@@ -1,6 +1,6 @@
 # 原生会话通信、操作回执与观察生命周期
 
-本说明沿用 Android → OAI Core → Session Adapter → Agent 宿主。设备能力仍由 Android 本地授权。本文补充[生成回执](2026-10-29-native-session-recovery.zh-CN.md)和[持久事件同步](2026-10-30-native-event-sync.zh-CN.md)，不新增消息或事件数据库。
+本说明沿用 Android → OAI Core → Session Adapter → Agent 宿主。设备能力仍由 Android 本地授权。本文补充[生成回执](2026-10-29-native-session-recovery.zh-CN.md)和[持久事件同步](2026-10-30-native-event-sync.zh-CN.md)，不新增消息或事件数据库。Platform 连接策略见[连接与恢复职责](2026-11-03-platform-connection-reliability.zh-CN.md)。
 
 ## 实际传输与任务所有者
 
@@ -11,7 +11,7 @@
 | Core → Hermes/DSH | HTTP JSON；消息返回 NDJSON | Adapter 桥负责宿主调用；NDJSON 关闭不代表宿主执行失败或明确取消。 |
 | Core → Codex | 原生 app-server 的 JSON-RPC/stdin/stdout | 原生 turn 与流观察分别管理；首帧提供真实 turn ID，显式取消绑定该 turn。 |
 | Android → Core 原生事件补偿 | HTTP JSON 长轮询、分页、ACK | 继续使用现有 eventSync 和不透明游标。 |
-| Android → Core 平台事件 | SSE；Core 也支持协商的 WebSocket | 平台事件不能替代原生 generation 的受理或终态证据。 |
+| Android → Core 平台事件 | WebSocket 优先，SSE 自动降级；健康 SSE 期间可作无订阅 WS 探测 | 平台事件不能替代原生 generation 的受理或终态证据。 |
 
 Core 的消息任务不依赖手机写 socket 的速度。中间观察缓冲有界；观察者过慢时关闭该观察并留下可恢复状态。平台 SSE/WS 队列溢出后必须停止发送更晚游标，避免客户端确认越过未交付事件。宿主原生历史、generation 回执和持久事件仍是恢复来源。
 

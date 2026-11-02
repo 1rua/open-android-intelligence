@@ -43,6 +43,8 @@ class NativeEventTrackerRecoveryTest {
         assertEquals("generation", h.repository.generationId.value)
         h.rejectCommit = false
         h.repository.connectionRestored(); runCurrent()
+        assertEquals("A wake keeps the pending save retry and its generation barrier", GenerationState.RUNNING, h.repository.generationState.value)
+        advanceTimeBy(250); runCurrent()
         assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
         assertNull(h.repository.generationId.value)
     }
@@ -50,6 +52,7 @@ class NativeEventTrackerRecoveryTest {
     @Test fun foregroundRecoveryOnlyReadsAndCannotRepostTheOriginalMessage() = runTest {
         val h = Harness(this)
         h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(51); runCurrent()
         repeat(4) { h.repository.connectionRestored(); runCurrent() }
         assertEquals(GenerationState.RUNNING, h.repository.generationState.value)
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
@@ -74,7 +77,10 @@ class NativeEventTrackerRecoveryTest {
         h.terminal = true; h.nextPage.complete(Unit); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
         h.terminal = false
-        h.repository.connectionRestored(); runCurrent()
+        val receiptReads = h.requests.count { it.target.contains("/generation?") }
+        h.stalePage.complete(Unit)
+        h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
+        assertTrue(h.requests.count { it.target.contains("/generation?") } > receiptReads)
         assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
         assertNull(h.repository.generationId.value)
     }
@@ -132,7 +138,7 @@ class NativeEventTrackerRecoveryTest {
             transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=dispatcher))
         val agent = CoreAgent("hermes","test","hermes",true,"account",AgentCapabilities(history=true,send=true,cancel=true,generationRecovery=true,eventSync=true))
         val store = NativeEventSynchronizerTest.Storage().apply { cursor = null }
-        val repository = CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store})
+        val repository = CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         repository.activeConversationChanged(); runCurrent()
         if (otherActive && authoritative == null) {
             assertNull(repository.generationId.value)
@@ -151,6 +157,8 @@ class NativeEventTrackerRecoveryTest {
     private class Harness(scope: TestScope) {
         val requests = mutableListOf<WireRequest>()
         val nextPage = CompletableDeferred<Unit>()
+        val stalePage = CompletableDeferred<Unit>()
+        private var sentStalePage = false
         var terminal = false
         var rejectCommit = false
         var observers = 0
@@ -173,10 +181,14 @@ class NativeEventTrackerRecoveryTest {
                     request.target.contains("/events?") -> {
                         observers++; maximumObservers = maxOf(maximumObservers, observers)
                         try {
-                            if (sentPage && request.target.contains("waitMs=")) awaitCancellation()
+                            if (sentPage && request.target.contains("waitMs=")) {
+                                if (sentStalePage) awaitCancellation()
+                                stalePage.await()
+                                sentStalePage = true
+                            }
                             if (!sentPage) nextPage.await()
                         } finally { observers-- }
-                        val events = if (sentPage) "" else """{"eventId":"terminal","eventType":"conversation.message.status","payload":{"conversationId":"chat","messageId":"user","clientMessageId":"client","generationId":"generation","status":"completed","revision":7,"errorCode":null}}"""
+                        val events = if (!sentPage || sentStalePage) """{"eventId":"${if (sentStalePage) "stale" else "terminal"}","eventType":"conversation.message.status","payload":{"conversationId":"chat","messageId":"user","clientMessageId":"client","generationId":"generation","status":"${if (sentStalePage) "delivered" else "completed"}","revision":${if (sentStalePage) 1 else 7},"errorCode":null}}""" else ""
                         sentPage = true
                         """{"events":[$events],"cursor":"base","hasMore":false}"""
                     }
@@ -194,6 +206,6 @@ class NativeEventTrackerRecoveryTest {
         }
         private val client = AgentSessionClient(GatewayHttpClient(GatewayProfile("account", "phone", "login", "https://core.example", accessToken = "synthetic"), transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher))
         private val agent = CoreAgent("hermes", "test", "hermes", true, "account", AgentCapabilities(history=true, send=true, stream=true, cancel=true, generationRecovery=true, eventSync=true))
-        val repository = CoreAgentConversationRepository(client, {agent}, {"chat"}, scope.backgroundScope, dispatcher, storeForAgent={store})
+        val repository = CoreAgentConversationRepository(client, {agent}, {"chat"}, scope.backgroundScope, dispatcher, storeForAgent={store}, nativeRetryJitter={it})
     }
 }

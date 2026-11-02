@@ -19,6 +19,9 @@ EVENT_STREAM_PATH = "/open-android-intelligence/v2/events"
 EVENT_STREAM_WS_PATH = "/open-android-intelligence/v2/events/ws"
 
 
+EVENT_STREAM_WS_PROBE_PATH = EVENT_STREAM_WS_PATH + "/probe"
+
+
 SSE_HEARTBEAT = b": ping\n\n"
 
 
@@ -214,6 +217,7 @@ class GatewayTransport:
         self._event_subscribers: dict[str, set[asyncio.Queue]] = {}
         self._maintenance_task: asyncio.Task | None = None
         self._event_sink = self._publish_event
+        self._websocket_handlers: set[asyncio.Task] = set()
 
     def _publish_event(self, account_id: str, event: Mapping[str, Any]) -> None:
         loop = self._loop
@@ -437,6 +441,97 @@ class GatewayTransport:
         return response
 
 
+    async def close_websockets(self) -> None:
+        """Join connection owners before the server tears down authentication."""
+        self._running = False
+        handlers = list(self._websocket_handlers)
+        for handler in handlers:
+            handler.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)
+
+    async def _close_invalid_ws_session(self, ws: web.WebSocketResponse, context: Any) -> None:
+        # Expiry of an otherwise active credential permits the client's bounded
+        # refresh episode. Revoked pairing/session identities remain terminal.
+        code = 4001 if self.services.core.event_session_failure(context) == "SESSION_EXPIRED" else 1008
+        await ws.close(code=code)
+
+    async def _watch_ws_session(self, ws: web.WebSocketResponse, context: Any) -> None:
+        while self._running and not ws.closed:
+            if not self.services.core.is_event_session_active(context):
+                await self._close_invalid_ws_session(ws, context)
+                return
+            await asyncio.sleep(1.0)
+        if not ws.closed:
+            await ws.close(code=1001)
+
+    async def _finish_websocket(
+        self, ws: web.WebSocketResponse | None, tasks: list[asyncio.Task],
+    ) -> None:
+        for task in tasks:
+            task.cancel()
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception) and not isinstance(result, ConnectionResetError):
+                    logger.debug("[open_android] WebSocket task completed error_type=%s", type(result).__name__)
+        finally:
+            if ws is not None and ws.prepared:
+                await ws.close(code=1000 if self._running else 1001)
+
+    async def _handle_ws_probe(
+        self, request: web.Request, raw_req: Mapping[str, Any],
+    ) -> web.StreamResponse:
+        """Signed control frames only; never attach a device event subscriber."""
+        route = next(
+            (item for item in self.services.exposure.routes if item.path == EVENT_STREAM_PATH),
+            None,
+        )
+        if route is None:
+            return web.json_response({"errorCode": "NOT_FOUND"}, status=404)
+        authentication = route.authenticate_event_stream(raw_req)
+        if authentication["statusCode"] != 200:
+            return web.json_response(authentication.get("body", {}), status=authentication["statusCode"])
+        context = authentication["verifiedContext"]
+        if authentication["verifiedRequest"].target != EVENT_STREAM_WS_PROBE_PATH:
+            failure = route.failure_response(context.request_id, context.correlation_id, "SCHEMA_INVALID")
+            return web.json_response(failure["body"], status=failure["statusCode"])
+        if not self.services.core.is_event_session_active(context):
+            failure = route.failure_response(None, None, "SESSION_REVOKED")
+            return web.json_response(failure["body"], status=failure["statusCode"])
+
+        ws = web.WebSocketResponse(autoping=False)
+        tasks: list[asyncio.Task] = []
+        handler = asyncio.current_task()
+        self._websocket_handlers.add(handler)
+        try:
+            await ws.prepare(request)
+
+            async def receive_probe() -> None:
+                async for msg in ws:
+                    if not self.services.core.is_event_session_active(context):
+                        await self._close_invalid_ws_session(ws, context)
+                        break
+                    if msg.type == WSMsgType.PING:
+                        await ws.pong(msg.data)
+                    elif msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+                        await ws.close(code=1008, message=b"control frames only")
+                        break
+
+            tasks = [
+                asyncio.create_task(receive_probe()),
+                asyncio.create_task(self._watch_ws_session(ws, context)),
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        finally:
+            try:
+                await self._finish_websocket(ws, tasks)
+            finally:
+                self._websocket_handlers.discard(handler)
+        return ws
+
+
     async def _handle_ws_stream(
         self, request: web.Request, raw_req: Mapping[str, Any],
     ) -> web.StreamResponse:
@@ -456,6 +551,10 @@ class GatewayTransport:
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=SSE_QUEUE_SIZE)
         registered_account_id: Optional[str] = None
+        ws: web.WebSocketResponse | None = None
+        tasks: list[asyncio.Task] = []
+        handler = asyncio.current_task()
+        self._websocket_handlers.add(handler)
 
         try:
             handshake = route.event_backlog(raw_req)
@@ -483,19 +582,19 @@ class GatewayTransport:
             for c in query.get("cursor", ()):
                 seen_event_ids[unquote(c)] = None
 
-            for event in handshake.get("events", []):
-                if not authorized():
-                    await ws.close(code=1008)
-                    return ws
-                eid = event.get("eventId") or event.get("id")
-                if eid:
-                    seen_event_ids[str(eid)] = None
-                await ws.send_str(_ws_event_frame(event))
-
             async def send_loop() -> None:
+                for event in handshake.get("events", []):
+                    if not authorized():
+                        await self._close_invalid_ws_session(ws, handshake["verifiedContext"])
+                        return
+                    eid = event.get("eventId") or event.get("id")
+                    if eid:
+                        seen_event_ids[str(eid)] = None
+                    await ws.send_str(_ws_event_frame(event))
+
                 while self._running and not ws.closed:
                     if not authorized():
-                        await ws.close(code=1008)
+                        await self._close_invalid_ws_session(ws, handshake["verifiedContext"])
                         break
                     try:
                         item = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -513,15 +612,13 @@ class GatewayTransport:
                     except Exception:
                         break
 
+                    if not authorized():
+                        await self._close_invalid_ws_session(ws, handshake["verifiedContext"])
+                        break
                     if item is _SUBSCRIBER_OVERFLOW:
                         await ws.close(code=1013, message=b"resume from cursor")
                         break
-                    if not self._running or not authorized():
-                        if not ws.closed:
-                            try:
-                                await ws.close()
-                            except Exception:
-                                pass
+                    if not self._running:
                         break
 
                     eid = _extract_event_id_from_item(item)
@@ -540,7 +637,7 @@ class GatewayTransport:
                         except (asyncio.CancelledError, ConnectionResetError):
                             break
                         except Exception as send_err:
-                            logger.debug("[open_android] WebSocket send_str error: %s", send_err)
+                            logger.debug("[open_android] WebSocket send_str error_type=%s", type(send_err).__name__)
                             break
 
             async def receive_loop() -> None:
@@ -577,32 +674,26 @@ class GatewayTransport:
                     ):
                         break
 
-            send_task = asyncio.create_task(send_loop())
-            receive_task = asyncio.create_task(receive_loop())
-            done, pending = await asyncio.wait(
-                [send_task, receive_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for t in pending:
-                t.cancel()
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    pass
-            for t in done:
-                exc = t.exception()
-                if exc and not isinstance(exc, (asyncio.CancelledError, ConnectionResetError)):
-                    logger.debug("[open_android] WebSocket task completed with error: %s", exc)
+            tasks = [
+                asyncio.create_task(send_loop()),
+                asyncio.create_task(receive_loop()),
+                asyncio.create_task(self._watch_ws_session(ws, handshake["verifiedContext"])),
+            ]
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         except (asyncio.CancelledError, ConnectionResetError):
             pass
         finally:
-            if registered_account_id:
-                self.services.core.set_device_online(handshake["verifiedContext"],False)
-                subscribers = self._event_subscribers.get(registered_account_id)
-                if subscribers:
-                    subscribers.discard(queue)
-                    if not subscribers:
-                        self._event_subscribers.pop(registered_account_id, None)
+            try:
+                await self._finish_websocket(ws, tasks)
+            finally:
+                self._websocket_handlers.discard(handler)
+                if registered_account_id:
+                    self.services.core.set_device_online(handshake["verifiedContext"], False)
+                    subscribers = self._event_subscribers.get(registered_account_id)
+                    if subscribers:
+                        subscribers.discard(queue)
+                        if not subscribers:
+                            self._event_subscribers.pop(registered_account_id, None)
 
         return ws
 

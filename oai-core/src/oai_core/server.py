@@ -15,7 +15,7 @@ from typing import Any
 
 from aiohttp import web
 from .gateway.verifier import AccountPasswordVerifier
-from .gateway.transport import GatewayTransport
+from .gateway.transport import EVENT_STREAM_WS_PROBE_PATH, GatewayTransport
 from .gateway.admin import HostApiCompatibility
 from .gateway.core import GatewayCore, GatewayError, _now
 from .gateway.http import _status, create_gateway_exposure
@@ -130,6 +130,8 @@ class CoreTransport(GatewayTransport):
         if request.method == "PUT" and re.fullmatch(r"/open-android-intelligence/v2/attachments/[^/]+/content", path):
             return await self._handle_attachment_content_stream(request)
         raw = raw_request(request, await request.read())
+        if path == EVENT_STREAM_WS_PROBE_PATH:
+            return await self._handle_ws_probe(request, raw)
         if path in {"/open-android-intelligence/v2/events", "/open-android-intelligence/v2/events/ws"}:
             if "websocket" in request.headers.get("Upgrade", "").lower():
                 return await self._handle_ws_stream(request, raw)
@@ -266,6 +268,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
             transport._maintenance_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await transport._maintenance_task
+        await transport.close_websockets()
         await registry.close()
 
     async def cleanup(_: web.Application) -> None:

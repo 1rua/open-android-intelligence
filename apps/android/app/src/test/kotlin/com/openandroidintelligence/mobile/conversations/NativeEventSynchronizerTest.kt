@@ -39,6 +39,39 @@ class NativeEventSynchronizerTest {
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
     }
 
+    @Test fun cancellationDuringAckKeepsTheCommittedPageForTheNextOwner() = runTest {
+        val h = Harness().apply { ackGate = CompletableDeferred() }
+        val owner = launch(UnconfinedTestDispatcher(testScheduler)) { h.sync().synchronize() }
+        h.ackStarted.await()
+        assertEquals("next", h.store.pending)
+        assertEquals("base", h.store.cursor)
+        assertTrue(h.store.events.isNotEmpty())
+        owner.cancelAndJoin()
+        assertEquals("next", h.store.pending)
+        assertEquals("base", h.store.cursor)
+        val readsBefore = h.requests.count { it.target.contains("/events?") }
+        h.ackGate = null
+        h.sync().synchronize()
+        assertEquals(listOf("next", "next"), h.acks)
+        assertEquals(readsBefore, h.requests.count { it.target.contains("/events?") })
+        assertEquals("next", h.store.cursor)
+        assertNull(h.store.pending)
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
+    @Test fun localAckConfirmationFailureKeepsThePendingCursorAndNamesLocalStorage() = runTest {
+        val h = Harness().apply { store.failConfirm = true }
+        val failure = runCatching { h.sync().synchronize() }.exceptionOrNull()
+        assertTrue(failure is NativeEventSyncFailure)
+        assertEquals("LOCAL_SAVE_FAILED", (failure as NativeEventSyncFailure).stage)
+        assertEquals("next", h.store.pending)
+        assertEquals("base", h.store.cursor)
+        h.sync().synchronize()
+        assertEquals(listOf("next", "next"), h.acks)
+        assertEquals("next", h.store.cursor)
+        assertNull(h.store.pending)
+    }
+
     @Test fun expiredReplayBootstrapsBeforeHistoryAndKeepsFollowingEvents() = runTest {
         val h = Harness().apply { expired = true }
         val sync = h.sync()
@@ -100,6 +133,37 @@ class NativeEventSynchronizerTest {
         assertTrue(h.acks.isEmpty())
     }
 
+    @Test fun aPageCannotBeAcknowledgedWhileItsMessageRevisionIsMissingFromHistory() = runTest {
+        for (missing in listOf(false, true)) {
+            val h = Harness().apply {
+                raw = """{"eventId":"completed-7","eventType":"conversation.message.completed","payload":{"conversationId":"chat","messageId":"reply","generationId":"gen","revision":7}}"""
+                historyRevision = 6
+                historyMissing = missing
+            }
+            val sync = h.sync()
+            assertTrue(runCatching { sync.synchronize() }.exceptionOrNull() is NativeHistoryBehind)
+            assertTrue(h.acks.isEmpty())
+            assertEquals("base", h.store.cursor)
+            assertTrue(h.store.events.isEmpty())
+            h.historyRevision = 7
+            h.historyMissing = false
+            sync.synchronize()
+            assertEquals(listOf("next"), h.acks)
+            assertEquals(1, h.requests.count { it.target.contains("/events?") })
+            assertEquals(7L, h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().revision)
+        }
+    }
+
+    @Test fun generationLifecycleRevisionIsNeverComparedWithMessageContentRevision() = runTest {
+        val h = Harness().apply {
+            raw = """{"eventId":"status-100","eventType":"conversation.message.status","payload":{"conversationId":"chat","messageId":"user","clientMessageId":"client","generationId":"gen","status":"completed","revision":100,"errorCode":null}}"""
+            historyRevision = 1
+        }
+        h.sync().synchronize()
+        assertEquals(listOf("next"), h.acks)
+        assertEquals(1L, h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().revision)
+    }
+
     private fun approval(type:String) = NativeEventApproval(type, JsonFields.obj(Json.parse(if(type=="approval_requested")
         """{"approvalId":"ap","conversationId":"chat","command":"synthetic","reason":"test","requestedAt":1,"expiresAt":9999999999999,"options":[{"choice":"once","label":"once"}]}"""
         else """{"approvalId":"ap","conversationId":"chat","decision":"once","decidedAt":2}"""))!!)
@@ -112,8 +176,12 @@ class NativeEventSynchronizerTest {
         val published=mutableListOf<VerifiedConversationEvent>()
         val approvalPublications=mutableListOf<NativeEventApproval>()
         var failAck=false
+        var ackGate:CompletableDeferred<Unit>?=null
+        val ackStarted=CompletableDeferred<Unit>()
         var expired=false
         var historyGate:CompletableDeferred<Unit>?=null
+        var historyRevision = 1L
+        var historyMissing = false
         var snapshotApprovals=emptyList<NativeEventApproval>()
         var raw="""{"eventId":"e1","eventType":"conversation.message.completed","payload":{"conversationId":"chat","messageId":"reply"}}"""
         val agent=CoreAgent("hermes","synthetic","hermes",false,"account",AgentCapabilities(history=true,generationRecovery=true,eventSync=true))
@@ -124,6 +192,8 @@ class NativeEventSynchronizerTest {
                     request.target.endsWith("/events/ack") -> {
                         val cursor=JsonFields.string(JsonFields.obj(Json.parse(request.body.decodeToString())),"cursor")!!
                         acks+=cursor;log+="ack:$cursor"
+                        ackStarted.complete(Unit)
+                        ackGate?.await()
                         if(failAck){failAck=false;throw IOException("lost ack response")}
                         """{"cursor":"$cursor"}"""
                     }
@@ -142,7 +212,9 @@ class NativeEventSynchronizerTest {
         private val client=AgentSessionClient(GatewayHttpClient(GatewayProfile("account","phone","login","https://core.example",accessToken="synthetic"),transport,{ByteArray(64)},InMemoryEventCursorStore()))
         fun sync()=NativeEventSynchronizer(client,agent,"chat",store,refresh={
             log+="history";historyGate?.await()
-            listOf(VerifiedConversationEvent.TimelineUpsert("history-reply",1,1,TimelineMessage("reply","assistant",listOf(MessagePart.Text("final")),1,conversationId=ConversationId("chat"))))
+            if (historyMissing) emptyList() else listOf(VerifiedConversationEvent.TimelineUpsert("history-reply",1,historyRevision,
+                TimelineMessage("reply","assistant",listOf(MessagePart.Text("final")),1,conversationId=ConversationId("chat"),
+                    generationId="gen", contentRevision=historyRevision)))
         },publish={published+=it},publishApproval={approvalPublications+=it})
     }
 
@@ -153,6 +225,7 @@ class NativeEventSynchronizerTest {
         var cursor:String?="base"
         var pending:String?=null
         var failCommit=false
+        var failConfirm=false
         val events=mutableListOf<VerifiedConversationEvent>()
         private val approvals=mutableListOf<NativeEventApproval>()
         val identities=mutableListOf<NativeRecoveryIdentity>()
@@ -178,6 +251,9 @@ class NativeEventSynchronizerTest {
             commitApprovals(conversationId,approvals)
             log+="commit";pending=cursor
         }
-        override suspend fun confirmAck(conversationId:String,cursor:String){check(pending==cursor);this.cursor=cursor;pending=null}
+        override suspend fun confirmAck(conversationId:String,cursor:String){
+            if(failConfirm){failConfirm=false;throw IOException("synthetic local ACK confirmation failed")}
+            check(pending==cursor);this.cursor=cursor;pending=null
+        }
     }
 }

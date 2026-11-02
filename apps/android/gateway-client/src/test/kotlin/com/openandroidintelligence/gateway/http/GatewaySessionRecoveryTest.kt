@@ -334,7 +334,8 @@ class GatewaySessionRecoveryTest {
         val sibling = GatewayHttpClient(initial, healthy, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
         repeat(3) {
             val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                     throw EventSessionRejectedException(requireNotNull(sessionSnapshot))
                 }
             }
@@ -366,7 +367,7 @@ class GatewaySessionRecoveryTest {
         assertEquals("before", cursors.load("account"))
     }
 
-    @Test fun anAuthenticatedHeartbeatResetsNetworkFailuresAndReconnectBackoff() = runTest {
+    @Test fun oneHeartbeatCannotResetTheBackoffBeforeSixtySecondsOfStableActivity() = runTest {
         var attempts = 0
         val delays = mutableListOf<Long>()
         val status = EventStreamStatusSink()
@@ -380,9 +381,9 @@ class GatewaySessionRecoveryTest {
             }
         }
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, InMemoryEventCursorStore(),
-            delayFn = { delays += it }, maxConsecutiveFailures = 3, statusSink = status)
+            jitterFn = { it }, delayFn = { delays += it }, maxConsecutiveFailures = 3, statusSink = status)
         assertEquals("recovered", client.events().take(1).toList().single().id)
-        assertEquals(listOf(1_000L, 2_000L, 1_000L), delays)
+        assertEquals(listOf(1_000L, 2_000L, 5_000L), delays)
         assertEquals(EventStreamStatus.LIVE, status.status.value)
     }
 
@@ -413,7 +414,7 @@ class GatewaySessionRecoveryTest {
         assertEquals(3, attempts)
     }
 
-    @Test fun failedSharedRotationCanBeRetriedByARecollectedStream() = runTest {
+    @Test fun failedSharedRotationRetriesInTheSameStream() = runTest {
         val initial = profile()
         var refreshes = 0
         val renewal = GatewaySessionRenewal(initial, backgroundScope) {
@@ -428,8 +429,8 @@ class GatewaySessionRecoveryTest {
                 emit("id: recovered\nevent: notice\ndata: {}\n\n".toByteArray())
             }
         }
-        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
-        assertTrue(runCatching { client.events().toList() }.exceptionOrNull() is IOException)
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            sessionRenewal = renewal, delayFn = {}, jitterFn = { it })
         assertEquals("recovered", client.events().take(1).toList().single().id)
         assertEquals(2, refreshes)
     }
@@ -479,7 +480,8 @@ class GatewaySessionRecoveryTest {
         var attempts = 0
         val renewal = GatewaySessionRenewal(initial, backgroundScope) { refreshes++; it.copy(accessToken = "new") }
         val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 attempts++
                 throw EventSessionRejectedException(renewal.current)
             }
@@ -504,7 +506,8 @@ class GatewaySessionRecoveryTest {
             it.copy(sessionId = "session_new", accessToken = "new")
         }
         val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 val snapshot = requireNotNull(sessionSnapshot)
                 snapshots += snapshot
                 if (snapshots.size == 1) {

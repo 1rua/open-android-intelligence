@@ -4558,12 +4558,10 @@ class GatewayCore:
 
     has_gateway_account = account_exists
 
-    def is_event_session_active(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> bool:
-        """Recheck lifecycle facts without replaying the signed handshake nonce."""
+    def event_session_failure(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> str | None:
+        """Classify retained stream credentials without consuming the handshake nonce."""
         try:
             paths = account_paths(self.storage_root, context.account_id)
-            # A retained handle may reference a deleted/replaced account. Always
-            # consult the current file without creating an unknown account.
             with closing(sqlite3.connect(paths.database.as_uri() + "?mode=ro", uri=True)) as database:
                 row = database.execute(
                     "SELECT s.status, s.expires_at, k.pairing_generation "
@@ -4571,10 +4569,15 @@ class GatewayCore:
                     "WHERE s.session_id = ? AND s.device_id = ?",
                     (context.session_id, context.device_id),
                 ).fetchone()
-                return bool(row and row[0] == "active" and _now(row[1]) > _now(now)
-                            and int(row[2]) == context.pairing_generation)
+                if not row or row[0] != "active" or int(row[2]) != context.pairing_generation:
+                    return "SESSION_REVOKED"
+                return "SESSION_EXPIRED" if _now(row[1]) <= _now(now) else None
         except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError):
-            return False
+            return "SESSION_REVOKED"
+
+    def is_event_session_active(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> bool:
+        """Recheck lifecycle facts against the current account without recreating it."""
+        return self.event_session_failure(context, now) is None
 
     def set_device_online(self, context: VerifiedRequestContext, online: bool) -> None:
         key = (context.account_id,context.device_id,context.session_id)

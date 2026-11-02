@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.TestDocumentKeys
 import java.time.Instant
@@ -80,7 +81,7 @@ class DeviceGrantFenceTest {
         } finally { executionScope.cancel() }
     }
 
-    @Test fun aGatewayRejectionOrStalePayloadRemovesTheEncryptedJournalWithoutClaimingOrRepeatingRecovery()=runBlocking {
+    @Test fun aGatewayRejectionOrStalePayloadDurablyFencesTheJournalWithoutClaimingOrRepeatingRecovery()=runBlocking {
         val context=ApplicationProvider.getApplicationContext<Application>()
         for (status in listOf(409,200)) {
             val scopeKey="fence_"+status
@@ -106,8 +107,12 @@ class DeviceGrantFenceTest {
             val executionScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
             try {
                 val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,scopeKey,{7},{true},TestDocumentKeys)
-                driver.recoverPending();driver.recoverPending()
-                assertEquals(1,lookups);assertTrue(journal.keys().isEmpty())
+                driver.recoverPending()
+                withTimeout(2_000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                driver.recoverPending()
+                assertEquals(1,lookups)
+                val saved=JsonFields.obj(Json.parse(journal.read("req_old")!!.decodeToString()))
+                assertEquals("fenced",JsonFields.string(saved,"stage"))
             } finally { executionScope.cancel() }
         }
     }

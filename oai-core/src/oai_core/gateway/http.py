@@ -244,14 +244,8 @@ class GatewayHttpRoute:
             status = 401
         return {"statusCode": status, "headers": dict(_RESPONSE_HEADERS), "body": body}
 
-    def event_backlog(self, request: Any) -> dict[str, Any]:
-        """Contract section 9 SSE handshake: verify the request, then read events.
-
-        Authentication and cursor validity are decided here and only here, so a
-        streaming transport never has to make a security decision of its own.
-        A failure return carries the same envelope any other route would send;
-        a success return names the verified account and the events to replay.
-        """
+    def authenticate_event_stream(self, request: Any) -> dict[str, Any]:
+        """Verify the original signed target without entering event business logic."""
         empty: dict[str, Any] = {}
         if not is_host_api_compatible(self._services.host_version, self._services.host_api):
             return {
@@ -280,6 +274,18 @@ class GatewayHttpRoute:
                 "statusCode": 401, "headers": dict(_RESPONSE_HEADERS),
                 "body": _failure(empty, "AUTHENTICATION_REQUIRED"),
             }
+        return {
+            "statusCode": 200, "headers": dict(_RESPONSE_HEADERS),
+            "accountId": str(verified.context.accountId),
+            "verifiedContext": verified.context, "verifiedRequest": verified,
+        }
+
+    def event_backlog(self, request: Any) -> dict[str, Any]:
+        """Authenticate the event handshake, then validate and read its cursor."""
+        authentication = self.authenticate_event_stream(request)
+        if authentication["statusCode"] != 200:
+            return authentication
+        verified = authentication["verifiedRequest"]
         body = self._services.core.handle(verified)
         status = _status(body)
         if status != 200:

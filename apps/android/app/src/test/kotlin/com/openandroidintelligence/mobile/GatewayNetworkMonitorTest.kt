@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Application
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.NetworkCapabilities
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
 import org.junit.Test
@@ -12,6 +14,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowNetwork
+import org.robolectric.shadows.ShadowNetworkCapabilities
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -34,6 +37,93 @@ class GatewayNetworkMonitorTest {
         assertEquals(2, wakeups)
         assertEquals(1, callbacks.size)
     }
+
+    @Test
+    fun duplicate_availability_and_validation_changes_do_not_restart_a_healthy_route() {
+        lateinit var callback: ConnectivityManager.NetworkCallback
+        var available = 0
+        var changed = 0
+        val monitor = GatewayNetworkMonitor(
+            onAvailable = { available++ }, register = { callback = it },
+            onRouteChanged = { changed++ },
+        )
+        monitor.start()
+        val network = ShadowNetwork.newInstance(10)
+        val localWifi = capabilities(NetworkCapabilities.TRANSPORT_WIFI)
+        callback.onAvailable(network)
+        callback.onCapabilitiesChanged(network, localWifi)
+        callback.onAvailable(network)
+        callback.onCapabilitiesChanged(network, capabilities(NetworkCapabilities.TRANSPORT_WIFI, validated = true))
+        callback.onCapabilitiesChanged(network, localWifi)
+        assertEquals(1, available)
+        assertEquals(0, changed)
+    }
+
+    @Test
+    fun late_loss_and_capabilities_of_an_old_network_do_not_override_the_new_route() {
+        lateinit var callback: ConnectivityManager.NetworkCallback
+        var available = 0
+        var changed = 0
+        var lost = 0
+        GatewayNetworkMonitor(
+            onAvailable = { available++ }, register = { callback = it },
+            onLost = { lost++ }, onRouteChanged = { changed++ },
+        ).start()
+        val old = ShadowNetwork.newInstance(11)
+        val current = ShadowNetwork.newInstance(12)
+        callback.onAvailable(old)
+        callback.onAvailable(current)
+        callback.onLost(old)
+        callback.onCapabilitiesChanged(old, NetworkCapabilities())
+        callback.onLost(current)
+        callback.onLost(current)
+        callback.onAvailable(current)
+        assertEquals(1, available)
+        assertEquals(2, changed)
+        assertEquals(1, lost)
+    }
+
+    @Test
+    fun same_network_suspension_recovery_and_underlying_transport_changes_wake_once() {
+        lateinit var callback: ConnectivityManager.NetworkCallback
+        var changed = 0
+        GatewayNetworkMonitor(onAvailable = {}, register = { callback = it }, onRouteChanged = { changed++ }).start()
+        val network = ShadowNetwork.newInstance(13)
+        val wifi = capabilities(NetworkCapabilities.TRANSPORT_WIFI)
+        callback.onAvailable(network)
+        callback.onCapabilitiesChanged(network, wifi)
+        callback.onCapabilitiesChanged(network, capabilities(NetworkCapabilities.TRANSPORT_WIFI, suspended = true))
+        callback.onCapabilitiesChanged(network, wifi)
+        callback.onCapabilitiesChanged(network, wifi)
+        val mobile = capabilities(NetworkCapabilities.TRANSPORT_CELLULAR)
+        callback.onCapabilitiesChanged(network, mobile)
+        callback.onCapabilitiesChanged(network, mobile)
+        assertEquals(2, changed)
+    }
+
+    @Test
+    fun initial_link_properties_do_not_reconnect_but_a_new_route_does() {
+        lateinit var callback: ConnectivityManager.NetworkCallback
+        var changed = 0
+        GatewayNetworkMonitor(onAvailable = {}, register = { callback = it }, onRouteChanged = { changed++ }).start()
+        val network = ShadowNetwork.newInstance(14)
+        callback.onAvailable(network)
+        val wifi = LinkProperties().apply { interfaceName = "wlan0" }
+        callback.onLinkPropertiesChanged(network, wifi)
+        callback.onLinkPropertiesChanged(network, LinkProperties().apply { interfaceName = "wlan0" })
+        callback.onLinkPropertiesChanged(network, LinkProperties().apply { interfaceName = "rmnet_data0" })
+        assertEquals(1, changed)
+    }
+
+    private fun capabilities(transport: Int, suspended: Boolean = false, validated: Boolean = false): NetworkCapabilities =
+        ShadowNetworkCapabilities.newInstance().also {
+            val shadow = shadowOf(it)
+            shadow.addTransportType(transport)
+            if (suspended) shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+            else shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+            if (validated) shadow.addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            else shadow.removeCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+        }
 
     @Test
     fun rejected_registration_can_retry_on_a_later_visible_transition() {

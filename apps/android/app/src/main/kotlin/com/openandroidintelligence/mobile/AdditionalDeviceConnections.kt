@@ -216,7 +216,7 @@ class AdditionalDeviceConnections(
                     try {
                         withTimeout(requestTimeoutMillis) {
                             check(connection.executionCurrent()) { "DEVICE_PROFILE_CHANGED" }
-                            connection.driver.accept(id)
+                            connection.driver.enqueue(id)
                         }
                     } catch (_: TimeoutCancellationException) {
                         currentCoroutineContext().ensureActive()

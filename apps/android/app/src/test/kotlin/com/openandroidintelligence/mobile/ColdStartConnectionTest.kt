@@ -116,6 +116,26 @@ class ColdStartConnectionTest {
     }
 
     @Test
+    fun repeatedAvailabilityAndForegroundKeepTheHealthyPlatformEventOwner() {
+        val current = connectedRuntimeWithHistory(native = true).runtime
+        val release = gateway.openEventStream("$API/events")
+        try {
+            current.onNetworkAvailable(routeChanged = true)
+            assertTrue("必须从真实 SSE 心跳建立健康连接", awaitCondition {
+                current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
+            })
+            val streamCount = requestCount("GET", "$API/events")
+            val historyCount = requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history")
+            repeat(5) { current.onNetworkAvailable(); current.onAppForegrounded() }
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            assertEquals("重复通知不能重建健康平台订阅", streamCount, requestCount("GET", "$API/events"))
+            assertEquals("健康 Native 不能因 Platform 活动重复补历史", historyCount,
+                requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"))
+            assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, current.connectionStatus.value)
+        } finally { release.countDown() }
+    }
+
+    @Test
     fun aQuickColdConnectionKeepsSavedHistoryUnselectedAndReadable() {
         savedLoginWithHistory()
         val requestBoundary = gateway.requests.size

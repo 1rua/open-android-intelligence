@@ -701,12 +701,17 @@ type AttachmentEvent =
 
 ## 9. 事件流传输 (WebSocket 与 SSE)
 
-端点 `GET /events?cursor=<opaque>` 提供全链路事件订阅与断点续传能力，支持双通道传输：
+SSE 端点 `GET /open-android-intelligence/v2/events?cursor=<opaque>` 与正式 WS 端点 `GET /open-android-intelligence/v2/events/ws?cursor=<opaque>` 提供相同的持久事件订阅和断点续传。为保持已有客户端兼容，`/events` 仍接受合法 WS Upgrade。游标属于成功处理的事件，不属于连接或心跳。
+
+新增可选探测端点 `GET /open-android-intelligence/v2/events/ws/probe`：只接受不带查询参数的 WS Upgrade，使用相同完整签名、设备/会话认证、nonce 和 TLS 策略，签名 target 必须为探测路径。客户端通过控制 Ping/Pong 确认双向可达。探测不读取或订阅事件、不修改事件游标、不标记设备在线、不领取请求；不接受业务数据帧。已建立连接的有效 access session 自然过期时使用关闭码 `4001`，客户端进入既有受限续签；撤销、配对失效和策略拒绝使用 `1008`，不能作为普通网络降级。关闭释放连接。旧实现返回未找到或不支持时，客户端保持已工作的 SSE，不反复切断正式事件流。
+
+健康 SSE 期间探测失败不影响事件消费。探测成功后，客户端先关闭探测连接，再停止并等待 SSE 退出，从最后成功提交的游标建立正式 WS。同一客户端同一时刻只有一个有效正式 Platform 事件流消费者。两种业务传输如下：
 
 1. **WebSocket 传输 (RFC 6455)**：
    - 客户端请求携带 `Upgrade: websocket` 与 `Connection: Upgrade`；
    - 服务端校验认证与握手签名后完成协议升级，事件以 JSON 文本帧下发（包含 `id`、`event` 与 `data` 载荷）；
-   - 支持 PING/PONG 帧心跳保活；客户端以 WebSocket 为优先通道，异常时自动平滑降级至 SSE。
+   - 支持 PING/PONG 控制帧心跳；认证握手成功可报告连接建立，业务静默不代表断线。客户端以 WS 为优先通道，普通网络或升级不可用时降级至 SSE；最终认证拒绝、证书/主机名/指纹校验错误不能作为普通网络异常降级。
+   - Core 心跳周期十五秒；Android 已建立连接的失活预算六十秒，握手预算独立。心跳不创建事件 ID，不推进游标；持续不完整或无效载荷不能无限延后故障检测。
 
 2. **SSE (Server-Sent Events) 传输**：
    - 使用 `Accept: text/event-stream`；

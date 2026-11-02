@@ -63,7 +63,7 @@ class NativeRecoveryCommitTest {
                 }
             }
         }
-        val repository = CoreAgentConversationRepository(AgentSessionClient(http),{agent},{"chat"},owner,dispatcher,storeForAgent={store})
+        val repository = CoreAgentConversationRepository(AgentSessionClient(http),{agent},{"chat"},owner,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         var commits = 0
         owner.launch {
             repository.observeEvents(ConversationScope("profile","https://core.example","account","install")).collect { event ->

@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -140,7 +143,7 @@ class GatewayEventStreamTest {
         }
         val client=GatewayHttpClient(profile(),transport,{ByteArray(64)},cursors)
         client.setCursorRecovery { throw java.io.IOException("SNAPSHOT_INTERRUPTED") }
-        assertEquals("SNAPSHOT_INTERRUPTED",runCatching {client.events().toList()}.exceptionOrNull()?.message)
+        assertEquals("SNAPSHOT_INTERRUPTED",runCatching {client.events(autoReconnect = false).toList()}.exceptionOrNull()?.message)
         assertEquals("cur_expired",cursors.load("acc_test"))
     }
 
@@ -279,8 +282,9 @@ class GatewayEventStreamTest {
         val transport = RecordingTransport(listOf(completedFrame))
         val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_start") }
         val failingWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
-            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
-                throw java.io.IOException("WEBSOCKET_HANDSHAKE_FAILED: 404 Not Found")
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                throw com.openandroidintelligence.gateway.ws.GatewayWebSocketHandshakeException(404)
             }
         }
         val client = GatewayHttpClient(
@@ -305,7 +309,8 @@ class GatewayEventStreamTest {
         val cursorStore = MemoryCursorStore().apply { seed("acc_test", "cur_start") }
         val wsEvent = com.openandroidintelligence.gateway.events.GatewayEvent("ws_evt_1", "test.event", "{}")
         val successfulWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
-            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 emit(wsEvent)
             }
         }
@@ -352,7 +357,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = cursorStore,
             webSocketTransport = null,
-            delayFn = { recordedDelays += it },
+            jitterFn = { it }, delayFn = { recordedDelays += it },
         )
 
         val events = client.events().take(2).toList()
@@ -389,7 +394,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = MemoryCursorStore(),
             webSocketTransport = null,
-            delayFn = { recordedDelays += it },
+            jitterFn = { it }, delayFn = { recordedDelays += it },
         )
 
         val events = client.events().take(1).toList()
@@ -415,7 +420,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = MemoryCursorStore(),
             webSocketTransport = null,
-            delayFn = { /* no delay */ },
+            jitterFn = { it }, delayFn = { /* no delay */ },
         )
 
         val events = client.events(autoReconnect = true).take(2).toList()
@@ -452,33 +457,23 @@ class GatewayEventStreamTest {
     }
 
     @Test
-    fun `无帧正常关闭也必须在有限重试后报告失败`() = runBlocking {
+    fun `无帧正常关闭超过诊断阈值仍能重连自愈`() = runBlocking {
         var attempts = 0
-        val recordedDelays = mutableListOf<Long>()
+        val delays = mutableListOf<Long>()
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse = error("unused")
             override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
-                attempts++
+                if (++attempts > 4) emit("id: recovered\ndata: {}\n\n".toByteArray())
             }
         }
         val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
-        val client = GatewayHttpClient(
-            profile(), transport, { ByteArray(64) }, MemoryCursorStore(),
-            webSocketTransport = null,
-            delayFn = {
-                recordedDelays += it
-                check(recordedDelays.size < 4) { "TEST_RETRY_LIMIT_EXCEEDED" }
-            },
-            statusSink = sink,
-            maxConsecutiveFailures = 3,
-        )
-
-        val failure = runCatching { client.events().toList() }.exceptionOrNull()
-
-        assertEquals("EVENT_STREAM_CLOSED", failure?.message)
-        assertEquals(3, attempts)
-        assertEquals(listOf(1_000L, 2_000L), recordedDelays)
-        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.FAILED, sink.status.value)
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, MemoryCursorStore(),
+            webSocketTransport = null, delayFn = { delays += it }, jitterFn = { it },
+            statusSink = sink, maxConsecutiveFailures = 3)
+        assertEquals("recovered", client.events().take(1).toList().single().id)
+        assertEquals(5, attempts)
+        assertEquals(listOf(1_000L, 2_000L, 5_000L, 10_000L), delays)
+        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, sink.status.value)
     }
 
     @Test
@@ -498,7 +493,7 @@ class GatewayEventStreamTest {
         val client = GatewayHttpClient(
             profile(), transport, { ByteArray(64) }, cursors,
             webSocketTransport = null,
-            delayFn = { statusDuringBackoff += sink.status.value },
+            jitterFn = { it }, delayFn = { statusDuringBackoff += sink.status.value },
             statusSink = sink,
         )
 
@@ -507,45 +502,27 @@ class GatewayEventStreamTest {
         assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, sink.status.value)
     }
 
-    /**
-     * Retrying forever is what made a dropped reply look like an app that never
-     * answered: nothing above the transport could tell "reconnecting" from
-     * "working". A stream that never recovers now fails loudly.
-     */
     @Test
-    fun `a stream that never recovers fails instead of retrying forever`() = runBlocking {
-        val recordedDelays = mutableListOf<Long>()
-        val alwaysFailing = object : GatewayByteTransport {
+    fun `network outages stay reconnecting until the subscription is cancelled`() = kotlinx.coroutines.test.runTest {
+        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
+        var attempts = 0
+        val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse = error("unused")
             override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
-                throw java.io.IOException("Connection reset by peer")
+                attempts++
+                throw java.io.IOException("offline")
             }
         }
-        val sink = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
-        val client = GatewayHttpClient(
-            profile = profile(),
-            transport = alwaysFailing,
-            signer = { ByteArray(64) },
-            cursorStore = MemoryCursorStore(),
-            webSocketTransport = null,
-            delayFn = { recordedDelays += it },
-            statusSink = sink,
-            maxConsecutiveFailures = 3,
-        )
-
-        // Bounded so a regression shows up as a failed assertion instead of a
-        // build that hangs: retrying forever was the original defect.
-        val result = withTimeoutOrNull(5_000L) { runCatching { client.events().toList() } }
-
-        assertNotNull("事件流必须给出结论，不能永远重试下去", result)
-        assertTrue("必须向上抛出异常，否则上层永远看不到故障", result!!.isFailure)
-        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("Connection reset by peer"))
-        // Three dead rounds: two backoffs, then the third one gives up.
-        assertEquals(listOf(1000L, 2000L), recordedDelays)
-        assertEquals(
-            com.openandroidintelligence.gateway.events.EventStreamStatus.FAILED,
-            sink.status.value,
-        )
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, MemoryCursorStore(),
+            webSocketTransport = null, statusSink = sink, maxConsecutiveFailures = 2,
+            jitterFn = { it }, monotonicMillis = { testScheduler.currentTime })
+        val job = launch { client.events().collect() }
+        advanceTimeBy(80_000)
+        runCurrent()
+        assertTrue(attempts > 2)
+        assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.RECONNECTING, sink.status.value)
+        job.cancel()
+        job.join()
     }
 
     @Test
@@ -569,7 +546,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = MemoryCursorStore(),
             webSocketTransport = null,
-            delayFn = { /* no delay */ },
+            jitterFn = { it }, delayFn = { /* no delay */ },
             statusSink = sink,
         )
 
@@ -605,7 +582,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = MemoryCursorStore(),
             webSocketTransport = null,
-            delayFn = { /* no delay */ },
+            jitterFn = { it }, delayFn = { /* no delay */ },
         )
 
         val events = client.events().take(2).toList()
@@ -641,7 +618,8 @@ class GatewayEventStreamTest {
         val wsEvent2 = com.openandroidintelligence.gateway.events.GatewayEvent("ws_evt_new", "test.event", "{}")
 
         val replayingWs = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(profile(), { ByteArray(64) }) {
-            override fun events(cursor: String?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 wsAttempt++
                 if (wsAttempt == 1) {
                     emit(wsEvent1)
@@ -663,7 +641,7 @@ class GatewayEventStreamTest {
             signer = { ByteArray(64) },
             cursorStore = cursorStore,
             webSocketTransport = replayingWs,
-            delayFn = { /* no delay */ },
+            jitterFn = { it }, delayFn = { /* no delay */ },
             statusSink = sink,
         )
 

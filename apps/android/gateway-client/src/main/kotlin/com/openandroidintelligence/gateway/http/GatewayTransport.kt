@@ -39,6 +39,8 @@ class GatewayTransport(
     private val maximumResponseBytes:Int = 32*1024*1024,
     /** Recheck the caller's lifecycle authority on IO, immediately before opening a connection. */
     private val beforeConnect: () -> Unit = {},
+    private val onHttpResponse: (Int) -> Unit = {},
+    private val onHttpFailure: (Throwable) -> Unit = {},
 ) : GatewayByteTransport {
 
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
@@ -56,12 +58,20 @@ class GatewayTransport(
             phase(request, mode, "io_dequeued")
             try {
                 block()
-            } catch (failure: IOException) {
+            } catch (failure: Throwable) {
                 // Disconnecting a cancelled read must preserve the Job's cancellation cause.
                 currentCoroutineContext().ensureActive()
+                if (failure is IOException || GatewayConnectionSecurity.isSecurityFailure(failure)) reportFailure(failure)
                 throw failure
             }
         }
+    }
+
+    private fun reportResponse(status: Int) { runCatching { onHttpResponse(status) } }
+
+    private fun reportFailure(failure: Throwable) {
+        if (failure is EventSessionRejectedException || failure is EventStreamForbiddenException || failure is EventCursorExpiredException) return
+        runCatching { onHttpFailure(failure) }
     }
 
     private fun observedStream(request: WireRequest, mode: String, input: InputStream): InputStream =
@@ -100,6 +110,7 @@ class GatewayTransport(
                 phase(request, "consumeResponse", "write_completed")
             }
             val status = connection.responseCode
+            reportResponse(status)
             phase(request, "consumeResponse", "response_headers")
             val headers = RawHeaders.validate(readHeaders(connection))
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
@@ -148,6 +159,7 @@ class GatewayTransport(
             }
             if (request.body.isNotEmpty() || streamBody != null) phase(request, "execute", "write_completed")
             val status = connection.responseCode
+            reportResponse(status)
             phase(request, "execute", "response_headers")
             val headers = readHeaders(connection)
             val body = readBody(connection, status, request)
@@ -206,27 +218,38 @@ class GatewayTransport(
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
         phase(request, "eventStream", "io_dequeued")
-        GatewayLog.d(TAG, "sse open ${request.method} ${request.target}")
-        val connection = open(request, readTimeoutMillis = SSE_IDLE_TIMEOUT_MILLIS)
+        GatewayLog.d(TAG, "sse open")
+        val connection = try {
+            open(request, readTimeoutMillis = SSE_HANDSHAKE_TIMEOUT_MILLIS)
+        } catch (failure: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (failure is IOException || GatewayConnectionSecurity.isSecurityFailure(failure)) reportFailure(failure)
+            throw failure
+        }
+        connection.connectTimeout = SSE_HANDSHAKE_TIMEOUT_MILLIS
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
             runCatching { connection.disconnect() }
         }
         try {
             phase(request, "eventStream", "connect_started")
-            connection.connect()
-            GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
-            phase(request, "eventStream", "connect_ready")
-            val status = connection.responseCode
+            val status = sseHandshake(connection) {
+                connection.connect()
+                GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)
+                phase(request, "eventStream", "connect_ready")
+                connection.responseCode.also(::reportResponse)
+            }
+            connection.readTimeout = SSE_IDLE_TIMEOUT_MILLIS
             phase(request, "eventStream", "response_headers")
             if (status !in 200..299) {
                 if (status == 410) throw EventCursorExpiredException()
                 if (status == 401) throw EventSessionRejectedException()
+                if (status == 403) throw EventStreamForbiddenException()
                 throw IOException("EVENT_STREAM_FAILED:$status")
             }
             val contentType = connection.getHeaderField("Content-Type").orEmpty()
             if (!contentType.contains("text/event-stream")) {
-                throw IOException("EVENT_STREAM_FAILED:unexpected-content-type:$contentType")
+                throw IOException("EVENT_STREAM_FAILED:unexpected-content-type")
             }
             observedStream(request, "eventStream", connection.inputStream).use { stream ->
                 val buffer = ByteArray(EVENT_CHUNK_BYTES)
@@ -238,14 +261,14 @@ class GatewayTransport(
                         // 15s, so no byte for this long means the socket is dead
                         // even though nobody sent a reset.
                         GatewayLog.w(TAG, "sse stalled after ${SSE_IDLE_TIMEOUT_MILLIS}ms")
-                        throw IOException("EVENT_STREAM_STALLED: no bytes received for ${SSE_IDLE_TIMEOUT_MILLIS}ms", e)
+                        throw EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)
                     } catch (e: java.net.SocketException) {
-                        if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
-                        GatewayLog.w(TAG, "sse socket error: ${e.message}")
+                        currentCoroutineContext().ensureActive()
+                        GatewayLog.w(TAG, "sse socket error")
                         throw e
                     } catch (e: IOException) {
-                        if (!currentCoroutineContext().isActive || e.message?.contains("closed", ignoreCase = true) == true) break
-                        GatewayLog.w(TAG, "sse io error: ${e.message}")
+                        currentCoroutineContext().ensureActive()
+                        GatewayLog.w(TAG, "sse io error")
                         throw e
                     }
                     if (read == -1) {
@@ -255,11 +278,30 @@ class GatewayTransport(
                     if (read > 0) emit(buffer.copyOf(read))
                 }
             }
+        } catch (failure: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (failure is IOException || GatewayConnectionSecurity.isSecurityFailure(failure)) reportFailure(failure)
+            throw failure
         } finally {
             cancelHandle?.dispose()
             connection.disconnect()
         }
     }.flowOn(Dispatchers.IO).onStart { phase(request, "eventStream", "io_queued") }
+
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private suspend fun <T> sseHandshake(connection: HttpURLConnection, block: () -> T): T {
+        try {
+            return kotlinx.coroutines.withTimeout(SSE_HANDSHAKE_TIMEOUT_MILLIS.toLong()) {
+                val handle = currentCoroutineContext()[Job]?.invokeOnCompletion(onCancelling = true) {
+                    runCatching { connection.disconnect() }
+                }
+                try { block() } finally { handle?.dispose() }
+            }
+        } catch (timeout: kotlinx.coroutines.TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            throw EventStreamTimeoutException(EventStreamTimeoutStage.HANDSHAKE)
+        }
+    }
 
     private fun open(
         request: WireRequest,
@@ -311,15 +353,9 @@ class GatewayTransport(
     }
 
     companion object {
-        /**
-         * Longest silence tolerated on an open SSE stream.
-         *
-         * The Gateway heartbeats every 15s, so this is one heartbeat plus
-         * slack: long enough to survive a slow network, short enough that a
-         * half-open socket is noticed in seconds rather than the better part of
-         * a minute, which is how a reply used to disappear without a trace.
-         */
-        const val SSE_IDLE_TIMEOUT_MILLIS = 20_000
+        /** Complete SSE frames are independently bounded by the HTTP event owner. */
+        const val SSE_IDLE_TIMEOUT_MILLIS = 60_000
+        const val SSE_HANDSHAKE_TIMEOUT_MILLIS = 10_000
         const val EVENT_CHUNK_BYTES = 8 * 1024
         const val BODY_CHUNK_BYTES = 16 * 1024
         const val STREAM_CHUNK_BYTES = 64 * 1024
