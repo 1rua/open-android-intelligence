@@ -2031,7 +2031,6 @@ class GatewayRuntime(
             transport = transport,
             signer = { preimage -> deviceKeys.sign(profileId, preimage) },
             cursorStore = AndroidEventCursorStore(context, platformCursorProfile(profileId)),
-            webSocketTransport = null,
             statusSink = platformStatus,
             sessionRenewal = renewal,
             handlePlatformEvent = { event ->
