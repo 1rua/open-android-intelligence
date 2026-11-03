@@ -158,25 +158,27 @@ class AndroidAccessibilityScreenshotRuntime(
 
     /** 把位图编码成 PNG；失败返回 null，由调用方归入取帧失败，绝不返回空字节冒充成功。 */
     private suspend fun encodePng(bitmap: Bitmap): ScreenCapture? {
-        var software: Bitmap? = null
+        // wrapHardwareBuffer 返回硬件位图，压缩前必须复制成软件位图。
+        val software = if (bitmap.config == Bitmap.Config.HARDWARE) {
+            bitmap.copy(Bitmap.Config.ARGB_8888, false)
+        } else {
+            bitmap
+        } ?: return null
         return try {
-            // wrapHardwareBuffer 得到硬件位图，压缩前必须转成软件位图。
-            software = if (bitmap.config == Bitmap.Config.HARDWARE) {
-                bitmap.copy(Bitmap.Config.ARGB_8888, false)
-            } else {
-                bitmap
-            } ?: return null
             val output = ByteArrayOutputStream()
-            if (!software.compress(Bitmap.CompressFormat.PNG, 100, output)) return null
-            currentCoroutineContext().ensureActive()
-            ScreenCapture.copyOf(output.toByteArray(), software.width, software.height)
+            if (!software.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                null
+            } else {
+                currentCoroutineContext().ensureActive()
+                ScreenCapture.copyOf(output.toByteArray(), software.width, software.height)
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: RuntimeException) {
             null
         } finally {
-            if (software !== bitmap) software?.recycle()
-            bitmap.recycle()
+            // 只有在确实复制过时才单独回收副本，避免对同一个位图重复回收。
+            if (software !== bitmap) software.recycle()
         }
     }
 
