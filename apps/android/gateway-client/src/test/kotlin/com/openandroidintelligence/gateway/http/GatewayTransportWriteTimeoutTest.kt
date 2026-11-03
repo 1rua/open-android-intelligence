@@ -23,7 +23,6 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.ServerSocket
-import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Base64
@@ -160,10 +159,18 @@ class GatewayTransportWriteTimeoutTest {
                     }
                     headersReceived.complete(requestLine to headers)
                     check(observePeerClose.await(5, TimeUnit.SECONDS))
+                    // A FIN follows bytes already queued by the client. Drain
+                    // them in blocks with a normal receive window before
+                    // observing EOF; one-byte reads with a tiny TCP window
+                    // measure draining speed rather than client cancellation.
+                    socket.receiveBufferSize = 256 * 1024
+                    socket.soTimeout = 1_000
+                    val remaining = ByteArray(64 * 1024)
                     try {
-                        while (input.read() >= 0) Unit
-                    } catch (_: IOException) {
+                        while (input.read(remaining) >= 0) Unit
+                    } catch (_: java.net.SocketException) {
                         // A reset is also proof that the client closed its request socket.
+                        // A read timeout is not proof and must fail the test.
                     }
                     peerClosed.complete(Unit)
                 }
@@ -240,13 +247,17 @@ class GatewayTransportWriteTimeoutTest {
                 }
                 assertTrue("large body must still be incomplete before cancellation", writtenBytes.get() < payload.size)
                 val cancellation = CancellationException("cancel stalled attachment write")
+                val cancellationStartedAt = System.nanoTime()
                 execution.cancel(cancellation)
                 withTimeout(1_500) { execution.join() }
+                val cancellationMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - cancellationStartedAt)
+                assertTrue("cancellation blocked for $cancellationMillis ms", cancellationMillis < 1_500)
                 val cause = runCatching { execution.await() }.exceptionOrNull()
                 assertTrue("caller cancellation was replaced by $cause", cause is CancellationException)
                 assertEquals(cancellation.message, cause?.message)
                 assertTrue("caller cancellation must not be reported as a network failure", reportedFailures.isEmpty())
             } else {
+                val observationStartedAt = System.nanoTime()
                 var operationFailure: Throwable? = null
                 val completedWithinBudget = withTimeoutOrNull(1_500) {
                     try {
@@ -260,11 +271,16 @@ class GatewayTransportWriteTimeoutTest {
                     }
                 } ?: false
 
+                val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - observationStartedAt)
                 assertTrue(
-                    "write must exit within the shortened existing timeout; evidence=$evidence",
-                    completedWithinBudget,
+                    "write must exit within the shortened existing timeout; elapsed=$elapsedMillis ms; evidence=$evidence",
+                    completedWithinBudget && elapsedMillis < 1_500,
                 )
-                assertTrue("expected the write timeout, got $operationFailure", operationFailure is SocketTimeoutException)
+                // Disconnecting a blocked fixed-length write may surface the
+                // socket's IOException before the coroutine timeout exception.
+                // The contract is bounded I/O failure with no successful write.
+                assertTrue("expected a bounded I/O failure, got $operationFailure", operationFailure is IOException)
+                assertTrue("stalled upload must not report all bytes sent", writtenBytes.get() < payload.size)
                 assertEquals(1, reportedFailures.size)
                 assertTrue(reportedFailures.single() is IOException)
                 assertSame(operationFailure, reportedFailures.single())

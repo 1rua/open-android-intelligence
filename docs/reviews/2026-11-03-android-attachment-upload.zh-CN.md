@@ -50,9 +50,9 @@ Terra 已准备专用 API 35 模拟器 `oai-attachment-upload-20261103`（`emula
 ## 已执行检查
 
 - 最终 Core 文件组合（审查补修后）：`test_attachment_policy.py` 与 `test_core_transport.py`，54 passed，约 19.27 秒；包含新旧 CAS 半成品恢复及真实 HTTP 大小/代理回归。
-- 本轮基线 Android 14 项通过不等于最终 Kotlin 修复通过；最终版本等待 CI。
+- 本轮基线 Android 14 项通过不等于最终 Kotlin 修复通过；最终运行以当前 PR 检查为准。
 - `npm run lock:check` 通过（8 项）；`git diff --check` 通过。
-- 遵照最新用户要求，后续不在本地编译，Android 构建和最终回归交由 CI。没有执行会触发本地 Gradle 的 `test:fast`/`test:pr`；不能将等价或部分检查标成这两条完整门禁已通过。
+- 遵照最新用户要求，后续不在本地编译，Android 构建和最终回归交由 CI。首次 CI（`1e3d6a81`）中 Core 3.11/3.12、Hermes、DSH 与 APK 通过；Android 374 项有 2 项新增测试失败，具体结果见[首次 CI 记录](2026-11-03-pr76-attachment-upload-ci.zh-CN.md)。没有执行会触发本地 Gradle 的 `test:fast`/`test:pr`；不能将等价或部分检查标成这两条完整门禁已通过。
 
 ## 分批提交与 CI
 
@@ -67,3 +67,5 @@ Terra 已准备专用 API 35 模拟器 `oai-attachment-upload-20261103`（`emula
 已完成上述受控故障复现与部分修复；用户报告的实际部署卡顿尚未闭环。Core 测试计数与 Android CI/设备结果分别记录，不引用上一轮计数冒充本轮结果。
 
 公开状态 staged 不能区分未收到正文与正文已暂存；未获上传确认的重试可能重传相同正文。已确认 uploaded 的附件查询后复用，不重新 PUT。该既有协议边界不能通过猜测成功来绕过，本轮不新增跨仓状态协议。
+
+追加忙碌会话探针：同一真实 Core HTTP、Hermes bridge 与 SQLite 中，4 MiB PUT+commit 空闲时约 86 ms，generation gate 未释放、SSE 保持打开且 eventSync 读写时约 140 ms，上传完成时 generation 仍 running；本机探针 1 passed。只能排除这个受控条件必然阻塞，不能排除部署中的其他同步阻塞或长事务。
