@@ -89,7 +89,7 @@ oai capabilities
 | `SCREEN_CAPTURE_AUTHORIZATION_REQUIRED` | 两条路径都还没有授权 | 是 | 开启无障碍服务，或发起一次系统投屏授权 |
 | `ACCESSIBILITY_SERVICE_UNAVAILABLE` | 服务开启过但当前未连接 | 是 | 到无障碍设置确认服务显示「已连接」 |
 | `SCREEN_CAPTURE_SYSTEM_REJECTED` | 用户拒绝或系统判定无权截图 | 是 | 重新发起一次显式授权 |
-| `SCREEN_CAPTURE_SECURE_WINDOW` | 当前窗口受系统保护 | 否（换界面即可） | 切换到普通界面 |
+| `SCREEN_CAPTURE_SECURE_WINDOW` | 当前窗口受系统保护 | 是（属当前界面属性，非设备缺陷） | 切换到普通界面 |
 | `SCREEN_CAPTURE_RATE_LIMITED` | 触发系统截图限速 | 是 | 稍等片刻重试，不必重新授权 |
 | `SCREEN_CAPTURE_FAILED` | 本次取帧失败 | 是 | 直接重试 |
 | `SCREEN_DEVICE_LOCKED` | 设备锁屏 | 是 | 解锁后重试 |

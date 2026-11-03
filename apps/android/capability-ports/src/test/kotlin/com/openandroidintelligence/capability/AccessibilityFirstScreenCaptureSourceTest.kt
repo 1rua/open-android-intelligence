@@ -235,11 +235,18 @@ class AccessibilityFirstScreenCaptureSourceTest {
     }
 
     @Test
-    fun allFailureStatesExceptUnsupportedAreRecoverable() {
+    fun onlyUnsupportedIsUnrecoverableBecauseEverythingElseHasAUserAction() {
+        // 问题三的核心要求：不能把可正常申请/可换界面绕开的情形长期标成不可恢复。
+        // 受保护窗口换界面即可、限速等一会即可、服务断连可重新开启、系统拒绝可重新授权。
         ScreenCaptureFailure.entries.forEach { failure ->
-            val expected = failure != ScreenCaptureFailure.UNSUPPORTED && failure != ScreenCaptureFailure.SECURE_WINDOW
-            assertEquals("$failure 可恢复性判定错误", expected, failure.isRecoverable)
+            assertEquals(
+                "$failure 可恢复性判定错误",
+                failure != ScreenCaptureFailure.UNSUPPORTED,
+                failure.isRecoverable,
+            )
         }
+        assertTrue("受保护窗口必须可恢复", ScreenCaptureFailure.SECURE_WINDOW.isRecoverable)
+        assertFalse(ScreenCaptureFailure.UNSUPPORTED.isRecoverable)
     }
 
     @Test

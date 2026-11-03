@@ -76,10 +76,12 @@ enum class ScreenCaptureFailure {
      */
     val isRecoverable: Boolean
         get() = when (this) {
-            NOT_AUTHORIZED, SERVICE_DISCONNECTED, SYSTEM_REJECTED, RATE_LIMITED, CAPTURE_FAILED, DEVICE_LOCKED -> true
-            // 受保护窗口只能靠用户切界面，不是稳定可恢复的本机能力；
-            // 不支持则是设备事实，重试没有意义。
-            SECURE_WINDOW, UNSUPPORTED -> false
+            // 受保护窗口是「当前界面」的属性，不是设备缺陷：用户切到普通界面即可截，
+            // 因此它属于可恢复处境，不能显示成永久不可用。
+            NOT_AUTHORIZED, SERVICE_DISCONNECTED, SYSTEM_REJECTED, RATE_LIMITED, CAPTURE_FAILED,
+            DEVICE_LOCKED, SECURE_WINDOW -> true
+            // 只有系统/服务本身不支持截图才是重试没有意义的设备事实。
+            UNSUPPORTED -> false
         }
 
     /** 稳定协议码：跨 Core / 客户端 / 诊断日志使用，不得随文案变化。 */
