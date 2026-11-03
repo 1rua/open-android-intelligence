@@ -13,9 +13,11 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 
@@ -182,11 +184,47 @@ class GatewayTransport(
         }
     }
 
-    private fun writeStreamBody(connection: HttpURLConnection, body: GatewayRequestBody) {
+    // HttpURLConnection's read timeout does not bound a blocked request write.
+    // Apply the same idle budget to each socket write, so progressing large
+    // uploads may run longer than one budget while stalled sockets are closed.
+    // Local source reads keep their own error semantics.
+    @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
+    private suspend fun <T> withRequestWriteIdleTimeout(
+        connection: HttpURLConnection,
+        block: () -> T,
+    ): T {
+        val timeoutMillis = connection.readTimeout
+        if (timeoutMillis <= 0) return block()
+
+        val timedOut = AtomicBoolean(false)
+        try {
+            return kotlinx.coroutines.withTimeout(timeoutMillis.toLong()) {
+                val cancelHandle = currentCoroutineContext()[Job]?.invokeOnCompletion(onCancelling = true) { cause ->
+                    if (cause != null) {
+                        if (cause is kotlinx.coroutines.TimeoutCancellationException) timedOut.set(true)
+                        runCatching { connection.disconnect() }
+                    }
+                }
+                try {
+                    block()
+                } finally {
+                    cancelHandle?.dispose()
+                }
+            }
+        } catch (failure: Throwable) {
+            currentCoroutineContext().ensureActive()
+            if (timedOut.get() || failure is kotlinx.coroutines.TimeoutCancellationException) {
+                throw SocketTimeoutException("REQUEST_WRITE_TIMEOUT").also { it.initCause(failure) }
+            }
+            throw failure
+        }
+    }
+
+    private suspend fun writeStreamBody(connection: HttpURLConnection, body: GatewayRequestBody) {
         val digest = MessageDigest.getInstance("SHA-256")
         var written = 0L
         val buffer = ByteArray(STREAM_CHUNK_BYTES)
-        connection.outputStream.use { output ->
+        withRequestWriteIdleTimeout(connection) { connection.outputStream }.use { output ->
             body.openStream().use { input ->
                 while (true) {
                     val read = input.read(buffer)
@@ -197,17 +235,18 @@ class GatewayTransport(
                         if (written >= body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
                         val singleByte = single.toByte()
                         digest.update(singleByte)
-                        output.write(single)
+                        withRequestWriteIdleTimeout(connection) { output.write(single) }
                         written++
                         body.reportBytesWritten(written)
                         continue
                     }
                     if (written > body.contentLength - read) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
                     digest.update(buffer, 0, read)
-                    output.write(buffer, 0, read)
+                    withRequestWriteIdleTimeout(connection) { output.write(buffer, 0, read) }
                     written += read
                     body.reportBytesWritten(written)
                 }
+                withRequestWriteIdleTimeout(connection) { output.flush() }
             }
         }
         if (written != body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
