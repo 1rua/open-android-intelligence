@@ -1,0 +1,15 @@
+{"bootId":"process-5e566d8ecbde","clickedAtNs":9755370822044,"conversationId":"synthetic-conversation-8ad30a397e66","epoch":1,"monotonicNs":9755372216003,"source":"pending","type":"timeline.opened"}
+{"bootId":"process-5e566d8ecbde","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":712627408,"epoch":1,"found":true,"monotonicNs":9756086751247,"source":"local","type":"timeline.local_read"}
+{"bootId":"process-5e566d8ecbde","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":834129981,"epoch":1,"monotonicNs":9756204965792,"source":"local","type":"timeline.first_draw"}
+{"bootId":"process-ecc55c2fca44","clickedAtNs":9765497930371,"conversationId":"synthetic-conversation-8ad30a397e66","epoch":1,"monotonicNs":9765499325912,"source":"pending","type":"timeline.opened"}
+{"bootId":"process-ecc55c2fca44","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":730866809,"epoch":1,"found":true,"monotonicNs":9766230974010,"source":"local","type":"timeline.local_read"}
+{"bootId":"process-ecc55c2fca44","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":871873129,"epoch":1,"monotonicNs":9766369822793,"source":"local","type":"timeline.first_draw"}
+{"bootId":"process-72392ee54e6d","clickedAtNs":9774964709715,"conversationId":"synthetic-conversation-8ad30a397e66","epoch":1,"monotonicNs":9774965990833,"source":"pending","type":"timeline.opened"}
+{"bootId":"process-72392ee54e6d","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":417330874,"epoch":1,"found":true,"monotonicNs":9775383822179,"source":"local","type":"timeline.local_read"}
+{"bootId":"process-72392ee54e6d","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":496560270,"epoch":1,"monotonicNs":9775461279675,"source":"local","type":"timeline.first_draw"}
+{"bootId":"process-0a63fb3b8bef","clickedAtNs":9782820229438,"conversationId":"synthetic-conversation-8ad30a397e66","epoch":1,"monotonicNs":9782821438646,"source":"pending","type":"timeline.opened"}
+{"bootId":"process-0a63fb3b8bef","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":394227818,"epoch":1,"found":true,"monotonicNs":9783216201821,"source":"local","type":"timeline.local_read"}
+{"bootId":"process-0a63fb3b8bef","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":457287534,"epoch":1,"monotonicNs":9783277549203,"source":"local","type":"timeline.first_draw"}
+{"bootId":"process-a16d768ca4c5","clickedAtNs":9790781096982,"conversationId":"synthetic-conversation-8ad30a397e66","epoch":1,"monotonicNs":9790782372817,"source":"pending","type":"timeline.opened"}
+{"bootId":"process-a16d768ca4c5","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":417256874,"epoch":1,"found":true,"monotonicNs":9791200132676,"source":"local","type":"timeline.local_read"}
+{"bootId":"process-a16d768ca4c5","conversationId":"synthetic-conversation-8ad30a397e66","elapsedNs":488070523,"epoch":1,"monotonicNs":9791269180481,"source":"local","type":"timeline.first_draw"}
