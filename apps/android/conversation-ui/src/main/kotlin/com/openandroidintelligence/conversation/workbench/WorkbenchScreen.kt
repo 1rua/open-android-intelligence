@@ -746,6 +746,21 @@ fun WorkbenchScreen(
         val latestMainContent by rememberUpdatedState(mainContent)
         val movableMain = remember { movableContentOf { latestMainContent() } }
 
+        val settingsContent: @Composable () -> Unit = {
+            savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
+                settingsPanel?.invoke {
+                    if (settingsFromConversations && !expanded) {
+                        scope.launch { drawer.open() }
+                    } else if (settingsFromConversations) {
+                        returnToConversations = true
+                    }
+                    onSettingsOpenChange(false)
+                }
+            }
+        }
+        val latestSettingsContent by rememberUpdatedState(settingsContent)
+        val movableSettingsContent = remember { movableContentOf { latestSettingsContent() } }
+
         // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
         // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
         if (expanded) {
@@ -762,14 +777,9 @@ fun WorkbenchScreen(
                     modifier = Modifier.fillMaxSize(),
                     label = "tablet-sidebar-content",
                 ) { panel ->
-                    savedSidebarState.SaveableStateProvider(panel) {
-                        when (panel) {
-                            SidebarPanel.CONVERSATIONS -> drawerContent()
-                            SidebarPanel.SETTINGS -> settingsPanel?.invoke {
-                                returnToConversations = settingsFromConversations
-                                onSettingsOpenChange(false)
-                            }
-                        }
+                    when (panel) {
+                        SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                        SidebarPanel.SETTINGS -> movableSettingsContent()
                     }
                 }
             }
@@ -830,16 +840,7 @@ fun WorkbenchScreen(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
-                        savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
-                            settingsPanel?.invoke {
-                                if (settingsFromConversations) {
-                                    scope.launch {
-                                        drawer.open()
-                                    }
-                                }
-                                onSettingsOpenChange(false)
-                            }
-                        }
+                        movableSettingsContent()
                     }
                 }
             }
