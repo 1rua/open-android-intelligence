@@ -365,7 +365,9 @@ class PluginManagementScreenTest {
             }
         }
         compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).performScrollTo().performClick()
-        compose.waitUntil(5_000) {
+        // 包来源在 Dispatchers.IO 上异步读取，CI 满载时 UI 提示可能晚于 5 秒出现。
+        // 仍等待真实的失败提示，不跳过任何行为断言。
+        compose.waitUntil(20_000) {
             compose.onAllNodesWithText("当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
         }
         assertTrue(store.listInstalled().isEmpty())
