@@ -1,12 +1,31 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
@@ -121,11 +140,226 @@ class WorkbenchLayoutRegressionTest {
         settingsNode.assertIsDisplayed()
         settingsNode.performClick()
         assertTrue("点击设置项必须触发 onOpenSettings", settingsOpened)
-        assertTrue("点击设置项必须触发关闭抽屉 onCloseDrawer", drawerClosed)
+        assertFalse("切换到设置时不能关闭并重新打开抽屉", drawerClosed)
 
         // 页脚同级的协议版本号与退出登录也必须常驻可见
         compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
         compose.onNodeWithText("退出登录").assertIsDisplayed()
+    }
+
+    @Test
+    fun phoneSwitchesToSettingsWithoutClosingAndVerticalScrollDoesNotDismiss() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
+        var mainMounts = 0
+        var mainDisposals = 0
+        var scrollStateHolder: ScrollState? = null
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                }, header = {
+                    DisposableEffect(Unit) {
+                        mainMounts++
+                        onDispose { mainDisposals++ }
+                    }
+                }, onScrollState = { scrollStateHolder = it })
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        val scrollState = scrollStateHolder ?: error("ScrollState must be captured")
+        repeat(3) {
+            compose.runOnIdle {
+                runBlocking {
+                    scrollState.scrollTo(scrollState.maxValue)
+                    scrollState.scrollTo(0)
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue("纵向滚动不能关闭设置", settingsOpen)
+            assertEquals("设置切换不能重建右侧内容", 1, mainMounts)
+            assertEquals("设置切换不能销毁右侧内容", 0, mainDisposals)
+        }
+
+        compose.onNode(hasText("返回会话") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        compose.runOnIdle { assertFalse("返回会话列表时应退出设置", settingsOpen) }
+    }
+
+    @Test
+    fun phoneSettingsSemanticsActionKeepsDrawerOpen() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                })
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNodeWithText("设置与平台管理").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle {
+            assertTrue("语义点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+    }
+
+    @Test
+    fun switchingFromConversationToSettingsKeepsDrawerOnScreenDuringTransition() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(
+                    controller,
+                    settingsOpen,
+                    { settingsOpen = it },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).assertIsDisplayed()
+        val drawerBefore = compose.onNodeWithTag("workbench-drawer", useUnmergedTree = true)
+            .assertIsDisplayed()
+            .fetchSemanticsNode()
+        val initialBounds = drawerBefore.boundsInRoot
+        val initialId = drawerBefore.id
+
+        compose.mainClock.autoAdvance = false
+        try {
+            compose.onNode(hasText("设置与平台管理") and hasClickAction())
+                .performSemanticsAction(SemanticsActions.OnClick) { it() }
+            // 覆盖内容切换以及可能错误触发的抽屉关闭、重新打开动画。
+            repeat(90) { frame ->
+                compose.mainClock.advanceTimeByFrame()
+                val drawers = compose.onAllNodesWithTag("workbench-drawer", useUnmergedTree = true)
+                    .fetchSemanticsNodes()
+                assertEquals("第 ${frame + 1} 帧必须保持唯一的抽屉容器", 1, drawers.size)
+                val drawer = drawers.single()
+                assertEquals("第 ${frame + 1} 帧不能销毁并重新创建抽屉", initialId, drawer.id)
+                assertEquals("第 ${frame + 1} 帧抽屉左边界不能移动", initialBounds.left, drawer.boundsInRoot.left, 1f)
+                assertEquals("第 ${frame + 1} 帧抽屉右边界不能移动", initialBounds.right, drawer.boundsInRoot.right, 1f)
+            }
+        } finally {
+            compose.mainClock.autoAdvance = true
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        compose.runOnIdle { assertTrue("切换后应保持设置面板打开", settingsOpen) }
+    }
+
+    @Test
+    fun phoneHorizontalDismissClosesSettingsAndSynchronizesItsState() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        compose.setContent {
+            MaterialTheme { SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }) }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeLeft() }
+        compose.runOnIdle { assertFalse("横向关闭抽屉后设置状态也必须关闭", settingsOpen) }
+        compose.onNodeWithContentDescription("打开会话抽屉").assertIsDisplayed()
+    }
+
+    @Test
+    @org.robolectric.annotation.Config(qualifiers = "w1200dp-h900dp-160dpi")
+    fun wideSettingsReplaces320dpSidebarWithoutRebuildingMainContent() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        var mainMounts = 0
+        var mainDisposals = 0
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(1000.dp, 800.dp)) {
+                    SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }, header = {
+                        DisposableEffect(Unit) {
+                            mainMounts++
+                            onDispose { mainDisposals++ }
+                        }
+                        Box(Modifier.fillMaxWidth().height(8.dp).testTag("main-content-marker"))
+                    })
+                }
+            }
+        }
+        compose.runOnIdle { controller.editDraft("保留的草稿") }
+        val before = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithText("设置与平台管理").performClick()
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
+        val after = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
+        assertEquals("设置不能改变右侧位置", before.left, after.left, 1f)
+        assertEquals("设置不能改变右侧宽度", before.width, after.width, 1f)
+        compose.runOnIdle {
+            assertEquals("保留的草稿", controller.state.value.draft)
+            assertEquals("设置切换不能重建会话内容", 1, mainMounts)
+            assertEquals("设置切换不能销毁会话内容", 0, mainDisposals)
+        }
+        compose.onNodeWithText("返回会话").performClick()
+        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+    }
+
+    @Test
+    @org.robolectric.annotation.Config(qualifiers = "w1200dp-h900dp-160dpi")
+    fun settingsSubpageAndDraftSurviveWindowBreakpointChanges() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        var windowWidth by mutableStateOf(411.dp)
+        var mainMounts = 0
+        var mainDisposals = 0
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(windowWidth, 800.dp)) {
+                    SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }, header = {
+                        DisposableEffect(Unit) {
+                            mainMounts++
+                            onDispose { mainDisposals++ }
+                        }
+                    })
+                }
+            }
+        }
+        compose.runOnIdle { controller.editDraft("跨断点保留") }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.onNode(hasText("进入设置子页") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+
+        compose.runOnIdle { windowWidth = 1000.dp }
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+        compose.runOnIdle { windowWidth = 411.dp }
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue("跨断点不能关闭设置", settingsOpen)
+            assertEquals("跨断点保留", controller.state.value.draft)
+            assertEquals("跨断点不能重建会话内容", 1, mainMounts)
+            assertEquals("跨断点不能销毁会话内容", 0, mainDisposals)
+        }
     }
 
     @Test fun failedSendExplainsItselfInsteadOfShowingABareErrorCode() {
@@ -330,6 +564,71 @@ class WorkbenchLayoutRegressionTest {
         // 有活动线程后同一个菜单项变为可用，点击即打开重命名对话框。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsEnabled()
+    }
+
+    private fun sidebarController(): WorkbenchController = WorkbenchController(
+        scope,
+        EmptyGateway(),
+        object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        },
+        { ConversationScope("p", "g", "a", "i") },
+    )
+
+    @Composable
+    private fun SidebarWorkbench(
+        controller: WorkbenchController,
+        settingsOpen: Boolean,
+        onSettingsChange: (Boolean) -> Unit,
+        header: @Composable () -> Unit = {},
+        onPanelPosition: (Float) -> Unit = {},
+        onScrollState: ((ScrollState) -> Unit)? = null,
+    ) {
+        WorkbenchScreen(
+            controller = controller,
+            gatewayLabel = "gateway",
+            onOpenSettings = { onSettingsChange(true) },
+            onPickCamera = {},
+            onPickGallery = {},
+            onPickDocument = {},
+            onVoiceInput = {},
+            onLogout = {},
+            header = header,
+            settingsOpen = settingsOpen,
+            onSettingsOpenChange = onSettingsChange,
+            settingsPanel = { onClose -> SidebarSettingsFixture(onClose, onPanelPosition, onScrollState) },
+        )
+    }
+
+    @Composable
+    private fun SidebarSettingsFixture(
+        onClose: () -> Unit,
+        onPanelPosition: (Float) -> Unit,
+        onScrollState: ((ScrollState) -> Unit)? = null,
+    ) {
+        var subpageOpen by rememberSaveable { mutableStateOf(false) }
+        val scrollState = rememberScrollState()
+        LaunchedEffect(scrollState) { onScrollState?.invoke(scrollState) }
+        Column(
+            Modifier.fillMaxSize().testTag("sidebar-test-panel")
+                .onGloballyPositioned { onPanelPosition(it.positionInRoot().x) },
+        ) {
+            Text("测试设置面板")
+            if (subpageOpen) {
+                Text("设置子页状态")
+            } else {
+                TextButton(onClick = { subpageOpen = true }) { Text("进入设置子页") }
+            }
+            Column(
+                Modifier.weight(1f).fillMaxWidth()
+                    .testTag("sidebar-test-scroll")
+                    .verticalScroll(scrollState),
+            ) {
+                repeat(40) { Text("设置条目 $it") }
+            }
+            TextButton(onClick = onClose) { Text("返回会话") }
+        }
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {

@@ -4,7 +4,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -51,7 +53,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.BuildConfig
 
 /** 选择只编辑草稿；保存成功前不改变通知采集白名单。 */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun NotificationAppPicker(
     apps: List<InstalledNotificationApp>?,
@@ -111,44 +113,53 @@ internal fun NotificationAppPicker(
                         )
                     },
                 ) { padding ->
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    LazyColumn(
                         modifier = Modifier
                             .padding(padding)
+                            .consumeWindowInsets(padding)
                             .imePadding()
                             .padding(horizontal = Dimensions.ScreenHorizontal)
-                            .fillMaxSize(),
+                            .fillMaxSize()
+                            .testTag("notification-app-list"),
                     ) {
-                        Text(
-                            text = "已选 ${selectedIds.size} 个应用；未选择任何应用时不会采集通知。",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (BuildConfig.FLAVOR == "play") {
+                        item(key = "notification-picker:summary") {
                             Text(
-                                text = "此发行版仅显示系统允许查询的已安装应用。",
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "已选 ${selectedIds.size} 个应用；未选择任何应用时不会采集通知。",
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
                             )
                         }
-                        OutlinedTextField(
-                            enabled = !saving,
-                            value = query,
-                            onValueChange = { query = it },
-                            singleLine = true,
-                            label = { Text("搜索应用名称或包名") },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                            modifier = Modifier.fillMaxWidth().testTag("notification-app-search"),
-                        )
+                        if (BuildConfig.FLAVOR == "play") {
+                            item(key = "notification-picker:visibility-note") {
+                                Text(
+                                    text = "此发行版仅显示系统允许查询的已安装应用。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+                                )
+                            }
+                        }
+                        item(key = "notification-picker:search") {
+                            OutlinedTextField(
+                                enabled = !saving,
+                                value = query,
+                                onValueChange = { query = it },
+                                singleLine = true,
+                                label = { Text("搜索应用名称或包名") },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = Dimensions.SpaceSmall)
+                                    .testTag("notification-app-search"),
+                            )
+                        }
                         if (apps != null && !loadFailed && candidates.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                            ) {
-                                val targetApps = if (filtered.isNotEmpty()) filtered else candidates
-                                val targetIds = remember(targetApps) { targetApps.map { it.packageId }.toSet() }
-                                val allTargetSelected = targetIds.isNotEmpty() && targetIds.all { it in selectedIds }
+                            val targetApps = if (filtered.isNotEmpty()) filtered else candidates
+                            val targetIds = targetApps.map { it.packageId }.toSet()
+                            val allTargetSelected = targetIds.isNotEmpty() && targetIds.all { it in selectedIds }
 
+                            item(key = "notification-picker:select-all") {
                                 TextButton(
                                     enabled = !saving,
                                     onClick = {
@@ -162,7 +173,8 @@ internal fun NotificationAppPicker(
                                 ) {
                                     Text(if (allTargetSelected) "取消全选" else "全选")
                                 }
-
+                            }
+                            item(key = "notification-picker:invert-selection") {
                                 TextButton(
                                     enabled = !saving,
                                     onClick = {
@@ -183,53 +195,62 @@ internal fun NotificationAppPicker(
                             }
                         }
                         if (rejection != null) {
-                            Text(
-                                text = "设置没有保存成功：$rejection",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            TextButton(onClick = onReloadSelection, enabled = !saving) { Text("重新载入已保存选择") }
+                            item(key = "notification-picker:rejection") {
+                                Text(
+                                    text = "设置没有保存成功：$rejection",
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+                                )
+                            }
+                            item(key = "notification-picker:reload-selection") {
+                                TextButton(onClick = onReloadSelection, enabled = !saving) {
+                                    Text("重新载入已保存选择")
+                                }
+                            }
                         }
                         when {
-                            loadFailed -> {
-                                Text("无法读取本机应用列表，请重试。", color = MaterialTheme.colorScheme.error)
-                                TextButton(onClick = onRetry, enabled = !saving) { Text("重试") }
+                            loadFailed -> item(key = "notification-picker:failure") {
+                                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                                    Text("无法读取本机应用列表，请重试。", color = MaterialTheme.colorScheme.error)
+                                    TextButton(onClick = onRetry, enabled = !saving) { Text("重试") }
+                                }
                             }
-                            apps == null -> {
-                                CircularProgressIndicator(modifier = Modifier.size(Dimensions.Progress))
-                                Text("正在读取本机应用…")
+                            apps == null -> item(key = "notification-picker:loading") {
+                                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(Dimensions.Progress))
+                                    Text("正在读取本机应用…")
+                                }
                             }
-                            filtered.isEmpty() -> Text(
-                                text = if (query.isBlank()) "未找到可选择的已安装应用。" else "没有匹配的应用。",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            else -> LazyColumn(
-                                modifier = Modifier.weight(1f).testTag("notification-app-list"),
-                            ) {
-                                items(filtered, key = { it.packageId }) { app ->
-                                    val checked = app.packageId in selectedIds
-                                    ListItem(
-                                        headlineContent = {
-                                            Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        },
-                                        supportingContent = {
-                                            Text(
-                                                if (app.packageId in installedIds) app.packageId
-                                                else "未安装或当前不可见，可以保留或取消原有选择",
+                            filtered.isEmpty() -> item(key = "notification-picker:empty") {
+                                Text(
+                                    text = if (query.isBlank()) "未找到可选择的已安装应用。" else "没有匹配的应用。",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            else -> items(filtered, key = { it.packageId }) { app ->
+                                val checked = app.packageId in selectedIds
+                                ListItem(
+                                    headlineContent = {
+                                        Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                    },
+                                    supportingContent = {
+                                        Text(
+                                            if (app.packageId in installedIds) app.packageId
+                                            else "未安装或当前不可见，可以保留或取消原有选择",
+                                        )
+                                    },
+                                    leadingContent = { ApplicationIcon(app) },
+                                    trailingContent = { Checkbox(checked = checked, onCheckedChange = null) },
+                                    modifier = Modifier
+                                        .testTag("notification-app-${app.packageId}")
+                                        .toggleable(value = checked, enabled = !saving, role = Role.Checkbox) { selected ->
+                                            onSelectionChanged(
+                                                if (selected) selectedPackages + app.packageId
+                                                else selectedPackages - app.packageId,
                                             )
                                         },
-                                        leadingContent = { ApplicationIcon(app) },
-                                        trailingContent = { Checkbox(checked = checked, onCheckedChange = null) },
-                                        modifier = Modifier
-                                            .testTag("notification-app-${app.packageId}")
-                                            .toggleable(value = checked, enabled = !saving, role = Role.Checkbox) { selected ->
-                                                onSelectionChanged(
-                                                    if (selected) selectedPackages + app.packageId
-                                                    else selectedPackages - app.packageId,
-                                                )
-                                            },
-                                    )
-                                }
+                                )
                             }
                         }
                     }

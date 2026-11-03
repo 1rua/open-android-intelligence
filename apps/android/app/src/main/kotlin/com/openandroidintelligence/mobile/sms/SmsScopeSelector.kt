@@ -2,7 +2,8 @@ package com.openandroidintelligence.mobile.sms
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -15,6 +16,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.kernel.SmsScopeMode
 
 /** 主动与被动范围只共享控件；草稿及保存入口由各自的配置页面持有。 */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SmsScopeSelector(
     mode: SmsScopeMode,
@@ -29,7 +31,7 @@ internal fun SmsScopeSelector(
     enabled: Boolean = true,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
             listOf(
                 SmsScopeMode.ALL to "全部",
                 SmsScopeMode.KEYWORDS to "关键词",

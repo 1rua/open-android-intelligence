@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -142,10 +143,7 @@ fun ThreadDrawer(
                 DrawerNavItem(
                     icon = Icons.Default.Settings,
                     label = "设置与平台管理",
-                    onClick = {
-                        onOpenSettings()
-                        onCloseDrawer()
-                    },
+                    onClick = onOpenSettings,
                 )
 
                 Row(
@@ -367,7 +365,10 @@ private fun DrawerNavItem(
 ) {
     SettingsListItem(
         headline = label,
-        modifier = modifier.clip(RoundedCornerShape(AppRadius.Medium)),
+        modifier = modifier
+            .clip(RoundedCornerShape(AppRadius.Medium))
+            .semantics(mergeDescendants = true) {}
+            .testTag("drawer-nav-item-$label"),
         icon = icon,
         tone = if (isActive) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
         onClick = onClick,

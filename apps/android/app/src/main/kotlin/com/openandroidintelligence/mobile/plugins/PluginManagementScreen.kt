@@ -53,6 +53,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -121,11 +122,11 @@ fun PluginManagementScreen(
     var invokePlugin by remember { mutableStateOf<String?>(null) }
     var invokeCapability by remember { mutableStateOf("") }
     var invokeParameters by remember { mutableStateOf("{}") }
-    var showRemote by remember { mutableStateOf(false) }
-    var sourceUrl by remember { mutableStateOf("") }
-    var sourcePin by remember { mutableStateOf("") }
-    var sourceDigest by remember { mutableStateOf("") }
-    var indexPluginId by remember { mutableStateOf("") }
+    var showRemote by rememberSaveable { mutableStateOf(false) }
+    var sourceUrl by rememberSaveable { mutableStateOf("") }
+    var sourcePin by rememberSaveable { mutableStateOf("") }
+    var sourceDigest by rememberSaveable { mutableStateOf("") }
+    var indexPluginId by rememberSaveable { mutableStateOf("") }
     var notice by remember { mutableStateOf<String?>(null) }
     val installScope = rememberCoroutineScope()
     var installing by remember { mutableStateOf(false) }
@@ -510,7 +511,16 @@ fun PluginManagementScreen(
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState())) { Text(host?.entries(id).orEmpty().joinToString("\n") { it.key }); OutlinedTextField(invokeCapability,{invokeCapability=it},label={Text("能力 ID@版本")}); OutlinedTextField(invokeParameters,{invokeParameters=it},label={Text("JSON 参数")}) } },
+            text = {
+                Column(
+                    modifier = Modifier.imePadding().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Text(host?.entries(id).orEmpty().joinToString("\n") { it.key })
+                    OutlinedTextField(invokeCapability, { invokeCapability = it }, label = { Text("能力 ID@版本") }, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(invokeParameters, { invokeParameters = it }, label = { Text("JSON 参数") }, modifier = Modifier.fillMaxWidth())
+                }
+            },
             confirmButton = { TextButton(onClick = {
                 val selected = invokeCapability; val parameters = invokeParameters; invokePlugin = null
                 installScope.launch {
@@ -533,8 +543,8 @@ fun PluginManagementScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
                     .imePadding()
+                    .verticalScroll(rememberScrollState())
                     .padding(
                         start = Dimensions.ScreenHorizontal,
                         end = Dimensions.ScreenHorizontal,
@@ -552,7 +562,7 @@ fun PluginManagementScreen(
                 OutlinedTextField(sourcePin,{sourcePin=it},label={Text("证书公钥指纹 SPKI（sha256:…）")},modifier=Modifier.fillMaxWidth())
                 OutlinedTextField(sourceDigest,{sourceDigest=it},label={Text("文件摘要 SHA-256（可代替公钥指纹）")},modifier=Modifier.fillMaxWidth())
                 OutlinedTextField(indexPluginId,{indexPluginId=it},label={Text("清单中的插件 ID（直接下载插件包时留空）")},modifier=Modifier.fillMaxWidth())
-                Row(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     TextButton(onClick = { showRemote = false }) { Text("取消") }
                     Button(onClick = {
                         showRemote = false

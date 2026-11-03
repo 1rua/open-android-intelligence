@@ -1,6 +1,8 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -18,12 +20,15 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -36,6 +41,7 @@ import com.openandroidintelligence.conversation.components.connectionLabel
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamHealth
+import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
@@ -94,12 +100,33 @@ fun WorkbenchScreen(
     accountAvatar: androidx.compose.ui.graphics.ImageBitmap? = null,
     onChangeAvatar: (() -> Unit)? = null,
     connectionHealth: StreamHealth? = null,
+    /**
+     * 设置面板是否打开（受控状态，真值由宿主持有）。
+     *
+     * 设置与会话列表共用同一个左侧侧栏容器，只是内容不同：宿主把它置为 true 时，
+     * 工作台在自己的抽屉/固定侧栏里切到设置面板，不再叠一层底部弹层。
+     * 登录页、无控制器分支等其他入口也复用这份状态。
+     */
+    settingsOpen: Boolean = false,
+    /** 设置面板的开合回写。设置内容里的「关闭设置」/返回最终都收敛到这一个回调。 */
+    onSettingsOpenChange: (Boolean) -> Unit = {},
+    /**
+     * 设置内容插槽：由 App 模块提供（设置界面的侧栏呈现）。
+     *
+     * 传 null 表示宿主没有装配设置界面，此时「设置」入口回落到 [onOpenSettings]。
+     * 退出回调区分设置根页返回和抽屉的手势关闭。
+     */
+    settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    // 抽屉打开时返回键先关抽屉：交给平台默认处理会把用户直接退出 App。
-    BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+    var sidebarPanel by rememberSaveable {
+        mutableStateOf(if (settingsOpen) SidebarPanel.SETTINGS else SidebarPanel.CONVERSATIONS)
+    }
+    // 从会话列表进入时，设置根页返回应保留抽屉并恢复列表。
+    var settingsFromConversations by rememberSaveable { mutableStateOf(false) }
+    var returnToConversations by remember { mutableStateOf(false) }
 
     val snackbar = remember { SnackbarHostState() }
     val readingPositions = remember(controller.localConversationScope) { mutableMapOf<String?, TimelineReadingPosition>() }
@@ -280,6 +307,46 @@ fun WorkbenchScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
 
+        // 关闭动画结束之前保留设置内容，避免抽屉滑出时闪回会话列表。
+        val latestSettingsOpen by rememberUpdatedState(settingsOpen)
+        LaunchedEffect(settingsOpen, expanded, settingsPanel != null, reduceMotion) {
+            if (settingsPanel == null) return@LaunchedEffect
+            if (settingsOpen) {
+                sidebarPanel = SidebarPanel.SETTINGS
+                if (!expanded && !(drawer.currentValue == DrawerValue.Open &&
+                        drawer.targetValue == DrawerValue.Open && !drawer.isAnimationRunning)) {
+                    if (reduceMotion) drawer.snapTo(DrawerValue.Open) else drawer.open()
+                }
+            } else if (sidebarPanel == SidebarPanel.SETTINGS) {
+                try {
+                    if (!returnToConversations && !expanded) {
+                        if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
+                    }
+                } finally {
+                    // 拖动可取消 close()；不能留下宿主已关闭、内容仍为设置的状态。
+                    if (!latestSettingsOpen) {
+                        sidebarPanel = SidebarPanel.CONVERSATIONS
+                        returnToConversations = false
+                        settingsFromConversations = false
+                    }
+                }
+            }
+        }
+
+        // 遮罩和横向拖动由 M3 处理；实际关闭后再同步宿主状态。
+        val currentSettingsChange by rememberUpdatedState(onSettingsOpenChange)
+        LaunchedEffect(settingsOpen, expanded, drawer) {
+            if (!settingsOpen || expanded) return@LaunchedEffect
+            var wasOpeningOrOpen = false
+            snapshotFlow { Triple(drawer.currentValue, drawer.targetValue, drawer.isAnimationRunning) }
+                .collect { (current, target, animating) ->
+                    if (current == DrawerValue.Open || target == DrawerValue.Open) wasOpeningOrOpen = true
+                    if (wasOpeningOrOpen && current == DrawerValue.Closed && target == DrawerValue.Closed && !animating) {
+                        currentSettingsChange(false)
+                    }
+                }
+        }
+
         val drawerContent: @Composable () -> Unit = {
             ThreadDrawer(
                 accountName = accountName,
@@ -323,7 +390,8 @@ fun WorkbenchScreen(
                 },
                 onRefresh = controller::refreshThreads,
                 onOpenSettings = {
-                    scope.launch { drawer.close() }
+                    settingsFromConversations = settingsPanel != null
+                    if (settingsPanel == null) scope.launch { drawer.close() }
                     onOpenSettings()
                 },
                 onCloseDrawer = { scope.launch { drawer.close() } },
@@ -394,7 +462,10 @@ fun WorkbenchScreen(
                             },
                             onOpenAttachments = { showAttachmentLibrary = true },
                             onOpenAssistant = onOpenAssistant,
-                            onOpenSettings = onOpenSettings,
+                            onOpenSettings = {
+                                settingsFromConversations = false
+                                onOpenSettings()
+                            },
                             onOverflowExpandedChange = { overflowMenuExpanded = it },
                         )
                         if (stackedContext) {
@@ -428,7 +499,7 @@ fun WorkbenchScreen(
 
                     // 抽屉盖在上面时它才是「当前可见的一层」：不能让背后看不见的
                     // 命令菜单先吃掉返回键（否则按一次返回抽屉纹丝不动）。
-                    if (isCommandPopupVisible && !drawer.isOpen) {
+                    if (isCommandPopupVisible && !drawer.isOpen && sidebarPanel != SidebarPanel.SETTINGS) {
                         BackHandler {
                             commandPopupDismissed = true
                         }
@@ -686,19 +757,68 @@ fun WorkbenchScreen(
             }
         }
 
+        val savedSidebarState = rememberSaveableStateHolder()
+        val sidebarContent: @Composable () -> Unit = {
+            AnimatedContent(
+                targetState = sidebarPanel,
+                transitionSpec = {
+                    if (targetState == SidebarPanel.SETTINGS) {
+                        AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
+                    } else {
+                        AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                label = "sidebar-content",
+            ) { panel ->
+                savedSidebarState.SaveableStateProvider(panel) {
+                    when (panel) {
+                        SidebarPanel.CONVERSATIONS -> drawerContent()
+                        SidebarPanel.SETTINGS -> settingsPanel?.invoke {
+                            if (settingsFromConversations || expanded) {
+                                returnToConversations = settingsFromConversations
+                                onSettingsOpenChange(false)
+                            } else {
+                                scope.launch {
+                                    if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 跨断点移动组合，而不是销毁设置导航栈或右侧输入框。
+        val latestSidebarContent by rememberUpdatedState(sidebarContent)
+        val movableSidebar = remember { movableContentOf { latestSidebarContent() } }
+        val latestMainContent by rememberUpdatedState(mainContent)
+        val movableMain = remember { movableContentOf { latestMainContent() } }
+
+        val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
         if (expanded) {
             Row(Modifier.fillMaxSize()) {
-                Box(Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()) { drawerContent() }
+                Box(
+                    Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
+                        .windowInsetsPadding(sidebarInsets),
+                ) { movableSidebar() }
                 VerticalDivider()
-                Box(Modifier.weight(1f)) { mainContent() }
+                Box(Modifier.weight(1f)) { movableMain() }
             }
         } else {
             ModalNavigationDrawer(
                 drawerState = drawer,
-                gesturesEnabled = true,
-                drawerContent = { ModalDrawerSheet(Modifier.width(Dimensions.DrawerWidth)) { drawerContent() } },
+                gesturesEnabled = settingsOpen || sidebarPanel == SidebarPanel.CONVERSATIONS,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
+                        windowInsets = sidebarInsets,
+                    ) {
+                        movableSidebar()
+                    }
+                },
             ) {
-                mainContent()
+                movableMain()
             }
         }
 

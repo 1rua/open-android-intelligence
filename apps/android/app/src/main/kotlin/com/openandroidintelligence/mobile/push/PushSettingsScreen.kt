@@ -20,11 +20,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,6 +50,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 
 /** Construct only from authenticated discovery; labels are presentation, never identity. */
 data class PushEndpointOption(val endpoint: PushEndpoint, val label: String, val available: Boolean)
@@ -117,6 +121,29 @@ fun PushSettingsScreen(
     )
 }
 
+/** 恢复时配置已变化则丢弃旧草稿；保存状态中只保留基线摘要。 */
+@Composable
+private fun rememberPushTextDraft(baseline: List<String>, initialValue: String): MutableState<String> {
+    val fingerprint = remember(baseline) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        baseline.forEach { value ->
+            val bytes = value.toByteArray(Charsets.UTF_8)
+            digest.update(ByteBuffer.allocate(4).putInt(bytes.size).array())
+            digest.update(bytes)
+        }
+        digest.digest().joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    }
+    val saver = remember(fingerprint, initialValue) {
+        listSaver<String, String>(
+            save = { draft -> if (draft == initialValue) listOf(fingerprint) else listOf(fingerprint, draft) },
+            restore = { saved ->
+                if (saved.firstOrNull() == fingerprint) saved.getOrNull(1) ?: initialValue else initialValue
+            },
+        )
+    }
+    return rememberSaveable(baseline, stateSaver = saver) { mutableStateOf(initialValue) }
+}
+
 /** Stateless interface also usable by a settings ViewModel that observes external runtime changes. */
 @Composable
 fun PushSettingsContent(
@@ -132,12 +159,23 @@ fun PushSettingsContent(
     saveCompletion: Long? = null,
 ) {
     val config = snapshot.configuration
-    var smsMode by remember(config.sms.scope.mode) { mutableStateOf(config.sms.scope.mode) }
-    var keywords by remember(config.sms.scope.keywords) { mutableStateOf(config.sms.scope.keywords.joinToString("\n")) }
-    var senders by remember(config.sms.scope.senderAddresses) { mutableStateOf(config.sms.scope.senderAddresses.joinToString("\n")) }
-    var retention by remember(config.retentionHours) { mutableStateOf(config.retentionHours.toString()) }
-    var maxEvents by remember(config.maxEvents) { mutableStateOf(config.maxEvents.toString()) }
-    var maxMiB by remember(config.maxQueueBytes) { mutableStateOf((config.maxQueueBytes / 1_048_576.0).toString()) }
+    val savedMode = config.sms.scope.mode
+    val modeSaver = remember(savedMode) {
+        listSaver<SmsScopeMode, String>(
+            save = { draft -> listOf(savedMode.name, draft.name) },
+            restore = { saved ->
+                if (saved.size == 2 && saved[0] == savedMode.name) {
+                    SmsScopeMode.entries.firstOrNull { it.name == saved[1] } ?: savedMode
+                } else savedMode
+            },
+        )
+    }
+    var smsMode by rememberSaveable(savedMode, stateSaver = modeSaver) { mutableStateOf(savedMode) }
+    var keywords by rememberPushTextDraft(config.sms.scope.keywords.sorted(), config.sms.scope.keywords.joinToString("\n"))
+    var senders by rememberPushTextDraft(config.sms.scope.senderAddresses.sorted(), config.sms.scope.senderAddresses.joinToString("\n"))
+    var retention by rememberPushTextDraft(listOf(config.retentionHours.toString()), config.retentionHours.toString())
+    var maxEvents by rememberPushTextDraft(listOf(config.maxEvents.toString()), config.maxEvents.toString())
+    var maxMiB by rememberPushTextDraft(listOf(config.maxQueueBytes.toString()), (config.maxQueueBytes / 1_048_576.0).toString())
     val keywordSet = parseSmsScopeEntries(keywords)
     val senderSet = parseSmsScopeEntries(senders)
     val hours = retention.toIntOrNull()
