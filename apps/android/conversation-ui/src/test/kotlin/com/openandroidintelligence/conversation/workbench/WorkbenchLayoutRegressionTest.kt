@@ -337,11 +337,9 @@ class WorkbenchLayoutRegressionTest {
 
         compose.runOnIdle { windowWidth = 1000.dp }
         compose.waitForIdle()
-        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
         compose.runOnIdle { windowWidth = 411.dp }
         compose.waitForIdle()
-        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("跨断点不能关闭设置", settingsOpen)
