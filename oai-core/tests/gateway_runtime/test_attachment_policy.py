@@ -631,6 +631,24 @@ def test_commit_retry_recovers_after_partial_cas_copy_failure(tmp_path, monkeypa
     assert b"".join(account.attachments.open_verified_stream(attachment_id)) == body
 
 
+def test_commit_replaces_partial_cas_left_by_older_version(tmp_path):
+    core = create_gateway_core(storage_root=tmp_path)
+    account = core.open_gateway_account("acct_legacy_partial_cas")
+    body = b"verified source survives an older interrupted commit" * 4096
+    attachment = _create(account, body=body, client_id="att_legacy_partial_cas")
+    attachment_id = attachment["attachmentId"]
+    account.attachments.upload_content_stream(
+        attachment_id,
+        (body[offset:offset + account.attachments.stream_chunk_bytes]
+         for offset in range(0, len(body), account.attachments.stream_chunk_bytes)),
+    )
+    # An old interrupted commit could leave an incomplete official CAS file.
+    (account.attachments.cas_dir / attachment_id).write_bytes(b"incomplete older sealed copy")
+
+    assert account.attachments.commit(attachment_id)["status"] == "uploaded"
+    assert b"".join(account.attachments.open_verified_stream(attachment_id)) == body
+
+
 def test_device_parameters_and_event_payload_are_sealed_at_rest(tmp_path):
     core = create_gateway_core(storage_root=tmp_path)
     account = core.open_gateway_account("acct_sealed_device")

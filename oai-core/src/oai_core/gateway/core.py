@@ -2433,7 +2433,10 @@ class AttachmentStore:
                 mismatch = True
             else:
                 cas_path = self.cas_dir / attachment_id
-                if not cas_path.exists():
+                # Before verification, an existing path may be a partial copy
+                # left by an older interrupted commit. Rebuild from the fully
+                # authenticated stage rather than treating existence as proof.
+                if row["state"] == "uploading" or not cas_path.exists():
                     copy_path = self.cas_dir / f"{attachment_id}.copying"
                     shutil.copyfile(stage_path, copy_path)
                     try:

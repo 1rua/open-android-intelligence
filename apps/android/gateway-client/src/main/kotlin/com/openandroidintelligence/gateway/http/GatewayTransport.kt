@@ -185,10 +185,11 @@ class GatewayTransport(
     }
 
     // HttpURLConnection's read timeout does not bound a blocked request write.
-    // Apply the same idle budget to each stream operation, so progressing large
+    // Apply the same idle budget to each socket write, so progressing large
     // uploads may run longer than one budget while stalled sockets are closed.
+    // Local source reads keep their own error semantics.
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
-    private suspend fun <T> withRequestBodyIdleTimeout(
+    private suspend fun <T> withRequestWriteIdleTimeout(
         connection: HttpURLConnection,
         block: () -> T,
     ): T {
@@ -223,28 +224,29 @@ class GatewayTransport(
         val digest = MessageDigest.getInstance("SHA-256")
         var written = 0L
         val buffer = ByteArray(STREAM_CHUNK_BYTES)
-        withRequestBodyIdleTimeout(connection) { connection.outputStream }.use { output ->
+        withRequestWriteIdleTimeout(connection) { connection.outputStream }.use { output ->
             body.openStream().use { input ->
                 while (true) {
-                    val read = withRequestBodyIdleTimeout(connection) { input.read(buffer) }
+                    val read = input.read(buffer)
                     if (read == -1) break
                     if (read == 0) {
-                        val single = withRequestBodyIdleTimeout(connection) { input.read() }
+                        val single = input.read()
                         if (single == -1) break
                         if (written >= body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
                         val singleByte = single.toByte()
                         digest.update(singleByte)
-                        withRequestBodyIdleTimeout(connection) { output.write(single) }
+                        withRequestWriteIdleTimeout(connection) { output.write(single) }
                         written++
                         body.reportBytesWritten(written)
                         continue
                     }
                     if (written > body.contentLength - read) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
                     digest.update(buffer, 0, read)
-                    withRequestBodyIdleTimeout(connection) { output.write(buffer, 0, read) }
+                    withRequestWriteIdleTimeout(connection) { output.write(buffer, 0, read) }
                     written += read
                     body.reportBytesWritten(written)
                 }
+                withRequestWriteIdleTimeout(connection) { output.flush() }
             }
         }
         if (written != body.contentLength) throw IOException("REQUEST_BODY_LENGTH_MISMATCH")
