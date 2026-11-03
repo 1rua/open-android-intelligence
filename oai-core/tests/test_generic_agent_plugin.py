@@ -271,6 +271,126 @@ class TestGenericAgentContract(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("lo!", events[1]["text"])
             self.assertEqual("done", events[2]["type"])
 
+    async def test_remote_adapter_rejects_session_list_without_sessions_field(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            with self.assertRaises(AdapterError) as caught:
+                await adapter.list_sessions(Principal("alice"))
+
+            self.assertEqual("HOST_INCOMPATIBLE", caught.exception.code)
+
+    async def test_remote_adapter_rejects_session_list_with_invalid_sessions_type(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({"sessions": {"id": "not-a-list"}})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            with self.assertRaises(AdapterError) as caught:
+                await adapter.list_sessions(Principal("alice"))
+
+            self.assertEqual("HOST_INCOMPATIBLE", caught.exception.code)
+
+    async def test_remote_adapter_preserves_a_valid_empty_session_list(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({"sessions": []})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            self.assertEqual([], await adapter.list_sessions(Principal("alice")))
+
+    async def test_remote_adapter_rejects_history_without_messages_field(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            with self.assertRaises(AdapterError) as caught:
+                await adapter.history(Principal("alice"), "session-1")
+
+            self.assertEqual("HOST_INCOMPATIBLE", caught.exception.code)
+
+    async def test_remote_adapter_rejects_history_with_invalid_messages_type(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({"messages": {"id": "not-an-array"}})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            with self.assertRaises(AdapterError) as caught:
+                await adapter.history(Principal("alice"), "session-1")
+
+            self.assertEqual("HOST_INCOMPATIBLE", caught.exception.code)
+
+    async def test_remote_adapter_preserves_a_valid_empty_history(self):
+        async def bridge(request: web.Request) -> web.Response:
+            return web.json_response({"messages": []})
+
+        app = web.Application()
+        app.router.add_route("*", "/{tail:.*}", bridge)
+        async with TestClient(TestServer(app)) as srv:
+            adapter = RemoteSessionAdapter(
+                str(srv.make_url("/")),
+                "t" * 32,
+                agent_id="test-remote",
+                name="RemoteTest",
+                kind="remote",
+                prefix="",
+            )
+
+            self.assertEqual([], await adapter.history(Principal("alice"), "session-1"))
+
     def test_unknown_unregistered_agent_type_fails_closed(self):
         config = {
             "storageRoot": "/tmp",

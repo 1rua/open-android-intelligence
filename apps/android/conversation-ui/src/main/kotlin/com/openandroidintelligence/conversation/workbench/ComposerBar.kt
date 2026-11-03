@@ -8,6 +8,7 @@ import androidx.compose.foundation.content.consume
 import androidx.compose.foundation.content.contentReceiver
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.animation.AnimatedVisibility
@@ -82,7 +83,7 @@ data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? 
  * 水平/垂直边距。导航栏 inset 随后被消费，`imePadding()` 只补键盘超出导航栏的高度，
  * 键盘弹出时不会出现「导航栏高度加键盘高度」的双重留白。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ComposerBar(
     draft: String,
@@ -112,21 +113,86 @@ fun ComposerBar(
     onSteer: () -> Unit = onSend,
     pendingDeliveries: List<PendingDelivery> = emptyList(),
     onRetryPendingDelivery: () -> Unit = {},
+    draftEpoch: Long = 0L,
+    onDraftEdit: ((String, Long) -> Unit)? = null,
+    onSubmitDraft: ((String, Long, MessageDeliveryMode) -> Long?)? = null,
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
+    val editor = key(editorKey) { rememberTextFieldState(draft) }
+    var editorEpoch by remember(editorKey) { mutableLongStateOf(draftEpoch) }
+    var reportedValue by remember(editorKey) { mutableStateOf(draft) }
+    val currentDraft by rememberUpdatedState(draft)
+    val currentDraftEpoch by rememberUpdatedState(draftEpoch)
+    val currentOnDraftChange by rememberUpdatedState(onDraftChange)
+    val currentOnDraftEdit by rememberUpdatedState(onDraftEdit)
+
+    fun reportEdit(text: String, epoch: Long) {
+        reportedValue = text
+        currentOnDraftEdit?.invoke(text, epoch) ?: currentOnDraftChange(text)
+    }
+    // Read the last report during composition as well: edit and external clear can
+    // happen in one input callback without changing the last composed draft string.
+    val restoreExternalDraft = draftEpoch > editorEpoch ||
+        (draftEpoch == editorEpoch && draft != reportedValue)
+    SideEffect {
+        // A successful submit advances locally before the host's next render arrives.
+        // Never restore text from props that still belong to the frozen draft.
+        if (restoreExternalDraft && draftEpoch >= editorEpoch) {
+            val changedEpoch = draftEpoch != editorEpoch
+            editorEpoch = draftEpoch
+            reportedValue = draft
+            if (changedEpoch || editor.text.toString() != draft) {
+                editor.edit { replace(0, length, draft) }
+            }
+        }
+    }
+    LaunchedEffect(editor) {
+        // Undo/redo bypass InputTransformation. Each observed edit belongs to its
+        // captured epoch; pending observations cannot revive an already sent draft.
+        snapshotFlow {
+            Triple(editor.text.toString(), editorEpoch, currentDraft to currentDraftEpoch)
+        }.collect { (text, epoch, external) ->
+            if (epoch == editorEpoch && text == editor.text.toString() && text != reportedValue &&
+                (external.second < epoch ||
+                    (external.second == epoch && external.first == reportedValue))) {
+                reportEdit(text, epoch)
+            }
+        }
+    }
+    val reportUserEdits = remember(editor) {
+        InputTransformation {
+            val text = asCharSequence().toString()
+            if (text != reportedValue) reportEdit(text, editorEpoch)
+        }
+    }
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
     val unknown = generation == GenerationState.OUTCOME_UNKNOWN
     val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
     val showBusyDeliveryChoice = running && hasPendingInput
     var deliveryMode by remember(editorKey, running) { mutableStateOf(MessageDeliveryMode.STEER) }
-    val submitDraft = if (showBusyDeliveryChoice) {
+    val legacySubmitDraft = if (showBusyDeliveryChoice) {
         when (deliveryMode) {
             MessageDeliveryMode.QUEUE -> onQueue
             MessageDeliveryMode.STEER -> onSteer
             MessageDeliveryMode.NORMAL -> onSend
         }
     } else onSend
+    val submitDraft: () -> Unit = {
+        if (onSubmitDraft != null) {
+            val acceptedEpoch = onSubmitDraft(
+                editor.text.toString(), editorEpoch,
+                if (showBusyDeliveryChoice) deliveryMode else MessageDeliveryMode.NORMAL,
+            )
+            if (acceptedEpoch != null) {
+                editorEpoch = acceptedEpoch
+                reportedValue = ""
+                editor.edit { replace(0, length, "") }
+            }
+        } else {
+            legacySubmitDraft()
+        }
+    }
     // A populated composer submits through the selected delivery mode.
     // Keep cancellation visible when the user has no pending input.
     val showStop = waitingCancel || (running && !hasPendingInput)
@@ -189,8 +255,8 @@ fun ComposerBar(
 
             key(editorKey) {
                 ComposerInputField(
-                    value = draft,
-                    onValueChange = onDraftChange,
+                    editor = editor,
+                    inputTransformation = reportUserEdits,
                     isFocused = focused,
                     onFocusChange = { focused = it },
                     onPasteImages = onPasteImages,
@@ -310,8 +376,8 @@ private fun ComposerIconAction(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ComposerInputField(
-    value: String,
-    onValueChange: (String) -> Unit,
+    editor: TextFieldState,
+    inputTransformation: InputTransformation,
     isFocused: Boolean,
     onFocusChange: (Boolean) -> Unit,
     onPasteImages: ((PastedImageContent) -> Unit)?,
@@ -321,42 +387,6 @@ private fun ComposerInputField(
     val shape = RoundedCornerShape(AppRadius.Bubble)
     // The state-based editor supports Android's image paste/IME content contract.
     // The caller keys this editor by controller/thread so editing state cannot cross conversations.
-    val editor = rememberTextFieldState(value)
-    val currentValue by rememberUpdatedState(value)
-    val currentOnValueChange by rememberUpdatedState(onValueChange)
-    var reportedValue by remember { mutableStateOf(value) }
-    // Observe the last report as well: editing and Send may both happen before the next
-    // composition, leaving the external string equal to its previous composed value.
-    val restoreExternalValue = value != reportedValue
-    SideEffect {
-        if (restoreExternalValue) {
-            if (editor.text.toString() != value) editor.edit { replace(0, length, value) }
-            reportedValue = value
-        }
-    }
-    LaunchedEffect(editor) {
-        // Undo/redo bypass InputTransformation. Only report a current editor change while
-        // the controller still agrees with the last report; late snapshots cannot undo Send
-        // or an external draft restoration.
-        snapshotFlow { editor.text.toString() to currentValue }.collect { (text, controllerText) ->
-            if (text != controllerText && controllerText == currentValue &&
-                text == editor.text.toString() && controllerText == reportedValue) {
-                reportedValue = text
-                currentOnValueChange(text)
-            }
-        }
-    }
-    val reportUserEdits = remember {
-        InputTransformation {
-            // Report in the input transaction, before Send or a thread switch can run.
-            // Programmatic draft restoration does not invoke this transformation.
-            val text = asCharSequence().toString()
-            if (text != reportedValue) {
-                reportedValue = text
-                currentOnValueChange(text)
-            }
-        }
-    }
     val resolver = LocalContext.current.contentResolver
     val currentOnPasteImages by rememberUpdatedState(onPasteImages)
     val receiver = remember(resolver) {
@@ -397,7 +427,7 @@ private fun ComposerInputField(
     ) {
         BasicTextField(
             state = editor,
-            inputTransformation = reportUserEdits,
+            inputTransformation = inputTransformation,
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (onPasteImages != null) Modifier.contentReceiver(receiver) else Modifier)

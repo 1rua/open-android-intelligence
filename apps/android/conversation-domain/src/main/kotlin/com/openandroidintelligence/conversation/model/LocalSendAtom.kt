@@ -62,26 +62,49 @@ data class LocalSendAtom(
 /** 只认明确删除与稳定身份，不将空页或缺正文的受理查询当作删除。 */
 fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<LocalSendAtom> =
     atoms.map { atom ->
-        val deleted = remote.firstOrNull { row -> row.isDeleted &&
-            (row.conversationId == null || row.conversationId == atom.conversationId) &&
-            ((atom.messageId != null && row.id == atom.messageId) || row.clientMessageId == atom.clientMessageId)
-        }
+        val deleted = findMatchingRemoteRow(remote, atom)?.takeIf { it.isDeleted }
         if (deleted == null) atom else atom.identified(deleted.id, deleted.batchId ?: atom.batchId)
             .copy(parts = emptyList(), snapshotDeleted = true)
     }
+
+private fun TimelineMessage.isInAtomScope(atom: LocalSendAtom): Boolean {
+    val expectedSender = if (atom.delivery == MessageDeliveryMode.STEER) "system" else "user"
+    return sender == expectedSender && (conversationId == null || conversationId == atom.conversationId)
+}
+
+private fun findMatchingRemoteRow(rows: Collection<TimelineMessage>, atom: LocalSendAtom): TimelineMessage? {
+    val scopedRows = rows.filter { it.isInAtomScope(atom) }
+    atom.messageId?.let { id -> scopedRows.firstOrNull { it.id == id }?.let { return it } }
+
+    val hasProvisionalIdentity = atom.messageId == null || atom.messageId == atom.clientMessageId.value
+    if (!hasProvisionalIdentity) return null
+
+    return scopedRows.filter { row ->
+        !row.localPlaceholder && row.clientMessageId == atom.clientMessageId
+    }.singleOrNull()
+}
+
+private fun localPlaceholderId(rows: Map<String, TimelineMessage>, atom: LocalSendAtom): String {
+    val baseId = "local_${atom.clientMessageId.value}"
+    if (baseId !in rows) return baseId
+
+    var suffix = 1
+    while ("${baseId}_$suffix" in rows) suffix++
+    return "${baseId}_$suffix"
+}
 
 /** 仅凭明确身份回并发送事实；空快照和无正文的受理查询不能抹掉本地内容。 */
 fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<TimelineMessage> {
     val rows = remote.associateByTo(linkedMapOf()) { it.id }
     atoms.forEach { atom ->
-        val matching = rows.values.firstOrNull { row ->
-            (atom.messageId != null && row.id == atom.messageId) || row.clientMessageId == atom.clientMessageId
-        }
+        val matching = findMatchingRemoteRow(rows.values, atom)
         if (atom.isDeleted || matching?.isDeleted == true) {
             matching?.let { rows.remove(it.id) }
             return@forEach
         }
-        val id = matching?.id ?: atom.messageId ?: "local_${atom.clientMessageId.value}"
+        val proposedId = matching?.id ?: atom.messageId ?: "local_${atom.clientMessageId.value}"
+        val idConflict = matching == null && proposedId in rows
+        val id = if (idConflict) localPlaceholderId(rows, atom) else proposedId
         val steered = atom.delivery == MessageDeliveryMode.STEER
         val atomParts = if (steered) {
             listOf(MessagePart.Text("↳ 已引导：" + atom.parts.joinToString("") { part ->
@@ -108,7 +131,8 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             batchId = atom.batchId ?: matching?.batchId,
             clientMessageId = atom.clientMessageId,
             // 本地投递终态不等于取得权威消息 ID；保留来源，避免占位行被当成另一条原生输入。
-            localPlaceholder = matching?.localPlaceholder ?: (atom.messageId == null || atom.messageId == atom.clientMessageId.value),
+            localPlaceholder = matching?.localPlaceholder ?:
+                (atom.messageId == null || atom.messageId == atom.clientMessageId.value || idConflict),
             generationId = matching?.generationId,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,

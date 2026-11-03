@@ -130,6 +130,11 @@ data class WorkbenchUiState(
     val activeThreadTitle: String = "",
     val generation: GenerationState = GenerationState.IDLE,
     val draft: String = "",
+    val draftEpoch: Long = 0L,
+    val draftVersion: Long = 0L,
+    val timelineOpenedAtNs: Long = 0L,
+    val timelineRequestEpoch: Long = 0L,
+    val timelineDataSource: String? = null,
     val composer: ComposerState = ComposerState.EDITING,
     val attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft> = emptyList(),
     /** Batch members collected by the debounce window, newest last. */
@@ -223,7 +228,7 @@ class WorkbenchController(
      * a card whose press cannot be delivered would leave the command blocked
      * while the UI shows a decision the Gateway never received.
      */
-    private val supportsApprovalCards: Boolean = false,
+    private var supportsApprovalCards: Boolean = false,
     /** Wall clock, injectable so a countdown can be advanced by a test. */
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val persistence: WorkbenchPersistence? = null,
@@ -234,10 +239,10 @@ class WorkbenchController(
     private val allowSending: Boolean = true,
     private val languageCode: String = "zh-CN",
     private val supportsConversationManagement: Boolean = false,
-    private val supportsConversationDelete: Boolean = supportsConversationManagement,
-    private val supportsConversationArchive: Boolean = supportsConversationManagement,
-    private val supportsConversationUnarchive: Boolean = supportsConversationArchive,
-    private val supportsConversationRename: Boolean = true,
+    private var supportsConversationDelete: Boolean = supportsConversationManagement,
+    private var supportsConversationArchive: Boolean = supportsConversationManagement,
+    private var supportsConversationUnarchive: Boolean = supportsConversationArchive,
+    private var supportsConversationRename: Boolean = true,
     private val organizationStoredLocally: Boolean = false,
     /** Native hosts own stable message IDs even when no client submission ID is available. */
     private val authoritativeMessageIds: Boolean = false,
@@ -322,13 +327,34 @@ class WorkbenchController(
         conversationRenameSupported=supportsConversationRename,
         organizationStoredLocally=organizationStoredLocally))
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
+    /** 本地浏览位置归属不随同账号连接所有者重建而变化。 */
+    val localConversationScope: ConversationScope get() = scopeFactory()
     private var remoteConversationOnline = true
+    private var remoteSendSupported = true
 
     /** Agent presence can change without replacing this controller or losing its draft. */
     fun setRemoteConversationOnline(online: Boolean) {
         if (closed || remoteConversationOnline == online) return
         remoteConversationOnline = online
         update { it }
+    }
+    fun updateRemoteCapabilities(online: Boolean, send: Boolean, delete: Boolean, archive: Boolean,
+        rename: Boolean, approvals: Boolean, unarchive: Boolean = false) {
+        if (closed || remoteConversationOnline == online && remoteSendSupported == send &&
+            supportsConversationDelete == delete && supportsConversationArchive == archive &&
+            supportsConversationRename == rename && supportsApprovalCards == approvals &&
+            supportsConversationUnarchive == unarchive) return
+        val wasOnline = remoteConversationOnline
+        GatewayLog.protocolEvidence("conversation.connection",mapOf("wasOnline" to wasOnline,"online" to online,"canSend" to send))
+        remoteConversationOnline = online
+        remoteSendSupported = send
+        supportsConversationDelete = delete
+        supportsConversationArchive = archive
+        supportsConversationRename = rename
+        supportsConversationUnarchive = unarchive
+        supportsApprovalCards = approvals
+        update { it }
+        if (!wasOnline && online) onForegrounded()
     }
     private val activeWork = WorkbenchActiveWork()
     /** Live sends across every conversation, including work not yet acknowledged by the Gateway. */
@@ -502,10 +528,13 @@ class WorkbenchController(
     }
 
     private suspend fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null, generationId: String? = null) {
+        val started = System.nanoTime()
         generationId?.let { rememberMessageGeneration(threadId, messageId, clientId, it) }
         activeWork.accepted(clientId, threadId, generationId)
         changeSendAtom(threadId, clientId) { old -> old?.identified(messageId, batchId ?: old.batchId) }
         identifyHistoricalAttachments(threadId, ClientMessageId(clientId), messageId)
+        GatewayLog.protocolEvidence("send.acceptance_merged", mapOf("conversationId" to threadId,"clientMessageId" to clientId,
+            "messageId" to messageId,"elapsedNs" to System.nanoTime()-started))
     }
 
     private suspend fun applySendEvent(event: VerifiedConversationEvent) {
@@ -665,6 +694,38 @@ class WorkbenchController(
     )
     private val renderedEntryCache = LinkedHashMap<String, RenderedTimelineEntry>()
     private val renderedEntryCacheLimit = 512
+    private data class CachedTimeline(
+        val messages: List<TimelineMessage>,
+        val revisions: Map<String, Long>,
+        val statusRevisions: Map<String, Long>,
+        val statusesById: Map<String, MessageStatusReceipt>,
+        val statusesByClient: Map<String, MessageStatusReceipt>,
+        val hydrated: Boolean,
+    ) {
+        val weight: Long get() = 256L + messages.sumOf { row ->
+            256L + row.executionSteps.sumOf { step -> step.arguments.length * 2L + (step.output?.length ?: 0) * 2L + 128L } + row.parts.sumOf { part -> when (part) {
+                is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value.length * 2L
+                is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText.length * 2L
+                is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> 256L
+            } }
+        }
+    }
+    private val timelineSnapshots = LinkedHashMap<Pair<ConversationScope, String>, CachedTimeline>(16, .75f, true)
+    private val timelineSnapshotBudget = Runtime.getRuntime().maxMemory() / 64L
+
+    private fun rememberActiveTimeline() {
+        val id = activeThreadId ?: return
+        if (_state.value.timeline !is Loadable.Ready && _state.value.timeline !is Loadable.Empty) return
+        timelineSnapshots[scopeFactory() to id] = CachedTimeline(mirrored.values.toList(), mirroredRevisions.toMap(),
+            messageStatusRevisions.toMap(), messageStatusesById.toMap(), messageStatusesByClientId.toMap(),
+            _state.value.historyHydrated)
+        var weight = timelineSnapshots.values.sumOf { it.weight }
+        val iterator = timelineSnapshots.entries.iterator()
+        while (weight > timelineSnapshotBudget && iterator.hasNext()) {
+            weight -= iterator.next().value.weight
+            iterator.remove()
+        }
+    }
 
     /**
      * Event ids already applied to the timeline.
@@ -740,7 +801,13 @@ class WorkbenchController(
         val key = historicalAttachmentKey(threadId, attachment.draftId)
         val previous = historicalAttachments[key]
         // 与选图入口的缩略图边界一致；超出预算仅省略预览，不影响上传的文件字节。
-        val preview = attachment.previewBytes?.takeIf { it.size <= MAX_HISTORY_PREVIEW_BYTES }?.copyOf()
+        val incoming = attachment.previewBytes?.takeIf { it.size <= MAX_HISTORY_PREVIEW_BYTES }
+        val existing = previous?.attachment?.previewBytes
+        val preview = when {
+            incoming == null -> existing
+            existing != null && existing.contentEquals(incoming) -> existing
+            else -> incoming.copyOf()
+        }
         historicalAttachments.put(key, HistoricalAttachmentPreview(attachment.copy(previewBytes = preview),
             clientMessageId ?: previous?.clientMessageId, messageId ?: previous?.messageId, previous?.contentRevision ?: -1L))
     }
@@ -821,6 +888,7 @@ class WorkbenchController(
     private var generationJob:Job?=null
     private var checkpointJob: Job? = null
     private var pendingCheckpoint: WorkbenchCheckpoint? = null
+    private var savedCheckpoint: WorkbenchCheckpoint? = null
     private var checkpointFailure: Throwable? = null
     private var closingJobs: List<Job> = emptyList()
     private val persistenceLifecycleMutex = Mutex()
@@ -839,6 +907,8 @@ class WorkbenchController(
     private var deferredThreadCheckpoint: WorkbenchCheckpoint? = null
     private var retiredThreadSelection: ((String) -> Unit)? = null
     private var retiredDraftEditing: ((String) -> Unit)? = null
+    private var retiredVersionedDraftEditing: ((String,Long) -> Unit)? = null
+    private var retiredDraftVersion: Long? = null
     private var threadRequestEpoch = 0L
     private var organizationMutationEpoch = 0L
     private var threadsSnapshotRevision: Long? = null
@@ -994,6 +1064,7 @@ class WorkbenchController(
             pendingCreation?.let { it.sourceThreadId == activeThreadId } == true
 
     private var draftRevision = 0L
+    private var userDraftUpdate = false
     private val finishedGenerations = LinkedHashSet<Pair<String,String>>()
     /** Gateway message status and confirmed cancellation are independent durable facts. */
     private val cancelledGenerations = LinkedHashSet<Pair<String, String>>()
@@ -1053,8 +1124,19 @@ class WorkbenchController(
             com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL,
         val optimisticEntry: TimelineEntry? = null,
         val generationBeforeSubmit: GenerationState? = null,
+        val expectedGenerationId: String? = null,
     )
     private var pendingSubmission: DraftSubmission? = null
+    private data class FrozenAttachmentSubmission(val submission: DraftSubmission, val attachments: Map<String, com.openandroidintelligence.conversation.model.AttachmentDraft>)
+    private val waitingAttachmentSubmissions = linkedMapOf<String, FrozenAttachmentSubmission>()
+    private val composerDrafts = linkedMapOf<String?, SavedComposerDraft>()
+    private val recoveredAttachmentSubmissions = linkedMapOf<String?, DraftSubmission>()
+
+    private fun rememberComposerDraft() {
+        val frozenIds = waitingAttachmentSubmissions.values.flatMap { it.submission.attachmentIds }.toSet()
+        composerDrafts[activeThreadId] = SavedComposerDraft(activeThreadId, _state.value.draft, draftRevision,
+            _state.value.attachments.filterNot { it.id.value in _state.value.inFlightAttachmentIds || it.id.value in frozenIds })
+    }
     private var failedSubmission: DraftSubmission? = null
     private val nativePendingSubmissions = mutableMapOf<String, Pair<String, List<String>>>()
     private val userRenamedThreads = mutableSetOf<String>()
@@ -1161,6 +1243,10 @@ class WorkbenchController(
         check(supportsConversationDelete) { "CONVERSATION_DELETE_UNSUPPORTED" }
         repository.deleteConversation(threadId)
         deletedThreads.add(threadId)
+        timelineSnapshots.remove(scopeFactory() to threadId)
+        composerDrafts.remove(threadId)
+        recoveredAttachmentSubmissions.remove(threadId)
+        waitingAttachmentSubmissions.entries.removeAll { it.value.submission.conversationId == threadId }
         sendAtomsEpoch++
         sendAtomsByThread.remove(threadId)
         snapshotDeletedIdsByThread.remove(threadId)
@@ -1314,6 +1400,9 @@ class WorkbenchController(
         attachmentJobs.values.forEach { it.cancel() }
         attachmentJobs.clear()
         attachmentPreviews.clear()
+        timelineSnapshots.clear()
+        waitingAttachmentSubmissions.clear()
+        composerDrafts.clear()
         historicalAttachments.evictAll()
         mediaJobs.values.forEach { it.cancel() }; mediaJobs.clear()
         downloadJobs.values.forEach { it.cancel() }; downloadJobs.clear()
@@ -1388,6 +1477,10 @@ class WorkbenchController(
 
     init {
         persistence?.load()?.let { saved ->
+            saved.composerDrafts.forEach { composerDrafts[it.threadId] = it }
+            saved.pendingSubmissions.forEach { submission -> recoveredAttachmentSubmissions[submission.conversationId] =
+                DraftSubmission(submission.text,submission.attachmentIds,submission.revision,submission.conversationId,submission.clientMessageId,
+                    delivery=submission.delivery,expectedGenerationId=submission.generationId) }
             val restoreComposer = restoreLastThread || saved.threadId == null
             if (!restoreLastThread && saved.threadId != null) deferredThreadCheckpoint = saved
             saved.cancellations.forEach { rememberCancelledGeneration(it.conversationId, it.generationId) }
@@ -1411,19 +1504,28 @@ class WorkbenchController(
             handledEventIds.addAll(saved.eventIds)
             userRenamedThreads.addAll(saved.renamedThreads)
             draftRevision = if (restoreComposer) saved.draftRevision else 0
-            failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) }
+            failedSubmission = saved.submission?.let { DraftSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId,
+                delivery=it.delivery,expectedGenerationId=it.generationId) }
+                ?: recoveredAttachmentSubmissions[activeThreadId]
             saved.threadId?.let(::reconcileDeletedRecoveryUnits)
             val displayedSubmission = failedSubmission?.takeIf { it.conversationId == activeThreadId }
             val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
                 activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) saved.title else "",
-                draft = if (restoreComposer) saved.draft.ifBlank { displayedSubmission?.text.orEmpty() } else "",
-                attachments = if (restoreComposer) attachmentCoordinator?.restoredDrafts() ?: saved.attachments else emptyList(),
+                draftVersion=saved.draftVersion,
+                draft = if (restoreComposer) {
+                    if (saved.draftExplicit) saved.draft else saved.draft.ifBlank { displayedSubmission?.text.orEmpty() }
+                } else "",
+                attachments = if (restoreComposer) {
+                    val owned = saved.composerDrafts.firstOrNull { it.threadId == activeThreadId }?.attachments ?: saved.attachments
+                    val restored = attachmentCoordinator?.restoredDrafts().orEmpty().associateBy { it.id }
+                    owned.map { restored[it.id] ?: it }
+                } else emptyList(),
                 pendingBatch=saved.batches.filter { it.conversationId==activeThreadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } },
                 timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (restoreComposer && displayedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
-                hasRecoverableSubmissions = frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
+                hasRecoverableSubmissions = recoveredAttachmentSubmissions.containsKey(activeThreadId) || frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
                     activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
                 notice = if (!restoreComposer) null else if (displayedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId }) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
@@ -1473,6 +1575,12 @@ class WorkbenchController(
                     message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().forEach { part ->
                         if (closed) return@launch
                         val key=historicalAttachmentKey(threadId,part.draftId.value)
+                        val knownSize = part.sizeBytes
+                        val knownDigest = part.sha256
+                        if (knownSize != null && knownDigest != null) try {
+                            withContext(mediaDispatcher) { media.restoreKnownOriginal(threadId,part.draftId.value,knownSize,knownDigest) }
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { update { it.copy(notice="LOCAL_MEDIA_RECOVERY_FAILED:LOCAL_MEDIA_UNAVAILABLE") } }
                         scheduleHistoricalMedia(threadId,listOf(message.copy(parts=listOf(part))))
                         mediaJobs[key]?.join()
                         attachmentCoordinator?.restoredDrafts()?.firstOrNull { attachmentCoordinator.remoteAttachmentId(it.id.value)==part.draftId.value }
@@ -1589,7 +1697,7 @@ class WorkbenchController(
     }
 
     fun refreshThreads() {
-        if (closed || _state.value.managingThreads || !canReadConversations()) return
+        if (closed || _state.value.managingThreads) return
         retryFolderAssignments()
         val epoch=++threadRequestEpoch
         val mutationEpoch=organizationMutationEpoch
@@ -1599,15 +1707,37 @@ class WorkbenchController(
         update { if (it.threads is Loadable.Ready || it.threads is Loadable.Empty) it else it.copy(threads = Loadable.Loading) }
         workScope.launch {
             try {
-                if (!canReadConversations()) return@launch
+                val local = (persistence as? AwaitableWorkbenchPersistence)?.let { store ->
+                    val started = System.nanoTime()
+                    withContext(persistenceDispatcher) { store.loadConversations() }.also {
+                        GatewayLog.protocolEvidence("local.list_read", mapOf("elapsedNs" to System.nanoTime() - started,
+                            "source" to "local", "found" to (it != null)))
+                    }
+                }
+                if (closed || epoch != threadRequestEpoch || requestedScope != scopeFactory()) return@launch
+                if (local != null && _state.value.threads !is Loadable.Ready) {
+                    val cached = _state.value.organization.sort(local.conversations.filterNot { it.id.value in deletedThreads })
+                    update { it.copy(threads = if (cached.isEmpty()) Loadable.Empty else Loadable.Ready(cached)) }
+                }
+                if (!canReadConversations()) {
+                    if (local == null && _state.value.threads !is Loadable.Ready && _state.value.threads !is Loadable.Empty)
+                        update { it.copy(threads=Loadable.Failed("AGENT_OFFLINE")) }
+                    return@launch
+                }
+                val remoteStarted = System.nanoTime()
                 val page=repository.completeConversations(requestedScope)
+                GatewayLog.protocolEvidence("remote.list_synced", mapOf("elapsedNs" to System.nanoTime() - remoteStarted,
+                    "source" to "remote", "authoritative" to page.authoritative))
                 val organization=if (supportsConversationManagement) repository.readOrganization() else _state.value.organization
                 if (closed || epoch != threadRequestEpoch || mutationEpoch != organizationMutationEpoch || requestedScope != scopeFactory()) return@launch
                 // Snapshot tokens identify coherent pages; host digest values have
                 // no numerical order. Request/mutation epochs above reject late reads.
                 threadsSnapshotRevision=page.snapshotRevision
                 val installedOrganization=organization.takeUnless { it.revision < _state.value.organization.revision } ?: _state.value.organization
-                val threads=installedOrganization.sort(page.conversations.filterNot { it.id.value in deletedThreads })
+                // 缓存页只能补齐已知会话，缺席不能作为删除证据。
+                val summaries = if (page.authoritative) page.conversations else
+                    (( _state.value.threads as? Loadable.Ready)?.value.orEmpty() + page.conversations).distinctBy { it.id }
+                val threads=installedOrganization.sort(summaries.filterNot { it.id.value in deletedThreads })
                 update { state -> state.copy(organization=installedOrganization,
                     selectedFolderId=state.selectedFolderId?.takeIf { id -> installedOrganization.folders.any { it.folderId == id } },
                     threads=if (threads.isEmpty()) Loadable.Empty else Loadable.Ready(threads),
@@ -1659,15 +1789,23 @@ class WorkbenchController(
     }
 
     fun openThread(threadId: String) {
+        val clickedAt = System.nanoTime()
         if (closed) { retiredThreadSelection?.invoke(threadId); return }
         if (threadId in deletedThreads) return
         if (activeThreadId == threadId) return
+        rememberActiveTimeline()
+        rememberComposerDraft()
+        val memory = timelineSnapshots[scopeFactory() to threadId]
         val restored = deferredThreadCheckpoint?.takeIf { it.threadId == threadId }
         deferredThreadCheckpoint = null
         attachmentTargetRevision++
-        cancelPendingSubmission()
+        if (pendingSubmission?.clientMessageId in waitingAttachmentSubmissions) pendingSubmission = null
+        else cancelPendingSubmission()
         threadEpoch++
         activeThreadId = threadId
+        val savedComposer = composerDrafts[threadId]
+        failedSubmission = recoveredAttachmentSubmissions[threadId] ?: failedSubmission?.takeIf { it.conversationId == threadId }
+        draftRevision = savedComposer?.revision ?: restored?.draftRevision ?: 0L
         onActiveThreadChanged(threadId)
         if (persistence==null) sendAtomsByThread.putIfAbsent(threadId,linkedMapOf())
         mirrored.clear()
@@ -1682,6 +1820,13 @@ class WorkbenchController(
         // with the countdown it had, never a fresh one — and a card the Gateway
         // already settled must not come back as a question.
         // (mirrored/mirroredRevisions are message state and are cleared above.)
+        memory?.let { saved ->
+            mirrored.putAll(saved.messages.associateBy { it.id })
+            mirroredRevisions.putAll(saved.revisions)
+            messageStatusRevisions.putAll(saved.statusRevisions)
+            messageStatusesById.putAll(saved.statusesById)
+            messageStatusesByClientId.putAll(saved.statusesByClient)
+        }
         restored?.let { saved ->
             draftRevision = saved.draftRevision
             mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
@@ -1689,30 +1834,48 @@ class WorkbenchController(
         }
         timelineJob?.cancel()
         disarmReplyWatchdog()
+        val waitingForThread = waitingAttachmentSubmissions.values.filter { it.submission.conversationId == threadId }
+        pendingSubmission = waitingForThread.lastOrNull()?.submission
+        val waitingRows = waitingForThread.mapNotNull { it.submission.optimisticEntry }
         update {
             it.copy(
                 activeThreadId = threadId,
+                draftEpoch = it.draftEpoch + 1,
+                timelineOpenedAtNs = clickedAt,
+                timelineRequestEpoch = threadEpoch,
+                timelineDataSource = if (memory != null) "memory" else null,
                 activeThreadTitle = threadTitleOf(threadId),
-                draft = restored?.draft?.ifBlank { failedSubmission?.takeIf { it.conversationId == threadId }?.text.orEmpty() } ?: it.draft,
-                attachments = restored?.let { saved -> attachmentCoordinator?.restoredDrafts() ?: saved.attachments } ?: it.attachments,
-                historyHydrated = persistence==null,
-                timeline = Loadable.Loading,
-                pendingBatch = emptyList(),
+                draft = restored?.let { saved ->
+                    if (saved.draftExplicit) saved.draft else saved.draft.ifBlank {
+                        failedSubmission?.takeIf { it.conversationId == threadId }?.text.orEmpty()
+                    }
+                } ?: savedComposer?.text.orEmpty(),
+                attachments = restored?.attachments ?: savedComposer?.attachments.orEmpty(),
+                historyHydrated = memory?.hydrated == true || persistence==null,
+                timeline = if (memory != null) renderTimeline(waitingRows).let { rows ->
+                    if (rows.isEmpty()) Loadable.Empty else Loadable.Ready(rows)
+                } else Loadable.Loading,
+                pendingBatch = waitingRows,
                 pendingDeliveries = emptyList(),
                 // Generation, composer and notice describe the conversation being
                 // left: a turn it was still running, or the failure that turn
                 // produced, must not read as the state of the one being opened.
                 generation = GenerationState.IDLE,
-                composer = ComposerState.EDITING,
+                composer = if (waitingRows.isNotEmpty()) ComposerState.WAITING_ATTACHMENTS else ComposerState.EDITING,
                 notice = null,
             )
         }
 
+        GatewayLog.protocolEvidence("timeline.opened", mapOf("conversationId" to threadId, "epoch" to threadEpoch,
+            "source" to if (memory != null) "memory" else "pending", "clickedAtNs" to clickedAt))
         if (restored != null) attachmentCoordinator?.let { coordinator ->
             _state.value.attachments.forEach { observeAttachment(coordinator, it.id.value) }
         }
         timelineJob = workScope.launch {
             if (!restoreLocalTimeline(threadId) || !canReadConversations()) return@launch
+            if ((_state.value.timeline is Loadable.Ready || _state.value.timeline is Loadable.Empty) &&
+                (repository as? com.openandroidintelligence.conversation.ports.EventSynchronizedHistory)?.observesHistory(threadId) == true)
+                return@launch
             loadPendingDeliveries(threadId)
             try {
                 repository.pendingApprovalFallbacks(threadId).forEach { fallback ->
@@ -1725,7 +1888,12 @@ class WorkbenchController(
                 // read must not replace the conversation with an error page.
             }
             if (!canReadConversations()) return@launch
+            val remoteStarted = System.nanoTime()
+            val remoteEpoch = threadEpoch
             val result = Result.runCatching { repository.completeTimeline(threadId) }
+            GatewayLog.protocolEvidence("timeline.remote_synced", mapOf("conversationId" to threadId,
+                "epoch" to remoteEpoch,"messageCount" to result.getOrNull()?.messages?.size,
+                "source" to "remote", "elapsedNs" to System.nanoTime()-remoteStarted, "success" to result.isSuccess))
             if (!isActive || activeThreadId != threadId) return@launch
             result.fold(
                 onSuccess = { page ->
@@ -1794,6 +1962,8 @@ class WorkbenchController(
                 refreshThreads()
                 // Navigation while HTTP is in flight belongs to the user.
                 if (threadEpoch == sourceEpoch && activeThreadId == sourceThreadId) {
+                    val transferredComposer = SavedComposerDraft(conversation.id.value,_state.value.draft,draftRevision,_state.value.attachments)
+                    composerDrafts[conversation.id.value] = transferredComposer
                     openThread(conversation.id.value)
                     update { it.copy(activeThreadTitle=conversation.title) }
                     GatewayLog.protocolEvidence("create.ui_applied", mapOf("conversationId" to conversation.id.value))
@@ -2325,9 +2495,14 @@ class WorkbenchController(
     /** Creates the first thread through the same authoritative Gateway endpoint. */
     private fun bootstrapConversationForFirstMessage(optimisticEntry: TimelineEntry?): Deferred<Result<String>> {
         bootstrapJob?.takeIf { it.isActive }?.let { return it }
+        val sourceEpoch = threadEpoch
         return workScope.async {
             try {
                 val conversation = createGatewayConversation()
+                if (activeThreadId != null || threadEpoch != sourceEpoch) {
+                    refreshThreads()
+                    return@async Result.success(conversation.id.value)
+                }
                 activeThreadId = conversation.id.value
                 onActiveThreadChanged(conversation.id.value)
                 mirrored.clear()
@@ -2361,13 +2536,46 @@ class WorkbenchController(
         // draft must not withdraw it while its attachments are still uploading.
         if (pendingSubmission?.optimisticEntry == null) cancelPendingSubmission()
         draftRevision++
-        update { it.copy(draft = text) }
+        userDraftUpdate = true
+        try { update { it.copy(draft = text) } } finally { userDraftUpdate = false }
         if (opensCommands) loadCatalog()
+    }
+
+    fun editDraft(text: String, expectedEpoch: Long) {
+        if (expectedEpoch != _state.value.draftEpoch) return
+        if (closed) {
+            val version = retiredDraftVersion ?: _state.value.draftVersion
+            retiredDraftVersion = version + 1
+            retiredVersionedDraftEditing?.invoke(text, version) ?: retiredDraftEditing?.invoke(text)
+            return
+        }
+        editDraft(text)
+    }
+
+    fun editDraftAtVersion(text: String, expectedVersion: Long) {
+        if (!closed && _state.value.draftVersion == expectedVersion) editDraft(text)
+    }
+
+    fun redirectRetiredDraftEditing(editDraft: (String,Long) -> Unit) {
+        retiredVersionedDraftEditing = editDraft
+    }
+
+    /** 编辑器的同步快照只有在同一草稿代次内才可冻结。 */
+    fun submitComposerDraft(text: String, expectedEpoch: Long,
+        delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode): Long? {
+        if (closed || expectedEpoch != _state.value.draftEpoch) return null
+        if (_state.value.draft != text) editDraft(text, expectedEpoch)
+        sendDraft(delivery)
+        return _state.value.draftEpoch.takeIf { it != expectedEpoch }
     }
 
     fun cancelPendingSubmission() {
         val cancelled = pendingSubmission
-        cancelled?.let { activeWork.cancelPending(it.clientMessageId) }
+        cancelled?.let {
+            activeWork.cancelPending(it.clientMessageId)
+            waitingAttachmentSubmissions.remove(it.clientMessageId)
+            recoveredAttachmentSubmissions.entries.removeAll { (_, saved) -> saved.clientMessageId == it.clientMessageId }
+        }
         pendingSubmission = null
         if (_state.value.composer == ComposerState.WAITING_ATTACHMENTS) {
             update { state ->
@@ -2539,6 +2747,13 @@ class WorkbenchController(
         attachmentJobs[draftId]?.cancel()
         attachmentJobs[draftId] = workScope.launch {
             coordinator.observe(draftId).collect { draftState ->
+                waitingAttachmentSubmissions.entries.toList().forEach { (clientId, frozen) ->
+                    frozen.attachments[draftId]?.let { old ->
+                        waitingAttachmentSubmissions[clientId] = frozen.copy(attachments=frozen.attachments +
+                            (draftId to old.copy(state=draftState.state,progress=draftState.progress,
+                                transferredBytes=draftState.transferredBytes,totalBytes=draftState.totalBytes,errorMessage=draftState.errorMessage)))
+                    }
+                }
                 update { state -> state.copy(attachments = state.attachments.map { current ->
                     if (current.id.value == draftId) current.copy(
                         state = draftState.state, progress = draftState.progress,
@@ -2730,6 +2945,10 @@ class WorkbenchController(
     fun sendDraft(delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode) {
         val clickedAt = System.nanoTime()
         if (!allowSending) { update { it.copy(notice="OFFLINE_MIRROR:重新连接后可发送，草稿已保留") }; return }
+        if (!remoteConversationOnline || !remoteSendSupported) {
+            update { it.copy(notice="AGENT_OFFLINE") }
+            return
+        }
         val current = _state.value
         if (!current.historyHydrated) {
             update { it.copy(notice="LOCAL_HISTORY_LOADING:正在恢复本地会话，草稿已保留") }
@@ -2797,12 +3016,18 @@ class WorkbenchController(
                     it.mediaType, previewBytes = attachmentPreviews[it.id.value])
             }, clientMessageId = ClientMessageId(frozen.clientMessageId), localPlaceholder = true,
         )
-        pendingSubmission = frozen.copy(optimisticEntry = localEntry, generationBeforeSubmit = current.generation)
+        pendingSubmission = frozen.copy(optimisticEntry = localEntry, generationBeforeSubmit = current.generation,
+            expectedGenerationId=(repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+                .takeIf { frozen.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER })
+        if (frozen.attachmentIds.isNotEmpty()) waitingAttachmentSubmissions[frozen.clientMessageId] =
+            FrozenAttachmentSubmission(requireNotNull(pendingSubmission), current.attachments.associateBy { it.id.value })
+        recoveredAttachmentSubmissions.remove(frozen.conversationId)
         activeWork.begin(frozen.clientMessageId, frozen.conversationId)
         beginLegacyTurn(activeThreadId)
         generationFactRevision++
         // 点击这一次状态变更即显示冻结的发送单元；网络与可靠写盘随后异步执行。
-        update { state -> state.copy(draft = "", composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
+        update { state -> state.copy(draft = "", draftEpoch = state.draftEpoch + 1,
+            composer = ComposerState.WAITING_ATTACHMENTS, notice = null,
             timeline = appendLocal(state.timeline, localEntry),
             pendingBatch = state.pendingBatch.filterNot { it.key == localEntry.key } + localEntry,
             generation = if (state.generation == GenerationState.RUNNING) GenerationState.RUNNING else GenerationState.QUEUED) }
@@ -2823,8 +3048,20 @@ class WorkbenchController(
 
     /** A click freezes the draft; upload progress can release that same submission only once. */
     private fun submitWhenAttachmentsVerified(): Job? {
-        val submission = pendingSubmission ?: return null
-        val drafts = _state.value.attachments.associateBy { it.id.value }
+        var launched: Job? = null
+        val pending = pendingSubmission
+        val pendingIsWaiting = pending?.clientMessageId in waitingAttachmentSubmissions
+        waitingAttachmentSubmissions.values.toList().forEach { frozen ->
+            submitVerifiedSubmission(frozen.submission,frozen.attachments)?.let { launched=it }
+        }
+        if (pending != null && !pendingIsWaiting &&
+            (pending.attachmentIds.isEmpty() || pending.voiceAttempt != null))
+            submitVerifiedSubmission(pending,_state.value.attachments.associateBy { it.id.value })?.let { launched=it }
+        return launched
+    }
+
+    private fun submitVerifiedSubmission(submission: DraftSubmission,
+        drafts: Map<String, com.openandroidintelligence.conversation.model.AttachmentDraft>): Job? {
         if (submission.attachmentIds.any { drafts[it]?.state != AttachmentState.VERIFIED }) return null
         var remoteIds = submission.attachmentIds.map { id ->
             attachmentCoordinator?.remoteAttachmentId(id) ?: run {
@@ -2834,11 +3071,14 @@ class WorkbenchController(
                 return null
             }
         }
-        failedSubmission = submission
-        pendingSubmission = null
+        if (submission.attachmentIds.isNotEmpty() && submission.voiceAttempt == null && submission.optimisticEntry != null)
+            recoveredAttachmentSubmissions[submission.conversationId] = submission
+        waitingAttachmentSubmissions.remove(submission.clientMessageId)
+        if (activeThreadId == submission.conversationId) failedSubmission = submission
+        if (pendingSubmission?.clientMessageId == submission.clientMessageId) pendingSubmission = null
         activeWork.started(submission.clientMessageId)
         update { it.copy(
-            composer = ComposerState.SUBMITTING,
+            composer = if (activeThreadId == submission.conversationId) ComposerState.SUBMITTING else it.composer,
             inFlightAttachmentIds = it.inFlightAttachmentIds + submission.attachmentIds,
         ) }
         return workScope.launch {
@@ -2851,9 +3091,17 @@ class WorkbenchController(
             try {
                 if (submission.isolatedThreadEpoch != null &&
                     (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != submission.conversationId)) return@launch
-                val target = submission.conversationId ?: activeThreadId
-                    ?: bootstrapConversationForFirstMessage(submission.optimisticEntry).await().getOrThrow()
+                val target = submission.conversationId ?: if (activeThreadId == null) {
+                    bootstrapConversationForFirstMessage(submission.optimisticEntry).await().getOrThrow()
+                } else {
+                    // 空白页的已确认输入拥有独立创建意图，不能借用后来选择的会话。
+                    createGatewayConversation().id.value.also { refreshThreads() }
+                }
                 sendTarget = target
+                if (recoveredAttachmentSubmissions.values.any { it.clientMessageId == submission.clientMessageId }) {
+                    recoveredAttachmentSubmissions.entries.removeAll { it.value.clientMessageId == submission.clientMessageId }
+                    recoveredAttachmentSubmissions[target] = submission.copy(conversationId=target)
+                }
                 submission.voiceAttempt?.conversationId = target
                 hydrateSendAtoms(target)
                 if (atomsFor(target)[submission.clientMessageId]?.isDeleted == true) {
@@ -2899,7 +3147,13 @@ class WorkbenchController(
                     }, timestamp = entry.timestamp, delivery = submission.delivery,
                 ) }
                 flushPendingPersistence()
+                recoveredAttachmentSubmissions.entries.removeAll { it.value.clientMessageId == submission.clientMessageId }
+                persistCheckpoint()
                 archiveBeforeMessageSubmit(target,submission.attachmentIds)
+                if (submission.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER &&
+                    submission.expectedGenerationId != null && submission.expectedGenerationId !=
+                    (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value)
+                    error("STEERING_GENERATION_CHANGED")
                 if (submission.isolatedThreadEpoch != null &&
                     (threadEpoch != submission.isolatedThreadEpoch || activeThreadId != target)) return@launch
                 // 发送事实已经持久保存，再清空仍属于本次提交的草稿。
@@ -3151,7 +3405,8 @@ class WorkbenchController(
                         // The text returns to the composer while it is still
                         // untouched, so a retry sends it again instead of
                         // leaving the user with nothing to send.
-                        draft = if (state.activeThreadId == sendTarget && draftWasCleared && state.draft.isEmpty()) {
+                        draft = if (state.activeThreadId == sendTarget && draftWasCleared && state.draft.isEmpty() &&
+                            draftRevision == submission.revision) {
                             submission.text
                         } else {
                             state.draft
@@ -3202,6 +3457,12 @@ class WorkbenchController(
             val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
+            if (!acceptance.authoritative) {
+                if (activeThreadId == conversationId) update { state -> state.copy(composer=ComposerState.EDITING,
+                    timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
+                persistCheckpoint()
+                return
+            }
             remotelyAccepted = true
             messages.forEach { msg ->
                 val id = acceptance.memberIds[msg.clientMessageId.value]?.takeIf { it.isNotBlank() } ?: error("SUBMIT_BATCH_FAILED:missing-member-ids")
@@ -3309,11 +3570,13 @@ class WorkbenchController(
     /** 用户确认恢复当前会话；先查询原身份，保留原内容及批次归属。 */
     fun retryPendingSubmissions() {
         if (!_state.value.isOnline || !_state.value.historyHydrated) return
-        val current = activeThreadId ?: return
+        val current = activeThreadId ?: run { resumeFrozenUpload(null); return }
         reconcileDeletedRecoveryUnits(current)
         val ready=frozenBatches.values.filter { it.conversationId == current }
         val unsealed=collectingUnits.values.filter { it.first == current }.groupBy { it.first }
         val ordinary = recoverableOrdinaryAtoms(current).toList()
+        if (recoveredAttachmentSubmissions[current]?.clientMessageId?.let { client ->
+                ordinary.none { it.clientMessageId.value == client } } == true) resumeFrozenUpload(current)
         (ready.flatMap { it.messages } + unsealed.values.flatten().map { it.second }).forEach {
             activeWork.begin(it.clientMessageId.value, current); activeWork.started(it.clientMessageId.value)
         }
@@ -3327,11 +3590,31 @@ class WorkbenchController(
         }
     }
 
+    private fun resumeFrozenUpload(threadId: String?) {
+        val frozen = recoveredAttachmentSubmissions[threadId] ?: return
+        val restored = attachmentCoordinator?.restoredDrafts().orEmpty().associateBy { it.id.value }
+        val saved = composerDrafts[threadId]?.attachments.orEmpty().associateBy { it.id.value }
+        val drafts = frozen.attachmentIds.mapNotNull { id -> (restored[id] ?: saved[id])?.let { id to it } }.toMap()
+        if (drafts.size != frozen.attachmentIds.size) {
+            update { it.copy(notice="ATTACHMENT_RECOVERY_UNAVAILABLE") }
+            return
+        }
+        waitingAttachmentSubmissions[frozen.clientMessageId] = FrozenAttachmentSubmission(frozen,drafts)
+        frozen.attachmentIds.forEach { id -> attachmentCoordinator?.let { observeAttachment(it,id) } }
+        activeWork.begin(frozen.clientMessageId,threadId)
+        submitWhenAttachmentsVerified()
+        persistCheckpoint()
+    }
+
     private suspend fun recoverOrdinary(atom: LocalSendAtom) {
         val threadId = atom.conversationId.value
         if (atom.isDeleted || atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) return
         var querying = true
         var remotelyAccepted = false
+        val recoveredDraftRevision = draftRevision
+        val recoveredDraftOwner = failedSubmission?.takeIf {
+            it.clientMessageId == atom.clientMessageId.value && it.revision == recoveredDraftRevision
+        } != null
         try {
             val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
                 ?: throw java.io.IOException("MESSAGE_QUERY_UNAVAILABLE")
@@ -3365,13 +3648,46 @@ class WorkbenchController(
             val messageId = known?.id ?: acceptedFromEvent ?: run {
                 beginLegacyTurn(threadId)
                 if (activeThreadId == threadId) generationFactRevision++
-                repository.submitMessage(threadId, OutgoingMessage(atom.clientMessageId, text, attachmentIds)).messageId
+                val acceptance = submitMessageToRepository(threadId,
+                    OutgoingMessage(atom.clientMessageId, text, attachmentIds, delivery = atom.delivery))
+                if (acceptance.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE) {
+                    changeSendAtom(threadId,atom.clientMessageId.value) { it?.copy(submissionState=LocalSubmissionState.QUEUED,
+                        submissionErrorCode=null) }
+                    if (activeThreadId == threadId) update { state -> state.copy(composer=ComposerState.EDITING,
+                        pendingBatch=state.pendingBatch.filterNot { it.clientMessageId == atom.clientMessageId },
+                        timeline=Loadable.Ready(renderTimeline(state.pendingBatch).filterNot { it.clientMessageId == atom.clientMessageId }),
+                        pendingDeliveries=state.pendingDeliveries.filterNot { it.clientMessageId == atom.clientMessageId } +
+                            com.openandroidintelligence.conversation.ports.PendingDelivery(atom.clientMessageId,ConversationId(threadId),text,
+                                attachmentIds.size,com.openandroidintelligence.conversation.ports.PendingDeliveryState.QUEUED)) }
+                    persistCheckpoint()
+                    return
+                }
+                if (acceptance.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER && acceptance.authoritative) {
+                    changeSendAtom(threadId,atom.clientMessageId.value) { old -> old?.identified(acceptance.messageId)?.copy(
+                        delivery=com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                        status=com.openandroidintelligence.conversation.ports.AgentMessageStatus.COMPLETED,
+                        statusRevision=maxOf(old.statusRevision,0L),submissionErrorCode=null) }
+                    activeWork.settledClient(threadId,atom.clientMessageId.value)
+                    if (activeThreadId == threadId) update { state -> state.copy(composer=ComposerState.EDITING,
+                        timeline=Loadable.Ready(renderTimeline(state.pendingBatch)),notice="STEERED:CURRENT_TURN") }
+                    persistCheckpoint()
+                    return
+                }
+                if (!acceptance.authoritative) {
+                    nativePendingSubmissions[atom.clientMessageId.value] = threadId to retried.localDraftIds
+                    if (activeThreadId == threadId) update { state -> state.copy(composer=ComposerState.EDITING,
+                        timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
+                    persistCheckpoint()
+                    return
+                }
+                acceptance.messageId
             }
             remotelyAccepted = true
             acceptSendAtom(threadId, atom.clientMessageId.value, messageId)
             if (failedSubmission?.clientMessageId == atom.clientMessageId.value) failedSubmission = null
             if (activeThreadId == threadId) {
-                val matchingDraft = _state.value.draft == text &&
+                val matchingDraft = draftRevision == recoveredDraftRevision &&
+                    recoveredDraftOwner && _state.value.draft == text &&
                     _state.value.attachments.map { attachmentCoordinator?.remoteAttachmentId(it.id.value) } == attachmentIds
                 update { state ->
                     val pending = state.pendingBatch.filterNot { it.key == "local_${atom.clientMessageId.value}" }
@@ -4055,6 +4371,10 @@ class WorkbenchController(
             if (event.eventId.isNotBlank() && event.eventId in handledEventIds) return
             if (event.deleted) event.conversationId?.value?.let { id ->
                 deletedThreads.add(id)
+                timelineSnapshots.remove(scopeFactory() to id)
+                composerDrafts.remove(id)
+                recoveredAttachmentSubmissions.remove(id)
+                waitingAttachmentSubmissions.entries.removeAll { it.value.submission.conversationId == id }
                 sendAtomsByThread.remove(id)
                 executionFacts.keys.removeAll { it.first == id }
                 if (activeThreadId == id) leaveManagedThread(id)
@@ -4074,6 +4394,9 @@ class WorkbenchController(
             else -> null
         }
         if (eventThreadId in deletedThreads) return
+        if (eventThreadId != null && eventThreadId != activeThreadId) {
+            timelineSnapshots.remove(scopeFactory() to eventThreadId)
+        }
         // 未携带线程身份的正文或删除事件不能借用当前屏幕的线程身份。
         if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
             (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return
@@ -4270,10 +4593,10 @@ class WorkbenchController(
                     if (message.sender == "user") {
                         val clientId = message.clientMessageId?.value
                         if (clientId != null) {
-                            // 同一 clientMessageId 只保留一行：受理时写入的占位行与随后到达的
-                            // 服务端行可能是不同 id，两行同时存在就会在回复下方多出重复气泡。
+                            // 只用明确 client 关联替换本地占位；两个真实宿主 ID 不互相吞并。
                             mirrored.entries.filter { (key, row) ->
                                 key != message.id && row.sender == "user" &&
+                                    (!authoritativeMessageIds || row.localPlaceholder) &&
                                     row.clientMessageId?.value == clientId
                             }.map { it.key }.forEach { stale ->
                                 mirrored.remove(stale)
@@ -4439,11 +4762,16 @@ class WorkbenchController(
     }
 
     private fun reloadTimeline(threadId: String) {
-        if (closed || !canReadConversations()) return
+        if (closed) return
         timelineJob?.cancel()
         timelineJob = workScope.launch {
             if (!restoreLocalTimeline(threadId) || !canReadConversations()) return@launch
+            val remoteStarted = System.nanoTime()
+            val remoteEpoch = threadEpoch
             val result = Result.runCatching { repository.completeTimeline(threadId) }
+            GatewayLog.protocolEvidence("timeline.remote_synced", mapOf("conversationId" to threadId,
+                "epoch" to remoteEpoch,"messageCount" to result.getOrNull()?.messages?.size,
+                "source" to "remote", "elapsedNs" to System.nanoTime()-remoteStarted, "success" to result.isSuccess))
             if (!isActive || activeThreadId != threadId) return@launch
             result.onSuccess { page ->
                 if (!isActive || activeThreadId != threadId) return@launch
@@ -4535,12 +4863,17 @@ class WorkbenchController(
 
     /** 先发布本地双方消息，再等待服务器；网络同步不得遮住已有历史。 */
     private suspend fun restoreLocalTimeline(threadId: String):Boolean {
+        val expectedEpoch = threadEpoch
         return try {
+        val localStarted = System.nanoTime()
         hydrateSendAtoms(threadId,refresh=true)
         val cached = (persistence as? AwaitableWorkbenchPersistence)?.let { store ->
             withContext(persistenceDispatcher) { store.loadTimeline(threadId) }
         }
-        if (closed || activeThreadId != threadId) return false
+        GatewayLog.protocolEvidence("timeline.local_read", mapOf("conversationId" to threadId, "epoch" to expectedEpoch,
+            "source" to "local", "elapsedNs" to System.nanoTime() - localStarted, "found" to (cached != null)))
+        currentCoroutineContext().ensureActive()
+        if (closed || activeThreadId != threadId || threadEpoch != expectedEpoch) return false
         cached?.let { page ->
             val deleted = page.deletedMessageIds + page.messages.filter { it.isDeleted }.map { it.id }
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
@@ -4548,7 +4881,7 @@ class WorkbenchController(
             page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
                 val message = withLatestMessageStatus(rawMessage)
                 val revision = message.contentRevision ?: 0L
-                if (message.id !in mirrored || revision >= (mirroredRevisions[message.id] ?: 0L)) {
+                if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = revision
                 }
@@ -4559,6 +4892,7 @@ class WorkbenchController(
         update { state ->
             if (state.activeThreadId != threadId) state
             else state.copy(historyHydrated=true,
+                timelineDataSource=state.timelineDataSource ?: if (cached != null || rows.isNotEmpty()) "local" else null,
                 timeline=if (cached!=null || rows.isNotEmpty()) {
                     if (rows.isEmpty()) Loadable.Empty else Loadable.Ready(rows)
                 } else state.timeline,
@@ -4567,8 +4901,12 @@ class WorkbenchController(
         true
     } catch (cancelled:CancellationException) { throw cancelled }
       catch (failure:Exception) {
-        if (!closed && activeThreadId==threadId) update { it.copy(historyHydrated=false,
-            timeline=Loadable.Failed(errorCodeOf(failure)),notice="LOCAL_HISTORY_FAILED:${errorCodeOf(failure)}") }
+        if (!closed && activeThreadId==threadId && threadEpoch==expectedEpoch) update { state ->
+            if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty)
+                state.copy(notice="LOCAL_HISTORY_FAILED:${errorCodeOf(failure)}")
+            else state.copy(historyHydrated=false, timeline=Loadable.Failed(errorCodeOf(failure)),
+                notice="LOCAL_HISTORY_FAILED:${errorCodeOf(failure)}")
+        }
         false
         }
     }
@@ -4883,7 +5221,17 @@ class WorkbenchController(
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
         val deletedClientIds = activeAtoms.filter { it.isDeleted }.map { it.clientMessageId.value }.toSet()
-        val unconfirmedPending = pendingBatch.filterNot { entry ->
+        val recoveredRows = recoveredAttachmentSubmissions[activeThreadId]?.let { submission ->
+            if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in deletedClientIds) emptyList()
+            else listOf(TimelineEntry("local_${submission.clientMessageId}","user",submission.text,true,0L,true,null,
+                clientMessageId=ClientMessageId(submission.clientMessageId),localPlaceholder=true,
+                attachments=submission.attachmentIds.map { id ->
+                    val draft=attachmentCoordinator?.restoredDrafts()?.firstOrNull { it.id.value == id }
+                    com.openandroidintelligence.conversation.model.TimelineAttachment(id,draft?.filename.orEmpty(),
+                        draft?.mediaType.orEmpty(),previewBytes=attachmentPreviews[id])
+                }))
+        }.orEmpty()
+        val unconfirmedPending = (pendingBatch + recoveredRows).distinctBy { it.key }.filterNot { entry ->
             mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_")) || mirroredClientIds.contains(entry.key.removePrefix("local_")) || deletedClientIds.contains(entry.key.removePrefix("local_"))
         }
 
@@ -5204,6 +5552,7 @@ class WorkbenchController(
         val store=persistence ?: return
         if (closed) return
         val ui = _state.value
+        rememberComposerDraft()
         val pending = pendingSubmission ?: failedSubmission
         // 只保留尚未被用户替换的单份旧草稿；明确编辑或选择会话后沿用原保存语义。
         val deferred = deferredThreadCheckpoint?.takeIf {
@@ -5215,14 +5564,20 @@ class WorkbenchController(
             deferred?.messages ?: mirrored.values.toList(), deferred?.revisions ?: mirroredRevisions.toMap(),
             deferred?.draft ?: ui.draft, deferred?.draftRevision ?: draftRevision,
             (deferred?.attachments ?: ui.attachments).filterNot { draft -> pending?.voiceAttempt != null && draft.id.value in pending.attachmentIds },
-            pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId) },
+            pending?.let { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId,it.delivery,it.expectedGenerationId) },
             userRenamedThreads.toSet(), handledEventIds + committingEventIds, frozenBatches.values.toList()+collectingUnits.values.groupBy { it.first }.map { (id,units) -> SavedBatch("collecting",id,units.map { it.second },false) },
             organization=ui.organization, threadsHydrated=ui.threads is Loadable.Ready || ui.threads is Loadable.Empty,
             threadsSnapshotRevision=threadsSnapshotRevision, deletedThreadIds=deletedThreads.toSet(),
             cancellations=cancelledGenerations.map { SavedCancellation(it.first,it.second) },
             messageGenerations=messageGenerations.map { (key,value) -> SavedMessageGeneration(key.first,key.second,value.id,value.revision) },
             pendingFolderAssignments=pendingFolderAssignments.map { SavedFolderAssignment(it.key,it.value) },
-            pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId) })
+            pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId) },
+            draftExplicit=deferred?.draftExplicit ?: true,draftVersion=ui.draftVersion,
+            composerDrafts=composerDrafts.values.toList(),
+            pendingSubmissions=(waitingAttachmentSubmissions.values.map { it.submission } + recoveredAttachmentSubmissions.values)
+                .distinctBy { it.clientMessageId }.map { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId,it.delivery,it.expectedGenerationId) })
+        if (checkpoint == pendingCheckpoint || checkpoint == savedCheckpoint && checkpointFailure == null &&
+            checkpointJob?.isActive != true) return
         pendingCheckpoint = checkpoint
         if (checkpointJob?.isActive == true) return
         checkpointJob = workScope.launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
@@ -5234,6 +5589,7 @@ class WorkbenchController(
                         val durable=store as? AwaitableWorkbenchPersistence
                         if (durable!=null) durable.saveCheckpoint(next) else store.save(next)
                     }
+                    savedCheckpoint = next
                 }
                 checkpointFailure = null
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -5267,6 +5623,7 @@ class WorkbenchController(
     /** Apply a freshly rebuilt baseline while preserving an unsent local draft. */
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
+        timelineSnapshots.clear()
         handledEventIds.clear(); mirrored.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
@@ -5281,7 +5638,11 @@ class WorkbenchController(
             // which keeps the common path — one keystroke, one transform — free
             // of a second allocation.
             val transformed = transform(current)
-            val recoverable = frozenBatches.values.any { it.conversationId == transformed.activeThreadId } ||
+            val nextDraftEpoch = if (!userDraftUpdate && transformed.draft != current.draft &&
+                transformed.draftEpoch == current.draftEpoch) current.draftEpoch + 1 else transformed.draftEpoch
+            val recoverable = recoveredAttachmentSubmissions.containsKey(transformed.activeThreadId) ||
+                waitingAttachmentSubmissions.values.any { it.submission.conversationId == transformed.activeThreadId } ||
+                frozenBatches.values.any { it.conversationId == transformed.activeThreadId } ||
                 collectingUnits.values.any { it.first == transformed.activeThreadId } ||
                 transformed.activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true
             val unknownSubmissionOutcome = transformed.activeThreadId?.let { threadId ->
@@ -5291,7 +5652,13 @@ class WorkbenchController(
                     atomsFor(threadId)[clientId]?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN
                 } || recoverableOrdinaryAtoms(threadId).any { it.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN }
             } == true
-            val next = transformed.copy(pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
+            val versionChanged = nextDraftEpoch != current.draftEpoch || transformed.draft != current.draft
+            val nextDraftVersion = if (versionChanged) maxOf(current.draftVersion+1,draftRevision) else maxOf(current.draftVersion,draftRevision)
+            val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,
+                timelineDataSource=transformed.timelineDataSource ?: if (transformed.timelineOpenedAtNs > 0 &&
+                    (transformed.timeline is Loadable.Ready || transformed.timeline is Loadable.Empty)) "remote" else null,
+                isOnline=allowSending && remoteConversationOnline && remoteSendSupported,
+                pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
                 hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,
                 conversationDeleteSupported=supportsConversationDelete && remoteConversationOnline,

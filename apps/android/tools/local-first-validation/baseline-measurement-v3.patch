@@ -1,0 +1,127 @@
+diff --git a/apps/android/tools/local-first-validation/build/baseline-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt b/apps/android/tools/local-first-validation/build/baseline-measure-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt
+index c0339dcf..e3be8faa 100644
+--- a/apps/android/tools/local-first-validation/build/baseline-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt
++++ b/apps/android/tools/local-first-validation/build/baseline-measure-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt
+@@ -130,6 +130,9 @@ data class WorkbenchUiState(
+     val activeThreadTitle: String = "",
+     val generation: GenerationState = GenerationState.IDLE,
+     val draft: String = "",
++    val timelineOpenedAtNs: Long = 0L,
++    val timelineRequestEpoch: Long = 0L,
++    val timelineDataSource: String? = null,
+     val composer: ComposerState = ComposerState.EDITING,
+     val attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft> = emptyList(),
+     /** Batch members collected by the debounce window, newest last. */
+@@ -1659,6 +1662,7 @@ class WorkbenchController(
+     }
+ 
+     fun openThread(threadId: String) {
++        val clickedAt = System.nanoTime()
+         if (closed) { retiredThreadSelection?.invoke(threadId); return }
+         if (threadId in deletedThreads) return
+         if (activeThreadId == threadId) return
+@@ -1692,6 +1696,9 @@ class WorkbenchController(
+         update {
+             it.copy(
+                 activeThreadId = threadId,
++                timelineOpenedAtNs = clickedAt,
++                timelineRequestEpoch = threadEpoch,
++                timelineDataSource = null,
+                 activeThreadTitle = threadTitleOf(threadId),
+                 draft = restored?.draft?.ifBlank { failedSubmission?.takeIf { it.conversationId == threadId }?.text.orEmpty() } ?: it.draft,
+                 attachments = restored?.let { saved -> attachmentCoordinator?.restoredDrafts() ?: saved.attachments } ?: it.attachments,
+@@ -1708,6 +1715,8 @@ class WorkbenchController(
+             )
+         }
+ 
++        GatewayLog.protocolEvidence("timeline.opened", mapOf("conversationId" to threadId,
++            "epoch" to threadEpoch, "source" to "pending", "clickedAtNs" to clickedAt))
+         if (restored != null) attachmentCoordinator?.let { coordinator ->
+             _state.value.attachments.forEach { observeAttachment(coordinator, it.id.value) }
+         }
+@@ -1725,7 +1734,12 @@ class WorkbenchController(
+                 // read must not replace the conversation with an error page.
+             }
+             if (!canReadConversations()) return@launch
++            val remoteStarted = System.nanoTime()
++            val remoteEpoch = threadEpoch
+             val result = Result.runCatching { repository.completeTimeline(threadId) }
++            GatewayLog.protocolEvidence("timeline.remote_synced", mapOf("conversationId" to threadId,
++                "epoch" to remoteEpoch, "source" to "remote", "elapsedNs" to System.nanoTime() - remoteStarted,
++                "success" to result.isSuccess, "messageCount" to result.getOrNull()?.messages?.size))
+             if (!isActive || activeThreadId != threadId) return@launch
+             result.fold(
+                 onSuccess = { page ->
+@@ -1747,6 +1761,7 @@ class WorkbenchController(
+                     update { state ->
+                         if (!isActive || state.activeThreadId != threadId) state
+                         else state.copy(
++                            timelineDataSource = state.timelineDataSource ?: if (page.messages.isNotEmpty()) "remote" else null,
+                             timeline = if (
+                                 renderTimeline(state.pendingBatch).isEmpty() &&
+                                 creationReceiptRow(threadId) == null &&
+@@ -4535,11 +4550,16 @@ class WorkbenchController(
+ 
+     /** 先发布本地双方消息，再等待服务器；网络同步不得遮住已有历史。 */
+     private suspend fun restoreLocalTimeline(threadId: String):Boolean {
++        val expectedEpoch = threadEpoch
+         return try {
++        val localStarted = System.nanoTime()
+         hydrateSendAtoms(threadId,refresh=true)
+         val cached = (persistence as? AwaitableWorkbenchPersistence)?.let { store ->
+             withContext(persistenceDispatcher) { store.loadTimeline(threadId) }
+         }
++        GatewayLog.protocolEvidence("timeline.local_read", mapOf("conversationId" to threadId,
++            "epoch" to expectedEpoch, "source" to "local", "elapsedNs" to System.nanoTime() - localStarted,
++            "found" to (cached != null)))
+         if (closed || activeThreadId != threadId) return false
+         cached?.let { page ->
+             val deleted = page.deletedMessageIds + page.messages.filter { it.isDeleted }.map { it.id }
+@@ -4559,6 +4579,7 @@ class WorkbenchController(
+         update { state ->
+             if (state.activeThreadId != threadId) state
+             else state.copy(historyHydrated=true,
++                timelineDataSource=state.timelineDataSource ?: if (rows.isNotEmpty()) "local" else null,
+                 timeline=if (cached!=null || rows.isNotEmpty()) {
+                     if (rows.isEmpty()) Loadable.Empty else Loadable.Ready(rows)
+                 } else state.timeline,
+diff --git a/apps/android/tools/local-first-validation/build/baseline-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt b/apps/android/tools/local-first-validation/build/baseline-measure-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt
+index 1f2c488d..c3f06fd2 100644
+--- a/apps/android/tools/local-first-validation/build/baseline-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt
++++ b/apps/android/tools/local-first-validation/build/baseline-measure-733c6a30/apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt
+@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+ import androidx.compose.material.icons.filled.*
+ import androidx.compose.material3.*
+ import androidx.compose.runtime.*
++import androidx.compose.ui.draw.drawWithContent
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.layout.onGloballyPositioned
+@@ -136,6 +137,18 @@ fun WorkbenchScreen(
+     var bottomDockHeightPx by remember { mutableIntStateOf(0) }
+     val density = LocalDensity.current
+ 
++    val firstFrameRecorded = remember(controller, state.activeThreadId, state.timelineRequestEpoch) {
++        java.util.concurrent.atomic.AtomicBoolean(false)
++    }
++    val firstFrameModifier = Modifier.drawWithContent {
++        drawContent()
++        if (state.timelineOpenedAtNs > 0 && state.timelineDataSource != null &&
++            firstFrameRecorded.compareAndSet(false, true)) {
++            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("timeline.first_draw", mapOf(
++                "conversationId" to state.activeThreadId, "epoch" to state.timelineRequestEpoch,
++                "source" to state.timelineDataSource, "elapsedNs" to System.nanoTime() - state.timelineOpenedAtNs))
++        }
++    }
+     val timelineReady = state.timeline is Loadable.Ready
+     val isThinking = (state.generation == GenerationState.QUEUED ||
+         state.generation == GenerationState.RUNNING) &&
+@@ -431,7 +444,7 @@ fun WorkbenchScreen(
+                                             ) { openPreview ->
+                                             LazyColumn(
+                                                 state = listState,
+-                                                modifier = Modifier.fillMaxSize(),
++                                                modifier = Modifier.fillMaxSize().then(firstFrameModifier),
+                                                 contentPadding = PaddingValues(
+                                                     start = Dimensions.TimelineHorizontal,
+                                                     end = Dimensions.TimelineHorizontal,

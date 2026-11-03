@@ -378,7 +378,8 @@ class CoreAgentConversationRepositoryTest {
         val message = OutgoingMessage(ClientMessageId("cm_files"), "", listOf("att_image", "att_docx"))
         val accepted = repo.submitBatch(com.openandroidintelligence.conversation.ports.MessageBatch("batch_files", listOf(message), "s_1"))
         runCurrent()
-        assertEquals(setOf("cm_files"), accepted.memberIds.keys)
+        assertFalse("本地启动不能包装成远端批次受理", accepted.authoritative)
+        assertTrue(accepted.memberIds.isEmpty())
         val payload = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(requests.single().body.decodeToString()))!!
         assertEquals(listOf("att_image", "att_docx"), com.openandroidintelligence.gateway.schema.JsonFields.strings(payload, "attachmentIds"))
         assertEquals("cm_files", com.openandroidintelligence.gateway.schema.JsonFields.string(payload, "clientMessageId"))
@@ -472,6 +473,59 @@ class CoreAgentConversationRepositoryTest {
         assertEquals("新对话", page.conversations[1].title)
         assertEquals(ConversationId("s_2"), page.conversations[1].id)
         assertTrue(page.conversations[1].archived)
+    }
+
+    @Test fun missingListCapabilityFailsInsteadOfReturningAnAuthoritativeEmptyPage() = runTest {
+        val repo = CoreAgentConversationRepository(client(responseTransport("{}")),
+            { sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(list = false)) }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler))
+
+        assertEquals("UNSUPPORTED_CAPABILITY", runCatching {
+            repo.listConversations(ConversationScope("p1", "https://core", "a1", "i1"), PageRequest())
+        }.exceptionOrNull()?.message)
+    }
+
+    @Test fun offlineAgentCannotReturnAnAuthoritativeEmptyConversationList() = runTest {
+        val repo = CoreAgentConversationRepository(client(responseTransport("""{"sessions":[]}""")),
+            { sampleAgent.copy(online = false) }, { "s_1" }, backgroundScope, StandardTestDispatcher(testScheduler))
+
+        assertEquals("AGENT_OFFLINE", runCatching {
+            repo.listConversations(ConversationScope("p1", "https://core", "a1", "i1"), PageRequest())
+        }.exceptionOrNull()?.message)
+    }
+
+    @Test fun staleNativeListReadIsRejectedAfterTheRemoteResponse() = runTest {
+        var epochReserved = false
+        val storage = NativeEventSynchronizerTest.Storage()
+        val store = object : NativeConversationStore by storage {
+            override suspend fun beginListRead(): Long? {
+                epochReserved = true
+                return 7L
+            }
+
+            override suspend fun saveConversations(
+                page: com.openandroidintelligence.conversation.ports.ConversationPage,
+                expectedEpoch: Long?,
+            ): Boolean {
+                assertEquals(7L, expectedEpoch)
+                return false
+            }
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                assertTrue("read epoch must be reserved before network access", epochReserved)
+                return WireResponse(200, emptyList(), """{"sessions":[]}""".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repo = CoreAgentConversationRepository(client(transport), { sampleAgent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler), storeForAgent = { store })
+
+        val failure = runCatching {
+            repo.listConversations(ConversationScope("p1", "https://core", "a1", "i1"), PageRequest())
+        }.exceptionOrNull()
+        assertEquals("NATIVE_LIST_STALE", failure?.message)
+        assertTrue(failure is kotlinx.coroutines.CancellationException)
     }
 
     @Test

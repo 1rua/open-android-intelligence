@@ -140,6 +140,7 @@ fun specificFailureText(code: String): String? {
         value.contains("CONVERSATION_DELETE_UNSUPPORTED") -> "当前 Agent 不支持删除对话，会话记录已保留。"
         value.contains("CONVERSATION_ARCHIVE_UNSUPPORTED") -> "当前 Agent 不支持归档操作，会话记录已保留。"
         value.contains("CONVERSATION_RENAME_UNSUPPORTED") -> "当前 Agent 不支持重命名对话。"
+        value.contains("LOCAL_HISTORY_UNAVAILABLE") -> "本机暂无可用的会话缓存。"
         value.contains("AGENT_OFFLINE") -> "当前 Agent 已离线，请等待恢复连接后重试。"
         value.contains("CONVERSATION_BUSY") -> "会话仍有发送或任务正在处理，请等待结束后再归档或删除。"
         value.contains("ORGANIZATION_CONFLICT") -> "另一端已修改文件夹或排序，已重新同步，请重试这次操作。"

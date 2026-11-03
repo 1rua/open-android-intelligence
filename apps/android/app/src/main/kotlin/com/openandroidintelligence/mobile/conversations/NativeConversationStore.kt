@@ -14,6 +14,12 @@ interface NativeConversationStore {
     suspend fun creation(requestId: String): NativeCreationReceipt?
     suspend fun commitCreation(requestId: String, receipt: NativeCreationReceipt)
     suspend fun saveConversations(page: ConversationPage)
+    suspend fun localTimeline(conversationId: String): com.openandroidintelligence.conversation.ports.TimelinePage? = null
+    suspend fun beginListRead(): Long? = null
+    suspend fun saveConversations(page: ConversationPage, expectedEpoch: Long?): Boolean {
+        saveConversations(page)
+        return true
+    }
     suspend fun recoveryIdentities(conversationId: String): List<NativeRecoveryIdentity>
     suspend fun commitEvents(events: List<VerifiedConversationEvent>)
     suspend fun commitApprovals(conversationId: String, approvals: List<NativeEventApproval>)

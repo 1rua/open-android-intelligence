@@ -86,6 +86,21 @@ class TimelineTurnDedupTest {
         assertEquals(listOf(first.id, second.id), rendered(first, second, authoritativeMessageIds = true).map { it.key })
     }
 
+    @Test fun liveNativeRowsAndHistoryKeepTheSameDistinctServerIdentities() = runTest {
+        val client = com.openandroidintelligence.conversation.model.ClientMessageId("client-conflict")
+        val first = user("第一次真实输入", 1).copy(id="real-one", clientMessageId=client)
+        val second = user("第二次真实输入", 2).copy(id="real-two", clientMessageId=client)
+        val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=8)
+        val controller = controller(FixedTimelineRepository(listOf(first), events), authoritativeMessageIds=true)
+        try {
+            controller.openThread(CONVERSATION_ID); advanceUntilIdle()
+            events.emit(VerifiedConversationEvent.TimelineUpsert("live-real-two", 2, 2, second))
+            advanceUntilIdle()
+            assertEquals("实时入口不能吞掉不同的真实 ID", listOf("real-one","real-two"),
+                (controller.state.value.timeline as Loadable.Ready).value.map { it.key })
+        } finally { controller.close() }
+    }
+
     @Test
     fun distinctClientIdentitiesKeepRepeatedUserText() = runTest {
         val first = user("继续", timestamp = 1_000L).copy(

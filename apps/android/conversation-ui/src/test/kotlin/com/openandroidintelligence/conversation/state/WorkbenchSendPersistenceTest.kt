@@ -288,6 +288,40 @@ class WorkbenchSendPersistenceTest {
         controller.close()
     }
 
+    @Test fun anOldSendFailureCannotRestoreATextThatTheUserAlreadyReplacedAndCleared() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val repository = EmptyHostHistory().apply {
+            ordinaryGates["conv_a"] = gate
+            loseMessageReceipt = true
+            commitOrdinaryMessage = false
+        }
+        val controller = controller(repository)
+        try {
+            runCurrent(); controller.openThread("conv_a"); runCurrent()
+            controller.editDraft("已经提交的旧文字"); controller.sendDraft(); runCurrent()
+            controller.editDraft("后来输入的新文字"); controller.editDraft("")
+            gate.complete(Unit); runCurrent()
+            assertEquals("用户清空的新草稿不属于旧提交", "", controller.state.value.draft)
+        } finally { gate.complete(Unit); controller.close() }
+    }
+
+    @Test fun aRetryInitiationWithoutRemoteReceiptDoesNotConfirmTheMessage() = runTest {
+        val store = MemoryPersistence()
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true; commitOrdinaryMessage = false }
+        val controller = controller(repository, store)
+        try {
+            runCurrent(); controller.openThread("conv_a"); runCurrent()
+            controller.editDraft("等待真实受理"); controller.sendDraft(); runCurrent()
+            val original = store.loadSendAtoms("conv_a").single().clientMessageId
+            repository.loseMessageReceipt = false
+            repository.initiationOnly = true
+            controller.retryPendingSubmissions(); runCurrent()
+            assertEquals(original, repository.messages.last().clientMessageId)
+            assertNotEquals("只有远端回执能确认受理", LocalSubmissionState.ACCEPTED,
+                store.loadSendAtoms("conv_a").single().submissionState)
+        } finally { controller.close() }
+    }
+
     private fun TestScope.controller(repository: ConversationRepository, persistence: WorkbenchPersistence? = null, batched: Boolean = false) = WorkbenchController(
         this,
         repository,
@@ -329,6 +363,7 @@ class WorkbenchSendPersistenceTest {
         var batchGate: CompletableDeferred<Unit>? = null
         var loseBatchReceipt = false
         var loseMessageReceipt = false
+        var initiationOnly = false
         var commitOrdinaryMessage = true
         var queryFailure = false
         var cancelBatchRequest = false
@@ -353,7 +388,7 @@ class WorkbenchSendPersistenceTest {
             }
             ordinaryGates[conversationId]?.await()
             if (loseMessageReceipt || loseReceiptOnConversation == conversationId) throw java.io.IOException("RESPONSE_LOST")
-            return MessageAcceptance("server_${message.clientMessageId.value}", message.clientMessageId.value)
+            return MessageAcceptance("server_${message.clientMessageId.value}", message.clientMessageId.value, authoritative = !initiationOnly)
         }
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
             batches += batch
