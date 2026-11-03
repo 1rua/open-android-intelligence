@@ -175,9 +175,19 @@ class WorkbenchLayoutRegressionTest {
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         repeat(3) {
-            compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeUp() }
+            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput {
+                swipe(
+                    start = center + androidx.compose.ui.geometry.Offset(0f, 150f),
+                    end = center - androidx.compose.ui.geometry.Offset(0f, 150f),
+                )
+            }
             compose.waitForIdle()
-            compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeDown() }
+            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput {
+                swipe(
+                    start = center - androidx.compose.ui.geometry.Offset(0f, 150f),
+                    end = center + androidx.compose.ui.geometry.Offset(0f, 150f),
+                )
+            }
             compose.waitForIdle()
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
