@@ -2,6 +2,7 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
@@ -738,6 +739,12 @@ fun WorkbenchScreen(
                 }
             }
         }
+
+        val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
+        val savedSidebarState = rememberSaveableStateHolder()
+        val latestMainContent by rememberUpdatedState(mainContent)
+        val movableMain = remember { movableContentOf { latestMainContent() } }
 
         // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
         // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
