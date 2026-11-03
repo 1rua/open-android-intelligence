@@ -50,6 +50,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.security.MessageDigest
 
 /** Construct only from authenticated discovery; labels are presentation, never identity. */
 data class PushEndpointOption(val endpoint: PushEndpoint, val label: String, val available: Boolean)
@@ -119,14 +121,23 @@ fun PushSettingsScreen(
     )
 }
 
-/** 配置基线与草稿一起保存：恢复时配置已变化则不能套用过期草稿。 */
+/** 恢复时配置已变化则丢弃旧草稿；保存状态中只保留基线摘要。 */
 @Composable
 private fun rememberPushTextDraft(baseline: List<String>, initialValue: String): MutableState<String> {
-    val saver = remember(baseline) {
+    val fingerprint = remember(baseline) {
+        val digest = MessageDigest.getInstance("SHA-256")
+        baseline.forEach { value ->
+            val bytes = value.toByteArray(Charsets.UTF_8)
+            digest.update(ByteBuffer.allocate(4).putInt(bytes.size).array())
+            digest.update(bytes)
+        }
+        digest.digest().joinToString("") { (it.toInt() and 0xff).toString(16).padStart(2, '0') }
+    }
+    val saver = remember(fingerprint, initialValue) {
         listSaver<String, String>(
-            save = { draft -> listOf(draft) + baseline },
+            save = { draft -> if (draft == initialValue) listOf(fingerprint) else listOf(fingerprint, draft) },
             restore = { saved ->
-                if (saved.isNotEmpty() && saved.drop(1) == baseline) saved.first() else null
+                if (saved.firstOrNull() == fingerprint) saved.getOrNull(1) ?: initialValue else initialValue
             },
         )
     }
@@ -154,8 +165,8 @@ fun PushSettingsContent(
             save = { draft -> listOf(savedMode.name, draft.name) },
             restore = { saved ->
                 if (saved.size == 2 && saved[0] == savedMode.name) {
-                    SmsScopeMode.entries.firstOrNull { it.name == saved[1] }
-                } else null
+                    SmsScopeMode.entries.firstOrNull { it.name == saved[1] } ?: savedMode
+                } else savedMode
             },
         )
     }

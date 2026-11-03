@@ -595,24 +595,24 @@ class MainActivity : ComponentActivity() {
                                     runtime = runtime,
                                     onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
                                 ) {
-                                val state = controller?.state?.collectAsState()?.value
-                                com.openandroidintelligence.mobile.plugins.NativePluginSurface(
-                                    app.pluginHost,
-                                    activeNative.first,
-                                    activeNative.second,
-                                    com.openandroidintelligence.plugin.ui.NativeUiContext(
-                                        (phase as? ConnectionPhase.Connected)?.gatewayUrl.orEmpty(),
-                                        state?.activeThreadId,
-                                        state?.activeThreadTitle.orEmpty(),
-                                        state?.draft.orEmpty(),
-                                        (state?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty()
-                                            .map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key, it.sender, it.text, it.isStreaming) },
-                                        { controller?.editDraft(it) },
-                                        { controller?.sendDraft() },
-                                        { controller?.stopGeneration() },
-                                        { showSettings = true },
-                                    ),
-                                )
+                                    val state = controller?.state?.collectAsState()?.value
+                                    com.openandroidintelligence.mobile.plugins.NativePluginSurface(
+                                        app.pluginHost,
+                                        activeNative.first,
+                                        activeNative.second,
+                                        com.openandroidintelligence.plugin.ui.NativeUiContext(
+                                            (phase as? ConnectionPhase.Connected)?.gatewayUrl.orEmpty(),
+                                            state?.activeThreadId,
+                                            state?.activeThreadTitle.orEmpty(),
+                                            state?.draft.orEmpty(),
+                                            (state?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty()
+                                                .map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key, it.sender, it.text, it.isStreaming) },
+                                            { controller?.editDraft(it) },
+                                            { controller?.sendDraft() },
+                                            { controller?.stopGeneration() },
+                                            { showSettings = true },
+                                        ),
+                                    )
                                 }
                             } else AnimatedContent(
                                 targetState = enterWorkbench,
@@ -630,24 +630,24 @@ class MainActivity : ComponentActivity() {
                                         runtime = runtime,
                                         onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
                                     ) {
-                                    GatewayLoginScreen(
-                                        phase = phase,
-                                        onLogin = { url, username, password ->
-                                            runtime.login(url, username, password)
-                                        },
-                                        onOpenSettings = { showSettings = true },
-                                        onRetry = { runtime.resetFailure() },
-                                        savedProfiles = savedProfiles,
-                                        onSelectProfile = runtime::selectSavedAccount,
-                                        onRemoveProfile = runtime::removeLocalAccount,
-                                        onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
-                                        isManagingProfiles = isManagingProfiles,
-                                        operationNotice = operationNotice,
-                                        onDismissNotice = runtime::dismissOperationNotice,
-                                        onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
-                                        onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
-                                        invitationPayload = pendingInvitation.value,
-                                    )
+                                        GatewayLoginScreen(
+                                            phase = phase,
+                                            onLogin = { url, username, password ->
+                                                runtime.login(url, username, password)
+                                            },
+                                            onOpenSettings = { showSettings = true },
+                                            onRetry = { runtime.resetFailure() },
+                                            savedProfiles = savedProfiles,
+                                            onSelectProfile = runtime::selectSavedAccount,
+                                            onRemoveProfile = runtime::removeLocalAccount,
+                                            onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
+                                            isManagingProfiles = isManagingProfiles,
+                                            operationNotice = operationNotice,
+                                            onDismissNotice = runtime::dismissOperationNotice,
+                                            onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
+                                            onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
+                                            invitationPayload = pendingInvitation.value,
+                                        )
                                     }
                                     return@AnimatedContent
                                 }
@@ -660,19 +660,19 @@ class MainActivity : ComponentActivity() {
                                         runtime = runtime,
                                         onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
                                     ) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        if (operationNotice != null || phase is ConnectionPhase.Failed) {
-                                            Column(
-                                                modifier = Modifier.padding(Dimensions.SpaceMedium),
-                                                horizontalAlignment = Alignment.CenterHorizontally,
-                                                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                                            ) {
-                                                Text(operationNotice ?: "本地会话暂时不可用，资料已保留。")
-                                                TextButton(onClick = runtime::retryConnection) { Text("重试连接") }
-                                                TextButton(onClick = { showSettings = true }) { Text("设置") }
-                                            }
-                                        } else CircularProgressIndicator(strokeWidth = 2.dp)
-                                    }
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            if (operationNotice != null || phase is ConnectionPhase.Failed) {
+                                                Column(
+                                                    modifier = Modifier.padding(Dimensions.SpaceMedium),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                                                ) {
+                                                    Text(operationNotice ?: "本地会话暂时不可用，资料已保留。")
+                                                    TextButton(onClick = runtime::retryConnection) { Text("重试连接") }
+                                                    TextButton(onClick = { showSettings = true }) { Text("设置") }
+                                                }
+                                            } else CircularProgressIndicator(strokeWidth = 2.dp)
+                                        }
                                     }
                                     return@AnimatedContent
                                 }

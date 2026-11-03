@@ -13,20 +13,24 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsOff
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
@@ -75,13 +79,20 @@ class NotificationPushScopeSettingsTest {
 
     private fun waitForApps() {
         compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag("notification-app-list").fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag("notification-app-save").fetchSemanticsNodes()
+                .any { !it.config.contains(SemanticsProperties.Disabled) }
         }
     }
 
-    private fun app(packageId: String) = compose.onNodeWithTag("notification-app-$packageId").also {
-        compose.onNodeWithTag("notification-app-list").performScrollToNode(hasTestTag("notification-app-$packageId"))
+    private fun pickerTag(tag: String) = compose.onNodeWithTag(tag).also {
+        compose.onNodeWithTag("notification-app-list").performScrollToNode(hasTestTag(tag))
     }
+
+    private fun pickerText(text: String) = compose.onNodeWithText(text).also {
+        compose.onNodeWithTag("notification-app-list").performScrollToNode(hasText(text))
+    }
+
+    private fun app(packageId: String) = pickerTag("notification-app-$packageId")
 
     @Test fun notificationScopeUsesTheOriginalSearchAndSelectionDraftWithoutSavingOnCancel() {
         var saved = setOf(chat)
@@ -94,16 +105,16 @@ class NotificationPushScopeSettingsTest {
         }
         openPicker()
         app(chat).assertIsOn()
-        compose.onNodeWithTag("notification-app-search").performTextReplacement("邮件")
+        pickerTag("notification-app-search").performTextReplacement("邮件")
         app(mail).assertIsOff()
         app(otherMail).assertIsOff()
-        compose.onNodeWithTag("notification-app-select-all").performClick()
+        pickerTag("notification-app-select-all").performClick()
         app(mail).assertIsOn()
         app(otherMail).assertIsOn()
-        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        pickerTag("notification-app-invert-selection").performClick()
         app(mail).assertIsOff()
         app(otherMail).assertIsOff()
-        compose.onNodeWithTag("notification-app-search").performTextReplacement(chat)
+        pickerTag("notification-app-search").performTextReplacement(chat)
         app(chat).assertIsOn().performClick().assertIsOff()
         assertEquals(setOf(chat), saved)
         compose.onNodeWithContentDescription("取消选择").performClick()
@@ -116,8 +127,8 @@ class NotificationPushScopeSettingsTest {
         assertEquals(setOf(chat, mail), saved)
         assertEquals(1, saves)
         openPicker()
-        compose.onNodeWithTag("notification-app-select-all").performClick()
-        compose.onNodeWithTag("notification-app-select-all").performClick()
+        pickerTag("notification-app-select-all").performClick()
+        pickerTag("notification-app-select-all").performClick()
         compose.onNodeWithTag("notification-app-save").performClick()
         assertTrue(saved.isEmpty())
         assertEquals(2, saves)
@@ -136,25 +147,25 @@ class NotificationPushScopeSettingsTest {
             }
         }
         openPicker()
-        compose.onNodeWithTag("notification-app-select-all").performClick()
+        pickerTag("notification-app-select-all").performClick()
         compose.onNodeWithTag("notification-app-save").assertIsEnabled().performClick()
         assertEquals(allIds, saved)
         assertEquals(1, saves)
         compose.onNodeWithTag("notification-app-picker").assertDoesNotExist()
 
         openPicker()
-        compose.onNodeWithTag("notification-app-search").performTextReplacement(largeList.last().packageId)
+        pickerTag("notification-app-search").performTextReplacement(largeList.last().packageId)
         app(largeList.last().packageId).assertIsOn()
-        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        pickerTag("notification-app-invert-selection").performClick()
         app(largeList.last().packageId).assertIsOff()
         compose.onNodeWithContentDescription("取消选择").performClick()
         assertEquals(allIds, saved)
         assertEquals(1, saves)
 
         openPicker()
-        compose.onNodeWithTag("notification-app-search").performTextReplacement(largeList.last().packageId)
+        pickerTag("notification-app-search").performTextReplacement(largeList.last().packageId)
         app(largeList.last().packageId).assertIsOn()
-        compose.onNodeWithTag("notification-app-invert-selection").performClick()
+        pickerTag("notification-app-invert-selection").performClick()
         compose.onNodeWithTag("notification-app-save").performClick()
         assertEquals(allIds - largeList.last().packageId, saved)
         assertEquals(2, saves)
@@ -169,7 +180,7 @@ class NotificationPushScopeSettingsTest {
         }
         openPicker()
         app(missing).assertIsOn()
-        compose.onNodeWithText("未安装或当前不可见，可以保留或取消原有选择").assertExists()
+        pickerText("未安装或当前不可见，可以保留或取消原有选择").assertExists()
         app(mail).performClick()
         compose.onNodeWithTag("notification-app-save").performClick()
         assertEquals(setOf(missing, mail), saved)
@@ -194,12 +205,15 @@ class NotificationPushScopeSettingsTest {
         compose.waitUntil(5_000) { attempts.get() > 0 }
         compose.onNodeWithTag("push-save-packages").performClick()
         compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag("notification-app-save").fetchSemanticsNodes().isNotEmpty()
+            runCatching {
+                compose.onNodeWithTag("notification-app-list")
+                    .performScrollToNode(hasText("无法读取本机应用列表，请重试。"))
+            }.isSuccess
         }
-        compose.onNodeWithText("无法读取本机应用列表，请重试。").assertExists()
+        pickerText("无法读取本机应用列表，请重试。").assertExists()
         compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
         compose.runOnIdle { fail = false }
-        compose.onNodeWithText("重试").performClick()
+        pickerText("重试").performClick()
         waitForApps()
         app(chat).assertIsOn()
         compose.onNodeWithContentDescription("取消选择").performClick()
@@ -253,13 +267,13 @@ class NotificationPushScopeSettingsTest {
         app(mail).performClick()
         compose.runOnIdle { current = setOf(otherMail) }
         compose.onNodeWithTag("notification-app-save").performClick()
-        compose.onNodeWithText("设置没有保存成功：应用范围已在其他位置修改，请重新载入已保存选择后再保存。").assertExists()
+        pickerText("设置没有保存成功：应用范围已在其他位置修改，请重新载入已保存选择后再保存。").assertExists()
         app(chat).assertIsOn()
         app(mail).assertIsOn()
         compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
         assertEquals(0, saves)
         assertEquals(setOf(otherMail), current)
-        compose.onNodeWithText("重新载入已保存选择").performClick()
+        pickerText("重新载入已保存选择").performClick()
         app(chat).assertIsOff()
         app(mail).assertIsOff()
         app(otherMail).assertIsOn()
@@ -287,10 +301,10 @@ class NotificationPushScopeSettingsTest {
         app(mail).assertIsOn().assertIsNotEnabled()
         assertEquals(setOf(chat, mail), submitted)
         compose.runOnIdle { error = "存储拒绝本次保存"; saving = false }
-        compose.onNodeWithText("设置没有保存成功：存储拒绝本次保存").assertExists()
+        pickerText("设置没有保存成功：存储拒绝本次保存").assertExists()
         app(chat).assertIsOn()
         app(mail).assertIsOn()
-        compose.onNodeWithText("重新载入已保存选择").performClick()
+        pickerText("重新载入已保存选择").performClick()
         app(mail).assertIsOff()
         app(chat).assertIsOn()
     }
@@ -309,7 +323,7 @@ class NotificationPushScopeSettingsTest {
         compose.onNodeWithTag("notification-app-picker").assertExists()
         compose.onNodeWithTag("notification-app-save").assertIsNotEnabled()
         compose.runOnIdle { error = "推送配置已在其他位置修改"; saving = false; completion++ }
-        compose.onNodeWithText("设置没有保存成功：推送配置已在其他位置修改").assertExists()
+        pickerText("设置没有保存成功：推送配置已在其他位置修改").assertExists()
         app(chat).assertIsOn()
         assertEquals(1, calls)
     }
@@ -322,15 +336,15 @@ class NotificationPushScopeSettingsTest {
             MaterialTheme { NotificationPushScopeSettings(packages, false, null, { packages = it; saves++ }, appLoader) }
         }
         openPicker()
-        compose.onNodeWithTag("notification-app-search").performTextReplacement("mail")
+        pickerTag("notification-app-search").performTextReplacement("mail")
         app(mail).performClick()
         restoration.emulateSavedInstanceStateRestore()
         waitForApps()
-        compose.onNodeWithTag("notification-app-search").assertTextContains("mail")
+        pickerTag("notification-app-search").assertTextContains("mail")
         app(mail).assertIsOn()
         compose.runOnIdle { packages = setOf(otherMail) }
         compose.onNodeWithTag("notification-app-save").performClick()
-        compose.onNodeWithText("设置没有保存成功：应用范围已在其他位置修改，请重新载入已保存选择后再保存。").assertExists()
+        pickerText("设置没有保存成功：应用范围已在其他位置修改，请重新载入已保存选择后再保存。").assertExists()
         assertEquals(0, saves)
     }
 
