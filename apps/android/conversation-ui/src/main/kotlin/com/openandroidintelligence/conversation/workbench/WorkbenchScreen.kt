@@ -307,44 +307,26 @@ fun WorkbenchScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
 
-        // 关闭动画结束之前保留设置内容，避免抽屉滑出时闪回会话列表。
+        // 平板端状态同步：在宽屏下设置面板在原左侧栏展示
         val latestSettingsOpen by rememberUpdatedState(settingsOpen)
-        LaunchedEffect(settingsOpen, expanded, settingsPanel != null, reduceMotion) {
+        LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
             if (settingsPanel == null) return@LaunchedEffect
-            if (settingsOpen) {
-                sidebarPanel = SidebarPanel.SETTINGS
-                if (!expanded && !(drawer.currentValue == DrawerValue.Open &&
-                        drawer.targetValue == DrawerValue.Open && !drawer.isAnimationRunning)) {
-                    if (reduceMotion) drawer.snapTo(DrawerValue.Open) else drawer.open()
+            if (expanded) {
+                if (settingsOpen) {
+                    sidebarPanel = SidebarPanel.SETTINGS
+                } else {
+                    sidebarPanel = SidebarPanel.CONVERSATIONS
+                    returnToConversations = false
+                    settingsFromConversations = false
                 }
-            } else if (sidebarPanel == SidebarPanel.SETTINGS) {
-                try {
-                    if (!returnToConversations && !expanded) {
-                        if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
-                    }
-                } finally {
-                    // 拖动可取消 close()；不能留下宿主已关闭、内容仍为设置的状态。
-                    if (!latestSettingsOpen) {
-                        sidebarPanel = SidebarPanel.CONVERSATIONS
-                        returnToConversations = false
-                        settingsFromConversations = false
+            } else {
+                // 手机端：设置打开时关闭底层的会话抽屉，避免遮挡/层叠
+                if (settingsOpen) {
+                    if (drawer.isOpen || drawer.isAnimationRunning) {
+                        drawer.snapTo(DrawerValue.Closed)
                     }
                 }
             }
-        }
-
-        // 遮罩和横向拖动由 M3 处理；实际关闭后再同步宿主状态。
-        val currentSettingsChange by rememberUpdatedState(onSettingsOpenChange)
-        LaunchedEffect(settingsOpen, expanded, drawer) {
-            if (!settingsOpen || expanded) return@LaunchedEffect
-            var wasOpeningOrOpen = false
-            snapshotFlow { Triple(drawer.currentValue, drawer.targetValue, drawer.isAnimationRunning) }
-                .collect { (current, target, animating) ->
-                    if (current == DrawerValue.Open || target == DrawerValue.Open) wasOpeningOrOpen = true
-                    if (wasOpeningOrOpen && current == DrawerValue.Closed && target == DrawerValue.Closed && !animating) {
-                        currentSettingsChange(false)
-                    }
-                }
         }
 
         val drawerContent: @Composable () -> Unit = {
@@ -391,7 +373,7 @@ fun WorkbenchScreen(
                 onRefresh = controller::refreshThreads,
                 onOpenSettings = {
                     settingsFromConversations = settingsPanel != null
-                    if (settingsPanel == null) scope.launch { drawer.close() }
+                    if (settingsPanel == null || !expanded) scope.launch { drawer.close() }
                     onOpenSettings()
                 },
                 onCloseDrawer = { scope.launch { drawer.close() } },
@@ -757,68 +739,102 @@ fun WorkbenchScreen(
             }
         }
 
-        val savedSidebarState = rememberSaveableStateHolder()
-        val sidebarContent: @Composable () -> Unit = {
-            AnimatedContent(
-                targetState = sidebarPanel,
-                transitionSpec = {
-                    if (targetState == SidebarPanel.SETTINGS) {
-                        AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
-                    } else {
-                        AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)
-                    }
-                },
-                modifier = Modifier.fillMaxSize(),
-                label = "sidebar-content",
-            ) { panel ->
-                savedSidebarState.SaveableStateProvider(panel) {
-                    when (panel) {
-                        SidebarPanel.CONVERSATIONS -> drawerContent()
-                        SidebarPanel.SETTINGS -> settingsPanel?.invoke {
-                            if (settingsFromConversations || expanded) {
+        // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
+        // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
+        if (expanded) {
+            val tabletSidebarContent: @Composable () -> Unit = {
+                AnimatedContent(
+                    targetState = sidebarPanel,
+                    transitionSpec = {
+                        if (targetState == SidebarPanel.SETTINGS) {
+                            AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
+                        } else {
+                            AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    label = "tablet-sidebar-content",
+                ) { panel ->
+                    savedSidebarState.SaveableStateProvider(panel) {
+                        when (panel) {
+                            SidebarPanel.CONVERSATIONS -> drawerContent()
+                            SidebarPanel.SETTINGS -> settingsPanel?.invoke {
                                 returnToConversations = settingsFromConversations
                                 onSettingsOpenChange(false)
-                            } else {
-                                scope.launch {
-                                    if (reduceMotion) drawer.snapTo(DrawerValue.Closed) else drawer.close()
-                                }
                             }
                         }
                     }
                 }
             }
-        }
-        // 跨断点移动组合，而不是销毁设置导航栈或右侧输入框。
-        val latestSidebarContent by rememberUpdatedState(sidebarContent)
-        val movableSidebar = remember { movableContentOf { latestSidebarContent() } }
-        val latestMainContent by rememberUpdatedState(mainContent)
-        val movableMain = remember { movableContentOf { latestMainContent() } }
+            val latestTabletSidebarContent by rememberUpdatedState(tabletSidebarContent)
+            val movableTabletSidebar = remember { movableContentOf { latestTabletSidebarContent() } }
 
-        val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
-            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
-        if (expanded) {
             Row(Modifier.fillMaxSize()) {
                 Box(
                     Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
                         .windowInsetsPadding(sidebarInsets),
-                ) { movableSidebar() }
+                ) { movableTabletSidebar() }
                 VerticalDivider()
                 Box(Modifier.weight(1f)) { movableMain() }
             }
         } else {
-            ModalNavigationDrawer(
-                drawerState = drawer,
-                gesturesEnabled = settingsOpen || sidebarPanel == SidebarPanel.CONVERSATIONS,
-                drawerContent = {
-                    ModalDrawerSheet(
-                        modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
-                        windowInsets = sidebarInsets,
-                    ) {
-                        movableSidebar()
+            // 手机端：侧边抽屉始终仅承载会话列表（固定320dp），绝不把全屏设置塞入抽屉假装全屏
+            val phoneDrawerContent: @Composable () -> Unit = {
+                drawerContent()
+            }
+            val latestPhoneDrawerContent by rememberUpdatedState(phoneDrawerContent)
+            val movablePhoneDrawer = remember { movableContentOf { latestPhoneDrawerContent() } }
+
+            Box(Modifier.fillMaxSize()) {
+                ModalNavigationDrawer(
+                    drawerState = drawer,
+                    gesturesEnabled = !settingsOpen,
+                    drawerContent = {
+                        ModalDrawerSheet(
+                            modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
+                            windowInsets = sidebarInsets,
+                        ) {
+                            movablePhoneDrawer()
+                        }
+                    },
+                ) {
+                    movableMain()
+                }
+
+                // 手机端全屏侧滑设置页面：
+                // 从左向右滑入（起点 translationX = -screenWidth，终点 translationX = 0）
+                // 退出时向左滑出（起点 translationX = 0，终点 translationX = -screenWidth）
+                // 覆盖整个应用窗口，宽度为全部可用宽度，高度填满整个内容区域，无右侧残留会话或背景遮罩空隙
+                AnimatedVisibility(
+                    visible = settingsOpen,
+                    enter = AppTransitions.modalEnter(reduceMotion),
+                    exit = AppTransitions.modalExit(reduceMotion),
+                    modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
+                ) {
+                    BackHandler(enabled = settingsOpen) {
+                        if (settingsFromConversations) {
+                            scope.launch {
+                                drawer.open()
+                            }
+                        }
+                        onSettingsOpenChange(false)
                     }
-                },
-            ) {
-                movableMain()
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
+                            settingsPanel?.invoke {
+                                if (settingsFromConversations) {
+                                    scope.launch {
+                                        drawer.open()
+                                    }
+                                }
+                                onSettingsOpenChange(false)
+                            }
+                        }
+                    }
+                }
             }
         }
 

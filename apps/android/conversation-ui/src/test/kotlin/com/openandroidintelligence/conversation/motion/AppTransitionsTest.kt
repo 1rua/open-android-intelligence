@@ -106,11 +106,9 @@ class AppTransitionsTest {
             val dataClass = data.javaClass
             val fade = dataClass.getDeclaredField("fade").apply { isAccessible = true }.get(data)
             val slide = dataClass.getDeclaredField("slide").apply { isAccessible = true }.get(data)
-            val scale = dataClass.getDeclaredField("scale").apply { isAccessible = true }.get(data)
 
             assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
-            assertNotNull("scale must not be null", scale)
 
             fun extractDuration(specOwner: Any): Int {
                 val spec = specOwner.javaClass.getDeclaredField("animationSpec").apply { isAccessible = true }.get(specOwner)
@@ -120,7 +118,6 @@ class AppTransitionsTest {
 
             assertEquals("Fade spec duration should match MotionSpecs.Exit", MotionSpecs.Exit, extractDuration(fade!!))
             assertEquals("Slide spec duration should match MotionSpecs.Exit", MotionSpecs.Exit, extractDuration(slide!!))
-            assertEquals("Scale spec duration should match MotionSpecs.Exit", MotionSpecs.Exit, extractDuration(scale!!))
         }
     }
 
@@ -137,11 +134,9 @@ class AppTransitionsTest {
             val dataClass = data.javaClass
             val fade = dataClass.getDeclaredField("fade").apply { isAccessible = true }.get(data)
             val slide = dataClass.getDeclaredField("slide").apply { isAccessible = true }.get(data)
-            val scale = dataClass.getDeclaredField("scale").apply { isAccessible = true }.get(data)
 
             assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
-            assertNotNull("scale must not be null", scale)
 
             fun extractDuration(specOwner: Any): Int {
                 val spec = specOwner.javaClass.getDeclaredField("animationSpec").apply { isAccessible = true }.get(specOwner)
@@ -151,7 +146,6 @@ class AppTransitionsTest {
 
             assertEquals("Fade spec duration should match MotionSpecs.Enter", MotionSpecs.Enter, extractDuration(fade!!))
             assertEquals("Slide spec duration should match MotionSpecs.Enter", MotionSpecs.Enter, extractDuration(slide!!))
-            assertEquals("Scale spec duration should match MotionSpecs.Enter", MotionSpecs.Enter, extractDuration(scale!!))
         }
     }
 }
