@@ -309,6 +309,7 @@ class SettingsHonestyCopyTest {
     }
 
     @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
     @Config(qualifiers = "w411dp-h891dp-420dpi")
     fun sidebarSettingsFitWithin320dpWithLargerText() {
         val environment = settingsEnvironment()
@@ -337,7 +338,15 @@ class SettingsHonestyCopyTest {
             compose.onNodeWithText(label, useUnmergedTree = true)
                 .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
             assertTrue("$label 必须具有可检查的文本布局", layouts.isNotEmpty())
-            assertTrue("$label 不应被裁切", layouts.none { it.hasVisualOverflow })
+            layouts.forEach { layout ->
+                assertTrue(
+                    "$label 不应被裁切：size=${layout.size}, " +
+                        "paragraph=${layout.multiParagraph.width}×${layout.multiParagraph.height}, " +
+                        "lines=${layout.lineCount}, " +
+                        "widthOverflow=${layout.didOverflowWidth}, heightOverflow=${layout.didOverflowHeight}",
+                    !layout.hasVisualOverflow,
+                )
+            }
         }
 
         assertTextFits("外观、主题与动效")

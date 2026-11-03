@@ -431,32 +431,27 @@ async def test_native_approval_records_withdrawn_or_authoritative_timeout(intera
     adapter = HermesSessionAdapter(interaction_core, runtime)
     principal = Principal("alice", device_id="phone")
     conversation = (await adapter.list_sessions(principal))[0]["id"]
-    received = []
+    received = ObservedEvents()
     async def consume():
         async for event in adapter.send(principal, conversation, "approval"):
             received.append(event)
     pending = asyncio.create_task(consume())
     try:
-        await asyncio.wait_for(runtime.prompted.wait(), 3)
-        await asyncio.sleep(.01)
-        card = next(event["approval"] for event in received if event["type"] == "approval_requested")
-        if expired:
-            await asyncio.sleep(1.1)
-        else:
+        card = (await received.wait_for_type("approval_requested", pending))["approval"]
+        if not expired:
             # A reconstructed runtime has no native wait after a host restart.
             replacement = PromptRuntime(interaction_core)
             restarted = HermesSessionAdapter(interaction_core, replacement)
             with pytest.raises(AdapterError) as error:
                 await restarted.decide_approval(principal, conversation, card["approvalId"], "once")
             assert error.value.code == "APPROVAL_EXPIRED"
+        resolved = await received.wait_for_type("approval_resolved", pending)
         with closing(interaction_core.open_gateway_account("alice")) as account:
             terminal = account.approvals.lookup(card["approvalId"])
         assert terminal["decision"] == ("timeout" if expired else "withdrawn")
         if expired:
             assert terminal["decidedAt"] == card["expiresAt"]
-        await asyncio.sleep(.01)
-        resolved = next(event["approval"] for event in received if event["type"] == "approval_resolved")
-        assert resolved["decision"] == terminal["decision"]
+        assert resolved["approval"]["decision"] == terminal["decision"]
         with pytest.raises(AdapterError):
             await adapter.decide_approval(principal, conversation, card["approvalId"], "once")
         assert calls == ["deny" if expired else "once"]

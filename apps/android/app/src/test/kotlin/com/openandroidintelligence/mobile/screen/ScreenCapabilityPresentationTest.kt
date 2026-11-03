@@ -126,6 +126,7 @@ class ScreenCapabilityPresentationTest {
         val withSession = ScreenCapabilityUiState(
             providerAvailable = true,
             connectionReady = true,
+            accessibilityError = "ACCESSIBILITY_SERVICE_UNAVAILABLE",
             session = readySession(ScreenPermission.CAPTURE),
             captureError = "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
         )
