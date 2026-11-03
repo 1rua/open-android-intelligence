@@ -13,6 +13,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import org.junit.After
@@ -37,14 +38,14 @@ import org.robolectric.annotation.Config
  * 3. 已授权时按钮禁用并显示「已授权」，不诱导重复申请。
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [34], application = OpenAndroidIntelligenceApplication::class)
 class PluginManagementGrantUiTest {
 
     @get:Rule
     val compose = createComposeRule()
 
     private lateinit var store: PluginInstallStore
-    private lateinit var context: Application
+    private lateinit var context: OpenAndroidIntelligenceApplication
 
     @Before
     fun setUp() {
@@ -70,6 +71,8 @@ class PluginManagementGrantUiTest {
             name = "示例设备能力插件",
             capabilities = capabilities(capabilityId, listOf(primitive)),
         ))
+        // 授权入口来自宿主载入的能力声明，安装后必须让 host 重新扫描。
+        context.pluginHost.reload()
     }
 
     /** 构造 capabilities 段；risk 属于能力绑定而非 manifest，不能出现在这里。 */
@@ -98,7 +101,7 @@ class PluginManagementGrantUiTest {
     fun smsPluginOffersARuntimePermissionEntryOnly() {
         installPlugin("org.example.sms", "kernel.sms.read", "org.example.sms.query")
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.sms")
 
         compose.onNodeWithTag("plugin-grant:sms").assertExists()
@@ -113,7 +116,7 @@ class PluginManagementGrantUiTest {
     fun accessibilityPluginPointsAtTheAccessibilitySettingsPage() {
         installPlugin("org.example.reader", "kernel.screen.read", "org.example.reader.read")
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.reader")
 
         compose.onNodeWithTag("plugin-grant:accessibility").assertExists()
@@ -127,7 +130,7 @@ class PluginManagementGrantUiTest {
     fun notificationPluginPointsAtNotificationAccessSettings() {
         installPlugin("org.example.notify", "kernel.notifications.read", "org.example.notify.read")
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.notify")
 
         compose.onNodeWithTag("plugin-grant:notifications").assertExists()
@@ -139,7 +142,7 @@ class PluginManagementGrantUiTest {
     fun capturePluginLaunchesTheSystemDialogInsteadOfOpeningASettingsPage() {
         installPlugin("org.example.capture", "kernel.screen.capture", "org.example.capture.capture")
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.capture")
 
         compose.onNodeWithTag("plugin-grant:screen-capture").assertExists()
@@ -159,8 +162,9 @@ class PluginManagementGrantUiTest {
                 listOf("kernel.screen.read", "kernel.screen.control"),
             ),
         ))
+        context.pluginHost.reload()
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.control")
 
         // 两个原语共用同一项无障碍授权，不能出现两条重复入口。
@@ -174,7 +178,7 @@ class PluginManagementGrantUiTest {
         // 预先授予运行时权限：界面必须显示「已授权」而不是再弹一次申请。
         shadowOf(context).grantPermissions(android.Manifest.permission.READ_SMS)
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.sms2")
 
         compose.onNodeWithText("已授权").assertExists()
@@ -184,8 +188,9 @@ class PluginManagementGrantUiTest {
     @Test
     fun pluginsWithoutDevicePrimitivesSaySoInsteadOfShowingEmptyEntries() {
         store.install(TestAlpPackages.signedPackage())
+        context.pluginHost.reload()
 
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
         compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
 
