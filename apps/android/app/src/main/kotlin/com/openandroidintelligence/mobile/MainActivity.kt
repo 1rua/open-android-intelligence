@@ -357,6 +357,10 @@ class MainActivity : ComponentActivity() {
                 // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
                 // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
                 // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
+                //
+                // 刻意**不**复用 RemoteScreenCaptureRegistry 的实例：圈选与远程
+                // 截图各自持有独立的系统票据与像素，一处授权不得扩大另一处的
+                // 权限范围（见下方远程截图段的同一约束）。
                 val screenCaptureSource = remember {
                     MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
                 }
@@ -474,6 +478,9 @@ class MainActivity : ComponentActivity() {
                     when {
                         source == null -> notify("本机未装配屏幕截图能力")
                         !permitted -> notify("请先安装并启用截图插件，开启本机截图能力")
+                        // 截图来源已可用（无障碍按需截图已就绪，或投屏此前已授权）
+                        // 时不需要再走一次系统授权，如实告知即可。
+                        source.isAvailable -> notify("截图已可用，不需要额外的系统授权")
                         else -> {
                             val intent = source.createAuthorizationIntent()
                             if (intent == null) {
@@ -680,11 +687,17 @@ class MainActivity : ComponentActivity() {
                                         onVoiceInput = startVoiceInput,
                                         screenCaptureSource = screenCaptureSource,
                                         onNeedScreenCaptureAuthorization = {
-                                            val intent = screenCaptureSource.createAuthorizationIntent()
-                                            if (intent == null) {
-                                                notify("此设备不支持屏幕采集，圈选不可用")
+                                            // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
+                                            // 不再把用户推进一次多余的投屏确认流程。
+                                            if (screenCaptureSource.isAvailable) {
+                                                notify("现在可以直接圈选，无需额外授权")
                                             } else {
-                                                screenCaptureAuthLauncher.launch(intent)
+                                                val intent = screenCaptureSource.createAuthorizationIntent()
+                                                if (intent == null) {
+                                                    notify("此设备不支持屏幕采集，圈选不可用")
+                                                } else {
+                                                    screenCaptureAuthLauncher.launch(intent)
+                                                }
                                             }
                                         },
                                     )

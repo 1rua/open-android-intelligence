@@ -186,8 +186,12 @@ class PluginManagementScreenTest {
         compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
         compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
         compose.onNodeWithText("允许后台任务").assertExists()
-        compose.onNodeWithText("检查 Android 系统权限").assertIsEnabled()
-        compose.onNodeWithText("取消").performClick()
+        // 授权入口按插件实际声明的 kernel primitive 动态生成（问题二修复后
+        // 不再是一个只处理短信/通话记录的「检查 Android 系统权限」按钮）。
+        // 这里打开的是短信插件的对话框：只应出现短信读取入口。
+        compose.onNodeWithTag("plugin-grant:sms").assertExists()
+        compose.onNodeWithTag("plugin-grant:notifications").assertDoesNotExist()
+        compose.onNodeWithText("完成").performClick()
         compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
         assertEquals(installed, store.listInstalled().map { it.pluginId })
     }

@@ -376,6 +376,9 @@ internal fun accessibilitySupporting(state: ScreenCapabilityUiState): String = w
 internal fun captureAuthorizationSupporting(state: ScreenCapabilityUiState): String = when {
     !state.providerAvailable -> "当前版本未接入屏幕能力"
     !state.has(ScreenPermission.CAPTURE) -> "需要先开始一个包含截图权限的屏幕会话"
+    // 无障碍服务已开启时截图不再需要每次系统确认，这里必须如实告诉用户，
+    // 否则用户会以为每次截图都要走一遍投屏授权。
+    state.accessibilityReady -> "已开启无障碍服务，截图按需直接进行，不需要重复授权"
     state.captureSystemGranted -> "已获得系统投屏授权，可以截图"
     else -> "尚未授权：${readableScreenError(state.captureError)}"
 }

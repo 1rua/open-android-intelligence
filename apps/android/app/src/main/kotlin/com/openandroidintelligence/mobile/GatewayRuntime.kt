@@ -526,6 +526,28 @@ class GatewayRuntime(
         wakeConnection(PlatformStreamWakeReason.FOREGROUND)
     }
 
+    /**
+     * Republish device capabilities after a local Android authorization change.
+     *
+     * Called when the user returns from a system settings page (accessibility,
+     * notification access) or finishes a MediaProjection consent dialog: the
+     * published inventory still describes the previous Android state, so Core
+     * would keep reporting a stale `ANDROID_PERMISSION_REQUIRED` even though the
+     * user just granted it.
+     *
+     * Absent session/owner means there is nothing to synchronize with — a no-op,
+     * never a fabricated success. Failures stay visible through
+     * [deviceCapabilityState] like any other publication error.
+     */
+    fun requestCapabilitySync() {
+        val publisher = capabilityPublisher ?: return
+        scope.launch(Dispatchers.IO) {
+            // The publisher serializes its own work and re-checks ownership;
+            // a throwing sync already recorded its error state for the UI.
+            runCatching { publisher.sync() }
+        }
+    }
+
     /** Duplicate availability signals preserve healthy process-owned channels. */
     fun onNetworkAvailable(routeChanged: Boolean = false) {
         wakeConnection(if (routeChanged) PlatformStreamWakeReason.NETWORK_CHANGED else PlatformStreamWakeReason.RECOVERY_SIGNAL)
