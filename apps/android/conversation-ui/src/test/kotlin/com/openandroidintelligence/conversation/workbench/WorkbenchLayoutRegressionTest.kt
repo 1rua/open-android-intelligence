@@ -174,11 +174,10 @@ class WorkbenchLayoutRegressionTest {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
-        val panel = compose.onNodeWithTag("sidebar-test-panel")
         repeat(3) {
-            panel.performTouchInput { swipeUp() }
+            compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeUp() }
             compose.waitForIdle()
-            panel.performTouchInput { swipeDown() }
+            compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeDown() }
             compose.waitForIdle()
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
