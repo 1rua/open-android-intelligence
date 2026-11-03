@@ -1,7 +1,10 @@
 package com.openandroidintelligence.conversation.model
 
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -15,12 +18,16 @@ import org.junit.Test
  */
 class LocalSendAtomIdentityTest {
 
-    private fun atom(messageId: String? = "client_1") = LocalSendAtom(
+    private fun atom(
+        messageId: String? = "client_1",
+        delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+    ) = LocalSendAtom(
         conversationId = ConversationId("conv_a"),
         clientMessageId = ClientMessageId("client_1"),
         parts = listOf(MessagePart.Text("查看设备状态")),
         timestamp = 1_000L,
         messageId = messageId,
+        delivery = delivery,
     )
 
     @Test
@@ -62,7 +69,7 @@ class LocalSendAtomIdentityTest {
 
     @Test
     fun aRealMessageWithALocalLookingIdKeepsItsAuthorityAndGeneration() {
-        val remote = com.openandroidintelligence.conversation.ports.TimelineMessage(
+        val remote = TimelineMessage(
             "local_native_id", "user", listOf(MessagePart.Text("原稿")), 1_000L,
             clientMessageId = ClientMessageId("client_1"), generationId = "generation_1")
         val row = mergeLocalSendAtoms(listOf(remote), listOf(atom("local_native_id"))).single()
@@ -79,5 +86,60 @@ class LocalSendAtomIdentityTest {
         } catch (_: IllegalStateException) {
             // 期望：创建/受理路径仍保持强不变量。
         }
+    }
+
+    /**
+     * 边界 A 第一切片（回归锁）：
+     * 1. 引导消息本地记录（无论是仅有 clientMessageId、旧合成 steer_${clientId}、还是受理乱序到达）
+     *    与远端迟到的权威 user 消息（sender="user", 真实 messageId, 相同 clientMessageId）
+     *    必须唯一合并为单条时间线行，且身份归为用户 ("user")。
+     * 2. 不允许将身份改为 "system"，不允许拼接 "↳ 已引导：" 改写原文，且真实权威 ID 必须吸收旧占位 ID。
+     */
+    @Test
+    fun steeringAtomMergesWithRemoteAuthoritativeUserMessageAndLegacySyntheticSteerId() {
+        val remoteAuthoritativeUser = TimelineMessage(
+            id = "msg_native_input_authoritative_100",
+            sender = "user",
+            parts = listOf(MessagePart.Text("请改用新模式执行")),
+            timestamp = 1_500L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = ClientMessageId("client_steer_1"),
+            generationId = "gen_live",
+            localPlaceholder = false,
+        )
+
+        // 场景 1: 本地 STEER 发送记录（即使历史记录存过旧版合成 ID "steer_client_steer_1" 或仅有 clientId 占位）
+        val steerAtomWithLegacySyntheticId = LocalSendAtom(
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = ClientMessageId("client_steer_1"),
+            parts = listOf(MessagePart.Text("请改用新模式执行")),
+            timestamp = 1_400L,
+            messageId = "steer_client_steer_1",
+            delivery = MessageDeliveryMode.STEER,
+            submissionState = LocalSubmissionState.ACCEPTED,
+            status = AgentMessageStatus.QUEUED,
+        )
+
+        val merged = mergeLocalSendAtoms(
+            remote = listOf(remoteAuthoritativeUser),
+            atoms = listOf(steerAtomWithLegacySyntheticId),
+        )
+
+        // 断言：必须唯一合并为 1 条消息
+        assertEquals("远端权威用户消息与旧合成 STEER ID 记录必须唯一合并，不得拆分为两行", 1, merged.size)
+        val row = merged.single()
+
+        // 断言：身份必须是 user，原汁原味正文，不能被改写为 system 或拼接 "↳ 已引导："
+        assertEquals("引导消息身份必须始终为 user", "user", row.sender)
+        assertEquals(
+            "引导消息正文必须保留用户原文，禁止拼接系统前缀",
+            listOf(MessagePart.Text("请改用新模式执行")),
+            row.parts,
+        )
+        // 断言：ID 应取远端权威服务端 ID，且不再是 localPlaceholder
+        assertEquals("msg_native_input_authoritative_100", row.id)
+        assertFalse("已获得权威远端消息时不应是占位符", row.localPlaceholder)
+        assertEquals("gen_live", row.generationId)
     }
 }

@@ -16,6 +16,35 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchDuplicateAndDeliveryTest {
+    @Test fun repeatedSteeringKeepsEveryOriginalUserInputWhenHistoryAndReceiptsRepeat() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val originals = listOf("先检查第一项", "再检查第二项", "最后保留结果")
+        for (text in originals) {
+            controller.editDraft(text)
+            controller.sendDraft(MessageDeliveryMode.STEER)
+            runCurrent()
+        }
+        val local = rows(controller).filter { it.isUser }
+        assertEquals(originals, local.map { it.text })
+        assertEquals(3, local.map { it.clientMessageId }.toSet().size)
+        for ((index, entry) in local.withIndex()) {
+            val event = VerifiedConversationEvent.TimelineUpsert("history-steer-$index", entry.timestamp, 1,
+                TimelineMessage("native-steer-$index", "user", listOf(MessagePart.Text(originals[index])), entry.timestamp,
+                    conversationId = ConversationId("conv_a"), clientMessageId = entry.clientMessageId, generationId = "gen_live"))
+            repository.events.emit(event); repository.events.emit(event); runCurrent()
+        }
+        assertEquals(originals, rows(controller).filter { it.isUser }.map { it.text })
+        assertEquals(3, rows(controller).count { it.isUser })
+        assertTrue(rows(controller).all { it.generationId == "gen_live" })
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        assertEquals(3, repository.steered.size)
+        controller.close()
+    }
+
 
     @Test
     fun serverAcceptanceOnlyPreservesWaitingForAgentUntilItsDeliveredReceipt() = runTest {
@@ -234,9 +263,185 @@ class WorkbenchDuplicateAndDeliveryTest {
         assertTrue(repository.submitted.isEmpty())
         assertTrue(controller.state.value.pendingDeliveries.isEmpty())
         assertEquals("STEERED:CURRENT_TURN", controller.state.value.notice)
-        assertTrue("引导不是独立用户回合", rows(controller).none { it.isUser })
-        assertTrue(rows(controller).any { it.text.contains("已引导") })
+        // 新规格：引导始终保留用户身份，原文不拼接系统前缀，同任务不结束运行状态
+        val userRow = rows(controller).single { it.isUser }
+        assertEquals("先检查失败用例", userRow.text)
+        assertTrue("引导输入不得拼接已引导系统前缀", rows(controller).none { it.text.contains("已引导") })
+        assertEquals("任务保持运行，引导不提前终态", GenerationState.RUNNING, repository.generationState.value)
         controller.close()
+    }
+
+    @Test
+    fun steeringWithProvisionalAcceptanceKeepsUserRowAndPreservesGenerationForRecovery() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        controller.editDraft("引导保留用户原文且记住generation")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        val userRow = rows(controller).single { it.isUser }
+        assertEquals("引导保留用户原文且记住generation", userRow.text)
+        assertEquals(AgentMessageStatus.DELIVERED, userRow.messageStatus)
+        // 验证迟到的远端权威用户行到达后能够原位升级且不会拆分为两行
+        repository.events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                "user_remote_authoritative", 50, 1,
+                TimelineMessage(
+                    id = "msg_server_authoritative_steer_1",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("引导保留用户原文且记住generation")),
+                    timestamp = userRow.timestamp,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_a"),
+                    clientMessageId = userRow.clientMessageId,
+                    generationId = "gen_live",
+                )
+            )
+        )
+        runCurrent()
+
+        val updatedUserRow = rows(controller).single { it.isUser }
+        assertEquals("msg_server_authoritative_steer_1", updatedUserRow.key)
+        assertFalse("获得权威服务端消息后不应是占位符", updatedUserRow.pendingAcceptance)
+        assertEquals("gen_live", updatedUserRow.generationId)
+        controller.close()
+    }
+
+    @Test
+    fun steeringFailureOrOutcomeUnknownRetainsUserBubbleIdentity() = runTest {
+        for (loseReceipt in listOf(false, true)) {
+            val repository = Repository()
+            repository.generationId.value = "gen_live"
+            repository.generationState.value = GenerationState.RUNNING
+            if (loseReceipt) {
+                repository.loseNextSteerReceipt = true
+            } else {
+                repository.failNextSteer = true
+            }
+            val controller = controller(repository, resetGenerationOnOpen = false)
+            runCurrent()
+            controller.editDraft(if (loseReceipt) "网络丢失回执的引导" else "明确失败的引导")
+            controller.sendDraft(MessageDeliveryMode.STEER)
+            runCurrent()
+
+            // 无论明确失败还是回执丢失/结果未知，用户气泡身份必须始终为 user，且原任务不被中断退出
+            val userRow = rows(controller).single { it.isUser }
+            assertEquals(if (loseReceipt) "网络丢失回执的引导" else "明确失败的引导", userRow.text)
+            assertEquals("user", userRow.sender)
+            assertTrue("气泡身份必须始终为 user", userRow.isUser)
+            assertEquals("原任务保持运行", GenerationState.RUNNING, repository.generationState.value)
+            controller.close()
+        }
+    }
+
+    @Test
+    fun remoteAuthoritativeUserArrivingBeforeSteerAcceptanceResolvesCleanly() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val gate = kotlinx.coroutines.CompletableDeferred<MessageAcceptance>()
+        repository.steerGate = gate
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        controller.editDraft("乱序先到引导")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        // 此时 steerMessage 仍在等待 gate，本地已记录 clientMessageId 并上屏占位行
+        assertEquals(1, repository.steeringClientIds.size)
+        val clientId = repository.steeringClientIds.single()
+        val prompt = rows(controller).single { it.isUser }
+        assertEquals(clientId, prompt.clientMessageId)
+
+        // 远端真实权威 user 消息在 acceptance 前先到达
+        repository.events.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                "user_remote_early", 60, 1,
+                TimelineMessage(
+                    id = "msg_server_early_steer",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("乱序先到引导")),
+                    timestamp = prompt.timestamp,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_a"),
+                    clientMessageId = clientId,
+                    generationId = "gen_live",
+                ),
+            ),
+        )
+        runCurrent()
+
+        // 随后 acceptance 终于到达并 complete
+        gate.complete(
+            MessageAcceptance(
+                clientId.value,
+                clientId.value,
+                "gen_live",
+                MessageDeliveryMode.STEER,
+                authoritative = false,
+            ),
+        )
+        runCurrent()
+
+        val rendered = rows(controller)
+        assertEquals("乱序先到的远端行与本地引导记录必须唯一合并，不得拆分为两行", 1, rendered.count { it.isUser })
+        val finalUser = rendered.single { it.isUser }
+        assertEquals("msg_server_early_steer", finalUser.key)
+        assertFalse("获得权威服务端消息后不应是占位符", finalUser.pendingAcceptance)
+        assertEquals("gen_live", finalUser.generationId)
+        assertEquals("原任务保持运行", GenerationState.RUNNING, repository.generationState.value)
+        controller.close()
+    }
+
+    @Test
+    fun steeringAcceptedPersistsAcceptedStateAndRealGenerationWithoutResendingOnRestart() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val persistence = MemoryPersistence()
+        val controller = controller(repository, resetGenerationOnOpen = false, persistence = persistence)
+        runCurrent()
+
+        controller.editDraft("持久化保存的引导")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+        controller.flushPendingPersistence()
+
+        // 1. 验证 LocalSendAtom 明确为 ACCEPTED，且无合成的假服务器 ID（仍然保留 clientId 占位），记录 generation
+        val atoms = persistence.loadSendAtoms("conv_a")
+        val steerAtom = atoms.single { it.clientMessageId.value in repository.steeringClientIds.map { id -> id.value } }
+        assertEquals("已受理工件必须持久化为 ACCEPTED", LocalSubmissionState.ACCEPTED, steerAtom.submissionState)
+        assertFalse("禁止产生 steer_ 假服务器 ID", steerAtom.messageId?.startsWith("steer_") == true)
+        assertEquals("steer 投递模式正确", MessageDeliveryMode.STEER, steerAtom.delivery)
+
+        // 2. 验证 checkpoint 中持久化记录了真实 generationId
+        val checkpoint = persistence.checkpoint!!
+        assertTrue(
+            "checkpoint 必须持久记住 clientId 与真实 generationId 的关联",
+            checkpoint.messageGenerations.any {
+                it.conversationId == "conv_a" &&
+                it.messageId == steerAtom.clientMessageId.value &&
+                it.generationId == "gen_live"
+            },
+        )
+
+        controller.close()
+
+        // 3. 重启 Controller，验证不会重新触发第二轮 steerMessage 投递
+        val restartedRepo = Repository()
+        restartedRepo.generationId.value = "gen_live"
+        restartedRepo.generationState.value = GenerationState.RUNNING
+        val restarted = controller(restartedRepo, resetGenerationOnOpen = false, persistence = persistence)
+        runCurrent()
+
+        assertEquals("重启后已 ACCEPTED 的引导绝不二次投递", 0, restartedRepo.steered.size)
+        val reopenedRow = rows(restarted).single { it.isUser }
+        assertEquals("持久化恢复后用户正文完整", "持久化保存的引导", reopenedRow.text)
+        assertEquals("gen_live", reopenedRow.generationId)
+        restarted.close()
     }
 
     @Test
@@ -412,14 +617,25 @@ class WorkbenchDuplicateAndDeliveryTest {
             ConversationId("conv_a"), generationId = generation),
     )
 
+    private class MemoryPersistence : WorkbenchPersistence {
+        var checkpoint: WorkbenchCheckpoint? = null
+        private val atoms = mutableMapOf<String, List<LocalSendAtom>>()
+        override fun load() = checkpoint
+        override fun save(checkpoint: WorkbenchCheckpoint) { this.checkpoint = checkpoint }
+        override fun loadSendAtoms(conversationId: String) = atoms[conversationId].orEmpty()
+        override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) { this.atoms[conversationId] = atoms }
+    }
+
     private fun TestScope.controller(
         repository: Repository,
         resetGenerationOnOpen: Boolean = true,
+        persistence: WorkbenchPersistence? = null,
     ) = WorkbenchController(
         workbenchTestScope(), repository, object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) =
                 AgentCommandCatalog(CatalogVersion("v1"), emptyList())
         }, { ConversationScope("p", "g", "a", "i") },
+        persistence = persistence,
         persistenceDispatcher = StandardTestDispatcher(testScheduler),
         onActiveThreadChanged = {
             if (resetGenerationOnOpen) {
@@ -457,6 +673,7 @@ class WorkbenchDuplicateAndDeliveryTest {
         var failNextSend = false
         var failNextSteer = false
         var loseNextSteerReceipt = false
+        var steerGate: kotlinx.coroutines.CompletableDeferred<MessageAcceptance>? = null
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance {
             if (failNextSend) {
                 failNextSend = false
@@ -483,6 +700,7 @@ class WorkbenchDuplicateAndDeliveryTest {
         override suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
             steered += message.text
             steeringClientIds += message.clientMessageId
+            steerGate?.let { return it.await() }
             if (loseNextSteerReceipt) {
                 loseNextSteerReceipt = false
                 throw java.io.IOException("STEERING_RECEIPT_LOST")
@@ -492,10 +710,11 @@ class WorkbenchDuplicateAndDeliveryTest {
                 error("STEER_UNAVAILABLE")
             }
             return MessageAcceptance(
-                "steer_${message.clientMessageId.value}",
+                message.clientMessageId.value,
                 message.clientMessageId.value,
                 "gen_live",
                 MessageDeliveryMode.STEER,
+                authoritative = false,
             )
         }
         override suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> =

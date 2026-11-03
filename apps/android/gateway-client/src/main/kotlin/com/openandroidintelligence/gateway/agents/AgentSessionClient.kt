@@ -40,7 +40,8 @@ data class NativeAgentMessage(val id: String, val role: String, val text: String
     val generationId: String? = null, val contentRevision: Long? = null, val state: String? = null,
     val executionSteps: List<NativeAgentExecutionStep> = emptyList())
 data class NativeAgentExecutionStep(val stepId: String, val eventId: String, val toolName: String,
-    val arguments: String, val output: String?, val status: String, val revision: Long)
+    val arguments: String, val output: String?, val status: String, val revision: Long,
+    val sourceMessageId: String? = null, val occurredAt: Long? = null)
 data class NativeEventApproval(val type: String, val approval: JsonValue.JObject)
 data class NativeEventPage(val events: List<JsonValue.JObject>, val cursor: String, val hasMore: Boolean,
     val approvals: List<NativeEventApproval>? = null)
@@ -96,7 +97,9 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
                     NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"),
                         required(step, "toolName"), JsonFields.string(step, "arguments").orEmpty(),
                         JsonFields.string(step, "output"), JsonFields.string(step, "status") ?: "unknown",
-                        JsonFields.long(step, "revision")?.takeIf { revision -> revision >= 0 } ?: 0)
+                        JsonFields.long(step, "revision")?.takeIf { revision -> revision >= 0 } ?: 0,
+                        JsonFields.string(step, "sourceMessageId")?.takeIf { it.isNotBlank() },
+                        JsonFields.long(step, "occurredAt"))
                 })
         }
     }
@@ -474,7 +477,8 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
         return NativeAgentExecutionStep(required(step, "stepId"), required(step, "eventId"), required(step, "toolName"),
             JsonFields.string(step, "arguments").orEmpty(), JsonFields.string(step, "output"),
             JsonFields.string(step, "status")?.takeIf { it in setOf("running", "completed", "failed", "unknown") } ?: "unknown",
-            revision)
+            revision, JsonFields.string(step, "sourceMessageId")?.takeIf { it.isNotBlank() },
+            JsonFields.long(step, "occurredAt"))
     }
 
     private fun traceHeaders(key: String?): List<RawHeader> =

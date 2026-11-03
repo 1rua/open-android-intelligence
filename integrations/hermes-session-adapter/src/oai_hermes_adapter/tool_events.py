@@ -28,11 +28,19 @@ def execution_key(storage_owner: str, account_id: str, conversation_id: str, gen
     return execution_prefix(storage_owner, account_id, conversation_id) + hashlib.sha256(generation_id.encode()).hexdigest()
 
 
-def public_execution(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+def _public_step(step: Mapping[str, Any]) -> dict[str, Any]:
     names = {"stepId", "eventId", "toolName", "arguments", "output", "status", "revision"}
+    result = {key: value for key, value in step.items() if key in names}
+    if isinstance(step.get("sourceMessageId"), str) and step["sourceMessageId"]:
+        result["sourceMessageId"] = step["sourceMessageId"]
+    if type(step.get("occurredAt")) is int:
+        result["occurredAt"] = step["occurredAt"]
+    return result
+
+
+def public_execution(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     return {"executionRevision": snapshot.get("revision", 0), "executionSteps": [
-        {key: value for key, value in step.items() if key in names}
-        for step in snapshot.get("steps", [])]}
+        _public_step(step) for step in snapshot.get("steps", [])]}
 
 
 def read_execution(database: Any, storage_owner: str, account_id: str,
@@ -44,6 +52,10 @@ def read_execution(database: Any, storage_owner: str, account_id: str,
     if (result.get("storageOwner") != storage_owner or result.get("accountId") != account_id
             or result.get("conversationId") != conversation_id or result.get("generationId") != generation_id):
         return None
+    for step in result.get("steps", []):
+        # v1 used this name for a private SQLite row number, never a wire ID.
+        if type(step.get("sourceMessageId")) is int:
+            step.setdefault("nativeSourceMessageId", step.pop("sourceMessageId"))
     return result
 
 
@@ -71,15 +83,18 @@ def merge_history_execution(database: Any, storage_owner: str, account_id: str, 
                                and native["status"] in {"completed", "failed"}):
                 snapshot["revision"] += 1
                 known[native["stepId"]] = {**native, "revision": snapshot["revision"],
-                    "sourceMessageId": source_id, "sourceIndex": source_index}
+                    "nativeSourceMessageId": source_id, "sourceIndex": source_index,
+                    **{name: old[name] for name in ("sourceMessageId", "occurredAt") if old and name in old}}
                 changed = True
-            elif old.get("sourceMessageId") is None:
-                old.update(sourceMessageId=source_id, sourceIndex=source_index)
-                changed = True
-            native.update({name: value for name, value in known[native["stepId"]].items()
-                           if name in {"stepId", "eventId", "toolName", "arguments", "output", "status", "revision"}})
+            else:
+                for name, value in {"nativeSourceMessageId": source_id, "sourceIndex": source_index,
+                                    **_public_step(native)}.items():
+                    if name not in old:
+                        old[name] = value
+                        changed = True
+            native.update(_public_step(known[native["stepId"]]))
         if changed:
-            snapshot["steps"] = sorted(known.values(), key=lambda item: (item["sourceMessageId"], item["sourceIndex"]))
+            snapshot["steps"] = sorted(known.values(), key=lambda item: (item.get("nativeSourceMessageId", 0), item.get("sourceIndex", 0)))
             database.set_meta(key, json.dumps(snapshot, separators=(",", ":")))
 
 
@@ -112,20 +127,25 @@ class NativeToolObserver:
                 return
             database = self.history._database(binding["agentSessionId"], binding.get("sessionKey"))
             chain = self.history._session_chain(database, binding["agentSessionId"])
-            if session_id not in chain:
+            if session_id != chain[-1]:
                 return
             # Hermes commits the assistant tool-call row before tool side effects.
             # Require that exact call inside the exact accepted native user turn.
-            rows = self.history._history_rows(database, binding["agentSessionId"])
+            rows = self.history._history_rows(database, binding["agentSessionId"],
+                account_id=account_id, conversation_id=conversation_id)
             anchors = [row for row in rows if row.get("role") == "user"
                        and not row.get("_compressed_summary") and row.get("platform_message_id") == client_id]
-            if len(anchors) != 1:
+            if len(anchors) != 1 or anchors[0].get("session_id") != session_id:
                 return
             anchor = anchors[0]["id"]
-            end = min((row["id"] for row in rows if row.get("role") == "user" and row["id"] > anchor),
-                      default=float("inf"))
+            generations = self.history._execution_generations(account, database, binding["agentSessionId"],
+                rows, conversation_id)
+            if (generations.get(anchor) != generation_id or rows[-1].get("session_id") != session_id
+                    or any(row.get("role") == "user" and row["id"] > anchor
+                           and generations.get(row["id"]) != generation_id for row in rows)):
+                return
             sources = [(row, index) for row in rows if row.get("role") == "assistant"
-                and row.get("session_id") == session_id and anchor < row["id"] < end
+                and row.get("session_id") == session_id and anchor < row["id"]
                 and isinstance(row.get("tool_calls"), list)
                 for index, call in enumerate(row["tool_calls"])
                 if isinstance(call, Mapping) and call.get("id") == tool_call_id
@@ -150,7 +170,12 @@ class NativeToolObserver:
             step = {"stepId": tool_call_id, "toolName": tool_name, "arguments": arguments,
                 "output": output, "status": ({"ok": "completed", "error": "failed", "blocked": "failed"}.get(status, "unknown")
                                                if finished else "running"),
-                "nativeTurnId": turn_id, "sourceMessageId": source["id"], "sourceIndex": index}
+                "nativeTurnId": turn_id, "nativeSourceMessageId": source["id"], "sourceIndex": index,
+                "sourceMessageId": (old or {}).get("sourceMessageId") or self.history.public_message_id(
+                    account, binding["agentSessionId"], source, conversation_id)}
+            occurred_at = (old or {}).get("occurredAt", self.history.occurred_at(source))
+            if occurred_at is not None:
+                step["occurredAt"] = occurred_at
             if old and all(old.get(name) == value for name, value in step.items()):
                 return
             snapshot["revision"] += 1
@@ -160,7 +185,7 @@ class NativeToolObserver:
             # notification that can still roll back after this KV write.
             known[tool_call_id] = {**step, "revision": snapshot["revision"],
                 "eventId": f"{source['session_id']}:{source['id']}"}
-            snapshot["steps"] = sorted(known.values(), key=lambda item: (item.get("sourceMessageId", 0), item.get("sourceIndex", 0)))
+            snapshot["steps"] = sorted(known.values(), key=lambda item: (item.get("nativeSourceMessageId", 0), item.get("sourceIndex", 0)))
             database.set_meta(key, json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")))
 
     def snapshot(self, account_id: str, conversation_id: str, generation_id: str) -> dict[str, Any] | None:

@@ -173,6 +173,199 @@ async def main():
     runtime, store, history = setup_runtime()
     passed = []
     try:
+        async def busy_ack(cid, entry, db, agent, runner):
+            with patch.dict(os.environ, {'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true',
+                                        'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '引导输入原稿',
+                    'synthetic-busy-ack', generation_id='synthetic-generation')
+            assert receipt['outcome'] == 'accepted'
+            assert receipt['messages'] == [], receipt
+            assert receipt['statuses'] == [{'kind': 'busy_ack', 'clientMessageId': 'synthetic-busy-ack',
+                                            'generationId': 'synthetic-generation'}], receipt
+            drain(agent)
+            projected = history.read('synthetic-origin', cid)
+            assert [(row['sender'], row['text']) for row in projected] == [('user', '引导输入原稿')], projected
+        await busy(runtime, store, history, 'busy-ack-status', busy_ack)
+        passed.append('busy_ack_is_delivery_status_not_assistant_history')
+
+        async def concurrent_ack(cid, entry, db, agent, runner):
+            original_send = runtime.send
+            observed = []
+            async def send_with_model_reply(chat_id, content, reply_to=None, metadata=None):
+                # Public model send from a sibling task, even with byte-identical
+                # content and an inherited input context, remains real output.
+                model = await asyncio.create_task(original_send(chat_id, content))
+                ack = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
+                observed.append((model, ack, content))
+                return ack
+            with patch.object(runtime, 'send', send_with_model_reply), patch.dict(os.environ, {
+                    'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true', 'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '并发引导原稿',
+                    'synthetic-concurrent-ack', generation_id='synthetic-generation')
+            assert len(observed) == 1
+            model, ack, body = observed[0]
+            assert model.success and model.message_id, model
+            assert ack.success and ack.message_id is None, ack
+            assert ack.raw_response['kind'] == 'busy_ack'
+            assert receipt['messages'] == [{'messageId': model.message_id, 'text': body}], receipt
+            assert len(receipt['statuses']) == 1
+            projected = history.read('synthetic-origin', cid)
+            assert [(row['messageId'], row['text']) for row in projected if row['sender'] == 'assistant'] == [(model.message_id, body)]
+        await busy(runtime, store, history, 'concurrent-busy-ack', concurrent_ack)
+        passed.append('busy_ack_does_not_consume_concurrent_identical_model_reply')
+
+        async def ordinary_busy_reply(cid, entry, db, agent, runner):
+            async def handler(event, session_key):
+                accepted = await runner._handle_active_session_busy_message(event, session_key)
+                await runner._send_busy_reply(event, runtime, '普通 busy 回复原文')
+                return accepted
+            runtime.set_busy_session_handler(handler)
+            with patch.dict(os.environ, {'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true',
+                                        'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '普通输入',
+                    'synthetic-ordinary-busy', generation_id='synthetic-generation')
+            assert [item['text'] for item in receipt['messages']] == ['普通 busy 回复原文'], receipt
+            assert len(receipt['statuses']) == 1
+            projected = history.read('synthetic-origin', cid)
+            assert [row['text'] for row in projected if row['sender'] == 'assistant'] == ['普通 busy 回复原文']
+        await busy(runtime, store, history, 'ordinary-busy-reply', ordinary_busy_reply)
+        passed.append('shared_busy_reply_is_not_classified_as_ack')
+
+        async def slash_reply(cid, entry, db, agent, runner):
+            runner.config = GatewayConfig()
+            receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '/help', 'synthetic-help')
+            assert receipt['outcome'] == 'accepted'
+            assert receipt['statuses'] == [], receipt
+            assert len(receipt['messages']) == 1 and receipt['messages'][0]['text'], receipt
+            projected = history.read('synthetic-origin', cid)
+            assert [(row['messageId'], row['text']) for row in projected if row['sender'] == 'assistant'] == [
+                (receipt['messages'][0]['messageId'], receipt['messages'][0]['text'])]
+        await busy(runtime, store, history, 'real-slash-reply', slash_reply)
+        passed.append('real_busy_slash_reply_remains_assistant_history')
+
+        async def scope_reply(cid, entry, db, agent, runner):
+            other_cid, _, _ = bound_conversation(runtime, store, 'other-send-scope')
+            other_adapter = type(runtime)(runtime.config, runtime.services.core, runtime._token, runtime._accounts, runtime._port)
+            other_adapter.set_session_store(store)
+            other_adapter._conv_to_account[cid] = 'synthetic-origin'
+            runtime._conv_to_account[other_cid] = 'synthetic-origin'
+            original_send, observed = runtime.send, []
+            async def send_with_other_scopes(chat_id, content, reply_to=None, metadata=None):
+                other_chat = await original_send(other_cid, '另一会话真实正文')
+                other_self = await other_adapter.send(chat_id, '另一适配器真实正文')
+                ack = await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
+                observed.append((other_chat, other_self, ack))
+                return ack
+            with patch.object(runtime, 'send', send_with_other_scopes), patch.dict(os.environ, {
+                    'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true', 'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '范围校验输入',
+                    'synthetic-scope-ack', generation_id='synthetic-generation')
+            assert len(observed) == 1
+            other_chat, other_self, ack = observed[0]
+            assert other_chat.success and other_chat.message_id, other_chat
+            assert other_self.success and other_self.message_id, other_self
+            assert ack.success and ack.message_id is None
+            assert receipt['messages'] == [{'messageId': other_self.message_id, 'text': '另一适配器真实正文'}]
+            assert len(receipt['statuses']) == 1
+            assert [row['text'] for row in history.read('synthetic-origin', other_cid) if row['sender'] == 'assistant'] == ['另一会话真实正文']
+            assert [row['text'] for row in history.read('synthetic-origin', cid) if row['sender'] == 'assistant'] == ['另一适配器真实正文']
+        await busy(runtime, store, history, 'busy-ack-other-scopes', scope_reply)
+        passed.append('busy_ack_cannot_consume_other_conversation_or_adapter_output')
+
+        async def mismatched_links(cid, entry, db, agent, runner):
+            from oai_hermes_adapter.context import native_input_receipt, trusted_turn
+            original_send, delivered = runtime.send, []
+            async def send_with_mismatched_links(chat_id, content, reply_to=None, metadata=None):
+                turn = trusted_turn.get()
+                for name in ('core', 'accountId', 'conversationId', 'clientMessageId', 'sessionId', 'generationId'):
+                    previous = turn[name]
+                    turn[name] = object() if name == 'core' else 'wrong-native-scope'
+                    try:
+                        result = await original_send(chat_id, content)
+                        assert result.success and result.message_id, (name, result)
+                        delivered.append({'messageId': result.message_id, 'text': content})
+                    finally:
+                        turn[name] = previous
+                # Equal-looking receipt values are insufficient: the ack must
+                # refer to this exact trusted input invocation.
+                shadow = {**native_input_receipt.get(), 'messages': [], 'statuses': []}
+                token = native_input_receipt.set(shadow)
+                try:
+                    result = await original_send(chat_id, content)
+                    assert result.success and result.message_id, result
+                    delivered.append({'messageId': result.message_id, 'text': content})
+                    assert shadow['statuses'] == []
+                finally:
+                    native_input_receipt.reset(token)
+                return await original_send(chat_id, content, reply_to=reply_to, metadata=metadata)
+            with patch.object(runtime, 'send', send_with_mismatched_links), patch.dict(os.environ, {
+                    'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true', 'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '逐字段身份验证',
+                    'synthetic-links-ack', generation_id='synthetic-generation')
+            assert len(delivered) == 7
+            assert receipt['messages'] == delivered[:6]
+            assert len(receipt['statuses']) == 1
+            projected = history.read('synthetic-origin', cid)
+            assert {row['messageId'] for row in projected if row['sender'] == 'assistant'} == {
+                row['messageId'] for row in delivered}
+        await busy(runtime, store, history, 'busy-ack-mismatched-links', mismatched_links)
+        passed.append('busy_ack_requires_exact_core_account_conversation_client_session_generation_receipt')
+
+        async def unknown_ack_entry(cid, entry, db, agent, runner):
+            async def replacement(event, adapter, message):
+                await adapter.send(event.source.chat_id, '宿主替换入口的真实正文')
+            runner._send_busy_ack_reply = replacement
+            with patch.dict(os.environ, {'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true',
+                                        'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '替换入口输入',
+                    'synthetic-unknown-entry', generation_id='synthetic-generation')
+            assert [item['text'] for item in receipt['messages']] == ['宿主替换入口的真实正文'], receipt
+            assert receipt['statuses'] == []
+            assert [row['text'] for row in history.read('synthetic-origin', cid) if row['sender'] == 'assistant'] == ['宿主替换入口的真实正文']
+        await busy(runtime, store, history, 'busy-ack-unknown-entry', unknown_ack_entry)
+        passed.append('unknown_host_ack_entry_keeps_output_without_classification')
+
+        async def redirect_ack(cid, entry, db, agent, runner):
+            runner._effective_busy_input_mode = lambda source: 'interrupt'
+            with patch.dict(os.environ, {'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '纠正输入原稿',
+                    'synthetic-redirect-ack', generation_id='synthetic-generation')
+            assert receipt['messages'] == [] and len(receipt['statuses']) == 1, receipt
+            text = agent._drain_pending_redirect()
+            messages = [{'role': 'assistant', 'content': 'synthetic partial'}]
+            _apply_active_turn_redirect(agent, messages, text)
+            assert agent._flush_messages_to_session_db(messages, []) is True
+            assert [(row['text'], row['clientMessageId']) for row in users(history, cid)] == [('纠正输入原稿', 'synthetic-redirect-ack')]
+            assert not [row for row in history.read('synthetic-origin', cid) if row['sender'] == 'assistant' and row['text'] != 'synthetic partial']
+        await busy(runtime, store, history, 'redirect-ack-status', redirect_ack)
+        passed.append('redirect_ack_is_status_and_original_input_survives')
+
+        async def old_history(cid, entry, db, agent, runner):
+            runtime._conv_to_account[cid] = 'synthetic-origin'
+            old_text = '↪ Redirected current run. ⏩ Steered into current run.'
+            old = await runtime.send(cid, old_text)
+            before = history.read('synthetic-origin', cid)
+            original_send, results = runtime.send, []
+            async def repeated_ack(chat_id, content, reply_to=None, metadata=None):
+                results.append(await original_send(chat_id, content, reply_to=reply_to, metadata=metadata))
+                results.append(await original_send(chat_id, content, reply_to=reply_to, metadata=metadata))
+                return results[-1]
+            with patch.object(runtime, 'send', repeated_ack), patch.dict(os.environ, {
+                    'HERMES_GATEWAY_BUSY_ACK_ENABLED': 'true', 'HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED': 'true'}):
+                receipt = await runtime.dispatch_native_input('synthetic-origin', cid, '重试输入原稿',
+                    'synthetic-repeated-ack', generation_id='synthetic-generation')
+            assert all(item.success and item.message_id is None for item in results) and len(results) == 2
+            assert receipt['messages'] == [] and len(receipt['statuses']) == 1
+            after = history.read('synthetic-origin', cid)
+            assert next(row for row in after if row['messageId'] == old.message_id) == next(row for row in before if row['messageId'] == old.message_id)
+            assert [row['text'] for row in after if row['sender'] == 'assistant'] == [old_text]
+            # The marker is reset after the dedicated call, including same-task
+            # output with text that happens to look exactly like an ack.
+            later = await runtime.send(cid, old_text)
+            assert later.success and later.message_id and later.message_id != old.message_id
+        await busy(runtime, store, history, 'old-history-and-ack-retry', old_history)
+        passed.append('ack_retry_has_no_message_id_and_never_rewrites_existing_history')
+
         async def explicit(cid, entry, db, agent, runner):
             original = '中途追加：先确认原稿身份'
             for _ in range(2):

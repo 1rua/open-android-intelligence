@@ -127,6 +127,28 @@ async def test_public_native_stream_preserves_interaction_events(native_api):
 
 
 @pytest.mark.asyncio
+async def test_public_native_stream_keeps_tool_source_position_and_structured_result(native_api):
+    client, host = native_api
+    step = {"stepId": "call", "eventId": "source-event", "toolName": "terminal",
+            "arguments": '{"command":"pwd"}', "output": '{"stdout":"/project","stderr":"","exitCode":0}',
+            "status": "completed", "revision": 3,
+            "sourceMessageId": "source-after-steering", "occurredAt": 3000}
+
+    async def send(principal, session_id, text):
+        yield {"type": "generation", "generationId": "gen_native", "executionRevision": 3,
+               "eventId": "source-event", "executionSteps": [step]}
+        yield {"type": "done", "generationId": "gen_native", "outcome": "completed"}
+
+    host.send = send
+    response = await client.post(PREFIX + "/agents/interactive/sessions/chat/messages",
+                                 json={"text": "synthetic"}, headers=write_headers())
+    assert response.status == 200
+    events = [json.loads(line[6:]) for line in (await response.text()).splitlines() if line.startswith("data: ")]
+    assert events[0]["executionSteps"] == [step]
+    assert events[0]["executionRevision"] == 3
+
+
+@pytest.mark.asyncio
 async def test_approval_decision_is_validated_and_replayable_without_releasing_host_twice(native_api):
     client, host = native_api
     path = PREFIX + "/agents/interactive/sessions/chat/approvals/apr_native/decisions"

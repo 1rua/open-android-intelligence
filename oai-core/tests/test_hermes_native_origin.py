@@ -20,11 +20,22 @@ def native_origin_results(tmp_path_factory):
     result = subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("native_hermes_origin_contract.py")),
                              str(repo), str(temporary)], cwd=repo, env=environment,
                             capture_output=True, text=True, timeout=40)
+    (temporary / "contract.stdout.log").write_text(result.stdout)
+    (temporary / "contract.stderr.log").write_text(result.stderr)
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(result.stdout.splitlines()[-1])["passed"]
 
 
 @pytest.mark.parametrize("scenario", [
+    "busy_ack_is_delivery_status_not_assistant_history",
+    "busy_ack_does_not_consume_concurrent_identical_model_reply",
+    "shared_busy_reply_is_not_classified_as_ack",
+    "real_busy_slash_reply_remains_assistant_history",
+    "busy_ack_cannot_consume_other_conversation_or_adapter_output",
+    "busy_ack_requires_exact_core_account_conversation_client_session_generation_receipt",
+    "unknown_host_ack_entry_keeps_output_without_classification",
+    "redirect_ack_is_status_and_original_input_survives",
+    "ack_retry_has_no_message_id_and_never_rewrites_existing_history",
     "explicit_identity_original_retry_restart", "merged_two_inputs_compaction",
     "normal_busy_keeps_existing_identity", "native_redirect_keeps_original",
     "native_pre_api_requeue", "legal_history_systemnote_recovered_unchanged",

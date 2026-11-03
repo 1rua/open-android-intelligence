@@ -30,6 +30,45 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
 class NativeConversationMirrorTest {
+    @Test fun legacySteeringIdentityUpgradesDurablyWithoutRecreatingTheUserMessage() = runBlocking {
+        val testScope = scope("legacy-steering-id")
+        val mirror = NativeConversationMirror(context, testScope, { "hermes" }, key)
+        val clientId = com.openandroidintelligence.conversation.model.ClientMessageId("steering-client")
+        val atom = com.openandroidintelligence.conversation.model.LocalSendAtom(ConversationId("chat"), clientId,
+            listOf(MessagePart.Text("原引导")), 1000, messageId = "steer_steering-client",
+            submissionState = com.openandroidintelligence.conversation.model.LocalSubmissionState.ACCEPTED,
+            delivery = MessageDeliveryMode.STEER)
+        mirror.saveSendAtoms("chat", listOf(atom))
+        mirror.commitEvents(listOf(VerifiedConversationEvent.TimelineUpsert("real-user", 1000, 1,
+            TimelineMessage("native-steering-user", "user", atom.parts, 1000, conversationId = ConversationId("chat"),
+                clientMessageId = clientId, generationId = "g"))))
+        mirror.closeStore()
+        val reopened = NativeConversationMirror(context, testScope, { "hermes" }, key)
+        try {
+            assertEquals("native-steering-user", reopened.loadSendAtoms("chat").single().messageId)
+            val rows = com.openandroidintelligence.conversation.model.mergeLocalSendAtoms(
+                reopened.loadTimeline("chat")!!.messages, reopened.loadSendAtoms("chat"))
+            assertEquals(1, rows.size)
+            assertEquals("user", rows.single().sender)
+            assertEquals("native-steering-user", rows.single().id)
+        } finally { reopened.closeStore() }
+    }
+
+    @Test fun toolSourcePositionSurvivesEncryptedMirrorReopen() = runBlocking {
+        val testScope = scope("tool-source-position")
+        val mirror = NativeConversationMirror(context, testScope, { "hermes" }, key, observerId = "phone:1")
+        val step = NativeExecutionStep("call", "event", "terminal", "pwd", "/project", NativeExecutionStatus.COMPLETED, 3,
+            sourceMessageId = "tool-after-steering", occurredAt = 3000L)
+        mirror.commitEvents(listOf(VerifiedConversationEvent.TimelineUpsert("source-history", 3000, 1,
+            TimelineMessage("tool-after-steering", "assistant", emptyList(), 3000,
+                conversationId = ConversationId("chat"), generationId = "g", executionSteps = listOf(step)))))
+        mirror.closeStore()
+        val reopened = NativeConversationMirror(context, testScope, { "hermes" }, key, observerId = "phone:1")
+        try {
+            assertEquals(step, reopened.loadTimeline("chat")!!.messages.single().executionSteps.single())
+        } finally { reopened.closeStore() }
+    }
+
     @Test fun aNewNativeThreadMustSurviveTheNextOfflineLoad() = runBlocking {
         val context=ApplicationProvider.getApplicationContext<Application>()
         val key=object:AesGcmKeyProvider {
