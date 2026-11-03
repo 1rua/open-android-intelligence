@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.TestScope
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -24,8 +25,25 @@ class WorkbenchPendingAttachmentSwitchTest {
         verifyFrozenUploadStartsInItsOriginalConversation(true)
     }
 
-    private fun TestScope.verifyFrozenUploadStartsInItsOriginalConversation(fromBlank: Boolean) {
-        val repository = RecordingRepository()
+    @Test fun aReturnedConversationCanStillCancelItsFrozenUpload() = runTest {
+        verifyFrozenUploadStartsInItsOriginalConversation(false,cancelAfterReturn=true)
+    }
+
+    @Test fun aFailedCreationKeepsTheFrozenBlankSubmissionRecoverable() = runTest {
+        verifyFrozenUploadStartsInItsOriginalConversation(true,creationFails=true)
+    }
+
+    private fun TestScope.verifyFrozenUploadStartsInItsOriginalConversation(fromBlank: Boolean,
+        cancelAfterReturn: Boolean = false, creationFails: Boolean = false) {
+        val repository = RecordingRepository().apply { failCreation=creationFails }
+        var saved: WorkbenchCheckpoint? = null
+        val atoms = mutableMapOf<String,List<LocalSendAtom>>()
+        val persistence = object:WorkbenchPersistence {
+            override fun load():WorkbenchCheckpoint?=null
+            override fun save(checkpoint:WorkbenchCheckpoint) { saved=checkpoint }
+            override fun loadSendAtoms(conversationId:String)=atoms[conversationId].orEmpty()
+            override fun saveSendAtoms(conversationId:String,values:List<LocalSendAtom>) { atoms[conversationId]=values }
+        }
         val attachmentState = MutableStateFlow(
             AttachmentDraftState(AttachmentDraftId("photo_a"), AttachmentState.UPLOADING),
         )
@@ -39,6 +57,7 @@ class WorkbenchPendingAttachmentSwitchTest {
             },
             { ConversationScope("profile", "gateway", "account", "install") },
             attachmentCoordinator = coordinator,
+            persistence=persistence,persistenceDispatcher=kotlinx.coroutines.test.UnconfinedTestDispatcher(testScheduler),
             replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
         )
         val preview = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
@@ -73,11 +92,29 @@ class WorkbenchPendingAttachmentSwitchTest {
             controller.editDraft(nextDraft)
             runCurrent()
 
+            if (cancelAfterReturn) {
+                controller.openThread("conv_a"); runCurrent()
+                controller.cancelPendingSubmission()
+                controller.openThread("conv_b"); runCurrent()
+            }
             attachmentState.value = AttachmentDraftState(
                 AttachmentDraftId("photo_a"), AttachmentState.VERIFIED, progress = 1f,
             )
             runCurrent()
 
+            if (creationFails) {
+                runCurrent()
+                assertTrue("创建失败后原客户端身份和冻结内容必须仍可恢复", saved?.pendingSubmissions?.any {
+                    it.clientMessageId == originalClientMessageId && it.text == frozenText && it.conversationId == null
+                } == true)
+                assertTrue(repository.submissions.isEmpty())
+                return
+            }
+            if (cancelAfterReturn) {
+                assertTrue("回切后明确取消仍必须阻止上传完成自动发送",repository.submissions.isEmpty())
+                assertEquals(nextDraft,controller.state.value.draft)
+                return
+            }
             val bRows = when (val timeline = controller.state.value.timeline) {
                 is Loadable.Ready -> timeline.value
                 else -> emptyList()
@@ -175,12 +212,15 @@ class WorkbenchPendingAttachmentSwitchTest {
 
     private class RecordingRepository : ConversationRepository {
         val submissions = mutableListOf<Pair<String, OutgoingMessage>>()
+        var failCreation=false
 
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
             ConversationPage(emptyList(), null)
 
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-            Conversation(ConversationId("conv_created"), "新对话", 0)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String):Conversation {
+            if (failCreation) error("SYNTHETIC_CREATION_FAILED")
+            return Conversation(ConversationId("conv_created"), "新对话", 0)
+        }
 
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
 

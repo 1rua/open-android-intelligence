@@ -1834,8 +1834,9 @@ class WorkbenchController(
         }
         timelineJob?.cancel()
         disarmReplyWatchdog()
-        val waitingRows = waitingAttachmentSubmissions.values.filter { it.submission.conversationId == threadId }
-            .mapNotNull { it.submission.optimisticEntry }
+        val waitingForThread = waitingAttachmentSubmissions.values.filter { it.submission.conversationId == threadId }
+        pendingSubmission = waitingForThread.lastOrNull()?.submission
+        val waitingRows = waitingForThread.mapNotNull { it.submission.optimisticEntry }
         update {
             it.copy(
                 activeThreadId = threadId,
@@ -1860,7 +1861,7 @@ class WorkbenchController(
                 // left: a turn it was still running, or the failure that turn
                 // produced, must not read as the state of the one being opened.
                 generation = GenerationState.IDLE,
-                composer = ComposerState.EDITING,
+                composer = if (waitingRows.isNotEmpty()) ComposerState.WAITING_ATTACHMENTS else ComposerState.EDITING,
                 notice = null,
             )
         }
@@ -3070,6 +3071,8 @@ class WorkbenchController(
                 return null
             }
         }
+        if (submission.attachmentIds.isNotEmpty() && submission.voiceAttempt == null && submission.optimisticEntry != null)
+            recoveredAttachmentSubmissions[submission.conversationId] = submission
         waitingAttachmentSubmissions.remove(submission.clientMessageId)
         if (activeThreadId == submission.conversationId) failedSubmission = submission
         if (pendingSubmission?.clientMessageId == submission.clientMessageId) pendingSubmission = null
@@ -3095,6 +3098,10 @@ class WorkbenchController(
                     createGatewayConversation().id.value.also { refreshThreads() }
                 }
                 sendTarget = target
+                if (recoveredAttachmentSubmissions.values.any { it.clientMessageId == submission.clientMessageId }) {
+                    recoveredAttachmentSubmissions.entries.removeAll { it.value.clientMessageId == submission.clientMessageId }
+                    recoveredAttachmentSubmissions[target] = submission.copy(conversationId=target)
+                }
                 submission.voiceAttempt?.conversationId = target
                 hydrateSendAtoms(target)
                 if (atomsFor(target)[submission.clientMessageId]?.isDeleted == true) {
@@ -3140,6 +3147,8 @@ class WorkbenchController(
                     }, timestamp = entry.timestamp, delivery = submission.delivery,
                 ) }
                 flushPendingPersistence()
+                recoveredAttachmentSubmissions.entries.removeAll { it.value.clientMessageId == submission.clientMessageId }
+                persistCheckpoint()
                 archiveBeforeMessageSubmit(target,submission.attachmentIds)
                 if (submission.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER &&
                     submission.expectedGenerationId != null && submission.expectedGenerationId !=
@@ -3561,23 +3570,13 @@ class WorkbenchController(
     /** 用户确认恢复当前会话；先查询原身份，保留原内容及批次归属。 */
     fun retryPendingSubmissions() {
         if (!_state.value.isOnline || !_state.value.historyHydrated) return
-        val current = activeThreadId ?: return
+        val current = activeThreadId ?: run { resumeFrozenUpload(null); return }
         reconcileDeletedRecoveryUnits(current)
         val ready=frozenBatches.values.filter { it.conversationId == current }
         val unsealed=collectingUnits.values.filter { it.first == current }.groupBy { it.first }
         val ordinary = recoverableOrdinaryAtoms(current).toList()
-        val frozenUploads = recoveredAttachmentSubmissions.remove(current)?.takeIf { submission ->
-            ordinary.none { it.clientMessageId.value == submission.clientMessageId }
-        }
-        if (frozenUploads != null) {
-            val restored = attachmentCoordinator?.restoredDrafts().orEmpty().associateBy { it.id.value }
-            val saved = composerDrafts[current]?.attachments.orEmpty().associateBy { it.id.value }
-            val drafts = frozenUploads.attachmentIds.mapNotNull { id -> (restored[id] ?: saved[id])?.let { id to it } }.toMap()
-            waitingAttachmentSubmissions[frozenUploads.clientMessageId] = FrozenAttachmentSubmission(frozenUploads,drafts)
-            frozenUploads.attachmentIds.forEach { id -> attachmentCoordinator?.let { observeAttachment(it,id) } }
-            submitWhenAttachmentsVerified()
-            persistCheckpoint()
-        }
+        if (recoveredAttachmentSubmissions[current]?.clientMessageId?.let { client ->
+                ordinary.none { it.clientMessageId.value == client } } == true) resumeFrozenUpload(current)
         (ready.flatMap { it.messages } + unsealed.values.flatten().map { it.second }).forEach {
             activeWork.begin(it.clientMessageId.value, current); activeWork.started(it.clientMessageId.value)
         }
@@ -3589,6 +3588,22 @@ class WorkbenchController(
             }
             ordinary.forEach { atom -> recoverOrdinary(atom) }
         }
+    }
+
+    private fun resumeFrozenUpload(threadId: String?) {
+        val frozen = recoveredAttachmentSubmissions[threadId] ?: return
+        val restored = attachmentCoordinator?.restoredDrafts().orEmpty().associateBy { it.id.value }
+        val saved = composerDrafts[threadId]?.attachments.orEmpty().associateBy { it.id.value }
+        val drafts = frozen.attachmentIds.mapNotNull { id -> (restored[id] ?: saved[id])?.let { id to it } }.toMap()
+        if (drafts.size != frozen.attachmentIds.size) {
+            update { it.copy(notice="ATTACHMENT_RECOVERY_UNAVAILABLE") }
+            return
+        }
+        waitingAttachmentSubmissions[frozen.clientMessageId] = FrozenAttachmentSubmission(frozen,drafts)
+        frozen.attachmentIds.forEach { id -> attachmentCoordinator?.let { observeAttachment(it,id) } }
+        activeWork.begin(frozen.clientMessageId,threadId)
+        submitWhenAttachmentsVerified()
+        persistCheckpoint()
     }
 
     private suspend fun recoverOrdinary(atom: LocalSendAtom) {
