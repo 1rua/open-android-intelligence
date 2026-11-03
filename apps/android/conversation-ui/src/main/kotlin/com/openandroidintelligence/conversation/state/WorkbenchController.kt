@@ -1525,7 +1525,7 @@ class WorkbenchController(
                 pendingBatch=saved.batches.filter { it.conversationId==activeThreadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } },
                 timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (restoreComposer && displayedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
-                hasRecoverableSubmissions = frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
+                hasRecoverableSubmissions = recoveredAttachmentSubmissions.containsKey(activeThreadId) || frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
                     activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
                 notice = if (!restoreComposer) null else if (displayedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId }) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
@@ -5221,7 +5221,17 @@ class WorkbenchController(
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
         val deletedClientIds = activeAtoms.filter { it.isDeleted }.map { it.clientMessageId.value }.toSet()
-        val unconfirmedPending = pendingBatch.filterNot { entry ->
+        val recoveredRows = recoveredAttachmentSubmissions[activeThreadId]?.let { submission ->
+            if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in deletedClientIds) emptyList()
+            else listOf(TimelineEntry("local_${submission.clientMessageId}","user",submission.text,true,0L,true,null,
+                clientMessageId=ClientMessageId(submission.clientMessageId),localPlaceholder=true,
+                attachments=submission.attachmentIds.map { id ->
+                    val draft=attachmentCoordinator?.restoredDrafts()?.firstOrNull { it.id.value == id }
+                    com.openandroidintelligence.conversation.model.TimelineAttachment(id,draft?.filename.orEmpty(),
+                        draft?.mediaType.orEmpty(),previewBytes=attachmentPreviews[id])
+                }))
+        }.orEmpty()
+        val unconfirmedPending = (pendingBatch + recoveredRows).distinctBy { it.key }.filterNot { entry ->
             mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_")) || mirroredClientIds.contains(entry.key.removePrefix("local_")) || deletedClientIds.contains(entry.key.removePrefix("local_"))
         }
 

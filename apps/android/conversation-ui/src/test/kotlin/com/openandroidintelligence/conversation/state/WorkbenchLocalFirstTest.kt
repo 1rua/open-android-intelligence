@@ -139,6 +139,20 @@ class WorkbenchLocalFirstTest {
         finally { controller.close() }
     }
 
+    @Test fun aRebuiltControllerDisplaysTheDurableFrozenMessageWithoutAutomaticallySendingIt() = runTest {
+        val saved=WorkbenchCheckpoint(listOf(savedThread),"cached","缓存",emptyList(),emptyMap(),"",4,emptyList(),null,
+            emptySet(),emptySet(),draftExplicit=true,
+            pendingSubmissions=listOf(SavedSubmission("持久冻结消息",listOf("attachment-local"),4,"cached","frozen-client")))
+        val controller=WorkbenchController(backgroundScope,Host(),catalog,{account},persistence=MemoryStore(saved),
+            persistenceDispatcher=StandardTestDispatcher(testScheduler))
+        try {
+            runCurrent()
+            assertEquals(listOf("持久冻结消息"),(controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().filter { it.isUser }.map { it.text })
+            assertEquals("",controller.state.value.draft)
+            assertTrue(controller.state.value.hasRecoverableSubmissions)
+        } finally { controller.close() }
+    }
+
     private val catalog = object : AgentCommandCatalogRepository {
         override suspend fun get(gatewayId: String, languageCode: String) =
             AgentCommandCatalog(CatalogVersion("test"), emptyList())
