@@ -55,6 +55,18 @@ class DeviceCapabilityBlockTest {
         assertTrue("需要用户去无障碍设置确认", block.requiresUserActionInSettings)
     }
 
+    @Test
+    fun notificationListenerDisconnectionIsRecoverableServiceDisconnection() {
+        // 回归（Codex P2）：通知监听服务开启后若系统未绑定，属于可恢复的服务断连，
+        // 绝不能归入不可恢复的设备缺失。
+        val block = classifyCapabilityBlock("PROVIDER_UNAVAILABLE", "NOTIFICATION_LISTENER_UNAVAILABLE")
+        assertEquals(DeviceCapabilityBlock.SERVICE_DISCONNECTED, block)
+        assertTrue(block.isRecoverable)
+        val detail = capabilityBlockDetail("PROVIDER_UNAVAILABLE", "NOTIFICATION_LISTENER_UNAVAILABLE")
+        assertNotNull(detail)
+        assertTrue("应包含通知监听引导", detail!!.contains("通知监听服务尚未连接"))
+    }
+
     // ------------------------------------------------------------------
     // 系统拒绝 / 频率限制
     // ------------------------------------------------------------------
@@ -194,6 +206,10 @@ class DeviceCapabilityBlockTest {
 
         val unavailable = capabilityStatusLabel("PROVIDER_UNAVAILABLE", "SCREEN_CAPTURE_UNSUPPORTED")
         assertTrue("真正不可用要说明不能恢复", unavailable.contains("不能在本机恢复"))
+
+        val notificationListener = capabilityStatusLabel("PROVIDER_UNAVAILABLE", "NOTIFICATION_LISTENER_UNAVAILABLE")
+        assertTrue(notificationListener.contains("服务未连接"))
+        assertFalse(notificationListener.contains("不能在本机恢复"))
     }
 
     @Test

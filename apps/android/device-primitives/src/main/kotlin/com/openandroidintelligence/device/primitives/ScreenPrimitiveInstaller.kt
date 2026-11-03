@@ -36,7 +36,7 @@ internal object ScreenPrimitiveInstaller {
         RemoteScreenCaptureRegistry.install(source)
         val runtime = RemoteScreenRuntime(AndroidScreenBackend(app), source,
             stopProjection = { source.release(); RemoteScreenCaptureRegistry.stopForeground(app) },
-            captureReadiness = { captureReadiness(source) },
+            captureReadiness = { captureReadiness(source, app) },
             resize = ::resize)
         ScreenHostRegistry.current = runtime
         runtime.providers.forEach(KernelPrimitiveRegistry::register)
@@ -55,7 +55,8 @@ internal object ScreenPrimitiveInstaller {
      *
      * 返回 null 表示就绪；返回稳定原因码表示当前不可用及其具体类别。
      */
-    private fun captureReadiness(source: AccessibilityFirstScreenCaptureSource): String? {
+    private fun captureReadiness(source: AccessibilityFirstScreenCaptureSource, app: Context): String? {
+        if (app.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked != false) return "SCREEN_DEVICE_LOCKED"
         if (source.isAvailable) return null
         return source.diagnose()?.code ?: ScreenCaptureFailure.NOT_AUTHORIZED.code
     }

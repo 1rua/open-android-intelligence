@@ -276,6 +276,8 @@ fun PluginManagementScreen(
                         "屏幕截图会话建立失败，可改用无障碍截图或稍后重试。"
                     }
                 }
+                captureTicket = null
+                pendingCapturePlugin = null
                 permissionRefreshTick++
                 requestCapabilityResync()
             }
@@ -284,15 +286,17 @@ fun PluginManagementScreen(
             source?.release()
             com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
             notice = "截图能力或本机设置已变化，请重新发起系统授权。"
+            captureTicket = null
+            pendingCapturePlugin = null
             permissionRefreshTick++
         } else {
             source?.release()
             com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
             notice = "未获得屏幕截图授权；截图能力暂不可用，其余能力不受影响。"
+            captureTicket = null
+            pendingCapturePlugin = null
             permissionRefreshTick++
         }
-        captureTicket = null
-        pendingCapturePlugin = null
     }
     fun openAccessibilityGrant(): Boolean = runCatching {
         context.startActivity(
@@ -834,16 +838,16 @@ internal fun capabilityBlockDetail(status: String, reason: String?): String? {
         DeviceCapabilityBlock.SYNCING -> "等待同步"
         DeviceCapabilityBlock.UNAVAILABLE -> "当前不可用"
     }
-    val next = capabilityBlockNextStep(block)
+    val next = capabilityBlockNextStep(block, reason)
     val recoverable = if (block.isRecoverable) "" else "（这一项不能在本机恢复）"
     return "$cause$recoverable，$next"
 }
 
 /**
- * 截图诊断相关的稳定原因码。
+ * 诊断详情相关的稳定原因码。
  *
- * 这些码由截图来源在失败时给出，必须能区分失败、系统拒绝、频率限制与
- * 服务断连，因此单独用可恢复性说明呈现，而不是套用既有的阻塞码文案。
+ * 这些码在失败时给出，必须能区分失败、系统拒绝、频率限制、服务断连与
+ * 监听器未就绪，因此单独用可恢复性说明呈现，而不是套用既有的通用阻塞码文案。
  */
 internal val screenshotDiagnosisReasons: Set<String> = setOf(
     "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
@@ -854,6 +858,7 @@ internal val screenshotDiagnosisReasons: Set<String> = setOf(
     "SCREEN_CAPTURE_FAILED",
     "SCREEN_CAPTURE_UNSUPPORTED",
     "SCREEN_DEVICE_LOCKED",
+    "NOTIFICATION_LISTENER_UNAVAILABLE",
 )
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */

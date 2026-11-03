@@ -90,6 +90,8 @@ fun classifyCapabilityBlock(status: String, reason: String?): DeviceCapabilityBl
         else -> DeviceCapabilityBlock.AWAITING_USER_ACTION
     }
     "PROVIDER_UNAVAILABLE" -> when (reason) {
+        // 通知监听服务未连接：开过但未连接，属于可恢复的服务断连状态。
+        "NOTIFICATION_LISTENER_UNAVAILABLE" -> DeviceCapabilityBlock.SERVICE_DISCONNECTED
         // 受保护窗口不是设备缺陷：换到普通界面就能截，属于等待用户操作。
         "SCREEN_CAPTURE_SECURE_WINDOW" -> DeviceCapabilityBlock.AWAITING_USER_ACTION
         // 只有「系统/无障碍服务本身不支持截图」才是真正不可用。
@@ -107,10 +109,13 @@ fun classifyCapabilityBlock(status: String, reason: String?): DeviceCapabilityBl
  *
  * 每条都指向一个具体动作，不说「当前阻塞原因」这类无法执行的话。
  */
-fun capabilityBlockNextStep(block: DeviceCapabilityBlock): String = when (block) {
+fun capabilityBlockNextStep(block: DeviceCapabilityBlock, reason: String? = null): String = when (block) {
     DeviceCapabilityBlock.NOT_YET_REQUESTED -> "在「系统权限与后台任务」里点开对应条目即可申请"
     DeviceCapabilityBlock.AWAITING_USER_ACTION -> "需要在 Android 系统设置中亲手完成"
-    DeviceCapabilityBlock.SERVICE_DISCONNECTED -> "无障碍服务已开启但当前未连接，请回到无障碍设置确认服务已连接"
+    DeviceCapabilityBlock.SERVICE_DISCONNECTED -> when (reason) {
+        "NOTIFICATION_LISTENER_UNAVAILABLE" -> "通知监听服务尚未连接，请在系统设置中确认本应用的通知使用权已开启"
+        else -> "无障碍服务已开启但当前未连接，请回到无障碍设置确认服务已连接"
+    }
     DeviceCapabilityBlock.SYSTEM_REJECTED -> "上次授权被系统拒绝，请重新发起一次授权"
     DeviceCapabilityBlock.RATE_LIMITED -> "系统暂时限速，稍等片刻重试即可"
     DeviceCapabilityBlock.LOCAL_SWITCH_OFF -> "本机已关闭此项能力，打开对应开关即可恢复"
@@ -119,3 +124,5 @@ fun capabilityBlockNextStep(block: DeviceCapabilityBlock): String = when (block)
     DeviceCapabilityBlock.SYNCING -> "正在同步本机能力设置，稍候会自动更新"
     DeviceCapabilityBlock.UNAVAILABLE -> "当前设备或系统版本不支持这项能力"
 }
+
+fun capabilityBlockNextStep(block: DeviceCapabilityBlock): String = capabilityBlockNextStep(block, null)
