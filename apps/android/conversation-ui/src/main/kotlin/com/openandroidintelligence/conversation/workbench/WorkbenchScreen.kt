@@ -746,6 +746,8 @@ fun WorkbenchScreen(
         val latestMainContent by rememberUpdatedState(mainContent)
         val movableMain = remember { movableContentOf { latestMainContent() } }
 
+        val effectiveSidebarPanel = if (settingsOpen) SidebarPanel.SETTINGS else sidebarPanel
+
         val settingsContent: @Composable () -> Unit = {
             savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
                 settingsPanel?.invoke {
@@ -766,7 +768,7 @@ fun WorkbenchScreen(
         if (expanded) {
             val tabletSidebarContent: @Composable () -> Unit = {
                 AnimatedContent(
-                    targetState = sidebarPanel,
+                    targetState = effectiveSidebarPanel,
                     transitionSpec = {
                         if (targetState == SidebarPanel.SETTINGS) {
                             AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
