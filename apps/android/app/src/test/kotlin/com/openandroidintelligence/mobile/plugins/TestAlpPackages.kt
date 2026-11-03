@@ -8,6 +8,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import java.io.File
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 
 /**
@@ -236,11 +237,8 @@ internal object TestAlpPackages {
     }
 
     /** 从能力声明里取出所有 schema 路径，保证包内文件与 manifest 一致。 */
-    private fun declaredSchemaPaths(capabilities: JsonValue.JObject?): List<String> {
-        val provides = capabilities?.get("provides") as? JsonValue.JArray ?: return emptyList()
-        return provides.items.mapNotNull { (it as? JsonValue.JObject)?.get("schema") }
-            .mapNotNull { (it as? JsonValue.JString)?.value }
-    }
+    private fun declaredSchemaPaths(capabilities: JsonValue.JObject?): List<String> =
+        JsonFields.objects(capabilities, "provides").mapNotNull { JsonFields.string(it, "schema") }
 
     /**
      * 满足能力 Schema 最低要求的最小对象 schema。
