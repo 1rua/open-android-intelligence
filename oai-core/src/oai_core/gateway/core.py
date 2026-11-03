@@ -2434,11 +2434,13 @@ class AttachmentStore:
             else:
                 cas_path = self.cas_dir / attachment_id
                 if not cas_path.exists():
-                    shutil.copyfile(stage_path, cas_path)
+                    copy_path = self.cas_dir / f"{attachment_id}.copying"
+                    shutil.copyfile(stage_path, copy_path)
                     try:
-                        cas_path.chmod(0o600)
+                        copy_path.chmod(0o600)
                     except OSError:
                         pass
+                    os.replace(copy_path, cas_path)
                 self.store.database.execute(
                     "UPDATE attachments SET state = ?, cas_path = ?, storage_revision = storage_revision + 1 WHERE attachment_id = ?",
                     (next_attachment_state(row["state"], "verify"), str(cas_path), attachment_id),
