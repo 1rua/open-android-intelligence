@@ -17,6 +17,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -193,7 +194,8 @@ class WorkbenchLayoutRegressionTest {
             assertEquals("设置切换不能销毁右侧内容", 0, mainDisposals)
         }
 
-        compose.onNodeWithText("返回会话").performClick()
+        compose.onNode(hasText("返回会话") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
         compose.runOnIdle { assertFalse("返回会话列表时应退出设置", settingsOpen) }
     }
