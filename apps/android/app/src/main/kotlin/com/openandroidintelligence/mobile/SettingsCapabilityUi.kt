@@ -200,13 +200,17 @@ val negotiatedCapabilityLabels: Map<String, String> = mapOf(
     "newline-v1" to "换行输入",
     "generation-cancel-v1" to "生成中止",
     "conversation-mirror-v1" to "会话镜像",
-    "attachment-status-v1" to "圈选结果回传",
     "conversation-management-v1" to "会话与文件夹管理",
 )
 
+/** 协商协议仍保留 attachment-status-v1，但它属于内部能力，不单独向用户展示。 */
+private val visibleNegotiatedCapabilityKeys = ConversationUiFeature.CLOSED_SET.filterNot {
+    it == "attachment-status-v1"
+}
+
 /**
- * 「协商能力」分组：把 [ConnectionPhase.Connected] 带回的能力位按契约 §4
- * 的 8 项闭集如实呈现。三种状态各有各的话——
+ * 「协商能力」分组：按契约 §4 接收 [ConnectionPhase.Connected] 的完整能力位，
+ * 但只渲染有用户可见含义的项目。三种状态各有各的话——
  * `true`「已启用」、`false`「本网关不支持」、`null`「未声明」——任何把
  * 未声明折叠成不支持的写法都会把一台可以升级的网关说成已拒绝。
  */
@@ -217,7 +221,7 @@ fun NegotiatedCapabilitiesGroup(
 ) {
     SettingsSectionCard(modifier = modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-            ConversationUiFeature.CLOSED_SET.forEachIndexed { index, key ->
+            visibleNegotiatedCapabilityKeys.forEachIndexed { index, key ->
                 if (index > 0) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
