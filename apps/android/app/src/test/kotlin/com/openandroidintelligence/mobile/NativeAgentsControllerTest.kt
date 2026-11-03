@@ -121,6 +121,50 @@ class NativeAgentsControllerTest {
         controller.close()
     }
 
+    @Test fun missingRememberedAgentKeepsItsIdUntilThatAgentReturns() = runTest {
+        var rememberedAgentReturns = false
+        var missingSelectionNotifications = 0
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                val body = when {
+                    request.target == AgentSessionClient.ROOT -> if (rememberedAgentReturns) agents else
+                        """{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"list":true,"history":true}}]}"""
+                    else -> """{"sessions":[]}"""
+                }
+                return WireResponse(200, emptyList(), body.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val controller = NativeAgentsController(
+            client(transport, dispatcher), backgroundScope, dispatcher, lastSelectedAgentId = "dsh",
+            onSelectionLost = { missingId ->
+                assertEquals("dsh", missingId)
+                missingSelectionNotifications++
+            },
+        )
+
+        runCurrent()
+        assertEquals("dsh", controller.state.value.selectedAgentId)
+        assertNull(controller.state.value.agent)
+        assertEquals(listOf("hermes"), controller.state.value.agents.map { it.id })
+        assertEquals(1, missingSelectionNotifications)
+
+        controller.refresh()
+        runCurrent()
+        assertEquals("dsh", controller.state.value.selectedAgentId)
+        assertEquals(1, missingSelectionNotifications)
+
+        rememberedAgentReturns = true
+        controller.refresh()
+        runCurrent()
+        assertEquals("dsh", controller.state.value.selectedAgentId)
+        assertEquals("dsh", controller.state.value.agent?.id)
+        assertTrue(controller.state.value.agent?.online == true)
+        assertEquals(1, missingSelectionNotifications)
+        controller.close()
+    }
+
     private fun client(transport: GatewayByteTransport, dispatcher: CoroutineDispatcher) = AgentSessionClient(GatewayHttpClient(
         GatewayProfile("account", "device", "session", "https://core.example"), transport,
         { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher))

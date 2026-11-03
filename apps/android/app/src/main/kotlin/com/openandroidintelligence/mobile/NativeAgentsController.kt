@@ -52,6 +52,7 @@ class NativeAgentsController(
     private val scope = CoroutineScope(parentScope.coroutineContext + owned)
     private val _state = MutableStateFlow(NativeAgentsState(selectedAgentId = lastSelectedAgentId))
     private val revision = AtomicLong()
+    private var reportedMissingSelectionId: String? = null
     val state = _state.asStateFlow()
 
     init {
@@ -77,8 +78,16 @@ class NativeAgentsController(
         catch (failure: Exception) {
             if (revision.get() != expectedRevision) return
             if (failure is AgentSessionException && (failure.status == 404 || failure.code == "UNSUPPORTED")) {
-                _state.update { it.copy(supported = false) }
-            } else _state.update { it.copy(supported = true, error = errorCode(failure)) }
+                _state.update { current ->
+                    current.copy(supported = false, agents = current.agents.map { agent ->
+                        if (agent.id == current.selectedAgentId) agent.copy(online = false) else agent
+                    })
+                }
+            } else _state.update { current ->
+                current.copy(supported = true, agents = current.agents.map { agent ->
+                    if (agent.id == current.selectedAgentId) agent.copy(online = false) else agent
+                }, error = errorCode(failure))
+            }
             return
         }
         try {
@@ -88,14 +97,16 @@ class NativeAgentsController(
             var lostSelection: String? = null
             _state.update { current ->
                 if (current.busy || revision.get() != expectedRevision) return@update current
-                // 列表不含当前选择时保持选择不动（Agent 可能只是暂时离线/列表波动），
-                // 绝不静默回落到列表第一项；仅当当前选择是"恢复的旧值且从未被本会话
-                // 确认过"时，才清除并通知宿主。
+                // 列表不含当前选择时保留 ID。Agent 可能只是暂时离线或列表尚未完整，
+                // 因此既不清除持久选择，也不静默回落到列表第一项。
                 val requested = current.selectedAgentId
                 val known = requested != null && agents.any { it.id == requested }
-                if (requested != null && !known && !current.selectionConfirmed) {
-                    lostSelection = requested
-                    return@update current.copy(supported = true, agents = agents, selectedAgentId = null, error = null)
+                if (requested != null && !known) {
+                    if (!current.selectionConfirmed && reportedMissingSelectionId != requested) {
+                        reportedMissingSelectionId = requested
+                        lostSelection = requested
+                    }
+                    return@update current.copy(supported = true, agents = agents, error = null)
                 }
                 if (requested == null) {
                     // 首次发现列表且用户尚无任何选择：以列表第一项作为默认值。
@@ -103,6 +114,7 @@ class NativeAgentsController(
                     return@update current.copy(supported = true, agents = agents,
                         selectedAgentId = agents.firstOrNull()?.id, selectionConfirmed = true, error = null)
                 }
+                reportedMissingSelectionId = null
                 current.copy(supported = true, agents = agents,
                     selectionConfirmed = current.selectionConfirmed || known, error = null)
             }
