@@ -41,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -185,7 +186,8 @@ class MainActivity : ComponentActivity() {
                 val savedProfiles by runtime.savedProfiles.collectAsState()
                 val isManagingProfiles by runtime.isManagingProfiles.collectAsState()
                 val operationNotice by runtime.operationNotice.collectAsState()
-                var showSettingsSheet by remember { mutableStateOf(false) }
+                var showSettings by rememberSaveable { mutableStateOf(false) }
+                val settingsEnvironment = remember(app) { app.platformSettingsEnvironment() }
                 var showAssistant by remember { mutableStateOf(false) }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                     runtime.replyNotifications.refreshPermission()
@@ -203,7 +205,7 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(phase, controller, pendingReply.value) {
                     pendingReply.value?.let { target ->
                         if (runtime.openReplyNotification(target)) {
-                            showSettingsSheet = false
+                            showSettings = false
                             showAssistant = false
                             pendingReply.value = null
                             intent.data = null
@@ -349,7 +351,7 @@ class MainActivity : ComponentActivity() {
                 }
                 ReceivePendingConversationShares(sharedAttachments,
                     controller.takeIf { phase is ConnectionPhase.Connected }, attachmentPickers.receive) {
-                    showSettingsSheet = false
+                    showSettings = false
                     showAssistant = false
                 }
 
@@ -564,10 +566,14 @@ class MainActivity : ComponentActivity() {
                         ((phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null)
                     val pluginRevision by app.pluginHost.revision.collectAsState()
                     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
+                    var displayedNativeUi by remember { mutableStateOf(nativeUi) }
+                    LaunchedEffect(nativeUi, showSettings) {
+                        if (!showSettings) displayedNativeUi = nativeUi
+                    }
                     Box(modifier = Modifier.fillMaxSize()) {
                         // 原生插件界面 ↔ 宿主界面：交叉淡化切换，而不是硬 if 重建。
                         AnimatedContent(
-                            targetState = nativeUi,
+                            targetState = displayedNativeUi,
                             transitionSpec = {
                                 fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                                     fadeOut(MotionSpecs.fade(reduceMotion))
@@ -575,6 +581,13 @@ class MainActivity : ComponentActivity() {
                             label = "native-plugin-surface",
                         ) { activeNative ->
                             if (activeNative != null) {
+                                PlatformSettingsDrawer(
+                                    open = showSettings && displayedNativeUi == activeNative,
+                                    onDismiss = { showSettings = false },
+                                    environment = settingsEnvironment,
+                                    runtime = runtime,
+                                    onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                ) {
                                 val state = controller?.state?.collectAsState()?.value
                                 com.openandroidintelligence.mobile.plugins.NativePluginSurface(
                                     app.pluginHost,
@@ -590,9 +603,10 @@ class MainActivity : ComponentActivity() {
                                         { controller?.editDraft(it) },
                                         { controller?.sendDraft() },
                                         { controller?.stopGeneration() },
-                                        { showSettingsSheet = true },
+                                        { showSettings = true },
                                     ),
                                 )
+                                }
                             } else AnimatedContent(
                                 targetState = enterWorkbench,
                                 transitionSpec = {
@@ -602,12 +616,19 @@ class MainActivity : ComponentActivity() {
                                 label = "root-surface",
                             ) { onWorkbench ->
                                 if (!onWorkbench) {
+                                    PlatformSettingsDrawer(
+                                        open = showSettings && !enterWorkbench && displayedNativeUi == null,
+                                        onDismiss = { showSettings = false },
+                                        environment = settingsEnvironment,
+                                        runtime = runtime,
+                                        onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                    ) {
                                     GatewayLoginScreen(
                                         phase = phase,
                                         onLogin = { url, username, password ->
                                             runtime.login(url, username, password)
                                         },
-                                        onOpenSettings = { showSettingsSheet = true },
+                                        onOpenSettings = { showSettings = true },
                                         onRetry = { runtime.resetFailure() },
                                         savedProfiles = savedProfiles,
                                         onSelectProfile = runtime::selectSavedAccount,
@@ -620,10 +641,18 @@ class MainActivity : ComponentActivity() {
                                         onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
                                         invitationPayload = pendingInvitation.value,
                                     )
+                                    }
                                     return@AnimatedContent
                                 }
                                 val activeController = controller
                                 if (activeController == null) {
+                                    PlatformSettingsDrawer(
+                                        open = showSettings && enterWorkbench && displayedNativeUi == null && controller == null,
+                                        onDismiss = { showSettings = false },
+                                        environment = settingsEnvironment,
+                                        runtime = runtime,
+                                        onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                    ) {
                                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                         if (operationNotice != null || phase is ConnectionPhase.Failed) {
                                             Column(
@@ -633,9 +662,10 @@ class MainActivity : ComponentActivity() {
                                             ) {
                                                 Text(operationNotice ?: "本地会话暂时不可用，资料已保留。")
                                                 TextButton(onClick = runtime::retryConnection) { Text("重试连接") }
-                                                TextButton(onClick = { showSettingsSheet = true }) { Text("设置") }
+                                                TextButton(onClick = { showSettings = true }) { Text("设置") }
                                             }
                                         } else CircularProgressIndicator(strokeWidth = 2.dp)
+                                    }
                                     }
                                     return@AnimatedContent
                                 }
@@ -647,7 +677,18 @@ class MainActivity : ComponentActivity() {
                                     gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl
                                         ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
                                         ?: (localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl.orEmpty(),
-                                    onOpenSettings = { showSettingsSheet = true },
+                                    onOpenSettings = { showSettings = true },
+                                    settingsOpen = showSettings && enterWorkbench && displayedNativeUi == null,
+                                    onSettingsOpenChange = { showSettings = it },
+                                    settingsPanel = { onClose ->
+                                        SettingsScreen(
+                                            environment = settingsEnvironment,
+                                            runtime = runtime,
+                                            onBack = onClose,
+                                            presentation = SettingsPresentation.SIDEBAR,
+                                            onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                        )
+                                    },
                                     onOpenAssistant = { showAssistant = true },
                                     onPickCamera = attachmentPickers.camera,
                                     onPickGallery = attachmentPickers.gallery,
@@ -658,7 +699,7 @@ class MainActivity : ComponentActivity() {
                                         com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(
                                             app.pluginHost,
                                             runtime.connectedAccountId,
-                                        ) { showSettingsSheet = true }
+                                        ) { showSettings = true }
                                     },
                                     offlineMirrorPhase = phase is ConnectionPhase.OfflineMirror,
                                     onReconnectOfflineMirror = runtime::reconnectOfflineMirror,
@@ -690,19 +731,6 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             }
-                        }
-
-                        // 设置呈现形式：标准 M3 ModalBottomSheet（规格
-                        // specs/2026-09-12-app-material-ui-and-motion.md），替代此前
-                        // 的全屏 AnimatedVisibility。关闭走 onDismissRequest，
-                        // 进出场动画由组件自身按 M3 规范承担。
-                        if (showSettingsSheet) {
-                            PlatformSettingsBottomSheet(
-                                environment = app.platformSettingsEnvironment(),
-                                runtime = runtime,
-                                onDismissRequest = { showSettingsSheet = false },
-                                onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
-                            )
                         }
 
                         // 底部 Snackbar：留出输入坞高度，避免压住撰写栏与手势条。
@@ -793,6 +821,9 @@ internal fun GatewayWorkbenchScreen(
     onReconnectOfflineMirror: () -> Unit = {},
     reduceMotion: Boolean = false,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
+    settingsOpen: Boolean = false,
+    onSettingsOpenChange: (Boolean) -> Unit = {},
+    settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
 ) {
     val operationNotice by runtime.operationNotice.collectAsState()
     val phase by runtime.phase.collectAsState()
@@ -817,6 +848,9 @@ internal fun GatewayWorkbenchScreen(
             controller = controller,
             gatewayLabel = gatewayLabel,
             onOpenSettings = onOpenSettings,
+            settingsOpen = settingsOpen,
+            onSettingsOpenChange = onSettingsOpenChange,
+            settingsPanel = settingsPanel,
             onPickCamera = onPickCamera,
             onPickGallery = onPickGallery,
             onPickDocument = onPickDocument,

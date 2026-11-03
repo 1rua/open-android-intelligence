@@ -142,10 +142,7 @@ fun ThreadDrawer(
                 DrawerNavItem(
                     icon = Icons.Default.Settings,
                     label = "设置与平台管理",
-                    onClick = {
-                        onOpenSettings()
-                        onCloseDrawer()
-                    },
+                    onClick = onOpenSettings,
                 )
 
                 Row(

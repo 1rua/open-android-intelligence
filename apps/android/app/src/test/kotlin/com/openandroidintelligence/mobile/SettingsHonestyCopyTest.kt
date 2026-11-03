@@ -2,15 +2,34 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import android.view.View
+import androidx.activity.OnBackPressedDispatcher
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.DrawerState
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.core.view.drawToBitmap
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
@@ -24,6 +43,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
@@ -36,6 +56,7 @@ import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
 import com.openandroidintelligence.mobile.push.DevicePushRuntime
 import com.openandroidintelligence.mobile.push.EncryptedPushStateStore
@@ -43,6 +64,7 @@ import com.openandroidintelligence.mobile.push.PushSystemAccess
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -166,8 +188,8 @@ class SettingsHonestyCopyTest {
 
     @Test
     @GraphicsMode(GraphicsMode.Mode.NATIVE)
-    fun devicePushBottomSheetUsesItsPresentationBackgroundAndOneBackAction() {
-        assertDevicePushProductionPage(SettingsPresentation.BOTTOM_SHEET)
+    fun devicePushSidebarUsesItsPresentationBackgroundAndOneBackAction() {
+        assertDevicePushProductionPage(SettingsPresentation.SIDEBAR)
     }
 
     @Test
@@ -176,8 +198,8 @@ class SettingsHonestyCopyTest {
     }
 
     @Test
-    fun devicePushBottomSheetEntersAndReturnsThroughSettingsNavigation() {
-        assertDevicePushNavigation(SettingsPresentation.BOTTOM_SHEET, reducedMotion = false)
+    fun devicePushSidebarEntersAndReturnsThroughSettingsNavigation() {
+        assertDevicePushNavigation(SettingsPresentation.SIDEBAR, reducedMotion = false)
     }
 
     @Test
@@ -186,8 +208,140 @@ class SettingsHonestyCopyTest {
     }
 
     @Test
-    fun devicePushBottomSheetRespectsTheSharedReducedMotionPolicy() {
-        assertDevicePushNavigation(SettingsPresentation.BOTTOM_SHEET, reducedMotion = true)
+    fun devicePushSidebarRespectsTheSharedReducedMotionPolicy() {
+        assertDevicePushNavigation(SettingsPresentation.SIDEBAR, reducedMotion = true)
+    }
+
+    @Test
+    fun sidebarSystemBackNavigatesSubpagesBeforeClosingSettings() {
+        var closeCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+        val environment = settingsEnvironment()
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            MaterialTheme {
+                SettingsScreen(
+                    environment = environment,
+                    onBack = { closeCalls++ },
+                    presentation = SettingsPresentation.SIDEBAR,
+                )
+            }
+        }
+
+        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("未安装任何插件").assertExists()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("授权管理").performScrollTo().assertIsDisplayed()
+        assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        assertEquals("设置根页返回才退出面板", 1, closeCalls)
+    }
+
+    @OptIn(ExperimentalMaterial3Api::class)
+    @Test
+    fun modalDrawerSystemBackPopsSettingsBeforeClosingTheDrawer() {
+        val environment = settingsEnvironment()
+        var closeCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var drawerState: DrawerState
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            val drawer = rememberDrawerState(DrawerValue.Closed)
+            drawerState = drawer
+            val scope = rememberCoroutineScope()
+            MaterialTheme {
+                ModalNavigationDrawer(
+                    drawerState = drawer,
+                    drawerContent = {
+                        ModalDrawerSheet(drawerState = drawer, modifier = Modifier.width(Dimensions.DrawerWidth)) {
+                            SettingsScreen(
+                                environment = environment,
+                                onBack = {
+                                    closeCalls++
+                                    scope.launch { drawer.close() }
+                                },
+                                presentation = SettingsPresentation.SIDEBAR,
+                            )
+                        }
+                    },
+                ) {
+                    TextButton(onClick = { scope.launch { drawer.open() } }) {
+                        Text("打开设置")
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithText("打开设置").performClick()
+        compose.runOnIdle { assertEquals("设置抽屉应已打开", DrawerValue.Open, drawerState.currentValue) }
+        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("未安装任何插件").assertExists()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
+            assertEquals("从插件页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
+            assertEquals("从插件页返回时抽屉不能开始关闭", DrawerValue.Open, drawerState.targetValue)
+        }
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.onNodeWithText("授权管理").performScrollTo().assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
+            assertEquals("从授权页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
+            assertEquals("从授权页返回时抽屉不能开始关闭", DrawerValue.Open, drawerState.targetValue)
+        }
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.runOnIdle {
+            assertEquals("设置根页返回应调用关闭回调", 1, closeCalls)
+            assertEquals("设置根页返回后抽屉应关闭", DrawerValue.Closed, drawerState.currentValue)
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "w411dp-h891dp-420dpi")
+    fun sidebarSettingsFitWithin320dpWithLargerText() {
+        val environment = settingsEnvironment()
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, 1.5f)) {
+                MaterialTheme {
+                    Box(Modifier.size(320.dp, 700.dp).testTag("settings-sidebar")) {
+                        SettingsScreen(
+                            environment = environment,
+                            onBack = {},
+                            presentation = SettingsPresentation.SIDEBAR,
+                        )
+                    }
+                }
+            }
+        }
+
+        fun assertTextFits(label: String) {
+            val node = compose.onNodeWithText(label).performScrollTo()
+            val textBounds = node.fetchSemanticsNode().boundsInRoot
+            val panelBounds = compose.onNodeWithTag("settings-sidebar").fetchSemanticsNode().boundsInRoot
+            assertTrue("$label 不应超出侧栏左边界", textBounds.left >= panelBounds.left)
+            assertTrue("$label 不应超出侧栏右边界", textBounds.right <= panelBounds.right)
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(label, useUnmergedTree = true)
+                .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertTrue("$label 必须具有可检查的文本布局", layouts.isNotEmpty())
+            assertTrue("$label 不应被裁切", layouts.none { it.hasVisualOverflow })
+        }
+
+        assertTextFits("外观、主题与动效")
+        compose.onNodeWithText("外观、主题与动效").performClick()
+        assertTextFits("减弱动态效果 (Reduce Motion)")
     }
 
     private fun assertDevicePushProductionPage(presentation: SettingsPresentation) {
@@ -290,7 +444,7 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
         assertEquals(0, closeCalls)
         compose.onNodeWithContentDescription("返回").performClick()
-        val closeDescription = if (presentation == SettingsPresentation.BOTTOM_SHEET) "关闭设置" else "返回"
+        val closeDescription = if (presentation == SettingsPresentation.SIDEBAR) "关闭设置" else "返回"
         compose.onNodeWithContentDescription(closeDescription).performClick()
         assertEquals(1, closeCalls)
     }

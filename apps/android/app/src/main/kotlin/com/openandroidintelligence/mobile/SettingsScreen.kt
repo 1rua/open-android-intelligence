@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -89,12 +90,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.openandroidintelligence.conversation.components.CONNECTION_FAILURE_FALLBACK
 import com.openandroidintelligence.conversation.components.SettingsListItem
@@ -139,24 +142,17 @@ object SettingsRoutes {
 }
 
 /**
- * 设置的呈现宿主。
- *
- * - [SCREEN]：整屏页面（登录页 / 工作台内打开）。系统栏安全区由每个子页自己的
- *   `Scaffold` 负责，页面内容在全屏窗口里正确避让状态栏与手势条。
- * - [BOTTOM_SHEET]：M3 底部弹层的内容。安全区归弹层所有（`ModalBottomSheet` 已在
- *   它自己的 `contentWindowInsets` 里扣过一份），内部 `Scaffold` 因此显式使用
- *   `WindowInsets(0)`：同一份安全区不能父子各扣一次，否则内容会被凭空推下去一截。
- *   首屏标题栏的返回箭头同时改为「关闭」语义——它关掉的是整个弹层，而不是退子页。
+ * SCREEN 自行处理系统栏；SIDEBAR 的系统栏由抽屉或固定侧栏宿主消费，
+ * 设置内容只负责键盘避让，避免重复计算安全区。
  */
-enum class SettingsPresentation { SCREEN, BOTTOM_SHEET }
+enum class SettingsPresentation { SCREEN, SIDEBAR }
 
-/** 弹层内容使用的零 inset：安全区归属见 [SettingsPresentation.BOTTOM_SHEET]。 */
 private val NoWindowInsets = WindowInsets(0, 0, 0, 0)
 
 /** 当前呈现方式下页面（Scaffold / 标题栏）应使用的底色。 */
 @Composable
 private fun settingsContainerColor(presentation: SettingsPresentation): Color =
-    if (presentation == SettingsPresentation.BOTTOM_SHEET) {
+    if (presentation == SettingsPresentation.SIDEBAR) {
         MaterialTheme.colorScheme.surfaceContainerLow
     } else {
         MaterialTheme.colorScheme.surface
@@ -165,7 +161,7 @@ private fun settingsContainerColor(presentation: SettingsPresentation): Color =
 /** 当前呈现方式下 Scaffold 内容区应扣的系统栏 inset。 */
 @Composable
 private fun settingsContentWindowInsets(presentation: SettingsPresentation): WindowInsets =
-    if (presentation == SettingsPresentation.BOTTOM_SHEET) NoWindowInsets else WindowInsets.systemBars
+    if (presentation == SettingsPresentation.SIDEBAR) NoWindowInsets else WindowInsets.systemBars
 
 /**
  * 设置主界面（SettingsScreen）。
@@ -206,12 +202,12 @@ fun SettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
-    // 远程截图专用的系统投屏授权必须由前台 Activity 发起：设置页只能请求宿主执行，
-    // 不能自己 startActivityForResult（它可能跑在 bottom sheet 里，没有稳定的宿主）。
+    // 远程截图专用的系统投屏授权必须由前台 Activity 发起。
     onRequestScreenCaptureAuthorization: () -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val navController = rememberNavController()
+    val currentEntry by navController.currentBackStackEntryAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     // 转场与降级统一读 composition local：它同时覆盖「用户开关」与「系统动画时长 0」
@@ -256,12 +252,14 @@ fun SettingsScreen(
         viewModel.dismissOperationNotice()
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier.fillMaxSize()
+            .then(if (presentation == SettingsPresentation.SIDEBAR) Modifier.imePadding() else Modifier),
+    ) {
         NavHost(
             navController = navController,
             startDestination = SettingsRoutes.OVERVIEW,
-            // 底色由各子页 Scaffold 负责：弹层里必须是 surfaceContainerLow，
-            // 独立页面里是 surface，避免在弹层上再压一层不同的面色。
+            // 底色由各子页 Scaffold 负责，侧栏与独立页面使用各自的 surface 色阶。
             modifier = Modifier.fillMaxSize(),
             enterTransition = { AppTransitions.navEnter(reduceMotion) },
             exitTransition = { AppTransitions.navExit(reduceMotion) },
@@ -272,6 +270,7 @@ fun SettingsScreen(
             SettingsOverviewScreen(
                 uiState = uiState,
                 onBack = onBack,
+                backEnabled = currentEntry?.destination?.route == SettingsRoutes.OVERVIEW,
                 presentation = presentation,
                 onNavigate = { route ->
                     navController.navigate(route) {
@@ -512,7 +511,7 @@ private fun SettingsPageScaffold(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(title) },
+                title = { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         if (closeSemantics) {
@@ -526,7 +525,7 @@ private fun SettingsPageScaffold(
                     containerColor = containerColor,
                     scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                 ),
-                windowInsets = if (presentation == SettingsPresentation.BOTTOM_SHEET) {
+                windowInsets = if (presentation == SettingsPresentation.SIDEBAR) {
                     NoWindowInsets
                 } else {
                     TopAppBarDefaults.windowInsets
@@ -578,6 +577,7 @@ private fun SettingsPageColumn(
 private fun SettingsOverviewScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
+    backEnabled: Boolean,
     presentation: SettingsPresentation,
     onNavigate: (String) -> Unit,
     onSetScreenSelectionGrant: (Boolean) -> Unit,
@@ -586,14 +586,14 @@ private fun SettingsOverviewScreen(
     onRequestEmergencyStop: () -> Unit,
     onRequestUnpair: () -> Unit,
 ) {
-    BackHandler(onBack = onBack)
+    BackHandler(enabled = backEnabled, onBack = onBack)
 
     SettingsPageScaffold(
         title = "设置与平台管理",
         presentation = presentation,
         onBack = onBack,
-        // 弹层里这一下关掉的是整个面板，箭头语义必须说「关闭」；子页才用「返回」。
-        closeSemantics = presentation == SettingsPresentation.BOTTOM_SHEET,
+        // 根页退出设置面板；子页继续使用「返回」语义。
+        closeSemantics = presentation == SettingsPresentation.SIDEBAR,
     ) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             SectionLabel("应用信息")

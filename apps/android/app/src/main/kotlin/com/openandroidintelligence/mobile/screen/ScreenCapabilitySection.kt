@@ -6,10 +6,14 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -153,6 +157,7 @@ fun ScreenCapabilitySection(
  *
  * 不提供「全选」按钮 —— 三项的后果不同，让用户逐项确认比一键同意更安全。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ScreenConsentDialog(
     state: ScreenCapabilityUiState,
@@ -175,7 +180,10 @@ private fun ScreenConsentDialog(
         onDismissRequest = onDismiss,
         title = { Text("允许屏幕能力") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+            ) {
                 Text(
                     text = "这些许可只保存在这台手机上，随时可以结束。进程重启后需要重新确认。",
                     style = MaterialTheme.typography.bodyMedium,
@@ -214,9 +222,8 @@ private fun ScreenConsentDialog(
                     text = "有效期",
                     style = MaterialTheme.typography.bodyLarge,
                 )
-                Row(
+                FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     TTL_OPTIONS.forEachIndexed { index, (label, _) ->
                         TextButton(
