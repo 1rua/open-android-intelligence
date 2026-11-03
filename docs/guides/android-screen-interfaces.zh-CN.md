@@ -99,6 +99,8 @@ oai capabilities
 （系统拒绝、受保护窗口、频率限制）不换路重试——前两者换路也拿不到像素，后者会额外
 消耗投屏会话并更容易被系统回收。
 
+真机验收步骤见[屏幕截图与设备能力授权验证清单](../reviews/2026-11-03-screenshot-authorization-device-verification.zh-CN.md)。
+
 ## 设备能力授权的入口形态
 
 插件管理里的 Android 授权入口**按插件实际声明的 `kernelPrimitives` 动态推导**，不硬编码
