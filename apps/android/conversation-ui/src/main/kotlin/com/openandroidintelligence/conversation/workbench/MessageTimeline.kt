@@ -25,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -37,6 +38,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -393,7 +395,15 @@ private fun ImageAttachmentCard(
     }
     // 缩略图解码放到 IO 线程并交给 ImageDecoder 处理 EXIF 方向；失败时保留可点的
     // 占位，用户仍可进入 Lightbox 尝试加载原图，而不是得到一张空白。
-    val image = rememberDecodedPreview(attachment.previewBytes)
+    val imageState = rememberImagePreviewState(attachment.previewBytes, attachment.draftId)
+    val previewScope = LocalImagePreviewScope.current
+    val previewStarted = remember(previewScope,attachment.draftId) { System.nanoTime() }
+    val previewDrawn = remember(previewScope,attachment.draftId) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val image = when (imageState) {
+        is ImagePreviewState.Ready -> imageState.bitmap
+        is ImagePreviewState.Pending -> imageState.lastGood
+        ImagePreviewState.Failed, ImagePreviewState.Missing -> null
+    }
     val canOpen = image != null || attachment.localState != AttachmentLocalState.UNAVAILABLE
 
     Column(
@@ -422,6 +432,11 @@ private fun ImageAttachmentCard(
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .testTag("attachment-image:${attachment.draftId}")
+                            .drawWithContent {
+                                drawContent()
+                                if (previewDrawn.compareAndSet(false,true)) GatewayLog.protocolEvidence("preview.first_draw",mapOf(
+                                    "attachmentId" to attachment.draftId,"elapsedNs" to System.nanoTime()-previewStarted))
+                            }
                             .size(width = imageWidth, height = imageWidth / ratio)
                             .clip(RoundedCornerShape(AppRadius.Medium))
                             .background(MaterialTheme.colorScheme.surfaceContainerLow),
@@ -429,10 +444,12 @@ private fun ImageAttachmentCard(
                 }
             }
         } else {
-            ImageUnavailablePlaceholder(
+            ImagePreviewPlaceholder(
                 attachment = attachment,
                 canOpen = canOpen,
                 onOpen = openPreview,
+                loading = imageState is ImagePreviewState.Pending ||
+                    (imageState is ImagePreviewState.Missing && attachment.localState == AttachmentLocalState.PENDING),
             )
         }
 
@@ -505,10 +522,11 @@ private fun ImageAttachmentCard(
 }
 
 @Composable
-private fun ImageUnavailablePlaceholder(
+private fun ImagePreviewPlaceholder(
     attachment: TimelineAttachment,
     canOpen: Boolean,
     onOpen: () -> Unit,
+    loading: Boolean,
 ) {
     val shape = RoundedCornerShape(AppRadius.Medium)
     Column(
@@ -527,30 +545,40 @@ private fun ImageUnavailablePlaceholder(
                         .clickable(role = Role.Button, onClickLabel = "查看大图", onClick = onOpen)
                         .semantics {
                             contentDescription = "查看大图：${attachment.filename.ifBlank { "图片" }}"
+                            if (loading) stateDescription = "正在加载"
                         }
                 } else {
-                    Modifier.semantics { contentDescription = "图片预览不可用" }
+                    Modifier.semantics {
+                        contentDescription = if (loading) "正在加载图片预览" else "图片预览不可用"
+                    }
                 },
             )
             .padding(Dimensions.SpaceMedium),
         verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            imageVector = Icons.Default.Image,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(Dimensions.Icon),
-        )
-        Text(
-            text = if (attachment.localState == AttachmentLocalState.UNAVAILABLE) {
-                "原件不可用，暂时无法查看"
-            } else {
-                "图片预览不可用"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(Dimensions.Icon),
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Default.Image,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(Dimensions.Icon),
+            )
+            Text(
+                text = if (attachment.localState == AttachmentLocalState.UNAVAILABLE) {
+                    "原件不可用，暂时无法查看"
+                } else {
+                    "图片预览不可用"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -641,6 +669,7 @@ fun TimelineDisplayRow(
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
     evidenceOwner: Any? = null,
 ) {
+    val inheritedPreviewScope = LocalImagePreviewScope.current
     if (GatewayLog.protocolEvidenceEnabled) {
         val entry = when (item) {
             is TimelineDisplayItem.Single -> item.entry
@@ -697,23 +726,27 @@ fun TimelineDisplayRow(
         }
     }
     CompositionLocalProvider(LocalExecutionTiming provides timing) {
-        when (item) {
-            is TimelineDisplayItem.Single -> TimelineRow(
-                entry = item.entry,
-                onDecide = onDecide,
-                modifier = modifier,
-                onDownloadAttachment = onDownloadAttachment,
-                onRequestOriginalAttachment = onRequestOriginalAttachment,
-                onOpenAttachmentPreview = onOpenAttachmentPreview,
-            )
+        CompositionLocalProvider(
+            LocalImagePreviewScope provides (evidenceOwner ?: inheritedPreviewScope),
+        ) {
+            when (item) {
+                is TimelineDisplayItem.Single -> TimelineRow(
+                    entry = item.entry,
+                    onDecide = onDecide,
+                    modifier = modifier,
+                    onDownloadAttachment = onDownloadAttachment,
+                    onRequestOriginalAttachment = onRequestOriginalAttachment,
+                    onOpenAttachmentPreview = onOpenAttachmentPreview,
+                )
 
-            is TimelineDisplayItem.Execution -> ExecutionTurnRow(
-                run = item.run,
-                modifier = modifier,
-                onDownloadAttachment = onDownloadAttachment,
-                onRequestOriginalAttachment = onRequestOriginalAttachment,
-                onOpenAttachmentPreview = onOpenAttachmentPreview,
-            )
+                is TimelineDisplayItem.Execution -> ExecutionTurnRow(
+                    run = item.run,
+                    modifier = modifier,
+                    onDownloadAttachment = onDownloadAttachment,
+                    onRequestOriginalAttachment = onRequestOriginalAttachment,
+                    onOpenAttachmentPreview = onOpenAttachmentPreview,
+                )
+            }
         }
     }
 }

@@ -10,7 +10,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -46,6 +47,15 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+private data class TimelineReadingAnchor(val key: String, val offset: Int)
+
+private class TimelineReadingPosition {
+    val listState = LazyListState()
+    val followLatest = mutableStateOf(true)
+    var anchor: TimelineReadingAnchor? = null
+    var opened = false
+}
 
 /**
  * 对话工作台界面：严格遵守产品主导航边界（账号/Gateway、对话、附件）。
@@ -92,8 +102,12 @@ fun WorkbenchScreen(
     BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
 
     val snackbar = remember { SnackbarHostState() }
-    val listState = rememberLazyListState()
-    var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
+    val readingPositions = remember(controller.localConversationScope) { mutableMapOf<String?, TimelineReadingPosition>() }
+    val readingPosition = remember(controller.localConversationScope, state.activeThreadId) {
+        readingPositions.getOrPut(state.activeThreadId) { TimelineReadingPosition() }
+    }
+    val listState = readingPosition.listState
+    var followLatest by readingPosition.followLatest
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
@@ -121,6 +135,17 @@ fun WorkbenchScreen(
                 "visibleItems" to visible))
         }
     }
+    val currentDisplayKeys by rememberUpdatedState(displayItems.map { it.key }.toSet())
+    LaunchedEffect(readingPosition) {
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                val key = item.key as? String
+                key != null && key in currentDisplayKeys
+            }?.let { item -> TimelineReadingAnchor(item.key as String, -item.offset) }
+        }.distinctUntilChanged().collect { anchor ->
+            if (anchor != null) readingPosition.anchor = anchor
+        }
+    }
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
@@ -136,6 +161,18 @@ fun WorkbenchScreen(
     var bottomDockHeightPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
 
+    val firstFrameRecorded = remember(controller, state.activeThreadId, state.timelineRequestEpoch) {
+        java.util.concurrent.atomic.AtomicBoolean(false)
+    }
+    val firstFrameModifier = Modifier.drawWithContent {
+        drawContent()
+        if (state.timelineOpenedAtNs > 0 && state.timelineDataSource != null &&
+            firstFrameRecorded.compareAndSet(false, true)) {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("timeline.first_draw", mapOf(
+                "conversationId" to state.activeThreadId, "epoch" to state.timelineRequestEpoch,
+                "source" to state.timelineDataSource, "elapsedNs" to System.nanoTime() - state.timelineOpenedAtNs))
+        }
+    }
     val timelineReady = state.timeline is Loadable.Ready
     val isThinking = (state.generation == GenerationState.QUEUED ||
         state.generation == GenerationState.RUNNING) &&
@@ -196,13 +233,17 @@ fun WorkbenchScreen(
             }
     }
 
-    // 打开 / 切换到某个会话：直接定位到最新一条。这是「读到这里」的位置语义，
-    // 不是流式跟随，所以这里允许一次瞬时定位。
-    LaunchedEffect(state.activeThreadId, timelineReady) {
-        if (timelineReady) {
-            followLatest = true
+    // 首次打开定位最新；回访与补同步按真实展示 key 恢复，不把旧索引当成消息身份。
+    LaunchedEffect(readingPosition, timelineReady) {
+        if (!timelineReady) return@LaunchedEffect
+        val savedAnchor = readingPosition.anchor
+        if (!readingPosition.opened || followLatest) {
             latestScrollTarget()?.takeIf { it > 0 }?.let { target -> listState.scrollToItem(target) }
+        } else if (savedAnchor != null) {
+            val index = displayItems.indexOfFirst { it.key == savedAnchor.key }
+            if (index >= 0) listState.scrollToItem(index + 1, savedAnchor.offset)
         }
+        readingPosition.opened = true
     }
 
     // 尾部形状变化（新消息、思考点出现/消失、创建中）：平滑跟到最新，不整段硬跳。
@@ -300,7 +341,7 @@ fun WorkbenchScreen(
 
         val mainContent: @Composable () -> Unit = {
             // M01：列表离开顶部后，顶栏与内容之间出现 1dp 分隔线（150ms alpha）。
-            val timelineScrolled by remember(state.activeThreadId) {
+            val timelineScrolled by remember(listState) {
                 derivedStateOf {
                     listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
                 }
@@ -431,7 +472,7 @@ fun WorkbenchScreen(
                                             ) { openPreview ->
                                             LazyColumn(
                                                 state = listState,
-                                                modifier = Modifier.fillMaxSize(),
+                                                modifier = Modifier.fillMaxSize().then(firstFrameModifier),
                                                 contentPadding = PaddingValues(
                                                     start = Dimensions.TimelineHorizontal,
                                                     end = Dimensions.TimelineHorizontal,
@@ -575,14 +616,20 @@ fun WorkbenchScreen(
                                     editorKey = controller to state.activeThreadId,
                                     onPasteImages = onPasteImages,
                                     draft = state.draft,
-                                    onDraftChange = { newDraft ->
-                                        if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(state.draft))) {
-                                            commandPopupDismissed = false
-                                        } else if (newDraft != state.draft && !newDraft.startsWith("/")) {
-                                            commandPopupDismissed = false
+                                    draftEpoch = state.draftEpoch,
+                                    onDraftChange = controller::editDraft,
+                                    onDraftEdit = { newDraft, expectedEpoch ->
+                                        val current = controller.state.value
+                                        if (expectedEpoch == current.draftEpoch) {
+                                            if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(current.draft))) {
+                                                commandPopupDismissed = false
+                                            } else if (newDraft != current.draft && !newDraft.startsWith("/")) {
+                                                commandPopupDismissed = false
+                                            }
+                                            controller.editDraft(newDraft, expectedEpoch)
                                         }
-                                        controller.editDraft(newDraft)
                                     },
+                                    onSubmitDraft = controller::submitComposerDraft,
                                     generation = state.generation,
                                     canSend = state.canSend,
                                     onSend = controller::sendDraft,
