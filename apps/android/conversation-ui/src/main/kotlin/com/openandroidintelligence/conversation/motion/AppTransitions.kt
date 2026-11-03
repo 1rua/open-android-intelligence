@@ -126,36 +126,34 @@ object AppTransitions {
     }
 
     /**
-     * 模态层/全屏设置面板打开动画：从底部柔和上浮 + 弹性微缩放 + 材质渐变展开。
+     * 模态层/全屏设置面板打开动画：从左向右（+X）滑入。
+     * 起点：translationX = -full（屏幕左侧外部）
+     * 终点：translationX = 0
      */
     fun modalEnter(reduced: Boolean): EnterTransition = when {
         reduced -> fadeIn(MotionSpecs.fade(reduced))
-        else -> slideInVertically(
+        else -> slideInHorizontally(
             animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
-            initialOffsetY = { full -> (full * 0.14f).toInt() },
+            initialOffsetX = { full -> -full },
         ) + fadeIn(
             animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
             initialAlpha = 0.0f,
-        ) + scaleIn(
-            animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
-            initialScale = 0.95f,
         )
     }
 
     /**
-     * 模态层/全屏设置面板关闭动画：平滑下沉 + 淡出 + 紧凑收起。
+     * 模态层/全屏设置面板关闭动画：向左（-X）滑出屏幕。
+     * 起点：translationX = 0
+     * 终点：translationX = -full（屏幕左侧外部）
      */
     fun modalExit(reduced: Boolean): ExitTransition = when {
         reduced -> fadeOut(MotionSpecs.fade(reduced))
-        else -> slideOutVertically(
+        else -> slideOutHorizontally(
             animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
-            targetOffsetY = { full -> (full * 0.10f).toInt() },
+            targetOffsetX = { full -> -full },
         ) + fadeOut(
             animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
             targetAlpha = 0.0f,
-        ) + scaleOut(
-            animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
-            targetScale = 0.96f,
         )
     }
 }

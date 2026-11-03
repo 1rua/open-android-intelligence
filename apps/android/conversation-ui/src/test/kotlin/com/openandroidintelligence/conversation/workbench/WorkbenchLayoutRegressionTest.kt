@@ -176,6 +176,8 @@ class WorkbenchLayoutRegressionTest {
         compose.runOnIdle {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
+        // 手机端全屏展示：设置面板宽度应占满整个可用屏幕宽度（411dp），不再是 320dp 侧栏
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         val scrollState = scrollStateHolder ?: error("ScrollState must be captured")
         repeat(3) {
@@ -219,11 +221,12 @@ class WorkbenchLayoutRegressionTest {
         compose.runOnIdle {
             assertTrue("语义点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
     }
 
     @Test
-    fun switchingFromConversationToSettingsKeepsDrawerOnScreenDuringTransition() {
+    fun phoneFullscreenSettingsCoversWholeWindowWithoutResidualConversation() {
         val controller = sidebarController()
         var settingsOpen by mutableStateOf(false)
         compose.setContent {
@@ -236,35 +239,17 @@ class WorkbenchLayoutRegressionTest {
             }
         }
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).assertIsDisplayed()
-        val drawerBefore = compose.onNodeWithTag("workbench-drawer", useUnmergedTree = true)
-            .assertIsDisplayed()
-            .fetchSemanticsNode()
-        val initialBounds = drawerBefore.boundsInRoot
-        val initialId = drawerBefore.id
-
-        compose.mainClock.autoAdvance = false
-        try {
-            compose.onNode(hasText("设置与平台管理") and hasClickAction())
-                .performSemanticsAction(SemanticsActions.OnClick) { it() }
-            // 覆盖内容切换以及可能错误触发的抽屉关闭、重新打开动画。
-            repeat(90) { frame ->
-                compose.mainClock.advanceTimeByFrame()
-                val drawers = compose.onAllNodesWithTag("workbench-drawer", useUnmergedTree = true)
-                    .fetchSemanticsNodes()
-                assertEquals("第 ${frame + 1} 帧必须保持唯一的抽屉容器", 1, drawers.size)
-                val drawer = drawers.single()
-                assertEquals("第 ${frame + 1} 帧不能销毁并重新创建抽屉", initialId, drawer.id)
-                assertEquals("第 ${frame + 1} 帧抽屉左边界不能移动", initialBounds.left, drawer.boundsInRoot.left, 1f)
-                assertEquals("第 ${frame + 1} 帧抽屉右边界不能移动", initialBounds.right, drawer.boundsInRoot.right, 1f)
-            }
-        } finally {
-            compose.mainClock.autoAdvance = true
-        }
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
 
-        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
-        compose.runOnIdle { assertTrue("切换后应保持设置面板打开", settingsOpen) }
+        // 手机端全屏设置：宽度必须为 411dp（全部窗口宽度），占满屏幕
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
+        // 验证设置容器存在且为全屏容器
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertWidthIsEqualTo(411.dp)
+        // 返回后退出
+        compose.onNode(hasText("返回会话") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse(settingsOpen) }
     }
 
     @Test
@@ -279,8 +264,9 @@ class WorkbenchLayoutRegressionTest {
         compose.waitForIdle()
         compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
-        compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeLeft() }
-        compose.runOnIdle { assertFalse("横向关闭抽屉后设置状态也必须关闭", settingsOpen) }
+        // 点击返回会话退出设置
+        compose.onNode(hasText("返回会话") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle { assertFalse("关闭设置后状态也必须关闭", settingsOpen) }
         compose.onNodeWithContentDescription("打开会话抽屉").assertIsDisplayed()
     }
 
@@ -353,6 +339,7 @@ class WorkbenchLayoutRegressionTest {
         compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
         compose.runOnIdle { windowWidth = 411.dp }
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("跨断点不能关闭设置", settingsOpen)

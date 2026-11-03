@@ -688,13 +688,16 @@ class MainActivity : ComponentActivity() {
                                     settingsOpen = showSettings && enterWorkbench && displayedNativeUi == null,
                                     onSettingsOpenChange = { showSettings = it },
                                     settingsPanel = { onClose ->
-                                        SettingsScreen(
-                                            environment = settingsEnvironment,
-                                            runtime = runtime,
-                                            onBack = onClose,
-                                            presentation = SettingsPresentation.SIDEBAR,
-                                            onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
-                                        )
+                                        BoxWithConstraints(Modifier.fillMaxSize()) {
+                                            val isExpanded = maxWidth >= Dimensions.ExpandedWindow
+                                            SettingsScreen(
+                                                environment = settingsEnvironment,
+                                                runtime = runtime,
+                                                onBack = onClose,
+                                                presentation = if (isExpanded) SettingsPresentation.SIDEBAR else SettingsPresentation.SCREEN,
+                                                onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                            )
+                                        }
                                     },
                                     onOpenAssistant = { showAssistant = true },
                                     onPickCamera = attachmentPickers.camera,
