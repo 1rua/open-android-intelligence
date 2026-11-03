@@ -88,7 +88,7 @@ class AndroidAccessibilityScreenshotRuntime(
             context.getSystemService(WindowManager::class.java)?.defaultDisplay?.displayId
         }.getOrNull() ?: Display.DEFAULT_DISPLAY
 
-        val outcome: Pending? = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
+        val outcome = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
             withContext(Dispatchers.Main.immediate) {
                 suspendCancellableCoroutine { continuation ->
                     // 回调直接在当前线程执行：转码放在回调里会阻塞主线程，
@@ -133,14 +133,18 @@ class AndroidAccessibilityScreenshotRuntime(
                     }
                 }
             }
-        } ?: return ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
+        }
 
+        if (outcome == null) {
+            // 超时不是「成功」，也不能静默退化成未授权：明确报告本次取帧失败。
+            return ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
+        }
 
-        return when (outcome) {
+        return when (val pending: Pending = outcome) {
             // encodeScreenshot 的 finally 负责关闭缓冲区；协程若在此前被取消，
             // 上面的 onSuccess 已负责释放，不会重复关闭。
-            is FrameHolder -> encodeScreenshot(outcome.result)
-            is BitmapHolder -> ScreenCaptureOutcome.Failure(outcome.failure)
+            is FrameHolder -> encodeScreenshot(pending.result)
+            is BitmapHolder -> ScreenCaptureOutcome.Failure(pending.failure)
         }
     }
 

@@ -45,6 +45,7 @@ enum class DeviceCapabilityBlock {
 
     /** 真正不可用：设备能力缺失或配置重复且当前无检测手段。 */
     UNAVAILABLE,
+    ;
 
     /**
      * 该阻塞是否可由此应用的用户操作（或简单重试）恢复。

@@ -206,12 +206,7 @@ fun PluginManagementScreen(
     fun screenCaptureAuthorized(): Boolean = runCatching {
         com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true
     }.getOrDefault(false)
-    /** 无障碍通道当前是否可用，用于区分「投屏还没授权但已能截图」这一情形。 */
-    fun accessibilityCaptureReady(): Boolean = runCatching {
-        (com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
-            as? com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource)
-            ?.accessibilityAvailable() == true
-    }.getOrDefault(false)
+
     val grantInspector = remember(permissionRefreshTick, pluginRevision) {
         DeviceCapabilityGrantInspector(
             context = context,
@@ -1047,3 +1042,15 @@ private fun DeviceGrantRow(
         ) { Text(actionText) }
     }
 }
+
+/**
+ * 无障碍截图通道当前是否可用。
+ *
+ * 提到文件级是为了避免局部函数「先使用后定义」的顺序问题；它同时也是
+ * 授权状态与界面文案的单一判据，必须与截图来源的真实判断完全一致。
+ */
+private fun accessibilityCaptureReady(): Boolean = runCatching {
+    (com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+        as? com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource)
+        ?.accessibilityAvailable() == true
+}.getOrDefault(false)
