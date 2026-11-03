@@ -174,10 +174,12 @@ class WorkbenchLayoutRegressionTest {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        compose.waitForIdle()
         repeat(3) {
-            compose.onNodeWithTag("sidebar-test-scroll").performTouchInput { swipeUp() }
-            compose.onNodeWithTag("sidebar-test-scroll").performTouchInput { swipeDown() }
+            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput { swipeUp() }
+            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput { swipeDown() }
         }
+        compose.waitForIdle()
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("纵向滚动不能关闭设置", settingsOpen)
@@ -335,7 +337,8 @@ class WorkbenchLayoutRegressionTest {
         compose.waitForIdle()
         compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
-        compose.onNodeWithText("进入设置子页").performClick()
+        compose.onNode(hasText("进入设置子页") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
 
         compose.runOnIdle { windowWidth = 1000.dp }
@@ -604,8 +607,8 @@ class WorkbenchLayoutRegressionTest {
             }
             Column(
                 Modifier.weight(1f).fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .testTag("sidebar-test-scroll"),
+                    .testTag("sidebar-test-scroll")
+                    .verticalScroll(rememberScrollState()),
             ) {
                 repeat(40) { Text("设置条目 $it") }
             }
