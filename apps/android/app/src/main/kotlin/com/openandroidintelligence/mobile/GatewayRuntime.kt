@@ -1898,12 +1898,30 @@ class GatewayRuntime(
                     keyProvider=localDocumentKeyProvider) else downloads
             val ownerAttachments = if (nativePersistence != null) {
                 val ownerStaging = attachmentStagingStore(endpoint.baseUrl,ownerScope.accountId,installationId())
+                val ownerRecovery = com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ownerScope,localDocumentKeyProvider)
+                val savedNative = nativePersistence.load()
+                val trustedDraftIds = savedNative?.let { saved -> buildSet {
+                    addAll(saved.attachments.map { it.id.value })
+                    addAll(saved.composerDrafts.flatMap { it.attachments }.map { it.id.value })
+                    addAll(saved.pendingSubmissions.flatMap { it.attachmentIds })
+                    addAll(saved.submission?.attachmentIds.orEmpty())
+                } }.orEmpty()
+                if (trustedDraftIds.isNotEmpty()) try {
+                    val legacyScopeKey = "attachment-map-v1:" + Json.canonical(Json.of(listOf(
+                        conversationScope.profileId,conversationScope.gatewayId,conversationScope.accountId,conversationScope.installId)))
+                    val legacyHash = MessageDigest.getInstance("SHA-256").digest(legacyScopeKey.toByteArray()).joinToString("") { "%02x".format(it) }
+                    val legacyRecovery = com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,conversationScope,
+                        localDocumentKeyProvider ?: existingLocalKey("oai_documents_$legacyHash"))
+                    com.openandroidintelligence.mobile.conversations.NativeAttachmentDraftMigration.migrate(trustedDraftIds,
+                        attachmentStagingStore(endpoint.baseUrl,conversationScope.accountId,installationId(),existingOnly=true),
+                        ownerStaging,legacyRecovery,ownerRecovery,isCancelled={ !ownedJob.isActive })
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { _operationNotice.value = MEDIA_RECOVERY_NOTICE }
                 GatewayAttachmentDraftCoordinator(AttachmentUploader(HttpAttachmentTransport(http)),
                     com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
                         onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") }),
                     sessionScope, ownerStaging,
-                    recovery=com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(
-                        context, ownerScope, localDocumentKeyProvider))
+                    recovery=ownerRecovery)
             } else attachmentCoordinator
             if (nativePersistence != null) {
                 if (prepareNativeMedia(nativePersistence,ownerMedia))
@@ -2552,12 +2570,20 @@ class GatewayRuntime(
      * downgrading the account to unverified system trust.
      */
 
-    private fun attachmentStagingStore(gatewayId: String, accountId: String, installId: String): LocalAttachmentStagingStore {
+    private fun existingLocalKey(alias: String) = object: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider {
+        override fun getOrCreate(): javax.crypto.SecretKey = java.security.KeyStore.getInstance("AndroidKeyStore")
+            .apply { load(null) }.getKey(alias,null) as? javax.crypto.SecretKey ?: error("LOCAL_MEDIA_KEY_UNAVAILABLE")
+        override fun delete(): Unit = error("LEGACY_MEDIA_READ_ONLY")
+    }
+
+    private fun attachmentStagingStore(gatewayId: String, accountId: String, installId: String,
+        existingOnly: Boolean = false): LocalAttachmentStagingStore {
         val scopeId = "$gatewayId\n$accountId\n$installId"
         val scopeHash = MessageDigest.getInstance("SHA-256").digest(scopeId.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
         val directory = File(context.noBackupFilesDir, "attachment-staging/$scopeHash")
-        val provider = AndroidKeystoreOutboxKeyProvider("oai_attachment_${scopeHash.take(32)}")
+        val keyAlias = "oai_attachment_${scopeHash.take(32)}"
+        val provider = if (existingOnly) existingLocalKey(keyAlias) else AndroidKeystoreOutboxKeyProvider(keyAlias)
         val delegate by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
             EncryptedAttachmentStagingStore(directory, provider.getOrCreate(), scopeId)
         }
