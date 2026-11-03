@@ -172,12 +172,17 @@ class RemoteSessionAdapter:
     async def list_sessions(self, principal: Principal) -> list[dict[str, Any]]:
         headers = self._headers(principal)
         result = await self._request("GET", "/sessions", headers=headers)
-        return result.get("sessions", [])
+        sessions = result.get("sessions")
+        if not isinstance(sessions, list):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        return sessions
 
     async def history(self, principal: Principal, session_id: str) -> list[dict[str, Any]]:
         headers = self._headers(principal)
         result = await self._request("GET", f"/sessions/{quote(session_id, safe='')}/history", headers=headers)
-        messages = result.get("messages", [])
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
         if self.attachment_core is not None:
             account = self.attachment_core.open_gateway_account(principal.account_id)
             try:
