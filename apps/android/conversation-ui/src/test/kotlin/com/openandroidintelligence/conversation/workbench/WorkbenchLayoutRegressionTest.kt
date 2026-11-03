@@ -174,12 +174,13 @@ class WorkbenchLayoutRegressionTest {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
-        compose.waitForIdle()
+        val panel = compose.onNodeWithTag("sidebar-test-panel")
         repeat(3) {
-            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput { swipeUp() }
-            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput { swipeDown() }
+            panel.performTouchInput { swipeUp() }
+            compose.waitForIdle()
+            panel.performTouchInput { swipeDown() }
+            compose.waitForIdle()
         }
-        compose.waitForIdle()
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("纵向滚动不能关闭设置", settingsOpen)
