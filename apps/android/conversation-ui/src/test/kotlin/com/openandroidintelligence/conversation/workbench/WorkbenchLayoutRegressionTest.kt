@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -152,6 +153,7 @@ class WorkbenchLayoutRegressionTest {
         val settingsChanges = mutableListOf<Boolean>()
         var mainMounts = 0
         var mainDisposals = 0
+        var scrollStateHolder: ScrollState? = null
         compose.setContent {
             MaterialTheme {
                 SidebarWorkbench(controller, settingsOpen, {
@@ -162,7 +164,7 @@ class WorkbenchLayoutRegressionTest {
                         mainMounts++
                         onDispose { mainDisposals++ }
                     }
-                })
+                }, onScrollState = { scrollStateHolder = it })
             }
         }
 
@@ -174,22 +176,16 @@ class WorkbenchLayoutRegressionTest {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        val scrollState = scrollStateHolder ?: error("ScrollState must be captured")
         repeat(3) {
-            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput {
-                swipe(
-                    start = center + androidx.compose.ui.geometry.Offset(0f, 150f),
-                    end = center - androidx.compose.ui.geometry.Offset(0f, 150f),
-                )
+            compose.runOnIdle {
+                runBlocking {
+                    scrollState.scrollTo(scrollState.maxValue)
+                    scrollState.scrollTo(0)
+                }
             }
-            compose.waitForIdle()
-            compose.onNodeWithTag("sidebar-test-scroll", useUnmergedTree = true).performTouchInput {
-                swipe(
-                    start = center - androidx.compose.ui.geometry.Offset(0f, 150f),
-                    end = center + androidx.compose.ui.geometry.Offset(0f, 150f),
-                )
-            }
-            compose.waitForIdle()
         }
+        compose.waitForIdle()
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         compose.runOnIdle {
             assertTrue("纵向滚动不能关闭设置", settingsOpen)
@@ -585,6 +581,7 @@ class WorkbenchLayoutRegressionTest {
         onSettingsChange: (Boolean) -> Unit,
         header: @Composable () -> Unit = {},
         onPanelPosition: (Float) -> Unit = {},
+        onScrollState: ((ScrollState) -> Unit)? = null,
     ) {
         WorkbenchScreen(
             controller = controller,
@@ -598,13 +595,19 @@ class WorkbenchLayoutRegressionTest {
             header = header,
             settingsOpen = settingsOpen,
             onSettingsOpenChange = onSettingsChange,
-            settingsPanel = { onClose -> SidebarSettingsFixture(onClose, onPanelPosition) },
+            settingsPanel = { onClose -> SidebarSettingsFixture(onClose, onPanelPosition, onScrollState) },
         )
     }
 
     @Composable
-    private fun SidebarSettingsFixture(onClose: () -> Unit, onPanelPosition: (Float) -> Unit) {
+    private fun SidebarSettingsFixture(
+        onClose: () -> Unit,
+        onPanelPosition: (Float) -> Unit,
+        onScrollState: ((ScrollState) -> Unit)? = null,
+    ) {
         var subpageOpen by rememberSaveable { mutableStateOf(false) }
+        val scrollState = rememberScrollState()
+        LaunchedEffect(scrollState) { onScrollState?.invoke(scrollState) }
         Column(
             Modifier.fillMaxSize().testTag("sidebar-test-panel")
                 .onGloballyPositioned { onPanelPosition(it.positionInRoot().x) },
@@ -618,7 +621,7 @@ class WorkbenchLayoutRegressionTest {
             Column(
                 Modifier.weight(1f).fillMaxWidth()
                     .testTag("sidebar-test-scroll")
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(scrollState),
             ) {
                 repeat(40) { Text("设置条目 $it") }
             }
