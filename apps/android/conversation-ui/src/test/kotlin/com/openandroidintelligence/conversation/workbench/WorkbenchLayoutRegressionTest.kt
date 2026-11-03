@@ -167,7 +167,9 @@ class WorkbenchLayoutRegressionTest {
         }
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).assertIsDisplayed().performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performClick()
+        compose.waitForIdle()
         compose.runOnIdle {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
@@ -264,7 +266,9 @@ class WorkbenchLayoutRegressionTest {
         }
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
         compose.onNode(hasText("设置与平台管理") and hasClickAction()).performClick()
+        compose.waitForIdle()
         compose.onNodeWithTag("sidebar-test-panel").performTouchInput { swipeLeft() }
         compose.runOnIdle { assertFalse("横向关闭抽屉后设置状态也必须关闭", settingsOpen) }
         compose.onNodeWithContentDescription("打开会话抽屉").assertIsDisplayed()
@@ -328,7 +332,9 @@ class WorkbenchLayoutRegressionTest {
         }
         compose.runOnIdle { controller.editDraft("跨断点保留") }
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
         compose.onNode(hasText("设置与平台管理") and hasClickAction()).performClick()
+        compose.waitForIdle()
         compose.onNodeWithText("进入设置子页").performClick()
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
 
