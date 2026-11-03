@@ -198,6 +198,13 @@ jobs:
           gradle --max-workers=2
           :conversation-domain:testDebugUnitTest
           :conversation-ui:testDebugUnitTest
+      - name: Attachment upload phases and confirmed-upload recovery
+        working-directory: apps/android
+        run: >-
+          gradle --max-workers=2
+          :conversation-data:testDebugUnitTest
+          --tests '*AttachmentPhaseTest'
+          --tests '*AttachmentRecoveryTest'
       - name: Core connection, Agent sessions, platform recovery and transport regressions
         working-directory: apps/android
         run: >-
@@ -235,13 +242,6 @@ jobs:
           --tests '*PlatformStreamHandoverTest'
           --tests '*GatewayNetworkMonitorTest'
           --tests '*DeviceGrantFenceTest'
-      - name: Attachment upload phases and confirmed-upload recovery
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :conversation-data:testDebugUnitTest
-          --tests '*AttachmentPhaseTest'
-          --tests '*AttachmentRecoveryTest'
       - name: Play screen integration and Android API compatibility
         working-directory: apps/android
         run: >-

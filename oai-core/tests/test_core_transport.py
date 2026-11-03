@@ -473,6 +473,71 @@ async def test_real_http_attachment_upload_and_commit_preserve_length_and_digest
 
 
 @pytest.mark.asyncio
+async def test_interrupted_http_upload_retries_the_same_attachment_before_commit(gateway):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    body = b"r" * (4 * 1024 * 1024)
+    digest = hashlib.sha256(body).hexdigest()
+    metadata = {
+        "clientAttachmentId": "interrupted-content-attempt",
+        "filename": "retry.bin",
+        "mediaType": "application/octet-stream",
+        "sizeBytes": len(body),
+        "sha256": digest,
+    }
+    created = await request_signed(client, bundle, key, "POST", PREFIX + "/attachments", metadata)
+    attachment_id = created["attachment"]["attachmentId"]
+    content_path = PREFIX + f"/attachments/{attachment_id}/content"
+    _, headers = signed_raw(
+        bundle, key, "PUT", content_path, body, content_type="application/octet-stream",
+    )
+    endpoint = client.server.make_url("/")
+    async with asyncio.timeout(5):
+        reader, writer = await asyncio.open_connection(endpoint.host, endpoint.port)
+        try:
+            request_headers = {
+                "Host": endpoint.authority,
+                "Connection": "close",
+                **headers,
+            }
+            wire = f"PUT {content_path} HTTP/1.1\r\n" + "".join(
+                f"{name}: {value}\r\n" for name, value in request_headers.items()
+            ) + "\r\n"
+            writer.write(wire.encode("ascii"))
+            writer.write(body[:1024 * 1024])
+            await writer.drain()
+            # Half-close the real TCP request before its declared length.
+            writer.write_eof()
+            interrupted_response = await reader.read()
+            assert not interrupted_response.startswith(b"HTTP/1.1 200")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+        status = await request_signed(client, bundle, key, "GET", PREFIX + f"/attachments/{attachment_id}")
+        assert status["attachment"]["status"] == "staged"
+        retry = await request_signed(client, bundle, key, "POST", PREFIX + "/attachments", metadata)
+        assert retry["attachment"]["attachmentId"] == attachment_id
+        assert retry["attachment"]["status"] == "staged"
+
+        raw, headers = signed_raw(
+            bundle, key, "PUT", content_path, body, content_type="application/octet-stream",
+        )
+        uploaded = await client.put(content_path, data=raw, headers=headers)
+        assert uploaded.status == 200
+        assert (await uploaded.json())["data"]["attachment"]["status"] == "staged"
+        committed = await request_signed(
+            client, bundle, key, "POST", PREFIX + f"/attachments/{attachment_id}/commit", {},
+        )
+        assert committed["attachment"] == {
+            "attachmentId": attachment_id,
+            "status": "uploaded",
+            "sizeBytes": len(body),
+            "sha256": digest,
+        }
+
+
+@pytest.mark.asyncio
 async def test_aiohttp_reverse_proxy_preserves_attachment_body_and_reports_413(gateway):
     client, core, _ = gateway
     bundle, key = await phone_login(client, core)
