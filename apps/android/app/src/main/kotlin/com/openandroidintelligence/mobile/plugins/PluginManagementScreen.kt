@@ -804,19 +804,24 @@ internal fun capabilityStatusLabel(status: String, reason: String? = null): Stri
     "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查连接与 OAI Core 版本"
     else -> "等待同步当前设备能力状态"
     }
-    val detail = capabilityBlockDetail(status, reason)
-    return if (detail == null) label else "$label；$detail"
+    if (reason.isNullOrBlank()) return label
+    // 截图相关的新诊断码用可恢复性说明（问题三）：它们必须讲清「能不能恢复、下一步做什么」。
+    if (reason in screenshotDiagnosisReasons) return "$label；${capabilityBlockDetail(status, reason)}"
+    // 既有原因码保持原有展开方式，不改变既有界面语义。
+    return "$label；${com.openandroidintelligence.mobile.deviceCapabilityReasonLabel(reason)}"
 }
 
 /**
  * 追加「现在的具体处境 + 下一步该做什么」。
  *
  * 问题三要求区分未申请、等待用户操作、服务未连接、系统拒绝与真正不可用。
- * 这里只对有实际阻塞的状态追加说明，READY 与同步中不啰嗦。
+ * 只对确实存在阻塞的状态给出说明，READY 与同步中不啰嗦。
  */
 internal fun capabilityBlockDetail(status: String, reason: String?): String? {
-    if (status == "READY" || status == "SYNCING" || status == "SYNC_RETRYING") return null
+    if (status == "READY") return null
     val block = classifyCapabilityBlock(status, reason)
+    // 同步中属于等待，无需解释阻塞原因。
+    if (block == DeviceCapabilityBlock.SYNCING) return null
     val cause = when (block) {
         DeviceCapabilityBlock.NOT_YET_REQUESTED -> "尚未申请授权"
         DeviceCapabilityBlock.AWAITING_USER_ACTION -> "等待你在系统里操作"
@@ -833,6 +838,23 @@ internal fun capabilityBlockDetail(status: String, reason: String?): String? {
     val recoverable = if (block.isRecoverable) "" else "（这一项不能在本机恢复）"
     return "$cause$recoverable，$next"
 }
+
+/**
+ * 截图诊断相关的稳定原因码。
+ *
+ * 这些码由截图来源在失败时给出，必须能区分失败、系统拒绝、频率限制与
+ * 服务断连，因此单独用可恢复性说明呈现，而不是套用既有的阻塞码文案。
+ */
+internal val screenshotDiagnosisReasons: Set<String> = setOf(
+    "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
+    "ACCESSIBILITY_SERVICE_UNAVAILABLE",
+    "SCREEN_CAPTURE_SYSTEM_REJECTED",
+    "SCREEN_CAPTURE_SECURE_WINDOW",
+    "SCREEN_CAPTURE_RATE_LIMITED",
+    "SCREEN_CAPTURE_FAILED",
+    "SCREEN_CAPTURE_UNSUPPORTED",
+    "SCREEN_DEVICE_LOCKED",
+)
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */
 @Composable
