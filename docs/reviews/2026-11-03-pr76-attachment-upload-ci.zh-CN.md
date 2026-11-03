@@ -84,3 +84,19 @@ CI 失败后保留原始失败结果，未重跑相同提交。超时用例继�
 第二轮中，调用方取消测试和持续进展测试通过。固定长度超时测试在身份断言处提前退出，因此独立 `System.nanoTime` 时限、未写完与单次失败上报断言均已通过，但其后的真实 EOF/reset peer-close 断言尚未执行，仍须由后续统一 CI 验证。限时、I/O 类型、未完成写入、单次上报和真实 EOF/reset 检查均保留；未弱化关闭证据或延长时限。
 
 本补丁未本地编译或运行测试，也未启动第三轮 CI。待主 Agent 汇总 Terra 的真实 50 MB 上传结果及其他改动后统一推送 CI。
+
+## 第三轮 CI 检查摘要
+
+监测 head：`6c46c8c8f99a29c379eb358feb0000e83d376ef9`。后台 session `35388` 已结束，精确 HEAD 快照匹配，监测结果为 `CHECK_FAILURE`；当前没有该监测进程。六项检查成功，Android job 失败：
+
+| 检查 | 结果 | 运行记录 |
+| --- | --- | --- |
+| `sign-plugin-packages` | 成功 | [job 125980543909](https://github.com/1rua/open-android-intelligence/actions/runs/41654340747/job/125980543909) |
+| `apk` | 成功 | [job 125980983314](https://github.com/1rua/open-android-intelligence/actions/runs/41654340747/job/125980983314) |
+| `core (3.11)` | 成功 | [job 125980590594](https://github.com/1rua/open-android-intelligence/actions/runs/41654353020/job/125980590594) |
+| `core (3.12)` | 成功 | [job 125980591313](https://github.com/1rua/open-android-intelligence/actions/runs/41654353020/job/125980591313) |
+| `hermes-native` | 成功 | [job 125980590219](https://github.com/1rua/open-android-intelligence/actions/runs/41654353020/job/125980590219) |
+| `dsh` | 成功 | [job 125980589620](https://github.com/1rua/open-android-intelligence/actions/runs/41654353020/job/125980589620) |
+| `android` | 失败 | [job 125980590260](https://github.com/1rua/open-android-intelligence/actions/runs/41654353020/job/125980590260) |
+
+Android job 中 `:gateway-client:testDebugUnitTest` 已通过；job 后续失败，因此附件上传专项步骤未执行。失败日志由主 Agent 单独核对，本节只记录检查状态，不重复根因分析。第三轮状态保存在忽略目录 `tmp/attachment-upload/ci-76/`；第二轮 `39a` 快照保存在 `tmp/attachment-upload/ci-76-39a/`。

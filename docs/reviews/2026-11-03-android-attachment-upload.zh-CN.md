@@ -45,10 +45,21 @@
 
 Terra 已准备专用 API 35 模拟器 `oai-attachment-upload-20261103`（`emulator-5580`，独立 ADB 5049）及真实可解码的 100 KB、1 MB、3 MB、4 MB、50 MB PNG。合成 Core/Adapter 使用基线归档源码，端口 18981/18982，不使用生产账号。基线设备内 APK SHA-256 为 `613df3c045fa731ae22a2559d059c789c0b644faa749fd860e2b1ab61629e0a7`。
 
-截至本次记录，100 KB 图片在真实 App 中已显示“已核验，可发送”；尚不能以此替代最终消息发送、4 MB/50 MB、代理和断网重试验收。阶段耗时及后续结果由 Terra 单独记录。最终修复 APK 使用 CI 产物，不再进行本地编译。
+Terra 基线直连记录：100 KB 与 4 MB 图片均完成上传、校验、发送和合成回复；50 MB 完成上传及 commit，随后消息发送显示 OUTCOME_UNKNOWN，尚无该次请求开始/合成回复。下面均为单次样本，不作为真实移动网络的性能承诺：
+
+| 图片实际长度 | 客户端写入 | Core 接收正文 | Core commit 校验 | 最终发送 |
+| --- | ---: | ---: | ---: | --- |
+| 100,745 字节 | 8.47 ms | 46.73 ms | 1.25 ms | 合成回复可见 |
+| 4,193,968 字节 | 196.79 ms | 226.69 ms | 19.42 ms | 合成回复可见 |
+| 52,438,001 字节 | 1957.35 ms | 1991.29 ms | 229.52 ms | OUTCOME_UNKNOWN，未闭环 |
+
+客户端和 Core 的时钟各自计时，表列阶段不可直接相加。该环境没有复现上传卡点；50 MB 消息失败发生在上传校验之后，不能改称附件未上传。初步静态入口中 `CoreAgentConversationRepository.submitMessageForAgent` 在存在未决恢复或 generation 身份歧义时可在 send.scheduled 前拒绝发送，当前样本是否由该闸门触发尚需验证。保留未决消息，不自动重复投递。
+
+最终修复 APK 使用 CI 产物，不再本地编译；基线与 CI 签名不同，CI 候选已安装到另一个隔离模拟器，未卸载旧包或清除数据，尚无候选上传验收结果。设备细节和后续场景见[设备验收记录](2026-11-03-android-attachment-upload-device.zh-CN.md)。
 
 ## 已执行检查
 
+- 真实 TCP 中断恢复：4 MiB 请求仅发 1 MiB 后半关闭连接，Core 保持 staged；相同 clientAttachmentId 再次创建返回同一个 attachmentId，完整重传与 commit 成功。新增公开 HTTP 定向用例 1 passed、27 deselected，约 0.66 秒；这不替代 Android 设备断网测试。
 - 最终 Core 文件组合（审查补修后）：`test_attachment_policy.py` 与 `test_core_transport.py`，54 passed，约 19.27 秒；包含新旧 CAS 半成品恢复及真实 HTTP 大小/代理回归。
 - 本轮基线 Android 14 项通过不等于最终 Kotlin 修复通过；最终运行以当前 PR 检查为准。
 - `npm run lock:check` 通过（8 项）；`git diff --check` 通过。
@@ -60,7 +71,7 @@ Terra 已准备专用 API 35 模拟器 `oai-attachment-upload-20261103`（`emula
 - `10969a71`：真实 HTTP 100 KiB 至 50 MiB 与反向代理完整性回归。
 - `2a275331`：请求写入停滞超时及持续进展/取消回归。
 - `be00b2a2`：修复已有半成品恢复；网络写入超时不改变本地源读取错误分类。
-- CI 增加已有 `AttachmentPhaseTest`、`AttachmentRecoveryTest` 的定向执行，检查已确认 uploaded 不重传、未知结果状态与恢复。工作流 YAML 解析及测试路径检查已通过；Android 最终运行结果以 PR 当前提交检查为准。
+- CI 增加已有 `AttachmentPhaseTest`、`AttachmentRecoveryTest` 的定向执行，检查已确认 uploaded 不重传、未知结果状态与恢复。工作流 YAML 解析及测试路径检查已通过；Android 最终运行结果以 PR 当前提交检查为准。第三轮 `6c46c8c8` 中 gateway-client 写入停滞/持续进展/取消三项回归均通过，Android 后续仅在本轮未修改的 PluginManagementScreenTest 第 348 行 5 秒等待失败；CI 附件专项前移但不删除其他检查。
 
 ## 剩余风险与交付
 
@@ -69,3 +80,7 @@ Terra 已准备专用 API 35 模拟器 `oai-attachment-upload-20261103`（`emula
 公开状态 staged 不能区分未收到正文与正文已暂存；未获上传确认的重试可能重传相同正文。已确认 uploaded 的附件查询后复用，不重新 PUT。该既有协议边界不能通过猜测成功来绕过，本轮不新增跨仓状态协议。
 
 追加忙碌会话探针：同一真实 Core HTTP、Hermes bridge 与 SQLite 中，4 MiB PUT+commit 空闲时约 86 ms，generation gate 未释放、SSE 保持打开且 eventSync 读写时约 140 ms，上传完成时 generation 仍 running；本机探针 1 passed。只能排除这个受控条件必然阻塞，不能排除部署中的其他同步阻塞或长事务。
+
+现场闭环仍缺实际部署中的 Core 版本、反向代理类型/相关限制，以及一次失败的请求 ID 或脱敏阶段日志。现有本地数据不能判断现场是在 Android 写入、代理转发、Core 接收、commit 还是后续会话投递阶段停止。PR 保持草稿，不能把受控修复与基线直连成功等同最终验收通过。
+
+后续验证提交 `5bf68bb6` 只补真实 TCP 中断恢复测试和 CI 执行顺序，生产 Android/Core 源码相对 `1e3d6a81` 一致；不能将旧提交 CI 通过等同新提交全绿。
