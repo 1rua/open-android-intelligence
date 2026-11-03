@@ -215,3 +215,212 @@ def test_failed_notice_commit_keeps_native_source_identity_and_does_not_publish_
     projected = next(row for row in history.read("synthetic", context["conversationId"]) if row.get("executionSteps"))
     assert projected["executionSteps"][0]["status"] == "completed"
     assert len(rows) == 3  # Recovery observes stored facts; it never executes a tool.
+
+
+def append_trusted_steer(native_tools, client="steer"):
+    _, history, _, context, _, rows, accepted = native_tools
+    from oai_hermes_adapter.host_history import NATIVE_INPUT_KEY
+    staged = history.stage_native_input({"accountId": "synthetic", "conversationId": context["conversationId"],
+        "sessionKey": "native-key", "clientMessageId": client, "text": "private synthetic prompt", "timestamp": 3000,
+        "generationId": accepted["generationId"], "source": {"platform": "synthetic"}})
+    history.accept_native_input(staged)
+    rows.append({"id": max(row["id"] for row in rows) + 1, "role": "user", "content": "model input with origin", "platform_message_id": client,
+        "timestamp": 3, "display_metadata": {NATIVE_INPUT_KEY: {"version": 1, "storageOwner": history.storage_owner,
+            "accountId": "synthetic", "conversationId": context["conversationId"], "inputKeys": [staged["key"]]}}})
+    return staged
+
+
+def test_live_pre_and_post_keep_tool_identity_across_trusted_steer(native_tools):
+    _, history, observer, context, event, rows, accepted = native_tools
+    token = trusted_turn.set(context)
+    try:
+        pre_tool_call(**event)
+        append_trusted_steer(native_tools)
+        post_tool_call(**event, status="ok", result="before result")
+        rows.append({"id": 4, "role": "assistant", "content": "", "timestamp": 4, "tool_calls": [
+            {"id": "after", "function": {"name": "read", "arguments": "{}"}}]})
+        after = {**event, "tool_call_id": "after", "args": {}}
+        pre_tool_call(**after)
+        running = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+        assert [(step["stepId"], step["status"]) for step in running["executionSteps"]] == [
+            ("native-call", "completed"), ("after", "running")]
+        post_tool_call(**after, status="ok", result="after result")
+        completed = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+        assert [step["output"] for step in completed["executionSteps"]] == ["before result", "after result"]
+        projected = [step for row in history.read("synthetic", context["conversationId"])
+                     for step in row.get("executionSteps", [])]
+        assert projected == completed["executionSteps"]
+    finally:
+        trusted_turn.reset(token)
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_live_and_history_expose_public_call_source_and_start_millis(native_tools, mapped):
+    import hashlib
+    core, history, observer, context, event, rows, accepted = native_tools
+    rows[1]["timestamp"] = 2.125
+    if mapped:
+        key = "history-native:" + hashlib.sha256(b"native-session:2").hexdigest()
+        with closing(core.open_gateway_account("synthetic")) as account:
+            account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES (?,?)", (key, "msg_existing_source"))
+    token = trusted_turn.set(context)
+    try:
+        pre_tool_call(**event)
+        running = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])["executionSteps"][0]
+        assert isinstance(running.get("sourceMessageId"), str)
+        assert running["occurredAt"] == 2125
+        append_trusted_steer(native_tools)
+        rows.append({"id": 4, "role": "tool", "tool_call_id": "native-call", "content": "result", "timestamp": 9})
+        post_tool_call(**event, status="ok", result="result")
+        step = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])["executionSteps"][0]
+        source = next(row for row in history.read("synthetic", context["conversationId"]) if row.get("executionSteps"))
+        assert step["sourceMessageId"] == running["sourceMessageId"] == source["messageId"]
+        assert source["executionSteps"][0]["sourceMessageId"] == source["messageId"]
+        assert step["occurredAt"] == source["executionSteps"][0]["occurredAt"] == 2125
+        if mapped:
+            assert step["sourceMessageId"] == "msg_existing_source"
+        assert not {"nativeTurnId", "nativeSourceMessageId", "sessionKey", "sourceIndex"}.intersection(step)
+    finally:
+        trusted_turn.reset(token)
+
+
+@pytest.mark.parametrize("boundary", ["unbound", "summary", "duplicate_input", "duplicate_call", "compression_child", "deleted_anchor", "wrong_scope"])
+def test_live_finish_does_not_cross_an_unproven_native_boundary(native_tools, boundary):
+    import json
+    _, history, observer, context, event, rows, accepted = native_tools
+    token = trusted_turn.set(context)
+    try:
+        pre_tool_call(**event)
+        running = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+        if boundary in {"unbound", "summary"}:
+            rows.append({"id": 3, "role": "user", "content": "private synthetic prompt",
+                         "_compressed_summary": boundary == "summary", "timestamp": 3})
+        elif boundary == "duplicate_input":
+            append_trusted_steer(native_tools)
+            append_trusted_steer(native_tools)
+        elif boundary == "duplicate_call":
+            rows.append({"id": 3, "role": "assistant", "content": "", "timestamp": 3,
+                         "tool_calls": rows[1]["tool_calls"]})
+        elif boundary == "compression_child":
+            database = history.session_store._db_for_key("native-key")
+            database.get_compression_chain = lambda session: ["native-session", "child-session"]
+            database.get_messages = lambda session, **kw: rows if session == "native-session" else [
+                {"id": 3, "role": "assistant", "content": "child", "timestamp": 3}]
+        elif boundary == "deleted_anchor":
+            rows[0]["active"] = 0
+        else:
+            staged = append_trusted_steer(native_tools)
+            database = history.session_store._db_for_key("native-key")
+            record = json.loads(database.get_meta(staged["key"]))
+            database.set_meta(staged["key"], json.dumps({**record, "accountId": "other-account"}))
+        post_tool_call(**event, status="ok", result="unproven completion")
+        assert observer.snapshot("synthetic", context["conversationId"], accepted["generationId"]) == running
+    finally:
+        trusted_turn.reset(token)
+
+
+def test_legacy_integer_source_is_never_exported_and_recovers_public_identity(native_tools):
+    import json
+    _, history, observer, context, event, _, accepted = native_tools
+    database = history.session_store._db_for_key("native-key")
+    key = execution_key(history.storage_owner, "synthetic", context["conversationId"], accepted["generationId"])
+    database.set_meta(key, json.dumps({"storageOwner": history.storage_owner, "accountId": "synthetic",
+        "conversationId": context["conversationId"], "generationId": accepted["generationId"], "revision": 7,
+        "steps": [{"stepId": "native-call", "eventId": "native-session:2", "toolName": "read",
+                   "arguments": '{"path":"private synthetic path"}', "output": None, "status": "running",
+                   "nativeTurnId": "native-turn", "sourceMessageId": 2, "sourceIndex": 0, "revision": 7}]}))
+    before = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+    assert "sourceMessageId" not in before["executionSteps"][0]
+    token = trusted_turn.set(context)
+    try:
+        pre_tool_call(**event)
+        post_tool_call(**event, status="ok", result="result")
+    finally:
+        trusted_turn.reset(token)
+    completed = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+    projected = next(row for row in history.read("synthetic", context["conversationId"]) if row.get("executionSteps"))
+    source = completed["executionSteps"][0]["sourceMessageId"]
+    assert isinstance(source, str) and source != "2"
+    assert source == projected["messageId"] == projected["executionSteps"][0]["sourceMessageId"]
+    assert completed["executionSteps"][0]["status"] == "completed"
+    assert completed["executionSteps"][0]["revision"] > 7
+
+
+def test_legacy_integer_source_recovers_from_history_without_hooks(native_tools):
+    import json
+    _, history, observer, context, _, _, accepted = native_tools
+    database = history.session_store._db_for_key("native-key")
+    key = execution_key(history.storage_owner, "synthetic", context["conversationId"], accepted["generationId"])
+    database.set_meta(key, json.dumps({"storageOwner": history.storage_owner, "accountId": "synthetic",
+        "conversationId": context["conversationId"], "generationId": accepted["generationId"], "revision": 7,
+        "steps": [{"stepId": "native-call", "eventId": "native-session:2", "toolName": "read",
+                   "arguments": '{"path":"private synthetic path"}', "output": "already completed", "status": "completed",
+                   "nativeTurnId": "native-turn", "sourceMessageId": 2, "sourceIndex": 0, "revision": 7}]}))
+    projected = next(row for row in history.read("synthetic", context["conversationId"]) if row.get("executionSteps"))
+    after = observer.snapshot("synthetic", context["conversationId"], accepted["generationId"])
+    step = after["executionSteps"][0]
+    assert isinstance(step["sourceMessageId"], str) and step["sourceMessageId"] == projected["messageId"]
+    assert step["occurredAt"] == 2000
+    assert step["status"] == "completed" and step["output"] == "already completed"
+    assert step["revision"] == after["executionRevision"] == 7
+    assert "nativeSourceMessageId" not in step
+    assert after["executionSteps"] == projected["executionSteps"]
+
+
+@pytest.fixture
+def persisted_native_tools(native_tools, tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_TEST_ISOLATION", str(tmp_path / "hermes"))
+    from hermes_state import SessionDB
+    core, history, observer, context, event, rows, accepted = native_tools
+    database = SessionDB(tmp_path / "native.sqlite")
+    database.create_session("native-session", "cli")
+    for row in rows:
+        database.append_message("native-session", row["role"], row["content"],
+            timestamp=row["timestamp"], platform_message_id=row.get("platform_message_id"),
+            tool_calls=row.get("tool_calls"))
+    history.session_store._db_for_key = lambda key: database
+    try:
+        yield SimpleNamespace(core=core, history=history, observer=observer, context=context, event=event,
+                              database=database, accepted=accepted)
+    finally:
+        database.close()
+
+
+def test_real_compaction_keeps_live_source_result_and_terminal_revision(persisted_native_tools):
+    case = persisted_native_tools
+    token = trusted_turn.set(case.context)
+    try:
+        pre_tool_call(**case.event)
+        case.database.append_message("native-session", "tool", "durable result", tool_call_id="native-call", timestamp=3)
+        post_tool_call(**case.event, status="ok", result="durable result")
+        before = case.observer.snapshot("synthetic", case.context["conversationId"], case.accepted["generationId"])
+        native = case.database.get_messages("native-session")
+        case.database.archive_and_compact("native-session", native, tail_count=len(native))
+        history = case.history.read("synthetic", case.context["conversationId"])
+        source = next(row for row in history if row.get("executionSteps"))
+        assert source["executionSteps"] == before["executionSteps"]
+        assert source["messageId"] == before["executionSteps"][0]["sourceMessageId"]
+        pre_tool_call(**case.event)
+        assert case.observer.snapshot("synthetic", case.context["conversationId"], case.accepted["generationId"]) == before
+        assert not {"nativeTurnId", "nativeSourceMessageId", "sourceIndex", "oaiGatewayHistoryOrigin"}.intersection(source["executionSteps"][0])
+    finally:
+        trusted_turn.reset(token)
+
+
+def test_real_compression_child_cannot_finish_parent_tool_with_late_hooks(persisted_native_tools):
+    case = persisted_native_tools
+    token = trusted_turn.set(case.context)
+    try:
+        pre_tool_call(**case.event)
+        before = case.observer.snapshot("synthetic", case.context["conversationId"], case.accepted["generationId"])
+        case.database.publish_compression_child(parent_session_id="native-session", child_session_id="compression-child",
+            source="cli", messages=case.database.get_messages("native-session"), require_compression_lease=False)
+        case.database.append_message("compression-child", "tool", "unproven child result", tool_call_id="native-call", timestamp=3)
+        post_tool_call(**case.event, status="ok", result="late parent result")
+        post_tool_call(**{**case.event, "session_id": "compression-child"}, status="ok", result="child result")
+        assert case.observer.snapshot("synthetic", case.context["conversationId"], case.accepted["generationId"]) == before
+        history = case.history.read("synthetic", case.context["conversationId"])
+        assert [step for row in history for step in row.get("executionSteps", [])] == before["executionSteps"]
+    finally:
+        trusted_turn.reset(token)

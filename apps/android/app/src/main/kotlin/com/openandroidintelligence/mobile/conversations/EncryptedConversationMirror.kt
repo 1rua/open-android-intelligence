@@ -183,14 +183,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
         "contentRevision" to m.contentRevision,"generationId" to m.generationId,
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
-            "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision) })
+            "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
+            "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt) })
     private fun decodeMessage(o: JsonValue.JObject) = TimelineMessage(str(o,"id"),str(o,"sender"),decodeParts(o),
         JsonFields.long(o,"timestamp") ?: 0L,str(o,"state"),JsonFields.string(o,"conversationId")?.let(::ConversationId),
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
         JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
             str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
-            com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0) })
+            com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
+            JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt")) })
     private fun attachment(a: AttachmentDraft) = mapOf("id" to a.id.value,"name" to a.filename,"mediaType" to a.mediaType,
         "size" to a.sizeBytes,"sha256" to a.sha256,"state" to a.state.name)
     private fun decodeAttachment(o: JsonValue.JObject) = AttachmentDraft(AttachmentDraftId(str(o,"id")),str(o,"name"),str(o,"mediaType"),
@@ -449,7 +451,11 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
 
     private fun mergeAtom(existing: LocalSendAtom,incoming: LocalSendAtom): LocalSendAtom {
-        check(existing.messageId == null || incoming.messageId == null || existing.messageId == incoming.messageId) { "MESSAGE_ID_CONFLICT" }
+        val legacySteeringIdentity = existing.delivery == MessageDeliveryMode.STEER &&
+            incoming.delivery == MessageDeliveryMode.STEER && existing.clientMessageId == incoming.clientMessageId &&
+            existing.messageId == "steer_${existing.clientMessageId.value}"
+        check(existing.messageId == null || incoming.messageId == null || existing.messageId == incoming.messageId ||
+            legacySteeringIdentity) { "MESSAGE_ID_CONFLICT" }
         val content=if (existing.contentRevision >= 0L && existing.contentRevision >= incoming.contentRevision) existing else incoming
         val status=if (existing.status != null && existing.statusRevision >= incoming.statusRevision) existing else incoming
         val contentRevision=maxOf(existing.contentRevision,incoming.contentRevision)

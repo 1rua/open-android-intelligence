@@ -492,6 +492,26 @@ class AgentSessionClientTest {
         assertNull(observed.single { it.executionSteps != null }.state)
     }
 
+    @Test fun nativeToolSourcePositionSurvivesLiveAndHistoricalDecoding() = runBlocking {
+        val step = """{"stepId":"call-after-steer","eventId":"tool-event","toolName":"terminal","arguments":"{\"command\":\"pwd\"}","output":"/project","status":"completed","revision":3,"sourceMessageId":"source-after-steer","occurredAt":3000}"""
+        val frames = listOf(
+            """{"type":"generation","generationId":"g","clientMessageId":"original","userMessageId":"original-user"}""",
+            """{"type":"generation","generationId":"g","executionRevision":3,"eventId":"tool-event","executionSteps":[$step]}""",
+            """{"type":"done","generationId":"g","outcome":"completed"}""",
+        )
+        val events = mutableListOf<NativeAgentStreamEvent>()
+        client(streamTransport(frames)).send(agent, "native", "synthetic", onEvent = { events += it }) {}
+        val live = events.filterIsInstance<NativeAgentStreamEvent.Generation>().single { it.executionSteps != null }.executionSteps!!.single()
+        val history = client(RecordingTransport("""{"messages":[{"id":"source-after-steer","role":"assistant","text":"","generationId":"g","executionSteps":[$step]}]}""", "application/json"))
+            .history(agent, "native").single().executionSteps.single()
+        for (decoded in listOf(live, history)) {
+            assertEquals("source-after-steer", decoded.sourceMessageId)
+            assertEquals(3000L, decoded.occurredAt)
+            assertEquals("{\"command\":\"pwd\"}", decoded.arguments)
+            assertEquals("/project", decoded.output)
+        }
+    }
+
     @Test fun nativeExecutionSnapshotsKeepTheirOwnRevisionAndDoNotResetAssistantContentIdentity() = runBlocking {
         val frames = listOf(
             """{"type":"generation","generationId":"g","userMessageId":"u","clientMessageId":"cm"}""",

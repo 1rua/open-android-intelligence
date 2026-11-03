@@ -47,7 +47,9 @@ data class LocalSendAtom(
      */
     fun identified(serverId: String, serverBatchId: String? = batchId): LocalSendAtom {
         if (serverId.isBlank()) return this
-        val provisional = messageId == null || messageId == clientMessageId.value
+        val provisional = messageId == null ||
+            messageId == clientMessageId.value ||
+            (delivery == MessageDeliveryMode.STEER && isLegacySyntheticSteerId(messageId, clientMessageId))
         val adopt = provisional || messageId == serverId
         return copy(
             messageId = if (adopt) serverId else messageId,
@@ -56,6 +58,11 @@ data class LocalSendAtom(
             status = status ?: AgentMessageStatus.QUEUED,
             submissionErrorCode = null,
         )
+    }
+
+    companion object {
+        fun isLegacySyntheticSteerId(id: String?, clientId: ClientMessageId): Boolean =
+            id != null && id == "steer_${clientId.value}"
     }
 }
 
@@ -68,15 +75,16 @@ fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalS
     }
 
 private fun TimelineMessage.isInAtomScope(atom: LocalSendAtom): Boolean {
-    val expectedSender = if (atom.delivery == MessageDeliveryMode.STEER) "system" else "user"
-    return sender == expectedSender && (conversationId == null || conversationId == atom.conversationId)
+    return sender == "user" && (conversationId == null || conversationId == atom.conversationId)
 }
 
 private fun findMatchingRemoteRow(rows: Collection<TimelineMessage>, atom: LocalSendAtom): TimelineMessage? {
     val scopedRows = rows.filter { it.isInAtomScope(atom) }
     atom.messageId?.let { id -> scopedRows.firstOrNull { it.id == id }?.let { return it } }
 
-    val hasProvisionalIdentity = atom.messageId == null || atom.messageId == atom.clientMessageId.value
+    val hasProvisionalIdentity = atom.messageId == null ||
+        atom.messageId == atom.clientMessageId.value ||
+        (atom.delivery == MessageDeliveryMode.STEER && LocalSendAtom.isLegacySyntheticSteerId(atom.messageId, atom.clientMessageId))
     if (!hasProvisionalIdentity) return null
 
     return scopedRows.filter { row ->
@@ -102,26 +110,18 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             matching?.let { rows.remove(it.id) }
             return@forEach
         }
-        val proposedId = matching?.id ?: atom.messageId ?: "local_${atom.clientMessageId.value}"
+        val isSyntheticSteerId = atom.delivery == MessageDeliveryMode.STEER &&
+            LocalSendAtom.isLegacySyntheticSteerId(atom.messageId, atom.clientMessageId)
+        val proposedId = matching?.id ?: (if (isSyntheticSteerId) null else atom.messageId) ?: "local_${atom.clientMessageId.value}"
         val idConflict = matching == null && proposedId in rows
         val id = if (idConflict) localPlaceholderId(rows, atom) else proposedId
-        val steered = atom.delivery == MessageDeliveryMode.STEER
-        val atomParts = if (steered) {
-            listOf(MessagePart.Text("↳ 已引导：" + atom.parts.joinToString("") { part ->
-                when (part) {
-                    is MessagePart.Text -> part.value
-                    is MessagePart.Command -> part.rawText
-                    is MessagePart.Attachment -> ""
-                }
-            }))
-        } else atom.parts
         rows[id] = TimelineMessage(
-            id = id, sender = if (steered) "system" else "user",
-            parts = if (steered) atomParts
-                else if (atom.contentRevision >= 0L) atom.parts
+            id = id,
+            sender = "user",
+            parts = if (atom.contentRevision >= 0L) atom.parts
                 else matching?.parts?.takeIf { it.isNotEmpty() } ?: atom.parts,
             timestamp = atom.timestamp.takeIf { it > 0L } ?: matching?.timestamp ?: 0L,
-            state = if (steered) "STEERED" else atom.status?.wireValue ?: when (atom.submissionState) {
+            state = atom.status?.wireValue ?: when (atom.submissionState) {
                 LocalSubmissionState.ACCEPTED -> "queued"
                 LocalSubmissionState.FAILED -> "FAILED"
                 else -> "PENDING"
@@ -132,7 +132,10 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             clientMessageId = atom.clientMessageId,
             // 本地投递终态不等于取得权威消息 ID；保留来源，避免占位行被当成另一条原生输入。
             localPlaceholder = matching?.localPlaceholder ?:
-                (atom.messageId == null || atom.messageId == atom.clientMessageId.value || idConflict),
+                (atom.messageId == null ||
+                 atom.messageId == atom.clientMessageId.value ||
+                 isSyntheticSteerId ||
+                 idConflict),
             generationId = matching?.generationId,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,

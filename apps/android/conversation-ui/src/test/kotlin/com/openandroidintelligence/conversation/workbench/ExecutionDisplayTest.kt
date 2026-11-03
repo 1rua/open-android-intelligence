@@ -156,14 +156,37 @@ class ExecutionDisplayTest {
     }
 
     @Test
-    fun streamingExecutionStaysSingleUntilFinalAnswerAppears() {
+    fun streamingLegacyMarkupKeepsExecutionContainerBeforeAndAfterFinalAnswer() {
+        val model = TimelineDisplayModel()
         val entry = assistantEntry("a1", "<think>正在分析设备状态", streaming = true)
 
-        val items = TimelineDisplayModel().build(listOf(entry))
+        val initialItems = model.build(listOf(entry), GenerationState.RUNNING)
+        val initialRun = executionRun(initialItems)
+        assertTrue(initialRun.isStreaming)
+        assertFalse(initialRun.hasFinalAnswer)
+        assertTrue(initialRun.finalBlocks.isEmpty(), "执行中没有最终正文时不能伪造回答")
 
-        assertEquals(1, items.size)
-        val single = items.single() as TimelineDisplayItem.Single
-        assertEquals("a1", single.entry.key)
+        val incrementalItems = model.build(
+            listOf(entry.copy(text = "<think>正在分析设备状态与电池信息")),
+            GenerationState.RUNNING,
+        )
+        val incrementalRun = executionRun(incrementalItems)
+        assertTrue(incrementalRun.isStreaming)
+        assertFalse(incrementalRun.hasFinalAnswer)
+        assertEquals(initialRun.steps.single().stepKey, incrementalRun.steps.single().stepKey)
+        assertEquals("正在分析设备状态与电池信息", (incrementalRun.steps.single() as ExecutionStep.Thought).block.thought)
+
+        val completedItems = model.build(
+            listOf(entry.copy(text = "<think>正在分析设备状态与电池信息</think>设备状态正常。", isStreaming = false)),
+            GenerationState.COMPLETED,
+        )
+        val completedRun = executionRun(completedItems)
+        assertFalse(completedRun.isStreaming)
+        assertTrue(completedRun.hasFinalAnswer)
+        assertEquals("设备状态正常。", (completedRun.finalBlocks.single() as TimelineBlock.Paragraph).text)
+        val snapshots = listOf(initialItems.single(), incrementalItems.single(), completedItems.single())
+        assertEquals(listOf("a1", "a1", "a1"), snapshots.map { it.key })
+        assertEquals(listOf("execution", "execution", "execution"), snapshots.map { it.contentType })
     }
 
     @Test
@@ -238,9 +261,15 @@ class ExecutionDisplayTest {
             streaming = true,
         )
 
-        // 仍在流式且没有最终正文：逐条实时呈现，不聚合。
-        val items = TimelineDisplayModel().build(listOf(entry))
-        assertTrue(items.single() is TimelineDisplayItem.Single)
+        // 运行中的工具从开始就位于统一容器内，步骤自身仍保留真实运行状态。
+        val run = executionRun(TimelineDisplayModel().build(listOf(entry)))
+        assertTrue(run.isStreaming)
+        assertFalse(run.hasFinalAnswer)
+        val tool = run.steps.single() as ExecutionStep.ToolCall
+        assertTrue(tool.block.isRunning)
+        assertTrue(tool.entryIsStreaming)
+        assertEquals("adb_shell", tool.block.toolName)
+        assertEquals("dumpsys battery", tool.block.command)
     }
 
     @Test
@@ -279,6 +308,26 @@ class ExecutionDisplayTest {
     // ==========================================
 
     @Test
+    fun adjacentLegacyMarkupWithDifferentGenerationsRemainsSeparate() {
+        val first = assistantEntry("g-one-thought", "<think>任务一的思考</think>")
+            .copy(generationId = "g-one")
+        val second = assistantEntry("g-two-thought", "<think>任务二的思考", streaming = true)
+            .copy(generationId = "g-two")
+
+        val items = TimelineDisplayModel().build(listOf(first, second))
+
+        assertEquals(2, items.size, "相邻的明确执行块不能跨真实 generation 聚合")
+        val runs = items.map { (it as TimelineDisplayItem.Execution).run }
+        assertEquals(listOf("g-one", "g-two"), runs.map { it.generationId })
+        assertEquals(listOf("g-one-thought", "g-two-thought"), items.map { it.key })
+        assertEquals(listOf("任务一的思考", "任务二的思考"),
+            runs.map { (it.steps.single() as ExecutionStep.Thought).block.thought })
+        assertFalse(runs.first().isStreaming)
+        assertTrue(runs.last().isStreaming)
+        assertTrue(runs.none { it.hasFinalAnswer })
+    }
+
+    @Test
     fun approvalInterruptsContinuousExecutionSegment() {
         val thought = assistantEntry("a1", "<think>准备执行危险命令</think>")
         val approval = waitingApprovalEntry()
@@ -292,6 +341,19 @@ class ExecutionDisplayTest {
         assertTrue(items[2] is TimelineDisplayItem.Single)
         assertEquals("approval-1", items[1].key)
         assertEquals("a3", items[2].key)
+    }
+
+    @Test
+    fun ordinarySystemMarkupRemainsSingleOutsideAssistantExecution() {
+        val systemAck = assistantEntry(
+            "system-ack",
+            "<think>系统记录的执行回执</think>",
+        ).copy(sender = "system")
+
+        val item = TimelineDisplayModel().build(listOf(systemAck)).single()
+
+        assertTrue(item is TimelineDisplayItem.Single, "普通 system 回执不能因为含 markup 就折成助手执行过程")
+        assertEquals(systemAck, (item as TimelineDisplayItem.Single).entry)
     }
 
     @Test
@@ -500,10 +562,13 @@ class ExecutionDisplayTest {
 
         val items = model.build(entries)
         val completed = (items[1] as TimelineDisplayItem.Single).entry
-        val ongoing = (items[2] as TimelineDisplayItem.Single).entry
+        val ongoing = (items[2] as TimelineDisplayItem.Execution).run
 
+        assertEquals("第一段最终答案", completed.text)
         assertFalse(completed.isStreaming, "已完成的回答独立保留，不能继续画光标")
-        assertTrue(ongoing.isStreaming, "后续思考保留自己的实时状态")
+        assertTrue(ongoing.isStreaming, "后续思考在统一容器里保留自己的实时状态")
+        assertFalse(ongoing.hasFinalAnswer)
+        assertEquals("后续思考还在流式", (ongoing.steps.single() as ExecutionStep.Thought).block.thought)
     }
 
     // ==========================================

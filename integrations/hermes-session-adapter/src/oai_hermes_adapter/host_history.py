@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timezone, timedelta
 import threading
 from contextlib import nullcontext
+from collections import Counter
 from typing import Any, Mapping
 from .history_media import HistoryMedia
 from .tool_history import project_execution
@@ -31,6 +32,7 @@ PRESENTATION_KEY = "oaiGatewayPresentation"
 PRESENTATION_NAMESPACE = "oai_gateway_presentation_v2:"
 NATIVE_INPUT_NAMESPACE = "oai_gateway_native_input_v1:"
 NATIVE_INPUT_KEY = "oaiGatewayNativeInputs"
+ROW_ORIGIN_KEY = "oaiGatewayHistoryOrigin"
 
 
 def _message_parts(account: Any, row: Any, text: str) -> list[dict[str, Any]]:
@@ -185,15 +187,92 @@ class HermesHistoryPort:
         # 跟随宿主合法压缩链，分支和重置会话由原生 API 排除。
         return chain(ancestors[0]) if ancestors and callable(chain) else (ancestors or [session_id])
 
-    def _history_rows(self, database: Any, session_id: str) -> list[dict[str, Any]]:
-        rows = [{**row, "session_id":owner} for owner in self._session_chain(database, session_id)
-                for row in database.get_messages(owner, include_inactive=True)]
-        return sorted(rows, key=lambda row: row["id"])
+    def _history_rows(self, database: Any, session_id: str, *, account_id: str | None = None,
+                      conversation_id: str | None = None) -> list[dict[str, Any]]:
+        chain = self._session_chain(database, session_id)
+        rows = sorted(({**row, "session_id": owner} for owner in chain
+                       for row in database.get_messages(owner, include_inactive=True)), key=lambda row: row["id"])
+        write = getattr(database, "_execute_write", None)
+        if account_id is None or conversation_id is None or not callable(write):
+            return rows
+        # The SDK carries display_metadata through SQL clones and compaction copies.
+        # Stamp the actual persisted row before a future copy; never infer an origin
+        # from equal text, a client ID alone, or membership in a compression chain.
+        scope = {"version": 1, "storageOwner": self.storage_owner,
+                 "accountId": account_id, "conversationId": conversation_id}
+        with self._migration_lock:
+            def stamp(conn):
+                for row in rows:
+                    metadata = row.get("display_metadata") or {}
+                    if not isinstance(metadata, Mapping) or ROW_ORIGIN_KEY in metadata:
+                        continue
+                    origin = {**scope, "sessionId": row["session_id"], "rowId": row["id"]}
+                    metadata = {**metadata, ROW_ORIGIN_KEY: origin}
+                    conn.execute("UPDATE messages SET display_metadata=? WHERE id=? AND session_id=?",
+                                 (json.dumps(metadata, separators=(",", ":")), row["id"], row["session_id"]))
+                    row["display_metadata"] = metadata
+            write(stamp)
+        originals = {(row["session_id"], row["id"]): row for row in rows}
+        result = {}
+        for row in rows:
+            metadata = row.get("display_metadata") or {}
+            origin = metadata.get(ROW_ORIGIN_KEY) if isinstance(metadata, Mapping) else None
+            source = None
+            if (isinstance(origin, Mapping) and all(origin.get(key) == value for key, value in scope.items())
+                    and isinstance(origin.get("sessionId"), str) and type(origin.get("rowId")) is int):
+                source = originals.get((origin["sessionId"], origin["rowId"]))
+            source_metadata = (source or {}).get("display_metadata") or {}
+            same_source = (source is not None and source["id"] < row["id"]
+                and isinstance(source_metadata, Mapping) and source_metadata.get(ROW_ORIGIN_KEY) == origin
+                and all(source.get(name) == row.get(name) for name in
+                        ("role", "content", "platform_message_id", "tool_call_id", "tool_calls", "timestamp", "_compressed_summary")))
+            copied = same_source and (
+                source["session_id"] == row["session_id"] and not source.get("active", 1)
+                or source["session_id"] != row["session_id"]
+                and chain.index(source["session_id"]) < chain.index(row["session_id"])
+                and database.get_session(source["session_id"]).get("end_reason") == "compression")
+            if copied:
+                # Keep the original location, parameters and result. A retained tail
+                # can supersede its original with rewind flags rather than compacted=1.
+                if row.get("active", 1):
+                    result[source["id"]] = {**result.get(source["id"], source), "active": 1}
+                continue
+            result[row["id"]] = row
+        return list(result.values())
 
     @staticmethod
     def _native_key(session_id: str, row: Mapping[str, Any]) -> str:
         owner = row.get("session_id") or session_id
         return "history-native:" + hashlib.sha256(f"{owner}:{row['id']}".encode()).hexdigest()
+
+    def public_message_id(self, account: Any, session_id: str, row: Mapping[str, Any],
+                          conversation_id: str) -> str:
+        """Use persisted identity first; native call sources never depend on prose."""
+        mapped = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?",
+            (self._native_key(session_id, row),)).fetchone()
+        if mapped:
+            return mapped[0]
+        client_id = row.get("platform_message_id")
+        protocol = account.store.database.execute(
+            "SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=? AND sender=?",
+            (conversation_id, client_id, row.get("role")),
+        ).fetchone() if client_id else None
+        if protocol:
+            return protocol[0]
+        native_id = f"{row.get('session_id') or session_id}:{row['id']}"
+        return "msg_host_" + hashlib.sha256(f"{account.account_id}:{conversation_id}:{native_id}".encode()).hexdigest()[:40]
+
+    @staticmethod
+    def occurred_at(row: Mapping[str, Any]) -> int | None:
+        timestamp = row.get("timestamp")
+        try:
+            if type(timestamp) in (float, int):
+                return int(timestamp * 1000)
+            if isinstance(timestamp, str):
+                return int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
+        except (ValueError, TypeError, OverflowError):
+            pass
+        return None
 
     def _presentation_prefix(self, account_id: str, conversation_id: str | None = None) -> str:
         prefix = PRESENTATION_NAMESPACE + self.storage_owner + ":" + hashlib.sha256(account_id.encode()).hexdigest() + ":"
@@ -370,13 +449,15 @@ class HermesHistoryPort:
                                rows: list[dict[str, Any]], conversation_id: str) -> dict[str, list[dict[str, Any]]]:
         """Resolve only producer-stamped native rows, never text or prefix matches."""
         result = {}
-        chain = set(self._session_chain(database, session_id))
+        chain = self._session_chain(database, session_id)
         prefix = NATIVE_INPUT_NAMESPACE + self._presentation_prefix(account.account_id, conversation_id)
         for row in rows:
             metadata = row.get("display_metadata")
-            binding = metadata.get(NATIVE_INPUT_KEY) if isinstance(metadata, Mapping) else None
-            if not isinstance(binding, Mapping):
+            if not isinstance(metadata, Mapping) or NATIVE_INPUT_KEY not in metadata:
                 continue
+            binding = metadata[NATIVE_INPUT_KEY]
+            if not isinstance(binding, Mapping):
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
             if (binding.get("version") != 1 or binding.get("storageOwner") != self.storage_owner
                     or binding.get("accountId") != account.account_id
                     or binding.get("conversationId") != conversation_id):
@@ -386,18 +467,115 @@ class HermesHistoryPort:
                     or not all(isinstance(key, str) for key in keys) or len(set(keys)) != len(keys)):
                 raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
             snapshots = []
+            clients = set()
             for key in keys:
                 if not isinstance(key, str) or not key.startswith(prefix):
                     raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
                 value = database.get_meta(key)
-                record = json.loads(value) if value else {}
+                try:
+                    record = json.loads(value) if value else {}
+                except (ValueError, TypeError) as exc:
+                    raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT") from exc
+                if not isinstance(record, Mapping):
+                    raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                client = record.get("clientMessageId")
+                items = record.get("inputs")
                 if (record.get("version") != 1 or record.get("storageOwner") != self.storage_owner
                         or record.get("accountId") != account.account_id
                         or record.get("conversationId") != conversation_id
-                        or record.get("sessionId") not in chain or not record.get("inputs")):
+                        or record.get("sessionId") not in chain
+                        or record.get("status") != "accepted"
+                        or not isinstance(client, str) or not client
+                        or key != prefix + hashlib.sha256(client.encode()).hexdigest()
+                        or not isinstance(items, list) or not items):
                     raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
-                snapshots.extend(dict(item) for item in record["inputs"])
+                owner = row.get("session_id") or session_id
+                if record["sessionId"] != owner:
+                    # Reading an authored original is independent of continuing its
+                    # generation. Require the producer's exact input binding in a
+                    # real compression ancestor; a chain member alone proves nothing.
+                    if (owner not in chain or chain.index(record["sessionId"]) >= chain.index(owner)
+                            or not any(original["id"] < row["id"] and original.get("role") == "user"
+                                and original.get("session_id") == record["sessionId"]
+                                and isinstance(original.get("display_metadata"), Mapping)
+                                and original["display_metadata"].get(NATIVE_INPUT_KEY) == binding
+                                for original in rows)):
+                        raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                for item in items:
+                    if (not isinstance(item, Mapping) or item.get("sender") != "user"
+                            or item.get("conversationId") != conversation_id
+                            or not isinstance(item.get("messageId"), str) or not item["messageId"]
+                            or (item.get("anchorClientMessageId") or item.get("clientMessageId")) != client
+                            or item.get("generationId") != record.get("generationId")):
+                        raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
+                clients.add(client)
+                snapshots.extend(dict(item) for item in items)
+            if row.get("platform_message_id") and row["platform_message_id"] not in clients:
+                raise RuntimeError("HOST_HISTORY_BINDING_CONFLICT")
             result[self._native_key(session_id, row)] = snapshots
+        return result
+
+    def _execution_generations(self, account: Any, database: Any, session_id: str,
+                               rows: list[dict[str, Any]], conversation_id: str,
+                               native_inputs: dict[str, list[dict[str, Any]]] | None = None) -> dict[int, str]:
+        inputs = (self._native_input_bindings(account, database, session_id, rows, conversation_id)
+                  if native_inputs is None else native_inputs)
+        users = [row for row in rows if row.get("role") == "user" and not _deleted(row)]
+        clients = Counter((row.get("session_id"), bool(row.get("compacted")), row["platform_message_id"]) for row in users
+                          if isinstance(row.get("platform_message_id"), str) and row["platform_message_id"])
+        keys = Counter((row.get("session_id"), bool(row.get("compacted")), key) for row in users
+                       if self._native_key(session_id, row) in inputs
+                       for key in row["display_metadata"][NATIVE_INPUT_KEY]["inputKeys"])
+        result = {}
+        current = None
+        owner = None
+        seen = set()
+        seen_clients, seen_keys = set(), set()
+        for row in rows:
+            if row.get("session_id") != owner:
+                current, owner = None, row.get("session_id")
+            if row.get("role") != "user":
+                continue
+            client_id = row.get("platform_message_id")
+            population = (owner, bool(row.get("compacted")))
+            if (row.get("_compressed_summary") or _deleted(row)
+                    or isinstance(client_id, str) and (clients[(*population, client_id)] > 1
+                                                       or (owner, client_id) in seen_clients)):
+                current = None
+                continue
+            if isinstance(client_id, str) and client_id:
+                seen_clients.add((owner, client_id))
+            accepted = account.store.database.execute(
+                "SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=? AND sender='user'",
+                (conversation_id, client_id),
+            ).fetchone() if isinstance(client_id, str) and client_id else None
+            ordinary = account.conversations.workflow.for_message(accepted[0]) if accepted else None
+            generation = ordinary
+            linked = inputs.get(self._native_key(session_id, row))
+            if linked:
+                row_keys = row["display_metadata"][NATIVE_INPUT_KEY]["inputKeys"]
+                generations = {item.get("generationId") for item in linked}
+                if (any(keys[(*population, key)] != 1 or (owner, key) in seen_keys for key in row_keys)
+                        or len(generations) != 1):
+                    current = None
+                    continue
+                seen_keys.update((owner, key) for key in row_keys)
+                linked_generation = next(iter(generations))
+                if isinstance(linked_generation, str) and linked_generation:
+                    generation = account.conversations.workflow._get("generation:" + linked_generation)
+                elif linked_generation is not None:
+                    generation = None
+                if (not generation or ordinary and ordinary["generationId"] != generation["generationId"]
+                        or not ordinary and generation["generationId"] != current):
+                    current = None
+                    continue
+            if (not generation or generation["conversationId"] != conversation_id
+                    or generation["generationId"] != current and generation["generationId"] in seen):
+                current = None
+                continue
+            current = generation["generationId"]
+            seen.add(current)
+            result[row["id"]] = current
         return result
 
     def record_visible(self, account: Any, payload: Mapping[str, Any], state: str = "CONFIRMED") -> dict[str, Any] | None:
@@ -500,7 +678,7 @@ class HermesHistoryPort:
             with self._migration_lock, account.store.transaction():
                 account.store.database.execute("INSERT OR IGNORE INTO account_metadata(key,value) VALUES ('native-history-migration-cutoff',?)", (self.started_at,))
                 cutoff = account.store.database.execute("SELECT value FROM account_metadata WHERE key='native-history-migration-cutoff'").fetchone()[0]
-                rows = self._history_rows(database, session_id)
+                rows = self._history_rows(database, session_id, account_id=account_id, conversation_id=conversation_id)
                 by_platform = {str(row["platform_message_id"]): row for row in rows if row.get("platform_message_id") and row.get("role") in {"user", "assistant"}}
                 remaining = list(rows)
                 queued = account.store.database.execute(
@@ -536,7 +714,7 @@ class HermesHistoryPort:
                     account.store.database.execute("INSERT OR IGNORE INTO account_metadata(key,value) VALUES (?,?)", (native_key, row["message_id"]))
                     for mid in generation["messageIds"] if generation and generation.get("offsets") else [row["message_id"]]:
                         account.store.database.execute("UPDATE messages SET text='' WHERE message_id=?", (mid,))
-                rows = self._history_rows(database, session_id)
+                rows = self._history_rows(database, session_id, account_id=account_id, conversation_id=conversation_id)
 
             native_inputs = self._native_input_bindings(account, database, session_id, rows, conversation_id)
             presentations = self._presentations(database, account_id, conversation_id, rows)
@@ -547,14 +725,15 @@ class HermesHistoryPort:
             self._host_user_edits(account, database, session_id, rows, presentations)
             self._bind_replies(account, session_id, rows, presentations)
             native_by_client = {str(row["platform_message_id"]): row for row in rows if row.get("role") == "user" and row.get("platform_message_id")}
-            def generation_for_client(client_id: str) -> str | None:
-                accepted = account.store.database.execute(
-                    "SELECT message_id FROM messages WHERE conversation_id=? AND client_message_id=? AND sender='user'",
-                    (conversation_id, client_id),
-                ).fetchone()
-                generation = account.conversations.workflow.for_message(accepted[0]) if accepted else None
-                return generation["generationId"] if generation and generation["conversationId"] == conversation_id else None
-            execution = project_execution(rows, generation_for_client)
+            generations = self._execution_generations(account, database, session_id, rows, conversation_id, native_inputs)
+            execution = project_execution(rows, lambda client: None,
+                generation_for_row=lambda row: generations.get(row["id"]))
+            for row in rows:
+                for step in execution.get(row["id"], {}).get("executionSteps", []):
+                    step["sourceMessageId"] = self.public_message_id(account, session_id, row, conversation_id)
+                    occurred_at = self.occurred_at(row)
+                    if occurred_at is not None:
+                        step["occurredAt"] = occurred_at
             with self._migration_lock:
                 merge_history_execution(database, self.storage_owner, account_id, conversation_id, execution)
             result = {}
@@ -579,10 +758,8 @@ class HermesHistoryPort:
                     "SELECT * FROM messages WHERE conversation_id=? AND client_message_id=? AND sender=?",
                     (conversation_id, client_id, role),
                 ).fetchone() if client_id else None
-                if mapped:
-                    message_id = mapped[0]
-                elif protocol:
-                    message_id = protocol["message_id"]
+                if mapped or protocol or row.get("tool_calls"):
+                    message_id = self.public_message_id(account, session_id, row, conversation_id)
                 else:
                     digest = hashlib.sha256(text.encode()).hexdigest()
                     prefix = f"history-hash:{conversation_id}:"
@@ -594,10 +771,8 @@ class HermesHistoryPort:
                     if candidate:
                         account.store.database.execute("DELETE FROM account_metadata WHERE key=?", (candidate[0],))
                 account.store.database.execute("INSERT OR IGNORE INTO account_metadata(key,value) VALUES (?,?)", (native_key, message_id))
-                timestamp = row.get("timestamp")
-                try:
-                    millis = int(float(timestamp) * 1000) if isinstance(timestamp, (float, int)) else int(datetime.fromisoformat(str(timestamp).replace("Z", "+00:00")).timestamp() * 1000)
-                except (ValueError, TypeError):
+                millis = self.occurred_at(row)
+                if millis is None:
                     millis = int(row["id"])
                 snapshot = presentations.get(message_id)
                 if snapshot is not None:

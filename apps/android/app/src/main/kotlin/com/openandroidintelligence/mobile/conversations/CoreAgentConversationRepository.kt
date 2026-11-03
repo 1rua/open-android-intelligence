@@ -883,7 +883,7 @@ class CoreAgentConversationRepository(
                         step.stepId, step.eventId, step.toolName, step.arguments, step.output,
                         runCatching { com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(step.status.uppercase()) }
                             .getOrDefault(com.openandroidintelligence.conversation.model.NativeExecutionStatus.UNKNOWN),
-                        step.revision,
+                        step.revision, step.sourceMessageId, step.occurredAt,
                     )
                 },
             )
@@ -1245,7 +1245,7 @@ class CoreAgentConversationRepository(
                                             step.stepId, step.eventId, step.toolName, step.arguments, step.output,
                                             runCatching { com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(step.status.uppercase()) }
                                                 .getOrDefault(com.openandroidintelligence.conversation.model.NativeExecutionStatus.UNKNOWN),
-                                            step.revision)
+                                            step.revision, step.sourceMessageId, step.occurredAt)
                                     }, event.clientMessageId, event.userMessageId))
                             }
                         }
@@ -1536,10 +1536,11 @@ class CoreAgentConversationRepository(
             "send.steered client=${message.clientMessageId.value} conversation=$conversationId generation=$generationId",
         )
         return MessageAcceptance(
-            messageId = "steer_${message.clientMessageId.value}",
+            messageId = message.clientMessageId.value,
             correlationId = message.clientMessageId.value,
             generationId = result.generationId,
             delivery = MessageDeliveryMode.STEER,
+            authoritative = false,
         )
     }
 

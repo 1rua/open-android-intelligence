@@ -80,6 +80,7 @@ def _report_dispatch_delivered(account: Any, record: Mapping[str, Any] | None, c
 
 
 _native_input_origin = ContextVar("oai_hermes_native_input_origin", default=None)
+_native_busy_ack = ContextVar("oai_hermes_native_busy_ack", default=None)
 
 
 # The fixed SDK has lifecycle/tool hooks, but no structured mid-turn input hook.
@@ -446,6 +447,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         # which can bypass BasePlatformAdapter's busy callback entirely.
         session_key = self._event_session_key(event)
         runner = self._host_runner()
+        self._observe_busy_ack(runner)
         agent = getattr(runner, "_running_agents", {}).get(session_key)
         origin = None
         if agent is not None:
@@ -457,6 +459,56 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             await super().handle_message(event)
         finally:
             _native_input_origin.reset(token)
+
+    @staticmethod
+    def _observe_busy_ack(runner: Any) -> None:
+        """Mark only the host's dedicated ack send, never arbitrary busy replies."""
+        original = getattr(runner, "_send_busy_ack_reply", None)
+        if not callable(original) or getattr(original, "_oai_busy_ack_observer", False):
+            return
+        import inspect
+        from gateway.run_busy import GatewayBusySessionMixin
+        if getattr(original, "__func__", None) is not GatewayBusySessionMixin._send_busy_ack_reply:
+            return
+        try:
+            if hashlib.sha256(inspect.getsource(original).encode()).hexdigest() != (
+                    "b16da0e48bd46e725cc0a79dc2286bc78bfa32295a936a953048662f78c39c86"):
+                return
+        except (OSError, TypeError):
+            return
+
+        @wraps(original)
+        async def observed(event, adapter, message):
+            token = _native_busy_ack.set({"adapter": adapter, "event": event, "task": asyncio.current_task(),
+                "core": getattr(getattr(adapter, "services", None), "core", None),
+                "receipt": native_input_receipt.get(), "turn": trusted_turn.get()})
+            try:
+                return await original(event, adapter, message)
+            finally:
+                _native_busy_ack.reset(token)
+
+        observed._oai_busy_ack_observer = True
+        runner._send_busy_ack_reply = observed
+
+    def _busy_ack_receipt(self, account_id: str, conversation_id: str) -> dict[str, Any] | None:
+        observed = _native_busy_ack.get()
+        receipt, turn = native_input_receipt.get(), trusted_turn.get()
+        if not observed or not receipt or not turn or not receipt.get("open"):
+            return None
+        event = observed["event"]
+        if (observed["task"] is not asyncio.current_task()
+                or observed["adapter"] is not self or observed["core"] is not self.services.core
+                or observed["receipt"] is not receipt or observed["turn"] is not turn
+                or receipt.get("adapter") is not self or receipt.get("core") is not self.services.core
+                or turn.get("core") is not self.services.core
+                or any(receipt.get(name) != turn.get(name) for name in
+                       ("accountId", "conversationId", "clientMessageId", "sessionId", "generationId"))
+                or receipt.get("accountId") != account_id or receipt.get("conversationId") != conversation_id
+                or event.source.user_id != account_id or event.source.chat_id != conversation_id
+                or event.message_id != receipt.get("clientMessageId")
+                or (event.metadata or {}).get("gateway_session_key") != receipt.get("sessionKey")):
+            return None
+        return receipt
 
     def _native_input_capture(self, event: Any, session_key: str) -> dict[str, Any] | None:
         runner = self._host_runner()
@@ -676,6 +728,13 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         if not target_account:
             return SendResult(success=False, error="ACCOUNT_NOT_CONFIGURED", retryable=False)
         try:
+            receipt = self._busy_ack_receipt(target_account, chat_id)
+            if receipt is not None:
+                status = {"kind": "busy_ack", "clientMessageId": receipt["clientMessageId"],
+                          "generationId": receipt["generationId"]}
+                if status not in receipt["statuses"]:
+                    receipt["statuses"].append(status)
+                return SendResult(success=True, message_id=None, raw_response=status)
             now_iso = iso_millis()
             # `reply_to` names the message being answered, not this one: using it
             # as our own id would overwrite the user's row. Only an id the host
@@ -1254,7 +1313,10 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             "clientMessageId": client_message_id,
             "generationId": generation_id,
         })
-        receipt = {"accountId": account_id, "conversationId": conversation_id, "messages": [], "open": True}
+        receipt = {"adapter": self, "core": self.services.core, "accountId": account_id,
+            "conversationId": conversation_id, "clientMessageId": client_message_id,
+            "sessionId": binding["agentSessionId"], "sessionKey": session_key, "generationId": generation_id,
+            "messages": [], "statuses": [], "open": True}
         receipt_token = native_input_receipt.set(receipt)
         try:
             previous_task = self._session_tasks.get(session_key)
@@ -1279,7 +1341,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             bool(conversation_id),
             bool(client_message_id),
         )
-        return {"outcome": "accepted", "messages": receipt["messages"],
+        return {"outcome": "accepted", "messages": receipt["messages"], "statuses": receipt["statuses"],
                 "text": "\n\n".join(message["text"] for message in receipt["messages"])}
 
 

@@ -30,8 +30,8 @@ sealed interface TimelineDisplayItem {
 
     data class Execution(val run: AssistantExecutionRun) : TimelineDisplayItem {
         /**
-         * 段身份直接取段内第一条消息的 key：折叠瞬间这个展示项沿用原单条条目的身份，
-         * key 不再突变，位置动画与测量树不会错位。
+         * 原生步骤用任务与公共来源身份固定段 key，旧 markup 沿用首条消息的 key。
+         * 流式增量与事实行替换成历史来源消息时，展示身份保持稳定。
          */
         override val key: String get() = run.segmentKey
 
@@ -40,14 +40,14 @@ sealed interface TimelineDisplayItem {
 }
 
 /**
- * 一轮助手执行过程的聚合结果。
+ * 一段连续助手执行过程的聚合结果；同一 generation 可有多个展示段。
  *
  * [finalBlocks] 是 [finalEntry] 里「尾部正文之前」的最终回答块；
  * 没有最终正文时为空，宿主不应伪造回答占位。
  */
 data class AssistantExecutionRun(
     /**
-     * 段身份：段内第一条助手消息的 key。
+     * 段身份：原生步骤取任务与公共来源身份，旧 markup 取段内首条消息 key。
      *
      * 聚合面板的展开偏好与 LazyColumn 的展示项 key 用这个字段，而不是随最终回答
      * 变化的 [key]；否则多消息回合里 finalEntry 换成后一条时，面板会被当成新项。
@@ -63,6 +63,8 @@ data class AssistantExecutionRun(
     /** 只有最终回答所在消息仍在流式时，才在最终正文末尾画光标。 */
     val finalEntryIsStreaming: Boolean,
     val hasFinalAnswer: Boolean,
+    /** 宿主明确提供的任务身份，与连续展示段的身份分开保存。 */
+    val generationId: String? = null,
 )
 
 /**
@@ -120,7 +122,7 @@ internal fun ExecutionStep.isInterruptedStep(): Boolean = when (this) {
  * 规则严格对齐规格 §3.1：
  * 1. 用户消息、审批行、系统回执行打断助手段；已完成的正常回答也关闭当前段，
  *    后续消息不能再把它降级为过程叙述；
- * 2. 段内至少有一个思考/工具块，且（已出现尾部正文 或 整段不再流式）才折叠；
+ * 2. 段内出现明确的思考/工具块即使用统一执行容器，运行中也保持同一展示类型；
  * 3. 普通多条助手消息（无执行块）不聚合；
  * 4. 折叠时 `finalEntry` 取最后一条有尾部正文的助手消息，没有则取段内最后一条；
  * 5. 解析结果按 `entry.key + 文本长度 + 内容 hash` 缓存，上限 [MaxCachedEntries] 条；
@@ -138,14 +140,6 @@ class TimelineDisplayModel(
     /** 当前会话中无身份冲突的用户行，沿用首次出现的展示键。 */
     private val userItemKeys = mutableMapOf<String, String>()
 
-    /**
-     * 当前仍在增量的执行段里，是否已经出现过最终正文。
-     *
-     * 只用一段 key：同一时刻只可能有一轮在流式；历史段不需要这个标记。
-     * 这样「片段 → 工具块 → 片段」的多步输出不会在折叠/展开之间来回跳。
-     */
-    private var latchedFinalSegmentKey: String? = null
-
     /** 当前缓存条数（测试用于验证上限）。 */
     internal val cachedEntryCount: Int get() = parsedCache.size
 
@@ -159,46 +153,78 @@ class TimelineDisplayModel(
             return emptyList()
         }
 
+        // 同任务同一步的后续快照只更新首次来源位置，不能跨引导复制卡片。
+        val latestNativeSteps = linkedMapOf<Pair<String, String>, NativeExecutionStep>()
+        val nativeStepSources = mutableMapOf<Pair<String, String>, Int>()
+        entries.forEachIndexed { index, entry ->
+            val generationId = entry.generationId?.takeIf { it.isNotBlank() }
+            if (!isExecutionEligible(entry) || generationId == null) return@forEachIndexed
+            entry.executionSteps.forEach { step ->
+                val identity = generationId to step.stepId
+                val previous = latestNativeSteps[identity]
+                if (previous == null) {
+                    nativeStepSources[identity] = index
+                    latestNativeSteps[identity] = step
+                } else if (step.revision > previous.revision) {
+                    latestNativeSteps[identity] = step.copy(
+                        sourceMessageId = previous.sourceMessageId?.takeIf { it.isNotBlank() } ?: step.sourceMessageId,
+                        occurredAt = previous.occurredAt ?: step.occurredAt,
+                    )
+                }
+            }
+        }
+
         val items = mutableListOf<TimelineDisplayItem>()
         val segment = mutableListOf<EntryAnalysis>()
-        // 结构化步骤只按宿主明确提供的 generation / step 身份关联，
-        // 普通正文、相似时间以及相邻位置都不参与归属判断。
-        val nativeGroups = entries.filter { isExecutionEligible(it) && !it.generationId.isNullOrBlank() }
-            .groupBy { requireNotNull(it.generationId) }
-            .filterValues { group -> group.any { it.executionSteps.isNotEmpty() } }
-        val emittedNativeGroups = mutableSetOf<String>()
+        // 只收集实际相邻且 generation 一致的执行源；后续步骤不能提前到引导前。
+        val nativeSegment = mutableListOf<TimelineEntry>()
+
+        fun flushNativeSegment() {
+            if (nativeSegment.isEmpty()) return
+            items += TimelineDisplayItem.Execution(
+                buildNativeRun(requireNotNull(nativeSegment.first().generationId), nativeSegment.toList()),
+            )
+            nativeSegment.clear()
+        }
 
         fun flushSegment() {
             if (segment.isEmpty()) return
-            // 只有最后一段会继续增量；历史段不需要「已开始最终回答」的粘滞状态。
-            val isLastSegment = segment.last().entry.key == entries.last().key
-            items += buildSegment(segment.toList(), isLastSegment, generation)
+            items += buildSegment(segment.toList(), generation)
             segment.clear()
         }
 
-        entries.forEach { entry ->
-            val nativeGroup = entry.generationId?.let(nativeGroups::get)
-            if (isExecutionEligible(entry) && nativeGroup != null) {
-                flushSegment()
-                val nativeGenerationId = requireNotNull(entry.generationId)
-                if (emittedNativeGroups.add(nativeGenerationId)) {
-                    items += TimelineDisplayItem.Execution(buildNativeRun(nativeGenerationId, nativeGroup))
+        entries.forEachIndexed { index, entry ->
+            if (isExecutionEligible(entry) && !entry.generationId.isNullOrBlank() && entry.executionSteps.isNotEmpty()) {
+                val sourceSteps = entry.executionSteps.distinctBy { it.stepId }.mapNotNull { step ->
+                    val identity = requireNotNull(entry.generationId) to step.stepId
+                    if (nativeStepSources[identity] == index) latestNativeSteps[identity] else null
                 }
-                // 原生工具步骤与回答分别呈现；同轮的多条合法回复全部保留。
+                if (sourceSteps.isNotEmpty()) {
+                    flushSegment()
+                    if (nativeSegment.firstOrNull()?.generationId != entry.generationId) flushNativeSegment()
+                    nativeSegment += entry.copy(executionSteps = sourceSteps)
+                }
+                // 只有重复步骤的事实行不生成新容器；合法正文和附件始终原位保留。
                 if (entry.text.isNotBlank() || entry.attachments.isNotEmpty()) {
+                    flushSegment()
+                    flushNativeSegment()
                     items += TimelineDisplayItem.Single(entry)
                 }
             } else if (isExecutionEligible(entry)) {
+                flushNativeSegment()
+                if (segment.isNotEmpty() && segment.last().entry.generationId != entry.generationId) flushSegment()
                 val analysis = analyse(entry)
                 segment += analysis
                 // 已完成且有正常正文的消息就是一个回答边界。后续助手消息即使
                 // 没有用户分隔，也不能把这条回答降级为下一段工具过程的叙述。
                 if ((!entry.isStreaming || generation?.isTerminal() == true) && analysis.finalVisible) flushSegment()
             } else {
+                flushNativeSegment()
                 flushSegment()
                 items += TimelineDisplayItem.Single(entry)
             }
         }
+        flushNativeSegment()
         flushSegment()
         return retainUserItemKeys(items)
     }
@@ -230,20 +256,35 @@ class TimelineDisplayModel(
             val previous = latest[step.stepId]
             if (previous == null || step.revision > previous.revision) latest[step.stepId] = step
         } }
-        val segmentKey = "execution:$generationId"
+        val segmentKey = entries.first().executionSteps.firstOrNull()?.sourceMessageId
+            ?.takeIf { it.isNotBlank() }?.let { "execution:$generationId:$it" } ?: entries.first().key
+        // 任务状态由明确的 generation 投影提供，不能用本段某一步完成代替任务终态。
+        val generationState = entries.firstNotNullOfOrNull { it.executionGenerationState }
+        val terminalGeneration = generationState?.isTerminal() == true
+        val streamActive = when {
+            terminalGeneration -> false
+            generationState == GenerationState.RUNNING || generationState == GenerationState.QUEUED ||
+                generationState == GenerationState.CANCEL_REQUESTED -> true
+            else -> latest.values.any { it.status == NativeExecutionStatus.RUNNING }
+        }
+        // 步骤身份属于任务，不能随引导前后的展示段变化。
+        val taskKey = "execution:$generationId"
         val steps = latest.values.mapIndexed { index, step ->
+            // 明确终态压住迟到的运行快照；没有真实结果时仍是未知，不能伪造成功。
+            val status = if (terminalGeneration && step.status == NativeExecutionStatus.RUNNING)
+                NativeExecutionStatus.UNKNOWN else step.status
             ExecutionStep.ToolCall(
                 block = TimelineBlock.ToolCallBlock(
                     toolName = step.toolName,
                     command = step.arguments,
                     output = step.output,
-                    isSuccess = step.status != NativeExecutionStatus.FAILED,
-                    isRunning = step.status == NativeExecutionStatus.RUNNING,
-                    executionStatus = step.status,
+                    isSuccess = status != NativeExecutionStatus.FAILED,
+                    isRunning = status == NativeExecutionStatus.RUNNING,
+                    executionStatus = status,
                 ),
-                entryKey = segmentKey,
+                entryKey = taskKey,
                 blockIndex = index,
-                entryIsStreaming = step.status == NativeExecutionStatus.RUNNING,
+                entryIsStreaming = streamActive && status == NativeExecutionStatus.RUNNING,
                 nativeStepId = step.stepId,
             )
         }
@@ -255,37 +296,27 @@ class TimelineDisplayModel(
             stepCount = steps.size,
             failedStepCount = latest.values.count { it.status == NativeExecutionStatus.FAILED },
             interrupted = false,
-            isStreaming = latest.values.any { it.status == NativeExecutionStatus.RUNNING },
+            isStreaming = streamActive,
             finalEntryIsStreaming = false,
             hasFinalAnswer = false,
+            generationId = generationId,
         )
     }
 
     private fun buildSegment(
         analyses: List<EntryAnalysis>,
-        isLastSegment: Boolean,
         generation: GenerationState?,
     ): List<TimelineDisplayItem> {
         val entries = analyses.map { it.entry }
         val hasExecutionBlocks = analyses.any { it.executionCount > 0 }
-        val anyFinalVisible = analyses.any { it.finalVisible }
         // 只有明确终态才强制结束流式判定；OUTCOME_UNKNOWN / UNSUPPORTED / IDLE
         // 仍按每条消息的 isStreaming 判断（取消结果未知时可能还有增量到达）。
         // Hermes 的实时快照可能一直停留在 STREAMING，直到切会话重载才变成
         // CONFIRMED；生成已经明确结束时必须允许折叠，不再依赖消息标记。
         val terminalGeneration = generation?.isTerminal() == true
         val streamActive = !terminalGeneration && entries.any { it.isStreaming }
-        val anyStreaming = streamActive
-        val segmentKey = entries.first().key
-        // 一旦这一段出现过最终正文，就不能因为后续又出现一个工具块而把已折叠的
-        // 面板重新展开：展开/收起来回跳比晚一点显示更糟。这个粘滞标记只作用于
-        // 仍在增量的最后一段，历史段由 anyFinalVisible / !anyStreaming 自然覆盖。
-        val stickyFinalStarted = isLastSegment && latchedFinalSegmentKey == segmentKey
-        if (isLastSegment && anyFinalVisible) latchedFinalSegmentKey = segmentKey
-        val shouldFold = hasExecutionBlocks &&
-            (anyFinalVisible || stickyFinalStarted || !anyStreaming)
-
-        if (!shouldFold) {
+        // 明确的执行块从首个流式快照起就在统一容器内；是否已有最终正文只决定回答区域。
+        if (!hasExecutionBlocks) {
             return entries.map { entry ->
                 TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
             }
@@ -367,6 +398,7 @@ class TimelineDisplayModel(
             isStreaming = streamActive,
             finalEntryIsStreaming = finalEntry.isStreaming && streamActive,
             hasFinalAnswer = hasFinalAnswer,
+            generationId = analyses.first().entry.generationId?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -462,7 +494,7 @@ fun rememberTimelineDisplayItems(
     threadId: String? = null,
     generation: GenerationState? = null,
 ): List<TimelineDisplayItem> {
-    // 缓存与粘滞状态都属于一段会话：换会话必须重建，避免跨会话 id 命中/误折叠。
+    // 解析缓存与用户展示身份属于当前会话，换会话时重建。
     val model = remember(threadId) { TimelineDisplayModel() }
     return remember(model, entries, generation) { model.build(entries, generation) }
 }
@@ -473,9 +505,10 @@ internal fun GenerationState.isTerminal(): Boolean =
         this == GenerationState.FAILED ||
         this == GenerationState.CANCELLED
 
-/** 能进入执行段的消息：既不是用户消息，也不是审批/系统回执行。 */
+/** 只有助手消息或明确的执行事实能进入执行段，审批与系统导航行始终独立。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =
-    !entry.isUser && entry.approval == null && entry.systemThreadId == null
+    !entry.isUser && (entry.sender == "assistant" || entry.executionFact) &&
+        entry.approval == null && entry.systemThreadId == null
 
 /**
  * 廉价预扫描：只有可能包含执行块的消息才需要完整 Markdown 解析。

@@ -169,7 +169,7 @@ fun AssistantExecutionTurnBody(
 /**
  * 执行过程折叠面板（规格 §4.3）。
  *
- * 首次出现即折叠；用户手动展开后保持，不因流式增量重建而强制收起。
+ * 运行中默认展开，生成结束后自动收起；用户手动选择优先于自动状态。
  * 标题两种文案：
  * - 折叠：「已完成 N 步执行与思考 · 点击展开」；
  * - 展开：「执行过程 · N 步 · 点击收起」；
@@ -194,11 +194,11 @@ fun ExecutionProcessPanel(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    // 默认折叠；段身份不变时用户选择保持不变。
-    // 无最终正文且过程区含有附件（例如 Agent 只回了截图）时默认展开：
-    // 折叠面板把唯一的可见附件藏起来，用户会以为消息丢了内容。
-    val startsExpanded = !run.hasFinalAnswer && run.steps.any { it is ExecutionStep.Attachments }
-    var expanded by rememberSaveable(run.segmentKey) { mutableStateOf(startsExpanded) }
+    // 自动状态随任务结束收起，用户选择单独保存，不能被增量或终态覆盖。
+    // 无最终正文且过程区只有附件时，继续保留默认展开，避免隐藏唯一可见内容。
+    var userExpanded by rememberSaveable(run.segmentKey) { mutableStateOf<Boolean?>(null) }
+    val expanded = userExpanded ?: (run.isStreaming ||
+        !run.hasFinalAnswer && run.steps.any { it is ExecutionStep.Attachments })
 
     val chevronRotation = if (reduceMotion) {
         if (expanded) 180f else 0f
@@ -212,7 +212,7 @@ fun ExecutionProcessPanel(
 
     val baseTitle = if (expanded) {
         "执行过程 · ${run.stepCount} 步"
-    } else if (unknownSteps > 0 || nativeRunning) {
+    } else if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
         "执行过程 · ${run.stepCount} 步"
     } else {
         "已完成 ${run.stepCount} 步执行与思考"
@@ -241,11 +241,11 @@ fun ExecutionProcessPanel(
                         role = Role.Button,
                         onClickLabel = if (expanded) "收起执行过程" else "展开执行过程",
                     ) {
-                        expanded = !expanded
+                        userExpanded = !expanded
                     }
                     .semantics {
                         contentDescription =
-                            if (unknownSteps > 0 || nativeRunning) {
+                            if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
                                 "执行过程，${run.stepCount} 步$unknownSuffix$runningSuffix，${if (expanded) "已展开" else "已收起"}"
                             } else {
                                 "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"

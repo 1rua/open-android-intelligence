@@ -5,7 +5,8 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 
-def project_execution(rows: list[dict[str, Any]], generation_for_client: Callable[[str], str | None]) -> dict[int, dict[str, Any]]:
+def project_execution(rows: list[dict[str, Any]], generation_for_client: Callable[[str], str | None], *,
+                      generation_for_row: Callable[[Mapping[str, Any]], str | None] | None = None) -> dict[int, dict[str, Any]]:
     """Keep tools inside the native user turn whose client identity is recorded.
 
     A result establishes completion, not success inferred from its output. Rows
@@ -14,12 +15,18 @@ def project_execution(rows: list[dict[str, Any]], generation_for_client: Callabl
     projected: dict[int, dict[str, Any]] = {}
     generation: str | None = None
     calls: dict[str, tuple[int, dict[str, Any]]] = {}
+    owner = None
     for row in rows:
+        if row.get("session_id") != owner:
+            generation, calls, owner = None, {}, row.get("session_id")
         if row.get("role") == "user":
             client = row.get("platform_message_id")
-            generation = (generation_for_client(client)
-                          if not row.get("_compressed_summary") and isinstance(client, str) and client else None)
-            calls = {}
+            next_generation = (None if row.get("_compressed_summary") else
+                generation_for_row(row) if generation_for_row is not None else
+                generation_for_client(client) if isinstance(client, str) and client else None)
+            if next_generation != generation or next_generation is None:
+                calls = {}
+            generation = next_generation
         if generation is None or row.get("active", 1) in (0, False) and not row.get("compacted", 0):
             continue
         row_id = row.get("id")

@@ -15,6 +15,20 @@ import java.io.IOException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NativeRecoveryDeliverySemanticsTest {
+    @Test fun steeringAcceptanceKeepsAProvisionalUserIdentityAndTheOriginalRunActive() = runTest {
+        val h = Harness(this)
+        h.restore()
+        val result = h.repository.steerMessage("A", h.message("steering-input", MessageDeliveryMode.STEER))
+        assertFalse("accepted 只确认引导投递，不能把本地合成 ID 当作宿主消息 ID", result.authoritative)
+        assertEquals("steering-input", result.messageId)
+        assertEquals(MessageDeliveryMode.STEER, result.delivery)
+        assertEquals("generation-A", result.generationId)
+        assertEquals(GenerationState.RUNNING, h.repository.generationState.value)
+        assertEquals("generation-A", h.repository.generationId.value)
+        assertEquals(1, h.posts("/steer").size)
+        assertTrue(h.posts("/messages").isEmpty())
+    }
+
     @Test fun recoveredRunningSteeringCannotBeRetargetedToALaterGeneration() = runTest {
         val h = Harness(this)
         h.restore()
