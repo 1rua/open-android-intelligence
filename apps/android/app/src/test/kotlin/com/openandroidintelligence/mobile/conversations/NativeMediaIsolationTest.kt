@@ -4,10 +4,17 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Color
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.model.AttachmentDraftId
+import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.HistoricalMediaTransition
+import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.ports.TimelinePage
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -96,65 +103,124 @@ class NativeMediaIsolationTest {
     }
 
 
-    @Test fun trustedLegacyOriginalCopiesOnceWithoutChangingTheRollbackSourceOrSharingTheClaim() = runBlocking {
-        val bytes = "LEGACY ORIGINAL KEPT FOR ROLLBACK".toByteArray()
-        val legacy = cache(null)
-        archive(legacy, bytes)
-        val metadata = checkNotNull(legacy.localMetadata(conversationId, attachmentId))
-        val destination = cache("agent-a")
-        assertNull(destination.localMetadata(conversationId, attachmentId))
-        assertTrue(destination.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertArrayEquals(bytes, original(cache("agent-a")))
-        assertArrayEquals(bytes, original(cache(null)))
-        assertTrue(cache("agent-a").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        val anotherAgent = cache("agent-b")
-        assertFalse(anotherAgent.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertNull(anotherAgent.localMetadata(conversationId, attachmentId))
-        assertArrayEquals(bytes, original(cache(null)))
-    }
-
-
-    @Test fun incompleteOrMismatchedLegacyEvidenceNeverClaimsOrCopiesAnOriginal() = runBlocking {
-        val bytes = "UNCLAIMED LEGACY ORIGINAL".toByteArray()
+    @Test fun anUnregisteredLegacyAgentPreventsFirstClaimWithoutAuthenticatedSource() = runBlocking {
+        val bytes = "SAME ORIGINAL IN TWO PRE-REGISTRY MIRRORS".toByteArray()
         archive(cache(null), bytes)
         val metadata = checkNotNull(cache(null).localMetadata(conversationId, attachmentId))
-        val unproven = cache("unproven-agent")
-        assertFalse(unproven.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, ""))
-        assertFalse(unproven.migrateLegacyOriginal(conversationId, attachmentId, -1, metadata.sha256))
-        assertFalse(unproven.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes + 1, metadata.sha256))
-        assertFalse(unproven.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, "sha256:${"0".repeat(64)}"))
-        assertFalse(unproven.migrateLegacyOriginal("another-conversation", attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertFalse(unproven.migrateLegacyOriginal(conversationId, "another-attachment", metadata.sizeBytes, metadata.sha256))
-        assertNull(unproven.localMetadata(conversationId, attachmentId))
-        assertTrue(cache("proven-agent").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertArrayEquals(bytes, original(cache("proven-agent")))
+        val row = TimelineMessage("legacy-message", "assistant", listOf(MessagePart.Attachment(
+            AttachmentDraftId(attachmentId), "original", "text/plain", metadata.sizeBytes, metadata.sha256,
+        )), 1L, conversationId = ConversationId(conversationId))
+        listOf("agent-a", "agent-b").forEach { agentId ->
+            // 真实旧 Mirror 直接使用子范围，不经过新增 registry；同键、长度、摘要都相同。
+            val mirror = EncryptedConversationMirror(context, NativeLocalPartitions.partitionScope(scope, agentId), key)
+            try {
+                mirror.saveTimeline(conversationId, TimelinePage(listOf(row), null))
+                assertEquals(listOf(row), mirror.loadKnownMediaMessages())
+            } finally { mirror.closeNativeStore() }
+        }
+        val registry = NativeLocalPartitions(context, scope, key)
+        assertTrue(registry.agents().isEmpty())
+        val destination = cache("agent-a")
+        assertEquals(setOf("agent-a"), registry.agents())
+        assertFalse("Only visiting A does not prove that the legacy inventory is complete",
+            destination.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertNull(destination.localMetadata(conversationId, attachmentId))
+        assertTrue("Refused migration must not write a first claim", legacyDocuments("native-media-legacy-claims-v1").keys().isEmpty())
         assertArrayEquals(bytes, original(cache(null)))
     }
 
-    @Test fun legacyCopyCannotUndoAnAgentsDeletionOrReplaceItsDifferentOriginal() = runBlocking {
-        val legacyBytes = "LEGACY ORIGINAL".toByteArray()
-        archive(cache(null), legacyBytes)
-        val metadata = checkNotNull(cache(null).localMetadata(conversationId, attachmentId))
-        val deleted = cache("deleted-agent")
-        deleted.remove(conversationId, attachmentId)
-        assertFalse(cache("deleted-agent").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertNull(cache("deleted-agent").localMetadata(conversationId, attachmentId))
-        val ownBytes = "THIS AGENT ALREADY HAS ITS OWN ORIGINAL".toByteArray()
-        archive(cache("existing-agent"), ownBytes)
-        assertFalse(cache("existing-agent").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertArrayEquals(ownBytes, original(cache("existing-agent")))
-        assertTrue(cache("proven-agent").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertArrayEquals(legacyBytes, original(cache("proven-agent")))
-        assertArrayEquals(legacyBytes, original(cache(null)))
+    private fun legacyDocuments(namespace: String, scope: ConversationScope = this.scope): EncryptedDocuments {
+        val scopeKey = Json.canonical(Json.of(listOf(scope.profileId, scope.gatewayId, scope.accountId, scope.installId)))
+        return EncryptedDocuments(context, "$namespace:$scopeKey", key)
     }
 
-    @Test fun deletingTheLegacyOriginalPreventsItFromBeingCopiedIntoAnAgent() = runBlocking {
-        val legacy = cache(null)
-        archive(legacy, "DELETED LEGACY ORIGINAL".toByteArray())
+    @Test fun unattributedLegacyOriginalIsNeverClaimedEvenWithoutKnownCompetingMirrors() = runBlocking {
+        val bytes = "UNATTRIBUTED ORIGINAL REMAINS READABLE".toByteArray()
+        archive(cache(null), bytes)
+        val metadata = checkNotNull(cache(null).localMetadata(conversationId, attachmentId))
+        listOf("agent-a", "agent-b").forEach { agentId ->
+            val destination = cache(agentId)
+            assertFalse(destination.restoreKnownOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+            assertNull(destination.localMetadata(conversationId, attachmentId))
+        }
+        assertTrue(legacyDocuments("native-media-legacy-claims-v1").keys().isEmpty())
+        assertArrayEquals(bytes, original(cache(null)))
+    }
+
+    @Test fun authenticatedLegacySourceCopiesWithoutChangingTheRollbackSourceOrSharingTheClaim() = runBlocking {
+        val bytes = "PHONE-SAVED ATTRIBUTED ORIGINAL KEPT FOR ROLLBACK".toByteArray()
+        // 由手机真实归档路径保存来源，再重开其持久范围作为 v2 迁移源；不给无归属旧索引补签来源。
+        archive(cache("agent-a"), bytes)
+        val legacyScope = NativeLocalPartitions.partitionScope(scope, "agent-a")
+        val legacy = cache(null, legacyScope)
+        val metadata = checkNotNull(legacy.localMetadata(conversationId, attachmentId))
+        val anotherAgent = cache("agent-b", legacyScope)
+        assertFalse(anotherAgent.restoreKnownOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertNull(anotherAgent.localMetadata(conversationId, attachmentId))
+        assertTrue("A mismatched Agent must not claim authenticated source metadata",
+            legacyDocuments("native-media-legacy-claims-v1", legacyScope).keys().isEmpty())
+        val destination = cache("agent-a", legacyScope)
+        assertNull(destination.localMetadata(conversationId, attachmentId))
+        assertTrue(destination.restoreKnownOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertArrayEquals(bytes, original(cache("agent-a", legacyScope)))
+        assertArrayEquals(bytes, original(cache(null, legacyScope)))
+        assertTrue(cache("agent-a", legacyScope).migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertFalse(anotherAgent.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertNull(anotherAgent.localMetadata(conversationId, attachmentId))
+        assertArrayEquals(bytes, original(cache(null, legacyScope)))
+    }
+
+    @Test fun incompleteOrMismatchedLegacyEvidenceNeverClaimsOrCopiesAnOriginal() = runBlocking {
+        val bytes = "AUTHENTICATED PHONE SOURCE STILL NEEDS EXACT CONTENT EVIDENCE".toByteArray()
+        archive(cache("proven-agent"), bytes)
+        val legacyScope = NativeLocalPartitions.partitionScope(scope, "proven-agent")
+        val metadata = checkNotNull(cache(null, legacyScope).localMetadata(conversationId, attachmentId))
+        val candidate = cache("proven-agent", legacyScope)
+        assertFalse(candidate.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, ""))
+        assertFalse(candidate.migrateLegacyOriginal(conversationId, attachmentId, -1, metadata.sha256))
+        assertFalse(candidate.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes + 1, metadata.sha256))
+        assertFalse(candidate.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, "sha256:${"0".repeat(64)}"))
+        assertFalse(candidate.migrateLegacyOriginal("another-conversation", attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertFalse(candidate.migrateLegacyOriginal(conversationId, "another-attachment", metadata.sizeBytes, metadata.sha256))
+        assertNull(candidate.localMetadata(conversationId, attachmentId))
+        assertTrue(legacyDocuments("native-media-legacy-claims-v1", legacyScope).keys().isEmpty())
+        assertTrue(candidate.migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertArrayEquals(bytes, original(cache("proven-agent", legacyScope)))
+        assertArrayEquals(bytes, original(cache(null, legacyScope)))
+    }
+
+    @Test fun authenticatedLegacyCopyCannotUndoAnAgentsDeletionOrReplaceItsDifferentOriginal() = runBlocking {
+        val legacyBytes = "PHONE-SAVED ATTRIBUTED ORIGINAL".toByteArray()
+        archive(cache("deleted-agent"), legacyBytes)
+        val deletedScope = NativeLocalPartitions.partitionScope(scope, "deleted-agent")
+        val metadata = checkNotNull(cache(null, deletedScope).localMetadata(conversationId, attachmentId))
+        val deleted = cache("deleted-agent", deletedScope)
+        deleted.remove(conversationId, attachmentId)
+        assertFalse(cache("deleted-agent", deletedScope).migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertNull(cache("deleted-agent", deletedScope).localMetadata(conversationId, attachmentId))
+        assertTrue(legacyDocuments("native-media-legacy-claims-v1", deletedScope).keys().isEmpty())
+        assertArrayEquals(legacyBytes, original(cache(null, deletedScope)))
+
+        archive(cache("existing-agent"), legacyBytes)
+        val existingScope = NativeLocalPartitions.partitionScope(scope, "existing-agent")
+        val ownBytes = "THIS AGENT ALREADY HAS ITS OWN ORIGINAL".toByteArray()
+        archive(cache("existing-agent", existingScope), ownBytes)
+        assertFalse(cache("existing-agent", existingScope).migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertArrayEquals(ownBytes, original(cache("existing-agent", existingScope)))
+        assertTrue(legacyDocuments("native-media-legacy-claims-v1", existingScope).keys().isEmpty())
+        assertArrayEquals(legacyBytes, original(cache(null, existingScope)))
+    }
+
+    @Test fun deletingTheAuthenticatedLegacyOriginalPreventsItFromBeingCopiedIntoAnAgent() = runBlocking {
+        val legacy = cache("agent-a")
+        archive(legacy, "DELETED AUTHENTICATED PHONE ORIGINAL".toByteArray())
+        val legacyScope = NativeLocalPartitions.partitionScope(scope, "agent-a")
         val metadata = checkNotNull(legacy.localMetadata(conversationId, attachmentId))
         legacy.applyTransition(HistoricalMediaTransition(conversationId, "message", 2L, listOf(attachmentId), true))
-        assertFalse(cache("agent-a").migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
-        assertNull(cache("agent-a").localMetadata(conversationId, attachmentId))
+        assertFalse(cache("agent-a", legacyScope).migrateLegacyOriginal(conversationId, attachmentId, metadata.sizeBytes, metadata.sha256))
+        assertNull(cache("agent-a", legacyScope).localMetadata(conversationId, attachmentId))
+        assertTrue(legacyDocuments("native-media-legacy-claims-v1", legacyScope).keys().isEmpty())
+        assertNotNull(runCatching { original(cache(null, legacyScope)) }.exceptionOrNull())
     }
 
     @Test @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -195,10 +261,11 @@ class NativeMediaIsolationTest {
     @Test fun verifiedLegacyCopyKeepsLargeOriginalsAndUsesTheSameStreamingIntegrityChecks() = runBlocking {
         val size = 33L * 1024 * 1024 + 7
         val expected = "sha256:79d526b3f4fbf5f47d829040f3ac05c8abc852a23bdd414b670fbeb8a6ab3301"
-        cache(null).archiveSubmitted(conversationId, attachmentId, "large.bin", "application/octet-stream",
+        cache("agent-a").archiveSubmitted(conversationId, attachmentId, "large.bin", "application/octet-stream",
             AttachmentContentSource { RepeatedInput(size) }, size, expected)
-        assertTrue(cache("agent-a").migrateLegacyOriginal(conversationId, attachmentId, size, expected))
-        listOf(cache(null), cache("agent-a")).forEach { saved ->
+        val legacyScope = NativeLocalPartitions.partitionScope(scope, "agent-a")
+        assertTrue(cache("agent-a", legacyScope).migrateLegacyOriginal(conversationId, attachmentId, size, expected))
+        listOf(cache(null, legacyScope), cache("agent-a", legacyScope)).forEach { saved ->
             val digest = MessageDigest.getInstance("SHA-256")
             var readBytes = 0L
             saved.openOriginal(conversationId, attachmentId).use { input ->
