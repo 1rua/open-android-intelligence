@@ -113,13 +113,15 @@ class SettingsCapabilityUiTest {
         compose.onAllNodesWithText("已启用").assertCountEquals(2)
         compose.onAllNodesWithText("本网关不支持").assertCountEquals(1)
         // 客户端只声明了 3 项，其余能力保持「未声明」。
-        compose.onAllNodesWithText("未声明").assertCountEquals(ConversationUiFeature.CLOSED_SET.size - 3)
+        compose.onAllNodesWithText("未声明").assertCountEquals(ConversationUiFeature.CLOSED_SET.size - 4)
         // 闭集全部渲染，并为会话管理提供人类可读的标签。
         for (label in negotiatedCapabilityLabels.values) {
             compose.onNodeWithText(label).assertExists()
         }
         compose.onNodeWithText("会话与文件夹管理").assertExists()
         compose.onNodeWithText("conversation-management-v1").assertDoesNotExist()
+        compose.onNodeWithText("圈选结果回传").assertDoesNotExist()
+        compose.onNodeWithText("attachment-status-v1").assertDoesNotExist()
     }
 
     @Test
