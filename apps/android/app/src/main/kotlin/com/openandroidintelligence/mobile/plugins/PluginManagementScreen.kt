@@ -403,11 +403,17 @@ fun PluginManagementScreen(
                                     // 运行时权限：走系统权限申请对话框。
                                     requirement.grantKind == DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> {
                                         val permission = requirement.manifestPermission
-                                        if (permission == null) {
-                                            notice = "${requirement.label}没有可申请的系统权限。"
-                                        } else {
-                                            permissionDialogPlugin = id
-                                            requestPermissions.launch(arrayOf(permission))
+                                        when {
+                                            permission == null ->
+                                                notice = "${requirement.label}没有可申请的系统权限。"
+                                            // 已被拒绝过的再弹框在多数系统上毫无反应，
+                                            // 直接引导去系统设置页，避免用户反复点却无反馈。
+                                            state == DeviceCapabilityGrantState.DENIED ->
+                                                notice = manualGrantGuidance(requirement)
+                                            else -> {
+                                                permissionDialogPlugin = id
+                                                requestPermissions.launch(arrayOf(permission))
+                                            }
                                         }
                                     }
                                     // 无障碍：跳系统无障碍设置，由用户亲手开启。

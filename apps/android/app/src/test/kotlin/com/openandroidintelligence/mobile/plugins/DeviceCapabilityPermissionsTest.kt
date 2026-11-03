@@ -126,8 +126,7 @@ class DeviceCapabilityPermissionsTest {
         val inspector = inspector()
 
         assertEquals(DeviceCapabilityGrantState.GRANTED, inspector.state(requirement))
-        // 已授权时不得再出现在待申请列表里 —— 避免无意义弹窗。
-        assertTrue(inspector.pending(listOf(requirement)).isEmpty())
+        // 已授权时不得再进入申请列表 —— 避免无意义弹窗。
         assertTrue(inspector.runtimePermissionsToRequest(listOf(requirement)).isEmpty())
     }
 
@@ -137,7 +136,6 @@ class DeviceCapabilityPermissionsTest {
         val inspector = inspector()
 
         assertEquals(DeviceCapabilityGrantState.NOT_REQUESTED, inspector.state(requirement))
-        assertEquals(listOf(requirement), inspector.pending(listOf(requirement)))
         assertEquals(
             listOf(Manifest.permission.READ_CALL_LOG),
             inspector.runtimePermissionsToRequest(listOf(requirement)),
@@ -176,7 +174,7 @@ class DeviceCapabilityPermissionsTest {
         notifications = true
         assertEquals(DeviceCapabilityGrantState.GRANTED, live.state(accessibilityRequirement))
         assertEquals(DeviceCapabilityGrantState.GRANTED, live.state(notificationRequirement))
-        assertTrue(live.pending(listOf(accessibilityRequirement, notificationRequirement)).isEmpty())
+        assertTrue(live.runtimePermissionsToRequest(listOf(accessibilityRequirement, notificationRequirement)).isEmpty())
     }
 
     @Test

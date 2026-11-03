@@ -179,14 +179,6 @@ class DeviceCapabilityGrantInspector(
     }
 
     /**
-     * 当前真正需要执行动作的需求。
-     *
-     * 已授权的不会重复申请 —— 问题二要求「已授权时正确显示状态，避免无意义地重复申请」。
-     */
-    fun pending(requirements: List<AndroidPermissionRequirement>): List<AndroidPermissionRequirement> =
-        requirements.filter { state(it) != DeviceCapabilityGrantState.GRANTED }
-
-    /**
      * 可以合并成一次系统申请对话框的运行时权限。
      *
      * 只收集 [DeviceCapabilityGrantState.NOT_REQUESTED] 的项：
