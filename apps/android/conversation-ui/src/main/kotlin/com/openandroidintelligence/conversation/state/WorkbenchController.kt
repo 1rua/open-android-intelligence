@@ -1513,7 +1513,7 @@ class WorkbenchController(
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
                 activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) saved.title else "",
-                draftVersion=draftRevision,
+                draftVersion=saved.draftVersion,
                 draft = if (restoreComposer) {
                     if (saved.draftExplicit) saved.draft else saved.draft.ifBlank { displayedSubmission?.text.orEmpty() }
                 } else "",
@@ -2544,7 +2544,7 @@ class WorkbenchController(
     fun editDraft(text: String, expectedEpoch: Long) {
         if (expectedEpoch != _state.value.draftEpoch) return
         if (closed) {
-            val version = retiredDraftVersion ?: draftRevision
+            val version = retiredDraftVersion ?: _state.value.draftVersion
             retiredDraftVersion = version + 1
             retiredVersionedDraftEditing?.invoke(text, version) ?: retiredDraftEditing?.invoke(text)
             return
@@ -2553,7 +2553,7 @@ class WorkbenchController(
     }
 
     fun editDraftAtVersion(text: String, expectedVersion: Long) {
-        if (!closed && draftRevision == expectedVersion) editDraft(text)
+        if (!closed && _state.value.draftVersion == expectedVersion) editDraft(text)
     }
 
     fun redirectRetiredDraftEditing(editDraft: (String,Long) -> Unit) {
@@ -5572,7 +5572,7 @@ class WorkbenchController(
             messageGenerations=messageGenerations.map { (key,value) -> SavedMessageGeneration(key.first,key.second,value.id,value.revision) },
             pendingFolderAssignments=pendingFolderAssignments.map { SavedFolderAssignment(it.key,it.value) },
             pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId) },
-            draftExplicit=deferred?.draftExplicit ?: true,
+            draftExplicit=deferred?.draftExplicit ?: true,draftVersion=ui.draftVersion,
             composerDrafts=composerDrafts.values.toList(),
             pendingSubmissions=(waitingAttachmentSubmissions.values.map { it.submission } + recoveredAttachmentSubmissions.values)
                 .distinctBy { it.clientMessageId }.map { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId,it.delivery,it.expectedGenerationId) })
@@ -5652,7 +5652,9 @@ class WorkbenchController(
                     atomsFor(threadId)[clientId]?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN
                 } || recoverableOrdinaryAtoms(threadId).any { it.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN }
             } == true
-            val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=draftRevision,
+            val versionChanged = nextDraftEpoch != current.draftEpoch || transformed.draft != current.draft
+            val nextDraftVersion = if (versionChanged) maxOf(current.draftVersion+1,draftRevision) else maxOf(current.draftVersion,draftRevision)
+            val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,
                 timelineDataSource=transformed.timelineDataSource ?: if (transformed.timelineOpenedAtNs > 0 &&
                     (transformed.timeline is Loadable.Ready || transformed.timeline is Loadable.Empty)) "remote" else null,
                 isOnline=allowSending && remoteConversationOnline && remoteSendSupported,

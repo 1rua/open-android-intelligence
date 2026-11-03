@@ -336,7 +336,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             "title" to checkpoint.title,"messages" to checkpoint.messages.filterNot { row ->
                 (row.conversationId?.value ?: checkpoint.threadId)?.let { isTombstoned(it,row.id) } == true
             }.map(::message),"revisions" to checkpoint.revisions,"draft" to checkpoint.draft,
-            "draftRevision" to checkpoint.draftRevision,"draftExplicit" to checkpoint.draftExplicit,
+            "draftRevision" to checkpoint.draftRevision,"draftVersion" to checkpoint.draftVersion,"draftExplicit" to checkpoint.draftExplicit,
             "composerDrafts" to checkpoint.composerDrafts.map { draft -> mapOf("threadId" to draft.threadId,
                 "text" to draft.text,"revision" to draft.revision,"explicit" to draft.explicit,"attachments" to draft.attachments.map(::attachment)) },
             "pendingSubmissions" to checkpoint.pendingSubmissions.map { item -> mapOf("text" to item.text,
@@ -377,6 +377,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             pendingFolderAssignments=JsonFields.objects(o,"pendingFolderAssignments").map { SavedFolderAssignment(str(it,"conversationId"),str(it,"folderId")) },
             pendingConversationCreation=JsonFields.obj(JsonFields.field(o,"pendingConversationCreation"))?.let { SavedConversationCreation(str(it,"clientId"),JsonFields.string(it,"folderId")) },
             draftExplicit=JsonFields.bool(o,"draftExplicit") == true,
+            draftVersion=JsonFields.long(o,"draftVersion") ?: JsonFields.long(o,"draftRevision") ?: 0L,
             composerDrafts=JsonFields.objects(o,"composerDrafts").map { draft -> SavedComposerDraft(
                 JsonFields.string(draft,"threadId"),str(draft,"text"),JsonFields.long(draft,"revision") ?: 0,
                 JsonFields.objects(draft,"attachments").map(::decodeAttachment),JsonFields.bool(draft,"explicit") != false) },

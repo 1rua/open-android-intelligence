@@ -41,6 +41,7 @@ data class WorkbenchCheckpoint(
     val draftExplicit: Boolean = false,
     val composerDrafts: List<SavedComposerDraft> = emptyList(),
     val pendingSubmissions: List<SavedSubmission> = emptyList(),
+    val draftVersion: Long = draftRevision,
 )
 
 interface WorkbenchPersistence {

@@ -153,6 +153,18 @@ class WorkbenchLocalFirstTest {
         } finally { controller.close() }
     }
 
+    @Test fun aForwardedEditCannotReviveADraftAlreadyFrozenByTheReplacementController() = runTest {
+        val controller=WorkbenchController(backgroundScope,Host(),catalog,{account},restoreLastThread=false)
+        try {
+            runCurrent();controller.openThread("cached");runCurrent()
+            controller.editDraft("发送过的内容")
+            val version=controller.state.value.draftVersion
+            controller.sendDraft()
+            controller.editDraftAtVersion("发送过的内容",version)
+            assertEquals("交接旧输入不能复活已经冻结的草稿","",controller.state.value.draft)
+        } finally { controller.close() }
+    }
+
     private val catalog = object : AgentCommandCatalogRepository {
         override suspend fun get(gatewayId: String, languageCode: String) =
             AgentCommandCatalog(CatalogVersion("test"), emptyList())
