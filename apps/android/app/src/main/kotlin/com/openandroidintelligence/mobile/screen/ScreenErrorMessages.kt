@@ -37,7 +37,19 @@ fun readableScreenError(code: String?): String = when (code) {
 
     // ===== 截图授权 =====
     "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED" ->
-        "还没有获得系统的投屏授权，请在下方完成一次系统授权"
+        "截图还没有可用路径：请开启无障碍服务（推荐，之后不再重复确认），或完成一次系统投屏授权"
+    // 以下四条是「失败、系统拒绝、频率限制、服务断连」四类必须彼此可区分的诊断，
+    // 措辞各自指向不同的下一步，不能合并成一句「截图失败」。
+    "ACCESSIBILITY_SERVICE_UNAVAILABLE" ->
+        "无障碍服务已开启但当前未连接，请到系统无障碍设置确认本应用的服务显示「已连接」"
+    "SCREEN_CAPTURE_SYSTEM_REJECTED" ->
+        "系统拒绝了这次截图授权，请重新发起一次授权"
+    "SCREEN_CAPTURE_SECURE_WINDOW" ->
+        "当前界面受系统保护（如密码、支付页面），系统不允许截取；请切换到普通界面再试"
+    "SCREEN_CAPTURE_RATE_LIMITED" ->
+        "系统对截图做了频率限制，稍等片刻再试即可，不需要重新授权"
+    "SCREEN_CAPTURE_UNSUPPORTED" ->
+        "当前系统版本或无障碍服务配置不支持直接截图，只能使用系统投屏授权"
     "SCREEN_CAPTURE_FAILED" ->
         "这次截图没有成功，请稍后再试"
     "SCREEN_CAPTURE_ENCODING_FAILED" ->

@@ -1,6 +1,7 @@
 package com.openandroidintelligence.device.primitives
 
 import com.openandroidintelligence.capability.ScreenCapture
+import com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource
 import com.openandroidintelligence.capability.ScreenCaptureSource
 import com.openandroidintelligence.control.*
 import com.openandroidintelligence.gateway.schema.*
@@ -422,7 +423,9 @@ internal class RemoteScreenRuntime(
             "capture" -> {
                 val maxWidth = JsonFields.int(args, "maxWidth")
                 if (maxWidth != null && maxWidth !in 64..2048) throw ScreenOperationException("SCHEMA_INVALID")
-                val frame = capture.capture() ?: throw ScreenOperationException("SCREEN_CAPTURE_FAILED")
+                // 保留可分类的失败原因：系统拒绝、频率限制、服务断连与本次取帧失败
+                // 对调用方是四件不同的事，不能一律压平成 SCREEN_CAPTURE_FAILED。
+                val frame = capture.capture() ?: throw ScreenOperationException(captureFailureCode())
                 val scaled = resize(frame, maxWidth)
                 currentCoroutineContext().ensureActive()
                 guard()
@@ -434,6 +437,15 @@ internal class RemoteScreenRuntime(
             else -> throw ScreenOperationException("SCHEMA_INVALID")
         }
     }
+
+    /**
+     * 截图失败的具体原因码。
+     *
+     * 来源实现能给出可分类诊断时用它，否则退回通用取帧失败。
+     * 只暴露稳定协议码，不泄漏系统异常文本。
+     */
+    private fun captureFailureCode(): String =
+        (capture as? AccessibilityFirstScreenCaptureSource)?.lastFailure?.code ?: "SCREEN_CAPTURE_FAILED"
 
     private fun target(snapshot: ScreenSnapshot): ScreenTargetIdentity {
         val packageName = snapshot.foregroundPackage ?: throw ScreenOperationException("SCREEN_WINDOW_UNAVAILABLE")

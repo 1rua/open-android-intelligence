@@ -134,8 +134,9 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("授权管理").performScrollTo().performClick()
 
         compose.onNodeWithText("全局设备能力").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕上下文分析与圈选").performScrollTo().assertExists()
+        compose.onNodeWithText("屏幕上下文分析与圈选").assertDoesNotExist()
         compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
+        compose.onNodeWithText("屏幕读取与控制").performScrollTo().assertExists()
         compose.onNodeWithText("通知读取范围").assertDoesNotExist()
         compose.onNodeWithText("系统通知推送").assertDoesNotExist()
     }

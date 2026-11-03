@@ -41,7 +41,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Lock
@@ -277,7 +276,6 @@ fun SettingsScreen(
                         launchSingleTop = true
                     }
                 },
-                onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
                 onSetNotificationsGrant = setReplyNotifications,
                 onToggleTrustMode = { enable ->
                     if (enable) showTrustModeDialog = true else viewModel.disableTrustMode()
@@ -320,11 +318,9 @@ fun SettingsScreen(
 
         composable(SettingsRoutes.PAIRING) {
             PairingSubScreen(
-                uiState = uiState,
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
                 onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
-                onSetScreenSelectionGrant = viewModel::setScreenSelectionGrant,
             )
         }
 
@@ -580,7 +576,6 @@ private fun SettingsOverviewScreen(
     backEnabled: Boolean,
     presentation: SettingsPresentation,
     onNavigate: (String) -> Unit,
-    onSetScreenSelectionGrant: (Boolean) -> Unit,
     onSetNotificationsGrant: (Boolean) -> Unit,
     onToggleTrustMode: (Boolean) -> Unit,
     onRequestEmergencyStop: () -> Unit,
@@ -1329,11 +1324,9 @@ private fun GatewaySubScreen(
  */
 @Composable
 private fun PairingSubScreen(
-    uiState: SettingsUiState,
     onBack: () -> Unit,
     presentation: SettingsPresentation,
     onNavigate: (String) -> Unit,
-    onSetScreenSelectionGrant: (Boolean) -> Unit,
 ) {
     SettingsPageScaffold(
         title = "授权管理",
@@ -1358,18 +1351,6 @@ private fun PairingSubScreen(
                         onClick = { onNavigate(SettingsRoutes.PLUGINS) },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    ScreenSelectionCapabilityItem(
-                        checked = uiState.isScreenSelectionGranted,
-                        presentation = screenSelectionCapabilityPresentation(
-                            grantsBound = uiState.pairingGrants != null,
-                            attachmentStatusAgreed = uiState.conversationUi["attachment-status-v1"],
-                        ),
-                        icon = Icons.Default.Fullscreen,
-                        onCheckedChange = onSetScreenSelectionGrant,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    // 屏幕读取与控制是另一回事：它按「本地会话 + 三类权限」逐项授予，
-                    // 与上面的圈选（把圈选结果回传 Gateway）不是同一个授权。
                     SettingsNavigationItem(
                         headline = "短信与通知主动推送",
                         supporting = "独立选择内容范围、接收端点和离线保留时间；默认关闭",

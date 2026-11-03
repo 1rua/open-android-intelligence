@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -167,10 +168,156 @@ fun PluginManagementScreen(
             notice = "Android 系统权限已就绪；每项能力的本机授权模式保持原设置。"
         }
     }
-    var permissionPlugin by remember { mutableStateOf<String?>(null) }
+
+    // ===== Android 系统授权：按插件实际声明的 kernel primitive 动态推导 =====
+    //
+    // 修复前这里只处理 READ_SMS / READ_CALL_LOG，无障碍、通知读取、屏幕截图
+    // 三类能力在「检查 Android 系统权限」里没有任何入口。现在全部由声明推导，
+    // 不再硬编码特定 Agent 或 Gateway。
+    //
+    // 每次从系统设置返回都会递增 refreshTick，令下面所有查询重新取真实状态。
+    var permissionRefreshTick by remember { mutableStateOf(0) }
+    fun notificationAccessGranted(): Boolean = runCatching {
+        com.openandroidintelligence.notification.control.NotificationControlRegistry.bindingPort().isListenerBound()
+    }.getOrDefault(false)
+    /**
+     * 无障碍服务是否真的可用：系统设置里已启用**且**服务当前已连接。
+     *
+     * 只查设置标记会把「开过但被系统解绑」误判为已授权，并禁用设置按钮 ——
+     * 而那正是用户唯一需要回到无障碍设置的时刻。
+     */
+    fun accessibilityServiceEnabled(): Boolean = runCatching {
+        val enabled = android.provider.Settings.Secure.getString(
+            context.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ).orEmpty()
+        // 用组件名常量而不是类引用：app 模块不依赖 screen-control 的编译期类型，
+        // 无障碍实现经 device-primitives 在运行期装配。
+        val own = android.content.ComponentName(context, com.openandroidintelligence.mobile.screen.accessibilityServiceClassName())
+        val enabledInSettings = enabled.split(':').any {
+            it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true)
+        }
+        enabledInSettings && accessibilityCaptureReady()
+    }.getOrDefault(false)
+    /**
+     * 截图是否已经可用（任一路径）。
+     *
+     * 用 `isAvailable` 而不是「投屏是否已授权」：无障碍服务开启后截图就已经可用，
+     * 此时把投屏项显示成「未授权」并催用户再点一次系统授权是错的。
+     */
+    fun screenCaptureAuthorized(): Boolean = runCatching {
+        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true
+    }.getOrDefault(false)
+
+    val grantInspector = remember(permissionRefreshTick, pluginRevision) {
+        DeviceCapabilityGrantInspector(
+            context = context,
+            notificationAccessGranted = ::notificationAccessGranted,
+            accessibilityEnabled = ::accessibilityServiceEnabled,
+            captureAuthorized = ::screenCaptureAuthorized,
+        )
+    }
+    fun requestCapabilityResync() {
+        runCatching { app?.gatewayRuntime?.requestCapabilitySync() }
+    }
+    var permissionDialogPlugin by remember { mutableStateOf<String?>(null) }
+    var pendingCapturePlugin by remember { mutableStateOf<String?>(null) }
+    // 系统投屏对话框可能停留很久，期间用户可能触发紧急停止、改动本机能力设置、
+    // 切换插件或撤销屏幕会话。票据记录发起时的授权版本，返回时逐项复核，
+    // 与 MainActivity 的远程截图流程保持同一套安全约束。
+    var captureTicket by remember {
+        mutableStateOf<com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket?>(null)
+    }
+    fun captureConsentStillCurrent(): Boolean {
+        return com.openandroidintelligence.mobile.screen.screenCaptureConsentCurrent(
+            captureTicket,
+            localAuthorizationRevision,
+            pluginRevision ?: -1L,
+            capabilityEnabled = app?.pluginHost?.let { host ->
+                val plugin = "org.openandroidintelligence.screen-capture"
+                host.entries(plugin).firstOrNull { "kernel.screen.capture" in it.primitives }
+                    ?.let { host.isEnabled(plugin) && host.capabilityPolicy(plugin, it.key).enabled } == true
+            } == true,
+            emergencyStopped = app?.kernel?.isEmergencyStopped() ?: true,
+            stopGeneration = com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
+        )
+    }
     val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        val id = permissionPlugin; permissionPlugin = null
-        if (id != null && result.values.all { it }) showPermissionStatus(id) else notice = "系统权限未授予；本机能力开关保持原状态。"
+        val id = permissionDialogPlugin; permissionDialogPlugin = null
+        // 逐项判断而不是要求"全部授予"：部分授予时也要把已授予的部分如实计入。
+        if (id != null && result.values.any { it }) showPermissionStatus(id)
+        else notice = "系统权限未授予；本机能力开关保持原状态。"
+        permissionRefreshTick++
+        requestCapabilityResync()
+    }
+    // MediaProjection 必须由前台 Activity 发起系统对话框，跳设置页是无关操作。
+    val captureGrantLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+        // 第一次复核：系统对话框期间授权状态可能已经变化，变化后不得再建立会话。
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null &&
+            source != null && captureConsentStillCurrent()
+        ) {
+            // Android 14+ 要求 mediaProjection 前台服务先完成 startForeground，
+            // 再转交授权结果，否则确定性抛出 SecurityException。
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.startForeground(context) {
+                // 第二次复核：等待前台服务就绪期间仍可能被撤销。
+                if (!captureConsentStillCurrent()) {
+                    source.release()
+                    com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+                    notice = "截图能力或本机设置已变化，未使用这次系统授权。"
+                } else {
+                    val granted = source.onAuthorizationResult(result.resultCode, result.data)
+                    if (!granted) {
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+                    }
+                    notice = if (granted) {
+                        "已获得屏幕截图系统授权。"
+                    } else {
+                        "屏幕截图会话建立失败，可改用无障碍截图或稍后重试。"
+                    }
+                }
+                captureTicket = null
+                pendingCapturePlugin = null
+                permissionRefreshTick++
+                requestCapabilityResync()
+            }
+        } else if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            // 授权结果本身有效，但发起时的授权前提已经失效。
+            source?.release()
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+            notice = "截图能力或本机设置已变化，请重新发起系统授权。"
+            captureTicket = null
+            pendingCapturePlugin = null
+            permissionRefreshTick++
+        } else {
+            source?.release()
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+            notice = "未获得屏幕截图授权；截图能力暂不可用，其余能力不受影响。"
+            captureTicket = null
+            pendingCapturePlugin = null
+            permissionRefreshTick++
+        }
+    }
+    fun openAccessibilityGrant(): Boolean = runCatching {
+        context.startActivity(
+            android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    }.getOrDefault(false)
+    fun openNotificationGrant(): Boolean = openNotificationAccessSettings(context)
+    // 从系统设置返回后重新检测，并触发 Core 同步让远端看到最新能力状态。
+    val grantLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(grantLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                permissionRefreshTick++
+                requestCapabilityResync()
+            }
+        }
+        grantLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { grantLifecycleOwner.lifecycle.removeObserver(observer) }
     }
     fun sink(id: String) = PluginUiActionSink { component, action, value ->
         if (host == null) notice = "已提交 $action（$component）——$KERNEL_ABSENT_NOTICE"
@@ -271,17 +418,96 @@ fun PluginManagementScreen(
                     entries.forEach { entry ->
                         Text("${entry.key}（风险：${entry.risk}）\n需要：${entry.primitives.joinToString()}")
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text("Android 系统授权", style = MaterialTheme.typography.titleSmall)
+                    val requirements = remember(permissionRefreshTick, entries) {
+                        androidPermissionRequirements(entries.flatMap { it.primitives }.toSet())
+                    }
+                    if (requirements.isEmpty()) {
+                        Text(
+                            text = "这个插件不需要额外的 Android 系统授权。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    requirements.forEach { requirement ->
+                        // 投屏项：无障碍通道已能截图时，把状态如实呈现为已满足，
+                        // 避免在能力已可用的情况下催用户再授权一次。
+                        val inspected = grantInspector.state(requirement)
+                        val state = if (requirement.opensMediaProjectionDialog() && inspected != DeviceCapabilityGrantState.GRANTED) {
+                            if (accessibilityCaptureReady()) DeviceCapabilityGrantState.GRANTED else inspected
+                        } else inspected
+                        DeviceGrantRow(
+                            requirement = requirement,
+                            state = state,
+                            onAction = {
+                                when {
+                                    // 已授权：不再重复申请，只给出状态，避免无意义弹窗。
+                                    state == DeviceCapabilityGrantState.GRANTED -> {
+                                        notice = "${requirement.label}已授权，无需再次申请。"
+                                    }
+                                    // 运行时权限：走系统权限申请对话框。
+                                    requirement.grantKind == DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> {
+                                        val permission = requirement.manifestPermission
+                                        when {
+                                            permission == null ->
+                                                notice = "${requirement.label}没有可申请的系统权限。"
+                                            // 已被拒绝过的再弹框在多数系统上毫无反应，
+                                            // 直接引导去系统设置页，避免用户反复点却无反馈。
+                                            state == DeviceCapabilityGrantState.DENIED ->
+                                                notice = manualGrantGuidance(requirement)
+                                            else -> {
+                                                permissionDialogPlugin = id
+                                                requestPermissions.launch(arrayOf(permission))
+                                            }
+                                        }
+                                    }
+                                    // 无障碍：跳系统无障碍设置，由用户亲手开启。
+                                    requirement.opensAccessibilitySettings() -> {
+                                        if (!openAccessibilityGrant()) {
+                                            notice = manualGrantGuidance(requirement)
+                                        }
+                                    }
+                                    // 通知使用权：跳系统通知使用权设置。
+                                    requirement.opensNotificationAccessSettings() -> {
+                                        if (!openNotificationGrant()) {
+                                            notice = manualGrantGuidance(requirement)
+                                        }
+                                    }
+                                    // 投屏：前台 Activity 发起系统授权对话框，不跳无关设置页。
+                                    requirement.opensMediaProjectionDialog() -> {
+                                        // 无障碍已能截图时不必再走一次投屏授权，
+                                        // 否则用户会为了「已可用的能力」再确认一遍。
+                                        if (accessibilityCaptureReady()) {
+                                            notice = "无障碍截图已可用，不需要额外的系统投屏授权。"
+                                        } else {
+                                            val intent = runCatching {
+                                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                                                    .source?.createAuthorizationIntent()
+                                            }.getOrNull()
+                                            if (intent == null) {
+                                                notice = manualGrantGuidance(requirement)
+                                            } else {
+                                                // 记录发起时的授权版本；返回后据此判断是否仍然有效。
+                                                captureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
+                                                    localAuthorizationRevision,
+                                                    pluginRevision ?: -1L,
+                                                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
+                                                )
+                                                pendingCapturePlugin = id
+                                                captureGrantLauncher.launch(intent)
+                                            }
+                                        }
+                                    }
+                                    else -> notice = manualGrantGuidance(requirement)
+                                }
+                            },
+                        )
+                    }
                 }
             },
-            confirmButton = { TextButton(onClick = {
-                grantPlugin = null
-                val primitives = entries.flatMap { it.primitives }.toSet()
-                val permissions = buildList {
-                    if ("kernel.sms.read" in primitives) add(android.Manifest.permission.READ_SMS)
-                    if ("kernel.call-log.read" in primitives) add(android.Manifest.permission.READ_CALL_LOG)
-                }.filter { context.checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
-                if (permissions.isEmpty()) showPermissionStatus(id) else { permissionPlugin = id; requestPermissions.launch(permissions.toTypedArray()) }
-            }) { Text("检查 Android 系统权限") } },dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("取消") } })
+            confirmButton = { TextButton(onClick = { grantPlugin = null }) { Text("完成") } },
+            dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("关闭") } })
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
@@ -592,8 +818,58 @@ internal fun capabilityStatusLabel(status: String, reason: String? = null): Stri
     "STATUS_UNAVAILABLE" -> "Gateway 未提供能力状态；请检查连接与 OAI Core 版本"
     else -> "等待同步当前设备能力状态"
     }
-    return if (reason.isNullOrBlank()) label else "$label；${com.openandroidintelligence.mobile.deviceCapabilityReasonLabel(reason)}"
+    if (reason.isNullOrBlank()) return label
+    // 截图相关的新诊断码用可恢复性说明（问题三）：它们必须讲清「能不能恢复、下一步做什么」。
+    if (reason in screenshotDiagnosisReasons) return "$label；${capabilityBlockDetail(status, reason)}"
+    // 既有原因码保持原有展开方式，不改变既有界面语义。
+    return "$label；${com.openandroidintelligence.mobile.deviceCapabilityReasonLabel(reason)}"
 }
+
+/**
+ * 追加「现在的具体处境 + 下一步该做什么」。
+ *
+ * 问题三要求区分未申请、等待用户操作、服务未连接、系统拒绝与真正不可用。
+ * 只对确实存在阻塞的状态给出说明，READY 与同步中不啰嗦。
+ */
+internal fun capabilityBlockDetail(status: String, reason: String?): String? {
+    if (status == "READY") return null
+    val block = classifyCapabilityBlock(status, reason)
+    // 同步中属于等待，无需解释阻塞原因。
+    if (block == DeviceCapabilityBlock.SYNCING) return null
+    val cause = when (block) {
+        DeviceCapabilityBlock.NOT_YET_REQUESTED -> "尚未申请授权"
+        DeviceCapabilityBlock.AWAITING_USER_ACTION -> "等待你在系统里操作"
+        DeviceCapabilityBlock.SERVICE_DISCONNECTED -> "服务未连接"
+        DeviceCapabilityBlock.SYSTEM_REJECTED -> "系统拒绝了授权"
+        DeviceCapabilityBlock.RATE_LIMITED -> "系统暂时限速"
+        DeviceCapabilityBlock.LOCAL_SWITCH_OFF -> "本机能力开关已关闭"
+        DeviceCapabilityBlock.PLUGIN_INACTIVE -> "插件未安装或未启用"
+        DeviceCapabilityBlock.PROVIDER_UNSELECTED -> "尚未选择提供者"
+        DeviceCapabilityBlock.SYNCING -> "等待同步"
+        DeviceCapabilityBlock.UNAVAILABLE -> "当前不可用"
+    }
+    val next = capabilityBlockNextStep(block, reason)
+    val recoverable = if (block.isRecoverable) "" else "（这一项不能在本机恢复）"
+    return "$cause$recoverable，$next"
+}
+
+/**
+ * 诊断详情相关的稳定原因码。
+ *
+ * 这些码在失败时给出，必须能区分失败、系统拒绝、频率限制、服务断连与
+ * 监听器未就绪，因此单独用可恢复性说明呈现，而不是套用既有的通用阻塞码文案。
+ */
+internal val screenshotDiagnosisReasons: Set<String> = setOf(
+    "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
+    "ACCESSIBILITY_SERVICE_UNAVAILABLE",
+    "SCREEN_CAPTURE_SYSTEM_REJECTED",
+    "SCREEN_CAPTURE_SECURE_WINDOW",
+    "SCREEN_CAPTURE_RATE_LIMITED",
+    "SCREEN_CAPTURE_FAILED",
+    "SCREEN_CAPTURE_UNSUPPORTED",
+    "SCREEN_DEVICE_LOCKED",
+    "NOTIFICATION_LISTENER_UNAVAILABLE",
+)
 
 /** 一个已安装插件的真实状态与其声明式设置贡献。 */
 @Composable
@@ -743,3 +1019,75 @@ private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
         ),
     )
 }
+
+/**
+ * 一条 Android 系统授权需求：名称 + 状态 + 可执行动作。
+ *
+ * 已授权时按钮禁用并显示「已授权」，避免用户反复点击触发无意义的系统申请
+ * ——这是问题二明确要求的「已授权时正确显示状态」。
+ *
+ * 每行都带稳定 testTag，供 UI 测试定位不同类型的授权入口。
+ */
+@Composable
+private fun DeviceGrantRow(
+    requirement: AndroidPermissionRequirement,
+    state: DeviceCapabilityGrantState,
+    onAction: () -> Unit,
+) {
+    val granted = state == DeviceCapabilityGrantState.GRANTED
+    val statusText = when (state) {
+        DeviceCapabilityGrantState.GRANTED -> "已授权"
+        DeviceCapabilityGrantState.NOT_REQUESTED -> "未授权 · 可以现在申请"
+        DeviceCapabilityGrantState.DENIED -> "上次被拒绝 · 需要去系统设置开启"
+        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需要在系统设置中开启"
+        DeviceCapabilityGrantState.ASKED_ON_USE -> "使用时由系统询问 · 无需现在授权"
+    }
+    val actionText = when (state) {
+        DeviceCapabilityGrantState.GRANTED -> "已授权"
+        DeviceCapabilityGrantState.DENIED -> "前往设置"
+        // 投屏没有可持久状态：正确动作是发起系统对话框，而不是跳设置页。
+        DeviceCapabilityGrantState.ASKED_ON_USE -> "发起系统授权"
+        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> when {
+            requirement.opensAccessibilitySettings() -> "打开无障碍设置"
+            requirement.opensNotificationAccessSettings() -> "打开通知使用权设置"
+            else -> "前往设置"
+        }
+        DeviceCapabilityGrantState.NOT_REQUESTED -> "申请权限"
+    }
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(requirement.label, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = requirement.purpose,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (granted) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        TextButton(
+            onClick = onAction,
+            enabled = !granted,
+            modifier = Modifier.testTag("plugin-grant:${requirement.key}"),
+        ) { Text(actionText) }
+    }
+}
+
+/**
+ * 无障碍截图通道当前是否可用。
+ *
+ * 提到文件级是为了避免局部函数「先使用后定义」的顺序问题；它同时也是
+ * 授权状态与界面文案的单一判据，必须与截图来源的真实判断完全一致。
+ */
+private fun accessibilityCaptureReady(): Boolean = runCatching {
+    (com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+        as? com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource)
+        ?.accessibilityAvailable() == true
+}.getOrDefault(false)
