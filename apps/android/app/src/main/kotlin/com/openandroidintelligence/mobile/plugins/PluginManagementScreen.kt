@@ -183,9 +183,9 @@ fun PluginManagementScreen(
         val enabled = android.provider.Settings.Secure.getString(
             context.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
         ).orEmpty()
-        val own = android.content.ComponentName(
-            context, com.openandroidintelligence.screen.ScreenAccessibilityService::class.java,
-        )
+        // 用组件名常量而不是类引用：app 模块不依赖 screen-control 的编译期类型，
+        // 无障碍实现经 device-primitives 在运行期装配。
+        val own = android.content.ComponentName(context, com.openandroidintelligence.mobile.screen.accessibilityServiceClassName())
         enabled.split(':').any { it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true) }
     }.getOrDefault(false)
     /**

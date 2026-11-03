@@ -50,7 +50,6 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
 import com.openandroidintelligence.capability.MediaProjectionCaptureService
 import com.openandroidintelligence.capability.MediaProjectionRuntime
-import com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource
 import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
@@ -354,22 +353,16 @@ class MainActivity : ComponentActivity() {
                     showAssistant = false
                 }
 
-                // 真实系统能力契约：屏幕圈选的截图来源。
+                // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
+                // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
+                // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
+                // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
                 //
-                // 与远程截图用同一套优先策略：无障碍服务已开启时按需取帧，
-                // 不再每次圈选都弹系统投屏确认；只有无障碍不可用时才退回
-                // MediaProjection（由前台 Activity 发起系统对话框，授权结果
-                // 先启动 mediaProjection 型前台服务再转交，Android 14+ 硬性
-                // 要求）。拒绝/失败一律如实提示，圈选保持不可用降级。
+                // 刻意**不**复用 RemoteScreenCaptureRegistry 的实例：圈选与远程
+                // 截图各自持有独立的系统票据与像素，一处授权不得扩大另一处的
+                // 权限范围（见下方远程截图段的同一约束）。
                 val screenCaptureSource = remember {
-                    AccessibilityFirstScreenCaptureSource(
-                        accessibility = com.openandroidintelligence.screen.AndroidAccessibilityScreenshotRuntime(applicationContext),
-                        projection = MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext)),
-                        accessibilityScreenshotSupported = { android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R },
-                        deviceLocked = {
-                            getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
-                        },
-                    )
+                    MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
                 }
                 val screenCaptureAuthLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -485,9 +478,9 @@ class MainActivity : ComponentActivity() {
                     when {
                         source == null -> notify("本机未装配屏幕截图能力")
                         !permitted -> notify("请先安装并启用截图插件，开启本机截图能力")
-                        // 无障碍服务已就绪时截图按需直取，不应再把用户推进一次
-                        // 多余的投屏确认；如实告知当前已可用。
-                        source.isAvailable -> notify("无障碍截图已可用，不需要额外的系统投屏授权")
+                        // 截图来源已可用（无障碍按需截图已就绪，或投屏此前已授权）
+                        // 时不需要再走一次系统授权，如实告知即可。
+                        source.isAvailable -> notify("截图已可用，不需要额外的系统授权")
                         else -> {
                             val intent = source.createAuthorizationIntent()
                             if (intent == null) {
