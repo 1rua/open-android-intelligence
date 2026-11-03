@@ -313,4 +313,30 @@ class AccessibilityServiceWiringTest {
             xml.contains("android.permission.BIND_ACCESSIBILITY_SERVICE"),
         )
     }
+
+    /**
+     * 无障碍按需截图依赖服务配置里的 `canTakeScreenshot`。
+     *
+     * 漏声明时系统会拒绝 `takeScreenshot()`，业务侧只能退回每次都要用户同意的
+     * 投屏授权 —— 这正是本次修复要解决的体验问题。配置被误删必须由测试拦住。
+     */
+    @Test
+    fun accessibilityServiceDeclaresTheScreenshotCapability() {
+        val config = generateSequence(java.io.File(".").absoluteFile) { it.parentFile }
+            .take(8)
+            .map { java.io.File(it, "screen-control/src/main/res/xml/oai_screen_accessibility.xml") }
+            .firstOrNull { it.exists() }
+        org.junit.Assert.assertNotNull(
+            "找不到无障碍服务配置 oai_screen_accessibility.xml",
+            config,
+        )
+        val xml = config!!.readText()
+        assertTrue(
+            "必须声明 android:canTakeScreenshot=\"true\"，否则无障碍截图不可用",
+            xml.contains("android:canTakeScreenshot=\"true\""),
+        )
+        // 截图能力与既有的读屏/手势能力必须共存，不能为了加截图删掉原有配置。
+        assertTrue(xml.contains("android:canRetrieveWindowContent=\"true\""))
+        assertTrue(xml.contains("android:canPerformGestures=\"true\""))
+    }
 }

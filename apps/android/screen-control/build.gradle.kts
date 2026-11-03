@@ -17,6 +17,9 @@ android {
 
 dependencies {
     api(project(":control-ports"))
+    // 无障碍按需截图的系统壳实现 capability-ports 里的 AccessibilityScreenshotRuntime。
+    // 依赖方向是 screen-control → capability-ports，反向不存在，因此不会形成循环。
+    implementation(project(":capability-ports"))
     implementation(project(":gateway-client"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")

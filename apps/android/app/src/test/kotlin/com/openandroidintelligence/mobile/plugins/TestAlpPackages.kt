@@ -133,8 +133,15 @@ internal object TestAlpPackages {
         version: String = "1.0.0",
         name: String = "示例通知插件",
         author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(),
+        /**
+         * 覆盖 capabilities 段（provides / kernelPrimitives）。
+         *
+         * 设备能力授权的界面必须按插件**实际声明**的原语推导入口，
+         * 因此测试需要能构造只声明某一种能力的包，而默认包不带任何原语。
+         */
+        capabilities: JsonValue.JObject? = null,
     ): ByteArray {
-        val parts = buildParts(id, version, name, author)
+        val parts = buildParts(id, version, name, author, capabilities)
         return assemble(parts)
     }
 
@@ -157,6 +164,8 @@ internal object TestAlpPackages {
         val payload: ByteArray,
         val uiFile: ByteArray,
         val signatureText: String,
+        /** 声明式能力所需的 schema 文件；宿主载入时会按 manifest 里的路径读取。 */
+        val schemaFiles: List<Pair<String, ByteArray>> = emptyList(),
     )
 
     private fun buildParts(
@@ -164,20 +173,23 @@ internal object TestAlpPackages {
         version: String,
         name: String,
         keyPair: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(),
+        capabilities: JsonValue.JObject? = null,
     ): Parts {
         // X509 编码 = 12 字节固定前缀 + 32 字节裸密钥；校验器按同一规则还原。
         val rawPublicKey = keyPair.public.encoded.copyOfRange(12, 44)
         val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(rawPublicKey)
 
-        val manifest = manifestJson(id, version, name, publicKey)
+        val manifest = manifestJson(id, version, name, publicKey, capabilities)
         val payload = byteArrayOf(0, 0x61, 0x73, 0x6d) // \0asm
         val uiFile = SETTINGS_CONTRIBUTION_JSON.toByteArray(Charsets.UTF_8)
+        // 每个声明都需要包内存在对应 schema 文件，否则宿主载入会失败。
+        val schemaFiles = declaredSchemaPaths(capabilities).map { path -> path to MINIMAL_SCHEMA }
 
         val filesIndex = filesJson(
             listOf(
                 "payload/plugin.wasm" to payload,
                 "ui/settings-main.json" to uiFile,
-            ),
+            ) + schemaFiles,
         )
 
         // 契约 §4：preimage = 域分隔串 + manifest + '\n' + files.json。
@@ -189,7 +201,7 @@ internal object TestAlpPackages {
             sign()
         }
         val signatureText = Base64.getUrlEncoder().withoutPadding().encodeToString(signature)
-        return Parts(manifest, filesIndex, payload, uiFile, signatureText)
+        return Parts(manifest, filesIndex, payload, uiFile, signatureText, schemaFiles)
     }
 
     private fun assemble(parts: Parts, manifestOverride: ByteArray? = null): ByteArray =
@@ -200,19 +212,44 @@ internal object TestAlpPackages {
                 "payload/plugin.wasm" to parts.payload,
                 "signature.ed25519" to parts.signatureText.toByteArray(Charsets.UTF_8),
                 "ui/settings-main.json" to parts.uiFile,
-            ),
+            ) + parts.schemaFiles,
         )
 
-    private fun manifestJson(id: String, version: String, name: String, publicKey: String): ByteArray =
-        ("""{"schemaVersion":"1.0","plugin":{"id":"$id","version":"$version","name":"$name","description":"测试用示例插件"},""" +
+    private fun manifestJson(
+        id: String,
+        version: String,
+        name: String,
+        publicKey: String,
+        capabilities: JsonValue.JObject? = null,
+    ): ByteArray {
+        val capabilitiesSegment = capabilities?.let { Json.canonical(it) }
+            ?: """{"provides":[],"depends":[],"kernelPrimitives":[]}"""
+        return ("""{"schemaVersion":"1.0","plugin":{"id":"$id","version":"$version","name":"$name","description":"测试用示例插件"},""" +
             """"author":{"algorithm":"Ed25519","publicKey":"$publicKey"},""" +
             """"runtime":{"type":"protected-wasm","abiVersion":"1.0","entrypoint":"open_android_intelligence_plugin_main","payload":"payload/plugin.wasm"},""" +
             """"compatibility":{"androidHost":">=2.0.0 <3.0.0","gatewayProtocol":">=2.0 <3.0"},""" +
-            """"capabilities":{"provides":[],"depends":[],"kernelPrimitives":[]},""" +
+            """"capabilities":$capabilitiesSegment,""" +
             """"security":{"network":[],"background":{"requested":false,"minimumIntervalSeconds":null},""" +
             """"resources":{"maxInvocationMillis":5000,"maxMemoryBytes":16777216,"maxStorageBytes":10485760,"maxConcurrentInvocations":1,"maxDailyNetworkBytes":0}},""" +
             """"ui":{"settings":["ui/settings-main.json"],"cards":[]},""" +
             """"state":{"schemaVersion":1,"portableExport":false}}""").toByteArray(Charsets.UTF_8)
+    }
+
+    /** 从能力声明里取出所有 schema 路径，保证包内文件与 manifest 一致。 */
+    private fun declaredSchemaPaths(capabilities: JsonValue.JObject?): List<String> {
+        val provides = capabilities?.get("provides") as? JsonValue.JArray ?: return emptyList()
+        return provides.items.mapNotNull { (it as? JsonValue.JObject)?.get("schema") }
+            .mapNotNull { (it as? JsonValue.JString)?.value }
+    }
+
+    /**
+     * 满足能力 Schema 最低要求的最小对象 schema。
+     *
+     * 能力绑定要求根为 object 且 additionalProperties=false，这里如实构造，
+     * 不用宽松 schema 绕过校验。
+     */
+    private val MINIMAL_SCHEMA: ByteArray =
+        """{"type":"object","additionalProperties":false,"properties":{}}""".toByteArray(Charsets.UTF_8)
 
     /** files.json 按 UTF-8 路径升序排列，sha256 与 size 与载荷一致。 */
     private fun filesJson(entries: List<Pair<String, ByteArray>>): ByteArray {

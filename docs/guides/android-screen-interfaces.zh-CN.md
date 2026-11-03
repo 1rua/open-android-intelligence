@@ -25,7 +25,7 @@ CLI 与 MCP 均使用 `CoreClient` 请求既有设备 API；Core 沿用同一账
 | 插件 ID | 能力 ID（版本均为 `1.0.0`） | 内核原语 | 用途与风险 |
 | --- | --- | --- | --- |
 | `org.openandroidintelligence.screen-reader` | `org.openandroidintelligence.screen-reader.read` | `kernel.screen.read` | 读取或搜索有界 Accessibility 语义树，`read` |
-| `org.openandroidintelligence.screen-capture` | `org.openandroidintelligence.screen-capture.capture` | `kernel.screen.capture` | 经本地许可与 MediaProjection 授权截图，`read` |
+| `org.openandroidintelligence.screen-capture` | `org.openandroidintelligence.screen-capture.capture` | `kernel.screen.capture` | 经本地许可截图；优先无障碍按需截图，MediaProjection 作为需明确同意的备用，`read` |
 | `org.openandroidintelligence.screen-control` | `org.openandroidintelligence.screen-control.control` | `kernel.screen.control` | 执行明确的 Android 操作，`write`，按全局模式决定确认 |
 
 三个独立受保护插件各自只声明一个内核原语。能力 ID 必须属于自身插件命名空间，不能把
@@ -61,6 +61,88 @@ oai capabilities
 屏幕读取还要求用户在系统设置主动启用 OAI 无障碍服务；截图要求本地独立 CAPTURE 许可、
 系统 MediaProjection 授权和有效投影前台服务；控制要求独立全局控制模式、目标窗口绑定和
 当前请求在本地策略下获得允许（手动或限时批准、自动模式），并在排队后重核。远程参数不能传入本地授权、账号或设备身份来提升权限。
+
+## 截图的两条取景路径
+
+截图能力仍是同一个 `kernel.screen.capture` 原语、同一套三层授权，但**取景来源**有两条，
+它们解决的是同一个问题的两个阶段：
+
+| 路径 | 系统要求 | 用户操作频率 | 适用 |
+| --- | --- | --- | --- |
+| 无障碍 `AccessibilityService.takeScreenshot()` | Android 11+（API 30）；服务已连接且服务信息声明 `canTakeScreenshot` | 只需在系统无障碍设置里开启一次 | 默认优先；Agent 高频截图 |
+| MediaProjection | 每次重新建立采集会话都要系统投屏确认 | 每次会话一次 | 需要明确用户同意的备用方案 |
+
+`oai_screen_accessibility.xml` 已声明 `android:canTakeScreenshot="true"`。这是无障碍截图
+生效的前提：漏声明时系统会拒绝，业务侧只能退回投屏授权。
+
+**不绕过任何系统限制**：受保护窗口（密码、支付等 `FLAG_SECURE` 界面）由系统直接拒绝；
+无障碍截图也受系统频率限制。这两类都是真正的事实，源码不为它们提供绕过路径。
+
+### 截图失败的可诊断原因
+
+失败、系统拒绝、频率限制与服务断连必须彼此可区分，否则调用方无法判断该重试、
+该等待，还是该去系统设置。`reason` 使用以下稳定码（字符集同 Core 的
+`[A-Z0-9_]{0,128}` 约束）：
+
+| 原因码 | 含义 | 是否可恢复 | 下一步 |
+| --- | --- | --- | --- |
+| `SCREEN_CAPTURE_AUTHORIZATION_REQUIRED` | 两条路径都还没有授权 | 是 | 开启无障碍服务，或发起一次系统投屏授权 |
+| `ACCESSIBILITY_SERVICE_UNAVAILABLE` | 服务开启过但当前未连接 | 是 | 到无障碍设置确认服务显示「已连接」 |
+| `SCREEN_CAPTURE_SYSTEM_REJECTED` | 用户拒绝或系统判定无权截图 | 是 | 重新发起一次显式授权 |
+| `SCREEN_CAPTURE_SECURE_WINDOW` | 当前窗口受系统保护 | 否（换界面即可） | 切换到普通界面 |
+| `SCREEN_CAPTURE_RATE_LIMITED` | 触发系统截图限速 | 是 | 稍等片刻重试，不必重新授权 |
+| `SCREEN_CAPTURE_FAILED` | 本次取帧失败 | 是 | 直接重试 |
+| `SCREEN_DEVICE_LOCKED` | 设备锁屏 | 是 | 解锁后重试 |
+| `SCREEN_CAPTURE_UNSUPPORTED` | 系统低于 Android 11，或服务未声明截图能力 | 否 | 只能使用投屏授权 |
+
+无障碍取帧失败为 `SCREEN_CAPTURE_FAILED` 时会再尝试一次已获同意的投屏路径；其余原因
+（系统拒绝、受保护窗口、频率限制）不换路重试——前两者换路也拿不到像素，后者会额外
+消耗投屏会话并更容易被系统回收。
+
+## 设备能力授权的入口形态
+
+插件管理里的 Android 授权入口**按插件实际声明的 `kernelPrimitives` 动态推导**，不硬编码
+任何 Agent、Gateway 或固定权限清单。新增能力只需补一条映射，界面自动出现对应入口。
+
+| 内核原语 | 授权形态 | 点击后的系统入口 |
+| --- | --- | --- |
+| `kernel.sms.read` | 运行时权限 | 系统权限申请对话框（`READ_SMS`） |
+| `kernel.call-log.read` | 运行时权限 | 系统权限申请对话框（`READ_CALL_LOG`） |
+| `kernel.notifications.read` | 特殊访问 | 系统「通知使用权」设置页 |
+| `kernel.screen.read` / `kernel.screen.control` | 特殊访问 | 系统无障碍设置页 |
+| `kernel.screen.capture` | 系统对话框 | 由前台 Activity 发起投屏授权，**不跳设置页** |
+
+行为约定：
+
+- 已授权时显示「已授权」并禁用按钮，不重复申请；
+- 普通运行时权限走系统申请；无障碍与通知使用权跳对应设置页；投屏必须由前台 Activity
+  发起系统对话框——跳设置页是与该授权无关的操作；
+- 从系统设置返回（`ON_RESUME`）后重新检测全部授权状态，并触发一次 Core 能力同步，
+  使远端不再停留在旧状态；
+- 系统未提供对应设置页时，给出**具体的手动路径**（例如「系统设置 → 无障碍 → 已下载的
+  服务 → 本应用」），而不是笼统的「无法打开设置」。
+
+## 能力阻塞的可恢复性
+
+Core 的 inventory 只接受固定六个状态（`READY`、`PLUGIN_DISABLED`、`LOCAL_GRANT_REQUIRED`、
+`ANDROID_PERMISSION_REQUIRED`、`PROVIDER_UNAVAILABLE`、`PROVIDER_NOT_SELECTED`），这是既有
+统一能力接口的契约，不为界面方便而扩张。因此「可恢复性」由 `reason` 与本地分类表达。
+
+判定原则：**只有设备或系统确实不支持的能力才算不可恢复**。以下全部可恢复，不得长期
+显示成不可恢复的阻塞：
+
+| 处境 | 判定 | 恢复方式 |
+| --- | --- | --- |
+| 从未申请授权 | `NOT_YET_REQUESTED` | 点一下即可申请，属正常起点 |
+| 需要用户去系统设置 | `AWAITING_USER_ACTION` | 跳转对应设置页 |
+| 服务开启过但未连接 | `SERVICE_DISCONNECTED` | 回无障碍设置确认已连接 |
+| 用户/系统拒绝授权 | `SYSTEM_REJECTED` | 重新发起一次授权 |
+| 系统限速 | `RATE_LIMITED` | 等待后重试 |
+| 本机能力开关关闭 | `LOCAL_SWITCH_OFF` | 打开开关 |
+| 插件未安装/未启用 | `PLUGIN_INACTIVE` | 安装或启用插件 |
+| 尚未选择提供者 | `PROVIDER_UNSELECTED` | 选择提供者 |
+| 同步中 | `SYNCING` | 等待自动更新 |
+| 设备/系统不支持 | `UNAVAILABLE` | 唯一不可恢复的一类 |
 
 ## 屏幕读取
 

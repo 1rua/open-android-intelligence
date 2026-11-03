@@ -446,10 +446,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     }.orEmpty()
                     status = when (reason) {
                         "" -> "READY"
+                        // 授权类：都能由用户操作恢复。区分具体原因是为了让远端与界面
+                        // 知道该引导用户去「申请权限」还是「检查服务是否连接」。
                         "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED",
-                        "ACCESSIBILITY_SERVICE_UNAVAILABLE", "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED" -> "ANDROID_PERMISSION_REQUIRED"
+                        "ACCESSIBILITY_SERVICE_UNAVAILABLE", "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
+                        "SCREEN_CAPTURE_SYSTEM_REJECTED", "SCREEN_DEVICE_LOCKED" -> "ANDROID_PERMISSION_REQUIRED"
                         "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED", "SCREEN_SESSION_REQUIRED",
                         "SCREEN_SESSION_EXPIRED", "SCREEN_SESSION_BINDING_CHANGED", "SCREEN_PERMISSION_REQUIRED" -> "LOCAL_GRANT_REQUIRED"
+                        // 其余（含频率限制、受保护窗口、取帧失败、系统不支持）如实报
+                        // 提供者未就绪，具体原因由 reason 携带，不在这里升级成授权问题。
                         else -> "PROVIDER_UNAVAILABLE"
                     }
                 }
