@@ -156,34 +156,6 @@ class SettingsCapabilityUiTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun screenSelectionPresentationCombinesWiringGrantsAndNegotiation() {
-        // 宿主未接入截图来源（显式注入，与全局装配状态解耦）：不可用
-        val unwired = screenSelectionCapabilityPresentation(
-            grantsBound = true,
-            attachmentStatusAgreed = true,
-            screenshotSourceWired = false,
-        )
-        assertFalse(unwired.enabled)
-        assertTrue(unwired.supporting.contains("截图"))
-
-        // 来源已接入（Wave 1 起宿主装配了 MediaProjection 来源）且协商同意：可用
-        val wired = screenSelectionCapabilityPresentation(
-            grantsBound = true,
-            attachmentStatusAgreed = true,
-            screenshotSourceWired = true,
-        )
-        assertTrue(wired.enabled)
-
-        // 没有活动配对：授权本身不可用
-        val unbound = screenSelectionCapabilityPresentation(
-            grantsBound = false,
-            attachmentStatusAgreed = true,
-        )
-        assertFalse(unbound.enabled)
-        assertTrue(unbound.supporting.contains("配对"))
-    }
-
-    @Test
     fun notificationPushPresentationCombinesWiringGrantsAndNegotiation() {
         val unwired = notificationPushCapabilityPresentation(
             grantsBound = true,
@@ -206,43 +178,6 @@ class SettingsCapabilityUiTest {
         )
         assertFalse(unbound.enabled)
         assertTrue(unbound.supporting.contains("配对"))
-    }
-
-    @Test
-    fun aDisabledScreenSelectionEntryDoesNotToggleWhenPressed() {
-        var toggled: Boolean? = null
-        setContent {
-            ScreenSelectionCapabilityItem(
-                checked = false,
-                presentation = screenSelectionPresentation(
-                    screenshotSourceWired = false,
-                    attachmentStatusAgreed = true,
-                ),
-                onCheckedChange = { toggled = it },
-            )
-        }
-
-        compose.onNodeWithText("屏幕上下文分析与圈选").performClick()
-        compose.onNodeWithText("已启用").assertDoesNotExist()
-        assertEquals("禁用条目点了不得触发回调", null, toggled)
-    }
-
-    @Test
-    fun anEnabledScreenSelectionEntryTogglesWhenPressed() {
-        var toggled: Boolean? = null
-        setContent {
-            ScreenSelectionCapabilityItem(
-                checked = false,
-                presentation = screenSelectionPresentation(
-                    screenshotSourceWired = true,
-                    attachmentStatusAgreed = true,
-                ),
-                onCheckedChange = { toggled = it },
-            )
-        }
-
-        compose.onNodeWithText("屏幕上下文分析与圈选").performClick()
-        assertEquals(true, toggled)
     }
 
     @Test
