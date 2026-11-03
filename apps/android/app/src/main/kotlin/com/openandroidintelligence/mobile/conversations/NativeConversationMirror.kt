@@ -31,7 +31,8 @@ class NativeConversationMirror(
     private val mirrorDelegate = lazy {
         val agentId = checkNotNull(ownerAgentId) { "NATIVE_AGENT_REQUIRED" }
         require(agentId.isNotBlank()) { "NATIVE_AGENT_REQUIRED" }
-        EncryptedConversationMirror(context, baseScope.copy(accountId = "${baseScope.accountId}#native#$agentId"), keyProvider)
+        NativeLocalPartitions(context, baseScope, keyProvider).register(agentId)
+        EncryptedConversationMirror(context, NativeLocalPartitions.partitionScope(baseScope, agentId), keyProvider)
     }
 
     private val mirror get() = mirrorDelegate.value
@@ -50,9 +51,16 @@ class NativeConversationMirror(
         mirror.commitNativeCreation(requestId, receipt)
     }
 
-    override suspend fun saveConversations(page: ConversationPage) = withContext(Dispatchers.IO) {
+    override suspend fun saveConversations(page: ConversationPage) {
         mirror.saveNativeConversations(page)
     }
+
+    override suspend fun localTimeline(conversationId: String): TimelinePage? = loadTimeline(conversationId)
+
+    override suspend fun beginListRead(): Long = withContext(Dispatchers.IO) { mirror.beginHistoryRead() }
+
+    override suspend fun saveConversations(page: ConversationPage, expectedEpoch: Long?): Boolean =
+        mirror.saveNativeConversations(page, expectedEpoch)
 
     override suspend fun recoveryIdentities(conversationId: String) = withContext(Dispatchers.IO) {
         mirror.nativeRecoveryIdentities(conversationId)
@@ -100,6 +108,8 @@ class NativeConversationMirror(
     override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
         delegateMirror().saveSendAtoms(conversationId, atoms)
     }
+
+    override suspend fun loadConversations(): ConversationPage? = delegateMirror().loadConversations()
 
     override suspend fun loadTimeline(conversationId: String): TimelinePage? {
         return withContext(Dispatchers.IO) {

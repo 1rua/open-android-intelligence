@@ -9,16 +9,19 @@ import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingSto
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
+import com.openandroidintelligence.mobile.plugins.digestName
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.SecretKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -26,10 +29,15 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
-/** 账号隔离的持久原件库；正文独立保存，原件使用有界缓冲分块格式且不按 TTL 淘汰。 */
-class EncryptedHistoryMediaCache(context: Context, private val scope: ConversationScope,
-    private val http: GatewayHttpClient? = null, keyProvider: AesGcmKeyProvider? = null) : HistoricalMediaPort {
-    private val scopeKey = Json.canonical(Json.of(listOf(scope.profileId, scope.gatewayId, scope.accountId, scope.installId)))
+/** 账号与原生 Agent 隔离的持久原件库；正文独立保存，原件使用有界缓冲分块格式且不按 TTL 淘汰。 */
+class EncryptedHistoryMediaCache(private val context: Context, private val scope: ConversationScope,
+    private val http: GatewayHttpClient? = null, private val keyProvider: AesGcmKeyProvider? = null,
+    private val nativeAgentId: String? = null) : HistoricalMediaPort {
+    private val localScope = nativeAgentId?.let { NativeLocalPartitions.partitionScope(scope, it) } ?: scope
+    private val partitions = nativeAgentId?.let { agentId ->
+        NativeLocalPartitions(context, scope, keyProvider).also { it.register(agentId) }
+    }
+    private val scopeKey = Json.canonical(Json.of(listOf(localScope.profileId, localScope.gatewayId, localScope.accountId, localScope.installId)))
     private val scopeHash = MessageDigest.getInstance("SHA-256").digest(scopeKey.toByteArray()).joinToString("") { "%02x".format(it) }
     private val directory = File(context.noBackupFilesDir, "history-media/$scopeHash")
     private val retiredRoot = File(context.noBackupFilesDir, "history-media-retired/$scopeHash")
@@ -53,17 +61,18 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
     @Volatile private var generation = 0L
     @Volatile private var retired = false
     @Volatile private var pendingTransitionsBlocked = false
-    internal val conversationScope get() = scope
+    internal val conversationScope get() = localScope
     internal fun setPendingTransitionsBlocked(blocked: Boolean) { synchronized(index) { pendingTransitionsBlocked = blocked } }
     private fun checkTransitionsReady() { check(!pendingTransitionsBlocked) { "MEDIA_TRANSITIONS_PENDING" } }
 
     private data class Entry(val metadata: HistoricalMediaMetadata, val contentId: String, val localDraftIds: List<String> = emptyList())
     private fun entryKey(conversationId: String, id: String): String = MessageDigest.getInstance("SHA-256")
         .digest(Json.canonical(Json.of(listOf(conversationId, id))).toByteArray()).joinToString("") { "%02x".format(it) }
-    private fun recordAt(key: String): Entry? = index.read(key)?.let { bytes ->
+    private fun recordAt(key: String): Entry? = index.read(key)?.let(::decodeEntry)
+    private fun decodeEntry(bytes: ByteArray): Entry {
         val o = JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("LOCAL_MEDIA_INVALID")
         val id = JsonFields.string(o, "attachmentId") ?: error("LOCAL_MEDIA_INVALID")
-        Entry(HistoricalMediaMetadata(JsonFields.string(o, "conversationId") ?: error("LOCAL_MEDIA_INVALID"), id,
+        return Entry(HistoricalMediaMetadata(JsonFields.string(o, "conversationId") ?: error("LOCAL_MEDIA_INVALID"), id,
             JsonFields.string(o, "filename").orEmpty(), JsonFields.string(o, "mediaType").orEmpty(),
             JsonFields.long(o, "sizeBytes") ?: error("LOCAL_MEDIA_INVALID"), JsonFields.string(o, "sha256") ?: error("LOCAL_MEDIA_INVALID"),
             false, JsonFields.long(o, "sizeBytes") ?: 0L), JsonFields.string(o, "contentId") ?: error("LOCAL_MEDIA_INVALID"), JsonFields.strings(o, "localDraftIds"))
@@ -158,6 +167,78 @@ class EncryptedHistoryMediaCache(context: Context, private val scope: Conversati
             return scopedEntry(conversationId, id)
         } finally { content.fill(0) }
     }
+    /**
+     * 只接受已持久化 Mirror 提供的原件长度和摘要；只读旧 v2 持久原件并保留回滚资料。
+     * 未建 v2 索引的更早缓存、缺少可信摘要或已被其他 Agent 认领的旧键继续保留，不自动迁移。
+     */
+    override suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean =
+        migrateLegacyOriginal(conversationId,attachmentId,sizeBytes,sha256)
+
+    suspend fun migrateLegacyOriginal(conversationId: String, attachmentId: String,
+        expectedSize: Long, expectedSha256: String): Boolean = withContext(Dispatchers.IO) {
+        val agentId = nativeAgentId ?: return@withContext false
+        if (expectedSize < 0L) return@withContext false
+        val expectedDigest = runCatching { digest(expectedSha256) }.getOrNull() ?: return@withContext false
+        val job = currentCoroutineContext()
+        writes.withLock {
+            checkTransitionsReady()
+            if (revoked(conversationId, attachmentId)) return@withLock false
+            val epoch = originalEpoch(conversationId, attachmentId)
+            val baseKey = Json.canonical(Json.of(listOf(scope.profileId, scope.gatewayId, scope.accountId, scope.installId)))
+            val oldIndexScope = "history-media-index-v2:$baseKey"
+            val oldIndex = EncryptedDocuments(context, oldIndexScope,
+                keyProvider ?: existingKeyProvider("oai_documents_${digestName(oldIndexScope)}"))
+            val oldRoot = File(context.noBackupFilesDir, "private-documents/${digestName(oldIndexScope)}")
+            fun readOld(key: String): ByteArray? =
+                if (File(oldRoot, digestName(key)).isFile) oldIndex.read(key) else null
+            val key = entryKey(conversationId, attachmentId)
+            val record = readOld("metadata:$key") ?: return@withLock false
+            val entry = decodeEntry(record)
+            if (entry.metadata.conversationId != conversationId || entry.metadata.attachmentId != attachmentId ||
+                entry.metadata.sizeBytes != expectedSize || digest(entry.metadata.sha256) != expectedDigest) return@withLock false
+            val versionRecord = readOld("version:$key")
+            val version = versionRecord?.let { JsonFields.obj(Json.parse(it.decodeToString())) ?: error("LOCAL_MEDIA_INVALID") }
+            val owners = version?.let { JsonFields.objects(it, "owners") }.orEmpty()
+            if (version?.let { JsonFields.bool(it, "permanent") } == true ||
+                (owners.isNotEmpty() && owners.all { JsonFields.bool(it, "deleted") == true })) return@withLock false
+            fun unchanged(): Boolean = readOld("revoked:$key") == null &&
+                readOld("metadata:$key")?.contentEquals(record) == true &&
+                (if (versionRecord == null) readOld("version:$key") == null else readOld("version:$key")?.contentEquals(versionRecord) == true)
+            if (!unchanged()) return@withLock false
+            val oldHash = digestName(baseKey)
+            val oldDirectory = File(context.noBackupFilesDir, "history-media/$oldHash")
+            if (!File(oldDirectory, "${entry.contentId}.stage").isFile) return@withLock false
+            val current = localOrMigrate(conversationId, attachmentId)
+            if (current != null && (current.metadata.sizeBytes != expectedSize || digest(current.metadata.sha256) != expectedDigest)) return@withLock false
+            // 已登记的其他 Agent 若也持有同一旧键，单凭相同正文摘要不能确认旧原件归属。
+            val competingOwner = partitions?.agents().orEmpty().filter { it != agentId }.any { other ->
+                val otherMirror = EncryptedConversationMirror(context,NativeLocalPartitions.partitionScope(scope,other),keyProvider)
+                try {
+                    otherMirror.loadKnownMediaMessages().any { row -> row.conversationId?.value == conversationId &&
+                        row.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
+                            .any { it.draftId.value == attachmentId } }
+                } finally { otherMirror.closeNativeStore() }
+            }
+            if (competingOwner || partitions?.claimLegacyOriginal(agentId, conversationId, attachmentId) != true) return@withLock false
+            if (current != null) return@withLock true
+            val oldFiles = EncryptedAttachmentStagingStore(oldDirectory,
+                (keyProvider ?: existingKeyProvider("oai_history_media_$oldHash")).getOrCreate(), baseKey, persistent = true)
+            // save 保留现有分块认证、长度/摘要校验及原图预算；绝不退休旧文件或旧密钥。
+            save(entry.metadata, oldFiles.openStream(entry.contentId), { !job.isActive || !unchanged() }, epoch)
+            true
+        }
+    }
+
+    /** 迁移读取只能使用旧密钥；缺失时保留密文并失败，不能生成替代密钥。 */
+    private fun existingKeyProvider(alias: String) = object : AesGcmKeyProvider {
+        private val key by lazy {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(alias, null) as? SecretKey
+                ?: error("LOCAL_MEDIA_KEY_UNAVAILABLE")
+        }
+        override fun getOrCreate(): SecretKey = key
+        override fun delete(): Unit = error("LEGACY_MEDIA_READ_ONLY")
+    }
+
     suspend fun migrateLegacy() = withContext(Dispatchers.IO) {
         writes.withLock {
             legacy.keys().filter { it.startsWith("metadata:") }.forEach { key ->

@@ -148,10 +148,11 @@ class WorkbenchVoiceSendTest {
         assertFalse(voice.await())
         assertTrue(repository.sent.isEmpty())
         assertEquals("thread_b",controller.state.value.activeThreadId)
-        assertEquals("保留文字",controller.state.value.draft)
+        assertEquals("A 的草稿不能混入 B", "",controller.state.value.draft)
         assertTrue(controller.state.value.attachments.isEmpty())
         assertEquals(listOf("voice"),uploads.discarded)
         controller.openThread("thread_a"); runCurrent()
+        assertEquals("原草稿仍保存在原会话", "保留文字",controller.state.value.draft)
         val timeline=controller.state.value.timeline
         assertTrue(timeline is Loadable.Empty || (timeline is Loadable.Ready && timeline.value.isEmpty()))
         controller.cancel()

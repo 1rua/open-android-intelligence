@@ -8,9 +8,10 @@ import kotlinx.coroutines.withContext
 /** Explicit read-only mode for a persisted mirror when the host is unreachable. */
 class OfflineMirrorRepository(private val mirror:EncryptedConversationMirror) : ConversationRepository {
     private fun unavailable():Nothing=throw java.io.IOException("OFFLINE_MIRROR")
-    override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=withContext(Dispatchers.IO) { ConversationPage(mirror.threads().orEmpty(),null,mirror.threadsSnapshotRevision(),authoritative=false) }
+    override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=withContext(Dispatchers.IO) { mirror.threads()?.let { ConversationPage(it,null,mirror.threadsSnapshotRevision(),authoritative=false) }
+        ?: throw java.io.IOException("LOCAL_HISTORY_UNAVAILABLE") }
     override suspend fun readOrganization()=withContext(Dispatchers.IO) { mirror.organization() }
-    override suspend fun timeline(conversationId:String,page:PageRequest)=mirror.loadTimeline(conversationId) ?: TimelinePage(emptyList(),null)
+    override suspend fun timeline(conversationId:String,page:PageRequest)=mirror.loadTimeline(conversationId) ?: throw java.io.IOException("LOCAL_HISTORY_UNAVAILABLE")
     override fun observeEvents(scope:ConversationScope)=emptyFlow<VerifiedConversationEvent>()
     override suspend fun createConversation(scope:ConversationScope,clientConversationId:String):Conversation=unavailable()
     override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance=unavailable()

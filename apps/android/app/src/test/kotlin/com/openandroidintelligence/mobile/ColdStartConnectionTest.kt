@@ -483,10 +483,8 @@ class ColdStartConnectionTest {
             override fun getOrCreate(): javax.crypto.SecretKey {
                 if (blockNextConstruction.get()) {
                     val stack = Thread.currentThread().stackTrace
-                    // 只截获新工作台构造中的首次读密钥；后台原生仓储不能抢走闩锁。
+                    // 新工作台先准备其本地媒体与镜像，再构造 Controller；闩锁位于同一个外部密钥边界。
                     val isWorkbenchConstruction = stack.any {
-                        it.className == WorkbenchController::class.java.name && it.methodName == "<init>"
-                    } && stack.any {
                         it.className.startsWith(GatewayRuntime::class.java.name) &&
                             it.methodName.contains("buildWorkbenchController")
                     }
@@ -527,7 +525,7 @@ class ColdStartConnectionTest {
             assertTrue("发出用户操作时新工作台必须仍在构造闩锁内", constructionRelease.count == 1L)
             assertSame("交接尚未发布时界面仍持有已退役的旧工作台", previousController, restarted.controller.value)
             previousController.openThread(OLD_THREAD)
-            previousController.editDraft("交接输入")
+            previousController.editDraft("交接输入", previousController.state.value.draftEpoch)
             constructionRelease.countDown()
 
             assertTrue("交接必须把旧界面依序到达的选择与输入交给最新工作台", awaitCondition {
@@ -547,6 +545,32 @@ class ColdStartConnectionTest {
             constructionRelease.countDown()
             discoveryRelease.countDown()
         }
+    }
+
+    @Test fun agentCapabilityLossAndRecoveryKeepTheSameReadableWorkbench() {
+        val running = connectedRuntimeWithHistory(native = true)
+        val current = running.runtime
+        val original = requireNotNull(current.controller.value)
+        gateway.respond("$API/agents", NATIVE_AGENTS_BODY.replace("\"online\":true", "\"online\":false")
+            .replace("\"list\":true", "\"list\":false").replace("\"history\":true", "\"history\":false")
+            .replace("\"send\":true", "\"send\":false"))
+        requireNotNull(current.nativeAgents.value).refresh()
+        assertTrue("测试必须实际收到 Agent 离线描述", awaitCondition {
+            current.nativeAgents.value?.state?.value?.agent?.online == false
+        })
+        assertTrue("工作台需要同步离线状态", awaitCondition { current.controller.value?.state?.value?.isOnline == false })
+        assertSame("能力变化不能重建工作台", original, current.controller.value)
+        assertEquals(OLD_THREAD, original.state.value.activeThreadId)
+        assertEquals(OLD_DRAFT, original.state.value.draft)
+        assertTrue(original.hasSavedMessage())
+        gateway.respond("$API/agents", NATIVE_AGENTS_BODY)
+        requireNotNull(current.nativeAgents.value).refresh()
+        assertTrue("Agent 恢复后原工作台应重新可发送", awaitCondition {
+            current.nativeAgents.value?.state?.value?.agent?.online == true && original.state.value.isOnline
+        })
+        assertSame(original, current.controller.value)
+        assertTrue(original.hasSavedMessage())
+        assertEquals(OLD_DRAFT, original.state.value.draft)
     }
 
     private data class RunningSession(val runtime: GatewayRuntime, val scope: CoroutineScope, val profileId: String)

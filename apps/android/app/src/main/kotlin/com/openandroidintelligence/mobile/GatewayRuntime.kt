@@ -575,6 +575,8 @@ class GatewayRuntime(
     ) {
         var queuedAction: Job? = null
         var editorThread = previous.state.value.activeThreadId
+        var editorVersion = previous.state.value.draftVersion
+        var editorForwardingValid = true
         fun forward(action: (WorkbenchController) -> Unit) {
             val preceding = queuedAction
             queuedAction = ownerScope.launch {
@@ -584,8 +586,24 @@ class GatewayRuntime(
                 if (isActive && _controller.value === replacement && isCurrent()) action(replacement)
             }
         }
+        previous.redirectRetiredDraftEditing { text, _ ->
+            val expectedThread = editorThread
+            forward { replacement ->
+                if (replacement.state.value.activeThreadId == expectedThread && editorForwardingValid) {
+                    if (replacement.state.value.draftVersion != editorVersion) editorForwardingValid=false
+                    else {
+                        replacement.editDraftAtVersion(text,editorVersion)
+                        editorVersion = replacement.state.value.draftVersion
+                    }
+                }
+            }
+        }
         previous.redirectRetiredNavigation(
-            openThread = { id -> editorThread = id; forward { it.openThread(id) } },
+            openThread = { id -> editorThread = id; forward { replacement ->
+                replacement.openThread(id)
+                editorVersion = replacement.state.value.draftVersion
+                editorForwardingValid = true
+            } },
             editDraft = { text ->
                 val expectedThread = editorThread
                 forward { if (it.state.value.activeThreadId == expectedThread) it.editDraft(text) }
@@ -865,7 +883,9 @@ class GatewayRuntime(
     fun reconnectOfflineMirror() {
         if (restoringSession) { recoveryWakeup.trySend(Unit); return }
         if (connectionJob?.isActive == true || _phase.value !is ConnectionPhase.OfflineMirror) return
-        leaveWorkbench { restoreSessionIfAvailable() }
+        // 保留可读工作台，新的连接所有者准备完成后再按原持久化屏障交接。
+        _phase.value = ConnectionPhase.Disconnected
+        restoreSessionIfAvailable()
     }
 
     fun chooseAnotherAccount() {
@@ -948,6 +968,24 @@ class GatewayRuntime(
         }.onFailure { _operationNotice.value = "网关身份清理失败，请检查本机存储。" }
     }
 
+    private suspend fun clearNativeLocalPartitions(localScope: ConversationScope) {
+        val partitions = com.openandroidintelligence.mobile.conversations.NativeLocalPartitions(context,localScope,localDocumentKeyProvider)
+        accountProfiles.find(localScope.profileId)?.selectedAgentId?.let(partitions::register)
+        partitions.agents().forEach { agentId ->
+            val child = partitions.partitionScope(agentId)
+            val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(
+                context,localScope,keyProvider=localDocumentKeyProvider,nativeAgentId=agentId)
+            com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(
+                context,localMedia,child,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
+            attachmentStagingStore(child.gatewayId,child.accountId,child.installId).cleanup()
+            com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,child,localDocumentKeyProvider).wipe()
+            val localMirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,child,localDocumentKeyProvider)
+            try { localMirror.wipe() } finally { localMirror.closeNativeStore() }
+            localMedia.clearMedia()
+        }
+        partitions.wipe()
+    }
+
     fun removeLocalAccount(profileId: String) {
         if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) return
         val profile = accountProfiles.find(profileId) ?: return
@@ -983,6 +1021,7 @@ class GatewayRuntime(
                     deviceKeys.delete(profileId)
                     if (accountId != null) {
                         val localScope = ConversationScope(profileId,profile.gatewayBaseUrl,accountId,installationId())
+                        clearNativeLocalPartitions(localScope)
                         val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,localScope,keyProvider=localDocumentKeyProvider)
                         com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
                         pairingGrants.clearFor(PairingGrantBinding(profile.gatewayBaseUrl, accountId, installationId()))
@@ -1058,7 +1097,8 @@ class GatewayRuntime(
                     com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
                 } catch (cancelled: CancellationException) { throw cancelled }
                   catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，未完成下载的本机恢复记录清理失败，请重试本机账号清理。" }
-                val cleanup = listOf<() -> Unit>(
+                val cleanup = listOf<suspend () -> Unit>(
+                    { clearNativeLocalPartitions(localScope) },
                     { pairingGrants.clearFor(binding) },
                     { credentialStore.clearRefresh(profileId) },
                     { refreshJournal.clear(profileId); pendingRotations.remove(profileId) },
@@ -1075,7 +1115,7 @@ class GatewayRuntime(
                     { AndroidEventCursorStore(context, profileId).clear(accountId) },
                     { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
                     { clearLastProfile() },
-                ).map { action -> runCatching(action) }
+                ).map { action -> runCatching { action() } }
                 if (cleanup.any { it.isFailure }) {
                     _operationNotice.value = "Gateway 已解除配对，但本机数据清理失败，请重试本机账户清理。"
                 }
@@ -1242,10 +1282,15 @@ class GatewayRuntime(
                     .also { it.finishBaselineRecovery() }
             }
             val media = kotlinx.coroutines.withContext(Dispatchers.IO) {
-                com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider)
+                com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,mirrorScope,keyProvider=localDocumentKeyProvider,
+                    nativeAgentId=selectedAgentId)
             }
-            val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,mirrorScope,keyProvider=localDocumentKeyProvider)
-            val mediaReady = prepareMediaTransitions(mirror,media)
+            val localOwnerScope = selectedAgentId?.let {
+                com.openandroidintelligence.mobile.conversations.NativeLocalPartitions.partitionScope(mirrorScope, it)
+            } ?: mirrorScope
+            val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,localOwnerScope,keyProvider=localDocumentKeyProvider)
+            val mediaReady = if (nativeMirror != null) prepareNativeMedia(nativeMirror,media)
+                else prepareMediaTransitions(mirror,media)
             val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             checkOwner()
@@ -1254,7 +1299,7 @@ class GatewayRuntime(
                 com.openandroidintelligence.mobile.conversations.OfflineMirrorRepository(mirror),
                 object:com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository {
                     override suspend fun get(gatewayId:String,languageCode:String):com.openandroidintelligence.conversation.ports.AgentCommandCatalog=throw java.io.IOException("OFFLINE_MIRROR")
-                },{ mirrorScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
+                },{ localOwnerScope },persistence=nativeMirror ?: mirror,media=media,downloads=downloads,allowSending=false,
                 authoritativeMessageIds=nativeMirror != null, organizationStoredLocally=nativeMirror != null,
                 restoreLastThread=restoreLastThread) }
             workspacePresented = true
@@ -1835,17 +1880,45 @@ class GatewayRuntime(
             } else catalogRepository
 
         var workbenchAgentId: String? = null
-        fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
-            val ownerAgentId = _nativeAgents.value?.state?.value?.agent?.id
+        suspend fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
+            val ownerAgentId = _nativeAgents.value?.state?.value?.selectedAgentId
+                ?: accountProfiles.find(profileId)?.selectedAgentId.takeIf { nativeAgentSessions }
+            val ownerScope = ownerAgentId?.takeIf { nativeAgentSessions }?.let {
+                com.openandroidintelligence.mobile.conversations.NativeLocalPartitions.partitionScope(conversationScope, it)
+            } ?: conversationScope
+            val nativePersistence = ownerAgentId?.takeIf { nativeAgentSessions }?.let { agentId ->
+                com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
+                    context, conversationScope, currentAgentId = { agentId }, keyProvider = localDocumentKeyProvider)
+            }
+            val ownerMedia = if (nativeAgentSessions && ownerAgentId != null)
+                com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context, conversationScope, http,
+                    localDocumentKeyProvider, nativeAgentId=ownerAgentId) else mediaCache
+            val ownerDownloads = if (nativePersistence != null)
+                com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,ownerMedia,ownerScope,
+                    keyProvider=localDocumentKeyProvider) else downloads
+            val ownerAttachments = if (nativePersistence != null) {
+                val ownerStaging = attachmentStagingStore(endpoint.baseUrl,ownerScope.accountId,installationId())
+                GatewayAttachmentDraftCoordinator(AttachmentUploader(HttpAttachmentTransport(http)),
+                    com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
+                        onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") }),
+                    sessionScope, ownerStaging,
+                    recovery=com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(
+                        context, ownerScope, localDocumentKeyProvider))
+            } else attachmentCoordinator
+            if (nativePersistence != null) {
+                if (prepareNativeMedia(nativePersistence,ownerMedia))
+                    recoverDownloads(ownerDownloads)?.let { _operationNotice.value = it }
+                else _operationNotice.value = MEDIA_RECOVERY_NOTICE
+            }
             return WorkbenchController(
                 scope = sessionScope,
                 repository = activeRepo,
                 catalogRepository = activeCatalogRepo,
                 restoreLastThread = restoreSelection,
-                canReadConversations = { !nativeAgentSessions || _nativeAgents.value?.state?.value?.agent != null },
+                canReadConversations = { !nativeAgentSessions || _nativeAgents.value?.state?.value?.agent?.online == true },
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
-                scopeFactory = { conversationScope },
-                attachmentCoordinator = attachmentCoordinator,
+                scopeFactory = { ownerScope },
+                attachmentCoordinator = ownerAttachments,
                 supportsMessageBatches = !nativeAgentSessions && setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
                 debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
@@ -1867,14 +1940,9 @@ class GatewayRuntime(
                 },
                 onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
-                persistence = if (nativeAgentSessions) {
-                    ownerAgentId?.let { agentId ->
-                        com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
-                            context, conversationScope, currentAgentId = { agentId }, keyProvider = localDocumentKeyProvider)
-                    }
-                } else mirror,
-                media = mediaCache,
-                downloads = downloads,
+                persistence = if (nativeAgentSessions) nativePersistence else mirror,
+                media = ownerMedia,
+                downloads = ownerDownloads,
             ).also { workbenchAgentId = ownerAgentId }
         }
 
@@ -1905,7 +1973,8 @@ class GatewayRuntime(
             var previousAgent: Pair<String, com.openandroidintelligence.gateway.agents.AgentCapabilities>? = null
             val workbenchHandoff = Mutex()
             suspend fun updateNativeWorkbench(nState: NativeAgentsState) = workbenchHandoff.withLock {
-                if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController) return@withLock
+                if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController ||
+                    nState.selectedAgentId != nativeController.state.value.selectedAgentId) return@withLock
                 val selected = nState.agent?.id
                 val descriptor = nState.agent?.let { it.id to it.capabilities }
                 if (selected != null && descriptor != previousAgent) {
@@ -1930,11 +1999,7 @@ class GatewayRuntime(
                     if (currentPhase is ConnectionPhase.Connected && currentPhase.agentName != newAgentName) {
                         _phase.value = currentPhase.copy(agentName = newAgentName)
                     }
-                    val capabilityState = _controller.value?.state?.value
-                    val capabilitiesChanged = capabilityState?.conversationDeleteSupported != (newAgent?.capabilities?.delete == true) ||
-                        capabilityState?.conversationArchiveSupported != (newAgent?.capabilities?.archive == true) ||
-                        capabilityState?.conversationRenameSupported != (newAgent?.capabilities?.rename == true)
-                    if (!isFirstObservation || capabilitiesChanged || workbenchAgentId != selected) {
+                    if (workbenchAgentId != selected) {
                         var restoreSelection = when {
                             isFirstObservation -> if (retainedLocalController != null)
                                 _controller.value?.state?.value?.activeThreadId != null else restoreLastThread
@@ -1962,7 +2027,8 @@ class GatewayRuntime(
                             val replacement = withContext(Dispatchers.IO) {
                                 buildWorkbenchController(newAgentName, restoreSelection)
                             }
-                            if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController) {
+                            if (sessionJob !== ownedJob || _nativeAgents.value !== nativeController ||
+                                nativeController.state.value.selectedAgentId != selected) {
                                 replacement.close()
                                 return@withLock
                             }
@@ -1982,7 +2048,17 @@ class GatewayRuntime(
                         _controller.value?.loadCatalog()
                     }
                 }
-                _controller.value?.setRemoteConversationOnline(nState.agent?.online == true)
+                val available = nState.agent
+                val coreReadable = coreHttpHealth.value.reachability !in setOf(
+                    CoreHttpReachability.UNREACHABLE, CoreHttpReachability.SECURITY_BLOCKED)
+                _controller.value?.updateRemoteCapabilities(
+                    online = available?.online == true && coreReadable,
+                    send = available?.capabilities?.send == true,
+                    delete = available?.capabilities?.delete == true,
+                    archive = available?.capabilities?.archive == true,
+                    rename = available?.capabilities?.rename == true,
+                    approvals = approvalClient != null && available?.capabilities?.approvals == true,
+                )
             }
             restartNativeReads = {
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
@@ -1993,7 +2069,10 @@ class GatewayRuntime(
                     }
                 }
             }
-            sessionScope.launch { nativeController.state.collect { updateNativeWorkbench(it) } }
+            sessionScope.launch {
+                combine(nativeController.state, coreHttpHealth) { state, _ -> state }
+                    .collect { updateNativeWorkbench(it) }
+            }
         }
         clearBubbleWorkTracking()
         bubbleWorkspace?.close()
@@ -2215,6 +2294,13 @@ class GatewayRuntime(
             restartPlatformStream = startPlatform
             startPlatform(PlatformStreamWakeReason.INITIAL)
         }
+    }
+
+    private suspend fun prepareNativeMedia(
+        mirror: com.openandroidintelligence.mobile.conversations.NativeConversationMirror,
+        media: com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache,
+    ): Boolean {
+        return prepareMediaTransitions(mirror.offlineMirror(),media)
     }
 
     /** 附件状态失败保留正文；媒体端口保持锁定，不能先恢复旧导出再补做删除。 */

@@ -100,7 +100,14 @@ class CoreAgentConversationRepository(
         kotlin.random.Random.nextLong(base * 4 / 5, (base * 6 / 5).coerceAtMost(60_000) + 1)
     },
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery,
-    com.openandroidintelligence.conversation.ports.ConversationCreationRecovery {
+    com.openandroidintelligence.conversation.ports.ConversationCreationRecovery,
+    com.openandroidintelligence.conversation.ports.EventSynchronizedHistory {
+
+    override fun observesHistory(conversationId: String): Boolean = currentAgent()?.let { agent ->
+        usesEventSync(agent) && parentScope.isActive && eventSyncOwners[agent.id to conversationId]?.let { owner ->
+            owner.job.isActive && owner.blocked == null
+        } == true
+    } == true
 
     private val selectedProjectionLock = Any()
     private var selectedProjectionVersion = 0L
@@ -717,8 +724,13 @@ class CoreAgentConversationRepository(
 
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
         val agent = requireAgent()
+        if (!agent.online) throw AgentSessionException("AGENT_OFFLINE")
         if (!agent.capabilities.list) {
-            return ConversationPage(emptyList(), null)
+            throw AgentSessionException("UNSUPPORTED_CAPABILITY")
+        }
+        val store = storeForAgent?.invoke(agent)
+        val readEpoch = store?.let { fixedStore ->
+            withContext(ioDispatcher) { fixedStore.beginListRead() }
         }
         val sessions = withContext(ioDispatcher) { client.sessions(agent) }
         val summaries = sessions.map { session ->
@@ -730,9 +742,11 @@ class CoreAgentConversationRepository(
                 archived = session.archived,
             )
         }
-        return ConversationPage(conversations = summaries, nextCursor = null).also { page ->
-            storeForAgent?.invoke(agent)?.saveConversations(page)
+        val result = ConversationPage(conversations = summaries, nextCursor = null)
+        if (store != null && !withContext(ioDispatcher) { store.saveConversations(result, readEpoch) }) {
+            throw CancellationException("NATIVE_LIST_STALE")
         }
+        return result
     }
 
     private class CreationAttempt {
@@ -817,12 +831,12 @@ class CoreAgentConversationRepository(
 
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
         val agent = requireAgent()
-        if (!agent.capabilities.history) {
-            return TimelinePage(emptyList(), null)
-        }
+        // 旧宿主可在停止接受新执行时继续提供受授权历史，不能把在线执行状态当作读取权限。
+        if (!agent.capabilities.history) throw AgentSessionException("UNSUPPORTED_CAPABILITY")
         val messages = withContext(ioDispatcher) { client.history(agent, conversationId) }
         val timelineMessages = messages.map { timelineMessage(it, conversationId) }
-        storeForAgent?.invoke(agent)?.let { store ->
+        val localStore = storeForAgent?.invoke(agent)
+        localStore?.let { store ->
             store.commitEvents(timelineMessages.map { message -> VerifiedConversationEvent.TimelineUpsert(
                 "native-read:${agent.id}:${message.id}:${message.contentRevision}", System.currentTimeMillis(), message.contentRevision ?: 0, message) })
             store.loadApprovals(conversationId).forEach { approval ->
@@ -842,7 +856,8 @@ class CoreAgentConversationRepository(
                 }
             }
         }
-        return TimelinePage(messages = timelineMessages, nextCursor = null)
+        return localStore?.localTimeline(conversationId)
+            ?: TimelinePage(messages = timelineMessages, nextCursor = null)
     }
 
     private fun timelineMessage(msg: com.openandroidintelligence.gateway.agents.NativeAgentMessage,
@@ -1027,8 +1042,9 @@ class CoreAgentConversationRepository(
         val result = submitMessage(convId, batch.messages.single())
         return BatchAcceptance(
             batchId = UUID.randomUUID().toString(),
-            memberIds = mapOf(batch.messages.first().clientMessageId.value to result.messageId),
+            memberIds = if (result.authoritative) mapOf(batch.messages.first().clientMessageId.value to result.messageId) else emptyMap(),
             generationId = result.generationId,
+            authoritative = result.authoritative,
         )
     }
 

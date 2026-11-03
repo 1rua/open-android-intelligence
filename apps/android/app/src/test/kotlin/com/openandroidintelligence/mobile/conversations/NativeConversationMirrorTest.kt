@@ -82,6 +82,35 @@ class NativeConversationMirrorTest {
         } finally {mirror.closeStore()}
     }
 
+    @Test fun aLateNativeListCannotReplaceANewerCommittedList() = runBlocking {
+        val store = NativeConversationMirror(context, scope(), { "hermes" }, key)
+        try {
+            val olderRead = store.beginListRead()
+            val newerRead = store.beginListRead()
+            val fresh = ConversationPage(listOf(ConversationSummary(ConversationId("fresh"), "fresh", 2)), null)
+            assertTrue(store.saveConversations(fresh, newerRead))
+            assertFalse("迟到的空页不能覆盖更新列表", store.saveConversations(ConversationPage(emptyList(), null), olderRead))
+            assertEquals(listOf("fresh"), store.offlineMirror().threads()!!.map { it.id.value })
+        } finally { store.closeStore() }
+    }
+
+    @Test fun explicitDraftsAndFrozenDeliverySurviveReopeningTheMirror() = runBlocking {
+        val mirror=NativeConversationMirror(context,scope(),{"hermes"},key)
+        val expected=checkpoint(listOf("a","b")).copy(draftExplicit=true,
+            composerDrafts=listOf(com.openandroidintelligence.conversation.state.SavedComposerDraft("a","A 草稿",3,emptyList()),
+                com.openandroidintelligence.conversation.state.SavedComposerDraft("b","",4,emptyList())),
+            pendingSubmissions=listOf(com.openandroidintelligence.conversation.state.SavedSubmission("已冻结",listOf("draft"),5,"a","client",
+                MessageDeliveryMode.QUEUE,"generation")))
+        mirror.saveCheckpoint(expected); mirror.closeStore()
+        val reopened=NativeConversationMirror(context,scope(),{"hermes"},key)
+        try {
+            val actual=requireNotNull(reopened.load())
+            assertTrue(actual.draftExplicit)
+            assertEquals(expected.composerDrafts,actual.composerDrafts)
+            assertEquals(expected.pendingSubmissions,actual.pendingSubmissions)
+        } finally { reopened.closeStore() }
+    }
+
     @Test fun nativeListAndAckUseTheSameLockOrder()=runBlocking {
         val testScope=scope("lock-order-${UUID.randomUUID()}")
         val mirror=NativeConversationMirror(context,testScope,{"hermes"},key,observerId="phone:1")

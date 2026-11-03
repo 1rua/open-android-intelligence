@@ -109,6 +109,7 @@ data class BatchAcceptance(
     val batchId: String,
     val memberIds: Map<String, String> = emptyMap(),
     val generationId: String? = null,
+    val authoritative: Boolean = true,
 ) {
     /**
      * The ids the Gateway issued for the accepted members.
@@ -457,6 +458,11 @@ data class MirrorScope(
 
 interface MirrorSession
 
+/** 持久事件读取者负责恢复历史；已有本地快照无需再并发请求完整历史。 */
+interface EventSynchronizedHistory {
+    fun observesHistory(conversationId: String): Boolean
+}
+
 interface ConversationRepository {
     suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage
     suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation
@@ -661,6 +667,8 @@ data class HistoricalMediaTransition(val conversationId: String, val messageId: 
     init { require(revision == null || revision >= 0); require(deleted || revision != null) }
 }
 interface HistoricalMediaPort {
+    /** 只从已持久消息的明确长度及摘要恢复旧原件，默认不认领未知来源。 */
+    suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean = false
     suspend fun metadata(conversationId:String,attachmentId:String):HistoricalMediaMetadata
     suspend fun retain(metadata:HistoricalMediaMetadata)
     fun isRetained(attachmentId:String):Boolean
