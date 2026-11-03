@@ -11,7 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-from aiohttp import WSMsgType
+from aiohttp import ClientSession, WSMsgType, web
+from aiohttp.payload import AsyncIterablePayload
 from aiohttp.test_utils import TestClient, TestServer
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from oai_core.gateway.core import CredentialStore, _jcs
@@ -29,17 +30,24 @@ def b64(value):
 
 def signed(bundle, key, method, target, body=None, request_id=None):
     raw = json.dumps(body, separators=(",", ":")).encode() if body is not None else b""
+    return signed_raw(bundle, key, method, target, raw, request_id=request_id)
+
+
+def signed_raw(bundle, key, method, target, raw, request_id=None, content_type="application/json"):
     timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     nonce = b64(secrets.token_bytes(16))
     request_id = request_id or "req_" + secrets.token_hex(8)
     preimage = "\n".join(("OPEN-ANDROID-INTELLIGENCE-REQUEST-V2", method, target, bundle["accountId"], bundle["deviceId"], bundle["sessionId"], request_id, timestamp, nonce, hashlib.sha256(raw).hexdigest())).encode("ascii")
-    headers = {"Authorization": "Bearer " + bundle["accessToken"], "Content-Type": "application/json",
+    headers = {"Authorization": "Bearer " + bundle["accessToken"], "Content-Type": content_type,
                "X-Open-Android-Intelligence-Protocol": "2.1", "X-Open-Android-Intelligence-Account": bundle["accountId"],
                "X-Open-Android-Intelligence-Device": bundle["deviceId"], "X-Open-Android-Intelligence-Session": bundle["sessionId"],
                "X-Open-Android-Intelligence-Request-Id": request_id, "X-Open-Android-Intelligence-Timestamp": timestamp,
                "X-Open-Android-Intelligence-Nonce": nonce, "X-Open-Android-Intelligence-Signature": b64(key.sign(preimage))}
     if method != "GET":
         headers["Idempotency-Key"] = request_id
+    if method == "PUT" and target.startswith(PREFIX + "/attachments/") and target.endswith("/content"):
+        headers["Content-Length"] = str(len(raw))
+        headers["Digest"] = "sha-256=" + base64.b64encode(hashlib.sha256(raw).digest()).decode("ascii")
     return raw, headers
 
 
@@ -62,6 +70,14 @@ async def request_signed(client, bundle, key, method, path, body=None):
     response = await client.request(method, path, data=raw, headers=headers)
     assert response.status == 200, await response.text()
     return (await response.json())["data"]
+
+
+class FixedLengthAsyncPayload(AsyncIterablePayload):
+    """Stream a proxied request body while preserving its declared length."""
+
+    def __init__(self, chunks, size):
+        super().__init__(chunks, content_type="application/octet-stream")
+        self._size = size
 
 
 @pytest.fixture
@@ -402,6 +418,167 @@ async def test_signature_checks_exact_http_bytes_before_json_parsing_and_nonce_c
     # A failed signature must not burn a valid request's nonce or idempotency key.
     original = await client.post(path, data=raw, headers=headers)
     assert original.status == 200, await original.text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size_bytes", [
+    100 * 1024,
+    1 * 1024 * 1024,
+    3 * 1024 * 1024,
+    4 * 1024 * 1024,
+    50 * 1024 * 1024,
+], ids=["100KiB", "1MiB", "3MiB", "4MiB", "50MiB"])
+async def test_real_http_attachment_upload_and_commit_preserve_length_and_digest(gateway, size_bytes):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    body = b"attachment-http-regression\n" * (size_bytes // 27) + b"x" * (size_bytes % 27)
+    digest = hashlib.sha256(body).hexdigest()
+    created = await request_signed(client, bundle, key, "POST", PREFIX + "/attachments", {
+        "clientAttachmentId": "http-size-" + str(size_bytes),
+        "filename": "sample.bin",
+        "mediaType": "application/octet-stream",
+        "sizeBytes": len(body),
+        "sha256": digest,
+    })
+    attachment_id = created["attachment"]["attachmentId"]
+    content_path = PREFIX + f"/attachments/{attachment_id}/content"
+    raw, headers = signed_raw(
+        bundle, key, "PUT", content_path, body, content_type="application/octet-stream",
+    )
+    assert raw is body
+    assert headers["Content-Length"] == str(size_bytes)
+    assert headers["Digest"] == "sha-256=" + base64.b64encode(bytes.fromhex(digest)).decode("ascii")
+    assert "Transfer-Encoding" not in headers
+
+    async with asyncio.timeout(20):
+        uploaded = await client.put(content_path, data=raw, headers=headers)
+        upload_result = await uploaded.json()
+        assert uploaded.status == 200, upload_result
+        assert upload_result["data"]["attachment"] == {
+            "attachmentId": attachment_id,
+            "status": "staged",
+            "sizeBytes": size_bytes,
+            "sha256": digest,
+        }
+
+        committed = await request_signed(
+            client, bundle, key, "POST", PREFIX + f"/attachments/{attachment_id}/commit", {},
+        )
+        assert committed["attachment"] == {
+            "attachmentId": attachment_id,
+            "status": "uploaded",
+            "sizeBytes": size_bytes,
+            "sha256": digest,
+        }
+
+
+@pytest.mark.asyncio
+async def test_aiohttp_reverse_proxy_preserves_attachment_body_and_reports_413(gateway):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    proxy_limit = 4 * 1024 * 1024
+    forwarded = []
+
+    async with ClientSession() as upstream_session:
+        async def proxy(request):
+            if request.content_length is not None and request.content_length > proxy_limit:
+                await request.release()
+                return web.json_response({"error": {"code": "REQUEST_BODY_TOO_LARGE"}}, status=413)
+
+            digest = hashlib.sha256()
+            byte_count = 0
+
+            async def body_chunks():
+                nonlocal byte_count
+                async for chunk in request.content.iter_chunked(64 * 1024):
+                    byte_count += len(chunk)
+                    digest.update(chunk)
+                    yield chunk
+                forwarded.append({
+                    "contentLength": request.headers.get("Content-Length"),
+                    "digestHeader": request.headers.get("Digest"),
+                    "byteCount": byte_count,
+                    "sha256": digest.hexdigest(),
+                })
+
+            forward_headers = {
+                name: value for name, value in request.headers.items()
+                if name.lower() not in {"host", "connection", "accept-encoding"}
+            }
+            upstream_url = str(client.server.make_url(request.path_qs))
+            payload = FixedLengthAsyncPayload(body_chunks(), request.content_length)
+            async with upstream_session.put(
+                upstream_url, data=payload, headers=forward_headers, allow_redirects=False,
+            ) as response:
+                response_body = await response.read()
+                response_headers = {}
+                if "Content-Type" in response.headers:
+                    response_headers["Content-Type"] = response.headers["Content-Type"]
+                return web.Response(
+                    status=response.status, body=response_body, headers=response_headers,
+                )
+
+        proxy_app = web.Application()
+        proxy_app.router.add_route("*", "/{tail:.*}", proxy)
+        async with TestClient(TestServer(proxy_app)) as proxy_client:
+            body = b"p" * (3 * 1024 * 1024)
+            digest = hashlib.sha256(body).hexdigest()
+            created = await request_signed(client, bundle, key, "POST", PREFIX + "/attachments", {
+                "clientAttachmentId": "proxy-forwarded-image",
+                "filename": "sample.bin",
+                "mediaType": "application/octet-stream",
+                "sizeBytes": len(body),
+                "sha256": digest,
+            })
+            attachment_id = created["attachment"]["attachmentId"]
+            content_path = PREFIX + f"/attachments/{attachment_id}/content"
+            raw, headers = signed_raw(
+                bundle, key, "PUT", content_path, body, content_type="application/octet-stream",
+            )
+            async with asyncio.timeout(20):
+                response = await proxy_client.put(content_path, data=raw, headers=headers)
+                result = await response.json()
+            assert response.status == 200, result
+            assert result["data"]["attachment"]["status"] == "staged"
+            assert forwarded == [{
+                "contentLength": str(len(body)),
+                "digestHeader": headers["Digest"],
+                "byteCount": len(body),
+                "sha256": digest,
+            }]
+            committed = await request_signed(
+                client, bundle, key, "POST", PREFIX + f"/attachments/{attachment_id}/commit", {},
+            )
+            assert committed["attachment"]["status"] == "uploaded"
+            assert committed["attachment"]["sha256"] == digest
+
+            oversized_body = b"q" * (proxy_limit + 1)
+            oversized_digest = hashlib.sha256(oversized_body).hexdigest()
+            oversized = await request_signed(client, bundle, key, "POST", PREFIX + "/attachments", {
+                "clientAttachmentId": "proxy-rejected-over-limit",
+                "filename": "sample.bin",
+                "mediaType": "application/octet-stream",
+                "sizeBytes": len(oversized_body),
+                "sha256": oversized_digest,
+            })
+            oversized_id = oversized["attachment"]["attachmentId"]
+            oversized_path = PREFIX + f"/attachments/{oversized_id}/content"
+            oversized_raw, oversized_headers = signed_raw(
+                bundle, key, "PUT", oversized_path, oversized_body,
+                content_type="application/octet-stream",
+            )
+            async with asyncio.timeout(20):
+                rejected = await proxy_client.put(
+                    oversized_path, data=oversized_raw, headers=oversized_headers,
+                )
+                rejection = await rejected.json()
+            assert rejected.status == 413
+            assert rejection == {"error": {"code": "REQUEST_BODY_TOO_LARGE"}}
+            assert len(forwarded) == 1
+            status = await request_signed(
+                client, bundle, key, "GET", PREFIX + f"/attachments/{oversized_id}",
+            )
+            assert status["attachment"]["status"] == "staged"
 
 
 @pytest.mark.asyncio
