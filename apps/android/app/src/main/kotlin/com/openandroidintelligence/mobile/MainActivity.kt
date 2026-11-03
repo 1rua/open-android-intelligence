@@ -50,6 +50,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.lifecycleScope
 import com.openandroidintelligence.capability.MediaProjectionCaptureService
 import com.openandroidintelligence.capability.MediaProjectionRuntime
+import com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource
 import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
@@ -353,12 +354,22 @@ class MainActivity : ComponentActivity() {
                     showAssistant = false
                 }
 
-                // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
-                // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
-                // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
-                // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
+                // 真实系统能力契约：屏幕圈选的截图来源。
+                //
+                // 与远程截图用同一套优先策略：无障碍服务已开启时按需取帧，
+                // 不再每次圈选都弹系统投屏确认；只有无障碍不可用时才退回
+                // MediaProjection（由前台 Activity 发起系统对话框，授权结果
+                // 先启动 mediaProjection 型前台服务再转交，Android 14+ 硬性
+                // 要求）。拒绝/失败一律如实提示，圈选保持不可用降级。
                 val screenCaptureSource = remember {
-                    MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
+                    AccessibilityFirstScreenCaptureSource(
+                        accessibility = com.openandroidintelligence.screen.AndroidAccessibilityScreenshotRuntime(applicationContext),
+                        projection = MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext)),
+                        accessibilityScreenshotSupported = { android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R },
+                        deviceLocked = {
+                            getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked == true
+                        },
+                    )
                 }
                 val screenCaptureAuthLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
@@ -474,6 +485,9 @@ class MainActivity : ComponentActivity() {
                     when {
                         source == null -> notify("本机未装配屏幕截图能力")
                         !permitted -> notify("请先安装并启用截图插件，开启本机截图能力")
+                        // 无障碍服务已就绪时截图按需直取，不应再把用户推进一次
+                        // 多余的投屏确认；如实告知当前已可用。
+                        source.isAvailable -> notify("无障碍截图已可用，不需要额外的系统投屏授权")
                         else -> {
                             val intent = source.createAuthorizationIntent()
                             if (intent == null) {
@@ -680,11 +694,17 @@ class MainActivity : ComponentActivity() {
                                         onVoiceInput = startVoiceInput,
                                         screenCaptureSource = screenCaptureSource,
                                         onNeedScreenCaptureAuthorization = {
-                                            val intent = screenCaptureSource.createAuthorizationIntent()
-                                            if (intent == null) {
-                                                notify("此设备不支持屏幕采集，圈选不可用")
+                                            // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
+                                            // 不再把用户推进一次多余的投屏确认流程。
+                                            if (screenCaptureSource.isAvailable) {
+                                                notify("现在可以直接圈选，无需额外授权")
                                             } else {
-                                                screenCaptureAuthLauncher.launch(intent)
+                                                val intent = screenCaptureSource.createAuthorizationIntent()
+                                                if (intent == null) {
+                                                    notify("此设备不支持屏幕采集，圈选不可用")
+                                                } else {
+                                                    screenCaptureAuthLauncher.launch(intent)
+                                                }
                                             }
                                         },
                                     )

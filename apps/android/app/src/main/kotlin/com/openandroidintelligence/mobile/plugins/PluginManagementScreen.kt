@@ -188,8 +188,20 @@ fun PluginManagementScreen(
         )
         enabled.split(':').any { it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true) }
     }.getOrDefault(false)
+    /**
+     * 截图是否已经可用（任一路径）。
+     *
+     * 用 `isAvailable` 而不是「投屏是否已授权」：无障碍服务开启后截图就已经可用，
+     * 此时把投屏项显示成「未授权」并催用户再点一次系统授权是错的。
+     */
     fun screenCaptureAuthorized(): Boolean = runCatching {
         com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true
+    }.getOrDefault(false)
+    /** 无障碍通道当前是否可用，用于区分「投屏还没授权但已能截图」这一情形。 */
+    fun accessibilityCaptureReady(): Boolean = runCatching {
+        (com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+            as? com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource)
+            ?.accessibilityAvailable() == true
     }.getOrDefault(false)
     val grantInspector = remember(permissionRefreshTick, pluginRevision) {
         DeviceCapabilityGrantInspector(
@@ -373,7 +385,12 @@ fun PluginManagementScreen(
                         )
                     }
                     requirements.forEach { requirement ->
-                        val state = grantInspector.state(requirement)
+                        // 投屏项：无障碍通道已能截图时，把状态如实呈现为已满足，
+                        // 避免在能力已可用的情况下催用户再授权一次。
+                        val inspected = grantInspector.state(requirement)
+                        val state = if (requirement.opensMediaProjectionDialog() && inspected != DeviceCapabilityGrantState.GRANTED) {
+                            if (accessibilityCaptureReady()) DeviceCapabilityGrantState.GRANTED else inspected
+                        } else inspected
                         DeviceGrantRow(
                             requirement = requirement,
                             state = state,
@@ -407,15 +424,21 @@ fun PluginManagementScreen(
                                     }
                                     // 投屏：前台 Activity 发起系统授权对话框，不跳无关设置页。
                                     requirement.opensMediaProjectionDialog() -> {
-                                        val intent = runCatching {
-                                            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
-                                                .source?.createAuthorizationIntent()
-                                        }.getOrNull()
-                                        if (intent == null) {
-                                            notice = manualGrantGuidance(requirement)
+                                        // 无障碍已能截图时不必再走一次投屏授权，
+                                        // 否则用户会为了「已可用的能力」再确认一遍。
+                                        if (accessibilityCaptureReady()) {
+                                            notice = "无障碍截图已可用，不需要额外的系统投屏授权。"
                                         } else {
-                                            pendingCapturePlugin = id
-                                            captureGrantLauncher.launch(intent)
+                                            val intent = runCatching {
+                                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                                                    .source?.createAuthorizationIntent()
+                                            }.getOrNull()
+                                            if (intent == null) {
+                                                notice = manualGrantGuidance(requirement)
+                                            } else {
+                                                pendingCapturePlugin = id
+                                                captureGrantLauncher.launch(intent)
+                                            }
                                         }
                                     }
                                     else -> notice = manualGrantGuidance(requirement)
