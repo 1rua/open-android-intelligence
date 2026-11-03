@@ -63,7 +63,6 @@ internal fun PlatformSettingsDrawer(
         gesturesEnabled = open,
         drawerContent = {
             ModalDrawerSheet(
-                drawerState = drawer,
                 modifier = Modifier.width(Dimensions.DrawerWidth),
                 windowInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
                     .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start),

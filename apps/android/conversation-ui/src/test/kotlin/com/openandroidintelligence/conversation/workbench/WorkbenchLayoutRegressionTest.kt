@@ -149,11 +149,15 @@ class WorkbenchLayoutRegressionTest {
     fun phoneSwitchesToSettingsWithoutClosingAndVerticalScrollDoesNotDismiss() {
         val controller = sidebarController()
         var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
         var mainMounts = 0
         var mainDisposals = 0
         compose.setContent {
             MaterialTheme {
-                SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }, header = {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                }, header = {
                     DisposableEffect(Unit) {
                         mainMounts++
                         onDispose { mainDisposals++ }
@@ -164,6 +168,9 @@ class WorkbenchLayoutRegressionTest {
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.onNodeWithText("设置与平台管理").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
         compose.onNodeWithText("测试设置面板").assertIsDisplayed()
         repeat(3) {
             compose.onNodeWithTag("sidebar-test-scroll").performTouchInput { swipeUp() }
@@ -179,6 +186,28 @@ class WorkbenchLayoutRegressionTest {
         compose.onNodeWithText("返回会话").performClick()
         compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
         compose.runOnIdle { assertFalse("返回会话列表时应退出设置", settingsOpen) }
+    }
+
+    @Test
+    fun phoneSettingsSemanticsActionKeepsDrawerOpen() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                })
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNodeWithText("设置与平台管理").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle {
+            assertTrue("语义点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
     }
 
     @Test

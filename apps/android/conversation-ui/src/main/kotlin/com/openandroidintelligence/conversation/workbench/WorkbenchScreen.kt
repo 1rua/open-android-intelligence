@@ -811,7 +811,6 @@ fun WorkbenchScreen(
                 gesturesEnabled = settingsOpen || sidebarPanel == SidebarPanel.CONVERSATIONS,
                 drawerContent = {
                     ModalDrawerSheet(
-                        drawerState = drawer,
                         modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
                         windowInsets = sidebarInsets,
                     ) {

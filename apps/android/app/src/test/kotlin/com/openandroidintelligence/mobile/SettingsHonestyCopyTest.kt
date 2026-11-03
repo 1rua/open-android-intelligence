@@ -260,7 +260,7 @@ class SettingsHonestyCopyTest {
                 ModalNavigationDrawer(
                     drawerState = drawer,
                     drawerContent = {
-                        ModalDrawerSheet(drawerState = drawer, modifier = Modifier.width(Dimensions.DrawerWidth)) {
+                        ModalDrawerSheet(modifier = Modifier.width(Dimensions.DrawerWidth)) {
                             SettingsScreen(
                                 environment = environment,
                                 onBack = {
