@@ -150,6 +150,12 @@ enum class DeviceCapabilityGrantState {
 class DeviceCapabilityGrantInspector(
     private val context: Context,
     private val notificationAccessGranted: () -> Boolean,
+    /**
+     * 无障碍服务是否**真的可用**（设置里已开启且系统当前已连接）。
+     *
+     * 只查设置里的启用标记是不够的：用户开启过、但系统解绑后，
+     * 界面会把该项显示成「已授权」并禁用设置按钮，恰好堵死唯一的恢复入口。
+     */
     private val accessibilityEnabled: () -> Boolean,
     private val captureAuthorized: () -> Boolean,
     private val deniedRuntimePermissions: (String) -> Boolean = { false },

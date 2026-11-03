@@ -179,6 +179,12 @@ fun PluginManagementScreen(
     fun notificationAccessGranted(): Boolean = runCatching {
         com.openandroidintelligence.notification.control.NotificationControlRegistry.bindingPort().isListenerBound()
     }.getOrDefault(false)
+    /**
+     * 无障碍服务是否真的可用：系统设置里已启用**且**服务当前已连接。
+     *
+     * 只查设置标记会把「开过但被系统解绑」误判为已授权，并禁用设置按钮 ——
+     * 而那正是用户唯一需要回到无障碍设置的时刻。
+     */
     fun accessibilityServiceEnabled(): Boolean = runCatching {
         val enabled = android.provider.Settings.Secure.getString(
             context.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
@@ -186,7 +192,10 @@ fun PluginManagementScreen(
         // 用组件名常量而不是类引用：app 模块不依赖 screen-control 的编译期类型，
         // 无障碍实现经 device-primitives 在运行期装配。
         val own = android.content.ComponentName(context, com.openandroidintelligence.mobile.screen.accessibilityServiceClassName())
-        enabled.split(':').any { it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true) }
+        val enabledInSettings = enabled.split(':').any {
+            it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true)
+        }
+        enabledInSettings && accessibilityCaptureReady()
     }.getOrDefault(false)
     /**
      * 截图是否已经可用（任一路径）。
@@ -216,6 +225,26 @@ fun PluginManagementScreen(
     }
     var permissionDialogPlugin by remember { mutableStateOf<String?>(null) }
     var pendingCapturePlugin by remember { mutableStateOf<String?>(null) }
+    // 系统投屏对话框可能停留很久，期间用户可能触发紧急停止、改动本机能力设置、
+    // 切换插件或撤销屏幕会话。票据记录发起时的授权版本，返回时逐项复核，
+    // 与 MainActivity 的远程截图流程保持同一套安全约束。
+    var captureTicket by remember {
+        mutableStateOf<com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket?>(null)
+    }
+    fun captureConsentStillCurrent(): Boolean {
+        return com.openandroidintelligence.mobile.screen.screenCaptureConsentCurrent(
+            captureTicket,
+            localAuthorizationRevision,
+            pluginRevision ?: -1L,
+            capabilityEnabled = app?.pluginHost?.let { host ->
+                val plugin = "org.openandroidintelligence.screen-capture"
+                host.entries(plugin).firstOrNull { "kernel.screen.capture" in it.primitives }
+                    ?.let { host.isEnabled(plugin) && host.capabilityPolicy(plugin, it.key).enabled } == true
+            } == true,
+            emergencyStopped = app?.kernel?.isEmergencyStopped() ?: true,
+            stopGeneration = com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
+        )
+    }
     val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         val id = permissionDialogPlugin; permissionDialogPlugin = null
         // 逐项判断而不是要求"全部授予"：部分授予时也要把已授予的部分如实计入。
@@ -229,28 +258,45 @@ fun PluginManagementScreen(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
-        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+        // 第一次复核：系统对话框期间授权状态可能已经变化，变化后不得再建立会话。
+        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null &&
+            source != null && captureConsentStillCurrent()
+        ) {
             // Android 14+ 要求 mediaProjection 前台服务先完成 startForeground，
             // 再转交授权结果，否则确定性抛出 SecurityException。
             com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.startForeground(context) {
-                val granted = source?.onAuthorizationResult(result.resultCode, result.data) == true
-                if (!granted) {
+                // 第二次复核：等待前台服务就绪期间仍可能被撤销。
+                if (!captureConsentStillCurrent()) {
+                    source.release()
                     com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
-                }
-                notice = if (granted) {
-                    "已获得屏幕截图系统授权。"
+                    notice = "截图能力或本机设置已变化，未使用这次系统授权。"
                 } else {
-                    "屏幕截图会话建立失败，可改用无障碍截图或稍后重试。"
+                    val granted = source.onAuthorizationResult(result.resultCode, result.data)
+                    if (!granted) {
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+                    }
+                    notice = if (granted) {
+                        "已获得屏幕截图系统授权。"
+                    } else {
+                        "屏幕截图会话建立失败，可改用无障碍截图或稍后重试。"
+                    }
                 }
                 permissionRefreshTick++
                 requestCapabilityResync()
             }
+        } else if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
+            // 授权结果本身有效，但发起时的授权前提已经失效。
+            source?.release()
+            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
+            notice = "截图能力或本机设置已变化，请重新发起系统授权。"
+            permissionRefreshTick++
         } else {
             source?.release()
             com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
             notice = "未获得屏幕截图授权；截图能力暂不可用，其余能力不受影响。"
             permissionRefreshTick++
         }
+        captureTicket = null
         pendingCapturePlugin = null
     }
     fun openAccessibilityGrant(): Boolean = runCatching {
@@ -442,6 +488,12 @@ fun PluginManagementScreen(
                                             if (intent == null) {
                                                 notice = manualGrantGuidance(requirement)
                                             } else {
+                                                // 记录发起时的授权版本；返回后据此判断是否仍然有效。
+                                                captureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
+                                                    localAuthorizationRevision,
+                                                    pluginRevision ?: -1L,
+                                                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
+                                                )
                                                 pendingCapturePlugin = id
                                                 captureGrantLauncher.launch(intent)
                                             }

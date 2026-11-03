@@ -100,7 +100,15 @@ class AndroidAccessibilityScreenshotRuntime(
                             executor,
                             object : AccessibilityService.TakeScreenshotCallback {
                                 override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                    if (continuation.isActive) continuation.resume(FrameHolder(result))
+                                    if (!continuation.isActive) {
+                                        // 请求已取消或已超时：结果不会被接收，立即释放图形内存。
+                                        // 否则反复取消的高频截图会持续占用整屏缓冲区，直到 GC。
+                                        runCatching { result.hardwareBuffer.close() }
+                                        return
+                                    }
+                                    // 一旦成功移交，缓冲区由 encodeScreenshot 的 finally
+                                    // 统一关闭；这里不得再关，避免重复释放。
+                                    continuation.resume(FrameHolder(result))
                                 }
 
                                 override fun onFailure(errorCode: Int) {
@@ -127,7 +135,10 @@ class AndroidAccessibilityScreenshotRuntime(
             }
         } ?: return ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
 
+
         return when (outcome) {
+            // encodeScreenshot 的 finally 负责关闭缓冲区；协程若在此前被取消，
+            // 上面的 onSuccess 已负责释放，不会重复关闭。
             is FrameHolder -> encodeScreenshot(outcome.result)
             is BitmapHolder -> ScreenCaptureOutcome.Failure(outcome.failure)
         }

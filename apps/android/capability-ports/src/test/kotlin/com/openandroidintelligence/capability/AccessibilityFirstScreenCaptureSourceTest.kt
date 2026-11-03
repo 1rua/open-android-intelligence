@@ -168,6 +168,23 @@ class AccessibilityFirstScreenCaptureSourceTest {
     }
 
     @Test
+    fun authorizedServiceCaptureFailureIsReportedAsFailureNotAsMissingConsent() = runBlocking {
+        // 回归（Codex P2）：服务已连接、无障碍取帧失败、投屏未授权时，
+        // diagnose() 因 isAvailable 为 true 而返回 null。若不复用本次失败原因，
+        // 会把「已授权但这次没截到」误报成「未授权」，把用户引向已做过的授权动作。
+        val accessibility = FakeAccessibility(
+            outcome = { ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED) },
+        )
+        val source = AccessibilityFirstScreenCaptureSource(accessibility, FakeProjection(available = false))
+
+        val result = source.captureDetailed()
+        assertEquals(ScreenCaptureFailure.CAPTURE_FAILED, (result as ScreenCaptureResult.Failure).reason)
+        // 对外错误码必须是「取帧失败」，不能是「需要授权」。
+        assertEquals("SCREEN_CAPTURE_FAILED", source.lastFailure?.code)
+        assertTrue("服务仍然可用", source.isAvailable)
+    }
+
+    @Test
     fun lockedDeviceIsReportedBeforeAnyCaptureAttempt() = runBlocking {
         val accessibility = FakeAccessibility()
         val source = AccessibilityFirstScreenCaptureSource(

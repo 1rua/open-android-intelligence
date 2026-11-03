@@ -178,6 +178,31 @@ class DeviceCapabilityPermissionsTest {
     }
 
     @Test
+    fun enabledButDisconnectedAccessibilityIsNotReportedAsGranted() {
+        // 回归（Codex P2）：设置里标记为已启用、但系统当前已解绑时，
+        // 若判成 GRANTED，界面会禁用「打开无障碍设置」，恰好堵死唯一的恢复入口。
+        // 实现在调用方把「已启用」与「已连接」一起判断，这里验证该契约：
+        // 只有两者同时成立才应返回 true。
+        var enabledInSettings = true
+        var connected = false
+        val live = DeviceCapabilityGrantInspector(
+            context = context,
+            notificationAccessGranted = { false },
+            // 与生产调用点同构：启用标记 且 真实连接。
+            accessibilityEnabled = { enabledInSettings && connected },
+            captureAuthorized = { false },
+        )
+        val requirement = androidPermissionRequirements(setOf("kernel.screen.read")).single()
+
+        assertEquals(DeviceCapabilityGrantState.REQUIRES_SETTINGS, live.state(requirement))
+        // 恢复入口必须仍然可用。
+        assertTrue(live.runtimePermissionsToRequest(listOf(requirement)).isEmpty())
+
+        connected = true
+        assertEquals(DeviceCapabilityGrantState.GRANTED, live.state(requirement))
+    }
+
+    @Test
     fun mediaProjectionIsReportedAsAskedOnUseRatherThanBlocked() {
         val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single()
         val inspector = inspector(capture = false)

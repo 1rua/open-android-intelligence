@@ -167,7 +167,11 @@ class AccessibilityFirstScreenCaptureSource(
             return ScreenCaptureResult.Failure(ScreenCaptureFailure.CAPTURE_FAILED, ScreenCaptureOrigin.MEDIA_PROJECTION)
         }
 
-        val reason = diagnose() ?: ScreenCaptureFailure.NOT_AUTHORIZED
+        // 走到这里说明无障碍取帧失败且投屏不可用。此时服务可能仍然连着，
+        // diagnose() 会因 isAvailable 为 true 而返回 null；必须保留本次取帧的
+        // 真实失败原因，否则会把「服务已授权但这次没截到」误报成「未授权」，
+        // 把用户引向一个已经做过的授权动作。
+        val reason = lastFailure ?: diagnose() ?: ScreenCaptureFailure.NOT_AUTHORIZED
         lastFailure = reason
         return ScreenCaptureResult.Failure(reason, null)
     }
