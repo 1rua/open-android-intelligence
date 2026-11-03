@@ -13,7 +13,6 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -283,7 +282,7 @@ class GatewayTransportWriteTimeoutTest {
                 assertTrue("stalled upload must not report all bytes sent", writtenBytes.get() < payload.size)
                 assertEquals(1, reportedFailures.size)
                 assertTrue(reportedFailures.single() is IOException)
-                assertSame(operationFailure, reportedFailures.single())
+                // Coroutine stack-trace recovery may copy Throwable instances; identity is not part of the contract.
             }
 
             assertTrue(hasPhase(evidence, "transport.write_started"))

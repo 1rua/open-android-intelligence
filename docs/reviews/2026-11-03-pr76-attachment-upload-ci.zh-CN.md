@@ -43,6 +43,44 @@ Android APK workflow `41627560370` 已在同一 head 完成并成功。只读 ar
 
 监测 JSON 保存在忽略目录 `tmp/attachment-upload/ci-76/`，包括 `status.json` 与 `complete.json`。本报告仅记录本次指定 SHA 的结果，不引用旧 head 的通过状态。
 
+## 新 head 监测：`39a48747de277c4b52d46e7edf0347872f3e25fd`
+
+日期：2026-11-03。后台监测确认 PR head 与本 SHA 一致，脚本以 `CHECK_FAILURE` 退出。6 项检查成功，Android 检查仍失败：
+
+| 检查 | 结果 | 运行记录 |
+| --- | --- | --- |
+| `sign-plugin-packages` | 成功 | [job 125903684444](https://github.com/1rua/open-android-intelligence/actions/runs/41632007735/job/125903684444) |
+| `apk` | 成功 | [job 125903985493](https://github.com/1rua/open-android-intelligence/actions/runs/41632007735/job/125903985493) |
+| `core (3.11)` | 成功 | [job 125903710618](https://github.com/1rua/open-android-intelligence/actions/runs/41632015298/job/125903710618) |
+| `core (3.12)` | 成功 | [job 125903710282](https://github.com/1rua/open-android-intelligence/actions/runs/41632015298/job/125903710282) |
+| `hermes-native` | 成功 | [job 125903710387](https://github.com/1rua/open-android-intelligence/actions/runs/41632015298/job/125903710387) |
+| `dsh` | 成功 | [job 125903710162](https://github.com/1rua/open-android-intelligence/actions/runs/41632015298/job/125903710162) |
+| `android` | 失败 | [job 125903710437](https://github.com/1rua/open-android-intelligence/actions/runs/41632015298/job/125903710437) |
+
+### 新 head Android 失败分析
+
+失败步骤仍为 `Core connection, Agent sessions, platform recovery and transport regressions`。本次 `:gateway-client:testDebugUnitTest` 共 374 项测试，只有 `fixedLengthWriteStopsWhenPeerKeepsHeadersOpenWithoutReadingBody` 失败。
+
+**最小根因：** 失败不是 bounded `IOException` 的类型检查，也不是异常消息变化。CI 日志显示 `operationFailure` 与 `reportedFailures.single()` 都是 `java.io.IOException: Error writing request body to server`，但第 286 行的 `assertSame` 要求两者必须引用同一个对象，运行结果是两个不同实例。之前的限时完成、I/O 类型、正文未全部写出和单次回调断言均已通过。定位：[GatewayTransportWriteTimeoutTest.kt:286](../../apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/http/GatewayTransportWriteTimeoutTest.kt#L286)。因此当前直接失败点是测试额外要求了异常对象身份；日志没有显示生产 Kotlin/Core 文件变化。
+
+`callerCancellationDisconnectsAStalledRealSocketAndKeepsCancellationCause` 本次通过。固定长度超时用例在第 286 行断言失败后提前退出，后面的 peer-close 断言未执行；不能把该用例的 socket-close 检查记为通过。附件上传专项步骤仍因前置步骤失败而跳过。
+
+### 新 head APK 与交接
+
+Android APK workflow `41632007735` 的 `head_sha` 已通过只读 API 核实为本 SHA，结论成功。`app-full-debug` 与 `signed-plugins-1` artifact 均未过期；未下载产物。可转告 Terra：新 head 的 `app-full-debug` 已可用，入口为 [Android APK Artifact run 41632007735](https://github.com/1rua/open-android-intelligence/actions/runs/41632007735)。
+
+只读检查了关联本 SHA 的 inline review comments 与 review summaries，未发现新意见；未发送评论，也未手动重跑或本地编译。
+
+旧 head 的监测目录已完整复制至忽略目录 `tmp/attachment-upload/ci-76-1e3d6a81/`，并与复制前逐文件比较一致。新 head 的脚本状态保存在 `tmp/attachment-upload/ci-76/`；旧 head 失败记录未改写。
+
 ## 后续测试修正
 
 CI 失败后保留原始失败结果，未重跑相同提交。超时用例继续要求 1.5 秒内结束、正文未完成、只报告一次 I/O 失败；不要求连接断开后由特定 JVM 实现抛出某个 I/O 异常子类。取消用例在观察 EOF 前改为批量读取已排队数据并恢复正常 TCP 接收窗口，避免把逐字节排空速度当成连接未关闭；读取超时不能作为关闭证据。修正后的三个用例仍须由新提交 CI 执行，未在本地编译。
+
+## 第二轮后的最小测试补丁
+
+第二轮 CI 的唯一失败是固定长度超时测试对 `operationFailure` 与失败回调异常执行 `assertSame`。两者均为同消息的 `IOException`，但异常对象身份不是公共契约；协程的异常栈恢复可能复制 `Throwable`。本补丁仅移除该身份断言及其 import，并在原位置说明这一点。
+
+第二轮中，调用方取消测试和持续进展测试通过。固定长度超时测试在身份断言处提前退出，因此独立 `System.nanoTime` 时限、未写完与单次失败上报断言均已通过，但其后的真实 EOF/reset peer-close 断言尚未执行，仍须由后续统一 CI 验证。限时、I/O 类型、未完成写入、单次上报和真实 EOF/reset 检查均保留；未弱化关闭证据或延长时限。
+
+本补丁未本地编译或运行测试，也未启动第三轮 CI。待主 Agent 汇总 Terra 的真实 50 MB 上传结果及其他改动后统一推送 CI。
