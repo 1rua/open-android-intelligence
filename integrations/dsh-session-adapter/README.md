@@ -8,9 +8,9 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 
 安装与初始化配置（`install.sh` / `setup.sh`）在检测到 DSH 环境并配置接入时，会全自动生成随机 Token 并注入/同步到 DSH 的环境文件（`$DSH_HOME/.env`）与凭据库（`$DSH_HOME/.credentials.yaml` 中的 `refs.OAI_DSH_ADAPTER_TOKEN`），无需开发者或用户手动复制粘贴。若手动启动或自定义启动环境，请确保 DSH 启动前导出 `OAI_DSH_ADAPTER_TOKEN`。
 
-列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete 与 archive），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。
+列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete、archive 与 cancel），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。
 
-消息观察连接与宿主执行分开管理。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。显式取消仍调用宿主 `sessionController.cancel`。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。这只建立关联，不表示宿主提供幂等提交或持久执行恢复，`generationRecovery`、`idempotentSend` 均为 `false`。
+消息观察连接与宿主执行分开管理。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。当前集成的宿主 `sessionController.cancel` 只接受会话身份，不能保证在真实取消时校验执行轮次，因此不声明 `cancel` 能力；显式取消请求返回 `UNSUPPORTED_CAPABILITY`，不会调用会话级取消接口。只有宿主提供并核实按真实执行轮次原子取消的接口后，才可重新启用。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。这只建立关联，不表示宿主提供幂等提交或持久执行恢复，`generationRecovery`、`idempotentSend` 均为 `false`。
 
 观察队列同时限制为 128 帧和 1 MiB。`res.write()` 返回 `false` 后等待 `drain`；无法在预算内恢复或队列超限时关闭当前响应，宿主执行继续。可选配置 `promptTimeoutMs`（默认 30000）、`observationTimeoutMs`（默认 1800000）、`drainTimeoutMs`（默认 5000）均为正整数毫秒，最大为 2147483647。没有原生终态证据的期限结束返回 `OUTCOME_UNKNOWN` / `state=unknown`；迟到的受理回执不会改写已经结束的观察。
 

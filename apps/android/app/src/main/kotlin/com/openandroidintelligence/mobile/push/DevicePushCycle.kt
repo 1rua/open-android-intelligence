@@ -12,8 +12,10 @@ internal suspend fun runDevicePushCycle(
     captureActiveNotifications: () -> Unit,
     captureSmsPage: () -> Boolean,
     onRevocationFailure: () -> Unit,
+    endpointAvailable: (PushEndpoint) -> Boolean = { true },
+    connectionScope: Pair<String, String>? = null,
 ): Boolean {
-    for (revocation in local.pendingRevocations()) {
+    for (revocation in local.pendingRevocations().filter { endpointAvailable(it.endpoint) }) {
         try {
             revoke(revocation)
             local.acknowledgeRevocation(revocation)
@@ -30,7 +32,7 @@ internal suspend fun runDevicePushCycle(
     val moreSmsPages = if (local.isCollectionAllowed(PushKind.SMS)) captureSmsPage() else false
     val snapshot = local.snapshot()
     if (snapshot.pendingDeliveries > 0 || snapshot.configuration.sms.enabled || snapshot.configuration.notifications.enabled)
-        local.deliver(transport)
+        local.deliver(transport, endpointAvailable = endpointAvailable, connectionScope = connectionScope)
     return pushCycleComplete(local.maintain(), moreSmsPages)
 }
 

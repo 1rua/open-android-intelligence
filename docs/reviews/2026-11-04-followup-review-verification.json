@@ -1,0 +1,131 @@
+{
+  "baseline": "54de1abbcb1312be6f815bcb044f44d62cff18b3",
+  "branch": "feature/followup-review-fixes-20261104",
+  "target": "dev",
+  "scope": [
+    "F01",
+    "F02",
+    "F03",
+    "F04",
+    "F05",
+    "F06",
+    "F07",
+    "F08",
+    "F09"
+  ],
+  "fast": {
+    "command": "npm run test:fast",
+    "exit": 0,
+    "android": {
+      "platform-kernel": {
+        "tests": 95,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "conversation-domain": {
+        "tests": 39,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "conversation-ui": {
+        "tests": 748,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "app": {
+        "tests": 1510,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "pythonPassed": 188,
+    "pythonSkipped": 1,
+    "dshPassed": 41
+  },
+  "pr": {
+    "command": "npm run test:pr",
+    "exit": 0,
+    "android": {
+      "platform-kernel": {
+        "tests": 95,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "conversation-domain": {
+        "tests": 39,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "conversation-ui": {
+        "tests": 751,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "app": {
+        "tests": 1514,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "pythonPassed": 188,
+    "pythonSkipped": 1,
+    "dshPassed": 41,
+    "seconds": 528.52,
+    "testsRunAgainstFrozenSource": true
+  },
+  "additional": {
+    "smartTestPlanPassed": 48,
+    "pluginToolingPassed": 86,
+    "nativeDeletionPersistencePassed": 6,
+    "screenKernelFifoPassed": 12,
+    "screenRuntimePassed": 40
+  },
+  "localEnvironment": {
+    "node": "24.18.0",
+    "vitest": "4.1.10",
+    "java": "21",
+    "usesExistingDependencyCaches": true
+  },
+  "sourceSha256": {
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/DevicePushComposition.kt": "d744474d0491e9f37a3f978968617c3061fe5751214b958d26b134346f6318dd",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/GatewayRuntime.kt": "a0220c551bc05c0a63585034eb225efafda1b38d21c0299113b32637c480bfc5",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsViewModel.kt": "4a5167a50be51816b657284c61f4ab889f7ecbd76244686ea497fd9d97b4652a",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/EncryptedConversationMirror.kt": "3468d4676335dbe8e5eba5aca92f7e26707b5e8133f66b5e8acea6bc156e6ec0",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizer.kt": "2afb85bc73b04d7d9e1f45cf8cedac2f01dfd1880db6d2414fcfc3f560de6a77",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/plugins/DeviceExecutionDriver.kt": "bbaa2097f63540628fc7c04fdf8be8850e28baea4c87b66e9a3313cd68e3a42c",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push/DevicePushCycle.kt": "9c78fbeda631dc65e09de55ea8ffb3ffe4dfda38712093c01b5c04fab695147f",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push/DevicePushRuntime.kt": "92198a129069669164e9a7751f454381d2f4f2b230dda47883bea6ca9c544012",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/ColdStartConnectionTest.kt": "4fa967e680a168ae3e2844e7e12a57a7e7e7750323ad290a6f7e2438e2c0d681",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/SettingsViewModelTest.kt": "4ca5f6eb9ddfb06032f56e21dded97153f99c2f4bf7ce1c8ada043edc8238898",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventSynchronizerTest.kt": "99e9196d852705b136fe28bb2db7a3e843ce8f40a0d7ad0c2df13b5d7c02cb68",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/DeviceExecutionRecoveryTest.kt": "7fbdb015d3f84b2359a747f9730b1982b4b4601268a8c228e649bdac6fc0a0d3",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/DeviceGrantFenceTest.kt": "dd06aef0b14a8fd329ce87b6b320f5d403691bf12d61ed4bb2bfa00f1187e2dc",
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt": "d1709f20d3f1e2528e0bf30470618934e5986c479b0377fe633ae1241e62e9d7",
+    "apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchPendingAttachmentSwitchTest.kt": "f36b286dbffaa85402bebd0d197ddb63d1ed84f3be9d1fe16fecc860d009051b",
+    "apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/PluginKernel.kt": "2a1fc9f7e8ea4b9e7aef4f9bb9cca92b3edab4f5bd81f0d5dd48180287fffac1",
+    "integrations/dsh-session-adapter/adapter.test.js": "5623029647d5d44d9aeb6355c72355dfcb91da3fbbcb75830de0e89620d192da",
+    "integrations/dsh-session-adapter/index.js": "97d6e41cc25be83e3b3d4521305e8b5bab45055fa0f521b90c27a9ae6b8b5ae1",
+    "integrations/dsh-session-adapter/reliability.test.js": "ea871cfb753bf665a65f55181e07f897bc607d46095bfe1eef88151fae5d0bfa",
+    "tools/smart-test.py": "6f795e34a87d389a9107a567fae6baa478655b392b58749dff74d913d6a40fdb",
+    "tools/test_smart_test.py": "ef7b909091efa9c7d52280123d579368a0134fd9737df779df16ac2221adc64f",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/IndependentConnectionDiscovery.kt": "50c02fd3775e8ea4f5fddeff9a203c0b6df0f6800fe9be18030ad6a34f2cdaba",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/AccountSwitchPersistenceFailureTest.kt": "bb7ceb343d965538f0238fd5e06b3cb7ae6ca21ec01d258a9943a428a128a3a8",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/IndependentConnectionDiscoveryTest.kt": "f83de65b659deb42d60129fb14ff240fa947c2c23f87bbeb87c063ad017ebb40",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeEventDeletionPersistenceTest.kt": "93ff6b75969c48de08e6aad94c0e32c85881d773590076d6ffe4688455e7123a",
+    "apps/android/platform-kernel/src/test/kotlin/com/openandroidintelligence/kernel/ScreenControlKernelQueueTest.kt": "648870725e9c0d33f546d47b3c43369a31d9b32022ad76fbb8aedf01541e19f8"
+  },
+  "limits": [
+    "未执行真机验收、真实 DSH 模型或共享部署验证",
+    "未执行 test:full 或本地 APK 发布构建",
+    "DSH detectAsyncLeaks 输出两条 fetch 测试夹具 Promise 诊断"
+  ],
+  "reviewInputSha256": "f35875b73e13c0466ee95376f12a8946aefba293cc0b81de58fd0fee751a290c"
+}

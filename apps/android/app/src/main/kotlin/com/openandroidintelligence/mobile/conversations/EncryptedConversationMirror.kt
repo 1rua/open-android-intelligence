@@ -906,6 +906,11 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         when(event) {
             is VerifiedConversationEvent.ConversationsChanged -> if (event.deleted) event.conversationId?.value?.let(::deleteConversation) else Unit
             is VerifiedConversationEvent.TimelineUpsert -> event.message.conversationId?.value?.let { id ->
+                // 原生历史将无修订撤回包装为 revision=0；先按身份保存删除事实，不能被旧正文版本挡住。
+                if (event.message.isDeleted && event.message.contentRevision == null) {
+                    rememberSnapshotDeletions(id,TimelinePage(listOf(event.message),null))
+                    return@let
+                }
                 val revision=contentRevision(id,event.message.id)
                 if (revision.snapshotDeleted) return@let
                 if (event.revision < revision.revision || (event.revision == revision.revision && revision.tombstoned)) return@let

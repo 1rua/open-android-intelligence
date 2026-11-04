@@ -94,7 +94,10 @@ export function createSessionHandler(ctx, config, token) {
     value.stream = value.send;
     value.clientMessageIdentity = value.send;
     value.rename = value.list && typeof controller?.rename === "function";
-    value.cancel = value.list && typeof controller?.cancel === "function";
+    // The integrated host cancel accepts only sessionId. It cannot atomically
+    // compare the target generation at the cancellation side effect, so neither
+    // an observed turn nor a client request ID makes this operation safe.
+    value.cancel = false;
     // The verified public query has no archive-state projection. Do not
     // advertise management whose result cannot be read back truthfully.
     return value;
@@ -335,9 +338,7 @@ export function createSessionHandler(ctx, config, token) {
       } else if (action === "archive") {
         if (typeof body.value !== "boolean") throw fail("SCHEMA_INVALID", 400);
         await registry[body.value ? "archiveSession" : "unarchiveSession"](id);
-      } else if (action === "cancel") {
-        const result = await controller.cancel({ sessionId: id });
-        if (result?.accepted !== true) throw fail("CANCEL_REJECTED");
+
       }
       return json(res, { id, action, ...(action === "archive" ? { archived: body.value } : {}) });
     } catch (error) {

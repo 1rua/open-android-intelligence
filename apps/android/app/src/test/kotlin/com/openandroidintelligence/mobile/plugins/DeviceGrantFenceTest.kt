@@ -52,10 +52,22 @@ class DeviceGrantFenceTest {
             val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,name,{7},{true},
                 TestDocumentKeys,localAuthorizationRevision={2L})
             driver.recoverPending()
-            withTimeout(2_000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+            // 查询会在同一作用域下新建执行任务，单次 children 快照并不包含后续隔离写入。
+            withTimeout(2_000) {
+                while (true) {
+                    val jobs = executionScope.coroutineContext[Job]!!.children.toList()
+                    if (jobs.isEmpty()) break
+                    jobs.joinAll()
+                }
+            }
             assertEquals(1,lookups)
             assertEquals(0,mutations)
-            assertNotNull(journal.read("req_old_result"))
+            val saved = JsonFields.obj(Json.parse(journal.read("req_old_result")!!.decodeToString()))!!
+            assertEquals("fenced", JsonFields.string(saved, "stage"))
+            assertEquals("LOCAL_AUTHORIZATION_CHANGED", JsonFields.string(saved, "fenceReason"))
+            assertEquals(1L, JsonFields.long(saved, "localAuthorizationRevision"))
+            assertNull(JsonFields.field(saved, "result"))
+            assertFalse(Json.canonical(saved).contains("withheld-content"))
         } finally { executionScope.cancel() }
     }
 
@@ -108,7 +120,13 @@ class DeviceGrantFenceTest {
             try {
                 val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,scopeKey,{7},{true},TestDocumentKeys)
                 driver.recoverPending()
-                withTimeout(2_000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                withTimeout(2_000) {
+                    while (true) {
+                        val jobs = executionScope.coroutineContext[Job]!!.children.toList()
+                        if (jobs.isEmpty()) break
+                        jobs.joinAll()
+                    }
+                }
                 driver.recoverPending()
                 assertEquals(1,lookups)
                 val saved=JsonFields.obj(Json.parse(journal.read("req_old")!!.decodeToString()))

@@ -28,6 +28,7 @@ class DevicePushRuntime(
 ) {
     private val lock = Any()
     private val drainLock = Mutex()
+    private val connectionDrainLocks = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Mutex>()
     private var state = store.load()
     private var loggedIn = false
     private var loginEpoch = 0L
@@ -216,7 +217,14 @@ class DevicePushRuntime(
     }
 
     /** One bounded drain, with no internal polling loop or implicit authentication fallback. */
-    suspend fun deliver(transport: PushTransport, maxDeliveries: Int = 64): PushDeliveryResult = drainLock.withLock {
+    suspend fun deliver(
+        transport: PushTransport,
+        maxDeliveries: Int = 64,
+        endpointAvailable: (PushEndpoint) -> Boolean = { true },
+        connectionScope: Pair<String, String>? = null,
+    ): PushDeliveryResult = (connectionScope?.let {
+        connectionDrainLocks.computeIfAbsent(it) { Mutex() }
+    } ?: drainLock).withLock {
         require(maxDeliveries in 1..512)
         val candidates = synchronized(lock) {
             checkHealthy()
@@ -224,6 +232,8 @@ class DevicePushRuntime(
             if (!loggedIn) return@withLock deliveryResult(0, 0, 0, 0, paused = true)
             state.events.asSequence()
                 .flatMap { queued -> queued.targets.keys.asSequence().map { PushDelivery(queued.event, it) } }
+                .filter { endpointAvailable(it.endpoint) && (connectionScope == null ||
+                    it.endpoint.coreInstanceId == connectionScope.first && it.endpoint.accountScope == connectionScope.second) }
                 .take(maxDeliveries).toList()
         }
         var attempted = 0

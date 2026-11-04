@@ -29,7 +29,7 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
   const controller = {
     create: async ({ sessionId }) => { calls.push(["create", sessionId]); records.push({ header: { id: sessionId, createdAt: 4000 } }); return { sessionId }; },
     rename: async (value) => { calls.push(["rename", value]); return { title: value.title }; },
-    cancel: () => ({ accepted: true }),
+    cancel: (value) => { calls.push(["cancel", value]); return { accepted: true }; },
     prompt: async (value) => {
       calls.push(["prompt", value]);
       const session = { id: value.sessionId };
@@ -159,6 +159,7 @@ describe("DSH native Session Adapter", () => {
     expect(status.online).toBe(true);
     expect(status.capabilities.archive).toBe(false);
     expect(status.capabilities.delete).toBe(false);
+    expect(status.capabilities.cancel).toBe(false);
     const unsupported = await h.request("/sessions/terminal/delete", "POST", {});
     expect(unsupported.status).toBe(409);
     expect(await unsupported.json()).toEqual({ code: "UNSUPPORTED_CAPABILITY" });
@@ -166,6 +167,16 @@ describe("DSH native Session Adapter", () => {
     const offline = await h.request("/status");
     expect(offline.status).toBe(503);
     expect(await offline.json()).toEqual({ code: "AGENT_UNAVAILABLE" });
+  });
+  it("cannot let delayed or repeated cancel requests interrupt a newer host turn", async () => {
+    const h = await host();
+    // The native controller's session-only cancel would always affect the current turn.
+    for (const generationId of ["old-turn", "current-turn", "current-turn"]) {
+      const response = await h.request("/sessions/terminal/cancel", "POST", { value: { generationId } });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ code: "UNSUPPORTED_CAPABILITY" });
+    }
+    expect(h.calls.filter((call) => call[0] === "cancel")).toEqual([]);
   });
   it.each([
     ["blocked", "AGENT_BLOCKED"], ["max-tokens", "AGENT_MAX_TOKENS"],

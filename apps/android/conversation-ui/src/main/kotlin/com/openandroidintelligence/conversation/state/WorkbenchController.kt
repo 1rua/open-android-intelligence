@@ -10,6 +10,7 @@ import com.openandroidintelligence.conversation.model.ApprovalSubmissionResult
 import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.ComposerState
 import com.openandroidintelligence.conversation.model.AttachmentState
+import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.model.LocalSendAtom
@@ -1889,7 +1890,7 @@ class WorkbenchController(
 
         GatewayLog.protocolEvidence("timeline.opened", mapOf("conversationId" to threadId, "epoch" to threadEpoch,
             "source" to if (memory != null) "memory" else "pending", "clickedAtNs" to clickedAt))
-        if (restored != null) attachmentCoordinator?.let { coordinator ->
+        attachmentCoordinator?.let { coordinator ->
             _state.value.attachments.forEach { observeAttachment(coordinator, it.id.value) }
         }
         timelineJob = workScope.launch {
@@ -2768,19 +2769,29 @@ class WorkbenchController(
         attachmentJobs[draftId]?.cancel()
         attachmentJobs[draftId] = workScope.launch {
             coordinator.observe(draftId).collect { draftState ->
+                fun updated(draft: AttachmentDraft) = draft.copy(
+                    state = draftState.state, progress = draftState.progress,
+                    transferredBytes = draftState.transferredBytes, totalBytes = draftState.totalBytes,
+                    errorMessage = draftState.errorMessage,
+                )
                 waitingAttachmentSubmissions.entries.toList().forEach { (clientId, frozen) ->
                     frozen.attachments[draftId]?.let { old ->
-                        waitingAttachmentSubmissions[clientId] = frozen.copy(attachments=frozen.attachments +
-                            (draftId to old.copy(state=draftState.state,progress=draftState.progress,
-                                transferredBytes=draftState.transferredBytes,totalBytes=draftState.totalBytes,errorMessage=draftState.errorMessage)))
+                        waitingAttachmentSubmissions[clientId] = frozen.copy(
+                            attachments = frozen.attachments + (draftId to updated(old)),
+                        )
+                    }
+                }
+                // 非活动会话的输入草稿也持有快照，不能在回切时恢复旧上传状态。
+                composerDrafts.entries.forEach { entry ->
+                    val saved = entry.value
+                    if (saved.attachments.any { it.id.value == draftId }) {
+                        entry.setValue(saved.copy(attachments = saved.attachments.map {
+                            if (it.id.value == draftId) updated(it) else it
+                        }))
                     }
                 }
                 update { state -> state.copy(attachments = state.attachments.map { current ->
-                    if (current.id.value == draftId) current.copy(
-                        state = draftState.state, progress = draftState.progress,
-                        transferredBytes = draftState.transferredBytes,totalBytes = draftState.totalBytes,
-                        errorMessage = draftState.errorMessage,
-                    ) else current
+                    if (current.id.value == draftId) updated(current) else current
                 }) }
                 submitWhenAttachmentsVerified()
             }
@@ -2948,7 +2959,20 @@ class WorkbenchController(
                 if (target != null && media != null) coordinator.ensureSubmittedSource(target,draftId,media)
                 coordinator.retry(draftId)
             } catch (cancelled:CancellationException) { throw cancelled }
-            catch (failure:Exception) { update { it.copy(notice="ATTACHMENT_RECOVERY_FAILED:${errorCodeOf(failure)}") } }
+            catch (failure:Exception) {
+                val notice = "ATTACHMENT_RECOVERY_FAILED:${errorCodeOf(failure)}"
+                if (original != null && target != null && target !in deletedThreads) {
+                    // 查询失败仍属于原发送身份；保留原终态，不把未知结果改成失败。
+                    changeSendAtom(target, original.clientMessageId) { old ->
+                        old?.takeIf { !it.isDeleted && it.submissionState != LocalSubmissionState.ACCEPTED }
+                            ?.copy(submissionErrorCode = notice)
+                    }
+                }
+                if (activeThreadId == target) update { state -> state.copy(
+                    notice = notice,
+                    timeline = if (original != null && target != null) Loadable.Ready(renderTimeline(state.pendingBatch)) else state.timeline,
+                ) }
+            }
         }
     }
 

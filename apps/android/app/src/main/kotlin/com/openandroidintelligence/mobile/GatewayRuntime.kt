@@ -200,7 +200,8 @@ class GatewayRuntime(
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
     private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
-    private val sessionOperationMutex = Mutex()
+    private val sessionOperationMutexes = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private fun sessionOperationMutex(profileId: String) = sessionOperationMutexes.computeIfAbsent(profileId) { Mutex() }
     private var sessionRenewal: GatewaySessionRenewal? = null
     private val recoveryWakeup = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var restoringSession = false
@@ -208,7 +209,7 @@ class GatewayRuntime(
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
     private var restartNativeReads: (() -> Unit)? = null
-    private val pendingRotations = mutableMapOf<String, Pair<SessionCredentials, NegotiationResult>>()
+    private val pendingRotations = java.util.concurrent.ConcurrentHashMap<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
     private val _localSessionState = MutableStateFlow<LocalSessionState>(LocalSessionState.LoadingLocal)
@@ -371,77 +372,87 @@ class GatewayRuntime(
 
     fun hasLoggedInPushAccount(): Boolean = accountProfiles.list().any { isPushProfileLoggedIn(it.localProfileId) }
 
-    /** Short-lived signed HTTP for each authenticated account; never changes the visible chat/account. */
-    suspend fun pushConnections(): List<com.openandroidintelligence.mobile.push.PushGatewayConnection> = pushConnectionLock.withLock {
-        val found = mutableListOf<com.openandroidintelligence.mobile.push.PushGatewayConnection>()
-        val descriptors = mutableListOf<DeviceConnectionProfile>()
-        for (saved in accountProfiles.list()) {
-            val id = saved.localProfileId
-            if (!isPushProfileLoggedIn(id)) { pushHttpClients.remove(id); continue }
-            val endpoint = GatewayEndpoint.parse(saved.gatewayBaseUrl)?.takeIf { it.isTls } ?: continue
-            try {
-                val account = accountProfiles.binding(id) ?: continue
-                val epoch = deviceProfileEpochs.computeIfAbsent(id) { java.util.concurrent.atomic.AtomicLong() }.get()
-                val current = { deviceProfileEpochs[id]?.get() == epoch && isPushProfileLoggedIn(id) &&
-                    accountProfiles.binding(id)?.accountId == account.accountId }
-                val http = if (id == context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null) && activeHttpClient != null) {
-                    check(deviceAuthorizationAgreement?.get() == true) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-                    pushHttpClients.remove(id)
-                    activeHttpClient!!
+    /** Each authenticated account discovers independently without changing the visible workbench. */
+    fun pushConnections(): kotlinx.coroutines.flow.Flow<com.openandroidintelligence.mobile.push.PushEndpointDiscovery> =
+        kotlinx.coroutines.flow.flow {
+            pushConnectionLock.withLock {
+                val saved = accountProfiles.list()
+                val loggedIn = saved.filter { isPushProfileLoggedIn(it.localProfileId) }
+                val currentIds = loggedIn.map { it.localProfileId }.toSet()
+                pushHttpClients.keys.retainAll(currentIds)
+                additionalConnectionProfiles.keys.removeAll { id ->
+                    id !in currentIds || additionalConnectionProfiles[id]?.isCurrent?.invoke() != true
                 }
-                    else pushHttpClients[id] ?: sessionOperationMutex.withLock {
-                        check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
-                        val trust = identityTrust.retained(endpoint, saved.username) ?: error("GATEWAY_IDENTITY_UNVERIFIED")
-                        val (credentials, negotiated) = rotateStoredSession(endpoint, saved.username, id,
-                            account.accountId, account.deviceId, setOfNotNull(trust.spki), preservePresentation = true)
-                        check(negotiated.androidDeviceAuthorization && current()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-                        val profile = GatewayProfile(accountId = credentials.accountId, deviceId = credentials.deviceId,
-                            sessionId = credentials.sessionId, gatewayBaseUrl = endpoint.baseUrl,
-                            pinnedSpkiSha256 = setOfNotNull(trust.spki), accessToken = credentials.accessToken)
-                        val renew = GatewaySessionRenewal(profile, scope) { rejected ->
-                            sessionOperationMutex.withLock {
-                                check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
-                                val (rotated, agreement) = rotateStoredSession(endpoint, saved.username, id,
-                                    rejected.accountId, rejected.deviceId, rejected.pinnedSpkiSha256,
-                                    preservePresentation = true)
-                                check(agreement.androidDeviceAuthorization && current()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-                                rejected.copy(sessionId = rotated.sessionId, accessToken = rotated.accessToken)
-                            }
-                        }
-                        GatewayHttpClient(profile = profile, transport = GatewayTransport(profile),
-                            signer = { preimage -> deviceKeys.sign(id, preimage) },
-                            cursorStore = AndroidEventCursorStore(context, "push:$id"), sessionRenewal = renew)
-                            .also { pushHttpClients[id] = it }
-                    }
-                val response = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest(
-                    "GET", "/open-android-intelligence/v2/push/endpoints", beforeSend = {
-                        check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
-                    }))
-                val data = response.requireData("PUSH_ENDPOINT_DISCOVERY_FAILED")
-                val coreId = com.openandroidintelligence.gateway.schema.JsonFields.string(data, "coreInstanceId")
-                    ?: error("PUSH_CORE_ID_MISSING")
-                val accountScope = com.openandroidintelligence.gateway.schema.JsonFields.string(data, "accountScope")
-                    ?: error("PUSH_ACCOUNT_SCOPE_MISSING")
-                found += com.openandroidintelligence.mobile.push.PushGatewayConnection(coreId, accountScope, http, current)
-                val selectedProfile = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null)
-                if (id != selectedProfile || executionDriver == null) {
-                    val pairing = http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest(
-                        "GET", "/open-android-intelligence/v2/pairings/current", beforeSend = {
-                            check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
-                        })).requireData("DEVICE_PAIRING_LOOKUP_FAILED")
-                    check(com.openandroidintelligence.gateway.schema.JsonFields.string(pairing, "deviceId") == account.deviceId) {
-                        "DEVICE_PROFILE_BINDING_MISMATCH"
-                    }
-                    descriptors += DeviceConnectionProfile(id, endpoint.baseUrl, account.accountId, account.deviceId,
-                        com.openandroidintelligence.gateway.schema.JsonFields.int(pairing, "pairingGeneration") ?: error("DEVICE_PAIRING_INVALID"),
-                        http, current, com.openandroidintelligence.gateway.schema.JsonFields.int(pairing, "grantRevision") ?: error("DEVICE_PAIRING_INVALID"))
-                }
-            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-            catch (_: Exception) { GatewayLog.d("OaiDevicePush", "stage=discover code=PUSH_CONNECTION_UNAVAILABLE") }
+                independentConnectionDiscovery(loggedIn, discover = ::discoverPushConnection,
+                    unavailable = { GatewayLog.d("OaiDevicePush", "stage=discover code=PUSH_CONNECTION_UNAVAILABLE") })
+                    .collect { emit(it) }
+            }
         }
-        additionalConnectionProfiles.clear()
-        descriptors.forEach { additionalConnectionProfiles[it.profileId] = it }
-        found
+
+    private suspend fun discoverPushConnection(saved: AccountProfile): com.openandroidintelligence.mobile.push.PushEndpointDiscovery? {
+        val id = saved.localProfileId
+        val endpoint = GatewayEndpoint.parse(saved.gatewayBaseUrl)?.takeIf { it.isTls } ?: return null
+        val account = accountProfiles.binding(id) ?: return null
+        val epoch = deviceProfileEpochs.computeIfAbsent(id) { java.util.concurrent.atomic.AtomicLong() }.get()
+        val current = { deviceProfileEpochs[id]?.get() == epoch && isPushProfileLoggedIn(id) &&
+            accountProfiles.binding(id)?.accountId == account.accountId }
+        val http = if (id == context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null) && activeHttpClient != null) {
+            check(deviceAuthorizationAgreement?.get() == true) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+            pushHttpClients.remove(id)
+            activeHttpClient!!
+        } else pushHttpClients[id] ?: sessionOperationMutex(id).withLock {
+            check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
+            pushHttpClients[id] ?: run {
+                val trust = identityTrust.retained(endpoint, saved.username) ?: error("GATEWAY_IDENTITY_UNVERIFIED")
+                val (credentials, negotiated) = rotateStoredSession(endpoint, saved.username, id,
+                    account.accountId, account.deviceId, setOfNotNull(trust.spki), preservePresentation = true)
+                check(negotiated.androidDeviceAuthorization && current()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+                val profile = GatewayProfile(accountId = credentials.accountId, deviceId = credentials.deviceId,
+                    sessionId = credentials.sessionId, gatewayBaseUrl = endpoint.baseUrl,
+                    pinnedSpkiSha256 = setOfNotNull(trust.spki), accessToken = credentials.accessToken)
+                val renew = GatewaySessionRenewal(profile, scope) { rejected ->
+                    sessionOperationMutex(id).withLock {
+                        check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
+                        val (rotated, agreement) = rotateStoredSession(endpoint, saved.username, id,
+                            rejected.accountId, rejected.deviceId, rejected.pinnedSpkiSha256,
+                            preservePresentation = true)
+                        check(agreement.androidDeviceAuthorization && current()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+                        rejected.copy(sessionId = rotated.sessionId, accessToken = rotated.accessToken)
+                    }
+                }
+                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile),
+                    signer = { preimage -> deviceKeys.sign(id, preimage) },
+                    cursorStore = AndroidEventCursorStore(context, "push:$id"), sessionRenewal = renew)
+                    .also { pushHttpClients[id] = it }
+            }
+        }
+        val discovery = com.openandroidintelligence.mobile.push.GatewayPushTransport(
+            com.openandroidintelligence.mobile.push.PushGatewayConnections { _, _ -> null }).discover(http, current)
+        val selectedProfile = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null)
+        if (id != selectedProfile || executionDriver == null) {
+            val descriptor = try {
+                val pairing = optionalDevicePairing(http, current) ?: run {
+                    // Device recovery can retry while the authenticated push route advances.
+                    GatewayLog.d("OaiDevicePush", "stage=discover code=DEVICE_PAIRING_RECOVERY_PENDING")
+                    return discovery
+                }
+                check(com.openandroidintelligence.gateway.schema.JsonFields.string(pairing, "deviceId") == account.deviceId) {
+                    "DEVICE_PROFILE_BINDING_MISMATCH"
+                }
+                DeviceConnectionProfile(id, endpoint.baseUrl, account.accountId, account.deviceId,
+                    com.openandroidintelligence.gateway.schema.JsonFields.int(pairing, "pairingGeneration") ?: error("DEVICE_PAIRING_INVALID"),
+                    http, current, com.openandroidintelligence.gateway.schema.JsonFields.int(pairing, "grantRevision") ?: error("DEVICE_PAIRING_INVALID"))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                // An invalid binding or identity must also retire an older cached profile.
+                fenceDeviceProfile(id)
+                throw failure
+            }
+            check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
+            additionalConnectionProfiles[id] = descriptor
+        } else additionalConnectionProfiles.remove(id)
+        check(current()) { "PUSH_ACCOUNT_LOGGED_OUT" }
+        return discovery
     }
 
     suspend fun syncAdditionalDeviceRequests() {
@@ -848,7 +859,7 @@ class GatewayRuntime(
                 sessionRenewal?.close()
                 sessionRenewal = null
 
-                sessionOperationMutex.withLock {
+                sessionOperationMutex(profileId).withLock {
                     val cleanup = buildList<() -> Unit> {
                         // 离线没有发出远端请求，保留凭据和未确认轮换记录；退出屏障阻止使用它们。
                         if (currentConnected != null) {
@@ -914,7 +925,10 @@ class GatewayRuntime(
         if (deferUntilSessionEstablished(::chooseAnotherAccount)) return
         if (connectionJob?.isActive == true && !restoringSession) return
         cancelRestoration()
-        leaveWorkbench { clearLastProfile() }
+        val previousProfile = (_localSessionState.value as? LocalSessionState.Workspace)?.account?.localProfileId
+        leaveWorkbench(prepare = { clearLastProfile() }) {
+            _localSessionState.value = LocalSessionState.AccountPicker(accountProfiles.list(), previousProfile)
+        }
     }
 
     fun selectSavedAccount(profileId: String) {
@@ -958,17 +972,23 @@ class GatewayRuntime(
     }
 
     /** 先持久保存草稿与发送状态，再关闭旧账号；新连接不会被旧任务的收尾覆盖。 */
-    private fun leaveWorkbench(action: () -> Unit) {
+    private fun leaveWorkbench(prepare: () -> Unit = {}, action: () -> Unit) {
+        val profileId = (_localSessionState.value as? LocalSessionState.Workspace)?.account?.localProfileId
+            ?: context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null)
         lateinit var owned: Job
         owned = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
                 if (!flushWorkbenchBeforeLeaving()) return@launch
-                _controller.value?.closeAndAwait()
-                sessionOperationMutex.withLock {
+                suspend fun leave() {
+                    // Fail before retirement, and keep a late rotation from restoring
+                    // the active profile pointer after the user's account switch.
+                    prepare()
+                    _controller.value?.closeAndAwait()
                     teardown()
                     connectionJob = null
                     action()
                 }
+                if (profileId != null) sessionOperationMutex(profileId).withLock { leave() } else leave()
             } catch (cancelled: CancellationException) { throw cancelled }
               catch (_: Exception) { _operationNotice.value = "账号切换未完成，请检查手机存储后重试。" }
             finally { if (connectionJob === owned) connectionJob = null }
@@ -1028,7 +1048,7 @@ class GatewayRuntime(
                 if (refresh != null && refresh.isNotEmpty() && binding != null) {
                     val endpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl) ?: error("PROFILE_INVALID")
                     val pins = identityTrust.pinsBeforeConnect(endpoint, profile.username, restoring = true)
-                    sessionOperationMutex.withLock {
+                    sessionOperationMutex(profileId).withLock {
                         val (session, _) = rotateStoredSession(endpoint, profile.username, profileId,
                             binding.accountId, binding.deviceId, pins)
                         authClientFor(endpoint.baseUrl, pins).logout(session.accessToken, session.accountId,
@@ -1108,7 +1128,7 @@ class GatewayRuntime(
             }
             sessionRenewal?.close()
             sessionRenewal = null
-            sessionOperationMutex.withLock {
+            sessionOperationMutex(profileId).withLock {
                 try { _controller.value?.closeAndAwait() }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，本机任务收尾失败，请重试本机账号清理。" }
@@ -1259,7 +1279,7 @@ class GatewayRuntime(
         _loginStatus.value = GatewayLoginStatus.REAUTHENTICATION_REQUIRED
         sessionRenewal?.close()
         sessionRenewal = null
-        sessionOperationMutex.withLock { invalidateCredentialsLocked(profileId, code) }
+        sessionOperationMutex(profileId).withLock { invalidateCredentialsLocked(profileId, code) }
     }
 
     private fun invalidateCredentialsLocked(profileId: String, code: String) {
@@ -1417,7 +1437,7 @@ class GatewayRuntime(
                     try {
                         checkOwner()
                         val pins = identityTrust.pinsBeforeConnect(endpoint, lastUser, restoring = true)
-                        val (session, negotiated) = sessionOperationMutex.withLock {
+                        val (session, negotiated) = sessionOperationMutex(profileId).withLock {
                             _credentialStatus.value = GatewayCredentialStatus.REFRESHING
                             rotateStoredSession(endpoint, lastUser, profileId, accountId, deviceId, pins, ::checkOwner)
                         }
@@ -1541,7 +1561,7 @@ class GatewayRuntime(
         deviceAuthorizationAgreement = authorizationAgreement
         lateinit var renewal: GatewaySessionRenewal
         renewal = GatewaySessionRenewal(profile, scope) { rejected ->
-            sessionOperationMutex.withLock {
+            sessionOperationMutex(profileId).withLock {
                 check(sessionRenewal === renewal) { "SESSION_RENEWAL_CLOSED" }
                 _isRefreshingSession.value = true
                 _credentialStatus.value = GatewayCredentialStatus.REFRESHING
@@ -1903,7 +1923,8 @@ class GatewayRuntime(
 
         var workbenchAgentId: String? = null
         suspend fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
-            val ownerAgent = _nativeAgents.value?.state?.value?.agent.takeIf { nativeAgentSessions }
+            val discoveryOwner = _nativeAgents.value.takeIf { nativeAgentSessions }
+            val ownerAgent = discoveryOwner?.state?.value?.agent
             val ownerAgentId = ownerAgent?.id
                 ?: accountProfiles.find(profileId)?.selectedAgentId.takeIf { nativeAgentSessions }
             val ownerRepository = if (nativeAgentSessions) nativeRepository(requireNotNull(ownerAgent)) else null
@@ -1911,7 +1932,7 @@ class GatewayRuntime(
             val activeCatalogRepo = if (nativeAgentSessions) {
                 com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
                     com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
-                    currentAgent = { ownerAgent },
+                    currentAgent = { discoveryOwner?.state?.value?.agents?.firstOrNull { it.id == ownerAgentId } },
                     negotiated = "agent-command-catalog-v1" in conversationUi,
                 )
             } else catalogRepository

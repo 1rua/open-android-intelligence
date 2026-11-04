@@ -141,6 +141,13 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     if ret != 0:
         return ret
 
+    # Plugin tooling tests cover plugin source, manifests, schemas, and packaging policy.
+    if impact["affects_plugins"] or level == "full":
+        print("\n--- 插件工具与清单回归 ---")
+        ret = run_command(["npm", "test", "--prefix", "plugin-tooling"])
+        if ret != 0:
+            return ret
+
     # 2. Python Core 测试
     if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
