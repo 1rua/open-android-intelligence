@@ -2705,7 +2705,7 @@ internal fun refreshFailureNotice(cause: Throwable): String {
         text.contains("GATEWAY_IDENTITY_CHANGED") ->
             "刷新网关凭据失败：网关部署身份或证书已变更，请核对后重新登录以建立新信任。"
         text.contains("PROTOCOL_INCOMPATIBLE") || text.contains(":406") ->
-            "Gateway 拒绝续期：App 与 Gateway 的契约版本不一致，请把两端升级到同一版本后重试。"
+            "Gateway 拒绝续期：App 与 Gateway 版本不一致，请把两端升级到同一版本后重试。"
         text.contains("401") || text.contains("403") ||
             text.contains("REVOKED") || text.contains("UNAUTHORIZED") ->
             "Gateway 拒绝续期：当前凭据已失效或被撤销，请重新登录。"

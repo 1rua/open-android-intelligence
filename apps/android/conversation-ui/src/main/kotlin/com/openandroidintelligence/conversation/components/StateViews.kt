@@ -170,7 +170,7 @@ fun specificFailureText(code: String): String? {
         // `AUTHENTICATION_FAILED:406`（`GatewayAuthClient` 在非 2xx 时只能回落到状态码），
         // 而契约把 406 专属给 `PROTOCOL_INCOMPATIBLE`。
         value.contains("PROTOCOL_INCOMPATIBLE") || STATUS_406.containsMatchIn(value) ->
-            "App 与 Gateway 的契约版本不一致（或本次协商已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
+            "App 与 Gateway 协议版本不一致（或连接已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
         value.contains("HOST_INCOMPATIBLE") ->
             "Gateway 与当前 Agent 宿主版本不兼容，请在 Agent 端升级插件或宿主后重试。"
         // 必须排在 `MISSING-TLS-IDENTITY` 之后：`NEGOTIATION_FAILED:missing-tls-identity`

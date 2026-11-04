@@ -128,7 +128,7 @@ fun buildVisiblePermissions(
             PermissionEntry(
                 id = "call_log",
                 displayName = "通话与电话状态",
-                purpose = "用于让 Agent 查询通话记录或感知来电状态，协助进行电话管理。",
+                purpose = "用于让 Agent 查询通话记录或检测来电状态，协助进行电话管理。",
                 group = PermissionGroup.DEVICE_CAPABILITY,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,

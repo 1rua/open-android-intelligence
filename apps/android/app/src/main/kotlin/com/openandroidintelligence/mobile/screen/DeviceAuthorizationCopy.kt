@@ -21,7 +21,7 @@ internal fun deviceRequestAction(capability: String, operation: String, paramete
 /** 展示实际请求参数，不据展示文本推断或扩大授权范围。输入正文保留在技术详情中。 */
 internal fun deviceRequestParameterLines(parameters: String): List<String> {
     val fields = runCatching { JsonFields.obj(Json.parse(parameters))?.fields }.getOrNull()
-        ?: return listOf("参数无法解析，请核对技术详情；授权范围仍以执行层校验为准。")
+        ?: return listOf("参数无法解析，请核对技术详情；授权范围以系统实际执行检查为准。")
     if (fields.isEmpty()) return listOf("未指定额外筛选参数；实际访问范围仍受本机设置限制。")
     val lines = fields.take(24).map { (key, value) ->
         val label = when (key) {

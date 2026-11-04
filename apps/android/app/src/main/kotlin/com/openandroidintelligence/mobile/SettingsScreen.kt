@@ -416,10 +416,10 @@ fun SettingsScreen(
     if (showEmergencyDialog) {
         AlertDialog(
             onDismissRequest = { showEmergencyDialog = false },
-            title = { Text("确认系统安全熔断") },
+            title = { Text("确认紧急停用") },
             text = {
                 Text(
-                    "这将调用平台内核的全局熔断机制，立即隔离所有已启用插件并关闭开发者信任模式。操作完成后必须重启应用才能恢复。",
+                    "这将立即停止并隔离所有已启用插件，并关闭开发者信任模式。操作完成后必须重启应用才能恢复。",
                 )
             },
             confirmButton = {
@@ -832,7 +832,7 @@ private fun SettingsOverviewScreen(
                         supporting = if (NotificationControlRegistry.policyPort().snapshot().installed) {
                             "选择要读取哪些应用的通知、读取哪些内容，以及是否自动发送"
                         } else {
-                            "本机未装配通知读取能力，暂不可配置"
+                            "本机未支持通知读取功能，暂不可配置"
                         },
                     )
                 }
@@ -1256,9 +1256,9 @@ private fun GatewaySubScreen(
                     SettingsListItem(
                         headline = "设备端任务执行",
                         supporting = when {
-                            uiState.deviceRequestChannel == null -> "当前 Core 不会把任务下发到手机执行"
-                            uiState.pluginRuntimesWired -> "已支持：Core 可以把任务下发到手机执行"
-                            else -> "Core 支持下发，但插件环境未就绪"
+                            uiState.deviceRequestChannel == null -> "当前 Core 不会向手机发送任务执行请求"
+                            uiState.pluginRuntimesWired -> "已支持：Core 可以向手机发送任务由插件执行"
+                            else -> "Core 支持发送任务，但插件环境未就绪"
                         },
                         icon = Icons.Default.Security,
                     )

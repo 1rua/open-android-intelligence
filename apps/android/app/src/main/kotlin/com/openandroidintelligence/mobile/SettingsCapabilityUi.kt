@@ -166,7 +166,7 @@ val negotiatedCapabilityLabels: Map<String, String> = mapOf(
     "agent-command-catalog-v1" to "指令目录",
     "agent-command-new-v1" to "新建对话指令",
     "agent-approval-cards-v1" to "审批卡片",
-    "message-batches-v1" to "消息批量下发",
+    "message-batches-v1" to "批量发送消息",
     "newline-v1" to "换行输入",
     "generation-cancel-v1" to "生成中止",
     "conversation-mirror-v1" to "会话镜像",

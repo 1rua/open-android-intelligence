@@ -159,8 +159,8 @@ object GatewayTutorials {
             ),
             TutorialStep(
                 title = "安装 Gateway 插件",
-                body = "按固定提交安装，避免版本漂移。插件会随安装自动同步契约快照，" +
-                    "启动时不再联网下载。",
+                body = "按指定版本安装以确保稳定。插件会随安装自动同步协议定义，" +
+                    "启动时无需联网下载。",
                 terminal = TerminalBlock(
                     label = "Terminal · 安装插件",
                     command = "openclaw plugins install \\\n" +

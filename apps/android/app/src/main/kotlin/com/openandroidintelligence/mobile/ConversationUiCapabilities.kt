@@ -79,11 +79,11 @@ fun screenSelectionPresentation(
     )
     attachmentStatusAgreed == null -> CapabilityPresentation(
         enabled = false,
-        supporting = "Gateway 未声明支持圈选回传，圈选不可用",
+        supporting = "Gateway 未声明支持屏幕圈选，圈选不可用",
     )
     !attachmentStatusAgreed -> CapabilityPresentation(
         enabled = false,
-        supporting = "网关不支持圈选回传，圈选不可用",
+        supporting = "网关不支持屏幕圈选，圈选不可用",
     )
     else -> CapabilityPresentation(
         enabled = true,

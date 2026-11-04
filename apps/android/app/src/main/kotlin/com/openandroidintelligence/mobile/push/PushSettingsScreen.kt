@@ -247,7 +247,7 @@ fun PushSettingsContent(
             onConfigurationChange(config.copy(sms = config.sms.copy(endpoints = it)))
         }
         Text("正文默认包含；关闭正文开关后仅推送元数据。", style = MaterialTheme.typography.bodySmall)
-        Text("关闭推送、缩小范围或移除端点，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
+        Text("关闭推送、缩小范围或移除接收设备，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
         TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新推送目标") }
 
         HorizontalDivider()
@@ -280,7 +280,7 @@ private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: 
     Text("推送目标（可多选）", style = MaterialTheme.typography.titleSmall)
     val byKey = options.associateBy { it.endpoint }
     val keys = (options.map { it.endpoint } + selected).distinct()
-    if (keys.isEmpty()) Text("尚无已验证接收端点。连接 Core 并刷新后选择。", modifier = Modifier.testTag("push-$kind-no-endpoints"))
+    if (keys.isEmpty()) Text("尚无已验证接收设备。连接 Core 并刷新后选择。", modifier = Modifier.testTag("push-$kind-no-endpoints"))
     keys.forEach { key ->
         val option = byKey[key]
         val checked = key in selected
@@ -296,7 +296,7 @@ private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: 
                     val replaced = options.any { it.available && it.endpoint.replaces(key) }
                     Text(
                         if (replaced) "接收端身份已更新，原选择和待发记录已保留。请手动重选；旧记录不会转给新接收端。"
-                        else "当前端点不可用，原选择和待发记录已保留，恢复后重试；可手动取消选择。",
+                        else "当前接收目标不可用，原选择和待发记录已保留，恢复后重试；可手动取消选择。",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }

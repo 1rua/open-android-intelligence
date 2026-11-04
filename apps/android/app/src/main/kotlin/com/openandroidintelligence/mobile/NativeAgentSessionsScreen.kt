@@ -171,7 +171,7 @@ internal fun NativeAgentSessionsScreen(
                     }
                 }
             }
-            if (capabilities?.send != true || capabilities.stream != true) Text("此 Agent 未提供可用的流式消息发送能力。")
+            if (capabilities?.send != true || capabilities.stream != true) Text("此 Agent 暂不支持实时消息收发。")
             OutlinedTextField(value = state.draft, onValueChange = controller::editDraft,
                 enabled = writable && capabilities?.send == true && capabilities.stream,
                 label = { Text("消息") }, modifier = Modifier.fillMaxWidth(), maxLines = 5)
