@@ -278,13 +278,12 @@ private fun UninstalledNotice() {
     SettingsSectionCard {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
             Text(
-                text = "本机暂不支持读取通知",
+                text = "暂不支持读取通知",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "这个版本没有装配通知读取能力，现在无法读取或查询通知。" +
-                    "因此这里不会出现任何开关；支持该能力的版本会在本页提供真实的授权与范围设置。",
+                text = "当前版本未包含通知读取组件，暂无法读取或查询系统通知。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -307,7 +306,7 @@ private fun RejectionNotice(reason: String) {
     ) {
         Text(
             text = if (reason == "NOTIFICATION_SETTINGS_UNAVAILABLE")
-                "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
+                "无法打开系统设置，请前往系统设置手动开启通知使用权。"
                 else "设置没有保存成功：$reason",
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(
@@ -433,8 +432,7 @@ private fun AllowlistGroup(
         if (snapshot.packageIds.isEmpty()) {
             // 空态不是"没有内容"：白名单为空时一条通知也不会采集，必须说清楚。
             Text(
-                text = "还没有选择任何应用：没有选择就不会读取任何通知。" +
-                    "选择应用后，只有这些应用的通知会按上面的内容与发送方式处理。",
+                text = "未选择应用时不会读取任何通知。请点击上方按钮添加应用。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = Dimensions.SpaceSmall),

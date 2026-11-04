@@ -112,18 +112,18 @@ fun ScreenCapabilitySection(
             if (state.hasSession) {
                 SettingsNavigationItem(
                     headline = "结束屏幕会话",
-                    supporting = "立即撤销本机屏幕许可，并停止正在进行的截图与操作",
+                    supporting = "撤销屏幕权限并停止正在进行的操作",
                     icon = Icons.Default.StopCircle,
                     tone = SettingsTone.DANGER,
                     onClick = {
                         onRevoke()
-                        notice = "屏幕会话已结束，后续调用会被安全拒绝"
+                        notice = "屏幕会话已结束"
                     },
                 )
             } else {
                 SettingsNavigationItem(
                     headline = "开始屏幕会话",
-                    supporting = "选择允许的屏幕权限；不选择任何一项时无法开始",
+                    supporting = "选择屏幕权限后方可开启",
                     icon = Icons.Default.Visibility,
                     enabled = state.gate == ScreenGate.READY,
                     onClick = { showConsent = true },

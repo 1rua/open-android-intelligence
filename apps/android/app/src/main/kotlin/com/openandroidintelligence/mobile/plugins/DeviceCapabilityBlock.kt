@@ -110,15 +110,15 @@ fun classifyCapabilityBlock(status: String, reason: String?): DeviceCapabilityBl
  * 每条都指向一个具体动作，不说「当前阻塞原因」这类无法执行的话。
  */
 fun capabilityBlockNextStep(block: DeviceCapabilityBlock, reason: String? = null): String = when (block) {
-    DeviceCapabilityBlock.NOT_YET_REQUESTED -> "在「系统权限与后台任务」里点开对应条目即可申请"
-    DeviceCapabilityBlock.AWAITING_USER_ACTION -> "需要在 Android 系统设置中亲手完成"
+    DeviceCapabilityBlock.NOT_YET_REQUESTED -> "可在「系统权限与后台任务」中申请对应权限"
+    DeviceCapabilityBlock.AWAITING_USER_ACTION -> "需要在系统设置中手动开启"
     DeviceCapabilityBlock.SERVICE_DISCONNECTED -> when (reason) {
         "NOTIFICATION_LISTENER_UNAVAILABLE" -> "通知监听服务尚未连接，请在系统设置中确认本应用的通知使用权已开启"
         else -> "无障碍服务已开启但当前未连接，请回到无障碍设置确认服务已连接"
     }
     DeviceCapabilityBlock.SYSTEM_REJECTED -> "上次授权被系统拒绝，请重新发起一次授权"
     DeviceCapabilityBlock.RATE_LIMITED -> "系统暂时限速，稍等片刻重试即可"
-    DeviceCapabilityBlock.LOCAL_SWITCH_OFF -> "本机已关闭此项能力，打开对应开关即可恢复"
+    DeviceCapabilityBlock.LOCAL_SWITCH_OFF -> "该能力已关闭，开启对应开关即可恢复"
     DeviceCapabilityBlock.PLUGIN_INACTIVE -> "安装或启用对应插件即可恢复"
     DeviceCapabilityBlock.PROVIDER_UNSELECTED -> "在插件条目里选择由哪个插件提供这项能力"
     DeviceCapabilityBlock.SYNCING -> "正在同步本机能力设置，稍候会自动更新"

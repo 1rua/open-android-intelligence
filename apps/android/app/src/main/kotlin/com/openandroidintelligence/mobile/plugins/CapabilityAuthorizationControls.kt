@@ -95,7 +95,7 @@ internal fun CapabilityAuthorizationControls(
             )
         }
         Text(
-            "设置保存在本机，离线也可修改。Android 系统权限、数据范围和必要的系统确认仍单独生效。",
+            "设置保存在本地。系统权限与确认提示仍需单独允许。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -109,7 +109,7 @@ private fun CapabilityAuthorizationMode.authorizationLabel(): String = when (thi
 }
 
 private fun CapabilityAuthorizationMode.authorizationDescription(): String = when (this) {
-    CapabilityAuthorizationMode.MANUAL -> "每次请求等待本机确认，也可在确认时选择临时允许。"
+    CapabilityAuthorizationMode.MANUAL -> "每次请求需手动确认，可选择临时允许。"
     CapabilityAuthorizationMode.READ_ONLY -> "已授权范围内的读取自动执行；发送、修改和控制仍需确认。"
     CapabilityAuthorizationMode.AUTOMATIC -> "在本机允许范围内自动执行，仍须满足系统权限和必要的安全确认。"
 }
