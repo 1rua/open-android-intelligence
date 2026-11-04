@@ -128,6 +128,9 @@ import com.openandroidintelligence.mobile.settings.ConnectionSettingsScreen
 import com.openandroidintelligence.mobile.settings.NotificationSettingsScreen
 import com.openandroidintelligence.mobile.settings.CapabilityAuthSettingsScreen
 import com.openandroidintelligence.mobile.settings.AdvancedSettingsScreen
+import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import com.openandroidintelligence.mobile.settings.SettingsPageColumn
+import com.openandroidintelligence.mobile.settings.SectionLabel
 
 /**
  * SCREEN 自行处理系统栏；SIDEBAR 的系统栏由抽屉或固定侧栏宿主消费，
@@ -138,16 +141,7 @@ enum class SettingsPresentation { SCREEN, SIDEBAR }
 private val NoWindowInsets = WindowInsets(0, 0, 0, 0)
 
 /** 当前呈现方式下页面（Scaffold / 标题栏）应使用的底色。 */
-private fun settingsContainerColor(presentation: SettingsPresentation): Color =
-    if (presentation == SettingsPresentation.SIDEBAR) {
-        MaterialTheme.colorScheme.surfaceContainerLow
-    } else {
-        MaterialTheme.colorScheme.surface
-    }
-
 /** 当前呈现方式下 Scaffold 内容区应扣的系统栏 inset。 */
-private fun settingsContentWindowInsets(presentation: SettingsPresentation): WindowInsets =
-    if (presentation == SettingsPresentation.SIDEBAR) NoWindowInsets else WindowInsets.systemBars
 
 /**
  * 设置主界面（SettingsScreen）。
@@ -521,7 +515,6 @@ internal fun DevicePushSubScreen(
 }
 
 /** 设置子页统一的 Scaffold：标题栏、底色与系统栏 inset 只在 [SettingsPresentation] 处分支一次。 */
-@OptIn(ExperimentalMaterial3Api::class)
 private fun SettingsPageScaffold(
     title: String,
     presentation: SettingsPresentation,
