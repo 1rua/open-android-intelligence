@@ -182,7 +182,7 @@ data class TimelineAttachment(
 
 - 容器：`Surface`，`surfaceContainerLow`，`AppRadius.Medium`，`outlineVariant` 细边框。
 - 标题栏（≥48dp，`role=Button`）：
-  - 折叠：`已完成 N 步执行与思考 · 点击展开`；
+  - 折叠：`已执行 N 步 · 点击展开`；
   - 展开：`执行过程 · N 步 · 点击收起`；
   - 有失败/中断时追加 `· 含 M 步失败`，使用 warning/error 图标与文字；
   - 右侧 chevron 旋转。
