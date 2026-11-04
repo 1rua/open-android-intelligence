@@ -126,15 +126,15 @@ object AppTransitions {
     }
 
     /**
-     * 模态层/全屏设置面板打开动画：从左向右（+X）滑入。
-     * 起点：translationX = -full（屏幕左侧外部）
+     * 模态层/全屏设置面板打开动画：从右向左滑入（符合 Android 规范）。
+     * 起点：translationX = +full（屏幕右侧外部）
      * 终点：translationX = 0
      */
     fun modalEnter(reduced: Boolean): EnterTransition = when {
         reduced -> fadeIn(MotionSpecs.fade(reduced))
         else -> slideInHorizontally(
             animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
-            initialOffsetX = { full -> -full },
+            initialOffsetX = { full -> full },
         ) + fadeIn(
             animationSpec = tween(MotionSpecs.Enter, easing = MotionSpecs.EmphasizedDecelerateEasing),
             initialAlpha = 0.0f,
@@ -142,15 +142,15 @@ object AppTransitions {
     }
 
     /**
-     * 模态层/全屏设置面板关闭动画：向左（-X）滑出屏幕。
+     * 模态层/全屏设置面板关闭动画：向右滑出屏幕（符合 Android 规范）。
      * 起点：translationX = 0
-     * 终点：translationX = -full（屏幕左侧外部）
+     * 终点：translationX = +full（屏幕右侧外部）
      */
     fun modalExit(reduced: Boolean): ExitTransition = when {
         reduced -> fadeOut(MotionSpecs.fade(reduced))
         else -> slideOutHorizontally(
             animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
-            targetOffsetX = { full -> -full },
+            targetOffsetX = { full -> full },
         ) + fadeOut(
             animationSpec = tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedAccelerateEasing),
             targetAlpha = 0.0f,
