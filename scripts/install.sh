@@ -220,15 +220,20 @@ prepare_source() {
     fi
 }
 
-# 搭建 Python 虚拟环境并安装 oai-core
-install_python_env() {
+# 只创建或复用已选解释器的虚拟环境，不执行包安装。
+create_python_environment() {
     local venv_dir="${TARGET_DIR}/.venv"
     info "正在配置 Python 虚拟环境: ${venv_dir}..."
 
     if [ ! -f "${venv_dir}/bin/python" ]; then
         "${PYTHON_BIN:-python3}" -m venv "${venv_dir}"
     fi
+}
 
+# 搭建 Python 虚拟环境并安装 oai-core
+install_python_env() {
+    local venv_dir="${TARGET_DIR}/.venv"
+    create_python_environment
     local pip_bin="${venv_dir}/bin/pip"
 
     info "正在安装/更新 build 依赖 (setuptools, wheel)..."

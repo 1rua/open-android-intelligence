@@ -531,53 +531,73 @@ printf 'R11_PASSWORD_READ_OK\n'
     assert returncode == 0
     assert b"R11_PASSWORD_READ_OK" in output
 
-def test_python_interpreter_selection_and_reuse_for_venv(tmp_path):
-    """R12 行为测试：当系统仅有合格 python (无 python3)，前置检查能识别并持久用于创建 venv。"""
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir(parents=True)
-    (fake_bin / "python").symlink_to(sys.executable)
-    target_dir = tmp_path / "target-oai"
-    target_dir.mkdir(parents=True)
 
-    test_script = f"""
-export PATH="{shlex.quote(str(fake_bin))}:/usr/bin:/bin"
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-TARGET_DIR={shlex.quote(str(target_dir))}
-command() {{
-    if [ "$1" = "-v" ] && [ "$2" = "python3" ]; then
-        return 1
-    fi
+def _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, *, selected, rejected=None):
+    """Exercise interpreter selection and real venv creation without package indexes."""
+    launchers = tmp_path / "python commands with spaces"
+    launchers.mkdir()
+    calls = tmp_path / "python-calls.txt"
+    target = tmp_path / "isolated install"
+    # venv accepts a real lib64 directory on filesystems without alias support.
+    # There is no bin/python yet, so production must still create the real environment.
+    if sys.platform == "linux" and sys.maxsize > 2**32:
+        (target / ".venv/lib64").mkdir(parents=True)
+    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+    for name in ("python3", "python"):
+        launcher = launchers / name
+        if name == selected:
+            body = f'printf \'%s\\n\' "{name} $*" >> {shlex.quote(str(calls))}\nexec {interpreter} "$@"\n'
+        elif rejected == "old-version":
+            body = '[ "$1" != "-c" ] || { printf "3.8\\n"; exit 0; }\nexit 1\n'
+        elif rejected == "missing-venv":
+            body = (f'if [ "$1" = "-c" ]; then exec {interpreter} "$@"; fi\n'
+                    'exit 1\n')
+        else:
+            body = 'exit 99\n'
+        launcher.write_text("#!/bin/sh\n" + body)
+        launcher.chmod(0o700)
+    monkeypatch.setenv("PATH", str(launchers) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    hidden = "python3" if selected == "python" else "python"
+    hide_missing = "" if rejected is not None else f"""command() {{
+    if [ "$1" = "-v" ] && [ "$2" = "{hidden}" ]; then return 1; fi
     builtin command "$@"
 }}
-check_prerequisites
-printf "CHOSEN_PYTHON=%s\n" "$PYTHON_BIN"
-install_python_env
 """
-    proc = subprocess.run(["bash", "-c", test_script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, f"执行失败:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
-    assert "CHOSEN_PYTHON=python" in proc.stdout
-    assert (target_dir / ".venv" / "bin" / "python").exists()
-
-def test_python_interpreter_picks_eligible_python_over_ineligible_python3(tmp_path):
-    """R12 行为测试：当 python3 版本不合格（例如 3.8）但 python 版本合格（>=3.11），能选出合格的 python。"""
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir(parents=True)
-    fake_py3 = fake_bin / "python3"
-    fake_py3.write_text("#!/bin/sh\nif [ \"$1\" = \"-c\" ]; then echo 3.8; exit 0; fi\nexit 1\n")
-    fake_py3.chmod(0o755)
-    (fake_bin / "python").symlink_to(sys.executable)
-    target_dir = tmp_path / "target-oai-ineligible-py3"
-    target_dir.mkdir(parents=True)
-
-    test_script = f"""
-export PATH="{shlex.quote(str(fake_bin))}:/usr/bin:/bin"
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-TARGET_DIR={shlex.quote(str(target_dir))}
+    script = f"""
+source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}
+TARGET_DIR={shlex.quote(str(target))}
+{hide_missing}
 check_prerequisites
-printf "CHOSEN_PYTHON=%s\n" "$PYTHON_BIN"
-install_python_env
+printf 'CHOSEN_PYTHON=%s\\n' "$PYTHON_BIN"
+create_python_environment
 """
-    proc = subprocess.run(["bash", "-c", test_script], capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 0, f"执行失败:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}"
-    assert "CHOSEN_PYTHON=" in proc.stdout
-    assert (target_dir / ".venv" / "bin" / "python").exists()
+    result = subprocess.run(["bash", "-c", script], cwd=REPOSITORY, capture_output=True,
+                            text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"CHOSEN_PYTHON={selected}" in result.stdout
+    venv = target / ".venv"
+    assert f"{selected} -m venv {venv}" in calls.read_text().splitlines()
+    probe = subprocess.run([str(venv / "bin/python"), "-c",
+        "import json,sys; print(json.dumps([sys.prefix, sys.base_prefix, list(sys.version_info[:2])]))"],
+        capture_output=True, text=True, check=True, timeout=5)
+    prefix, base_prefix, version = json.loads(probe.stdout)
+    assert Path(prefix) == venv
+    assert Path(base_prefix) == Path(sys.base_prefix)
+    assert version == list(sys.version_info[:2])
+    assert (venv / "pyvenv.cfg").is_file()
+    before = calls.read_text().splitlines()
+    run_bash(f'source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}\n'
+             f'TARGET_DIR={shlex.quote(str(target))}\nPYTHON_BIN={selected}\ncreate_python_environment\n')
+    assert calls.read_text().splitlines() == before
+
+
+@pytest.mark.parametrize("selected", ["python", "python3"])
+def test_python_interpreter_selection_and_reuse_for_venv(tmp_path, monkeypatch, selected):
+    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected=selected)
+
+
+@pytest.mark.parametrize("rejected", ["old-version", "missing-venv"])
+def test_python_interpreter_picks_eligible_python_over_ineligible_python3(tmp_path, monkeypatch, rejected):
+    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected="python", rejected=rejected)

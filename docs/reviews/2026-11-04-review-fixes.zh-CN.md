@@ -77,3 +77,24 @@ Android 明细：control-ports 38、capability-ports 67、screen-control 41、de
 本次不改变账号、设备密钥、宿主真实消息/会话 ID 或历史归属。新增 localPlaceholder 字段向后兼容，原有存储未声明该字段时按 false 读取。PR 保持打开，合并与部署另行处理。
 
 本地完整日志、Android XML 汇总及代码文件指纹保存在该修复 worktree 的 `.toolchains/review-fixes/`，按既有忽略规则保留，不提交生成物。唯一跳过用例为卸载器的符号链接保护场景：已单独运行并确认当前文件系统无法创建符号链接；Linux CI 继续覆盖该场景。
+
+## PR #81 的 CI 后续修复
+
+首个修复提交 `a5f66eec199458893b528164cf5c2503f48c020d` 的远端结果：Android、APK、签名包、Hermes、DSH 均通过；Core 3.11 在两个新增的解释器测试中失败，Core 3.12 被原矩阵默认的提前取消策略终止，不能记为通过。没有审查评论待处理。
+
+失败运行：OAI Core and Session Adapters `41755445886`，Core 3.11 job `126330354640`。日志明确为两个 `subprocess.TimeoutExpired`，各自超过 30 秒；该 job 最终 `707 passed, 2 failed, 8 skipped, 6 subtests passed`。
+
+两个用例在确认解释器后调用了完整 `install_python_env`，越过其本来要验证的 venv 创建边界，继续执行联网 pip 升级和 Core 依赖安装。本地曾通过不代表测试可在干净 CI 上稳定完成，本次修复不通过加长超时或重试掩盖问题。
+
+本次处理：
+
+- 将现有 venv 创建代码提取为内部函数 `create_python_environment`，完整安装入口继续调用它，原 pip 安装参数与顺序保持。
+- 回归测试直接运行实际解释器检查与创建函数；禁用包索引，使用转发到真实 Python 的可执行脚本记录调用，覆盖仅 python、仅 python3、旧版 python3 和 python3 缺少 venv 四种情形。
+- 校验实际虚拟环境的 prefix、base_prefix 和版本，并检查重复进入不再创建环境；同时使用带空格的路径验证 shell 引用。测试仍创建真实环境及 pip，不伪造环境或安装成功。
+- Core 矩阵显式 `fail-fast: false`，3.11 与 3.12 各自执行完整检查，保留各自结果。
+
+定向结果：Python 3.11 下四项通过（9.84 秒），Python 3.12 下四项通过（10.68 秒），Python 3.14 下四项通过（7.05 秒）。本地文件系统不支持符号链接，测试以真实 lib64 目录承载别名位置，venv 仍由生产函数创建；工具链准备阶段遇到的符号链接与下载环境错误单独记录；随后以普通文件复制展开官方 3.12 运行时，完成上述真实解释器测试，不将准备错误计为产品测试结论。本次 `test:fast` 与 `test:pr` 均通过（638.54 秒、127.45 秒）；Core/安装 718 passed、1 skipped、6 subtests passed，Hermes 231 passed，Android 2467 项零失败。
+
+补充执行了安装包矩阵：不设置 PYTHONPATH/HERMES_SDK_ROOT，在独立的 Python 3.11.17、3.12.15 虚拟环境安装同一新构建 wheel，仅加入声明的 Core 依赖和 CI 测试依赖。两者的 `verify_distribution.py` 与 `independent_core_contract.py` 均通过，完整 Core/安装测试各 `708 passed, 11 skipped, 6 subtests passed`，修复过的四个解释器用例全部实际执行。宿主 SDK 与本地文件系统导致的跳过保持可见。3.11 复核前还发现旧工具链 bin/python 别名为非可执行数据文件，已在独立目录复制有效二进制后重新建环境并通过，没有修改共享工具链；此前的准备/运行失败日志保留。新提交的远端 CI 结果仍需按 SHA 单独核对。
+
+上轮后台已收集 CI 结果，但恢复同一线程时遇到 active writer 冲突，未成功执行后续检查。续查现改为独立临时会话；初始化探针已实际返回 `BACKGROUND_CHECK_READY`，退出码 0，后续仍按固定 SHA 收集 CI 与审查结果。
