@@ -1136,14 +1136,60 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
         if (
             entry is None or origin is None or platform_id not in GATEWAY_PLATFORM_IDS
             or origin.chat_id != conversation_id or origin.user_id != account_id
-            or (bound_id is not None and entry.session_id != bound_id)
             or (bound_key is not None and entry.session_key != bound_key)
         ):
             raise GatewayError("HOST_INCOMPATIBLE", {"reason": "UNRESOLVED_AGENT_SESSION_BINDING"})
         source = self._agent_source(conversation_id, account_id, platform_id)
         if self._host_session_key(store, source) != entry.session_key:
             raise GatewayError("HOST_INCOMPATIBLE", {"reason": "AGENT_SESSION_KEY_MISMATCH"})
+        if (bound_id is not None and entry.session_id != bound_id
+                and not self._is_agent_compression_successor(store, entry, bound_id)):
+            raise GatewayError("HOST_INCOMPATIBLE", {"reason": "UNRESOLVED_AGENT_SESSION_BINDING"})
         self._conversation_platforms[(account_id, conversation_id)] = platform_id
+
+
+    @staticmethod
+    def _is_agent_compression_successor(store: Any, entry: Any, bound_id: str) -> bool:
+        """只接受精确来源下唯一的原生压缩后继，不改写账号绑定或宿主路由。"""
+        resolve = getattr(store, "_db_for_key", None)
+        if not callable(resolve):
+            return False
+        try:
+            # The session key owns profile selection; an ambient DB or ID lookup
+            # could turn another profile's matching IDs into apparent ancestry.
+            database = resolve(entry.session_key)
+            required = ("get_compression_chain", "get_session", "_read_all", "_is_compression_child_row")
+            if any(not callable(getattr(database, name, None)) for name in required):
+                return False
+            chain = database.get_compression_chain(bound_id)
+            if (len(chain) < 2 or chain[0] != bound_id or chain[-1] != entry.session_id
+                    or len(set(chain)) != len(chain)):
+                return False
+            origin = entry.origin
+            scope = {"source": origin.platform.value, "user_id": origin.user_id,
+                     "chat_id": origin.chat_id, "session_key": entry.session_key,
+                     "chat_type": origin.chat_type, "thread_id": origin.thread_id}
+            rows = [database.get_session(session_id) for session_id in chain]
+            if any(not isinstance(row, Mapping) or any(row.get(key) != value for key, value in scope.items())
+                   for row in rows):
+                return False
+            if rows[0].get("parent_session_id") in chain or rows[-1].get("end_reason") == "compression":
+                return False
+            for parent, child in zip(rows, rows[1:]):
+                if parent.get("end_reason") != "compression" or child.get("parent_session_id") != parent["id"]:
+                    return False
+                # The SDK picks a preferred child when siblings exist. Preference
+                # alone cannot prove ownership, so require a unique continuation;
+                # the host excludes reset, branch, delegate and tool children.
+                children = [dict(row) for row in database._read_all(
+                    "SELECT * FROM sessions WHERE parent_session_id = ?", (parent["id"],))]
+                continuations = [row["id"] for row in children if database._is_compression_child_row(row)]
+                if continuations != [child["id"]]:
+                    return False
+            return True
+        except Exception:
+            # Missing or unreadable lineage is never permission to rebind/create.
+            return False
 
 
     @staticmethod
@@ -1207,8 +1253,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             return
         try:
             with account.store.transaction():
-                account.agent_sessions.record(conversation_id, created_via)
-                if isinstance(agent_session_id, str) and agent_session_id:
+                binding = account.agent_sessions.record(conversation_id, created_via)
+                if isinstance(agent_session_id, str) and agent_session_id and not binding.get("agentSessionId"):
                     account.agent_sessions.attach(conversation_id, agent_session_id, session_key)
         except Exception as exc:
             logger.warning(

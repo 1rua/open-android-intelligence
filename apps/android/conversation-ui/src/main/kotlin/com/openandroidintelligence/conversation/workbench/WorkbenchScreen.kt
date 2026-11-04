@@ -122,12 +122,9 @@ fun WorkbenchScreen(
     val state by controller.state.collectAsState()
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var sidebarPanel by rememberSaveable {
-        mutableStateOf(if (settingsOpen) SidebarPanel.SETTINGS else SidebarPanel.CONVERSATIONS)
-    }
+    val sidebarPanel = if (settingsOpen) SidebarPanel.SETTINGS else SidebarPanel.CONVERSATIONS
     // 从会话列表进入时，设置根页返回应保留抽屉并恢复列表。
     var settingsFromConversations by rememberSaveable { mutableStateOf(false) }
-    var returnToConversations by remember { mutableStateOf(false) }
 
     val snackbar = remember { SnackbarHostState() }
     val readingPositions = remember(controller.localConversationScope) { mutableMapOf<String?, TimelineReadingPosition>() }
@@ -308,25 +305,12 @@ fun WorkbenchScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
 
-        // 平板端状态同步：在宽屏下设置面板在原左侧栏展示
-        val latestSettingsOpen by rememberUpdatedState(settingsOpen)
+        // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
         LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
             if (settingsPanel == null) return@LaunchedEffect
-            if (expanded) {
-                if (settingsOpen) {
-                    sidebarPanel = SidebarPanel.SETTINGS
-                } else {
-                    sidebarPanel = SidebarPanel.CONVERSATIONS
-                    returnToConversations = false
-                    settingsFromConversations = false
-                }
-            } else {
-                // 手机端：设置打开时关闭底层的会话抽屉，避免遮挡/层叠
-                if (settingsOpen) {
-                    if (drawer.isOpen || drawer.isAnimationRunning) {
-                        drawer.snapTo(DrawerValue.Closed)
-                    }
-                }
+            if (!settingsOpen && expanded) settingsFromConversations = false
+            if (settingsOpen && !expanded && (drawer.isOpen || drawer.isAnimationRunning)) {
+                drawer.snapTo(DrawerValue.Closed)
             }
         }
 
@@ -745,6 +729,14 @@ fun WorkbenchScreen(
         val savedSidebarState = rememberSaveableStateHolder()
         val latestMainContent by rememberUpdatedState(mainContent)
         val movableMain = remember { movableContentOf { latestMainContent() } }
+        val latestSettingsPanel by rememberUpdatedState(settingsPanel)
+        val movableSettings = remember {
+            movableContentOf<() -> Unit> { onClose ->
+                savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
+                    latestSettingsPanel?.invoke(onClose)
+                }
+            }
+        }
 
         // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
         // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
@@ -762,25 +754,17 @@ fun WorkbenchScreen(
                     modifier = Modifier.fillMaxSize(),
                     label = "tablet-sidebar-content",
                 ) { panel ->
-                    savedSidebarState.SaveableStateProvider(panel) {
-                        when (panel) {
-                            SidebarPanel.CONVERSATIONS -> drawerContent()
-                            SidebarPanel.SETTINGS -> settingsPanel?.invoke {
-                                returnToConversations = settingsFromConversations
-                                onSettingsOpenChange(false)
-                            }
-                        }
+                    when (panel) {
+                        SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                        SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
                     }
                 }
             }
-            val latestTabletSidebarContent by rememberUpdatedState(tabletSidebarContent)
-            val movableTabletSidebar = remember { movableContentOf { latestTabletSidebarContent() } }
-
             Row(Modifier.fillMaxSize()) {
                 Box(
                     Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
                         .windowInsetsPadding(sidebarInsets),
-                ) { movableTabletSidebar() }
+                ) { tabletSidebarContent() }
                 VerticalDivider()
                 Box(Modifier.weight(1f)) { movableMain() }
             }
@@ -830,15 +814,11 @@ fun WorkbenchScreen(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.surface,
                     ) {
-                        savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
-                            settingsPanel?.invoke {
-                                if (settingsFromConversations) {
-                                    scope.launch {
-                                        drawer.open()
-                                    }
-                                }
-                                onSettingsOpenChange(false)
+                        movableSettings {
+                            if (settingsFromConversations) {
+                                scope.launch { drawer.open() }
                             }
+                            onSettingsOpenChange(false)
                         }
                     }
                 }

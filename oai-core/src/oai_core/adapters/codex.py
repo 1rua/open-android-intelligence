@@ -215,20 +215,24 @@ class CodexSessionAdapter:
     async def _rpc_raw(
         self, method: str, params: dict[str, Any], *, wait_for_response: bool = False,
     ) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        deadline = None if wait_for_response else loop.time() + self.request_timeout
         started_ns = time.monotonic_ns()
         trace_native_stage("adapter.codex.rpc_submitted", agent_id=self.adapter_id,
             conversation_id=params.get("threadId"), operation=method)
         self._sequence += 1
         identifier = self._sequence
-        future = asyncio.get_running_loop().create_future()
+        future = loop.create_future()
         self._pending[identifier] = future
         try:
-            await self._write({"id": identifier, "method": method, "params": params})
             try:
-                # The service owns turn/start until its actual response (or
-                # transport loss). An observer deadline must not discard a late
-                # acceptance and make the native turn impossible to cancel.
-                message = await future if wait_for_response else await asyncio.wait_for(future, self.request_timeout)
+                # Ordinary RPCs share one deadline across the write lock, pipe
+                # backpressure and response. The service owns turn/start until
+                # its actual response (or transport loss), so an observer timeout
+                # cannot discard a late acceptance or lose its cancellation ID.
+                async with asyncio.timeout_at(deadline):
+                    await self._write({"id": identifier, "method": method, "params": params})
+                    message = await future
             except TimeoutError:
                 # Never retry a timed-out native mutation: its outcome may be unknown.
                 raise AdapterError("AGENT_TIMEOUT", 504) from None
@@ -243,6 +247,12 @@ class CodexSessionAdapter:
             return result
         finally:
             self._pending.pop(identifier, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                # Transport loss can resolve the response while the caller is
+                # still draining the pipe or waiting for the write lock.
+                future.exception()
 
     def _emit(self, thread_id: str, message: dict[str, Any]) -> None:
         execution = self._executions.get(thread_id)
@@ -438,10 +448,12 @@ class CodexSessionAdapter:
         self._streams[session_id] = queue
         execution.task = asyncio.create_task(self._execute(session_id, text, execution))
         try:
-            try:
-                turn_id = await asyncio.wait_for(asyncio.shield(execution.started), self.request_timeout)
-            except TimeoutError:
-                raise AdapterError("AGENT_TIMEOUT", 504) from None
+            # Observe the service future without cancelling it or leaving a
+            # shield proxy behind when this observer times out or disconnects.
+            done, _ = await asyncio.wait({execution.started}, timeout=self.request_timeout)
+            if not done:
+                raise AdapterError("AGENT_TIMEOUT", 504)
+            turn_id = execution.started.result()
             yield {"type": "generation", "generationId": turn_id, "state": "running",
                    **({"clientMessageId": client_message_id} if client_message_id is not None else {})}
             streamed_items: set[str] = set()
@@ -528,8 +540,10 @@ class CodexSessionAdapter:
                     with contextlib.suppress(AdapterError):
                         if not execution.terminal.done():
                             await self._rpc_raw("turn/interrupt", {"threadId": session_id, "turnId": turn_id})
-                    with contextlib.suppress(AdapterError, TimeoutError):
-                        terminal = await asyncio.wait_for(asyncio.shield(execution.terminal), self.request_timeout)
+                    with contextlib.suppress(AdapterError):
+                        done, _ = await asyncio.wait({execution.terminal}, timeout=self.request_timeout)
+                        if done:
+                            terminal = execution.terminal.result()
             outcome = {"interrupted": "cancelled", "completed": "already_completed"}.get(
                 terminal.get("status") if terminal is not None and terminal.get("id") == turn_id else None, "unknown")
             return {"id": session_id, "action": action, "generationId": turn_id, "outcome": outcome}

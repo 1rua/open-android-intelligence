@@ -1,6 +1,7 @@
 """Native protocol fixture tests; no real Codex home or model account is used."""
 
 import asyncio
+import gc
 import json
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from oai_core.sessions import AdapterError, AgentRegistry, Principal, create_age
 
 
 NATIVE_SERVER = r'''
-import json, os, sys
+import json, os, sys, time
 from pathlib import Path
 root = Path(os.environ['CODEX_HOME'])
 (root / 'environment-observed.json').write_text(json.dumps({
@@ -67,6 +68,15 @@ for line in sys.stdin:
         threads.append(thread)
         (root / 'threads.json').write_text(json.dumps(threads))
         result = {'thread': thread}
+    elif method == 'test/pause-stdin' or (method == 'thread/resume' and params['threadId'] == 'blocked-stdin'):
+        emit({'id': request['id'], 'result': {}})
+        # Acknowledge initialization/resume before pausing, so the next large
+        # RPC fills the real subprocess pipe rather than timing out on resume.
+        while not (root / 'resume-stdin').exists():
+            time.sleep(0.01)
+        continue
+    elif method == 'thread/name/set' and params['threadId'] == 'delayed-response':
+        time.sleep(0.25)
     elif method == 'test/approval-barrier':
         # A response on this ordered native input stream proves the preceding
         # approval reply was consumed by the host, not merely buffered by Core.
@@ -85,7 +95,7 @@ for line in sys.stdin:
         result = {'turn': {'id': turn['id'], 'status': 'inProgress'}}
         native_turns.setdefault(thread, {})[turn['id']] = {**result['turn'], 'items': []}
         # Deliberately notify before the start response to test dispatcher races.
-        if thread == 'late-start':
+        if thread in ('late-start', 'blocked-stdin'):
             pending_starts[request['id']] = result['turn']
             continue
         elif thread == 'malformed-start':
@@ -276,6 +286,142 @@ class CodexAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(r.get('method') == 'turn/interrupt' for r in self.requests()))
         # Native history is still the only transcript read interface.
         self.assertEqual((await self.adapter.history(self.bob, 'observed'))[-1]['id'], 'a1')
+
+    def capture_loop_errors(self):
+        loop = asyncio.get_running_loop()
+        errors = []
+        previous = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: errors.append(context.get("message")))
+        self.addCleanup(loop.set_exception_handler, previous)
+        self.addCleanup(self.assertEqual, errors, [])
+
+    async def test_status_times_out_while_large_send_is_blocked_and_late_start_stays_cancellable(self):
+        self.capture_loop_errors()
+        self.assertTrue(await self.adapter.status())
+        self.adapter.request_timeout = 0.1
+        with self.assertRaises(AdapterError) as caught:
+            _ = [event async for event in self.adapter.send(self.alice, 'blocked-stdin', 'x' * (512 * 1024))]
+        self.assertEqual(caught.exception.code, 'AGENT_TIMEOUT')
+        self.assertIn('blocked-stdin', self.adapter._executions)
+        self.assertNotIn('blocked-stdin', self.adapter._streams)
+        with self.assertRaises(AdapterError) as duplicate:
+            _ = [event async for event in self.adapter.send(self.bob, 'blocked-stdin', 'duplicate')]
+        self.assertEqual(duplicate.exception.code, 'SESSION_BUSY')
+
+        pending_start = dict(self.adapter._pending)
+        self.assertEqual(len(pending_start), 1)
+        async with asyncio.timeout(0.6):
+            self.assertFalse(await self.adapter.status())
+        self.assertEqual(self.adapter._pending, pending_start)
+        self.assertFalse(any(r.get('method') == 'turn/interrupt' for r in self.requests()))
+
+        # Resume the same host and deliver the original acceptance after both
+        # observer deadlines. Its turn must remain owned, without replay.
+        (self.root / 'resume-stdin').write_text('resume')
+        self.adapter.request_timeout = 2
+        await self.adapter._rpc('test/release-start', {})
+        await self.wait_for_turn('blocked-stdin')
+        receipt = await self.adapter.manage(self.bob, 'blocked-stdin', 'cancel', {'generationId': 'turn-blocked-stdin'})
+        self.assertEqual(receipt['outcome'], 'cancelled')
+        await self.wait_for_cleanup('blocked-stdin')
+        calls = [r for r in self.requests() if r.get('method') == 'turn/interrupt']
+        self.assertEqual([c['params'] for c in calls], [{'threadId': 'blocked-stdin', 'turnId': 'turn-blocked-stdin'}])
+        self.assertEqual(sum(r.get('method') == 'turn/start' for r in self.requests()), 1)
+        self.assertTrue(await self.adapter.status())
+        self.assertEqual(self.adapter._pending, {})
+
+    async def test_ordinary_rpc_times_out_during_pipe_write_without_replaying_mutation(self):
+        self.capture_loop_errors()
+        await self.adapter._rpc('test/pause-stdin', {})
+        self.adapter.request_timeout = 0.1
+        async with asyncio.timeout(0.6):
+            with self.assertRaises(AdapterError) as caught:
+                await self.adapter.manage(self.alice, 'terminal', 'rename', 'x' * (512 * 1024))
+        self.assertEqual(caught.exception.code, 'AGENT_TIMEOUT')
+        self.assertEqual(self.adapter._pending, {})
+        self.assertFalse(self.adapter._write_lock.locked())
+
+        # The mutation was buffered before drain timed out. Its late response
+        # must be ignored without confusing a subsequent RPC or replaying it.
+        (self.root / 'resume-stdin').write_text('resume')
+        self.adapter.request_timeout = 2
+        self.assertTrue(await self.adapter.status())
+        calls = [r for r in self.requests() if r.get('method') == 'thread/name/set']
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]['params']['name']), 512 * 1024)
+        self.assertEqual(self.adapter._pending, {})
+
+    async def test_pipe_write_and_response_share_one_rpc_timeout_budget(self):
+        self.capture_loop_errors()
+        await self.adapter._rpc('test/pause-stdin', {})
+        self.adapter.request_timeout = 0.4
+        release = asyncio.get_running_loop().call_later(0.25, (self.root / 'resume-stdin').write_text, 'resume')
+        try:
+            # Both the pipe stall and the host's delayed response take 250 ms:
+            # each fits the 400 ms limit separately, their sum does not.
+            async with asyncio.timeout(1):
+                with self.assertRaises(AdapterError) as caught:
+                    await self.adapter.manage(self.alice, 'delayed-response', 'rename', 'x' * (512 * 1024))
+            self.assertEqual(caught.exception.code, 'AGENT_TIMEOUT')
+            self.assertEqual(self.adapter._pending, {})
+            self.assertTrue(await self.adapter.status())
+            self.assertEqual(sum(r.get('method') == 'thread/name/set' for r in self.requests()), 1)
+        finally:
+            release.cancel()
+
+    async def test_cancelling_ordinary_rpc_during_pipe_write_cleans_response_future(self):
+        self.capture_loop_errors()
+        await self.adapter._rpc('test/pause-stdin', {})
+        renaming = asyncio.create_task(self.adapter.manage(self.alice, 'terminal', 'rename', 'x' * (512 * 1024)))
+        try:
+            async with asyncio.timeout(1):
+                while not self.adapter._write_lock.locked():
+                    await asyncio.sleep(0)
+            pending = list(self.adapter._pending.values())
+            self.assertEqual(len(pending), 1)
+            renaming.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await renaming
+            self.assertTrue(pending[0].cancelled())
+            self.assertEqual(self.adapter._pending, {})
+            self.assertFalse(self.adapter._write_lock.locked())
+            (self.root / 'resume-stdin').write_text('resume')
+            self.assertTrue(await self.adapter.status())
+            self.assertEqual(sum(r.get('method') == 'thread/name/set' for r in self.requests()), 1)
+        finally:
+            renaming.cancel()
+            await asyncio.gather(renaming, return_exceptions=True)
+
+    async def test_shutdown_during_blocked_send_consumes_pending_rpc_failure(self):
+        self.capture_loop_errors()
+        self.assertTrue(await self.adapter.status())
+        self.adapter.request_timeout = 0.1
+        with self.assertRaises(AdapterError) as caught:
+            _ = [event async for event in self.adapter.send(self.alice, 'blocked-stdin', 'x' * (512 * 1024))]
+        self.assertEqual(caught.exception.code, 'AGENT_TIMEOUT')
+        await self.adapter.close()
+        gc.collect()
+        await asyncio.sleep(0)
+        self.assertEqual(self.adapter._pending, {})
+        self.assertEqual(self.adapter._executions, {})
+        self.assertFalse(self.adapter._write_lock.locked())
+
+    async def test_shutdown_after_cancel_observation_timeout_consumes_terminal_failure(self):
+        self.capture_loop_errors()
+        self.assertTrue(await self.adapter.status())
+        self.adapter.request_timeout = 0.1
+        stream = self.adapter.send(self.alice, 'cancel-ack-only', 'wait')
+        generation = await anext(stream)
+        try:
+            receipt = await self.adapter.manage(self.bob, 'cancel-ack-only', 'cancel', {'generationId': generation['generationId']})
+            self.assertEqual(receipt['outcome'], 'unknown')
+        finally:
+            await stream.aclose()
+        await self.adapter.close()
+        gc.collect()
+        await asyncio.sleep(0)
+        self.assertEqual(self.adapter._pending, {})
+        self.assertEqual(self.adapter._executions, {})
 
     async def test_late_start_response_remains_cancellable_after_observer_request_timeout(self):
         self.adapter.request_timeout = 0.05

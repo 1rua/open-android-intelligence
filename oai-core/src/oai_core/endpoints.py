@@ -151,10 +151,14 @@ class EndpointService:
         with self.transaction():
             row = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND device_id=? AND pairing_generation=? AND registration_key=?",
                 (principal.account_id, principal.device_id, principal.pairing_generation, body["registrationKey"])).fetchone()
-            if row is None:
-                count = self.database.execute("SELECT count(*) FROM push_endpoints WHERE account_id=?", (principal.account_id,)).fetchone()[0]
-                if count >= MAX_ACCOUNT_ENDPOINTS:
+            if row is None or not self._active(row):
+                now = _now().timestamp()
+                active_rows = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND retired=0 AND lease_expires>?",
+                    (principal.account_id, now)).fetchall()
+                active_count = sum(1 for active_row in active_rows if self._active(active_row))
+                if active_count >= MAX_ACCOUNT_ENDPOINTS:
                     raise GatewayError("ENDPOINT_CAPACITY_EXCEEDED")
+            if row is None:
                 endpoint_id, generation = "endpoint_" + uuid.uuid4().hex, 1
             else:
                 endpoint_id = row["endpoint_id"]

@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -687,17 +688,14 @@ class MainActivity : ComponentActivity() {
                                     onOpenSettings = { showSettings = true },
                                     settingsOpen = showSettings && enterWorkbench && displayedNativeUi == null,
                                     onSettingsOpenChange = { showSettings = it },
-                                    settingsPanel = { onClose ->
-                                        BoxWithConstraints(Modifier.fillMaxSize()) {
-                                            val isExpanded = maxWidth >= Dimensions.ExpandedWindow
-                                            SettingsScreen(
-                                                environment = settingsEnvironment,
-                                                runtime = runtime,
-                                                onBack = onClose,
-                                                presentation = if (isExpanded) SettingsPresentation.SIDEBAR else SettingsPresentation.SCREEN,
-                                                onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
-                                            )
-                                        }
+                                    settingsPanel = { presentation, onClose ->
+                                        SettingsScreen(
+                                            environment = settingsEnvironment,
+                                            runtime = runtime,
+                                            onBack = onClose,
+                                            presentation = presentation,
+                                            onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                        )
                                     },
                                     onOpenAssistant = { showAssistant = true },
                                     onPickCamera = attachmentPickers.camera,
@@ -839,7 +837,7 @@ internal fun GatewayWorkbenchScreen(
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     settingsOpen: Boolean = false,
     onSettingsOpenChange: (Boolean) -> Unit = {},
-    settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
+    settingsPanel: (@Composable (presentation: SettingsPresentation, onClose: () -> Unit) -> Unit)? = null,
 ) {
     val operationNotice by runtime.operationNotice.collectAsState()
     val phase by runtime.phase.collectAsState()
@@ -853,52 +851,62 @@ internal fun GatewayWorkbenchScreen(
     }
     val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
     val avatar = rememberAccountAvatarPicker(runtime, profile)
-    Column(modifier.fillMaxSize()) {
-        WorkbenchScreen(
-            accountName = username,
-            agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
-            accountAvatar = avatar.image,
-            onChangeAvatar = avatar.pick,
-            connectionHealth = workbenchConnectionHealth(phase, connectionStatus),
-            onPasteImages = onPasteImages,
-            controller = controller,
-            gatewayLabel = gatewayLabel,
-            onOpenSettings = onOpenSettings,
-            settingsOpen = settingsOpen,
-            onSettingsOpenChange = onSettingsOpenChange,
-            settingsPanel = settingsPanel,
-            onPickCamera = onPickCamera,
-            onPickGallery = onPickGallery,
-            onPickDocument = onPickDocument,
-            onVoiceInput = onVoiceInput,
-            modifier = Modifier.weight(1f),
-            onOpenAssistant = onOpenAssistant,
-            onLogout = { runtime.logout(revokeRefresh = true) },
-            pluginCards = pluginCards,
-            header = {
-                // 通告区与时间线同宽，随内容滚动容器顶部分布；横幅本体带自己的圆角与内边距。
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    AnimatedVisibility(
-                        visible = offlineMirrorPhase,
-                        enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) +
-                            fadeIn(MotionSpecs.fade(reduceMotion)),
-                        exit = shrinkVertically(MotionSpecs.emphasized(reduceMotion)) +
-                            fadeOut(MotionSpecs.fade(reduceMotion)),
-                    ) {
-                        OfflineMirrorBanner(onReconnect = onReconnectOfflineMirror)
+    // 必须读取工作台宿主宽度；进入设置插槽后，宽屏侧栏已经只有 320dp。
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val settingsPresentation = if (maxWidth >= Dimensions.ExpandedWindow) {
+            SettingsPresentation.SIDEBAR
+        } else {
+            SettingsPresentation.SCREEN
+        }
+        Column(Modifier.fillMaxSize()) {
+            WorkbenchScreen(
+                accountName = username,
+                agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
+                accountAvatar = avatar.image,
+                onChangeAvatar = avatar.pick,
+                connectionHealth = workbenchConnectionHealth(phase, connectionStatus),
+                onPasteImages = onPasteImages,
+                controller = controller,
+                gatewayLabel = gatewayLabel,
+                onOpenSettings = onOpenSettings,
+                settingsOpen = settingsOpen,
+                onSettingsOpenChange = onSettingsOpenChange,
+                settingsPanel = settingsPanel?.let { panel ->
+                    { onClose -> panel(settingsPresentation, onClose) }
+                },
+                onPickCamera = onPickCamera,
+                onPickGallery = onPickGallery,
+                onPickDocument = onPickDocument,
+                onVoiceInput = onVoiceInput,
+                modifier = Modifier.weight(1f),
+                onOpenAssistant = onOpenAssistant,
+                onLogout = { runtime.logout(revokeRefresh = true) },
+                pluginCards = pluginCards,
+                header = {
+                    // 通告区与时间线同宽，随内容滚动容器顶部分布；横幅本体带自己的圆角与内边距。
+                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                        AnimatedVisibility(
+                            visible = offlineMirrorPhase,
+                            enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) +
+                                fadeIn(MotionSpecs.fade(reduceMotion)),
+                            exit = shrinkVertically(MotionSpecs.emphasized(reduceMotion)) +
+                                fadeOut(MotionSpecs.fade(reduceMotion)),
+                        ) {
+                            OfflineMirrorBanner(onReconnect = onReconnectOfflineMirror)
+                        }
+                        operationNotice?.let { notice ->
+                            OperationNoticeBanner(
+                                text = notice,
+                                onDismiss = runtime::dismissOperationNotice,
+                                onRetry = if (runtime.canRetryWorkbenchInitialization || phase is ConnectionPhase.Failed) runtime::retryConnection else null,
+                                modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
+                            )
+                        }
                     }
-                    operationNotice?.let { notice ->
-                        OperationNoticeBanner(
-                            text = notice,
-                            onDismiss = runtime::dismissOperationNotice,
-                            onRetry = if (runtime.canRetryWorkbenchInitialization || phase is ConnectionPhase.Failed) runtime::retryConnection else null,
-                            modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
-                        )
-                    }
-                }
-                header()
-            },
-        )
+                    header()
+                },
+            )
+        }
     }
 }
 

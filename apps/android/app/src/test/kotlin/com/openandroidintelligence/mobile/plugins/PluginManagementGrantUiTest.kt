@@ -5,6 +5,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onLast
@@ -181,8 +182,7 @@ class PluginManagementGrantUiTest {
         compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
         openGrantDialog("org.example.sms2")
 
-        compose.onNodeWithText("已授权").assertExists()
-        compose.onNodeWithTag("plugin-grant:sms").assertIsNotEnabled()
+        compose.onNodeWithTag("plugin-grant:sms").assertTextEquals("已授权").assertIsNotEnabled()
     }
 
     @Test

@@ -49,11 +49,11 @@ error() {
 banner() {
     printf "${CYAN}${BOLD}"
     cat << 'EOF'
-  ___    _    ___    ____                
- / _ \  / \  |_ _|  / ___|___  _ __ ___  
-| | | |/ _ \  | |  | |   / _ \| '__/ _ \ 
-| |_| / ___ \ | |  | |__| (_) | | |  __/ 
- \___/_/   \_\___|  \____\___/|_|  \___| 
+  ___    _    ___    ____
+ / _ \  / \  |_ _|  / ___|___  _ __ ___
+| | | |/ _ \  | |  | |   / _ \| '__/ _ \
+| |_| / ___ \ | |  | |__| (_) | | |  __/
+ \___/_/   \_\___|  \____\___/|_|  \___|
 EOF
     printf "${NC}\n"
     printf "${BOLD}Open Android Intelligence - Core 一键安装与配置程序${NC}\n\n"
@@ -64,6 +64,7 @@ REPO_URL="${OAI_REPO_URL:-https://github.com/1rua/open-android-intelligence.git}
 DEFAULT_INSTALL_DIR="${OAI_DIR:-${HOME}/.oai-core}"
 BRANCH="${OAI_BRANCH:-dev}"
 PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PYTHON_BIN=""
 
 # 探测是否具有可用的交互式 tty
 is_interactive() {
@@ -107,20 +108,28 @@ prompt_password() {
     local allow_empty="${3:-0}"
     local input=""
 
-    if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null; then
+    if [ -e /dev/tty ] && true >/dev/tty 2>/dev/null && true </dev/tty 2>/dev/null; then
         printf "%b: " "$prompt_text" > /dev/tty
         stty -echo < /dev/tty 2>/dev/null || true
-        read -r input < /dev/tty || true
+        local read_status=0
+        read -r input < /dev/tty || read_status=$?
         stty echo < /dev/tty 2>/dev/null || true
-        printf "\n" > /dev/tty
+        printf "\n" > /dev/tty 2>/dev/null || true
+        if [ "$read_status" -ne 0 ]; then
+            return 1
+        fi
     elif [ -t 0 ]; then
         printf "%b: " "$prompt_text"
         stty -echo 2>/dev/null || true
-        read -r input || true
+        local read_status=0
+        read -r input || read_status=$?
         stty echo 2>/dev/null || true
         printf "\n"
+        if [ "$read_status" -ne 0 ]; then
+            return 1
+        fi
     else
-        input=""
+        return 1
     fi
     printf -v "$var_name" '%s' "$input"
 }
@@ -130,32 +139,29 @@ check_prerequisites() {
     info "正在检查系统前置环境与依赖..."
 
     # 1. 检查 Python 3
-    local python_bin=""
-    if command -v python3 >/dev/null 2>&1; then
-        python_bin="python3"
-    elif command -v python >/dev/null 2>&1; then
-        python_bin="python"
-    else
-        error "未找到 Python。OAI Core 需要 Python 3.11 或更高版本，请先安装 Python。"
-        exit 1
-    fi
+    local cand
+    for cand in python3 python; do
+        if ! command -v "$cand" >/dev/null 2>&1; then
+            continue
+        fi
+        local py_version
+        if ! py_version=$("$cand" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null); then
+            continue
+        fi
+        local py_major py_minor
+        py_major=$(echo "$py_version" | cut -d. -f1)
+        py_minor=$(echo "$py_version" | cut -d. -f2)
+        if [ "$py_major" -gt 3 ] || { [ "$py_major" -eq 3 ] && [ "$py_minor" -ge 11 ]; }; then
+            if "$cand" -m venv --help >/dev/null 2>&1; then
+                PYTHON_BIN="$cand"
+                info "检测到符合要求的 Python 环境: ${PYTHON_BIN} (v${py_version})"
+                break
+            fi
+        fi
+    done
 
-    local py_version
-    py_version=$("$python_bin" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    local py_major
-    py_major=$(echo "$py_version" | cut -d. -f1)
-    local py_minor
-    py_minor=$(echo "$py_version" | cut -d. -f2)
-
-    if [ "$py_major" -lt 3 ] || { [ "$py_major" -eq 3 ] && [ "$py_minor" -lt 11 ]; }; then
-        error "当前 Python 版本为 ${py_version}，OAI Core 要求 Python >= 3.11。"
-        exit 1
-    fi
-    info "检测到符合要求的 Python 环境: ${python_bin} (v${py_version})"
-
-    # 2. 检查 python venv 模块
-    if ! "$python_bin" -m venv --help >/dev/null 2>&1; then
-        error "Python venv 模块不可用，请安装 python3-venv（例如: apt install python3-venv）。"
+    if [ -z "$PYTHON_BIN" ]; then
+        error "未找到符合要求的 Python 环境（需 Python >= 3.11 且包含 venv 模块）。请检查 python3 或 python 安装。"
         exit 1
     fi
 
@@ -220,7 +226,7 @@ install_python_env() {
     info "正在配置 Python 虚拟环境: ${venv_dir}..."
 
     if [ ! -f "${venv_dir}/bin/python" ]; then
-        python3 -m venv "${venv_dir}"
+        "${PYTHON_BIN:-python3}" -m venv "${venv_dir}"
     fi
 
     local pip_bin="${venv_dir}/bin/pip"
@@ -437,12 +443,18 @@ guide_initial_configuration() {
     local cfg_password=""
     local cfg_password_confirm=""
     while true; do
-        prompt_password "请设置 ${cfg_username} 的登录密码" cfg_password
+        if ! prompt_password "请设置 ${cfg_username} 的登录密码" cfg_password; then
+            error "无法读取密码：未检测到可用交互终端或输入已结束 (EOF)。"
+            return 1
+        fi
         if [ -z "$cfg_password" ]; then
             warn "密码不能为空，请重新输入。"
             continue
         fi
-        prompt_password "请再次输入密码以确认" cfg_password_confirm
+        if ! prompt_password "请再次输入密码以确认" cfg_password_confirm; then
+            error "无法读取密码：未检测到可用交互终端或输入已结束 (EOF)。"
+            return 1
+        fi
         if [ "$cfg_password" != "$cfg_password_confirm" ]; then
             error "两次输入的密码不一致，请重新输入！"
         else

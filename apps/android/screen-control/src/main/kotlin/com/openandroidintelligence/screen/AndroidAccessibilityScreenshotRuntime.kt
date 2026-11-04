@@ -88,68 +88,68 @@ class AndroidAccessibilityScreenshotRuntime(
             context.getSystemService(WindowManager::class.java)?.defaultDisplay?.displayId
         }.getOrNull() ?: Display.DEFAULT_DISPLAY
 
-        val outcome = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
-            withContext(Dispatchers.Main.immediate) {
-                suspendCancellableCoroutine { continuation ->
-                    // 回调直接在当前线程执行：转码放在回调里会阻塞主线程，
-                    // 因此只把结果交回挂起点，转码在下面的 IO 上下文里做。
-                    val executor = Executor { it.run() }
-                    try {
-                        service.takeScreenshot(
-                            displayId,
-                            executor,
-                            object : AccessibilityService.TakeScreenshotCallback {
-                                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
-                                    if (!continuation.isActive) {
-                                        // 请求已取消或已超时：结果不会被接收，立即释放图形内存。
-                                        // 否则反复取消的高频截图会持续占用整屏缓冲区，直到 GC。
-                                        runCatching { result.hardwareBuffer.close() }
-                                        return
-                                    }
-                                    // 一旦成功移交，缓冲区由 encodeScreenshot 的 finally
-                                    // 统一关闭；这里不得再关，避免重复释放。
-                                    continuation.resume(FrameHolder(result))
-                                }
-
-                                override fun onFailure(errorCode: Int) {
-                                    if (continuation.isActive) {
-                                        continuation.resume(
-                                            BitmapHolder(accessibilityScreenshotFailure(errorCode)),
+        // 所有者从请求前活到编码返回之后，覆盖 Main/超时作用域丢弃成功结果的窗口。
+        return ScreenshotBufferOwner().use { bufferOwner ->
+            val outcome = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
+                withContext(Dispatchers.Main.immediate) {
+                    suspendCancellableCoroutine { continuation ->
+                        // 回调只交接结果，不在主线程编码；成功缓冲区先登记再恢复协程。
+                        val executor = Executor { it.run() }
+                        try {
+                            service.takeScreenshot(
+                                displayId,
+                                executor,
+                                object : AccessibilityService.TakeScreenshotCallback {
+                                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                                        // resume 的取消回调处理恢复前被取消的结果；即使已超时后
+                                        // 才收到系统回调，也由同一个所有者关闭缓冲区。
+                                        bufferOwner.resume(
+                                            continuation,
+                                            FrameHolder(result),
+                                            result.hardwareBuffer,
                                         )
                                     }
-                                }
-                            },
-                        )
-                    } catch (_: RuntimeException) {
-                        // 服务刚好被系统解绑时可能抛异常：如实报告为断连，不伪装成取帧失败。
-                        if (continuation.isActive) {
-                            continuation.resume(
-                                BitmapHolder(
-                                    if (isServiceConnected()) ScreenCaptureFailure.CAPTURE_FAILED
-                                    else ScreenCaptureFailure.SERVICE_DISCONNECTED,
-                                ),
+
+                                    override fun onFailure(errorCode: Int) {
+                                        if (continuation.isActive) {
+                                            continuation.resume(
+                                                BitmapHolder(accessibilityScreenshotFailure(errorCode)),
+                                            )
+                                        }
+                                    }
+                                },
                             )
+                        } catch (_: RuntimeException) {
+                            // 服务刚好被系统解绑时可能抛异常：如实报告为断连，不伪装成取帧失败。
+                            if (continuation.isActive) {
+                                continuation.resume(
+                                    BitmapHolder(
+                                        if (isServiceConnected()) ScreenCaptureFailure.CAPTURE_FAILED
+                                        else ScreenCaptureFailure.SERVICE_DISCONNECTED,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
 
-        if (outcome == null) {
-            // 超时不是「成功」，也不能静默退化成未授权：明确报告本次取帧失败。
-            return ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
-        }
-
-        return when (val pending: Pending = outcome) {
-            // encodeScreenshot 的 finally 负责关闭缓冲区；协程若在此前被取消，
-            // 上面的 onSuccess 已负责释放，不会重复关闭。
-            is FrameHolder -> encodeScreenshot(pending.result)
-            is BitmapHolder -> ScreenCaptureOutcome.Failure(pending.failure)
+            when (val pending: Pending? = outcome) {
+                // 编码 finally 负责正常消费后的释放；若结果在到达编码前被丢弃，
+                // 外层 use 负责释放，二者共享同一个只关闭一次的所有者。
+                is FrameHolder -> encodeScreenshot(pending.result, bufferOwner)
+                is BitmapHolder -> ScreenCaptureOutcome.Failure(pending.failure)
+                // 超时不是「成功」，也不能静默退化成未授权：明确报告本次取帧失败。
+                null -> ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
+            }
         }
     }
 
     /** 把系统返回的硬件缓冲区转成 PNG；缓冲区无论如何都要关闭，避免泄漏图形内存。 */
-    private suspend fun encodeScreenshot(result: AccessibilityService.ScreenshotResult): ScreenCaptureOutcome {
+    private suspend fun encodeScreenshot(
+        result: AccessibilityService.ScreenshotResult,
+        bufferOwner: ScreenshotBufferOwner,
+    ): ScreenCaptureOutcome {
         val buffer = result.hardwareBuffer
         return try {
             withContext(Dispatchers.IO) {
@@ -167,7 +167,7 @@ class AndroidAccessibilityScreenshotRuntime(
         } catch (_: RuntimeException) {
             ScreenCaptureOutcome.Failure(ScreenCaptureFailure.CAPTURE_FAILED)
         } finally {
-            runCatching { buffer.close() }
+            bufferOwner.close()
         }
     }
 
