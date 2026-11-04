@@ -93,6 +93,36 @@ class WorkbenchCloseSubmissionTest {
         },{ConversationScope("p","g","a","i")},attachmentCoordinator=uploads,persistence=store,
         persistenceDispatcher=UnconfinedTestDispatcher(testScheduler),supportsMessageBatches=batches,
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
+    @Test fun retirementStopsNewRemoteOperationsBeforeWaitingForAnEarlierFlush() = runTest {
+        val store=Store()
+        val repository=Repository()
+        val controller=controller(repository,store,Uploads())
+        runCurrent()
+        assertTrue(controller.canSendVoiceAttachment("conv_a"))
+        val drainsBefore=repository.drains
+        val durableGate=CompletableDeferred<Unit>()
+        store.flushGate=durableGate
+        val flushing=launch { controller.flushPendingPersistence() }
+        runCurrent()
+        val closing=launch { controller.closeAndAwait() }
+        runCurrent()
+        assertFalse("退役不能等待持久化锁之后才冻结发送",controller.state.value.isOnline)
+        controller.updateRemoteCapabilities(online=true,send=true,delete=true,archive=true,rename=true,approvals=true)
+        controller.editDraft("交接期间的新输入")
+        controller.sendDraft()
+        controller.createThread()
+        controller.retryPendingDeliveries()
+        runCurrent()
+        assertFalse("迟到的在线状态不能重新启用旧工作台",controller.state.value.isOnline)
+        assertFalse("退役期间不能开始新的录音提交",controller.canSendVoiceAttachment("conv_a"))
+        assertEquals(drainsBefore,repository.drains)
+        assertTrue(repository.messages.isEmpty())
+        durableGate.complete(Unit)
+        runCurrent()
+        flushing.join(); closing.join()
+        assertEquals(1,store.closeCount)
+    }
+
     @Test fun aGracefullyRetiredWorkbenchCanBeFlushedAndClosedAgainDuringAccountSwitch() = runTest {
         val store=Store()
         val controller=controller(Repository(),store,Uploads())
@@ -179,6 +209,8 @@ class WorkbenchCloseSubmissionTest {
     }
     private class Repository:ConversationRepository,MessageOutcomeQuery {
         var block=true
+        var drains=0
+        override suspend fun retryPendingDeliveries(conversationId:String) { drains++ }
         val messages=mutableListOf<OutgoingMessage>()
         val batches=mutableListOf<MessageBatch>()
         val accepted=linkedMapOf<String,TimelineMessage>()

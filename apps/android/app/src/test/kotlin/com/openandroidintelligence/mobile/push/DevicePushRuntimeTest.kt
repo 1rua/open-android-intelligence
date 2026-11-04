@@ -69,6 +69,83 @@ class DevicePushRuntimeTest {
         assertEquals(1, transport.polls)
     }
 
+    @Test fun retryingEndpointCannotStarveAcknowledgingEndpointAcrossBatchRestarts() = runBlocking {
+        val persistence = InMemoryOutboxPersistence()
+        var current = ready(persistence)
+        val eventIds = (1L..65L).map { id ->
+            current.onSms(sms.copy(providerId = id)).also {
+                assertEquals(PushCaptureStatus.ENQUEUED, it.status)
+            }.eventId!!
+        }.toSet()
+        val transport = TestPushTransport { delivery ->
+            if (delivery.endpoint == a) PushReceiptState.RETRY else PushReceiptState.CONSUMED
+        }
+        repeat(10) {
+            assertTrue(current.deliver(transport).attempted <= 64)
+            current = runtime(persistence).also { it.onLoginStateChanged(true) }
+        }
+        val acknowledged = transport.deliveries.filter { it.endpoint == b }.map { it.event.eventId }
+        assertEquals("Every online target must advance despite a retrying queue head", 65, acknowledged.size)
+        assertEquals("Every event must reach the online target exactly once", eventIds, acknowledged.toSet())
+        assertEquals(65, current.snapshot().queuedEvents)
+        assertEquals(65, current.snapshot().pendingDeliveries)
+        assertEquals(0L, current.snapshot().expiredEvents)
+        assertEquals(0L, current.snapshot().revokedDeliveries)
+
+        transport.state = { PushReceiptState.CONSUMED }
+        repeat(2) { current.deliver(transport) }
+        assertEquals(0, runtime(persistence).snapshot().pendingDeliveries)
+        assertEquals(65, transport.deliveries.count { it.endpoint == b })
+        eventIds.forEach { id -> assertTrue(transport.deliveries.any { it.endpoint == a && it.event.eventId == id }) }
+        (1L..65L).forEach { id ->
+            assertEquals(PushCaptureStatus.DUPLICATE, current.onSms(sms.copy(providerId = id)).status)
+        }
+    }
+
+    @Test fun unavailableEndpointYieldsToOtherTargetInSingleDeliveryBatchesAfterRestart() = runBlocking {
+        val persistence = InMemoryOutboxPersistence()
+        val current = ready(persistence)
+        val eventId = current.onSms(sms).eventId!!
+        val sent = TestPushTransport()
+        val transport = object : PushTransport by sent {
+            override suspend fun verifyEndpoint(endpoint: PushEndpoint) =
+                if (endpoint == a) EndpointVerification.UNAVAILABLE else EndpointVerification.VALID
+        }
+        assertEquals(1, current.deliver(transport, maxDeliveries = 1).failures)
+        val reopened = runtime(persistence).also { it.onLoginStateChanged(true) }
+        assertEquals(1, reopened.deliver(transport, maxDeliveries = 1).acknowledged)
+        assertEquals(listOf(b), sent.deliveries.map { it.endpoint })
+        assertEquals(eventId, sent.deliveries.single().event.eventId)
+        assertEquals(1, reopened.snapshot().pendingDeliveries)
+        assertEquals(1, reopened.deliver(sent, maxDeliveries = 1).acknowledged)
+        assertEquals(0, runtime(persistence).snapshot().queuedEvents)
+    }
+
+    @Test fun interruptedBatchResumesWithTheNextTargetAfterRestart() = runBlocking {
+        val persistence = InMemoryOutboxPersistence()
+        val current = ready(persistence)
+        current.onSms(sms)
+        val entered = CompletableDeferred<Unit>()
+        val suspendedVerification = CompletableDeferred<EndpointVerification>()
+        val sent = TestPushTransport()
+        val transport = object : PushTransport by sent {
+            override suspend fun verifyEndpoint(endpoint: PushEndpoint): EndpointVerification {
+                assertEquals(a, endpoint)
+                entered.complete(Unit)
+                return suspendedVerification.await()
+            }
+        }
+        val interrupted = async { current.deliver(transport) }
+        entered.await()
+        interrupted.cancel()
+        withTimeout(1_000) { interrupted.join() }
+        assertTrue(sent.deliveries.isEmpty())
+        val reopened = runtime(persistence).also { it.onLoginStateChanged(true) }
+        assertEquals(1, reopened.deliver(sent, maxDeliveries = 1).acknowledged)
+        assertEquals("Interrupted work must yield to the next target", listOf(b), sent.deliveries.map { it.endpoint })
+        assertEquals(1, reopened.snapshot().pendingDeliveries)
+    }
+
     @Test fun stableIdsNeverIncludeAccountAndAddingAnEndpointDoesNotBackfillOldEvents() = runBlocking {
         val runtime = ready()
         val first = runtime.onSms(sms)
@@ -145,7 +222,8 @@ class DevicePushRuntimeTest {
         val recoveredTransport = TestPushTransport()
         runtime.onLoginStateChanged(true)
         assertEquals(2, runtime.deliver(recoveredTransport).acknowledged)
-        assertEquals(listOf(a, b), recoveredTransport.verified)
+        assertEquals(setOf(a, b), recoveredTransport.verified.toSet())
+        assertEquals(2, recoveredTransport.verified.size)
     }
 
     @Test fun aRevokeDuringEndpointValidationPreventsAnyPayloadLeavingTheDevice() = runBlocking {

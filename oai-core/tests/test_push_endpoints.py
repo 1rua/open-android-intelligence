@@ -493,3 +493,69 @@ async def test_unknown_revocation_lives_for_max_event_ttl_and_retry_never_shorte
     service.sweep()
     assert service.database.execute("SELECT count(*) FROM push_revocations").fetchone()[0] == 0
     assert service.database.execute("SELECT count(*) FROM push_deliveries").fetchone()[0] == 0
+
+@pytest.mark.asyncio
+async def test_retired_endpoints_release_capacity_for_new_registrations(gateway):
+    from oai_core.endpoints import MAX_ACCOUNT_ENDPOINTS
+    client, core, app = gateway
+    phone, key = await phone_login(client, core)
+    headers = await token(client, phone)
+
+    # 1. 连续注册并注销超过 64 个历史端点
+    # 在未修复前，注销后历史端点依然计入 count，导致超过 MAX_ACCOUNT_ENDPOINTS (64) 时报错 429
+    for i in range(MAX_ACCOUNT_ENDPOINTS):
+        res = await register(client, headers, registration_key=f"key-hist-{i}", label=f"hist-{i}")
+        del_resp = await client.delete(DEVICE_API + f"/endpoints/{res['route']['endpointId']}", headers=headers)
+        assert del_resp.status == 200
+
+    # 此时所有历史端点已被注销，活跃端点为 0。尝试注册第 65 个新端点：
+    # 期望成功注册，但在未修复前会返回 429 ENDPOINT_CAPACITY_EXCEEDED
+    resp65 = await client.post(DEVICE_API + "/endpoints", json={"registrationKey": "key-hist-65", "label": "hist-65", "ttlSeconds": 3600}, headers=headers)
+    assert resp65.status == 200, await resp65.text()
+    route65 = (await resp65.json())["route"]
+    assert route65["endpointId"]
+
+@pytest.mark.asyncio
+async def test_reactivating_retired_endpoint_enforces_capacity_limit(gateway):
+    from oai_core.endpoints import MAX_ACCOUNT_ENDPOINTS
+    client, core, app = gateway
+    phone, key = await phone_login(client, core)
+    headers = await token(client, phone)
+
+    # 注册 1 个端点并立即注销（处于 retired 状态，不占活跃名额）
+    old = await register(client, headers, registration_key="key-to-reactivate", label="old")
+    del_resp = await client.delete(DEVICE_API + f"/endpoints/{old['route']['endpointId']}", headers=headers)
+    assert del_resp.status == 200
+
+    # 注册 64 个活跃端点占满容量
+    for i in range(MAX_ACCOUNT_ENDPOINTS):
+        res = await register(client, headers, registration_key=f"active-key-{i}", label=f"active-{i}")
+        assert res["route"]["endpointId"]
+
+    # 此时活跃端点已达 64 上限。尝试重新激活之前注销的 old 端点，必须被容量检查拦截返回 429
+    resp_reactivate = await client.post(
+        DEVICE_API + "/endpoints",
+        json={"registrationKey": "key-to-reactivate", "label": "old-reactivated", "ttlSeconds": 3600},
+        headers=headers,
+    )
+    assert resp_reactivate.status == 429
+    err = (await resp_reactivate.json())["error"]
+    assert err["code"] == "ENDPOINT_CAPACITY_EXCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_expired_endpoint_releases_capacity_without_erasing_history(gateway, monkeypatch):
+    monkeypatch.setattr("oai_core.endpoints.MAX_ACCOUNT_ENDPOINTS", 2)
+    client, core, app = gateway
+    phone, _ = await phone_login(client, core)
+    headers = await token(client, phone)
+    expired = (await register(client, headers, "soon-expired"))["route"]
+    await register(client, headers, "still-active")
+    full = await client.post(DEVICE_API + "/endpoints", json={"registrationKey": "new", "label": "new"}, headers=headers)
+    assert full.status == 429
+    service = app[ENDPOINT_KEY]
+    service.database.execute("UPDATE push_endpoints SET lease_expires=? WHERE endpoint_id=?",
+        (_now().timestamp() - 1, expired["endpointId"]))
+    renewed_capacity = await register(client, headers, "new")
+    assert renewed_capacity["route"]["endpointId"] != expired["endpointId"]
+    assert service.database.execute("SELECT count(*) FROM push_endpoints").fetchone()[0] == 3

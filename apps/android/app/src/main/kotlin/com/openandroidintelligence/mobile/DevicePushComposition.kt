@@ -168,21 +168,14 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
             catch (_: Exception) { issue.value = "PUSH_ENDPOINT_DISCOVERY_FAILED"; emptyList() }
         }
         _endpoints.value = options
-        var revocationsReady = true
-        for (revocation in local.pendingRevocations()) {
-            try {
-                transport.revoke(revocation)
-                local.acknowledgeRevocation(revocation)
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { revocationsReady = false; issue.value = "PUSH_REVOCATION_DELIVERY_PENDING" }
-        }
-        if (!revocationsReady) return@withLock false
-        if (local.isCollectionAllowed(PushKind.NOTIFICATION)) DevicePushSourcesRegistry.current?.captureActiveNotifications()
-        val moreSmsPages = if (local.isCollectionAllowed(PushKind.SMS)) {
-            DevicePushSourcesRegistry.current?.let { sources -> captureSmsPage(local, sources) { synchronizeLogin() } } ?: false
-        } else false
-        if (snapshot.pendingDeliveries > 0 || enabled) local.deliver(transport)
-        local.maintain().let { pushCycleComplete(it, moreSmsPages) }
+        runDevicePushCycle(local, transport,
+            revoke = transport::revoke,
+            captureActiveNotifications = { DevicePushSourcesRegistry.current?.captureActiveNotifications() },
+            captureSmsPage = {
+                DevicePushSourcesRegistry.current?.let { sources -> captureSmsPage(local, sources) { synchronizeLogin() } } ?: false
+            },
+            onRevocationFailure = { issue.value = "PUSH_REVOCATION_DELIVERY_PENDING" },
+        )
     }
 
     companion object {
@@ -212,9 +205,6 @@ internal fun captureSmsPage(local: DevicePushRuntime, sources: DevicePushSources
             .status in setOf(PushCaptureStatus.ENQUEUED, PushCaptureStatus.DUPLICATE)
     })
 }
-
-internal fun pushCycleComplete(snapshot: PushSnapshot, moreSmsPages: Boolean): Boolean =
-    !moreSmsPages && snapshot.pendingDeliveries == 0 && snapshot.pendingRevocations == 0
 
 class DevicePushJobService : JobService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

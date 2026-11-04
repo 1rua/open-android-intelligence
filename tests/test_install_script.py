@@ -404,6 +404,200 @@ install_cli_wrapper
     assert '.local/bin' in zshrc.read_text(encoding="utf-8")
     assert 'fish_add_path -m $HOME/.local/bin' in fish_conf.read_text(encoding="utf-8")
 
+def test_wizard_aborts_promptly_when_no_tty_and_no_password(install_directory):
+    """R11 行为测试：无 /dev/tty 且标准输入非 TTY 时，必须立即明确失败退出，绝不陷入死循环。"""
+    root = install_directory
+    source = f"""
+source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
+TARGET_DIR={shlex.quote(str(root))}
+CONFIG_FILE="$TARGET_DIR/core.json"
+VENV_PYTHON="$TARGET_DIR/.venv/bin/python"
+guide_initial_configuration
+"""
+    start_time = os.times().elapsed
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", source],
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.fail("向导超过 5s 未返回，陷入无终端死循环")
+    elapsed = os.times().elapsed - start_time
+    assert elapsed < 3.0, f"向导耗时 {elapsed}s，疑似陷入无终端死循环"
+    assert proc.returncode != 0, "无可用终端时向导应当明确返回非 0 失败"
+    assert "密码不能为空" not in proc.stderr and "密码不能为空" not in proc.stdout
+    assert "无法读取密码" in proc.stderr or "未检测到可用交互终端" in proc.stderr
+
+def _run_password_prompt_in_pty(script, reply, *, piped_stdin=False):
+    """使用独立控制终端驱动真实密码读取，并在超时或断言失败时回收子进程。"""
+    import pty
+    import select
+    import signal
+    import termios
+    import time
+
+    master, slave = pty.openpty()
+    terminal_state = termios.tcgetattr(slave)
+    terminal_state[3] |= termios.ECHO | termios.ICANON
+    termios.tcsetattr(slave, termios.TCSANOW, terminal_state)
+    pipe_read, pipe_write = os.pipe() if piped_stdin else (None, None)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            os.close(master)
+            os.login_tty(slave)
+            if piped_stdin:
+                os.close(pipe_write)
+                os.dup2(pipe_read, 0)
+                os.close(pipe_read)
+                os.execvp("bash", ["bash"])
+            os.execvp("bash", ["bash", "-c", script])
+        finally:
+            os._exit(127)
+
+    output = bytearray()
+    child_status = None
+    replied = False
+    try:
+        if piped_stdin:
+            os.close(pipe_read)
+            pipe_read = None
+            with os.fdopen(pipe_write, "w") as source:
+                pipe_write = None
+                source.write(script)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([master], [], [], 0.05)
+            if readable:
+                output.extend(os.read(master, 4096))
+            if not replied and b"R11 test password: " in output:
+                # 等待生产函数关闭回显，避免在 read 准备好前写入密码。
+                if not termios.tcgetattr(slave)[3] & termios.ECHO:
+                    answer = terminal_state[6][termios.VEOF] if reply is None else reply
+                    os.write(master, answer)
+                    replied = True
+            waited, status = os.waitpid(pid, os.WNOHANG)
+            if waited:
+                child_status = status
+                break
+        if child_status is None:
+            pytest.fail("R11 密码读取在 5 秒内没有退出")
+        assert replied, "未进入关闭回显后的真实终端读取分支"
+        while select.select([master], [], [], 0)[0]:
+            output.extend(os.read(master, 4096))
+        assert termios.tcgetattr(slave)[3] & termios.ECHO, "密码读取退出后未恢复终端回显"
+        return os.waitstatus_to_exitcode(child_status), bytes(output)
+    finally:
+        if child_status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        for descriptor in (pipe_read, pipe_write, master, slave):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
+def test_prompt_password_returns_nonzero_on_eof():
+    """R11 行为测试：真实终端 read 遇到 EOF 后及时失败，并恢复终端回显。"""
+    script = f"""
+source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
+val=""
+prompt_password "R11 test password" val
+"""
+    returncode, _ = _run_password_prompt_in_pty(script, None)
+    assert returncode == 1
 
+
+def test_prompt_password_reads_controlling_tty_when_stdin_is_pipe():
+    """R11 行为测试：管道安装通过控制终端读取密码，不回显合成密码。"""
+    password = "synthetic-r11-pty-password"
+    script = f"""
+source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
+[ ! -t 0 ]
+val=""
+prompt_password "R11 test password" val
+[ "$val" = {shlex.quote(password)} ]
+unset val
+printf 'R11_PASSWORD_READ_OK\n'
+"""
+    returncode, output = _run_password_prompt_in_pty(
+        script, (password + "\n").encode(), piped_stdin=True,
+    )
+    leaked = password.encode() in output
+    assert not leaked, "合成密码出现在终端输出中"
+    assert returncode == 0
+    assert b"R11_PASSWORD_READ_OK" in output
+
+
+def _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, *, selected, rejected=None):
+    """Exercise interpreter selection and real venv creation without package indexes."""
+    launchers = tmp_path / "python commands with spaces"
+    launchers.mkdir()
+    calls = tmp_path / "python-calls.txt"
+    target = tmp_path / "isolated install"
+    # venv accepts a real lib64 directory on filesystems without alias support.
+    # There is no bin/python yet, so production must still create the real environment.
+    if sys.platform == "linux" and sys.maxsize > 2**32:
+        (target / ".venv/lib64").mkdir(parents=True)
+    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
+    for name in ("python3", "python"):
+        launcher = launchers / name
+        if name == selected:
+            body = f'printf \'%s\\n\' "{name} $*" >> {shlex.quote(str(calls))}\nexec {interpreter} "$@"\n'
+        elif rejected == "old-version":
+            body = '[ "$1" != "-c" ] || { printf "3.8\\n"; exit 0; }\nexit 1\n'
+        elif rejected == "missing-venv":
+            body = (f'if [ "$1" = "-c" ]; then exec {interpreter} "$@"; fi\n'
+                    'exit 1\n')
+        else:
+            body = 'exit 99\n'
+        launcher.write_text("#!/bin/sh\n" + body)
+        launcher.chmod(0o700)
+    monkeypatch.setenv("PATH", str(launchers) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    hidden = "python3" if selected == "python" else "python"
+    hide_missing = "" if rejected is not None else f"""command() {{
+    if [ "$1" = "-v" ] && [ "$2" = "{hidden}" ]; then return 1; fi
+    builtin command "$@"
+}}
+"""
+    script = f"""
+source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}
+TARGET_DIR={shlex.quote(str(target))}
+{hide_missing}
+check_prerequisites
+printf 'CHOSEN_PYTHON=%s\\n' "$PYTHON_BIN"
+create_python_environment
+"""
+    result = subprocess.run(["bash", "-c", script], cwd=REPOSITORY, capture_output=True,
+                            text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"CHOSEN_PYTHON={selected}" in result.stdout
+    venv = target / ".venv"
+    assert f"{selected} -m venv {venv}" in calls.read_text().splitlines()
+    probe = subprocess.run([str(venv / "bin/python"), "-c",
+        "import json,sys; print(json.dumps([sys.prefix, sys.base_prefix, list(sys.version_info[:2])]))"],
+        capture_output=True, text=True, check=True, timeout=5)
+    prefix, base_prefix, version = json.loads(probe.stdout)
+    assert Path(prefix) == venv
+    assert Path(base_prefix) == Path(sys.base_prefix)
+    assert version == list(sys.version_info[:2])
+    assert (venv / "pyvenv.cfg").is_file()
+    before = calls.read_text().splitlines()
+    run_bash(f'source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}\n'
+             f'TARGET_DIR={shlex.quote(str(target))}\nPYTHON_BIN={selected}\ncreate_python_environment\n')
+    assert calls.read_text().splitlines() == before
+
+
+@pytest.mark.parametrize("selected", ["python", "python3"])
+def test_python_interpreter_selection_and_reuse_for_venv(tmp_path, monkeypatch, selected):
+    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected=selected)
+
+
+@pytest.mark.parametrize("rejected", ["old-version", "missing-venv"])
+def test_python_interpreter_picks_eligible_python_over_ineligible_python3(tmp_path, monkeypatch, rejected):
+    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected="python", rejected=rejected)

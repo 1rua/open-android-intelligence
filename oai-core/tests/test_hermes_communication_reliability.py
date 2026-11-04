@@ -594,3 +594,184 @@ def test_sqlite_cursor_materialization_stays_under_the_shared_account_lock(reade
             list(executor.map(read, range(100)))
     finally:
         database.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform_id", [
+    "open-android-intelligence-gateway", "open_android", "open_android_intelligence",
+])
+@pytest.mark.parametrize("compressions", [1, 3])
+async def test_real_compression_successor_send_preserves_account_binding(host, platform_id, compressions):
+    from oai_core.auth import Principal
+
+    runtime, adapter, conversations, _ = host
+    owner = conversations[0][0]
+    store = runtime._session_store
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        conversation = account.conversations.create("compression", "Synthetic", "compression")["conversationId"]
+        source = runtime._agent_source(conversation, owner, platform_id)
+        entry = store.get_or_create_session(source, False)
+        account.agent_sessions.record(conversation, "conversation-create")
+        account.agent_sessions.attach(conversation, entry.session_id, entry.session_key)
+        binding = account.agent_sessions.lookup(conversation)
+    database = store._db_for_key(binding["sessionKey"])
+    chain = [binding["agentSessionId"]]
+    for index in range(compressions):
+        child_id = f"native-compression-{index}"
+        database.publish_compression_child(
+            parent_session_id=chain[-1], child_session_id=child_id, source=platform_id,
+            messages=[{"role": "user", "content": "synthetic compressed context"}],
+            require_compression_lease=False,
+        )
+        chain.append(child_id)
+    if compressions > 1:
+        # Explicit host forks share ancestry, but are not compression successors.
+        for marker in ("_reset_from", "_branched_from", "_delegate_from"):
+            database.create_session(f"fork-{marker}", source=platform_id,
+                parent_session_id=chain[0], model_config={marker: chain[0]})
+        database.create_session("tool-child", source="tool", parent_session_id=chain[0])
+    # Exercise the real host transition, leaving Core's original binding intact.
+    assert store.get_or_create_session(source, False).session_id == chain[-1]
+    assert database.get_compression_chain(binding["agentSessionId"]) == chain
+    calls = []
+
+    async def handler(event):
+        current = store.get_or_create_session(event.source, False)
+        calls.append((event.source.user_id, event.source.chat_id, event.source.platform.value,
+                      current.session_id, current.session_key))
+        return "native compression continued"
+
+    runtime.set_message_handler(handler)
+    events = [event async for event in adapter.send(
+        Principal(owner, device_id="phone"), conversation, "continue after compression",
+        client_message_id="compression-send",
+    )]
+    await asyncio.gather(*tuple(runtime._background_tasks))
+    assert events[-1]["type"] == "done", events
+    assert calls == [(owner, conversation, platform_id, chain[-1], binding["sessionKey"])], events
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        assert account.agent_sessions.lookup(conversation) == binding
+        dispatch = account.conversations.dispatch_message("compression-send")
+        assert account.conversations.workflow.for_message(dispatch["messageId"])["state"] == "completed"
+    assert database.get_compression_chain(binding["agentSessionId"]) == chain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", [
+    "host-reset", "reset-child", "branch-child", "delegate-child", "tool-child",
+    "entry-account", "entry-chat", "entry-platform", "entry-key", "missing-entry-origin",
+    "bound-key", "missing-bound-key", "root-account", "root-platform", "root-key",
+    "middle-account", "middle-platform", "middle-key", "middle-chat",
+    "tip-account", "tip-platform", "tip-key", "tip-chat", "tip-missing-account",
+    "non-compression-parent", "missing-parent", "cycle", "ambiguous-children",
+    "missing-database", "database-failure", "missing-lineage-api", "lineage-failure",
+])
+async def test_native_compression_binding_rejects_invalid_successors(host, monkeypatch, mismatch):
+    from gateway.config import Platform
+    from oai_core.auth import Principal
+    from oai_core.gateway.core import AgentSessionBindings, GatewayError
+
+    runtime, adapter, conversations, _ = host
+    owner, conversation = conversations[0]
+    store = runtime._session_store
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        binding = account.agent_sessions.lookup(conversation)
+    entry = store.lookup_by_session_key(binding["sessionKey"])
+    source = entry.origin
+    database = store._db_for_key(binding["sessionKey"])
+    chain = [binding["agentSessionId"], "compression-middle", "compression-tip"]
+    for parent, child in zip(chain, chain[1:]):
+        database.publish_compression_child(
+            parent_session_id=parent, child_session_id=child, source=source.platform.value,
+            messages=[{"role": "user", "content": "synthetic compressed context"}],
+            require_compression_lease=False,
+        )
+    assert store.get_or_create_session(source, False).session_id == chain[-1]
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("synthetic unavailable lineage")
+
+    if mismatch == "host-reset":
+        reset = store.get_or_create_session(source, True)
+        assert reset.session_id not in chain
+    elif mismatch in {"reset-child", "branch-child", "delegate-child", "tool-child"}:
+        marker = {"reset-child": "_reset_from", "branch-child": "_branched_from",
+                  "delegate-child": "_delegate_from", "tool-child": None}[mismatch]
+        database.create_session("invalid-fork", source="tool" if marker is None else source.platform.value,
+            parent_session_id=chain[0], model_config={marker: chain[0]} if marker else None)
+        entry.session_id = "invalid-fork"
+    elif mismatch.startswith("entry-"):
+        field, value = {
+            "entry-account": ("user_id", "bob"), "entry-chat": ("chat_id", conversations[1][1]),
+            "entry-platform": ("platform", Platform.LOCAL),
+            "entry-key": ("session_key", binding["sessionKey"] + ":other"),
+        }[mismatch]
+        setattr(entry if field == "session_key" else entry.origin, field, value)
+    elif mismatch == "missing-entry-origin":
+        entry.origin = None
+    elif mismatch in {"bound-key", "missing-bound-key"}:
+        with closing(runtime.services.core.open_gateway_account(owner)) as account:
+            account.store.database.execute(
+                "UPDATE conversation_agent_sessions SET session_key = ? WHERE conversation_id = ?",
+                (binding["sessionKey"] + ":other" if mismatch == "bound-key" else None, conversation),
+            )
+    elif mismatch.startswith(("root-", "middle-", "tip-")):
+        position, field = mismatch.split("-", 1)
+        column, value = {"account": ("user_id", "bob"), "platform": ("source", "open_android"),
+                         "key": ("session_key", binding["sessionKey"] + ":other"),
+                         "chat": ("chat_id", conversations[1][1]), "missing-account": ("user_id", None)}[field]
+        session_id = chain[{"root": 0, "middle": 1, "tip": 2}[position]]
+        database._execute_write(lambda connection: connection.execute(
+            f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id)))
+    elif mismatch == "missing-parent":
+        get_session = database.get_session
+        monkeypatch.setattr(database, "get_session",
+            lambda session_id: None if session_id == chain[1] else get_session(session_id))
+    elif mismatch in {"non-compression-parent", "cycle"}:
+        column, value, session_id = {
+            "non-compression-parent": ("end_reason", "session_reset", chain[0]),
+            "cycle": ("parent_session_id", chain[-1], chain[0]),
+        }[mismatch]
+        database._execute_write(lambda connection: connection.execute(
+            f"UPDATE sessions SET {column} = ? WHERE id = ?", (value, session_id)))
+    elif mismatch == "ambiguous-children":
+        database.create_session("ambiguous-sibling", source=source.platform.value, parent_session_id=chain[0])
+        # Even the real host's preferred path is insufficient proof of ownership.
+        assert database.get_compression_chain(chain[0]) == chain
+    elif mismatch == "missing-database":
+        monkeypatch.setattr(store, "_db_for_key", lambda key: None)
+    elif mismatch == "database-failure":
+        monkeypatch.setattr(store, "_db_for_key", unavailable)
+    elif mismatch == "missing-lineage-api":
+        monkeypatch.setattr(database, "get_compression_chain", None)
+    elif mismatch == "lineage-failure":
+        monkeypatch.setattr(database, "get_compression_chain", unavailable)
+    else:
+        raise AssertionError(mismatch)
+
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        expected_binding = account.agent_sessions.lookup(conversation)
+    session_ids = [row["id"] for row in database._read_all("SELECT id FROM sessions ORDER BY id")]
+    with pytest.raises(GatewayError) as error:
+        await runtime._ensure_agent_session(conversation, owner, force_new=False,
+            created_via=AgentSessionBindings.CREATED_VIA_INBOUND_MESSAGE)
+    assert error.value.code == "HOST_INCOMPATIBLE"
+    if mismatch in {"host-reset", "entry-account", "entry-platform", "ambiguous-children"}:
+        calls = []
+
+        async def handler(event):
+            calls.append(event)
+            return "must not run"
+
+        runtime.set_message_handler(handler)
+        events = [event async for event in adapter.send(Principal(owner, device_id="phone"),
+            conversation, "reject invalid successor", client_message_id="rejected-successor")]
+        await asyncio.gather(*tuple(runtime._background_tasks))
+        assert events[-1] == {"type": "error", "code": "AGENT_FAILED"}, events
+        assert calls == []
+        with closing(runtime.services.core.open_gateway_account(owner)) as account:
+            dispatch = account.conversations.dispatch_message("rejected-successor")
+            assert account.conversations.workflow.for_message(dispatch["messageId"])["state"] == "failed"
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        assert account.agent_sessions.lookup(conversation) == expected_binding
+    assert [row["id"] for row in database._read_all("SELECT id FROM sessions ORDER BY id")] == session_ids

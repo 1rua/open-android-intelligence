@@ -573,6 +573,51 @@ class ColdStartConnectionTest {
         assertEquals(OLD_DRAFT, original.state.value.draft)
     }
 
+    @Test fun aSendWaitingForPersistenceCannotReachANewAgentWithTheSameSessionId() {
+        assertAgentHandoffDoesNotRedirectSend(OLD_THREAD)
+    }
+
+    @Test fun aSendWaitingForPersistenceCannotReachANewAgentWithADifferentSessionId() {
+        assertAgentHandoffDoesNotRedirectSend("other-agent-session")
+    }
+
+    private fun assertAgentHandoffDoesNotRedirectSend(otherSessionId: String) {
+        val current=connectedRuntimeWithHistory(native=true).runtime
+        val previous=requireNotNull(current.controller.value)
+        val native=requireNotNull(current.nativeAgents.value)
+        val otherAgent="other-native-agent"
+        val agents=NATIVE_AGENTS_BODY.replace("]}",",{\"id\":\"$otherAgent\",\"name\":\"Other agent\",\"kind\":\"codex\",\"online\":true,"+
+            "\"sessionScope\":\"deployment\",\"capabilities\":{\"list\":true,\"history\":true,\"send\":true,\"stream\":true}}]}")
+        gateway.respond("$API/agents",agents)
+        gateway.respond("$API/agents/$otherAgent/sessions","{\"sessions\":[{\"id\":\"$otherSessionId\"}]}")
+        gateway.respond("$API/agents/$otherAgent/sessions/$otherSessionId/history","{\"messages\":[]}")
+        gateway.respond("$NATIVE_SESSIONS_PATH/$OLD_THREAD/messages","event: message\ndata: {\"type\":\"done\"}\n\n",
+            contentType="text/event-stream")
+        gateway.respond("$API/agents/$otherAgent/sessions/$OLD_THREAD/messages","event: message\ndata: {\"type\":\"done\"}\n\n",
+            contentType="text/event-stream")
+        native.refresh()
+        assertTrue("两个 Agent 必须真实出现在发现结果中",awaitCondition { native.state.value.agents.any { it.id==otherAgent } })
+        // 在真实工作台的提交锁处暂停，复现发送先排队、随后切换 Agent 的顺序。
+        val field=WorkbenchController::class.java.getDeclaredField("persistenceLifecycleMutex").apply { isAccessible=true }
+        val persistenceGate=field.get(previous) as kotlinx.coroutines.sync.Mutex
+        assertTrue(persistenceGate.tryLock())
+        val requestsBefore=gateway.requests.size
+        try {
+            previous.editDraft("原 Agent 的已确认提交")
+            previous.sendDraft()
+            assertTrue("发送必须已经开始等待本地持久化",awaitCondition { previous.hasActiveWork.value })
+            native.selectAgent(otherAgent)
+            assertTrue("新选择必须先于持久化恢复",awaitCondition { native.state.value.selectedAgentId==otherAgent })
+            assertTrue("交接应在获得存储锁之前冻结旧发送入口",awaitCondition { !previous.state.value.isOnline })
+        } finally { persistenceGate.unlock() }
+        assertTrue("新的 Agent 工作台必须完成交接",awaitCondition {
+            current.controller.value?.let { it!==previous && it.localConversationScope!=previous.localConversationScope }==true
+        })
+        assertTrue("原 Agent 的消息不能进入新 Agent",gateway.requests.drop(requestsBefore).none {
+            it.method=="POST" && it.target.startsWith("$API/agents/$otherAgent/") && it.target.endsWith("/messages")
+        })
+    }
+
     private data class RunningSession(val runtime: GatewayRuntime, val scope: CoroutineScope, val profileId: String)
 
     private fun connectedRuntimeWithHistory(native: Boolean = false): RunningSession {

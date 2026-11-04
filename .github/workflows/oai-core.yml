@@ -49,6 +49,7 @@ jobs:
   core:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ['3.11', '3.12']
     steps:
@@ -214,6 +215,12 @@ jobs:
           :app:testFullDebugUnitTest
           --tests '*NativeAgentsControllerTest'
           --tests '*NativeAgentBackgroundWorkTest'
+          --tests '*ColdStartConnectionTest'
+          --tests '*DevicePushRuntimeTest'
+          --tests '*DevicePushCycleTest'
+          --tests '*DeviceCapabilityBlockTest'
+          --tests '*PluginManagementGrantUiTest'
+          --tests '*SettingsResponsiveHostRegressionTest'
           --tests '*GatewayTutorialsTest'
           --tests '*GatewaySessionRefreshTest'
           --tests '*GatewayWorkbenchLogoutTest'
@@ -258,6 +265,7 @@ jobs:
           gradle --max-workers=2
           :app:compilePlayDebugKotlin
           :app:testPlayDebugUnitTest
+          --tests '*SettingsResponsiveHostRegressionTest'
           --tests '*ScreenExecutionErrorsTest'
           --tests '*ScreenCapabilityPresentationTest'
           --tests '*ScreenCaptureSystemConsentTest'

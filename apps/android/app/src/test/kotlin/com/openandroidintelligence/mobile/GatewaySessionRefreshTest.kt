@@ -455,9 +455,13 @@ class GatewaySessionRefreshTest {
         try {
             restored.onBackgroundSessionRestarted()
             assertTrue(awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            val recoveryOwner = restoreJob(restored)
             serviceController.get().onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             // This test Application is not the production composition root.
             restored.onBackgroundSessionStopped()
+            assertTrue("停止服务已请求取消原恢复任务", recoveryOwner.isCancelled)
+            assertFalse("凭据提交仍在闩锁内，取消不等于恢复任务已经完成", recoveryOwner.isCompleted)
+            assertEquals("保存闩锁释放之前仍是旧凭据", "refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
             if (foregroundBeforeCommit) {
                 restored.onAppForegrounded()
                 assertEquals("旧owner完成凭据落盘之前不能启动第二次刷新", 1,
@@ -465,7 +469,9 @@ class GatewaySessionRefreshTest {
             }
             release.countDown()
             if (!foregroundBeforeCommit) {
-                assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value !is ConnectionPhase.Negotiating })
+                assertTrue("等待原恢复所有者完成不可取消的凭据提交及清理", awaitCondition(AWAIT_MILLIS) {
+                    recoveryOwner.isCompleted
+                })
                 assertEquals("服务停止也必须保管已轮换凭据", "refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
                 assertFalse("持久化完成不得复活后台连接", restored.phase.value is ConnectionPhase.Connected)
                 assertFalse(gateway.requests.any { it.target.startsWith("/open-android-intelligence/v2/events") &&

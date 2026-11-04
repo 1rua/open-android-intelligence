@@ -1876,11 +1876,17 @@ class GatewayRuntime(
         ownedJob.invokeOnCompletion {
             nativeStores.values.forEach { store -> runCatching { store.close() } }
         }
-        val coreAgentRepo = if (nativeAgentSessions) {
+        // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。
+        val coreAgentRepositories = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        fun nativeRepository(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = coreAgentRepositories.computeIfAbsent(agent.id) {
+            val discoveryOwner = checkNotNull(_nativeAgents.value)
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
                 client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
-                currentAgent = { _nativeAgents.value?.state?.value?.agent },
-                activeConversationId = { activeThread.get() },
+                currentAgent = { discoveryOwner.state.value.agents.firstOrNull { it.id == agent.id } ?: agent },
+                activeConversationId = {
+                    activeThread.get().takeIf { _nativeAgents.value === discoveryOwner &&
+                        discoveryOwner.state.value.selectedAgentId == agent.id }
+                },
                 parentScope = sessionScope,
                 supportsApprovalCards = "agent-approval-cards-v1" in conversationUi,
                 supportsGenerationCancel = generationCancelCapability.agreed,
@@ -1889,22 +1895,26 @@ class GatewayRuntime(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
             )
-        } else null
-        restartNativeReads = { if (sessionJob === ownedJob) coreAgentRepo?.connectionRestored() }
-        val activeRepo: ConversationRepository = coreAgentRepo ?: mirroredRepository
-        val activeCatalogRepo: com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository =
-            if (nativeAgentSessions) {
-                com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
-                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
-                    currentAgent = { _nativeAgents.value?.state?.value?.agent },
-                    negotiated = "agent-command-catalog-v1" in conversationUi,
-                )
-            } else catalogRepository
+        }
+        fun restoreNativeReads() {
+            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored() }
+        }
+        restartNativeReads = ::restoreNativeReads
 
         var workbenchAgentId: String? = null
         suspend fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
-            val ownerAgentId = _nativeAgents.value?.state?.value?.selectedAgentId
+            val ownerAgent = _nativeAgents.value?.state?.value?.agent.takeIf { nativeAgentSessions }
+            val ownerAgentId = ownerAgent?.id
                 ?: accountProfiles.find(profileId)?.selectedAgentId.takeIf { nativeAgentSessions }
+            val ownerRepository = if (nativeAgentSessions) nativeRepository(requireNotNull(ownerAgent)) else null
+            val activeRepo: ConversationRepository = ownerRepository ?: mirroredRepository
+            val activeCatalogRepo = if (nativeAgentSessions) {
+                com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
+                    currentAgent = { ownerAgent },
+                    negotiated = "agent-command-catalog-v1" in conversationUi,
+                )
+            } else catalogRepository
             val ownerScope = ownerAgentId?.takeIf { nativeAgentSessions }?.let {
                 com.openandroidintelligence.mobile.conversations.NativeLocalPartitions.partitionScope(conversationScope, it)
             } ?: conversationScope
@@ -1955,7 +1965,8 @@ class GatewayRuntime(
                 repository = activeRepo,
                 catalogRepository = activeCatalogRepo,
                 restoreLastThread = restoreSelection,
-                canReadConversations = { !nativeAgentSessions || _nativeAgents.value?.state?.value?.agent?.online == true },
+                canReadConversations = { !nativeAgentSessions ||
+                    _nativeAgents.value?.state?.value?.agent?.let { it.id == ownerAgentId && it.online } == true },
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
                 scopeFactory = { ownerScope },
                 attachmentCoordinator = ownerAttachments,
@@ -1978,7 +1989,13 @@ class GatewayRuntime(
                     bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
                         .filter { it.isRunning }.map { it.target.conversationId }
                 },
-                onActiveThreadChanged = { threadId -> activeThread.set(threadId); repository.activeConversationChanged(); coreAgentRepo?.activeConversationChanged() },
+                onActiveThreadChanged = { threadId ->
+                    if (!nativeAgentSessions || _nativeAgents.value?.state?.value?.selectedAgentId == ownerAgentId) {
+                        activeThread.set(threadId)
+                        repository.activeConversationChanged()
+                    }
+                    ownerRepository?.activeConversationChanged()
+                },
                 streamHealthSource = (activeRepo as? com.openandroidintelligence.conversation.model.StreamHealthSource) ?: workbenchRepository,
                 persistence = if (nativeAgentSessions) nativePersistence else mirror,
                 media = ownerMedia,
@@ -2102,7 +2119,7 @@ class GatewayRuntime(
             }
             restartNativeReads = {
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
-                    coreAgentRepo?.connectionRestored()
+                    restoreNativeReads()
                     if (canRetryWorkbenchInitialization) {
                         nativeController.refresh()
                         sessionScope.launch { updateNativeWorkbench(nativeController.state.value) }
@@ -2268,7 +2285,7 @@ class GatewayRuntime(
                 updateScreenConnection(status == EventStreamStatus.LIVE)
                 if (status == EventStreamStatus.LIVE) {
                     platformHasBeenLive = true
-                    coreAgentRepo?.connectionRestored()
+                    restoreNativeReads()
                     // Keep network IO out of the status collector. Recovery
                     // activity must not cancel Native reads or refresh history.
                     if (notificationRecoveryJob?.isActive != true) {
@@ -2276,7 +2293,7 @@ class GatewayRuntime(
                             reconcileNotifications(force = true)
                         }
                     }
-                    if (coreAgentRepo == null) _controller.value?.refreshThreads()
+                    if (!nativeAgentSessions) _controller.value?.refreshThreads()
                 }
             }
         }

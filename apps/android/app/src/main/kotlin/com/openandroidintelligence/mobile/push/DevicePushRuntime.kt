@@ -222,7 +222,9 @@ class DevicePushRuntime(
             checkHealthy()
             maintainLocked()
             if (!loggedIn) return@withLock deliveryResult(0, 0, 0, 0, paused = true)
-            state.events.flatMap { queued -> queued.targets.keys.map { PushDelivery(queued.event, it) } }.take(maxDeliveries)
+            state.events.asSequence()
+                .flatMap { queued -> queued.targets.keys.asSequence().map { PushDelivery(queued.event, it) } }
+                .take(maxDeliveries).toList()
         }
         var attempted = 0
         var accepted = 0
@@ -237,7 +239,11 @@ class DevicePushRuntime(
                 }
                 val attempt = ActiveAttempt(delivery, epoch, task)
                 val registered = synchronized(lock) {
-                    if (authorized(delivery, epoch)) { active += attempt; true } else false
+                    if (authorized(delivery, epoch)) {
+                        advanceDeliveryLocked(delivery)
+                        active += attempt
+                        true
+                    } else false
                 }
                 if (!registered) {
                     task.cancel()
@@ -261,6 +267,20 @@ class DevicePushRuntime(
             }
         }
         synchronized(lock) { deliveryResult(attempted, accepted, acknowledged, failures, paused = !loggedIn) }
+    }
+
+    private fun advanceDeliveryLocked(delivery: PushDelivery) {
+        val queued = state.events.first { it.event.eventId == delivery.event.eventId }
+        if (state.events.last() == queued && queued.targets.keys.last() == delivery.endpoint) return
+        val targets = queued.targets.toMutableMap()
+        val receipt = targets.remove(delivery.endpoint)
+        targets[delivery.endpoint] = receipt
+        // The codec preserves list/map order. Persist progress before HTTP so retries,
+        // unavailable routes and interrupted batches yield without losing any receipt.
+        commit(state.copy(
+            events = state.events.filter { it.event.eventId != delivery.event.eventId } + queued.copy(targets = targets),
+            observedAtEpochMs = now(),
+        ))
     }
 
     private suspend fun attempt(transport: PushTransport, delivery: PushDelivery, epoch: Long): AttemptOutcome {

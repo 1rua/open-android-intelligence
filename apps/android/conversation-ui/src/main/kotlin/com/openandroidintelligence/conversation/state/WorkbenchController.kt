@@ -336,13 +336,13 @@ class WorkbenchController(
 
     /** Agent presence can change without replacing this controller or losing its draft. */
     fun setRemoteConversationOnline(online: Boolean) {
-        if (closed || remoteConversationOnline == online) return
+        if (closed || retiring || remoteConversationOnline == online) return
         remoteConversationOnline = online
         update { it }
     }
     fun updateRemoteCapabilities(online: Boolean, send: Boolean, delete: Boolean, archive: Boolean,
         rename: Boolean, approvals: Boolean, unarchive: Boolean = false) {
-        if (closed || remoteConversationOnline == online && remoteSendSupported == send &&
+        if (closed || retiring || remoteConversationOnline == online && remoteSendSupported == send &&
             supportsConversationDelete == delete && supportsConversationArchive == archive &&
             supportsConversationRename == rename && supportsApprovalCards == approvals &&
             supportsConversationUnarchive == unarchive) return
@@ -892,6 +892,7 @@ class WorkbenchController(
      * controller the owner has already thrown away.
      */
     private var closed = false
+    private var retiring = false
 
     private var eventJob: Job? = null
     private var timelineJob: Job? = null
@@ -1437,7 +1438,17 @@ class WorkbenchController(
     }
 
     /** 正常账号切换先提交，再等所有旧 IO 收尾；即时认证撤销仍使用同步 close。 */
-    suspend fun closeAndAwait() = persistenceLifecycleMutex.withLock {
+    suspend fun closeAndAwait() {
+        // 先停止接收新的远端操作，再等待发送与本地提交共用的持久化锁。
+        if (!retiring) {
+            retiring = true
+            remoteConversationOnline = false
+            update { it }
+        }
+        retireAndAwait()
+    }
+
+    private suspend fun retireAndAwait() = persistenceLifecycleMutex.withLock {
         currentCoroutineContext().ensureActive()
         if (persistenceRetired) {
             retirementFailure?.let { throw it }
@@ -1957,7 +1968,7 @@ class WorkbenchController(
         GatewayLog.protocolEvidence("create.clicked", mapOf("closed" to closed,
             "controllerActive" to controllerJob.isActive, "managingThreads" to _state.value.managingThreads,
             "creatingThread" to _state.value.creatingThread, "bootstrapping" to (bootstrapJob?.isActive == true)))
-        if (closed || _state.value.managingThreads || _state.value.creatingThread || bootstrapJob?.isActive == true) return
+        if (closed || retiring || _state.value.managingThreads || _state.value.creatingThread || bootstrapJob?.isActive == true) return
         attachmentTargetRevision++
         val sourceThreadId = activeThreadId
         val sourceEpoch = threadEpoch
@@ -2129,7 +2140,7 @@ class WorkbenchController(
      * structured notice — it is never painted as the decision the user asked for.
      */
     fun decideApproval(approvalId: String, choice: ApprovalChoice) {
-        if (closed) return
+        if (closed || retiring) return
         // Checked before anything else: on a Gateway without the decision
         // endpoint there is no card to press, so a decision must be refused as
         // an unavailable capability rather than by finding no card.
@@ -2638,7 +2649,7 @@ class WorkbenchController(
 
     /** The same live gate is used before recording and before submitting its attachment. */
     fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =
-        attachmentCoordinator != null && !closed && allowSending && activeThreadId == expectedThreadId &&
+        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
             !_state.value.managingThreads && !_state.value.activeThreadArchived &&
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
@@ -3893,7 +3904,7 @@ class WorkbenchController(
     }
 
     private fun schedulePendingDeliveryDrain(threadId: String) {
-        if (closed || pendingDeliveryDrainJobs[threadId]?.isActive == true) return
+        if (closed || retiring || pendingDeliveryDrainJobs[threadId]?.isActive == true) return
         pendingDeliveryDrainJobs[threadId] = workScope.launch {
             try {
                 repository.retryPendingDeliveries(threadId)

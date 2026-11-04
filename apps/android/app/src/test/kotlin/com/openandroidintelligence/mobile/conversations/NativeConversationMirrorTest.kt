@@ -21,6 +21,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.cancel
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,6 +32,61 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
 class NativeConversationMirrorTest {
+    @Test fun provisionalAssistantIdentitySurvivesCheckpointAndTimelineReopen() = runBlocking {
+        val account=scope("provisional-${UUID.randomUUID()}")
+        val provisional=TimelineMessage("stream_local", "assistant", listOf(MessagePart.Text("尚待真实身份的回复")),
+            1000, "CONFIRMED", conversationId=ConversationId("chat"), generationId="g", localPlaceholder=true)
+        val real=provisional.copy(id="stream_real_host_id",localPlaceholder=false)
+        val mirror=NativeConversationMirror(context,account,{"hermes"},key)
+        mirror.saveCheckpoint(checkpoint(listOf("chat")).copy(threadId="chat",messages=listOf(provisional,real)))
+        mirror.closeStore()
+        val reopened=NativeConversationMirror(context,account,{"hermes"},key)
+        try {
+            val restored=reopened.load()!!.messages
+            assertTrue(restored.single { it.id==provisional.id }.localPlaceholder)
+            assertFalse("真实宿主 ID 即使有 stream 前缀也不能被冒认为临时行",
+                restored.single { it.id==real.id }.localPlaceholder)
+            assertTrue(reopened.loadTimeline("chat")!!.messages.single { it.id==provisional.id }.localPlaceholder)
+        } finally { reopened.closeStore() }
+    }
+
+    @Test fun reopenedPlaceholderMergesWithRealHistoryWithoutMergingDistinctRealReplies() = runBlocking {
+        val account=scope("reconcile-placeholder-${UUID.randomUUID()}")
+        val provisional=TimelineMessage("stream_local", "assistant", listOf(MessagePart.Text("同一正文")),
+            1000, "CONFIRMED", conversationId=ConversationId("chat"), generationId="g", localPlaceholder=true)
+        val first=provisional.copy(id="native-first",localPlaceholder=false)
+        val second=first.copy(id="native-second",timestamp=1001)
+        val mirror=NativeConversationMirror(context,account,{"hermes"},key)
+        mirror.saveCheckpoint(checkpoint(listOf("chat")).copy(threadId="chat",messages=listOf(provisional)))
+        mirror.closeStore()
+        val reopened=NativeConversationMirror(context,account,{"hermes"},key)
+        val owner=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()+Dispatchers.Unconfined)
+        val repository=object:ConversationRepository {
+            override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=
+                ConversationPage(listOf(ConversationSummary(ConversationId("chat"),"chat",1000)),null)
+            override suspend fun createConversation(scope:ConversationScope,clientConversationId:String):Conversation=error("unused")
+            override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(listOf(first,second),null)
+            override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance=error("unused")
+            override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance=error("unused")
+            override fun observeEvents(scope:ConversationScope)=kotlinx.coroutines.flow.emptyFlow<VerifiedConversationEvent>()
+            override suspend fun cancelGeneration(generationId:String,requestId:String)=CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val controller=com.openandroidintelligence.conversation.state.WorkbenchController(owner,repository,
+            object:AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId:String,languageCode:String)=
+                    AgentCommandCatalog(com.openandroidintelligence.conversation.model.CatalogVersion("test"),emptyList())
+            },{account},persistence=reopened,authoritativeMessageIds=true,
+            replyTimeouts=com.openandroidintelligence.conversation.state.WorkbenchController.ReplyTimeouts(enabled=false))
+        try {
+            controller.openThread("chat")
+            val ready=withTimeout(5_000) { controller.state.first { state ->
+                (state.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value?.any { it.key==second.id }==true
+            } }
+            val rows=(ready.timeline as com.openandroidintelligence.conversation.state.Loadable.Ready).value
+            assertEquals(listOf(first.id,second.id),rows.map { it.key })
+        } finally { controller.closeAndAwait(); owner.cancel() }
+    }
+
     @Test fun legacySteeringIdentityUpgradesDurablyWithoutRecreatingTheUserMessage() = runBlocking {
         val testScope = scope("legacy-steering-id")
         val mirror = NativeConversationMirror(context, testScope, { "hermes" }, key)

@@ -193,9 +193,12 @@ class DeviceCapabilityBlockTest {
         // READY 不需要解释为什么被阻塞；同步中也不该出现「不可恢复」的字样。
         assertNull(capabilityBlockDetail("READY", ""))
         assertNull(capabilityBlockDetail("SYNCING", null))
-        val syncing = capabilityBlockDetail("SYNC_FAILED", "NETWORK_ERROR")
-        assertNotNull(syncing)
-        assertFalse("同步失败不能表述成不可恢复", syncing!!.contains("不能在本机恢复"))
+        // 同步失败由状态主文案说明失败与自动重试，不追加设备不可恢复的阻塞解释。
+        val syncing = capabilityStatusLabel("SYNC_FAILED", "NETWORK_ERROR")
+        assertTrue("同步失败必须可见", syncing.contains("同步失败"))
+        assertTrue("必须说明仍在重试", syncing.contains("重试"))
+        assertFalse("同步失败不能表述成不可恢复", syncing.contains("不能在本机恢复"))
+        assertNull(capabilityBlockDetail("SYNC_FAILED", "NETWORK_ERROR"))
     }
 
     @Test

@@ -2,7 +2,7 @@
 """Run push JVM contracts without Gradle or competing for its test reports.
 
 Uses the existing toolchain/cache and compiled support modules. It compiles the
-CURRENT runtime/codec/transport and their tests into a separate build child.
+CURRENT runtime/cycle/codec/transport and their tests into a separate build child.
 The --notification-sources mode recompiles the real collector/service sources,
 but neither mode runs Compose or Android system lifecycles/device acceptance.
 """
@@ -17,7 +17,7 @@ import sys
 def main() -> int:
     repo = next(path for path in Path(__file__).resolve().parents if (path / "gateway-contract").is_dir())
     toolchains = repo / ".toolchains"
-    if not toolchains.is_dir():
+    if not (toolchains / "gradle-user-home/caches/modules-2/files-2.1").is_dir():
         toolchains = (repo / "../../.toolchains").resolve()
     cache = toolchains / "gradle-user-home/caches/modules-2/files-2.1"
     notification_sources = "--notification-sources" in sys.argv[1:]
@@ -52,6 +52,9 @@ def main() -> int:
     for module in (("gateway-client", "encrypted-store", "core-model", "policy-engine") if notification_sources else ("gateway-client", "encrypted-store", "core-model")):
         jar = repo / f"apps/android/{module}/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar"
         if not jar.is_file():
+            # Shared worktrees compile their current sources here; support jars are read-only.
+            jar = repo / f"../../apps/android/{module}/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar"
+        if not jar.is_file():
             raise RuntimeError(f"Existing compiled support module required: {module}")
         dependencies.append(jar)
     if notification_sources:
@@ -65,7 +68,7 @@ def main() -> int:
     else:
         source = repo / "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push"
         tests = Path(__file__).resolve().parent
-        sources = [source / name for name in ("PushModels.kt", "EncryptedPushStateStore.kt", "DevicePushRuntime.kt", "GatewayPushTransport.kt")]
+        sources = [source / name for name in ("PushModels.kt", "EncryptedPushStateStore.kt", "DevicePushRuntime.kt", "DevicePushCycle.kt", "GatewayPushTransport.kt")]
         sources.append(repo / "apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/SmsScope.kt")
         # The picker DTO lives beside UI. Read its exact declaration, without a behavior stub.
         declaration = next(line for line in (source / "PushSettingsScreen.kt").read_text().splitlines()
@@ -73,7 +76,7 @@ def main() -> int:
         dto = output / "PushEndpointOption.kt"
         dto.write_text("package com.openandroidintelligence.mobile.push\n" + declaration + "\n")
         sources.append(dto)
-        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "PushStateCodecMigrationTest", "NotificationPushScopePersistenceTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
+        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "DevicePushCycleTest", "PushStateCodecMigrationTest", "NotificationPushScopePersistenceTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
         sources.extend(tests / f"{name}.kt" for name in test_classes)
         test_package = "com.openandroidintelligence.mobile.push."
     compiled = output / "classes"

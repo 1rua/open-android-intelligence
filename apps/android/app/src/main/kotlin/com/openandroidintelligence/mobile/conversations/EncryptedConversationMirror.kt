@@ -181,7 +181,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     private fun message(m: TimelineMessage): Map<String,Any?> = mapOf("id" to m.id,"sender" to m.sender,"parts" to parts(m.parts),
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
-        "contentRevision" to m.contentRevision,"generationId" to m.generationId,
+        "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
             "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt) })
@@ -189,6 +189,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.long(o,"timestamp") ?: 0L,str(o,"state"),JsonFields.string(o,"conversationId")?.let(::ConversationId),
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
         JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
+        localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
             str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
             com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
