@@ -51,13 +51,13 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已完成 2 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 2 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("设置应用已经打开了。", substring = true).assertIsDisplayed()
         // 折叠时过程正文不可见
         compose.onNodeWithText("先确认设备状态", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 2 步执行与思考", substring = true).performClick()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 2 步", substring = true).performClick()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()
     }
 
@@ -73,7 +73,7 @@ class MessageTimelineExecutionTest {
         }
 
         compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在查询系统时间", substring = true).assertIsDisplayed()
         compose.onNodeWithText("已完成", substring = true).assertDoesNotExist()
     }
@@ -115,7 +115,7 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("此消息没有可显示的文本", substring = true).assertDoesNotExist()
     }
 
@@ -149,11 +149,11 @@ class MessageTimelineExecutionTest {
         // 从默认展开切到手动展开，随后验证流式增量不会丢失用户选择。
         compose.onNodeWithText("执行过程 · 1 步 · 点击收起").performClick()
         compose.onNodeWithText("执行过程 · 1 步 · 点击展开").performClick()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
 
         compose.runOnIdle { streamingText = "$streamingText，第二段" }
 
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("第二段", substring = true).assertIsDisplayed()
     }
 

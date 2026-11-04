@@ -15,13 +15,13 @@ fun readableScreenError(code: String?): String = when (code) {
     "SCREEN_SESSION_REQUIRED", "SCREEN_SESSION_EXPIRED", "SCREEN_SESSION_BINDING_CHANGED" ->
         "屏幕会话已失效，请重新确认要允许的屏幕权限"
     "SCREEN_PERMISSION_REQUIRED" ->
-        "这次操作需要的权限不在当前会话里，请重新确认屏幕权限"
+        "当前会话缺少所需权限，请重新配置屏幕权限"
     "SCREEN_CONNECTION_REQUIRED" ->
-        "还没有连接到已配对的设备，请先登录并完成配对"
+        "未连接配对设备，请先完成登录与配对"
     "SCREEN_CONFIRMATION_REQUIRED", "SCREEN_CONFIRMATION_LIMIT" ->
-        "这次操作还需要你在手机上的确认才能执行"
+        "此操作需要你在手机上确认"
     "SCREEN_REQUEST_EXPIRED" ->
-        "这次操作已经超时，请重新发起"
+        "操作已超时，请重新发起"
 
     // ===== 系统服务 =====
     "ACCESSIBILITY_SERVICE_UNAVAILABLE" ->
@@ -51,7 +51,7 @@ fun readableScreenError(code: String?): String = when (code) {
     "SCREEN_CAPTURE_UNSUPPORTED" ->
         "当前系统版本或无障碍服务配置不支持直接截图，只能使用系统投屏授权"
     "SCREEN_CAPTURE_FAILED" ->
-        "这次截图没有成功，请稍后再试"
+        "截图失败，请稍后重试"
     "SCREEN_CAPTURE_ENCODING_FAILED" ->
         "截图处理失败，请尝试降低截图宽度"
     "SCREEN_IMAGE_TOO_LARGE", "SCREEN_IMAGE_LIMIT_REACHED" ->

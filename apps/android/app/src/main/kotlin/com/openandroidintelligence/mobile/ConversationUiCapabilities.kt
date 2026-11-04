@@ -75,19 +75,19 @@ fun screenSelectionPresentation(
 ): CapabilityPresentation = when {
     !screenshotSourceWired -> CapabilityPresentation(
         enabled = false,
-        supporting = "本机暂时无法获取屏幕截图，圈选不可用",
+        supporting = "无法获取屏幕截图，圈选不可用",
     )
     attachmentStatusAgreed == null -> CapabilityPresentation(
         enabled = false,
-        supporting = "当前 Gateway 未声明是否支持圈选回传，圈选不可用",
+        supporting = "Gateway 未声明支持圈选回传，圈选不可用",
     )
     !attachmentStatusAgreed -> CapabilityPresentation(
         enabled = false,
-        supporting = "本网关不支持圈选回传，圈选不可用",
+        supporting = "网关不支持圈选回传，圈选不可用",
     )
     else -> CapabilityPresentation(
         enabled = true,
-        supporting = "圈选可用：截图与结果回传都已就绪",
+        supporting = "圈选可用",
     )
 }
 
@@ -106,15 +106,15 @@ fun notificationPushPresentation(
 ): CapabilityPresentation = when {
     !pushChannelWired -> CapabilityPresentation(
         enabled = false,
-        supporting = "本机未接入推送通道，通知推送不可用",
+        supporting = "未接入推送通道，通知推送不可用",
     )
     mirrorAgreed == null -> CapabilityPresentation(
         enabled = false,
-        supporting = "当前 Gateway 未声明是否支持会话同步，通知推送不可用",
+        supporting = "Gateway 未声明支持会话同步，通知推送不可用",
     )
     !mirrorAgreed -> CapabilityPresentation(
         enabled = false,
-        supporting = "本网关不支持会话同步，通知推送不可用",
+        supporting = "网关不支持会话同步，通知推送不可用",
     )
     else -> CapabilityPresentation(
         enabled = true,

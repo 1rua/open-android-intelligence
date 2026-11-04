@@ -68,10 +68,10 @@ fun ScreenControlConfirmationDialog(
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 ) {
-                    Text("Agent 声明名称：${agentName.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-agent"))
-                    Text("操作目的：${purpose.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-purpose"))
+                    Text("Agent：${agentName.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-agent"))
+                    Text("用途：${purpose.ifBlank { "未说明" }}", modifier = Modifier.testTag("device-confirmation-purpose"))
                     Text(
-                        "Agent 名称和操作目的由请求方声明，仅供展示与审计，不证明身份或扩大权限。",
+                        "上述信息由请求方声明，仅供审计记录。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -86,7 +86,7 @@ fun ScreenControlConfirmationDialog(
                         modifier = Modifier.testTag("device-confirmation-sensitive"),
                     )
                     Text(
-                        "限时允许仅适用于同一能力、操作和已批准的数据范围，并由合法接入的 Agent 共享。Android 系统授权仍需单独满足。",
+                        "临时允许仅适用于当前操作与数据范围，系统权限仍需单独满足。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

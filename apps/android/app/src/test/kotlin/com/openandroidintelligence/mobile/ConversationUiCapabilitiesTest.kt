@@ -81,7 +81,7 @@ class ConversationUiCapabilitiesTest {
             attachmentStatusAgreed = false,
         )
         assertFalse(refused.enabled)
-        assertTrue(refused.supporting.contains("本网关不支持"))
+        assertTrue(refused.supporting.contains("网关不支持"))
     }
 
     @Test
@@ -115,6 +115,6 @@ class ConversationUiCapabilitiesTest {
 
         val refused = notificationPushPresentation(pushChannelWired = true, mirrorAgreed = false)
         assertFalse(refused.enabled)
-        assertTrue(refused.supporting.contains("本网关不支持"))
+        assertTrue(refused.supporting.contains("网关不支持"))
     }
 }

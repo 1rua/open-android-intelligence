@@ -172,7 +172,7 @@ class ThoughtCardTest {
             }
         }
 
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在推演量子算法与经典比特的区别...", substring = true)
             .assertIsDisplayed()
     }
@@ -206,7 +206,7 @@ class ThoughtCardTest {
             }
         }
 
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("${thoughtText.length} 字", substring = true).assertIsDisplayed()
         compose.onNodeWithText("点击展开", substring = true).assertIsDisplayed()
 
@@ -228,7 +228,7 @@ class ThoughtCardTest {
         compose.onNodeWithText("点击展开", substring = true).assertIsDisplayed()
         compose.onNodeWithText(thoughtText).assertDoesNotExist()
 
-        compose.onNodeWithText("已深度思考", substring = true).performClick()
+        compose.onNodeWithText("已思考", substring = true).performClick()
 
         compose.onNodeWithText(thoughtText, substring = true).assertIsDisplayed()
         compose.onNodeWithText("点击收起", substring = true).assertIsDisplayed()
@@ -272,7 +272,7 @@ class ThoughtCardTest {
         }
 
         compose.onNodeWithText("无思考内容", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -285,7 +285,7 @@ class ThoughtCardTest {
             }
         }
 
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("无思考内容", substring = true).assertDoesNotExist()
     }
 
@@ -348,7 +348,7 @@ class ThoughtCardTest {
             }
         }
 
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("无动效模式测试内容", substring = true).assertIsDisplayed()
     }
 }

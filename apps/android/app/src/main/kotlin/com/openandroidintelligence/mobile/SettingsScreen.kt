@@ -442,7 +442,7 @@ fun SettingsScreen(
             title = { Text("确认解除设备配对") },
             text = {
                 Text(
-                    "这会撤销当前设备的 Gateway 配对凭据并立即切断安全会话。本机插件能力开关与 Android 系统权限仍由各自设置管理。",
+                    "将撤销设备的配对凭据并切断连接。插件能力与系统权限设置将保留。",
                 )
             },
             confirmButton = {
@@ -584,7 +584,7 @@ private fun SettingsOverviewScreen(
     BackHandler(enabled = backEnabled, onBack = onBack)
 
     SettingsPageScaffold(
-        title = "设置与平台管理",
+        title = "设置",
         presentation = presentation,
         onBack = onBack,
         // 根页退出设置面板；子页继续使用「返回」语义。
@@ -620,7 +620,7 @@ private fun SettingsOverviewScreen(
                 var override by remember(gateway) { mutableStateOf(gateway!=null && preferences.hasOverride(gateway)) }
                 var delayMillis by remember(gateway,override) { mutableStateOf(preferences.read(if (override) gateway else null).delay.inWholeMilliseconds.toInt()) }
                 var extend by remember(gateway,override) { mutableStateOf(preferences.read(if (override) gateway else null).mode==com.openandroidintelligence.conversation.batch.DebounceMode.EXTEND_WINDOW) }
-                SectionLabel("消息防抖")
+                SectionLabel("消息发送延迟")
                 SettingsSectionCard {
                     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                         if (gateway!=null) Row(
@@ -705,7 +705,7 @@ private fun SettingsOverviewScreen(
                         ConnectionPhase.Disconnected -> "未连接 Gateway"
                         ConnectionPhase.Initializing -> "正在连接 OAI Core…"
                         ConnectionPhase.Reconnecting -> "正在重新连接 OAI Core…"
-                        ConnectionPhase.Negotiating -> "正在协商协议…"
+                        ConnectionPhase.Negotiating -> "正在连接…"
                         ConnectionPhase.Authenticating -> "正在验证凭据…"
                         // 这里绝不直接打印 `phase.code`：它是异常的 message，可能带地址与对端正文，
                         // 而且对用户没有可执行意义。与登录页共用同一套「码 → 可操作说明」。
@@ -787,7 +787,7 @@ private fun SettingsOverviewScreen(
                     // 与「安装插件」是两件不同的事，混在一起会让用户以为装完就能用。
                     SettingsNavigationItem(
                         headline = "短信与通知主动推送",
-                        supporting = "独立选择内容范围、接收端点和离线保留时间；默认关闭",
+                        supporting = "自主设置内容范围、推送目标与离线保留时间；默认关闭",
                         icon = Icons.Default.Notifications,
                         onClick = { onNavigate(SettingsRoutes.DEVICE_PUSH) },
                     )
@@ -1042,7 +1042,7 @@ private fun AppearanceSubScreen(
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                     SettingsSwitchItem(
-                        headline = "减弱动态效果 (Reduce Motion)",
+                        headline = "减少动画",
                         supporting = "停用位移与缩放动效，替换为标准无障碍淡入淡出。系统「动画时长 0」时自动等效。",
                         checked = uiState.appearance.reduceMotion,
                         icon = Icons.Default.Animation,
@@ -1258,7 +1258,7 @@ private fun GatewaySubScreen(
                         supporting = when {
                             uiState.deviceRequestChannel == null -> "当前 Core 不会把任务下发到手机执行"
                             uiState.pluginRuntimesWired -> "已支持：Core 可以把任务下发到手机执行"
-                            else -> "Core 支持下发，但本机插件执行尚未接通"
+                            else -> "Core 支持下发，但插件环境未就绪"
                         },
                         icon = Icons.Default.Security,
                     )
@@ -1299,7 +1299,7 @@ private fun GatewaySubScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
                             headline = "解除设备配对",
-                            supporting = "撤销这台手机的 Gateway 配对凭据；本机插件开关和系统权限分别管理",
+                            supporting = "撤销设备配对凭据；插件开关与系统权限保持独立管理",
                             icon = Icons.Default.DeleteForever,
                             tone = SettingsTone.DANGER,
                             onClick = onRequestUnpair,
@@ -1353,7 +1353,7 @@ private fun PairingSubScreen(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     SettingsNavigationItem(
                         headline = "短信与通知主动推送",
-                        supporting = "独立选择内容范围、接收端点和离线保留时间；默认关闭",
+                        supporting = "自主设置内容范围、推送目标与离线保留时间；默认关闭",
                         icon = Icons.Default.Notifications,
                         onClick = { onNavigate(SettingsRoutes.DEVICE_PUSH) },
                     )

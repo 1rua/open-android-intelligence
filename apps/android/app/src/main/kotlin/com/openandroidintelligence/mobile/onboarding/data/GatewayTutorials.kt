@@ -73,7 +73,7 @@ object GatewayTutorials {
         id = "core",
         shortName = "OAI Core",
         displayName = "OAI Core",
-        tagline = "一个服务端地址连接手机，统一管理设备调用与已接入 Agent 的原生会话。",
+        tagline = "一个服务端地址连接手机，统一管理设备调用与已接入 Agent 的会话。",
         chips = listOf("Python 3.11+", "Protocol v2.1", "Core v0.1.0"),
         repoUrl = "https://github.com/1rua/open-android-intelligence/tree/dev/oai-core",
         steps = listOf(

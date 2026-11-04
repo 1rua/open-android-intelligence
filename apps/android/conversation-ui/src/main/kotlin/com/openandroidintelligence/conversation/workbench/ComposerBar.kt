@@ -794,14 +794,14 @@ private fun attachmentStatusIcon(state: AttachmentState): ImageVector = when (st
 }
 
 fun attachmentStateLabel(state: AttachmentState): String = when (state) {
-    AttachmentState.LOCAL_PREPARING -> "正在加密暂存"
-    AttachmentState.CREATE_PENDING -> "正在申请上传"
+    AttachmentState.LOCAL_PREPARING -> "正在准备文件…"
+    AttachmentState.CREATE_PENDING -> "正在准备上传…"
     AttachmentState.UPLOADING -> "正在上传"
-    AttachmentState.VERIFYING -> "正在核验完整性"
-    AttachmentState.VERIFIED -> "已核验，可发送"
+    AttachmentState.VERIFYING -> "正在确认上传…"
+    AttachmentState.VERIFIED -> "已就绪，可发送"
     AttachmentState.RETRYABLE_FAILURE -> "上传失败，可重试"
     AttachmentState.TERMINAL_FAILURE -> "无法上传，请移除后重新选择"
-    AttachmentState.OUTCOME_UNKNOWN -> "上传结果未知，请先核实"
+    AttachmentState.OUTCOME_UNKNOWN -> "上传结果未确认，请核实"
     AttachmentState.CANCELLED -> "已取消上传"
 }
 
@@ -809,7 +809,7 @@ private fun attachmentProgressLabel(draft: AttachmentDraft): String {
     val totalBytes = draft.totalBytes
     return when {
     draft.state == AttachmentState.LOCAL_PREPARING && draft.transferredBytes > 0L ->
-        "正在加密暂存 · 已读 ${formatAttachmentSize(draft.transferredBytes)}"
+        "正在准备文件 · 已读 ${formatAttachmentSize(draft.transferredBytes)}"
     draft.state == AttachmentState.UPLOADING && totalBytes != null ->
         "正在上传 · ${formatAttachmentSize(draft.transferredBytes)} / ${formatAttachmentSize(totalBytes)}"
     else -> attachmentStateLabel(draft.state)
@@ -831,7 +831,7 @@ fun generationLabel(state: GenerationState): String? = when (state) {
     GenerationState.CANCELLED -> "本次生成已停止"
     GenerationState.FAILED -> "本次生成失败，请检查连接后重试"
     GenerationState.UNSUPPORTED -> "当前 Gateway 不支持停止生成"
-    GenerationState.OUTCOME_UNKNOWN -> "生成结果尚未确认，请先刷新会话核实，避免重复发送"
+    GenerationState.OUTCOME_UNKNOWN -> "结果未确认，请刷新会话，暂勿重复发送"
 }
 
 fun formatAttachmentSize(bytes: Long): String = when {

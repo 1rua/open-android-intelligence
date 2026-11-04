@@ -96,7 +96,7 @@ class ExecutionProcessComposeTest {
         }
 
         compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在分析设备状态", substring = true).assertIsDisplayed()
         compose.onNodeWithText("已完成", substring = true).assertDoesNotExist()
     }
@@ -132,7 +132,7 @@ class ExecutionProcessComposeTest {
 
         compose.onNodeWithText("遥测总览", substring = true).assertIsDisplayed()
         compose.onNodeWithText("系统运行正常", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("正在思考", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -165,15 +165,15 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("最终回答：已完成。", substring = true).assertIsDisplayed()
         // 折叠时步骤内容不在组合树里。
-        compose.onNodeWithText("已深度思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -191,11 +191,11 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         // 没有最终正文：不伪造回答占位，也不显示步骤详情。
         compose.onNodeWithText("执行成功", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithText("执行成功", substring = true).assertIsDisplayed()
         // 面板里的工具卡同样按规格默认折叠：再点一次摘要栏才看到命令与输出。
@@ -268,7 +268,7 @@ class ExecutionProcessComposeTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -297,7 +297,7 @@ class ExecutionProcessComposeTest {
         }
 
         compose.onAllNodesWithText("执行过程 · 1 步", substring = true).assertCountEquals(2)
-        compose.onAllNodesWithText("已完成 1 步执行与思考", substring = true).assertCountEquals(0)
+        compose.onAllNodesWithText("已执行 1 步", substring = true).assertCountEquals(0)
     }
 
     @Test
@@ -309,15 +309,15 @@ class ExecutionProcessComposeTest {
 
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("自动收起前的思考详情", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertDoesNotExist()
 
         compose.runOnIdle {
             run = runOf(assistantEntry("automatic", "<think>自动收起前的思考详情</think>最终回答"))
         }
         compose.waitForIdle()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
         compose.onNodeWithText("自动收起前的思考详情", substring = true).assertDoesNotExist()
         compose.onNodeWithText("最终回答").assertIsDisplayed()
     }
@@ -346,7 +346,7 @@ class ExecutionProcessComposeTest {
         }
         compose.waitForIdle()
         compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("最终回答第一版").assertIsDisplayed()
 
         compose.runOnIdle {
@@ -354,7 +354,7 @@ class ExecutionProcessComposeTest {
         }
         compose.waitForIdle()
         compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("最终回答第二版").assertIsDisplayed()
     }
 
@@ -398,7 +398,7 @@ class ExecutionProcessComposeTest {
             substring = true,
         ).assertIsDisplayed()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithContentDescription(
             "执行过程，已完成 1 步，已展开",

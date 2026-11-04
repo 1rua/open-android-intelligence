@@ -2,6 +2,8 @@
 
 后续修复与测试结果见[修复记录](2026-11-04-review-fixes.zh-CN.md)。本报告保留原审查时点的结论与证据。
 
+PR #81 合入后的独立复审见[复审报告](2026-11-04-dev-vs-main-followup-review.zh-CN.md)，对应 `dev@54de1abb` 的 9 项待修复问题。
+
 ## 审查范围
 
 - 审查日期：2026-11-04，Asia/Shanghai。

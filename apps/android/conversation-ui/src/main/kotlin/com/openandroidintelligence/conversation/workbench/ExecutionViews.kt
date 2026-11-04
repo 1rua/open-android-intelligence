@@ -171,7 +171,7 @@ fun AssistantExecutionTurnBody(
  *
  * 运行中默认展开，生成结束后自动收起；用户手动选择优先于自动状态。
  * 标题两种文案：
- * - 折叠：「已完成 N 步执行与思考 · 点击展开」；
+ * - 折叠：「已执行 N 步 · 点击展开」；
  * - 展开：「执行过程 · N 步 · 点击收起」；
  * - 有失败/中断时追加「· 含 M 步失败」（中断另行标注「· 已中断」）。
  */
@@ -215,7 +215,7 @@ fun ExecutionProcessPanel(
     } else if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
         "执行过程 · ${run.stepCount} 步"
     } else {
-        "已完成 ${run.stepCount} 步执行与思考"
+        "已执行 ${run.stepCount} 步"
     }
     val failureSuffix = if (run.failedStepCount > 0) " · 含 ${run.failedStepCount} 步失败" else ""
     val interruptedSuffix = if (run.interrupted) " · 已中断" else ""
@@ -248,7 +248,7 @@ fun ExecutionProcessPanel(
                             if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
                                 "执行过程，${run.stepCount} 步$unknownSuffix$runningSuffix，${if (expanded) "已展开" else "已收起"}"
                             } else {
-                                "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                                "执行过程，已执行 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
                             }
                         stateDescription = if (expanded) "已展开" else "已收起"
                     }

@@ -24,7 +24,7 @@ class MessageTimelineStreamingTest {
                 ThinkingIndicator()
             }
         }
-        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
     }
 
     @Test

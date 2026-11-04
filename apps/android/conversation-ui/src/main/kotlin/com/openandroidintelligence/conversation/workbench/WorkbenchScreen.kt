@@ -496,7 +496,7 @@ fun WorkbenchScreen(
                                 } else {
                                     LoadableRegion(
                                         state.timeline,
-                                        "写下第一条消息，开始这段对话",
+                                        "发送消息开始对话",
                                         controller::retryTimeline,
                                         modifier = Modifier.fillMaxSize(),
                                         ready = { _ ->
@@ -643,7 +643,7 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
-                                if (state.hasRecoverableSubmissions) TextButton(onClick=controller::retryPendingSubmissions,enabled=state.isOnline) { Text("确认并查询未确认消息") }
+                                if (state.hasRecoverableSubmissions) TextButton(onClick=controller::retryPendingSubmissions,enabled=state.isOnline) { Text("查询未确认消息") }
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
@@ -1062,9 +1062,9 @@ private fun ConversationWelcome(
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
         ) {
             SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
-            Text("从一个想法开始", style = MaterialTheme.typography.headlineMedium)
+            Text("有什么想聊的？", style = MaterialTheme.typography.headlineMedium)
             Text(
-                "与自己的 Agent 对话，分享你选中的图片和文件。",
+                "随时向 Agent 提问，或发送图片与文件。",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1178,7 +1178,7 @@ private fun CreatingThreadRow(onCancel: () -> Unit, modifier: Modifier = Modifie
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "正在由 Agent 创建新对话…",
+                text = "正在创建对话…",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),

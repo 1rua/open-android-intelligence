@@ -104,7 +104,7 @@ internal fun NativeAgentSessionsScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
                     Text(if (code == "OUTCOME_UNKNOWN") "回复流已中断，执行结果暂不确定。请刷新原生历史后再决定是否重试。"
-                        else "原生会话操作未完成：$code", color = MaterialTheme.colorScheme.error)
+                        else "Agent 会话操作未完成：$code", color = MaterialTheme.colorScheme.error)
                     TextButton(onClick = controller::dismissError) { Text("关闭提示") }
                 }
             }
@@ -116,17 +116,17 @@ internal fun NativeAgentSessionsScreen(
         }
         agent?.let {
             Text(if (it.sessionScope == "account") "此 Agent 的会话按当前 OAI 账号隔离。"
-                else "此 Core 已接入的共享原生会话，所有已认证 OAI 账号均可访问。",
+                else "此 Core 已接入的共享会话，所有已登录账号均可访问。",
                 style = MaterialTheme.typography.bodySmall)
         }
         if (state.selectedSessionId == null) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("原生会话", style = MaterialTheme.typography.titleLarge)
+                Text("Agent 会话", style = MaterialTheme.typography.titleLarge)
                 TextButton(onClick = controller::createSession,
                     enabled = writable && capabilities?.create == true) { Text("新建会话") }
             }
             if (capabilities?.list != true) Text("此 Agent 未提供会话列表能力。")
-            else if (state.sessions.isEmpty() && !state.loadingSessions && state.error == null) Text("没有可读取的原生会话。")
+            else if (state.sessions.isEmpty() && !state.loadingSessions && state.error == null) Text("暂无可读取的会话。")
             if (state.loadingSessions) CircularProgressIndicator()
             LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(state.sessions, key = { it.id }) { session ->
@@ -187,12 +187,12 @@ internal fun NativeAgentSessionsScreen(
         }
     }
 
-    if (renameVisible) AlertDialog(onDismissRequest = { renameVisible = false }, title = { Text("重命名原生会话") },
+    if (renameVisible) AlertDialog(onDismissRequest = { renameVisible = false }, title = { Text("重命名会话") },
         text = { OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }) },
         confirmButton = { TextButton(onClick = { controller.renameSession(title); renameVisible = false },
             enabled = title.isNotBlank()) { Text("保存") } },
         dismissButton = { TextButton(onClick = { renameVisible = false }) { Text("取消") } })
-    if (deleteVisible) AlertDialog(onDismissRequest = { deleteVisible = false }, title = { Text("删除原生会话？") },
+    if (deleteVisible) AlertDialog(onDismissRequest = { deleteVisible = false }, title = { Text("删除会话？") },
         text = { Text("这会调用 ${agent?.name.orEmpty()} 的原生删除接口。") },
         confirmButton = { TextButton(onClick = { controller.deleteSession(); deleteVisible = false }) { Text("删除") } },
         dismissButton = { TextButton(onClick = { deleteVisible = false }) { Text("取消") } })
