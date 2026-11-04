@@ -18,6 +18,7 @@ import com.openandroidintelligence.notifications.NotificationRuntimeFactoryRegis
 import com.openandroidintelligence.notifications.PairedBridgeBindingSource
 import com.openandroidintelligence.policy.FileNotificationPolicyPersistence
 import com.openandroidintelligence.policy.PersistentNotificationPolicyAuthority
+import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 import java.security.KeyStore
 import java.security.SecureRandom
@@ -44,8 +45,14 @@ class NotificationHostComposition internal constructor(
 ) {
     private val lock = Any()
     private var bridgeAttachments: BridgeAttachments? = null
+    // 实际运行时创建时才固定 dispatcher；仅 attachBridge 不能改变已创建的运行时。
+    private val dispatcherWired = MutableStateFlow(false)
 
-    val policyPort: NotificationPolicyPort = PersistentNotificationPolicyPort(authority)
+    val policyPort: NotificationPolicyPort = PersistentNotificationPolicyPort(
+        authority = authority,
+        outboxAvailable = outbox != null,
+        dispatcherWired = dispatcherWired,
+    )
     val bindingPort: NotificationBindingPort = HostNotificationBindingPort(context)
 
     /**
@@ -77,14 +84,15 @@ class NotificationHostComposition internal constructor(
      * NotificationAuthorization），出口闸与投递 admission 共用同一权威。
      */
     val runtimeFactory: NotificationRuntimeFactory = NotificationRuntimeFactory { scope ->
+        val dispatcher = buildDispatcher()
         NotificationRuntime(
             initialCollector = AndroidNotificationCollector(authorization = authority),
             outbox = outbox,
             scope = scope,
             egressGate = NotificationRecordEgressGate { record -> authority.allows(record) },
-            dispatcher = buildDispatcher(),
+            dispatcher = dispatcher,
             policyAuthority = authority,
-        )
+        ).also { dispatcherWired.value = dispatcher != null }
     }
 
     private data class BridgeAttachments(

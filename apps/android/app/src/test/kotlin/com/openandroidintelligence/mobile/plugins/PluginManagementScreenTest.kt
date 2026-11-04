@@ -167,7 +167,7 @@ class PluginManagementScreenTest {
         assertEquals(listOf(NOTIFICATION_PLUGIN_ID, SMS_PLUGIN_ID), installed)
 
         compose.setContent {
-            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { _, _ -> }) }
         }
 
         compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
@@ -175,7 +175,7 @@ class PluginManagementScreenTest {
         compose.onAllNodesWithText("系统权限与后台任务").assertCountEquals(2)
         compose.onAllNodesWithText("卸载").assertCountEquals(2)
         compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
-        compose.onNodeWithText("打开通知访问设置").assertExists()
+        compose.onNodeWithText("打开通知访问设置").assertDoesNotExist()
 
         compose.onAllNodesWithText("启用").onFirst().performScrollTo().performClick()
         assertTrue(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
@@ -185,15 +185,30 @@ class PluginManagementScreenTest {
 
         compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
         compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
-        compose.onNodeWithText("允许后台任务").assertExists()
-        // 授权入口按插件实际声明的 kernel primitive 动态生成（问题二修复后
-        // 不再是一个只处理短信/通话记录的「检查 Android 系统权限」按钮）。
-        // 这里打开的是短信插件的对话框：只应出现短信读取入口。
-        compose.onNodeWithTag("plugin-grant:sms").assertExists()
+        compose.onNodeWithTag("plugin-grant:sms").assertDoesNotExist()
         compose.onNodeWithTag("plugin-grant:notifications").assertDoesNotExist()
-        compose.onNodeWithText("完成").performClick()
+        compose.onNodeWithText("关闭").performClick()
         compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
         assertEquals(installed, store.listInstalled().map { it.pluginId })
+    }
+
+    @Test
+    @Config(application = OpenAndroidIntelligenceApplication::class)
+    fun normalUninstallRequiresConfirmationAndCancellationKeepsThePlugin() {
+        val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
+        store.install(TestAlpPackages.compiledNotificationsPackage())
+        app.pluginHost.reload()
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
+
+        compose.onNodeWithTag("plugin-uninstall:$NOTIFICATION_PLUGIN_ID").performScrollTo().performClick()
+        compose.onNodeWithText("确认卸载插件").assertIsDisplayed()
+        assertTrue(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
+        compose.onNodeWithText("取消").performClick()
+        assertTrue(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
+        compose.onNodeWithTag("plugin-uninstall:$NOTIFICATION_PLUGIN_ID").performScrollTo().performClick()
+        compose.onNodeWithTag("plugin-uninstall-confirm").performClick()
+        compose.waitForIdle()
+        assertFalse(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
     }
 
     @Test
@@ -425,7 +440,7 @@ class PluginManagementScreenTest {
         host.reload()
         assertEquals("PLUGIN_MANIFEST_INVALID",host.loadFailures[disguised.name])
         compose.setContent {
-            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { _, _ -> }) }
         }
         // Only the legitimate row can expose normal actions or its declarative UI.
         assertEquals(1,compose.onAllNodesWithText("系统权限与后台任务").fetchSemanticsNodes().size)
@@ -442,7 +457,7 @@ class PluginManagementScreenTest {
 
     @Test
     @Config(application = OpenAndroidIntelligenceApplication::class)
-    fun anInstalledCapabilityCanBeConfiguredOfflineWithoutAPairingGrant() {
+    fun anInstalledCapabilityOpensTheSingleEditorWithoutChangingPolicyOrTemporaryApprovals() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
         store.install(TestAlpPackages.compiledNotificationsPackage())
         app.pluginHost.reload()
@@ -451,28 +466,25 @@ class PluginManagementScreenTest {
         val approvalScope = CapabilityRequestScope(entry.key, DeviceOperation.READ, "a".repeat(64))
         val policyRevision = requireNotNull(app.pairingGrants.state.value).revision
         app.pairingGrants.authorization.approve("ui-test-approval", approvalScope, 5, policyRevision, 300_000L)
+        var opened: Pair<String, String>? = null
+        var openedAuthorizations = 0
+        compose.setContent {
+            MaterialTheme {
+                PluginManagementScreen(true, true, {}, store = store,
+                    onOpenCapability = { id, capability -> opened = id to capability },
+                    onOpenAuthorizations = { openedAuthorizations++ })
+            }
+        }
+        compose.onNodeWithTag("revoke-temporary-approvals").performScrollTo().performClick()
+        assertEquals(1, openedAuthorizations)
         assertTrue(app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision)
             is CapabilityAuthorization.Allowed)
-
-        compose.setContent {
-            MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
-        }
-
-        compose.onNodeWithTag("revoke-temporary-approvals").performScrollTo().assertIsEnabled().performClick()
-        compose.onNodeWithText("已撤销本机全部临时授权；各项能力的长期设置保持原样。").assertExists()
-        assertEquals(CapabilityAuthorization.AwaitingConfirmation,
-            app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision))
+        compose.onNodeWithTag("capability-enabled:$NOTIFICATION_PLUGIN_ID:${entry.key}").assertDoesNotExist()
+        compose.onNodeWithTag("plugin-open-capability:$NOTIFICATION_PLUGIN_ID:${entry.key}")
+            .performScrollTo().performClick()
+        assertEquals(NOTIFICATION_PLUGIN_ID to entry.key, opened)
         assertEquals(CapabilityPolicy(), app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
-        val identity = "$NOTIFICATION_PLUGIN_ID:${entry.key}"
-        compose.onNodeWithTag("capability-enabled:$identity")
-            .performScrollTo().assertIsDisplayed().assertIsEnabled().assertIsOn().performClick()
-        compose.waitForIdle()
-        assertFalse(app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key).enabled)
         assertFalse(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
-        compose.onNodeWithText("能力已关闭，授权模式仍会保留").assertExists()
-        compose.onNodeWithTag("capability-mode:$identity:READ_ONLY").performScrollTo().performClick()
-        assertEquals(CapabilityPolicy(false, CapabilityAuthorizationMode.READ_ONLY),
-            app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
     }
 
     @Test
@@ -501,10 +513,9 @@ class PluginManagementScreenTest {
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store) }
         }
-        compose.onNodeWithText("系统权限与后台任务").performScrollTo().performClick()
-        compose.onNodeWithText("允许后台任务").assertExists()
+        compose.onNodeWithText("允许后台任务").performScrollTo().assertExists()
 
-        compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performClick()
+        compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performScrollTo().performClick()
         compose.waitForIdle()
 
         val localState = requireNotNull(app.pairingGrants.state.value)
@@ -558,7 +569,8 @@ class PluginManagementScreenTest {
             }
         }
 
-        // 条目位于长列表下方：滚动可见后再点击（越界节点点击不生效）。
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        // 插件管理位于设备能力分类，仍可进入原真实安装流程。
         compose.onNodeWithText("插件管理").performScrollTo()
         compose.onNodeWithText("插件管理").performClick()
 

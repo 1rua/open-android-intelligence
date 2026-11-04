@@ -136,10 +136,14 @@ class PluginKernel(
      * created after the stop cannot miss that it already happened.
      */
     fun onEmergencyStop(listener: (Boolean) -> Unit) {
-        synchronized(emergencyStopListeners) {
-            emergencyStopListeners += listener
-        }
+        observeEmergencyStop(listener)
+    }
+
+    /** UI owners can stop observing without retaining a destroyed ViewModel. */
+    fun observeEmergencyStop(listener: (Boolean) -> Unit): AutoCloseable {
+        synchronized(emergencyStopListeners) { emergencyStopListeners += listener }
         listener(emergencyStopped)
+        return AutoCloseable { synchronized(emergencyStopListeners) { emergencyStopListeners -= listener } }
     }
 
     fun register(registration: PluginRegistration) {

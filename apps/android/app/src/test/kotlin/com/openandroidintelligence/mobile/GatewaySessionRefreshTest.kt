@@ -1032,6 +1032,8 @@ class GatewaySessionRefreshTest {
         assertTrue(gateway.targetsOf("DELETE").contains(path))
         assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.unpairOperation.value is LocalOperationState.Completed })
+        assertTrue(runtime.localSessionState.value is LocalSessionState.SignedOut)
     }
 
     @Test
@@ -1060,6 +1062,8 @@ class GatewaySessionRefreshTest {
         awaitConnected(runtime)
         runtime.unpair()
         assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value != null })
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.unpairOperation.value is LocalOperationState.Failed })
+        assertFalse((runtime.unpairOperation.value as LocalOperationState.Failed).remoteCompleted)
         assertTrue(deviceKeys.hasKey(profileId()))
         assertTrue(credentialStore.hasRefresh(profileId()))
         assertTrue(runtime.phase.value is ConnectionPhase.Connected)

@@ -3,23 +3,26 @@ package com.openandroidintelligence.mobile.plugins
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.HourglassEmpty
@@ -34,20 +37,19 @@ import com.openandroidintelligence.conversation.components.SettingsIconBadge
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+import com.openandroidintelligence.mobile.SettingsPresentation
+import com.openandroidintelligence.mobile.settings.SectionLabel
+import com.openandroidintelligence.mobile.settings.SettingsPageColumn
+import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.plugin.ui.UiActionId
 import com.openandroidintelligence.plugin.ui.PluginUiActionValue
 import com.openandroidintelligence.gateway.schema.Json
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,10 +63,18 @@ import kotlinx.coroutines.runInterruptible
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import android.view.Gravity
+import android.view.WindowManager
 import androidx.compose.ui.platform.testTag
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
+import com.openandroidintelligence.conversation.components.SettingsSwitchItem
 import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.OperationNoticeBanner
@@ -103,6 +113,10 @@ fun PluginManagementScreen(
     onOpenNotificationSettings: (() -> Unit)? = null,
     /** 测试注入的内置包来源；缺省时按插件各自读取 APK 资产。 */
     bundledPluginPackages: Map<BundledPlugin, () -> ByteArray> = emptyMap(),
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    onOpenCapability: ((String, String) -> Unit)? = null,
+    onOpenScreen: (() -> Unit)? = null,
+    onOpenAuthorizations: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     // 未显式给 store 时按应用上下文自建（真实存储：filesDir/plugins）。
@@ -116,11 +130,12 @@ fun PluginManagementScreen(
     val currentGatewayState = gatewayState.forLocalState(localAuthorizationRevision, pluginRevision ?: -1L)
     var installed by remember { mutableStateOf(resolvedStore.listInstalled()) }
     var pendingApproval by remember { mutableStateOf<ByteArray?>(null) }
-    var grantPlugin by remember { mutableStateOf<String?>(null) }
+    var grantPlugin by rememberSaveable { mutableStateOf<String?>(null) }
+    var grantCapabilityFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var removeDamagedPlugin by remember { mutableStateOf<String?>(null) }
-    var showNotificationSetup by remember { mutableStateOf(false) }
-    var invokePlugin by remember { mutableStateOf<String?>(null) }
-    var invokeCapability by remember { mutableStateOf("") }
+    var removePlugin by rememberSaveable { mutableStateOf<String?>(null) }
+    var invokePlugin by rememberSaveable { mutableStateOf<String?>(null) }
+    var invokeCapability by rememberSaveable { mutableStateOf("") }
     var invokeParameters by remember { mutableStateOf("{}") }
     var showRemote by rememberSaveable { mutableStateOf(false) }
     var sourceUrl by rememberSaveable { mutableStateOf("") }
@@ -161,168 +176,37 @@ fun PluginManagementScreen(
             catch (cause: Exception) { notice = installFailureNotice(cause) }
         }
     }
-    fun showPermissionStatus(id: String) {
-        if (host?.entries(id).orEmpty().any { "kernel.notifications.read" in it.primitives }) {
-            showNotificationSetup = true
-        } else {
-            notice = "Android 系统权限已就绪；每项能力的本机授权模式保持原设置。"
+    // 能力策略、提供者及系统授权均由相应能力详情统一编辑。
+    fun openCapability(id: String, entry: VerifiedCapability) {
+        grantPlugin = null
+        when {
+            onOpenCapability != null -> onOpenCapability(id, entry.key)
+            entry.primitives.any { it.startsWith("kernel.screen.") } && onOpenScreen != null -> onOpenScreen()
+            "kernel.notifications.read" in entry.primitives && onOpenNotificationSettings != null -> onOpenNotificationSettings()
+            onOpenAuthorizations != null -> onOpenAuthorizations()
+            else -> notice = "无法打开能力设置，请从设备能力与授权中配置。"
         }
     }
-
-    // ===== Android 系统授权：按插件实际声明的 kernel primitive 动态推导 =====
-    //
-    // 修复前这里只处理 READ_SMS / READ_CALL_LOG，无障碍、通知读取、屏幕截图
-    // 三类能力在「检查 Android 系统权限」里没有任何入口。现在全部由声明推导，
-    // 不再硬编码特定 Agent 或 Gateway。
-    //
-    // 每次从系统设置返回都会递增 refreshTick，令下面所有查询重新取真实状态。
-    var permissionRefreshTick by remember { mutableStateOf(0) }
-    fun notificationAccessGranted(): Boolean = runCatching {
-        com.openandroidintelligence.notification.control.NotificationControlRegistry.bindingPort().isListenerBound()
-    }.getOrDefault(false)
-    /**
-     * 无障碍服务是否真的可用：系统设置里已启用**且**服务当前已连接。
-     *
-     * 只查设置标记会把「开过但被系统解绑」误判为已授权，并禁用设置按钮 ——
-     * 而那正是用户唯一需要回到无障碍设置的时刻。
-     */
-    fun accessibilityServiceEnabled(): Boolean = runCatching {
-        val enabled = android.provider.Settings.Secure.getString(
-            context.contentResolver, android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-        ).orEmpty()
-        // 用组件名常量而不是类引用：app 模块不依赖 screen-control 的编译期类型，
-        // 无障碍实现经 device-primitives 在运行期装配。
-        val own = android.content.ComponentName(context, com.openandroidintelligence.mobile.screen.accessibilityServiceClassName())
-        val enabledInSettings = enabled.split(':').any {
-            it.equals(own.flattenToString(), true) || it.equals(own.flattenToShortString(), true)
+    fun openCapabilitiesForAction(id: String, value: PluginUiActionValue) {
+        val entries = host?.entries(id).orEmpty()
+        val requested = (value as? PluginUiActionValue.CapabilityValue)?.capability
+        val matches = when {
+            requested == null -> entries
+            requested.startsWith("kernel.") -> entries.filter { requested in it.primitives }
+            else -> entries.filter { it.key == requested || it.id == requested }
         }
-        enabledInSettings && accessibilityCaptureReady()
-    }.getOrDefault(false)
-    /**
-     * 截图是否已经可用（任一路径）。
-     *
-     * 用 `isAvailable` 而不是「投屏是否已授权」：无障碍服务开启后截图就已经可用，
-     * 此时把投屏项显示成「未授权」并催用户再点一次系统授权是错的。
-     */
-    fun screenCaptureAuthorized(): Boolean = runCatching {
-        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true
-    }.getOrDefault(false)
-
-    val grantInspector = remember(permissionRefreshTick, pluginRevision) {
-        DeviceCapabilityGrantInspector(
-            context = context,
-            notificationAccessGranted = ::notificationAccessGranted,
-            accessibilityEnabled = ::accessibilityServiceEnabled,
-            captureAuthorized = ::screenCaptureAuthorized,
-        )
-    }
-    fun requestCapabilityResync() {
-        runCatching { app?.gatewayRuntime?.requestCapabilitySync() }
-    }
-    var permissionDialogPlugin by remember { mutableStateOf<String?>(null) }
-    var pendingCapturePlugin by remember { mutableStateOf<String?>(null) }
-    // 系统投屏对话框可能停留很久，期间用户可能触发紧急停止、改动本机能力设置、
-    // 切换插件或撤销屏幕会话。票据记录发起时的授权版本，返回时逐项复核，
-    // 与 MainActivity 的远程截图流程保持同一套安全约束。
-    var captureTicket by remember {
-        mutableStateOf<com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket?>(null)
-    }
-    fun captureConsentStillCurrent(): Boolean {
-        return com.openandroidintelligence.mobile.screen.screenCaptureConsentCurrent(
-            captureTicket,
-            localAuthorizationRevision,
-            pluginRevision ?: -1L,
-            capabilityEnabled = app?.pluginHost?.let { host ->
-                val plugin = "org.openandroidintelligence.screen-capture"
-                host.entries(plugin).firstOrNull { "kernel.screen.capture" in it.primitives }
-                    ?.let { host.isEnabled(plugin) && host.capabilityPolicy(plugin, it.key).enabled } == true
-            } == true,
-            emergencyStopped = app?.kernel?.isEmergencyStopped() ?: true,
-            stopGeneration = com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
-        )
-    }
-    val requestPermissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        val id = permissionDialogPlugin; permissionDialogPlugin = null
-        // 逐项判断而不是要求"全部授予"：部分授予时也要把已授予的部分如实计入。
-        if (id != null && result.values.any { it }) showPermissionStatus(id)
-        else notice = "系统权限未授予；本机能力开关保持原状态。"
-        permissionRefreshTick++
-        requestCapabilityResync()
-    }
-    // MediaProjection 必须由前台 Activity 发起系统对话框，跳设置页是无关操作。
-    val captureGrantLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
-        // 第一次复核：系统对话框期间授权状态可能已经变化，变化后不得再建立会话。
-        if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null &&
-            source != null && captureConsentStillCurrent()
-        ) {
-            // Android 14+ 要求 mediaProjection 前台服务先完成 startForeground，
-            // 再转交授权结果，否则确定性抛出 SecurityException。
-            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.startForeground(context) {
-                // 第二次复核：等待前台服务就绪期间仍可能被撤销。
-                if (!captureConsentStillCurrent()) {
-                    source.release()
-                    com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
-                    notice = "截图能力或本机设置已变化，未使用这次系统授权。"
-                } else {
-                    val granted = source.onAuthorizationResult(result.resultCode, result.data)
-                    if (!granted) {
-                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
-                    }
-                    notice = if (granted) {
-                        "已获得屏幕截图系统授权。"
-                    } else {
-                        "屏幕截图会话建立失败，可改用无障碍截图或稍后重试。"
-                    }
-                }
-                captureTicket = null
-                pendingCapturePlugin = null
-                permissionRefreshTick++
-                requestCapabilityResync()
-            }
-        } else if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            // 授权结果本身有效，但发起时的授权前提已经失效。
-            source?.release()
-            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
-            notice = "截图能力或本机设置已变化，请重新发起系统授权。"
-            captureTicket = null
-            pendingCapturePlugin = null
-            permissionRefreshTick++
-        } else {
-            source?.release()
-            com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(context)
-            notice = "未获得屏幕截图授权；截图能力暂不可用，其余能力不受影响。"
-            captureTicket = null
-            pendingCapturePlugin = null
-            permissionRefreshTick++
+        when {
+            matches.size == 1 -> openCapability(id, matches.single())
+            matches.isNotEmpty() -> { grantCapabilityFilter = requested; grantPlugin = id }
+            requested != null -> notice = "插件请求的能力未声明，无法打开能力设置。"
+            onOpenAuthorizations != null -> onOpenAuthorizations()
+            else -> notice = "这个插件没有可配置的能力。"
         }
-    }
-    fun openAccessibilityGrant(): Boolean = runCatching {
-        context.startActivity(
-            android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-        true
-    }.getOrDefault(false)
-    fun openNotificationGrant(): Boolean = openNotificationAccessSettings(context)
-    // 从系统设置返回后重新检测，并触发 Core 同步让远端看到最新能力状态。
-    val grantLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(grantLifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                permissionRefreshTick++
-                requestCapabilityResync()
-            }
-        }
-        grantLifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { grantLifecycleOwner.lifecycle.removeObserver(observer) }
     }
     fun sink(id: String) = PluginUiActionSink { component, action, value ->
         if (host == null) notice = "已提交 $action（$component）——$KERNEL_ABSENT_NOTICE"
         else when (action) {
-            UiActionId.REQUEST_GRANT, UiActionId.SELECT_PROVIDER -> grantPlugin = id
+            UiActionId.REQUEST_GRANT, UiActionId.SELECT_PROVIDER -> openCapabilitiesForAction(id, value)
             UiActionId.INVOKE_CAPABILITY, UiActionId.REFRESH_CARD -> {
                 invokePlugin = id; invokeCapability = host.entries(id).firstOrNull()?.key.orEmpty(); invokeParameters = "{}"
             }
@@ -360,154 +244,51 @@ fun PluginManagementScreen(
             dismissButton = { TextButton(onClick = { removeDamagedPlugin = null }) { Text("取消") } },
         )
     }
-    if (showNotificationSetup) {
+    removePlugin?.let { id ->
         AlertDialog(
-            onDismissRequest = { showNotificationSetup = false },
-            title = { Text("完成通知读取设置") },
-            text = { Text("还需要在「通知读取范围」里允许读取、选择要读取的应用与内容，并在 Android 系统设置中开启通知使用权。") },
+            onDismissRequest = { removePlugin = null },
+            title = { Text("确认卸载插件") },
+            text = { Text("将停用并卸载插件 $id，清理其插件私有数据、已保存的插件专属授权和后台任务。重新安装后需要重新启用并检查相关权限。") },
             confirmButton = {
                 TextButton(onClick = {
-                    showNotificationSetup = false
-                    if (onOpenNotificationSettings != null) onOpenNotificationSettings()
-                    else if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
-                }) { Text(if (onOpenNotificationSettings != null) "配置通知读取范围" else "打开通知使用权设置") }
+                    removePlugin = null
+                    runCatching { host?.uninstall(id) ?: error("PLUGIN_HOST_UNAVAILABLE"); refresh() }
+                        .fold(onSuccess = { notice = "已卸载并清理插件数据。" },
+                            onFailure = { notice = "卸载未完成，请检查存储。" })
+                }, modifier = Modifier.testTag("plugin-uninstall-confirm")) { Text("确认卸载") }
             },
-            dismissButton = { TextButton(onClick = { showNotificationSetup = false }) { Text("稍后设置") } },
+            dismissButton = { TextButton(onClick = { removePlugin = null }) { Text("取消") } },
         )
     }
     grantPlugin?.let { id ->
         val entries = host?.entries(id).orEmpty()
-        AlertDialog(onDismissRequest = { grantPlugin = null },title = { Text("权限与能力设置") },
+        AlertDialog(
+            onDismissRequest = { grantPlugin = null },
+            title = { Text("权限与能力设置") },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                 ) {
-                    Text("系统权限、后台任务与每项能力的授权模式分别管理。短信和通话记录读取权限由 Android 单独确认，检查系统权限不会修改能力授权。")
-                    val activeHost = host
-                    if (activeHost != null && activeHost.supportsBackground(id)) {
-                        val backgroundEnabled = activeHost.isBackgroundEnabled(id)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("允许后台任务", style = MaterialTheme.typography.bodyLarge)
-                                Text(
-                                    text = when {
-                                        backgroundEnabled -> "已在本机明确允许后台任务"
-                                        else -> "普通查询无需此许可；定时/后台操作仍受系统调度和当前本地授权约束"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Switch(
-                                checked = backgroundEnabled,
-                                onCheckedChange = { enabled ->
-                                    runCatching { activeHost.setBackgroundEnabled(id, enabled) }
-                                        .fold(
-                                            onSuccess = { notice = if (enabled) "已明确允许此插件执行后台任务。" else "已在本机关闭此插件的后台任务许可。" },
-                                            onFailure = { notice = "后台任务许可未能保存，请稍后重试。" },
-                                        )
-                                },
-                                modifier = Modifier.testTag("plugin-background-toggle:$id"),
-                            )
-                        }
-                    }
-                    entries.forEach { entry ->
-                        Text("${entry.key}（风险：${entry.risk}）\n需要：${entry.primitives.joinToString()}")
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Text("Android 系统授权", style = MaterialTheme.typography.titleSmall)
-                    val requirements = remember(permissionRefreshTick, entries) {
-                        androidPermissionRequirements(entries.flatMap { it.primitives }.toSet())
-                    }
-                    if (requirements.isEmpty()) {
-                        Text(
-                            text = "这个插件不需要额外的 Android 系统授权。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    requirements.forEach { requirement ->
-                        // 投屏项：无障碍通道已能截图时，把状态如实呈现为已满足，
-                        // 避免在能力已可用的情况下催用户再授权一次。
-                        val inspected = grantInspector.state(requirement)
-                        val state = if (requirement.opensMediaProjectionDialog() && inspected != DeviceCapabilityGrantState.GRANTED) {
-                            if (accessibilityCaptureReady()) DeviceCapabilityGrantState.GRANTED else inspected
-                        } else inspected
-                        DeviceGrantRow(
-                            requirement = requirement,
-                            state = state,
-                            onAction = {
-                                when {
-                                    // 已授权：不再重复申请，只给出状态，避免无意义弹窗。
-                                    state == DeviceCapabilityGrantState.GRANTED -> {
-                                        notice = "${requirement.label}已授权，无需再次申请。"
-                                    }
-                                    // 运行时权限：走系统权限申请对话框。
-                                    requirement.grantKind == DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> {
-                                        val permission = requirement.manifestPermission
-                                        when {
-                                            permission == null ->
-                                                notice = "${requirement.label}没有可申请的系统权限。"
-                                            // 已被拒绝过的再弹框在多数系统上毫无反应，
-                                            // 直接引导去系统设置页，避免用户反复点却无反馈。
-                                            state == DeviceCapabilityGrantState.DENIED ->
-                                                notice = manualGrantGuidance(requirement)
-                                            else -> {
-                                                permissionDialogPlugin = id
-                                                requestPermissions.launch(arrayOf(permission))
-                                            }
-                                        }
-                                    }
-                                    // 无障碍：跳系统无障碍设置，由用户亲手开启。
-                                    requirement.opensAccessibilitySettings() -> {
-                                        if (!openAccessibilityGrant()) {
-                                            notice = manualGrantGuidance(requirement)
-                                        }
-                                    }
-                                    // 通知使用权：跳系统通知使用权设置。
-                                    requirement.opensNotificationAccessSettings() -> {
-                                        if (!openNotificationGrant()) {
-                                            notice = manualGrantGuidance(requirement)
-                                        }
-                                    }
-                                    // 投屏：前台 Activity 发起系统授权对话框，不跳无关设置页。
-                                    requirement.opensMediaProjectionDialog() -> {
-                                        // 无障碍已能截图时不必再走一次投屏授权，
-                                        // 否则用户会为了「已可用的能力」再确认一遍。
-                                        if (accessibilityCaptureReady()) {
-                                            notice = "无障碍截图已可用，不需要额外的系统投屏授权。"
-                                        } else {
-                                            val intent = runCatching {
-                                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
-                                                    .source?.createAuthorizationIntent()
-                                            }.getOrNull()
-                                            if (intent == null) {
-                                                notice = manualGrantGuidance(requirement)
-                                            } else {
-                                                // 记录发起时的授权版本；返回后据此判断是否仍然有效。
-                                                captureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
-                                                    localAuthorizationRevision,
-                                                    pluginRevision ?: -1L,
-                                                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L,
-                                                )
-                                                pendingCapturePlugin = id
-                                                captureGrantLauncher.launch(intent)
-                                            }
-                                        }
-                                    }
-                                    else -> notice = manualGrantGuidance(requirement)
-                                }
-                            },
+                    if (entries.isEmpty()) Text("这个插件没有可配置的能力。")
+                    entries.filter { entry ->
+                        val target = grantCapabilityFilter
+                        target == null || entry.key == target || entry.id == target || target in entry.primitives
+                    }.forEach { entry ->
+                        SettingsNavigationItem(
+                            headline = entry.key,
+                            supporting = "风险：${entry.risk}；需要：${entry.primitives.joinToString()}",
+                            onClick = { openCapability(id, entry) },
+                            enabled = onOpenCapability != null || onOpenAuthorizations != null ||
+                                (onOpenScreen != null && entry.primitives.any { it.startsWith("kernel.screen.") }) ||
+                                (onOpenNotificationSettings != null && "kernel.notifications.read" in entry.primitives),
+                            modifier = Modifier.testTag("plugin-capability-choice:$id:${entry.key}"),
                         )
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { grantPlugin = null }) { Text("完成") } },
-            dismissButton = { TextButton(onClick = { grantPlugin = null }) { Text("关闭") } })
+            confirmButton = { TextButton(onClick = { grantPlugin = null }) { Text("关闭") } },
+        )
     }
     invokePlugin?.let { id ->
         AlertDialog(onDismissRequest = { invokePlugin = null },title = { Text("调用插件能力") },
@@ -535,11 +316,8 @@ fun PluginManagementScreen(
             }) { Text("执行") } },dismissButton = { TextButton(onClick = { invokePlugin = null }) { Text("取消") } })
     }
     if (showRemote) {
-        // 四个输入框的对话框在大字号/横屏下会被挤出屏幕底部，改为可滚动的 M3 底部弹层。
-        ModalBottomSheet(
-            onDismissRequest = { showRemote = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        ) {
+        // 四个输入框在大字号和横屏下可滚动；侧栏模式不扩大弹窗窗口。
+        val remoteContent: @Composable () -> Unit = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -572,44 +350,35 @@ fun PluginManagementScreen(
                 }
             }
         }
+        if (presentation == SettingsPresentation.SIDEBAR) {
+            Dialog(onDismissRequest = { showRemote = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+                val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+                val drawerWidth = with(LocalDensity.current) { Dimensions.DrawerWidth.roundToPx() }
+                androidx.compose.runtime.SideEffect {
+                    window?.setDimAmount(0f)
+                    window?.setGravity(Gravity.START or Gravity.TOP)
+                    window?.setLayout(drawerWidth, WindowManager.LayoutParams.MATCH_PARENT)
+                }
+                Surface(
+                    modifier = Modifier.widthIn(max = Dimensions.DrawerWidth)
+                        .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)),
+                ) { remoteContent() }
+            }
+        } else {
+            ModalBottomSheet(
+                onDismissRequest = { showRemote = false },
+                sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            ) { remoteContent() }
+        }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("插件管理") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                ),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
+    SettingsPageScaffold(
+        title = "插件管理",
+        presentation = presentation,
+        onBack = onBack,
         modifier = modifier,
     ) { padding ->
-        // 宽屏限宽居中：分组卡片不再被拉成超长的一行。
-        Box(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize(),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-        Column(
-            modifier = Modifier
-                .widthIn(max = Dimensions.ReadingWidth)
-                .fillMaxHeight()
-                .verticalScroll(rememberScrollState())
-                .padding(
-                    horizontal = Dimensions.ScreenHorizontal,
-                    vertical = Dimensions.SpaceSmall,
-                ),
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-        ) {
+        SettingsPageColumn(contentPadding = padding) {
             notice?.let { text ->
                 OperationNoticeBanner(text = text, onDismiss = { notice = null })
             }
@@ -627,15 +396,9 @@ fun PluginManagementScreen(
                     icon = Icons.Default.Extension,
                     tone = if (pluginRuntimesWired) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
                 )
-                if (host != null) {
+                if (host != null && onOpenAuthorizations != null) {
                     TextButton(
-                        onClick = {
-                            runCatching { host.revokeTemporaryApprovals() }
-                                .fold(
-                                    onSuccess = { notice = "已撤销本机全部临时授权；各项能力的长期设置保持原样。" },
-                                    onFailure = { notice = "临时授权未能撤销，请稍后重试。" },
-                                )
-                        },
+                        onClick = onOpenAuthorizations,
                         modifier = Modifier.testTag("revoke-temporary-approvals"),
                     ) { Text("撤销临时授权") }
                 }
@@ -715,44 +478,45 @@ fun PluginManagementScreen(
                                     // 能力状态：图标 + 语义色 + 文字三件套，颜色不是唯一信号。
                                     val entries = remember(host, id, pluginRevision) { host.entries(id) }
                                     entries.forEach { entry ->
-                                        CapabilityAuthorizationControls(
-                                            pluginId = id,
-                                            capability = entry.key,
-                                            readOnly = entry.risk == "read" || entry.key.startsWith("org.openandroidintelligence.screen-capture.capture@"),
-                                            policy = host.capabilityPolicy(id, entry.key),
-                                            onPolicyChange = { policy ->
-                                                runCatching { host.setCapabilityPolicy(id, entry.key, policy) }
-                                                    .fold(
-                                                        onSuccess = { notice = "已保存本机授权设置，切换 Core 或账号后仍然有效。" },
-                                                        onFailure = { notice = "本机授权设置未能保存，请稍后重试。" },
-                                                    )
-                                            },
-                                        )
                                         val diagnostic = currentGatewayState.diagnostic(DeviceCapabilityIdentity(id, entry.id, entry.version))
                                         CapabilityStatusRow(entryId = entry.id, status = diagnostic.status, reason = diagnostic.reason)
-                                        if (diagnostic.status == "PROVIDER_NOT_SELECTED" && host.capabilityPolicy(id, entry.key).enabled) {
-                                            TextButton(onClick = {
-                                                runCatching { host.setCapabilityPolicy(id, entry.key, host.capabilityPolicy(id, entry.key)) }
-                                                    .fold(
-                                                        onSuccess = { notice = "已选择此插件提供这项能力，授权模式保持原设置。" },
-                                                        onFailure = { notice = "未能选择提供者，请检查插件状态后重试。" },
-                                                    )
-                                            }) { Text("使用此插件提供这项能力") }
+                                        if (onOpenCapability != null || onOpenAuthorizations != null ||
+                                            (onOpenScreen != null && entry.primitives.any { it.startsWith("kernel.screen.") }) ||
+                                            (onOpenNotificationSettings != null && "kernel.notifications.read" in entry.primitives)
+                                        ) {
+                                            TextButton(
+                                                onClick = { openCapability(id, entry) },
+                                                modifier = Modifier.testTag("plugin-open-capability:$id:${entry.key}"),
+                                            ) { Text("设置此项能力") }
                                         }
+                                    }
+                                    if (host.supportsBackground(id)) {
+                                        val backgroundEnabled = host.isBackgroundEnabled(id)
+                                        SettingsSwitchItem(
+                                            headline = "允许后台任务",
+                                            supporting = if (backgroundEnabled) "已在本机明确允许后台任务" else "普通查询无需此许可；定时/后台操作仍受系统调度和当前本地授权约束",
+                                            checked = backgroundEnabled,
+                                            onCheckedChange = { enabled ->
+                                                runCatching { host.setBackgroundEnabled(id, enabled) }.fold(
+                                                    onSuccess = { notice = if (enabled) "已明确允许此插件执行后台任务。" else "已在本机关闭此插件的后台任务许可。" },
+                                                    onFailure = { notice = "后台任务许可未能保存，请稍后重试。" },
+                                                )
+                                            },
+                                            modifier = Modifier.testTag("plugin-background-toggle:$id"),
+                                        )
                                     }
                                     // 常规动作：FlowRow 自动换行，窄屏不会再被挤成一条溢出屏幕的长行。
                                     FlowRow(horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                                         TextButton(onClick = { runCatching { host.enable(id,!host.isEnabled(id)) }.fold(onSuccess={notice="插件状态已更新。"},onFailure={notice="启用失败：请检查开发者信任模式、插件兼容性或安全限制。"}) }) { Text(if(host.isEnabled(id)) "停用" else "启用") }
-                                        TextButton(onClick = { grantPlugin = id }) { Text("系统权限与后台任务") }
+                                        if (entries.isNotEmpty() && (onOpenCapability != null || onOpenScreen != null || onOpenNotificationSettings != null || onOpenAuthorizations != null)) {
+                                            TextButton(onClick = { grantCapabilityFilter = null; grantPlugin = id }) { Text("系统权限与后台任务") }
+                                        }
                                         if (host.hasNativeUi(id)) TextButton(onClick = { runCatching { host.selectNativeUi(id) }.fold(onSuccess={notice="已切换为该插件自带的界面，随时可以切回来。"},onFailure={notice="需要先开启开发者信任模式并启用插件。"}) }) { Text("使用插件界面") }
                                         if (host.isQuarantined(id)) TextButton(onClick = { host.recoverNative(id); refresh() }) { Text("解除安全限制（保持停用）") }
-                                        if (host.entries(id).any { "kernel.notifications.read" in it.primitives }) {
-                                            onOpenNotificationSettings?.let { openSettings ->
-                                                TextButton(onClick = openSettings) { Text("通知读取范围") }
+                                        entries.firstOrNull { "kernel.notifications.read" in it.primitives }?.let { notification ->
+                                            if (onOpenCapability != null || onOpenNotificationSettings != null || onOpenAuthorizations != null) {
+                                                TextButton(onClick = { openCapability(id, notification) }) { Text("通知读取范围") }
                                             }
-                                            TextButton(onClick = {
-                                                if (!openNotificationAccessSettings(context)) notice = "无法打开系统通知使用权设置，请到 Android 系统设置里手动开启本应用的通知使用权。"
-                                            }) { Text("打开通知访问设置") }
                                         }
                                     }
                                     // 卸载与日常可逆设置分开呈现。
@@ -762,7 +526,8 @@ fun PluginManagementScreen(
                                             contentColor = MaterialTheme.colorScheme.error,
                                         )
                                         TextButton(
-                                            onClick = { runCatching { host.uninstall(id); refresh() }.fold(onSuccess={notice="已卸载并清理插件数据。"},onFailure={notice="卸载未完成，请检查存储。"}) },
+                                            onClick = { removePlugin = id },
+                                            modifier = Modifier.testTag("plugin-uninstall:$id"),
                                             colors = dangerColors,
                                         ) { Text("卸载") }
                                     }
@@ -795,7 +560,6 @@ fun PluginManagementScreen(
                     )
                 }
             }
-        }
         }
     }
 }
@@ -1004,90 +768,3 @@ internal fun installFailureNotice(cause: Throwable): String = when (cause) {
     is PluginInstallRefused -> "安装被拒绝：${cause.message ?: cause::class.java.simpleName}"
     else -> "安装失败：无法读取或处理所选插件包。"
 }
-
-/** 分组标题，与设置主页面同款式。 */
-@Composable
-private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = modifier.padding(
-            start = Dimensions.SpaceMedium,
-            top = Dimensions.SpaceSmall,
-            bottom = Dimensions.SpaceTiny,
-        ),
-    )
-}
-
-/**
- * 一条 Android 系统授权需求：名称 + 状态 + 可执行动作。
- *
- * 已授权时按钮禁用并显示「已授权」，避免用户反复点击触发无意义的系统申请
- * ——这是问题二明确要求的「已授权时正确显示状态」。
- *
- * 每行都带稳定 testTag，供 UI 测试定位不同类型的授权入口。
- */
-@Composable
-private fun DeviceGrantRow(
-    requirement: AndroidPermissionRequirement,
-    state: DeviceCapabilityGrantState,
-    onAction: () -> Unit,
-) {
-    val granted = state == DeviceCapabilityGrantState.GRANTED
-    val statusText = when (state) {
-        DeviceCapabilityGrantState.GRANTED -> "已授权"
-        DeviceCapabilityGrantState.NOT_REQUESTED -> "未授权 · 可以现在申请"
-        DeviceCapabilityGrantState.DENIED -> "上次被拒绝 · 需要去系统设置开启"
-        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需要在系统设置中开启"
-        DeviceCapabilityGrantState.ASKED_ON_USE -> "使用时由系统询问 · 无需现在授权"
-    }
-    val actionText = when (state) {
-        DeviceCapabilityGrantState.GRANTED -> "已授权"
-        DeviceCapabilityGrantState.DENIED -> "前往设置"
-        // 投屏没有可持久状态：正确动作是发起系统对话框，而不是跳设置页。
-        DeviceCapabilityGrantState.ASKED_ON_USE -> "发起系统授权"
-        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> when {
-            requirement.opensAccessibilitySettings() -> "打开无障碍设置"
-            requirement.opensNotificationAccessSettings() -> "打开通知使用权设置"
-            else -> "前往设置"
-        }
-        DeviceCapabilityGrantState.NOT_REQUESTED -> "申请权限"
-    }
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(requirement.label, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                text = requirement.purpose,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                text = statusText,
-                style = MaterialTheme.typography.bodySmall,
-                color = if (granted) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-            )
-        }
-        TextButton(
-            onClick = onAction,
-            enabled = !granted,
-            modifier = Modifier.testTag("plugin-grant:${requirement.key}"),
-        ) { Text(actionText) }
-    }
-}
-
-/**
- * 无障碍截图通道当前是否可用。
- *
- * 提到文件级是为了避免局部函数「先使用后定义」的顺序问题；它同时也是
- * 授权状态与界面文案的单一判据，必须与截图来源的真实判断完全一致。
- */
-private fun accessibilityCaptureReady(): Boolean = runCatching {
-    (com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
-        as? com.openandroidintelligence.capability.AccessibilityFirstScreenCaptureSource)
-        ?.accessibilityAvailable() == true
-}.getOrDefault(false)

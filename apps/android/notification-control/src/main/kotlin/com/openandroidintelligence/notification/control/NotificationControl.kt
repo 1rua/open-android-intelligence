@@ -21,6 +21,10 @@ data class NotificationPolicySnapshot(
     val fieldAccess: NotificationFieldAccess,
     val mode: NotificationDeliveryMode,
     val revision: ULong,
+    /** 旧加密队列是否已装配，不代表队列可写。 */
+    val outboxAvailable: Boolean = false,
+    /** 最近创建的旧通知运行时是否持有投递组件；不代表运行、联网或成功投递。 */
+    val deliveryDispatcherWired: Boolean = false,
 ) {
     companion object {
         /** 未装配时的诚实快照：deny-first 的每一位都是 false/默认/零。 */

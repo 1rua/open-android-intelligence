@@ -44,6 +44,8 @@ data class LocalCapabilityApproval(
     val onlyRequestId: String?,
     val expiresAtElapsedMillis: Long,
     val policyRevision: Long,
+    /** Ephemeral display metadata only; never consulted by authorization decisions. */
+    val displaySummary: List<String> = emptyList(),
 )
 
 sealed interface CapabilityAuthorization {
@@ -92,6 +94,7 @@ class CapabilityAuthorizationController(
         durationMinutes: Int,
         policyRevision: Long,
         remainingRequestMillis: Long,
+        displaySummary: List<String> = emptyList(),
     ): LocalCapabilityApproval {
         require(durationMinutes in setOf(0, 5, 30, 60)) { "LOCAL_APPROVAL_DURATION_INVALID" }
         check(requestId !in cancelled && remainingRequestMillis > 0) { "DEVICE_REQUEST_CANCELLED_OR_EXPIRED" }
@@ -102,6 +105,7 @@ class CapabilityAuthorizationController(
             UUID.randomUUID().toString(), scope, requestId,
             if (durationMinutes == 0) requestId else null,
             Math.addExact(elapsedMillis(), ttl), policyRevision,
+            displaySummary.take(24).map { it.take(240) },
         )
         approvals[approval.id] = approval
         // Bound ephemeral state even if an authenticated caller floods unique scopes.
@@ -131,8 +135,21 @@ class CapabilityAuthorizationController(
         if (approvals.entries.removeAll { it.value.onlyRequestId == requestId }) changed()
     }
 
+    /** Revoke exactly one approval without cancelling its originating request. */
+    @Synchronized
+    fun revoke(approvalId: String): Boolean {
+        val removed = approvals.remove(approvalId) != null
+        if (removed) changed()
+        return removed
+    }
+
     @Synchronized
     fun revokeAll() { if (approvals.isNotEmpty()) { approvals.clear(); changed() } }
+
+    /** Display-only time remaining, measured with the same clock used when approving. */
+    @Synchronized
+    fun remainingMillis(approval: LocalCapabilityApproval): Long =
+        (approval.expiresAtElapsedMillis - elapsedMillis()).coerceAtLeast(0L)
 
     @Synchronized
     fun activeApprovals(policyRevision: Long): List<LocalCapabilityApproval> {

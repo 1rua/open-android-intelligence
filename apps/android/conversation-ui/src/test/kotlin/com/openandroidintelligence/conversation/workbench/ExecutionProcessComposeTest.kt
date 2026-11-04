@@ -394,14 +394,14 @@ class ExecutionProcessComposeTest {
         }
 
         compose.onNodeWithContentDescription(
-            "执行过程，已完成 1 步，已收起",
+            "执行过程，已执行 1 步，已收起",
             substring = true,
         ).assertIsDisplayed()
 
         compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithContentDescription(
-            "执行过程，已完成 1 步，已展开",
+            "执行过程，已执行 1 步，已展开",
             substring = true,
         ).assertIsDisplayed()
     }

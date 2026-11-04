@@ -61,6 +61,58 @@ class CapabilityAuthorizationTest {
         assertFalse(controller.isCurrent(approval.id, "next", read, 2))
     }
 
+    @Test fun revokingOneApprovalLeavesOtherApprovalsAndRequestsUntouched() {
+        var now = 100L
+        val controller = CapabilityAuthorizationController { now }
+        val one = controller.approve("one", read, 5, 9, 300_000)
+        val two = controller.approve("two", write, 30, 9, 300_000)
+        val changes = controller.changes.value
+        assertEquals(300_000L, controller.remainingMillis(one))
+        now += 1_000L
+        assertEquals(299_000L, controller.remainingMillis(one))
+        assertTrue(controller.revoke(one.id))
+        assertEquals(changes + 1L, controller.changes.value)
+        assertFalse(controller.revoke(one.id))
+        assertEquals(changes + 1L, controller.changes.value)
+        assertFalse(controller.isCurrent(one.id, "one", read, 9))
+        assertTrue(controller.isCurrent(two.id, "two", write, 9))
+        assertEquals(CapabilityAuthorization.AwaitingConfirmation,
+            controller.evaluate("one", read, CapabilityPolicy(), 9))
+        now = two.expiresAtElapsedMillis
+        assertEquals(0L, controller.remainingMillis(two))
+        assertTrue(controller.activeApprovals(9).isEmpty())
+    }
+
+    @Test fun revokeAllInvalidatesEveryApprovalWithoutCancellingRequests() {
+        val controller = CapabilityAuthorizationController { 100L }
+        val once = controller.approve("once", read, 0, 3, 30_000)
+        val timed = controller.approve("timed", write, 60, 3, 30_000)
+        val revision = controller.changes.value
+        controller.revokeAll()
+        assertEquals(revision + 1, controller.changes.value)
+        assertFalse(controller.isCurrent(once.id, "once", read, 3))
+        assertFalse(controller.isCurrent(timed.id, "timed", write, 3))
+        assertEquals(CapabilityAuthorization.AwaitingConfirmation,
+            controller.evaluate("once", read, CapabilityPolicy(), 3))
+        controller.revokeAll()
+        assertEquals(revision + 1, controller.changes.value)
+    }
+
+    @Test fun approvalDurationsUseMonotonicExpirationAndRevisionFence() {
+        for (minutes in listOf(0, 5, 30, 60)) {
+            var now = 5_000L
+            val controller = CapabilityAuthorizationController { now }
+            val approved = controller.approve("request", read, minutes, 7, 30_000)
+            val expected = if (minutes == 0) 30_000L else minutes * 60_000L
+            assertEquals(expected, controller.remainingMillis(approved))
+            assertEquals(if (minutes == 0) "request" else null, approved.onlyRequestId)
+            now += expected
+            assertTrue(controller.activeApprovals(7).isEmpty())
+            val next = controller.approve("request", read, minutes, 7, 30_000)
+            assertFalse(controller.isCurrent(next.id, "request", read, 8))
+        }
+    }
+
     @Test fun globalPolicySurvivesBindingChangesAndOfflineEdits() {
         val store = InMemoryPairingGrantStore()
         val a = PairingGrantBinding("https://a.example", "alice", "phone")

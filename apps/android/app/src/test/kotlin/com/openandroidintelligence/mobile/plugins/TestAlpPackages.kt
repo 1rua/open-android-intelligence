@@ -141,8 +141,9 @@ internal object TestAlpPackages {
          * 因此测试需要能构造只声明某一种能力的包，而默认包不带任何原语。
          */
         capabilities: JsonValue.JObject? = null,
+        settingsContributionJson: String = SETTINGS_CONTRIBUTION_JSON,
     ): ByteArray {
-        val parts = buildParts(id, version, name, author, capabilities)
+        val parts = buildParts(id, version, name, author, capabilities, settingsContributionJson)
         return assemble(parts)
     }
 
@@ -175,6 +176,7 @@ internal object TestAlpPackages {
         name: String,
         keyPair: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(),
         capabilities: JsonValue.JObject? = null,
+        settingsContributionJson: String = SETTINGS_CONTRIBUTION_JSON,
     ): Parts {
         // X509 编码 = 12 字节固定前缀 + 32 字节裸密钥；校验器按同一规则还原。
         val rawPublicKey = keyPair.public.encoded.copyOfRange(12, 44)
@@ -182,7 +184,7 @@ internal object TestAlpPackages {
 
         val manifest = manifestJson(id, version, name, publicKey, capabilities)
         val payload = byteArrayOf(0, 0x61, 0x73, 0x6d) // \0asm
-        val uiFile = SETTINGS_CONTRIBUTION_JSON.toByteArray(Charsets.UTF_8)
+        val uiFile = settingsContributionJson.toByteArray(Charsets.UTF_8)
         // 每个声明都需要包内存在对应 schema 文件，否则宿主载入会失败。
         val schemaFiles = declaredSchemaPaths(capabilities).map { path -> path to MINIMAL_SCHEMA }
 

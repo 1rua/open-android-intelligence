@@ -1,31 +1,20 @@
 package com.openandroidintelligence.mobile.notifications
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -34,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -48,6 +36,9 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.core.model.NotificationDeliveryMode
 import com.openandroidintelligence.core.model.NotificationFieldAccess
+import com.openandroidintelligence.mobile.SettingsPresentation
+import com.openandroidintelligence.mobile.settings.SettingsPageColumn
+import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationBindingPort
 import com.openandroidintelligence.notification.control.NotificationPolicyPort
 import com.openandroidintelligence.notification.control.NotificationPolicySnapshot
@@ -68,10 +59,8 @@ import kotlinx.coroutines.withContext
  * - [policy] 未装配（registry deny-first）时整组如实渲染「通知采集未装配」，
  *   不渲染任何点了不生效的假开关。
  *
- * 本组件自包含：只依赖 port 接口与公共设计令牌，不反向依赖
- * SettingsScreen 的任何内部符号。
+ * 嵌入模式只提供原有分组，滚动与页面标题由调用方管理。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NotificationCollectionScreen(
     policy: NotificationPolicyPort,
@@ -79,6 +68,8 @@ internal fun NotificationCollectionScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     loadInstalledApps: (() -> List<InstalledNotificationApp>)? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    embedded: Boolean = false,
 ) {
     var snapshot by remember(policy) { mutableStateOf(policy.snapshot()) }
     var listenerBound by remember(binding) { mutableStateOf(binding.isListenerBound()) }
@@ -154,6 +145,7 @@ internal fun NotificationCollectionScreen(
                 selectionRejection = null
             },
             onCancel = { selectedPackages = null },
+            presentation = presentation,
             onSave = {
                 val outcome = applyUpdate(
                     NotificationPolicyUpdate(
@@ -169,105 +161,86 @@ internal fun NotificationCollectionScreen(
         )
     }
 
-    Scaffold(
-        modifier = modifier.testTag("notification-collection-screen"),
-        topBar = {
-            TopAppBar(
-                title = { Text("通知读取范围") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回",
-                            tint = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
+    val groups: @Composable () -> Unit = {
+        if (selectedPackages == null) {
+            rejection?.let { reason -> RejectionNotice(reason) }
+        }
+
+        if (!snapshot.installed) {
+            UninstalledNotice()
+        } else {
+            ConsentGroup(
+                snapshot = snapshot,
+                listenerBound = listenerBound,
+                onGrantChanged = { granted ->
+                    applyUpdate(
+                        NotificationPolicyUpdate(
+                            expectedRevision = snapshot.revision,
+                            granted = granted,
+                        ),
+                    )
+                },
+                onOpenListenerSettings = { context ->
+                    if (!binding.openSystemListenerSettings(context)) rejection = "NOTIFICATION_SETTINGS_UNAVAILABLE"
                 },
             )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
-    ) { padding ->
-        // 宽屏限宽居中；系统栏 inset 由 Scaffold 给出，页面左右边距由内容容器负责。
-        Box(
-            modifier = Modifier
-                .padding(padding)
-                .fillMaxSize(),
-            contentAlignment = Alignment.TopCenter,
-        ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-            modifier = Modifier
-                .widthIn(max = Dimensions.ReadingWidth)
-                .fillMaxHeight()
-                // 页面左右边距：卡片不再贴着屏幕边缘；水平 padding 在滚动容器外层，
-                // 滚动内容不会画到边距里。
-                .padding(horizontal = Dimensions.ScreenHorizontal)
-                .verticalScroll(rememberScrollState())
-                .testTag("notification-collection-content"),
-        ) {
-            if (selectedPackages == null) {
-                rejection?.let { reason -> RejectionNotice(reason) }
-            }
-
-            if (!snapshot.installed) {
-                UninstalledNotice()
-            } else {
-                ConsentGroup(
-                    snapshot = snapshot,
-                    listenerBound = listenerBound,
-                    onGrantChanged = { granted ->
-                        applyUpdate(
-                            NotificationPolicyUpdate(
-                                expectedRevision = snapshot.revision,
-                                granted = granted,
-                            ),
-                        )
-                    },
-                    onOpenListenerSettings = { context ->
-                        if (!binding.openSystemListenerSettings(context)) rejection = "NOTIFICATION_SETTINGS_UNAVAILABLE"
-                    },
-                )
-                AccessScopeGroup(
-                    snapshot = snapshot,
-                    onFieldAccessChanged = { access ->
-                        applyUpdate(
-                            NotificationPolicyUpdate(
-                                expectedRevision = snapshot.revision,
-                                fieldAccess = access,
-                            ),
-                        )
-                    },
-                )
-                DeliveryModeGroup(
-                    snapshot = snapshot,
-                    onModeChanged = { mode ->
-                        applyUpdate(
-                            NotificationPolicyUpdate(
-                                expectedRevision = snapshot.revision,
-                                mode = mode,
-                            ),
-                        )
-                    },
-                )
-                AllowlistGroup(
-                    snapshot = snapshot,
-                    installedApps = installedApps,
-                    onSelect = {
-                        selectedPackages = snapshot.packageIds
-                        selectionRevision = snapshot.revision.toString()
-                        selectionRejection = null
-                    },
-                    onRemove = { removed ->
-                        applyUpdate(
-                            NotificationPolicyUpdate(
-                                expectedRevision = snapshot.revision,
-                                packageIds = snapshot.packageIds - removed,
-                            ),
-                        )
-                    },
-                )
-            }
+            AccessScopeGroup(
+                snapshot = snapshot,
+                onFieldAccessChanged = { access ->
+                    applyUpdate(
+                        NotificationPolicyUpdate(
+                            expectedRevision = snapshot.revision,
+                            fieldAccess = access,
+                        ),
+                    )
+                },
+            )
+            DeliveryModeGroup(
+                snapshot = snapshot,
+                onModeChanged = { mode ->
+                    applyUpdate(
+                        NotificationPolicyUpdate(
+                            expectedRevision = snapshot.revision,
+                            mode = mode,
+                        ),
+                    )
+                },
+            )
+            AllowlistGroup(
+                snapshot = snapshot,
+                installedApps = installedApps,
+                onSelect = {
+                    selectedPackages = snapshot.packageIds
+                    selectionRevision = snapshot.revision.toString()
+                    selectionRejection = null
+                },
+                onRemove = { removed ->
+                    applyUpdate(
+                        NotificationPolicyUpdate(
+                            expectedRevision = snapshot.revision,
+                            packageIds = snapshot.packageIds - removed,
+                        ),
+                    )
+                },
+            )
         }
+    }
+    if (embedded) {
+        Column(
+            modifier = modifier.testTag("notification-collection-content"),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        ) { groups() }
+    } else {
+        SettingsPageScaffold(
+            title = "通知读取范围",
+            presentation = presentation,
+            onBack = onBack,
+            modifier = modifier.testTag("notification-collection-screen"),
+        ) { padding ->
+            SettingsPageColumn(
+                contentPadding = padding,
+                modifier = Modifier.testTag("notification-collection-content"),
+            ) { groups() }
         }
     }
 }
@@ -392,9 +365,9 @@ private fun DeliveryModeGroup(
         SettingsSwitchItem(
             headline = "自动把通知发送给 Gateway",
             supporting = if (autoSend) {
-                "已开启：符合条件的通知会自动发送给当前 Gateway"
+                "已开启：符合条件的通知使用原有自动投递配置"
             } else {
-                "已关闭：只有 Agent 主动查询时才读取当前通知"
+                "旧自动发送已关闭；通知查询和另行配置的主动推送不受此开关控制"
             },
             checked = autoSend,
             onCheckedChange = { enabled ->
@@ -402,6 +375,16 @@ private fun DeliveryModeGroup(
                     if (enabled) NotificationDeliveryMode.AUTO_SEND else NotificationDeliveryMode.ON_DEMAND,
                 )
             },
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        SettingsListItem(
+            headline = "旧通知投递通道",
+            supporting = when {
+                !snapshot.outboxAvailable -> "加密待发队列不可用，旧通知无法排队投递。"
+                !snapshot.deliveryDispatcherWired -> "加密待发队列已装配；最近创建的旧通知运行时未装配投递组件，或尚未启动监听。"
+                else -> "最近创建的旧通知运行时已装配投递组件；这不表示当前正在投递或投递成功。"
+            },
+            modifier = Modifier.testTag("notification-legacy-delivery-status"),
         )
     }
 }

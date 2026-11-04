@@ -80,7 +80,7 @@ class SettingsCapabilityUiTest {
     @Config(sdk = [36])
     fun liveUpdatesSettingsEntryOpensTheAndroid16PromotionControls() {
         setContent { LiveUpdatesSettingsItem() }
-        compose.onNodeWithText("Android 16 实时活动").performClick()
+        compose.onNodeWithText("实时任务状态").performClick()
         val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
         val intent = org.robolectric.Shadows.shadowOf(context).nextStartedActivity
         assertEquals(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS, intent.action)
@@ -90,7 +90,7 @@ class SettingsCapabilityUiTest {
     @Test
     fun liveUpdatesSettingsEntryIsAbsentOnOlderAndroid() {
         setContent { LiveUpdatesSettingsItem() }
-        compose.onNodeWithText("Android 16 实时活动").assertDoesNotExist()
+        compose.onNodeWithText("实时任务状态").assertDoesNotExist()
     }
 
     // ------------------------------------------------------------------
@@ -205,8 +205,8 @@ class SettingsCapabilityUiTest {
         )
         setContent { SettingsScreen(environment = environment, onBack = {}) }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("新能力默认每次手动", substring = true).assertExists()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("新能力默认每次手动", substring = true).performScrollTo().assertExists()
         compose.onNodeWithText("以下两种情况会清空本机授权", substring = true).assertDoesNotExist()
         assertTrue(
             compose.onAllNodesWithText("Android 系统权限", substring = true).fetchSemanticsNodes().isNotEmpty(),
@@ -227,7 +227,7 @@ class SettingsCapabilityUiTest {
             )
         }
 
-        compose.onNodeWithText("系统通知推送").performClick()
+        compose.onNodeWithText("Agent 任务通知").performClick()
         assertEquals("禁用条目点了不得触发回调", null, toggled)
     }
 
@@ -245,7 +245,7 @@ class SettingsCapabilityUiTest {
             )
         }
 
-        compose.onNodeWithText("系统通知推送").performClick()
+        compose.onNodeWithText("Agent 任务通知").performClick()
         assertEquals(true, toggled)
     }
 
@@ -265,7 +265,7 @@ class SettingsCapabilityUiTest {
 
     @Test
     fun deviceCapabilityFailureReasonsExplainRecoveryAndKeepTheActualCode() {
-        assertEquals("服务端状态版本已变化，正在重新读取（GRANT_STALE）", deviceCapabilityReasonLabel("GRANT_STALE"))
+        assertEquals("状态已更新，正在重新读取（GRANT_STALE）", deviceCapabilityReasonLabel("GRANT_STALE"))
         assertEquals("本机设置已变化，正在同步最新设置（LOCAL_AUTHORIZATION_CHANGED）", deviceCapabilityReasonLabel("LOCAL_AUTHORIZATION_CHANGED"))
         assertEquals("网络暂不可用，连接恢复后自动重试（NETWORK_ERROR）", deviceCapabilityReasonLabel("NETWORK_ERROR"))
         assertEquals("尚未提供可识别的阻塞原因", deviceCapabilityReasonLabel("invalid private message"))

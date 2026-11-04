@@ -66,6 +66,7 @@ import com.openandroidintelligence.ui.design.MotionPolicy
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -95,8 +96,8 @@ class SettingsHonestyCopyTest {
         // 短信读取不提供独立开关：它只存在于授权管理子页，且必须把用户送到真正的
         // 插件安装/授权链路，而不是给一个点了也不生效的授权位。
         compose.onNodeWithText("读取与发送短信").assertDoesNotExist()
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
     }
 
@@ -111,8 +112,8 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         assertTrue(environment.pairingGrants.state.value!!.granted.isEmpty())
     }
 
@@ -131,14 +132,16 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("全局设备能力").performScrollTo().assertExists()
+        compose.onNodeWithText("插件管理").performScrollTo().assertExists()
         compose.onNodeWithText("屏幕上下文分析与圈选").assertDoesNotExist()
         compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕读取与控制").performScrollTo().assertExists()
-        compose.onNodeWithText("通知读取范围").assertDoesNotExist()
-        compose.onNodeWithText("系统通知推送").assertDoesNotExist()
+        compose.onNodeWithText("屏幕内容读取").performScrollTo().assertExists()
+        compose.onNodeWithText("屏幕截图").performScrollTo().assertExists()
+        compose.onNodeWithText("屏幕控制").performScrollTo().assertExists()
+        compose.onNodeWithText("通知读取").performScrollTo().assertExists()
+        compose.onNodeWithText("Agent 任务通知").assertDoesNotExist()
     }
 
     /** 主览不再展示本机自增序号、本机合成标识这类对用户没有意义的技术元数据。 */
@@ -152,7 +155,7 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
         compose.onNodeWithText("配对元数据").assertDoesNotExist()
         compose.onNodeWithText("授权变更序号（本机）").assertDoesNotExist()
@@ -173,11 +176,9 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText(
-            "这台手机统一保存各项能力的开关与授权模式。切换 Core、账号或 Agent 不会重置；退出全部账号后暂停采集、执行和推送。",
-        ).performScrollTo().assertExists()
+        compose.onNodeWithText("新能力默认每次手动；Android 系统权限继续独立检查。").performScrollTo().assertExists()
         compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
     }
 
@@ -229,15 +230,15 @@ class SettingsHonestyCopyTest {
             }
         }
 
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
 
         compose.runOnIdle { dispatcher.onBackPressed() }
-        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
         assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
         compose.runOnIdle { dispatcher.onBackPressed() }
-        compose.onNodeWithText("授权管理").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().assertIsDisplayed()
         assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
         compose.runOnIdle { dispatcher.onBackPressed() }
         assertEquals("设置根页返回才退出面板", 1, closeCalls)
@@ -281,12 +282,12 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("打开设置").performClick()
         compose.runOnIdle { assertEquals("设置抽屉应已打开", DrawerValue.Open, drawerState.currentValue) }
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
-        compose.onNodeWithText("全局设备能力").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
+        compose.onNodeWithText("插件管理").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
 
         compose.runOnIdle { dispatcher.onBackPressed() }
-        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
         compose.runOnIdle {
             assertEquals("从插件页返回不得关闭设置", 0, closeCalls)
             assertEquals("从插件页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
@@ -294,7 +295,7 @@ class SettingsHonestyCopyTest {
         }
 
         compose.runOnIdle { dispatcher.onBackPressed() }
-        compose.onNodeWithText("授权管理").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().assertIsDisplayed()
         compose.runOnIdle {
             assertEquals("从授权页返回不得关闭设置", 0, closeCalls)
             assertEquals("从授权页返回时抽屉必须保持打开", DrawerValue.Open, drawerState.currentValue)
@@ -339,18 +340,18 @@ class SettingsHonestyCopyTest {
                 .performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
             assertTrue("$label 必须具有可检查的文本布局", layouts.isNotEmpty())
             layouts.forEach { layout ->
-                assertTrue(
-                    "$label 不应被裁切：size=${layout.size}, " +
-                        "paragraph=${layout.multiParagraph.width}×${layout.multiParagraph.height}, " +
-                        "lines=${layout.lineCount}, " +
-                        "widthOverflow=${layout.didOverflowWidth}, heightOverflow=${layout.didOverflowHeight}",
-                    !layout.hasVisualOverflow,
-                )
+                val lineCount = layout.lineCount
+                assertTrue("$label 必须包含至少一行", lineCount > 0)
+                assertEquals("$label 字符应全部可见未被裁切", label.length, layout.getLineEnd(lineCount - 1, visibleEnd = true))
+                for (line in 0 until lineCount) {
+                    assertFalse("$label 第 $line 行不应被省略", layout.isLineEllipsized(line))
+                    assertTrue("$label 第 $line 行字形右边界溢出", layout.getLineRight(line) <= layout.size.width + 1.5f)
+                }
             }
         }
 
-        assertTextFits("外观、主题与动效")
-        compose.onNodeWithText("外观、主题与动效").performClick()
+        assertTextFits("外观与交互")
+        compose.onNodeWithText("外观与交互").performClick()
         assertTextFits("减少动画")
     }
 
@@ -420,7 +421,7 @@ class SettingsHonestyCopyTest {
                 }
             }
         }
-        compose.onNodeWithText("授权管理").performScrollTo().performClick()
+        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
         compose.onNodeWithText("短信与通知主动推送").performScrollTo()
         compose.mainClock.autoAdvance = false
         compose.onNodeWithText("短信与通知主动推送").performClick()
@@ -451,7 +452,7 @@ class SettingsHonestyCopyTest {
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
         unavailable.assertDoesNotExist()
-        compose.onNodeWithText("全局设备能力").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
         assertEquals(0, closeCalls)
         compose.onNodeWithContentDescription("返回").performClick()
         val closeDescription = if (presentation == SettingsPresentation.SIDEBAR) "关闭设置" else "返回"

@@ -80,6 +80,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_android_conversation": False,
         "affects_android_gateway": False,
         "affects_android_app": False,
+        "affects_android_settings": False,
+        "affects_android_notifications": False,
     }
 
     if not changed_files:
@@ -111,6 +113,13 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             impact["affects_plugins"] = True
         
         if f.startswith("apps/android/"):
+            if "/settings/" in f or Path(f).name.startswith(("Settings", "PlatformSettings")):
+                impact["affects_android_settings"] = True
+                impact["affects_android_app"] = True
+                impact["affects_android_conversation"] = True
+            if any(f.startswith(f"apps/android/{module}/") for module in ("notification-control", "notification-host", "notification-collector")):
+                impact["affects_android_notifications"] = True
+                impact["affects_android_app"] = True
             if "screen" in f or "control" in f or "capability" in f or "device-primitives" in f:
                 impact["affects_android_control"] = True
             if "conversation" in f:
@@ -253,6 +262,26 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             android_tasks.append(":gateway-client:testDebugUnitTest")
         if impact["affects_android_app"]:
             android_tasks.append(":app:testFullDebugUnitTest")
+
+    # Settings routes compose these modules even when a renamed file no longer
+    # contains a primitive's name. PR admission must cover that dependency seam.
+    if impact["affects_android_notifications"] or (impact["affects_android_settings"] and level in {"pr", "full"}):
+        android_tasks.extend([
+            ":notification-control:testDebugUnitTest",
+            ":notification-host:testDebugUnitTest",
+            ":notification-collector:testDebugUnitTest",
+            ":policy-engine:testDebugUnitTest",
+            ":encrypted-store:testDebugUnitTest",
+        ])
+    if impact["affects_android_settings"] and level in {"pr", "full"}:
+        android_tasks.extend([
+            ":platform-kernel:testDebugUnitTest",
+            ":device-primitives:testDebugUnitTest",
+            ":gateway-client:testDebugUnitTest",
+            ":sms-collector:testDebugUnitTest",
+            ":app:testPlayDebugUnitTest",
+        ])
+    android_tasks = list(dict.fromkeys(android_tasks))
 
     if android_tasks and (android_dir / "gradlew").exists():
         print(f"\n--- 阶段 4: Android 增量测试任务 [{len(android_tasks)} 项] ---")

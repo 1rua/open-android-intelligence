@@ -31,6 +31,7 @@ internal fun CapabilityAuthorizationControls(
     policy: CapabilityPolicy,
     onPolicyChange: (CapabilityPolicy) -> Unit,
     modifier: Modifier = Modifier,
+    draftIdentity: String = "$pluginId:$capability",
 ) {
     val identity = "$pluginId:$capability"
     Column(
@@ -84,6 +85,7 @@ internal fun CapabilityAuthorizationControls(
                 identity = identity,
                 policy = policy,
                 onPolicyChange = onPolicyChange,
+                draftIdentity = draftIdentity,
             )
         }
         if (readOnly) {

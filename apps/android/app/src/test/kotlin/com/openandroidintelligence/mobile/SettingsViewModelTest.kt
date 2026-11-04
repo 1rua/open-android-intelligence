@@ -277,6 +277,24 @@ class SettingsViewModelTest {
     }
 
     @Test
+    fun emergencyStopReportsAnUnsavedTrustDisableWithoutReenablingExecution() = runBlocking {
+        val failingTrust = DeveloperTrustMode(object : com.openandroidintelligence.kernel.TrustModePersistence {
+            override fun load() = true
+            override fun save(enabled: Boolean) { error("disk unavailable") }
+        })
+        val failingKernel = PluginKernel(
+            hostEnvelope = HostEnvelope(emptySet()), phoneLimits = PhoneLimits(emptySet()), runtimes = emptyMap(),
+            audit = auditStore, trustMode = failingTrust, nativeLoader = NativePluginLoader(failingTrust),
+            providerSelector = CapabilityProviderSelector(emptyMap()), grants = { null },
+        )
+        val model = SettingsViewModel(environment.copy(trustMode = failingTrust, kernel = failingKernel), externalScope = testScope)
+        model.emergencyStop()
+        assertTrue(failingKernel.isEmergencyStopped())
+        assertFalse(failingTrust.isEnabled())
+        assertTrue(model.uiState.value.localError?.contains("未能保存") == true)
+    }
+
+    @Test
     fun emergencyStopShutsDownKernelAndRevokesTrust() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,

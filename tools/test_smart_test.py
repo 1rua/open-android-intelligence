@@ -103,6 +103,31 @@ def test_uninstall_and_runner_edits_propagate_regression_failures(changed_file):
     assert "tools/test_smart_test.py" in commands[-1]
 
 
+@pytest.mark.parametrize("changed_file", [
+    "apps/android/app/src/main/kotlin/example/settings/advanced/BuildDetailsScreen.kt",
+    "apps/android/app/src/main/kotlin/example/SettingsScreen.kt",
+])
+def test_settings_renames_keep_ui_and_pr_indirect_dependencies(changed_file):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact([changed_file])
+    assert impact["affects_android_settings"]
+    assert runner.execute_strategy("pr", impact) == 0
+    android = next(command for command in commands if "./gradlew" in command)
+    for task in (":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest", ":conversation-ui:testDebugUnitTest",
+                 ":platform-kernel:testDebugUnitTest", ":notification-host:testDebugUnitTest", ":sms-collector:testDebugUnitTest"):
+        assert task in android
+    assert len(android) == len(set(android))
+
+
+def test_settings_pr_indirect_failure_propagates():
+    runner = load_runner()
+    runner.run_command = lambda command, **kwargs: 13 if ":notification-host:testDebugUnitTest" in command else 0
+    impact = runner.analyze_impact(["apps/android/app/src/main/kotlin/example/settings/SettingsNavHost.kt"])
+    assert runner.execute_strategy("pr", impact) == 13
+
+
 def test_kernel_edits_include_kernel_regressions():
     runner = load_runner()
     commands = []

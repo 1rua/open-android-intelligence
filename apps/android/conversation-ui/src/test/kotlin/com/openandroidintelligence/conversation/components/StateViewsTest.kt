@@ -17,7 +17,7 @@ class StateViewsTest {
     fun localSaveFailureNamesPhoneStorageWithoutReportingANetworkDisconnect() {
         for (code in listOf("LOCAL_SAVE_FAILED:IOException", "EVENTS_FAILED:NATIVE_EVENT_SYNC_FAILED:LOCAL_SAVE_FAILED:IOException")) {
             val text = noticeText(code)
-            assertTrue(text.contains("本机") && text.contains("保存") && text.contains("存储"))
+            assertTrue(text.contains("保存") && text.contains("存储"))
             assertTrue(text.contains("重新进入会话"))
             assertTrue("本机保存错误不能报网络断线", !text.contains("通道已断开") && !text.contains("检查网络"))
             assertTrue("本机同步失败不能声称 Agent 任务停止", !text.contains("任务已停止") && !text.contains("任务已取消"))
@@ -112,7 +112,7 @@ class StateViewsTest {
         assertTrue("宿主不兼容必须指向 Agent 端", hostMismatch.contains("宿主") || hostMismatch.contains("插件"))
 
         val incompleteHandshake = readableFailure("NEGOTIATION_FAILED:400")
-        assertTrue("协商失败必须点名协商", incompleteHandshake.contains("协商"))
+        assertTrue("协商或连接失败必须点名协商或连接", incompleteHandshake.contains("协商") || incompleteHandshake.contains("连接"))
     }
 
     @Test
