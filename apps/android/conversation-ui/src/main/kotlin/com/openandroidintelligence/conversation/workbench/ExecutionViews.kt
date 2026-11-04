@@ -215,7 +215,7 @@ fun ExecutionProcessPanel(
     } else if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
         "执行过程 · ${run.stepCount} 步"
     } else {
-        "已完成 ${run.stepCount} 步执行与思考"
+        "已执行 ${run.stepCount} 步"
     }
     val failureSuffix = if (run.failedStepCount > 0) " · 含 ${run.failedStepCount} 步失败" else ""
     val interruptedSuffix = if (run.interrupted) " · 已中断" else ""
@@ -248,7 +248,7 @@ fun ExecutionProcessPanel(
                             if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
                                 "执行过程，${run.stepCount} 步$unknownSuffix$runningSuffix，${if (expanded) "已展开" else "已收起"}"
                             } else {
-                                "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                                "执行过程，已执行 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
                             }
                         stateDescription = if (expanded) "已展开" else "已收起"
                     }

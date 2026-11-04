@@ -337,7 +337,7 @@ fun PluginManagementScreen(
     }
     pendingApproval?.let { candidate ->
         AlertDialog(onDismissRequest = { pendingApproval = null },title = { Text("确认插件更新") },
-            text = { Text("该更新扩大了内核原语、联网、后台或资源范围。批准后，本机能力开关、系统权限和后台设置仍分别生效；作者和签名将再次核验。") },
+            text = { Text("该更新扩大了系统调用、联网、后台或资源范围。批准后，本机能力开关、系统权限和后台设置仍分别生效；作者和签名将再次核验。") },
             confirmButton = { TextButton(onClick = { installBytes(candidate,true) },enabled = !installing) { Text("批准更新") } },
             dismissButton = { TextButton(onClick = { pendingApproval = null }) { Text("取消") } })
     }
@@ -618,7 +618,7 @@ fun PluginManagementScreen(
             SectionLabel("插件运行环境")
             SettingsSectionCard {
                 SettingsListItem(
-                    headline = if (pluginRuntimesWired) "插件运行环境已就绪" else "当前版本暂不支持运行插件",
+                    headline = if (pluginRuntimesWired) "插件可用" else "当前版本暂不支持运行插件",
                     supporting = if (pluginRuntimesWired) {
                         "已安装并启用的插件，只有在本机能力开关、应用声明和系统权限均满足时才会执行"
                     } else {

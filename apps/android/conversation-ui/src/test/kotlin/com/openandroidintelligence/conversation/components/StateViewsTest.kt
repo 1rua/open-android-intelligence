@@ -188,7 +188,7 @@ class StateViewsTest {
         assertEquals("本次生成已停止", generationLabel(GenerationState.CANCELLED))
         assertEquals("本次生成失败，请检查连接后重试", generationLabel(GenerationState.FAILED))
         assertEquals("当前 Gateway 不支持停止生成", generationLabel(GenerationState.UNSUPPORTED))
-        assertEquals("生成结果尚未确认，请先刷新会话核实，避免重复发送", generationLabel(GenerationState.OUTCOME_UNKNOWN))
+        assertEquals("结果未确认，请刷新会话，暂勿重复发送", generationLabel(GenerationState.OUTCOME_UNKNOWN))
     }
 
     @Test

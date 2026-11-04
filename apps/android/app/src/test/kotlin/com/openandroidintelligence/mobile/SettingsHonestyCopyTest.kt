@@ -351,7 +351,7 @@ class SettingsHonestyCopyTest {
 
         assertTextFits("外观、主题与动效")
         compose.onNodeWithText("外观、主题与动效").performClick()
-        assertTextFits("减弱动态效果 (Reduce Motion)")
+        assertTextFits("减少动画")
     }
 
     private fun assertDevicePushProductionPage(presentation: SettingsPresentation) {

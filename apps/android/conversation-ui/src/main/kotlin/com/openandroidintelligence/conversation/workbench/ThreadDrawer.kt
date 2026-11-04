@@ -42,7 +42,7 @@ import com.openandroidintelligence.conversation.theme.LocalAppStateColors
  * 2. Gateway 身份与账号信息（首字母头像、主机名、在线状态的文字 + 圆点）；
  * 3. 当前 Gateway 的对话线程（支持搜索、选中高亮与相对时间）；
  * 4. 附件库；
- * 5. 设置与平台管理（置于底部页脚常驻区吸底显示）。
+ * 5. 设置（置于底部页脚常驻区吸底显示）。
  * 底部安全区由抽屉自己承担 `navigationBarsPadding()`，页脚不会落进手势导航条。
  * 坚决不包含假设备卡片（ADB、电量、Wi-Fi）及越界导航项（通知中心、帮助反馈等）。
  */
@@ -142,7 +142,7 @@ fun ThreadDrawer(
             ) {
                 DrawerNavItem(
                     icon = Icons.Default.Settings,
-                    label = "设置与平台管理",
+                    label = "设置",
                     onClick = onOpenSettings,
                 )
 

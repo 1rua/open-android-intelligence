@@ -5,7 +5,7 @@
   </description>
   <actions>
     <action>Click the "设置" action icon in top bar</action>
-    <action>Verify that the "设置与平台管理" screen is displayed</action>
+    <action>Verify that the "设置" screen is displayed</action>
     <action>Swipe down to the audit log section</action>
     <action>Verify that the "审计记录" card or header is displayed</action>
     <action>Verify that the audit event list container is present</action>

@@ -183,7 +183,7 @@ fun WelcomeScreen(
                 Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
                 Text(
                     text = "一个手机连接入口，由 OAI Core 接入多个自托管 Agent。" +
-                        "原生会话与设备插件独立管理，设备能力始终需要你的账号授权。",
+                        "Agent 会话与设备插件独立管理，设备能力始终需要你的授权。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

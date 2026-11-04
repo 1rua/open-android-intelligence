@@ -176,7 +176,7 @@ fun specificFailureText(code: String): String? {
         // 必须排在 `MISSING-TLS-IDENTITY` 之后：`NEGOTIATION_FAILED:missing-tls-identity`
         // 这种「前缀 + 更具体原因」的组合要命中更具体的那条说明。
         value.contains("NEGOTIATION_FAILED") ->
-            "Gateway 没有完成协议协商。请确认地址指向的是 Gateway v2 服务，并检查 Gateway 版本与运行日志。"
+            "Gateway 正在连接或连接未完成。请确认地址指向有效的 Gateway 服务，并检查版本与运行日志。"
         value.contains("OUTCOME_UNKNOWN") -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("AGENT_MESSAGE_FAILED") && value.contains("ATTACHMENT_READ_FAILED") ->
             "Agent 无法读取附件，请重新选择文件后重试。"

@@ -984,7 +984,7 @@ private const val StaticTypingDotAlpha = 0.55f
 @Composable
 fun ThinkingIndicator(
     modifier: Modifier = Modifier,
-    text: String = "AI 正在思考",
+    text: String = "正在思考",
 ) {
     val reduced = LocalMotionPolicy.current.reduceMotion
     Box(

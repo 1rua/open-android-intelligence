@@ -188,7 +188,7 @@ fun PushSettingsContent(
         onBack?.let { TextButton(onClick = it) { Text("返回") } }
         Text("主动推送", style = MaterialTheme.typography.headlineSmall)
         Text("设置保存在本机。短信和通知分别授权，不依赖被动查询的手动批准。", style = MaterialTheme.typography.bodyMedium)
-        Text(if (snapshot.hasLoggedInAccount) "采集和投递仍须具备系统权限及有效接收端点。" else "当前已退出全部账号：暂停采集和推送，保留配置与未过期队列。")
+        Text(if (snapshot.hasLoggedInAccount) "采集和投递仍须具备系统权限及有效推送目标。" else "当前已退出全部账号：暂停采集和推送，保留配置与未过期队列。")
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("push-error")) }
 
         Text("通知", style = MaterialTheme.typography.titleMedium)
@@ -248,7 +248,7 @@ fun PushSettingsContent(
         }
         Text("正文默认包含；关闭正文开关后仅推送元数据。", style = MaterialTheme.typography.bodySmall)
         Text("关闭推送、缩小范围或移除端点，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新接收端点") }
+        TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新推送目标") }
 
         HorizontalDivider()
         Text("加密离线队列", style = MaterialTheme.typography.titleMedium)
@@ -277,7 +277,7 @@ private fun ToggleRow(label: String, value: Boolean, enabled: Boolean, tag: Stri
 
 @Composable
 private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: List<PushEndpointOption>, enabled: Boolean, onChange: (Set<PushEndpoint>) -> Unit) {
-    Text("接收端点，可多选", style = MaterialTheme.typography.titleSmall)
+    Text("推送目标（可多选）", style = MaterialTheme.typography.titleSmall)
     val byKey = options.associateBy { it.endpoint }
     val keys = (options.map { it.endpoint } + selected).distinct()
     if (keys.isEmpty()) Text("尚无已验证接收端点。连接 Core 并刷新后选择。", modifier = Modifier.testTag("push-$kind-no-endpoints"))

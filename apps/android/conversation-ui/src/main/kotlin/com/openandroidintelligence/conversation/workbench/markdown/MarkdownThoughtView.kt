@@ -97,9 +97,9 @@ fun MarkdownThoughtBlockView(
 
     val actionSuffix = if (expanded) " · 点击收起" else " · 点击展开"
     val headerText = when {
-        live -> if (expanded) "AI 正在思考" else "AI 正在思考 · 点击展开"
+        live -> if (expanded) "正在思考" else "正在思考 · 点击展开"
         hasContent && interrupted -> "思考已中断 · ${block.thought.length} 字$durationSuffix$actionSuffix"
-        hasContent -> "已深度思考 · ${block.thought.length} 字$durationSuffix$actionSuffix"
+        hasContent -> "已思考 · ${block.thought.length} 字$durationSuffix$actionSuffix"
         interrupted -> "思考已中断 · 无思考内容"
         else -> "无思考内容"
     }

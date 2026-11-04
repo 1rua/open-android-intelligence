@@ -166,9 +166,9 @@
       "journeyFile": "MOD-07-platform-settings.journey.xml",
       "entryPoint": "MainActivity 顶部平台设置按钮",
       "criticalPaths": [
-        "展开设置与平台管理界面",
+        "展开设置界面",
         "切换主题模式 (浅色/深色/跟随系统)",
-        "切换减弱动态效果开关",
+        "切换减少动画开关",
         "开发者信任模式二次确认弹窗",
         "触发插件紧急熔断机制"
       ],

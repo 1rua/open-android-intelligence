@@ -390,7 +390,7 @@ fun GatewayLoginScreen(
             // ===== 4. 页脚入口 =====
             TextButton(onClick = onOpenSettings) {
                 Text(
-                    "设置与平台管理",
+                    "设置",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
@@ -499,7 +499,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
 
         ConnectionPhase.Reconnecting -> PhaseProgressRow(text = "正在重新连接 OAI Core…")
 
-        ConnectionPhase.Negotiating -> PhaseProgressRow(text = "正在协商协议版本…")
+        ConnectionPhase.Negotiating -> PhaseProgressRow(text = "正在连接…")
 
         ConnectionPhase.Authenticating -> PhaseProgressRow(text = "正在验证凭据…")
 

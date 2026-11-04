@@ -78,7 +78,7 @@ class WorkbenchLayoutRegressionTest {
                     connectionHealth = StreamHealth.CONNECTING)
             }
         }
-        compose.onNodeWithText("从一个想法开始").assertIsDisplayed()
+        compose.onNodeWithText("有什么想聊的？").assertIsDisplayed()
         compose.onNodeWithText("正在连接…", substring = true).assertIsDisplayed()
         compose.onNodeWithText("该网关不支持审批卡片，请用 /approve 文本命令回复。").assertDoesNotExist()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
@@ -136,7 +136,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // 即使有 30 条会话撑满列表，固定页脚中的「设置与平台管理」也必须常驻可见，无需滚动
-        val settingsNode = compose.onNodeWithText("设置与平台管理")
+        val settingsNode = compose.onNodeWithText("设置")
         settingsNode.assertIsDisplayed()
         settingsNode.performClick()
         assertTrue("点击设置项必须触发 onOpenSettings", settingsOpened)
@@ -171,7 +171,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.waitForIdle()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
         compose.runOnIdle {
             assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
@@ -217,7 +217,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        compose.onNodeWithText("设置与平台管理").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("设置").performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.runOnIdle {
             assertTrue("语义点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
         }
@@ -239,7 +239,7 @@ class WorkbenchLayoutRegressionTest {
             }
         }
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
 
         // 手机端全屏设置：宽度必须为 411dp（全部窗口宽度），占满屏幕
@@ -262,7 +262,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.waitForIdle()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
         // 点击返回会话退出设置
         compose.onNode(hasText("返回会话") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
@@ -292,7 +292,7 @@ class WorkbenchLayoutRegressionTest {
         }
         compose.runOnIdle { controller.editDraft("保留的草稿") }
         val before = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
-        compose.onNodeWithText("设置与平台管理").performClick()
+        compose.onNodeWithText("设置").performClick()
         compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
         val after = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
         assertEquals("设置不能改变右侧位置", before.left, after.left, 1f)
@@ -329,7 +329,7 @@ class WorkbenchLayoutRegressionTest {
         compose.runOnIdle { controller.editDraft("跨断点保留") }
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.waitForIdle()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
         compose.onNode(hasText("进入设置子页") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.waitForIdle()
@@ -342,7 +342,7 @@ class WorkbenchLayoutRegressionTest {
         }
         compose.onNodeWithText("返回会话").performClick()
         compose.waitForIdle()
-        compose.onNode(hasText("设置与平台管理") and hasClickAction())
+        compose.onNode(hasText("设置") and hasClickAction())
             .performSemanticsAction(SemanticsActions.OnClick) { it() }
         compose.onNodeWithText("设置子页状态").assertIsDisplayed()
         compose.runOnIdle {
@@ -394,8 +394,8 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Welcome screen is displayed initially, no thinking indicator
-        compose.onNodeWithText("从一个想法开始").assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("有什么想聊的？").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
 
         // Send a draft to enter QUEUED generation state
         compose.runOnIdle {
@@ -404,7 +404,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator must be displayed while QUEUED/RUNNING and no assistant streaming yet
-        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
         compose.onAllNodesWithText("你好").onFirst().assertIsDisplayed()
 
         // Assistant streaming delta arrives
@@ -427,7 +427,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator disappears, streaming indicator and streaming text appear
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
         compose.onNodeWithText("正在输出…").assertIsDisplayed()
         compose.onNodeWithText("助理正在回答中", substring = true).assertIsDisplayed()
 
@@ -451,7 +451,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator remains absent, streaming tag is gone, complete message is displayed
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
         compose.onNodeWithText("正在输出…").assertDoesNotExist()
         compose.onNodeWithText("助理正在回答中，回答完毕。", substring = true).assertIsDisplayed()
     }
@@ -496,7 +496,7 @@ class WorkbenchLayoutRegressionTest {
             controller.editDraft("正在提问")
             controller.sendDraft()
         }
-        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
 
         compose.runOnIdle {
             controller.stopGeneration()
@@ -505,7 +505,7 @@ class WorkbenchLayoutRegressionTest {
             assertEquals(1, cancellationCalls)
             assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
         }
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
     }
 
     /**
