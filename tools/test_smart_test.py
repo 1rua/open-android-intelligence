@@ -1,8 +1,10 @@
 """An Adapter-only edit must actually reach its optional-host regressions."""
 import importlib.util
+import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 def load_runner():
@@ -62,6 +64,7 @@ def test_standalone_core_suite_does_not_collect_optional_adapter_tests(level):
     "tests/test_core_setup_transaction.py",
     "tools/smart-test.py",
     "tools/test_smart_test.py",
+    ".github/workflows/oai-core.yml",
 ])
 def test_configuration_only_edits_run_configuration_fault_regressions(changed_file, level):
     runner = load_runner()
@@ -206,3 +209,39 @@ def test_full_level_always_runs_plugin_tests_without_plugin_changes():
 
     assert runner.execute_strategy("full", impact) == 0
     assert ["npm", "test", "--prefix", "plugin-tooling"] in commands
+
+
+@pytest.mark.parametrize(("step_name", "expected_task"), [
+    (
+        "Core connection, Agent sessions, platform recovery and transport regressions",
+        ":app:testFullDebugUnitTest",
+    ),
+    (
+        "Play screen integration and Android API compatibility",
+        ":app:testPlayDebugUnitTest",
+    ),
+])
+def test_android_ci_steps_select_connection_account_and_settings_regressions(step_name, expected_task):
+    workflow_path = Path(__file__).parents[1] / ".github/workflows/oai-core.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    android_steps = workflow["jobs"]["android"]["steps"]
+    matching_steps = [step for step in android_steps if step.get("name") == step_name]
+
+    assert len(matching_steps) == 1
+    arguments = shlex.split(matching_steps[0]["run"])
+    assert expected_task in arguments
+
+    selected_tests = {
+        arguments[index + 1]
+        for index, argument in enumerate(arguments[:-1])
+        if argument == "--tests"
+    }
+    required_tests = {
+        "*ColdStartConnectionTest",
+        "*AccountSwitchPersistenceFailureTest",
+        "*IndependentConnectionDiscoveryTest",
+        "*AdditionalDeviceConnectionsTest",
+        "*SettingsViewModelTest",
+        "*NativeEventDeletionPersistenceTest",
+    }
+    assert required_tests <= selected_tests

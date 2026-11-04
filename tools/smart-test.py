@@ -95,7 +95,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["is_full_required"] = True
                 break
 
-        if f in {"scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
+        if f in {".github/workflows/oai-core.yml", "scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
                  "tests/test_install_script.py", "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py",
                  "tools/smart-test.py", "tools/test_smart_test.py"}:
             impact["affects_configuration"] = True
