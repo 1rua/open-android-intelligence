@@ -122,23 +122,12 @@ import androidx.compose.material.icons.filled.Visibility
 import com.openandroidintelligence.mobile.screen.ScreenCapabilityController
 import com.openandroidintelligence.mobile.screen.ScreenCapabilitySection
 import com.openandroidintelligence.mobile.screen.openAccessibilitySettings
-
-/** 设置页面路由契约。 */
-object SettingsRoutes {
-    const val OVERVIEW = "settings/overview"
-    const val APPEARANCE = "settings/appearance"
-    const val GATEWAY = "settings/gateway"
-    const val PAIRING = "settings/pairing"
-    const val SECURITY = "settings/security"
-    const val AUDIT_LOG = "settings/audit"
-    const val PLUGINS = "settings/plugins"
-    const val DEVICE_PUSH = "settings/device-push"
-    const val NOTIFICATIONS = "settings/notifications"
-    const val APP_UPDATES = "settings/app-updates"
-
-    /** 屏幕读取与控制：本地会话、三类权限与系统授权入口。 */
-    const val SCREEN_CAPABILITY = "settings/screen-capability"
-}
+import com.openandroidintelligence.mobile.settings.SettingsRoutes
+import com.openandroidintelligence.mobile.settings.AppearanceSettingsScreen
+import com.openandroidintelligence.mobile.settings.ConnectionSettingsScreen
+import com.openandroidintelligence.mobile.settings.NotificationSettingsScreen
+import com.openandroidintelligence.mobile.settings.CapabilityAuthSettingsScreen
+import com.openandroidintelligence.mobile.settings.AdvancedSettingsScreen
 
 /**
  * SCREEN 自行处理系统栏；SIDEBAR 的系统栏由抽屉或固定侧栏宿主消费，
@@ -286,7 +275,7 @@ fun SettingsScreen(
         }
 
         composable(SettingsRoutes.APPEARANCE) {
-            AppearanceSubScreen(
+            AppearanceSettingsScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
@@ -303,16 +292,16 @@ fun SettingsScreen(
         }
 
         composable(SettingsRoutes.GATEWAY) {
-            GatewaySubScreen(
+            ConnectionSettingsScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
                 onRefreshSession = viewModel::refreshSession,
                 onLogout = { viewModel.logout(revokeRefresh = true) },
                 onSwitchAccount = { viewModel.chooseAnotherAccount(); onBack() },
-                onRequestUnpair = { showUnpairDialog = true },
                 onSelectAgent = viewModel::selectAgent,
                 onRefreshAgents = viewModel::refreshAgents,
+                onRequestUnpair = { showUnpairDialog = true },
             )
         }
 
@@ -334,7 +323,7 @@ fun SettingsScreen(
         }
 
         composable(SettingsRoutes.SECURITY) {
-            SecuritySubScreen(
+            com.openandroidintelligence.mobile.settings.SecuritySettingsScreen(
                 uiState = uiState,
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
@@ -342,6 +331,7 @@ fun SettingsScreen(
                     if (enable) showTrustModeDialog = true else viewModel.disableTrustMode()
                 },
                 onRequestEmergencyStop = { showEmergencyDialog = true },
+                onNavigateToAuditLog = { navController.navigate(SettingsRoutes.AUDIT_LOG) { launchSingleTop = true } },
             )
         }
 
