@@ -96,8 +96,18 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
         JsonFields.obj(Json.parse(it.decodeToString())) ?: error("EXECUTION_JOURNAL_INVALID")
     }
 
-    private fun writeJournal(id: String, fields: Map<String, Any?>) =
-        documents.write(id, Json.canonical(Json.of(fields)).toByteArray())
+    private fun writeJournal(id: String, fields: Map<String, Any?>) {
+        val document = Json.of(fields)
+        // 隔离事实必须保留用于防重放，但不可再交付的结果不应继续落盘。
+        val persisted = if (JsonFields.string(JsonFields.obj(document), "stage") == "fenced")
+            Json.of(fields - "result") else document
+        documents.write(id, Json.canonical(persisted).toByteArray())
+    }
+
+    private fun scrubFencedResult(id: String, document: JsonValue.JObject) {
+        // 清理旧版本留下的正文；保留原隔离原因、授权版本和请求期限。
+        if (document.fields.any { it.first == "result" }) writeJournal(id, journalFields(document))
+    }
 
     private fun journalFields(document: JsonValue.JObject): MutableMap<String, Any?> =
         document.fields.associateTo(mutableMapOf<String, Any?>()) { it.first to it.second }
@@ -122,7 +132,11 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
 
     private fun scheduleLookup(id: String) {
         val saved = readJournal(id) ?: return
-        if (JsonFields.string(saved, "stage") == "fenced" || !authorizationCurrent()) return
+        if (JsonFields.string(saved, "stage") == "fenced") {
+            scrubFencedResult(id, saved)
+            return
+        }
+        if (!authorizationCurrent()) return
         val executing = running[id]
         if (executing != null && executing.isCancelled && !executing.isCompleted) return
         launchTracked(lookups, id, "lookup") { lookup(id) }
@@ -240,7 +254,10 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                 try {
                     synchronized(stateLock) {
                         val doc = readJournal(id) ?: return@synchronized
-                        if (JsonFields.string(doc,"stage") == "fenced") return@synchronized
+                        if (JsonFields.string(doc,"stage") == "fenced") {
+                            scrubFencedResult(id, doc)
+                            return@synchronized
+                        }
                         val expiration = JsonFields.string(doc,"expiresAt")
                         if (expiration != null && Instant.parse(expiration).toEpochMilli() <= System.currentTimeMillis()) {
                             fence(id,"REQUEST_EXPIRED")

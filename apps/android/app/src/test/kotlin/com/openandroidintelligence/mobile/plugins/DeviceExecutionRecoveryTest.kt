@@ -306,8 +306,12 @@ class DeviceExecutionRecoveryTest {
             assertTrue(transport.results.first().body.decodeToString().contains("succeeded"))
             assertTrue(transport.results.last().body.decodeToString().contains("cancelled"))
             assertFalse(transport.results.last().body.decodeToString().contains("recovery-fixture"))
+            assertFalse(transport.results.last().body.decodeToString().contains("synthetic-sensitive-recovery-body"))
             assertEquals(1, transport.invocations.get())
-            assertNotNull(journal.read("req_cancelled_result"))
+            val fenced = JsonFields.obj(Json.parse(journal.read("req_cancelled_result")!!.decodeToString()))!!
+            assertEquals("fenced", JsonFields.string(fenced, "stage"))
+            assertEquals("REQUEST_CANCELLED", JsonFields.string(fenced, "fenceReason"))
+            assertNull(JsonFields.field(fenced, "result"))
             assertTrue(failures.isEmpty())
         }
     }
@@ -414,6 +418,78 @@ class DeviceExecutionRecoveryTest {
         }
     }
 
+    @Test fun anExpiredUndeliveredSensitiveResultIsScrubbedWithoutLosingItsFenceAfterRestart() = runBlocking {
+        val name = "expired_sensitive_result_fence"
+        fixture(name) { driver, transport, journal, scope, failures, host ->
+            val id = "req_expired_sensitive_result"
+            val completed = retainUndeliveredSensitiveResult(driver, transport, journal, scope, id)
+            transport.expiresAt = Instant.EPOCH.toString()
+            val expired = JsonFields.obj(Json.of(completed.fields.associate { it.first to it.second } +
+                ("expiresAt" to transport.expiresAt)))!!
+            journal.write(id, Json.canonical(expired).toByteArray())
+
+            driver.recoverPending()
+            awaitJobs(scope)
+            assertScrubbedFence(journal, id, expired, "REQUEST_EXPIRED")
+            assertFenceSurvivesRestart(name, id, transport, journal, scope, host)
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun aRevokedUndeliveredSensitiveResultIsScrubbedWithoutLosingItsFenceAfterRestart() = runBlocking {
+        val name = "revoked_sensitive_result_fence"
+        fixture(name) { driver, transport, journal, scope, failures, host ->
+            val id = "req_revoked_sensitive_result"
+            val completed = retainUndeliveredSensitiveResult(driver, transport, journal, scope, id)
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore())
+            val revoked = DeviceExecutionDriver(context, scope, http, host, "acct", "dev", 1,
+                name, { 7 }, { true }, TestDocumentKeys, localAuthorizationRevision = { 1L })
+
+            revoked.recoverPending()
+            awaitJobs(scope)
+            assertScrubbedFence(journal, id, completed, "LOCAL_AUTHORIZATION_CHANGED")
+            // Even restoring the old revision cannot make this request executable again.
+            assertFenceSurvivesRestart(name, id, transport, journal, scope, host)
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun legacyFencedSensitiveResultsAreScrubbedByRecoveryAndEventReplayWithoutReexecution() = runBlocking {
+        val name = "legacy_sensitive_fence"
+        // 同一应用只安装一次已签名插件；各场景使用独立请求，重启仍重新校验已安装包。
+        fixture(name) { driver, transport, journal, scope, failures, host ->
+            for (recoverFirst in listOf(true, false)) {
+                for (expired in listOf(true, false)) {
+                    val id = "req_legacy_sensitive_fence_${recoverFirst}_$expired"
+                    val reason = if (expired) "REQUEST_EXPIRED" else "LOCAL_AUTHORIZATION_CHANGED"
+                    val expiration = if (expired) Instant.EPOCH.toString() else transport.expiresAt
+                    val legacy = JsonFields.obj(Json.of(mapOf(
+                        "stage" to "fenced", "cancelRequested" to true, "fenceReason" to reason,
+                        "expiresAt" to expiration, "localAuthorizationRevision" to 0L,
+                        "hostAuthorizationDigest" to executionHostAuthorizationDigest(host),
+                        "localApproval" to mapOf("requestId" to id, "operation" to "READ",
+                            "parametersSha256" to "original-parameter-digest"),
+                        "result" to mapOf("outcome" to "succeeded",
+                            "data" to mapOf("private" to "synthetic-sensitive-legacy-body")),
+                    )))!!
+                    journal.write(id, Json.canonical(legacy).toByteArray())
+
+                    if (recoverFirst) driver.recoverPending() else driver.enqueue(id)
+                    awaitJobs(scope)
+                    assertScrubbedFence(journal, id, legacy, reason)
+                    assertFenceSurvivesRestart(name, id, transport, journal, scope, host)
+                    assertEquals(0, transport.invocations.get())
+                    assertTrue(transport.lookups.isEmpty())
+                    assertTrue(transport.claims.isEmpty())
+                    assertTrue(transport.results.isEmpty())
+                    assertTrue(failures.isEmpty())
+                }
+            }
+        }
+    }
+
     @Test fun cancellingBeforeInvocationPersistsCancelledInsteadOfAnUnknownOutcome() = runBlocking {
         fixture("cancel_before_invocation") { driver, transport, journal, scope, failures, host ->
             val entry = host.entries(NOTIFICATION_PLUGIN_ID).single()
@@ -483,6 +559,58 @@ class DeviceExecutionRecoveryTest {
         }
     }
 
+    private suspend fun retainUndeliveredSensitiveResult(driver: DeviceExecutionDriver, transport: Transport,
+        journal: EncryptedDocuments, scope: CoroutineScope, id: String): JsonValue.JObject {
+        transport.resultFailures = 4
+        driver.accept(id)
+        awaitJobs(scope)
+        val saved = JsonFields.obj(Json.parse(journal.read(id)!!.decodeToString()))!!
+        assertEquals("completed", JsonFields.string(saved, "stage"))
+        assertEquals("succeeded", JsonFields.string(JsonFields.obj(JsonFields.field(saved, "result")), "outcome"))
+        assertTrue("An undelivered result must remain available while it is still authorized",
+            Json.canonical(saved).contains("synthetic-sensitive-recovery-body"))
+        assertEquals(1, transport.invocations.get())
+        assertEquals(4, transport.results.size)
+        return saved
+    }
+
+    private fun assertScrubbedFence(journal: EncryptedDocuments, id: String, previous: JsonValue.JObject, reason: String) {
+        val saved = JsonFields.obj(Json.parse(journal.read(id)!!.decodeToString()))!!
+        assertEquals("fenced", JsonFields.string(saved, "stage"))
+        assertEquals(true, JsonFields.bool(saved, "cancelRequested"))
+        assertEquals(reason, JsonFields.string(saved, "fenceReason"))
+        assertNull("A fenced request must retain no deliverable result", JsonFields.field(saved, "result"))
+        assertFalse(Json.canonical(saved).contains("recovery-fixture"))
+        assertFalse(Json.canonical(saved).contains("synthetic-sensitive-recovery-body"))
+        assertFalse(Json.canonical(saved).contains("synthetic-sensitive-legacy-body"))
+        for (field in listOf("expiresAt", "localAuthorizationRevision", "hostAuthorizationDigest", "localApproval")) {
+            assertEquals("Fence must preserve $field",
+                JsonFields.field(previous, field)?.let(Json::canonical),
+                JsonFields.field(saved, field)?.let(Json::canonical))
+        }
+    }
+
+    private suspend fun assertFenceSurvivesRestart(name: String, id: String, transport: Transport,
+        journal: EncryptedDocuments, scope: CoroutineScope, host: ProductionPluginHost) {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val restartedHost = createHost(context, install = false)
+        assertEquals(executionHostAuthorizationDigest(host), executionHostAuthorizationDigest(restartedHost))
+        val http = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
+            transport, { ByteArray(64) }, InMemoryEventCursorStore())
+        val restarted = DeviceExecutionDriver(context, scope, http, restartedHost, "acct", "dev", 1,
+            name, { 7 }, { true }, TestDocumentKeys)
+        val saved = journal.read(id)!!.decodeToString()
+        val calls = listOf(transport.lookups.size, transport.claims.size, transport.results.size, transport.invocations.get())
+        repeat(2) {
+            restarted.recoverPending()
+            restarted.accept(id)
+            awaitJobs(scope)
+        }
+        assertEquals(saved, journal.read(id)!!.decodeToString())
+        assertEquals("A retained fence must block lookup, claim, result upload and plugin invocation after restart",
+            calls, listOf(transport.lookups.size, transport.claims.size, transport.results.size, transport.invocations.get()))
+    }
+
     private suspend fun awaitJobs(scope: CoroutineScope) {
         withTimeout(5_000) {
             while (true) {
@@ -507,7 +635,7 @@ class DeviceExecutionRecoveryTest {
             override val primitiveId = "kernel.notifications.read"
             override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
                 invocations.incrementAndGet()
-                return """{"records":[{"id":"recovery-fixture"}]}""".toByteArray()
+                return """{"records":[{"id":"recovery-fixture","text":"synthetic-sensitive-recovery-body"}]}""".toByteArray()
             }
         }
         KernelPrimitiveRegistry.register(provider)

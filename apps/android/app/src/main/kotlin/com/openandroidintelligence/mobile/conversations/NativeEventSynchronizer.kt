@@ -131,7 +131,8 @@ internal class NativeEventSynchronizer(
             val covered = facts.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().any {
                 it.message.id == messageId && it.message.conversationId?.value == conversationId &&
                     (generationId == null || it.message.generationId == null || it.message.generationId == generationId) &&
-                    it.message.contentRevision?.let { saved -> saved >= revision } == true
+                    // 权威历史的无修订撤回终态覆盖旧正文；有修订的消息仍按正文版本比较。
+                    (it.message.contentRevision?.let { saved -> saved >= revision } ?: it.message.isDeleted)
             }
             if (!covered) throw NativeHistoryBehind()
         }

@@ -194,15 +194,17 @@ describe("DSH execution and observer lifetimes", () => {
     expect(h.count()).toBe(0);
     expect(h.controller.cancel).not.toHaveBeenCalled();
   });
-  it("keeps explicit cancellation on the native controller", async () => {
-    const h = fixture(async (input) => { h.start(input); return { accepted: true }; });
-    const req = request("one", {});
+  it.each([undefined, "turn-old", "turn-current", "turn-current"])("rejects cancellation without a host generation-scoped primitive (%s)", async (generationId) => {
+    const h = fixture(async () => ({ accepted: true }));
+    const req = request("one", generationId === undefined ? {} : { value: { generationId } });
     req.url = `${prefix}/sessions/one/cancel`;
     const res = new SlowResponse();
+    res.writeHead = (status) => { res.status = status; res.headersSent = true; };
     res.end = (body) => { res.result = JSON.parse(body); res.writableEnded = true; };
     await h.handler(req, res);
-    expect(h.controller.cancel).toHaveBeenCalledExactlyOnceWith({ sessionId: "one" });
-    expect(res.result).toEqual({ id: "one", action: "cancel" });
+    expect(res.status).toBe(409);
+    expect(res.result).toEqual({ code: "UNSUPPORTED_CAPABILITY" });
+    expect(h.controller.cancel).not.toHaveBeenCalled();
   });
   it("bounds queued bytes as well as event count", async () => {
     const h = fixture(async (input) => { h.start(input); h.delta("one", "first"); return { accepted: true }; });

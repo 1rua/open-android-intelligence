@@ -24,6 +24,7 @@ import com.openandroidintelligence.kernel.SmsScopeMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -157,25 +158,50 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
             return@withLock true
         }
         val enabled = snapshot?.configuration?.let { it.sms.enabled || it.notifications.enabled } == true
-        val available = app.gatewayRuntime.pushConnections()
-        connections.clear(); available.forEach { connections[it.coreInstanceId to it.accountScope] = it }
-        app.gatewayRuntime.syncAdditionalDeviceRequests()
-        if (local == null || snapshot == null) return@withLock true
-        if (!enabled && !discover && snapshot.pendingDeliveries == 0 && snapshot.pendingRevocations == 0) return@withLock true
-        val options = available.flatMap { connection ->
-            try { transport.discover(connection) }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { issue.value = "PUSH_ENDPOINT_DISCOVERY_FAILED"; emptyList() }
+        connections.clear()
+        val options = mutableListOf<PushEndpointOption>()
+        var moreSmsPages = false
+        if (local != null && snapshot != null && (enabled || discover || snapshot.pendingDeliveries > 0 || snapshot.pendingRevocations > 0)) {
+            if (local.isCollectionAllowed(PushKind.NOTIFICATION)) DevicePushSourcesRegistry.current?.captureActiveNotifications()
+            if (local.isCollectionAllowed(PushKind.SMS)) {
+                moreSmsPages = DevicePushSourcesRegistry.current?.let { sources ->
+                    captureSmsPage(local, sources) { synchronizeLogin() }
+                } ?: false
+            }
         }
-        _endpoints.value = options
-        runDevicePushCycle(local, transport,
-            revoke = transport::revoke,
-            captureActiveNotifications = { DevicePushSourcesRegistry.current?.captureActiveNotifications() },
-            captureSmsPage = {
-                DevicePushSourcesRegistry.current?.let { sources -> captureSmsPage(local, sources) { synchronizeLogin() } } ?: false
-            },
-            onRevocationFailure = { issue.value = "PUSH_REVOCATION_DELIVERY_PENDING" },
-        )
+        supervisorScope {
+            val cycleScope = this
+            // One device-recovery owner consumes the complete independently bounded
+            // discovery set. Push targets begin draining on each individual result.
+            val discovery = async {
+                app.gatewayRuntime.pushConnections().collect { result ->
+                    val connection = result.connection
+                    connections[connection.coreInstanceId to connection.accountScope] = connection
+                    options += result.endpoints
+                    _endpoints.value = options.toList()
+                    if (local != null) cycleScope.launch {
+                        try {
+                            runDevicePushCycle(local, transport,
+                                revoke = transport::revoke,
+                                captureActiveNotifications = {},
+                                captureSmsPage = { false },
+                                onRevocationFailure = { issue.value = "PUSH_REVOCATION_DELIVERY_PENDING" },
+                                endpointAvailable = { endpoint -> endpoint.coreInstanceId == connection.coreInstanceId &&
+                                    endpoint.accountScope == connection.accountScope },
+                                connectionScope = connection.coreInstanceId to connection.accountScope,
+                            )
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { issue.value = "PUSH_ENDPOINT_DISCOVERY_FAILED" }
+                    }
+                }
+            }
+            discovery.await()
+            // Discovery has no network work left, but target delivery may still be
+            // running. Recover all device profiles once, in parallel with delivery.
+            app.gatewayRuntime.syncAdditionalDeviceRequests()
+        }
+        _endpoints.value = options.toList()
+        if (local == null) true else pushCycleComplete(local.maintain(), moreSmsPages)
     }
 
     companion object {

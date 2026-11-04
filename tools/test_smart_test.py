@@ -1,8 +1,10 @@
 """An Adapter-only edit must actually reach its optional-host regressions."""
 import importlib.util
+import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 def load_runner():
@@ -62,6 +64,7 @@ def test_standalone_core_suite_does_not_collect_optional_adapter_tests(level):
     "tests/test_core_setup_transaction.py",
     "tools/smart-test.py",
     "tools/test_smart_test.py",
+    ".github/workflows/oai-core.yml",
 ])
 def test_configuration_only_edits_run_configuration_fault_regressions(changed_file, level):
     runner = load_runner()
@@ -129,3 +132,116 @@ def test_measurement_only_edit_runs_its_portable_tests_without_android_or_native
     assert runner.execute_strategy("fast", impact) == 0
     assert any("tools/test_measure_communication.py" in command for command in commands)
     assert not any("oai-core/tests" in command or "oai-core/tests/test_hermes.py" in command for command in commands)
+
+
+@pytest.mark.parametrize("level", ["fast", "pr"])
+@pytest.mark.parametrize("changed_file", [
+    "plugins/sms/src/lib.rs",
+    "plugins/sms/manifest.json",
+    "plugins/schemas/sms.json",
+    "plugin-tooling/src/manifest.ts",
+    "plugin-tooling/src/reference-build-policy.ts",
+    "plugin-tooling/src/bundled-plugins.ts",
+    "plugin-tooling/src/build-references.ts",
+])
+def test_plugin_edits_run_plugin_tooling_tests_after_the_root_lock_gate(changed_file, level):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+
+    impact = runner.analyze_impact([changed_file])
+    assert impact["affects_plugins"]
+    assert runner.execute_strategy(level, impact) == 0
+
+    assert commands[0] == ["npm", "run", "mvp:lock:check"]
+    assert ["npm", "test", "--prefix", "plugin-tooling"] in commands
+
+
+@pytest.mark.parametrize("level", ["fast", "pr"])
+def test_plugin_tooling_test_failure_is_returned_to_the_caller(level):
+    runner = load_runner()
+    commands = []
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        return 17 if command == ["npm", "test", "--prefix", "plugin-tooling"] else 0
+
+    runner.run_command = execute
+    impact = runner.analyze_impact(["plugin-tooling/src/bundled-plugins.ts"])
+
+    assert runner.execute_strategy(level, impact) == 17
+    assert commands == [
+        ["npm", "run", "mvp:lock:check"],
+        ["npm", "test", "--prefix", "plugin-tooling"],
+    ]
+
+
+def test_combined_plugin_and_android_edits_run_both_relevant_suites():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact([
+        "plugins/screen-control/manifest.json",
+        "apps/android/platform-kernel/src/main/PairingGrantState.kt",
+    ])
+
+    assert runner.execute_strategy("pr", impact) == 0
+    assert ["npm", "test", "--prefix", "plugin-tooling"] in commands
+    assert any(":platform-kernel:testDebugUnitTest" in command for command in commands)
+
+
+def test_unrelated_android_edit_does_not_run_plugin_tests():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["apps/android/app/src/main/SettingsViewModel.kt"])
+
+    assert runner.execute_strategy("pr", impact) == 0
+    assert any(":app:testFullDebugUnitTest" in command for command in commands)
+    assert ["npm", "test", "--prefix", "plugin-tooling"] not in commands
+
+
+def test_full_level_always_runs_plugin_tests_without_plugin_changes():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["README.md"])
+
+    assert runner.execute_strategy("full", impact) == 0
+    assert ["npm", "test", "--prefix", "plugin-tooling"] in commands
+
+
+@pytest.mark.parametrize(("step_name", "expected_task"), [
+    (
+        "Core connection, Agent sessions, platform recovery and transport regressions",
+        ":app:testFullDebugUnitTest",
+    ),
+    (
+        "Play screen integration and Android API compatibility",
+        ":app:testPlayDebugUnitTest",
+    ),
+])
+def test_android_ci_steps_select_connection_account_and_settings_regressions(step_name, expected_task):
+    workflow_path = Path(__file__).parents[1] / ".github/workflows/oai-core.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    android_steps = workflow["jobs"]["android"]["steps"]
+    matching_steps = [step for step in android_steps if step.get("name") == step_name]
+
+    assert len(matching_steps) == 1
+    arguments = shlex.split(matching_steps[0]["run"])
+    assert expected_task in arguments
+
+    selected_tests = {
+        arguments[index + 1]
+        for index, argument in enumerate(arguments[:-1])
+        if argument == "--tests"
+    }
+    required_tests = {
+        "*ColdStartConnectionTest",
+        "*AccountSwitchPersistenceFailureTest",
+        "*IndependentConnectionDiscoveryTest",
+        "*AdditionalDeviceConnectionsTest",
+        "*SettingsViewModelTest",
+        "*NativeEventDeletionPersistenceTest",
+    }
+    assert required_tests <= selected_tests

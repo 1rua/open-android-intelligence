@@ -41,20 +41,23 @@ data class SettingsUiState(
     val replyNotificationsEnabled: Boolean = false,
     val replyNotificationsAllowed: Boolean = false,
     val nativeAgentsState: NativeAgentsState? = null,
+    val localSessionState: LocalSessionState = LocalSessionState.SignedOut(),
 ) {
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
 
     val hasLocalSession: Boolean
-        get() = connectionPhase is ConnectionPhase.Connected || connectionPhase is ConnectionPhase.OfflineMirror
+        get() = localSessionState is LocalSessionState.Workspace
 
     val connectedUsername: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.username
             ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.username
+            ?: (localSessionState as? LocalSessionState.Workspace)?.account?.username
 
     val connectedGatewayUrl: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.gatewayUrl
             ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
+            ?: (localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
 
     val connectedTransportSecurity: TransportSecurity?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.transportSecurity
@@ -111,6 +114,7 @@ data class SettingsUiState(
 private data class BaseSettings(
     val appearance: AppearanceSettings,
     val phase: ConnectionPhase,
+    val localSession: LocalSessionState,
     val grants: PairingGrantState?,
     val auditEvents: List<AuditEvent>,
 )
@@ -158,10 +162,11 @@ class SettingsViewModel(
     private val baseSettingsFlow = combine(
         environment.appearance.settings,
         runtime?.phase ?: MutableStateFlow(ConnectionPhase.Disconnected),
+        runtime?.localSessionState ?: MutableStateFlow<LocalSessionState>(LocalSessionState.SignedOut()),
         environment.pairingGrants.state,
         environment.auditSink.eventsFlow,
-    ) { appearance, phase, grants, auditEvents ->
-        BaseSettings(appearance, phase, grants, auditEvents)
+    ) { appearance, phase, localSession, grants, auditEvents ->
+        BaseSettings(appearance, phase, localSession, grants, auditEvents)
     }
 
     private val controlSettingsFlow = combine(
@@ -200,6 +205,7 @@ class SettingsViewModel(
         SettingsUiState(
             appearance = base.appearance,
             connectionPhase = base.phase,
+            localSessionState = base.localSession,
             pairingGrants = base.grants,
             isTrustModeEnabled = control.trustEnabled,
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,
@@ -222,6 +228,7 @@ class SettingsViewModel(
         initialValue = SettingsUiState(
             appearance = environment.appearance.settings.value,
             connectionPhase = runtime?.phase?.value ?: ConnectionPhase.Disconnected,
+            localSessionState = runtime?.localSessionState?.value ?: LocalSessionState.SignedOut(),
             pairingGrants = environment.pairingGrants.state.value,
             isTrustModeEnabled = environment.trustMode.isEnabled(),
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,

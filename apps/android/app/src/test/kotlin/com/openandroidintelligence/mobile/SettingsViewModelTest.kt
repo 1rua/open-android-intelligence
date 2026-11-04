@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
@@ -105,7 +106,49 @@ class SettingsViewModelTest {
         assertEquals(0, state.emergencyStoppedCount)
         assertEquals(ConnectionPhase.Disconnected, state.connectionPhase)
         assertFalse(state.isGatewayConnected)
+        assertFalse(state.hasLocalSession)
+        assertTrue(state.localSessionState is LocalSessionState.SignedOut)
         assertNotNull(state.pairingGrants)
+    }
+
+    @Test
+    fun localAccountControlsRemainAvailableForEveryWorkspaceConnectionPhase() {
+        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
+        val phases = listOf(
+            ConnectionPhase.Failed("PROTOCOL_INCOMPATIBLE:406"),
+            ConnectionPhase.Disconnected,
+            ConnectionPhase.Initializing,
+            ConnectionPhase.Reconnecting,
+            ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
+        )
+        phases.forEach { phase ->
+            val state = SettingsUiState(
+                connectionPhase = phase,
+                localSessionState = LocalSessionState.Workspace(account, phase),
+            )
+            assertTrue("本地工作台在 $phase 下仍须提供账号操作", state.hasLocalSession)
+            assertFalse("本地账号操作不能授予远端连接能力", state.isGatewayConnected)
+            assertEquals(account.username, state.connectedUsername)
+            assertEquals(account.gatewayBaseUrl, state.connectedGatewayUrl)
+        }
+    }
+
+    @Test
+    fun localAccountControlsRequireAWorkspaceRatherThanAnOldConnectionPhase() {
+        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
+        val localStates = listOf(
+            LocalSessionState.LoadingLocal,
+            LocalSessionState.SignedOut(),
+            LocalSessionState.AccountPicker(listOf(account)),
+            LocalSessionState.Locked(account, "KEY_UNAVAILABLE"),
+        )
+        localStates.forEach { local ->
+            val state = SettingsUiState(
+                connectionPhase = ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
+                localSessionState = local,
+            )
+            assertFalse("$local 不拥有活动工作台，旧连接阶段不能伪造本地登录", state.hasLocalSession)
+        }
     }
 
     @Test

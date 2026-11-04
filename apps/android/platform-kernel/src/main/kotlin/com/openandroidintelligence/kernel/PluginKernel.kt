@@ -147,7 +147,7 @@ class PluginKernel(
         if (previous != null && previous.identity != registration.identity) throw ProviderRejected("IDENTITY_CONFLICT")
         registrations[registration.identity.pluginId] = registration
         semaphores[registration.identity.pluginId] =
-            Semaphore(registration.budget.maxConcurrentInvocations.coerceAtLeast(1))
+            Semaphore(registration.budget.maxConcurrentInvocations.coerceAtLeast(1), true)
     }
 
     fun unregister(pluginId: String) {
@@ -261,38 +261,47 @@ class PluginKernel(
                 throw ProviderRejected("NOT_PROVIDER:$capability")
             }
 
-            EffectiveCapabilities.require(
-                CapabilityInputs(
-                    hostEnvelope = hostEnvelope.primitives,
-                    phoneLimits = phoneLimits.primitives,
-                    manifestRequests = registration.declaredPrimitives,
-                    pluginEnabled = registration.state.isExecutable(),
-                    pairingGrant = grants(pairingId),
-                    session = session,
-                    ),
-                    capability,
-                    )
-
-            val semaphore = semaphores[identity.pluginId]!!
-            requireIdentityGrant(registration, pairingId, capability)
-            if (session.background) {
-                requireIdentityGrant(registration, pairingId, "kernel.background.run")
-                if (!EffectiveCapabilities.compute(CapabilityInputs(hostEnvelope.primitives, phoneLimits.primitives,
-                    registration.declaredPrimitives, true, grants(pairingId), session)).backgroundAllowed) {
-                    throw CapabilityDenied("kernel.background.run")
-                }
+            requireInvocationCapabilities(registration, pairingId, capability, session)
+            val semaphore = semaphores[identity.pluginId] ?: throw CapabilityDenied(capability)
+            val grantRevision = grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
+            // The host passes the selected capability's primitive set, not just its
+            // public (versioned) capability ID. Queue before the plugin budget gate
+            // so a one-slot screen plugin can reach the device-wide lease queue.
+            val screenControl = "kernel.screen.control" in registration.declaredPrimitives &&
+                "kernel.screen.control" in session.primitives
+            if (screenControl) {
+                // invoke is synchronous and the trusted driver uses runInterruptible:
+                // acquire preserves FIFO and removes cancelled waiters by interruption.
+                semaphore.acquire()
+            } else if (!semaphore.tryAcquire()) {
+                throw BudgetExceeded("CONCURRENCY")
             }
-            val grantRevision=grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
-            if (!semaphore.tryAcquire()) throw BudgetExceeded("CONCURRENCY")
             val output = try {
+                if (screenControl) {
+                    // Admission is not permission to execute after waiting. Keep the
+                    // original generation, and reject replacement/unregistration too.
+                    requireCurrentInvocation(registration, semaphore, pairingId, grantRevision, capability)
+                    authorizeInvocation(identity, capability, input, session)
+                    if (providerSelector.select(capability, pairingId) != selected) {
+                        throw ProviderRejected("NOT_PROVIDER:$capability")
+                    }
+                    requireInvocationCapabilities(registration, pairingId, capability, session)
+                    requireCurrentInvocation(registration, semaphore, pairingId, grantRevision, capability)
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                    // RemoteScreenRuntime still acquires the real exclusive lease
+                    // and checks request/session/expiry and expected screen revision.
+                }
                 currentCall.set(KernelCallContext(identity, accountId, pairingId, session, registration.budget,grantRevision))
-                when (registration.runtimeType) {
-                    RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
-                    RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
-                    else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
+                try {
+                    when (registration.runtimeType) {
+                        RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
+                        RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
+                        else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
+                    }
+                } finally {
+                    currentCall.remove()
                 }
             } finally {
-                currentCall.remove()
                 semaphore.release()
             }
             if (grants(pairingId)?.revision!=grantRevision || !registration.state.isExecutable() || emergencyStopped) throw CapabilityDenied(capability)
@@ -319,6 +328,38 @@ class PluginKernel(
                 "invoke", AuditOutcome.FAILED, correlationId,
             )
             throw cause
+        }
+    }
+
+    private fun requireCurrentInvocation(
+        registration: PluginRegistration,
+        semaphore: Semaphore,
+        pairingId: String,
+        grantRevision: Long,
+        capability: String,
+    ) {
+        val pluginId = registration.identity.pluginId
+        if (emergencyStopped || !registration.state.isExecutable() || registrations[pluginId] !== registration ||
+            semaphores[pluginId] !== semaphore || grants(pairingId)?.revision != grantRevision) {
+            throw CapabilityDenied(capability)
+        }
+    }
+
+    private fun requireInvocationCapabilities(
+        registration: PluginRegistration,
+        pairingId: String,
+        capability: String,
+        session: SessionConstraints,
+    ) {
+        val inputs = CapabilityInputs(hostEnvelope.primitives, phoneLimits.primitives,
+            registration.declaredPrimitives, registration.state.isExecutable(), grants(pairingId), session)
+        EffectiveCapabilities.require(inputs, capability)
+        requireIdentityGrant(registration, pairingId, capability)
+        if (session.background) {
+            requireIdentityGrant(registration, pairingId, "kernel.background.run")
+            if (!EffectiveCapabilities.compute(inputs.copy(pluginEnabled = true, pairingGrant = grants(pairingId))).backgroundAllowed) {
+                throw CapabilityDenied("kernel.background.run")
+            }
         }
     }
 

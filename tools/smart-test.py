@@ -95,7 +95,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["is_full_required"] = True
                 break
 
-        if f in {"scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
+        if f in {".github/workflows/oai-core.yml", "scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
                  "tests/test_install_script.py", "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py",
                  "tools/smart-test.py", "tools/test_smart_test.py"}:
             impact["affects_configuration"] = True
@@ -140,6 +140,13 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     ret = run_command(["npm", "run", "mvp:lock:check"])
     if ret != 0:
         return ret
+
+    # Plugin tooling tests cover plugin source, manifests, schemas, and packaging policy.
+    if impact["affects_plugins"] or level == "full":
+        print("\n--- 插件工具与清单回归 ---")
+        ret = run_command(["npm", "test", "--prefix", "plugin-tooling"])
+        if ret != 0:
+            return ret
 
     # 2. Python Core 测试
     if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":

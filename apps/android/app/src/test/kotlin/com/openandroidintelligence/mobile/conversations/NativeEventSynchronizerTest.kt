@@ -154,6 +154,189 @@ class NativeEventSynchronizerTest {
         }
     }
 
+    @Test fun deletedHistoryWithoutAContentRevisionCoversOldBodyEventsAndSyncsTheFollowingPage() = runTest {
+        for (type in listOf("conversation.message.delta", "conversation.message.completed")) {
+            val h = Harness().apply {
+                raw = bodyEvent(type)
+                historyMessage = deletedHistoryMessage()
+                pageHasMore = true
+            }
+            val sync = h.sync()
+            assertTrue(sync.synchronize())
+            assertEquals(listOf("next"), h.acks)
+            assertEquals("next", h.store.cursor)
+            assertNull(h.store.pending)
+            val deleted = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+            assertTrue(deleted.message.isDeleted)
+            assertTrue(deleted.message.parts.isEmpty())
+            assertNull(deleted.message.contentRevision)
+            assertEquals(listOf(deleted), h.published)
+            assertTrue(h.log.indexOf("commit") < h.log.indexOf("ack:next"))
+
+            h.raw = bodyEvent(messageId = "following", generationId = "following-gen", revision = 1)
+            h.historyMessage = TimelineMessage("following", "assistant", listOf(MessagePart.Text("new reply")), 2,
+                conversationId = ConversationId("chat"), generationId = "following-gen", contentRevision = 1)
+            h.pageCursor = "following"
+            h.pageHasMore = false
+            assertFalse(sync.synchronize())
+            assertTrue(h.requests.any { it.target.contains("cursor=next") })
+            assertEquals(listOf("next", "following"), h.acks)
+            assertEquals("following", h.store.cursor)
+            val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            assertEquals(listOf("reply", "following"), saved.map { it.message.id })
+            assertEquals("new reply", (saved.last().message.parts.single() as MessagePart.Text).value)
+            assertTrue(h.published.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+                .filter { it.message.id == "reply" }.all { it.message.isDeleted && it.message.parts.isEmpty() })
+        }
+    }
+
+    @Test fun aDeletedHistoryPageIsNotAcknowledgedUntilTheDeletionIsPersisted() = runTest {
+        val h = Harness().apply {
+            raw = bodyEvent()
+            historyMessage = deletedHistoryMessage()
+            store.failCommit = true
+        }
+        val sync = h.sync()
+        val failure = runCatching { sync.synchronize() }.exceptionOrNull()
+        assertTrue(failure is NativeEventSyncFailure)
+        assertEquals("LOCAL_SAVE_FAILED", (failure as NativeEventSyncFailure).stage)
+        assertTrue(failure.cause is IOException)
+        assertTrue(h.acks.isEmpty())
+        assertEquals("base", h.store.cursor)
+        assertNull(h.store.pending)
+        assertTrue(h.store.events.isEmpty())
+        assertTrue(h.published.isEmpty())
+
+        // 即使服务端已有后页，也必须先保存并确认内存中保留的原页。
+        h.raw = bodyEvent(messageId = "following")
+        h.pageCursor = "following"
+        sync.synchronize()
+        assertEquals(1, h.requests.count { it.target.contains("/events?") })
+        assertEquals(listOf("next"), h.acks)
+        assertEquals("next", h.store.cursor)
+        assertNull(h.store.pending)
+        val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().message
+        assertTrue(saved.isDeleted)
+        assertTrue(saved.parts.isEmpty())
+        assertNull(saved.contentRevision)
+        assertTrue(h.log.indexOf("commit") < h.log.indexOf("ack:next"))
+    }
+
+    @Test fun aLostAckForDeletedHistoryRetriesTheSavedCursorWithoutRestoringOldContent() = runTest {
+        val h = Harness().apply {
+            raw = bodyEvent()
+            historyMessage = deletedHistoryMessage()
+            failAck = true
+        }
+        val failure = runCatching { h.sync().synchronize() }.exceptionOrNull()
+        assertTrue(failure is NativeEventSyncFailure)
+        assertEquals("ACK_FAILED", (failure as NativeEventSyncFailure).stage)
+        assertEquals("next", h.store.pending)
+        assertEquals("base", h.store.cursor)
+        val reads = h.requests.count { it.target.contains("/events?") }
+        val refreshes = h.log.count { it == "history" }
+        h.historyMessage = null
+        h.historyRevision = 7
+        h.pageCursor = "following"
+        h.sync().synchronize()
+        assertEquals(listOf("next", "next"), h.acks)
+        assertEquals("next", h.store.cursor)
+        assertNull(h.store.pending)
+        assertEquals(reads, h.requests.count { it.target.contains("/events?") })
+        assertEquals(refreshes, h.log.count { it == "history" })
+        val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().message
+        assertTrue(saved.isDeleted)
+        assertTrue(saved.parts.isEmpty())
+        assertEquals(h.store.events, h.published)
+    }
+
+    @Test fun aDeletedHistoryMessageMustStillMatchTheMessageSessionAndGeneration() = runTest {
+        val deleted = deletedHistoryMessage()
+        for (message in listOf(deleted.copy(id = "other-message"),
+            deleted.copy(conversationId = ConversationId("other-session")), deleted.copy(conversationId = null),
+            deleted.copy(generationId = "other-generation"))) {
+            val h = Harness().apply { raw = bodyEvent(); historyMessage = message }
+            assertTrue(runCatching { h.sync().synchronize() }.exceptionOrNull() is NativeHistoryBehind)
+            assertTrue(h.acks.isEmpty())
+            assertEquals("base", h.store.cursor)
+            assertNull(h.store.pending)
+            assertTrue(h.store.events.isEmpty())
+            assertTrue(h.published.isEmpty())
+        }
+    }
+
+    @Test fun deletedHistoryCannotHideABodyEventFromAnotherSession() = runTest {
+        val h = Harness().apply {
+            raw = bodyEvent(conversationId = "other-session")
+            historyMessage = deletedHistoryMessage()
+        }
+        val failure = runCatching { h.sync().synchronize() }.exceptionOrNull()
+        assertTrue(failure is AgentSessionException)
+        assertEquals("NATIVE_EVENT_SCOPE_MISMATCH", (failure as AgentSessionException).code)
+        assertFalse(h.log.contains("history"))
+        assertTrue(h.acks.isEmpty())
+        assertEquals("base", h.store.cursor)
+        assertTrue(h.store.events.isEmpty())
+    }
+
+    @Test fun aDeletedHistoryMessageCannotBypassAnAgentOwnerChangeBeforeCommit() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val h = Harness().apply {
+            raw = bodyEvent()
+            historyMessage = deletedHistoryMessage()
+            historyGate = gate
+        }
+        var ownsAgent = true
+        var rejectedOwnerChecks = 0
+        val sync = h.sync(checkOwner = {
+            if (!ownsAgent) {
+                rejectedOwnerChecks++
+                throw CancellationException("owner changed")
+            }
+        })
+        val task = launch(UnconfinedTestDispatcher(testScheduler)) { sync.synchronize() }
+        h.historyStarted.await()
+        ownsAgent = false
+        gate.complete(Unit)
+        task.join()
+        assertTrue(task.isCancelled)
+        assertEquals(1, rejectedOwnerChecks)
+        assertTrue(h.acks.isEmpty())
+        assertEquals("base", h.store.cursor)
+        assertNull(h.store.pending)
+        assertTrue(h.store.events.isEmpty())
+        assertTrue(h.published.isEmpty())
+    }
+
+    @Test fun emptyNonDeletedHistoryWithoutAContentRevisionCannotCoverABodyEvent() = runTest {
+        for (state in listOf("CONFIRMED", "STREAMING", "FAILED")) {
+            val h = Harness().apply {
+                raw = bodyEvent()
+                historyMessage = deletedHistoryMessage().copy(state = state)
+            }
+            val sync = h.sync()
+            assertTrue(runCatching { sync.synchronize() }.exceptionOrNull() is NativeHistoryBehind)
+            assertTrue(h.acks.isEmpty())
+            assertEquals("base", h.store.cursor)
+            assertTrue(h.store.events.isEmpty())
+            h.historyMessage = h.historyMessage!!.copy(contentRevision = 7)
+            sync.synchronize()
+            assertEquals(listOf("next"), h.acks)
+            assertEquals(1, h.requests.count { it.target.contains("/events?") })
+        }
+    }
+
+    @Test fun aRevisionedDeletionCannotCoverANewerBodyRevision() = runTest {
+        val h = Harness().apply {
+            raw = bodyEvent()
+            historyMessage = deletedHistoryMessage().copy(contentRevision = 6)
+        }
+        assertTrue(runCatching { h.sync().synchronize() }.exceptionOrNull() is NativeHistoryBehind)
+        assertTrue(h.acks.isEmpty())
+        assertEquals("base", h.store.cursor)
+        assertTrue(h.store.events.isEmpty())
+    }
+
     @Test fun generationLifecycleRevisionIsNeverComparedWithMessageContentRevision() = runTest {
         val h = Harness().apply {
             raw = """{"eventId":"status-100","eventType":"conversation.message.status","payload":{"conversationId":"chat","messageId":"user","clientMessageId":"client","generationId":"gen","status":"completed","revision":100,"errorCode":null}}"""
@@ -163,6 +346,13 @@ class NativeEventSynchronizerTest {
         assertEquals(listOf("next"), h.acks)
         assertEquals(1L, h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().revision)
     }
+
+    private fun bodyEvent(type: String = "conversation.message.completed", messageId: String = "reply",
+        conversationId: String = "chat", generationId: String = "gen", revision: Long = 7) =
+        """{"eventId":"body-$messageId-$revision","eventType":"$type","payload":{"conversationId":"$conversationId","messageId":"$messageId","generationId":"$generationId","revision":$revision,"sender":"assistant","parts":[{"type":"text","text":"stale body"}],"text":"stale body","timestamp":1}}"""
+
+    private fun deletedHistoryMessage() = TimelineMessage("reply", "assistant", emptyList(), 1, state = "DELETED",
+        conversationId = ConversationId("chat"), generationId = "gen")
 
     private fun approval(type:String) = NativeEventApproval(type, JsonFields.obj(Json.parse(if(type=="approval_requested")
         """{"approvalId":"ap","conversationId":"chat","command":"synthetic","reason":"test","requestedAt":1,"expiresAt":9999999999999,"options":[{"choice":"once","label":"once"}]}"""
@@ -180,8 +370,12 @@ class NativeEventSynchronizerTest {
         val ackStarted=CompletableDeferred<Unit>()
         var expired=false
         var historyGate:CompletableDeferred<Unit>?=null
+        val historyStarted = CompletableDeferred<Unit>()
         var historyRevision = 1L
         var historyMissing = false
+        var historyMessage: TimelineMessage? = null
+        var pageCursor = "next"
+        var pageHasMore = false
         var snapshotApprovals=emptyList<NativeEventApproval>()
         var raw="""{"eventId":"e1","eventType":"conversation.message.completed","payload":{"conversationId":"chat","messageId":"reply"}}"""
         val agent=CoreAgent("hermes","synthetic","hermes",false,"account",AgentCapabilities(history=true,generationRecovery=true,eventSync=true))
@@ -203,19 +397,20 @@ class NativeEventSynchronizerTest {
                         """{"events":[],"cursor":"high_water","hasMore":false,"approvals":$approvals}"""
                     }
                     expired -> {expired=false;return WireResponse(409,emptyList(),"""{"error":{"code":"CURSOR_EXPIRED"}}""".toByteArray())}
-                    else -> """{"events":[$raw],"cursor":"next","hasMore":false}"""
+                    else -> """{"events":[$raw],"cursor":"$pageCursor","hasMore":$pageHasMore}"""
                 }
                 return WireResponse(200,listOf(RawHeader("Content-Type","application/json")),body.toByteArray())
             }
             override fun eventStream(request:WireRequest)=emptyFlow<ByteArray>()
         }
         private val client=AgentSessionClient(GatewayHttpClient(GatewayProfile("account","phone","login","https://core.example",accessToken="synthetic"),transport,{ByteArray(64)},InMemoryEventCursorStore()))
-        fun sync()=NativeEventSynchronizer(client,agent,"chat",store,refresh={
-            log+="history";historyGate?.await()
-            if (historyMissing) emptyList() else listOf(VerifiedConversationEvent.TimelineUpsert("history-reply",1,historyRevision,
-                TimelineMessage("reply","assistant",listOf(MessagePart.Text("final")),1,conversationId=ConversationId("chat"),
-                    generationId="gen", contentRevision=historyRevision)))
-        },publish={published+=it},publishApproval={approvalPublications+=it})
+        fun sync(checkOwner: () -> Unit = {})=NativeEventSynchronizer(client,agent,"chat",store,refresh={
+            log+="history";historyStarted.complete(Unit);historyGate?.await()
+            val message = historyMessage ?: TimelineMessage("reply","assistant",listOf(MessagePart.Text("final")),1,
+                conversationId=ConversationId("chat"),generationId="gen",contentRevision=historyRevision)
+            if (historyMissing) emptyList() else listOf(VerifiedConversationEvent.TimelineUpsert(
+                "history-${message.id}",1,message.contentRevision ?: 0,message))
+        },publish={published+=it},publishApproval={approvalPublications+=it},checkOwner=checkOwner)
     }
 
     internal class Storage(private val log:MutableList<String> = mutableListOf()):NativeConversationStore {
