@@ -135,7 +135,7 @@ class WorkbenchLayoutRegressionTest {
             }
         }
 
-        // 即使有 30 条会话撑满列表，固定页脚中的「设置与平台管理」也必须常驻可见，无需滚动
+        // 即使有 30 条会话撑满列表，固定页脚中的「设置」也必须常驻可见，无需滚动
         val settingsNode = compose.onNodeWithText("设置")
         settingsNode.assertIsDisplayed()
         settingsNode.performClick()
