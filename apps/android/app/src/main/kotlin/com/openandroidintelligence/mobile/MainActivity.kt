@@ -430,7 +430,7 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
                     if (source == null) {
-                        notify("本机未装配屏幕截图能力")
+                        notify("未开启屏幕截图功能")
                         return@rememberLauncherForActivityResult
                     }
                     val accepted = result.resultCode == android.app.Activity.RESULT_OK
@@ -479,8 +479,8 @@ class MainActivity : ComponentActivity() {
                     val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
                     val permitted = captureEnabled() && !app.kernel.isEmergencyStopped()
                     when {
-                        source == null -> notify("本机未装配屏幕截图能力")
-                        !permitted -> notify("请先安装并启用截图插件，开启本机截图能力")
+                        source == null -> notify("未开启屏幕截图功能")
+                        !permitted -> notify("请先启用截图插件并开启截图权限")
                         // 截图来源已可用（无障碍按需截图已就绪，或投屏此前已授权）
                         // 时不需要再走一次系统授权，如实告知即可。
                         source.isAvailable -> notify("截图已可用，不需要额外的系统授权")
@@ -805,7 +805,7 @@ private fun OfflineMirrorBanner(onReconnect: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "离线镜像：仅显示本机缓存，收发需重新连接 Gateway",
+                text = "离线模式：仅显示本地缓存，连接后可继续收发",
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .weight(1f)

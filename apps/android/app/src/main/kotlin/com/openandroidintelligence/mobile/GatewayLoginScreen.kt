@@ -398,8 +398,8 @@ fun GatewayLoginScreen(
         }
     }
     removingProfile?.let { profile ->
-        AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text("移除本机账号") },
-            text = { Text("将退出 ${profile.username} 并删除本机凭据、配对密钥、账号资料和临时文件。Gateway 账号仍会保留；移除失败时可重试。") },
+        AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text("移除账号") },
+            text = { Text("将退出 ${profile.username} 并删除本地凭据与缓存，服务端账号不受影响。") },
             confirmButton = { TextButton(onClick = { onRemoveProfile(profile.localProfileId); removingProfile = null }) { Text("移除") } },
             dismissButton = { TextButton(onClick = { removingProfile = null }) { Text("取消") } })
     }
@@ -490,7 +490,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
     val stateColors = LocalAppStateColors.current
     when (phase) {
         ConnectionPhase.Disconnected -> Text(
-            text = "尚未连接 Gateway",
+            text = "未连接 Gateway",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -513,7 +513,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-            Text("离线镜像：显示本机缓存，收发需重新连接", style = MaterialTheme.typography.bodySmall)
+            Text("离线模式：仅显示本地缓存，连接后可继续收发", style = MaterialTheme.typography.bodySmall)
         }
 
         is ConnectionPhase.Connected -> PhaseSurface(

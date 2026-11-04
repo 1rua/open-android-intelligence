@@ -119,28 +119,28 @@ fun specificFailureText(code: String): String? {
             "登录已成功，但 App 未能完成${stage}的初始化。账号资料和历史记录已保留，请更新 App 后重试；若持续发生，请查看手机上的连接诊断。"
         }
         value.contains("LOCAL_SAVE_FAILED") ->
-            "本机会话记录保存失败，同步已暂停。请检查手机存储空间，恢复后重新进入会话重试同步；请勿重复发送原消息。"
+            "会话记录保存失败，同步已暂停。请检查存储空间后重新进入会话重试；暂勿重复发送原消息。"
         value.contains("EVENT_APPLY_FAILED") ->
             "会话同步数据未能处理，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App 与 Core 的版本兼容性。"
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
         value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
         value.contains("APPROVAL_UNSUPPORTED") ->
-            "审批卡暂时无法显示，命令仍在等待且尚未执行。请按宿主提示回复 /approve 或 /deny；这不是自动拒绝。"
+            "审批卡暂时无法显示，命令仍在等待执行。请回复 /approve 或 /deny 完成审批。"
         value.contains("APPROVAL_EXPIRED") ->
-            "审批已超时，命令没有执行。卡片恢复为不可点击，如需执行请让 Agent 重新发起。"
+            "审批已超时，命令未执行。如需执行请让 Agent 重新发起。"
         value.contains("APPROVAL_FAILED") ->
             "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
         value.startsWith("STEERED:") ->
             "引导消息已交给 Agent，由 Agent 处理当前任务。"
         value.startsWith("STEERING_UNAVAILABLE:") -> when {
             value.endsWith(":ATTACHMENTS") -> "实时引导只接受文本；带附件的消息请选择排队。"
-            else -> "这次引导未能提交，草稿已保留，请查看返回结果后重试。"
+            else -> "引导消息未提交，草稿已保留，请重试。"
         }
         value.contains("CONVERSATION_MANAGEMENT_UNSUPPORTED") -> "当前 Gateway 不支持会话管理，请安装配套网关更新后重试。"
         value.contains("CONVERSATION_DELETE_UNSUPPORTED") -> "当前 Agent 不支持删除对话，会话记录已保留。"
         value.contains("CONVERSATION_ARCHIVE_UNSUPPORTED") -> "当前 Agent 不支持归档操作，会话记录已保留。"
         value.contains("CONVERSATION_RENAME_UNSUPPORTED") -> "当前 Agent 不支持重命名对话。"
-        value.contains("LOCAL_HISTORY_UNAVAILABLE") -> "本机暂无可用的会话缓存。"
+        value.contains("LOCAL_HISTORY_UNAVAILABLE") -> "暂无可用的会话缓存。"
         value.contains("AGENT_OFFLINE") -> "当前 Agent 已离线，请等待恢复连接后重试。"
         value.contains("CONVERSATION_BUSY") -> "会话仍有发送或任务正在处理，请等待结束后再归档或删除。"
         value.contains("ORGANIZATION_CONFLICT") -> "另一端已修改文件夹或排序，已重新同步，请重试这次操作。"

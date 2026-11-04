@@ -442,7 +442,7 @@ fun SettingsScreen(
             title = { Text("确认解除设备配对") },
             text = {
                 Text(
-                    "这会撤销当前设备的 Gateway 配对凭据并立即切断安全会话。本机插件能力开关与 Android 系统权限仍由各自设置管理。",
+                    "将撤销设备的配对凭据并切断连接。插件能力与系统权限设置将保留。",
                 )
             },
             confirmButton = {
@@ -1258,7 +1258,7 @@ private fun GatewaySubScreen(
                         supporting = when {
                             uiState.deviceRequestChannel == null -> "当前 Core 不会把任务下发到手机执行"
                             uiState.pluginRuntimesWired -> "已支持：Core 可以把任务下发到手机执行"
-                            else -> "Core 支持下发，但本机插件执行尚未接通"
+                            else -> "Core 支持下发，但插件环境未就绪"
                         },
                         icon = Icons.Default.Security,
                     )
@@ -1299,7 +1299,7 @@ private fun GatewaySubScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         SettingsListItem(
                             headline = "解除设备配对",
-                            supporting = "撤销这台手机的 Gateway 配对凭据；本机插件开关和系统权限分别管理",
+                            supporting = "撤销设备配对凭据；插件开关与系统权限保持独立管理",
                             icon = Icons.Default.DeleteForever,
                             tone = SettingsTone.DANGER,
                             onClick = onRequestUnpair,
