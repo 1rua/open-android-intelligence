@@ -24,9 +24,8 @@ enum class ThemePreference {
 /**
  * 本机外观偏好。
  *
- * 动态取色（Monet）**默认开启**（Android 12+）：默认跟随系统壁纸取色，与 Material 3
- * 的平台默认形态一致。用户可以在「外观与动效」里关掉它，回落到本机预设色板；也可以
- * 直接从预设色板中选择一套（色板选择入口由主题层统一提供，本文件只负责偏好持久化）。
+ * 动态取色（Monet）默认关闭，预设色板默认为 EMBER。支持动态取色的系统上，
+ * 用户可自行开启跟随系统壁纸取色；关闭后使用选中的预设色板。
  * 代码不自行计算壁纸色，只调用 Android 官方的 `dynamicLightColorScheme` /
  * `dynamicDarkColorScheme`。
  *

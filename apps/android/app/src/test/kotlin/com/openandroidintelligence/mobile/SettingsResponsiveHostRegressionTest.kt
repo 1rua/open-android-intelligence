@@ -154,27 +154,27 @@ class SettingsResponsiveHostRegressionTest {
             }
         }
         compose.onNodeWithText("打开设置").performClick()
-        compose.onNodeWithText("外观、主题与动效").performScrollTo().performClick()
-        compose.onNodeWithText("外观与动效").assertIsDisplayed()
+        compose.onNodeWithText("外观与交互").performScrollTo().performClick()
+        compose.onNodeWithText("外观与交互").assertIsDisplayed()
         compose.onNode(hasScrollAction()).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 120f) }
         val offset = scrollOffset()
         assertTrue("必须先产生真实滚动状态", offset > 0f)
         for (nextWidth in widths) {
             compose.runOnIdle { width = nextWidth }
-            compose.onNodeWithText("外观与动效").assertIsDisplayed()
+            compose.onNodeWithText("外观与交互").assertIsDisplayed()
             assertEquals("真实设置子页的滚动位置应保留", offset, scrollOffset(), 1f)
             compose.runOnIdle { assertTrue(open); assertEquals(0, dismissals) }
         }
         compose.runOnIdle { dispatcher.onBackPressed() }
         compose.runOnIdle { assertTrue("子页返回只能回总览，不能被新宿主的返回处理提前关闭", open) }
-        compose.onNodeWithText("外观、主题与动效").assertExists()
+        compose.onNodeWithText("外观与交互").assertExists()
         compose.runOnIdle { dispatcher.onBackPressed() }
         compose.onNodeWithText("打开设置").assertIsDisplayed()
         compose.runOnIdle { assertFalse(open); assertEquals(1, dismissals) }
         for (nextWidth in widths) {
             compose.runOnIdle { width = nextWidth }
             compose.onNodeWithText("打开设置").assertIsDisplayed()
-            compose.onNodeWithText("外观与动效").assertDoesNotExist()
+            compose.onNodeWithText("外观与交互").assertDoesNotExist()
             compose.runOnIdle { assertFalse("关闭后跨断点不能重新打开", open) }
         }
     }

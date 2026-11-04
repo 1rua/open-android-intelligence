@@ -32,8 +32,10 @@ import java.security.MessageDigest
 import java.time.Instant
 
 /** App reply alerts are independent of notification collection and pairing grants. */
-class ReplyNotificationSettings(private val context: Context) {
-    private val preferences = context.getSharedPreferences("agent-reply-alert-settings", Context.MODE_PRIVATE)
+class ReplyNotificationSettings(
+    private val context: Context,
+    private val preferences: SharedPreferences = context.getSharedPreferences("agent-reply-alert-settings", Context.MODE_PRIVATE),
+) {
     private val _enabled = MutableStateFlow(preferences.getBoolean("enabled", true))
     val enabled = _enabled.asStateFlow()
     private val _allowed = MutableStateFlow(isAllowed())
@@ -47,12 +49,14 @@ class ReplyNotificationSettings(private val context: Context) {
     fun shouldRequestPermission(): Boolean = postNotificationsPermissionRequired && !permissionRequested &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
 
-    fun setEnabled(enabled: Boolean) {
-        preferences.edit().putBoolean("enabled", enabled).commitOrLog(TAG)
+    /** Publish a preference only once the existing durable owner accepted it. */
+    fun setEnabled(enabled: Boolean): Boolean {
+        if (!preferences.edit().putBoolean("enabled", enabled).commitOrLog(TAG)) return false
         _enabled.value = enabled
         if (!enabled) context.getSystemService(NotificationManager::class.java).let { manager ->
             manager.activeNotifications.filter { it.notification.channelId in setOf(REPLY_CHANNEL_ID, LIVE_UPDATE_CHANNEL_ID) }.forEach { manager.cancel(it.tag, it.id) }
         }
+        return true
     }
 
     fun markPermissionRequested() {

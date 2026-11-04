@@ -350,6 +350,11 @@ class GatewayRuntime(
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
     private val _savedProfiles = MutableStateFlow(accountProfiles.list())
     val savedProfiles: StateFlow<List<AccountProfile>> = _savedProfiles.asStateFlow()
+    private val _unpairOperation = MutableStateFlow<LocalOperationState>(LocalOperationState.Idle)
+    val unpairOperation: StateFlow<LocalOperationState> = _unpairOperation.asStateFlow()
+    fun dismissUnpairOperation() {
+        if (_unpairOperation.value !is LocalOperationState.Running) _unpairOperation.value = LocalOperationState.Idle
+    }
     private val pushHttpClients = java.util.concurrent.ConcurrentHashMap<String, GatewayHttpClient>()
     private val pushConnectionLock = Mutex()
 
@@ -923,7 +928,10 @@ class GatewayRuntime(
 
     fun chooseAnotherAccount() {
         if (deferUntilSessionEstablished(::chooseAnotherAccount)) return
-        if (connectionJob?.isActive == true && !restoringSession) return
+        if (connectionJob?.isActive == true && !restoringSession) {
+            _operationNotice.value = "当前账号操作尚未结束，请稍后再切换。"
+            return
+        }
         cancelRestoration()
         val previousProfile = (_localSessionState.value as? LocalSessionState.Workspace)?.account?.localProfileId
         leaveWorkbench(prepare = { clearLastProfile() }) {
@@ -933,7 +941,10 @@ class GatewayRuntime(
 
     fun selectSavedAccount(profileId: String) {
         if (deferUntilSessionEstablished { selectSavedAccount(profileId) }) return
-        if (connectionJob?.isActive == true && !restoringSession) return
+        if (connectionJob?.isActive == true && !restoringSession) {
+            _operationNotice.value = "当前账号操作尚未结束，请稍后再选择账号。"
+            return
+        }
         cancelRestoration()
         val profile = accountProfiles.find(profileId) ?: return
         val binding = accountProfiles.binding(profileId) ?: return
@@ -1029,7 +1040,10 @@ class GatewayRuntime(
     }
 
     fun removeLocalAccount(profileId: String) {
-        if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) return
+        if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) {
+            _operationNotice.value = "请先进入账号管理，并等待当前账号操作完成后再移除。"
+            return
+        }
         val profile = accountProfiles.find(profileId) ?: return
         val binding = accountProfiles.binding(profileId)
         val accountId = binding?.accountId ?: accountProfiles.accountId(profileId)
@@ -1108,59 +1122,101 @@ class GatewayRuntime(
 
     fun unpair() {
         if (deferUntilSessionEstablished(::unpair)) return
-        if (connectionJob?.isActive == true) return
-        val current = _phase.value as? ConnectionPhase.Connected ?: return
-        val http = activeHttpClient ?: return
-        val deviceId = lastDeviceId ?: return
+        if (connectionJob?.isActive == true) {
+            if (_unpairOperation.value !is LocalOperationState.Running) {
+                _unpairOperation.value = LocalOperationState.Failed("当前账号操作尚未结束，请稍后重试。")
+            }
+            return
+        }
+        val current = _phase.value as? ConnectionPhase.Connected
+        val http = activeHttpClient
+        val deviceId = lastDeviceId
+        val accountId = lastAccountId
+        if (current == null || http == null || deviceId == null || accountId == null) {
+            _unpairOperation.value = LocalOperationState.Failed("需要连接当前 Core 后才能解除设备配对。")
+            return
+        }
         val profileId = profileIdFor(current.gatewayUrl, current.username)
-        val accountId = lastAccountId ?: return
         val staging = activeAttachmentStaging
         val binding = PairingGrantBinding(current.gatewayUrl, accountId, installationId())
+        _unpairOperation.value = LocalOperationState.Running
         connectionJob = scope.launch {
-            if (!flushWorkbenchBeforeLeaving()) return@launch
+            var remoteCompleted = false
+            var partialFailure = false
             try {
-                PairingRevocationClient(http).revoke(deviceId)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (cause: Exception) {
-                _operationNotice.value = "解除配对未获 Gateway 确认，本机凭据已保留，请检查连接后重试。"
-                return@launch
-            }
-            sessionRenewal?.close()
-            sessionRenewal = null
-            sessionOperationMutex(profileId).withLock {
-                try { _controller.value?.closeAndAwait() }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，本机任务收尾失败，请重试本机账号清理。" }
-                teardown()
-                val localScope = ConversationScope(profileId,current.gatewayUrl,accountId,installationId())
-                try {
-                    val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,localScope,keyProvider=localDocumentKeyProvider)
-                    com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
-                } catch (cancelled: CancellationException) { throw cancelled }
-                  catch (_: Exception) { _operationNotice.value = "Gateway 已解除配对，未完成下载的本机恢复记录清理失败，请重试本机账号清理。" }
-                val cleanup = listOf<suspend () -> Unit>(
-                    { clearNativeLocalPartitions(localScope) },
-                    { pairingGrants.clearFor(binding) },
-                    { credentialStore.clearRefresh(profileId) },
-                    { refreshJournal.clear(profileId); pendingRotations.remove(profileId) },
-                    { credentialStore.clearDeviceKey(profileId) },
-                    { deviceKeys.delete(profileId) },
-                    { staging?.cleanup(); Unit },
-                    { com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
-                    { com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
-                    { com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context,localScope,localDocumentKeyProvider).wipe() },
-                    { com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia() },
-                    { pluginHost?.eraseAccount(accountId,binding.pairingId); Unit },
-                    { replyPublisher.eraseAccount(profileId, accountId) },
-                    { nativeConversationNotifications.eraseAccount(profileId, accountId) },
-                    { AndroidEventCursorStore(context, profileId).clear(accountId) },
-                    { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
-                    { clearLastProfile() },
-                ).map { action -> runCatching { action() } }
-                if (cleanup.any { it.isFailure }) {
-                    _operationNotice.value = "Gateway 已解除配对，但本机数据清理失败，请重试本机账户清理。"
+                if (!flushWorkbenchBeforeLeaving()) {
+                    _unpairOperation.value = LocalOperationState.Failed("本地会话未能保存，设备配对和凭据已保留。")
+                    return@launch
                 }
+                try {
+                    PairingRevocationClient(http).revoke(deviceId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (cause: Exception) {
+                    val message = "解除配对未获 Core 确认，本机凭据已保留，请检查连接后重试。"
+                    _operationNotice.value = message
+                    _unpairOperation.value = LocalOperationState.Failed(message)
+                    return@launch
+                }
+                remoteCompleted = true
+                sessionRenewal?.close()
+                sessionRenewal = null
+                sessionOperationMutex(profileId).withLock {
+                    try { _controller.value?.closeAndAwait() }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) {
+                        partialFailure = true
+                        _operationNotice.value = "Core 已解除配对，本机任务收尾失败，请重试本机账号清理。"
+                    }
+                    teardown()
+                    val localScope = ConversationScope(profileId,current.gatewayUrl,accountId,installationId())
+                    try {
+                        val localMedia = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,localScope,keyProvider=localDocumentKeyProvider)
+                        com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,localMedia,localScope,keyProvider=localDocumentKeyProvider).wipePrivateDownloadJournal()
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                      catch (_: Exception) {
+                        partialFailure = true
+                        _operationNotice.value = "Core 已解除配对，未完成下载的恢复记录清理失败，请重试本机账号清理。"
+                    }
+                    val cleanup = listOf<suspend () -> Unit>(
+                        { clearNativeLocalPartitions(localScope) },
+                        { pairingGrants.clearFor(binding) },
+                        { credentialStore.clearRefresh(profileId) },
+                        { refreshJournal.clear(profileId); pendingRotations.remove(profileId) },
+                        { credentialStore.clearDeviceKey(profileId) },
+                        { deviceKeys.delete(profileId) },
+                        { staging?.cleanup(); Unit },
+                        { com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
+                        { com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),localDocumentKeyProvider).wipe() },
+                        { com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context,localScope,localDocumentKeyProvider).wipe() },
+                        { com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(context,ConversationScope(profileId,current.gatewayUrl,accountId,installationId()),keyProvider=localDocumentKeyProvider).clearMedia() },
+                        { pluginHost?.eraseAccount(accountId,binding.pairingId); Unit },
+                        { replyPublisher.eraseAccount(profileId, accountId) },
+                        { nativeConversationNotifications.eraseAccount(profileId, accountId) },
+                        { AndroidEventCursorStore(context, profileId).clear(accountId) },
+                        { AndroidEventCursorStore(context, platformCursorProfile(profileId)).clear(accountId) },
+                        { clearLastProfile() },
+                    ).map { action -> runCatching { action() } }
+                    if (cleanup.any { it.isFailure }) {
+                        partialFailure = true
+                        _operationNotice.value = "Core 已解除配对，但本机数据清理失败，请重试本机账号清理。"
+                    }
+                }
+                _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = current.gatewayUrl, lastUsername = current.username)
+                _unpairOperation.value = if (partialFailure) {
+                    LocalOperationState.Failed(_operationNotice.value ?: "配对已解除，但部分本机资料尚未清理。", remoteCompleted = true)
+                } else LocalOperationState.Completed
+            } catch (cancelled: CancellationException) {
+                _unpairOperation.value = LocalOperationState.Failed(
+                    if (remoteCompleted) "配对已解除，本机清理被中断，请检查本机账号资料。" else "解除配对被中断，请重新连接后确认配对状态。",
+                    remoteCompleted,
+                )
+                throw cancelled
+            } catch (_: Exception) {
+                _unpairOperation.value = LocalOperationState.Failed(
+                    if (remoteCompleted) "配对已解除，本机清理未完成，请检查存储后重试本机账号清理。" else "解除配对未完成，本机凭据已保留，请检查连接后重试。",
+                    remoteCompleted,
+                )
             }
         }
     }
@@ -1298,13 +1354,18 @@ class GatewayRuntime(
     fun updateDebounceSettings(gateway:String?,delayMillis:Int,extend:Boolean) {
         val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
         preferences.write(gateway,delayMillis,extend)
-        val current=(_phase.value as? ConnectionPhase.Connected)?.gatewayUrl
-        _controller.value?.updateDebouncePolicy(preferences.read(current))
+        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
     }
     fun useGlobalDebounceSettings(gateway:String) {
         val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
         preferences.useGlobal(gateway)
-        _controller.value?.updateDebouncePolicy(preferences.read(gateway))
+        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
+    }
+
+    private fun currentDebounceGateway(): String? = when (val phase = _phase.value) {
+        is ConnectionPhase.Connected -> phase.gatewayUrl
+        is ConnectionPhase.OfflineMirror -> phase.gatewayUrl
+        else -> (_localSessionState.value as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
     }
 
     private suspend fun showLocalWorkspace(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,

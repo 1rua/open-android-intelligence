@@ -17,6 +17,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -48,11 +50,27 @@ fun replyNotificationPresentation(wired: Boolean, systemAllowed: Boolean): Capab
 }
 
 @Composable
-internal fun ConversationBubbleSettingsItem() {
+internal fun ConversationBubbleSettingsItem(refreshKey: Boolean = false) {
     val context = LocalContext.current
+    var refresh by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+    val bubblePreference = androidx.compose.runtime.remember(context, refresh, refreshKey) {
+        context.getSystemService(android.app.NotificationManager::class.java).bubblePreference
+    }
     SettingsNavigationItem(
         headline = "会话气泡",
-        supporting = "在系统中允许气泡，展开后可查看全部历史、管理文件夹并发送附件",
+        supporting = when (bubblePreference) {
+            android.app.NotificationManager.BUBBLE_PREFERENCE_ALL -> "系统允许全部会话使用气泡"
+            android.app.NotificationManager.BUBBLE_PREFERENCE_SELECTED -> "由 Android 按会话选择是否显示气泡"
+            else -> "系统尚未允许会话气泡，可前往系统设置开启"
+        },
         onClick = {
             val settings = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -77,7 +95,7 @@ internal fun LiveUpdatesSettingsItem() {
     if (android.os.Build.VERSION.SDK_INT < 36) return
     val context = LocalContext.current
     SettingsNavigationItem(
-        headline = "Android 16 实时活动",
+        headline = "实时任务状态",
         supporting = "允许系统突出显示运行中的 Agent 任务，具体展示位置由设备决定",
         onClick = {
             val settings = ReplyNotificationSettings(context).liveUpdatesSettingsIntent()
@@ -220,7 +238,7 @@ fun NotificationPushCapabilityItem(
     icon: ImageVector? = null,
 ) {
     SettingsSwitchItem(
-        headline = "系统通知推送",
+        headline = "Agent 任务通知",
         supporting = capabilitySupporting(presentation),
         checked = checked,
         enabled = presentation.enabled,

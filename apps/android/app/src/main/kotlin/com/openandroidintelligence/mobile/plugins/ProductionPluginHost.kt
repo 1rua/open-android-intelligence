@@ -189,6 +189,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun completeNativeFrame(pluginId: String) { nativeInFlight.remove(pluginId); check(crashPreferences.edit().remove("loading:$pluginId").commit()) }
 
     fun entries(pluginId: String): List<VerifiedCapability> = capabilities[pluginId].orEmpty()
+
+    /** Read-only view of verified declarations; listing never selects a provider. */
+    @Synchronized fun verifiedCapabilities(): List<VerifiedCapability> =
+        capabilities.values.flatten().sortedWith(compareBy({ it.id }, { it.version }, { it.identity.pluginId }))
+
+    /** Match an in-memory approval to its exact author/schema/risk/primitive policy key. */
+    @Synchronized fun capabilityForAuthorizationScope(scope: CapabilityRequestScope): VerifiedCapability? =
+        capabilities.values.asSequence().flatten().firstOrNull { policyKey(it) == scope.capability }
+
     fun minimumBackgroundInterval(pluginId:String):Long {
         val verified=installStore.openVerified(pluginId)
         try { val manifest=JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))
@@ -314,7 +323,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         remainingRequestMillis: Long, binding: PairingGrantBinding? = null): LocalCapabilityApproval =
         grants.authorization.approve(authorizationRequestKey(requestId, requireBinding(binding)),
             authorizationScope(entry, parameters), durationMinutes,
-            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), remainingRequestMillis)
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), remainingRequestMillis,
+            displaySummary = com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
 
     fun authorizationIsCurrent(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
         binding: PairingGrantBinding? = null): Boolean = runCatching {

@@ -1,22 +1,16 @@
 package com.openandroidintelligence.mobile.plugins
 
-import android.app.Application
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertTextEquals
-import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
+import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -25,180 +19,110 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 
-/**
- * 问题二的 UI 回归：授权入口必须按插件实际声明的 kernel primitive 呈现。
- *
- * 修复前「检查 Android 系统权限」只处理 READ_SMS / READ_CALL_LOG，
- * 无障碍、通知读取、屏幕截图三类能力没有任何入口。这些测试钉住：
- * 1. 声明了什么能力，就出现对应的授权入口；
- * 2. 不同类型能力给出**不同**的动作文案（申请权限 / 打开无障碍设置 /
- *    打开通知使用权 / 发起系统授权），而不是笼统一句「检查系统权限」；
- * 3. 已授权时按钮禁用并显示「已授权」，不诱导重复申请。
- */
+/** 插件页只提供能力详情快捷入口，不另行修改策略、提供者或系统授权。 */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = OpenAndroidIntelligenceApplication::class)
 class PluginManagementGrantUiTest {
-
-    @get:Rule
-    val compose = createComposeRule()
-
+    @get:Rule val compose = createComposeRule()
     private lateinit var store: PluginInstallStore
-    private lateinit var context: OpenAndroidIntelligenceApplication
+    private lateinit var app: OpenAndroidIntelligenceApplication
+    private val pluginId = "org.example.device"
+    private val first = "org.example.device.read"
+    private val second = "org.example.device.control"
 
-    @Before
-    fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
-        store = PluginInstallStore(context)
+    @Before fun setUp() {
+        app = ApplicationProvider.getApplicationContext()
+        store = PluginInstallStore(app)
         store.installRoot.deleteRecursively()
     }
 
-    @After
-    fun tearDown() {
-        store.installRoot.deleteRecursively()
-    }
+    @After fun tearDown() { store.installRoot.deleteRecursively() }
 
-    /**
-     * 渲染一个只声明给定 kernel primitive 的最小插件。
-     *
-     * 字段形状必须与契约校验一致：`provides` 只允许 id/version/schema；
-     * `kernelPrimitives` 每项必须是 id/version/purpose。
-     */
-    private fun installPlugin(pluginId: String, primitive: String, capabilityId: String) {
-        store.install(TestAlpPackages.signedPackage(
-            id = pluginId,
-            name = "示例设备能力插件",
-            capabilities = capabilities(capabilityId, listOf(primitive)),
-        ))
-        // 授权入口来自宿主载入的能力声明，安装后必须让 host 重新扫描。
-        context.pluginHost.reload()
-    }
-
-    /** 构造 capabilities 段；risk 属于能力绑定而非 manifest，不能出现在这里。 */
-    private fun capabilities(capabilityId: String, primitives: List<String>): JsonValue.JObject = Json.of(
-        mapOf(
-            "provides" to listOf(
-                mapOf(
-                    "id" to capabilityId,
-                    "version" to "1.0.0",
-                    "schema" to "schemas/$capabilityId.json",
-                ),
-            ),
-            "depends" to emptyList<Any>(),
-            "kernelPrimitives" to primitives.map {
-                mapOf("id" to it, "version" to "1.0.0", "purpose" to "测试声明")
+    private fun install() {
+        val capabilities = Json.of(mapOf(
+            "provides" to listOf(first, second).map { id ->
+                mapOf("id" to id, "version" to "1.0.0", "schema" to "schemas/$id.json")
             },
-        ),
-    ) as JsonValue.JObject
-
-    private fun openGrantDialog(pluginId: String) {
-        compose.onNodeWithText("系统权限与后台任务").performScrollTo().performClick()
-        compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
-    }
-
-    @Test
-    fun smsPluginOffersARuntimePermissionEntryOnly() {
-        installPlugin("org.example.sms", "kernel.sms.read", "org.example.sms.query")
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.sms")
-
-        compose.onNodeWithTag("plugin-grant:sms").assertExists()
-        // 未声明无障碍/通知/截图，就不该出现它们的入口。
-        compose.onNodeWithTag("plugin-grant:accessibility").assertDoesNotExist()
-        compose.onNodeWithTag("plugin-grant:notifications").assertDoesNotExist()
-        compose.onNodeWithTag("plugin-grant:screen-capture").assertDoesNotExist()
-        compose.onNodeWithText("短信读取").assertExists()
-    }
-
-    @Test
-    fun accessibilityPluginPointsAtTheAccessibilitySettingsPage() {
-        installPlugin("org.example.reader", "kernel.screen.read", "org.example.reader.read")
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.reader")
-
-        compose.onNodeWithTag("plugin-grant:accessibility").assertExists()
-        compose.onNodeWithText("无障碍服务").assertExists()
-        // 动作文案必须指向无障碍设置，而不是「申请权限」。
-        compose.onNodeWithText("打开无障碍设置").assertIsEnabled()
-        compose.onNodeWithTag("plugin-grant:sms").assertDoesNotExist()
-    }
-
-    @Test
-    fun notificationPluginPointsAtNotificationAccessSettings() {
-        installPlugin("org.example.notify", "kernel.notifications.read", "org.example.notify.read")
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.notify")
-
-        compose.onNodeWithTag("plugin-grant:notifications").assertExists()
-        compose.onNodeWithText("通知使用权").assertExists()
-        compose.onNodeWithText("打开通知使用权设置").assertIsEnabled()
-    }
-
-    @Test
-    fun capturePluginLaunchesTheSystemDialogInsteadOfOpeningASettingsPage() {
-        installPlugin("org.example.capture", "kernel.screen.capture", "org.example.capture.capture")
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.capture")
-
-        compose.onNodeWithTag("plugin-grant:screen-capture").assertExists()
-        compose.onNodeWithText("屏幕截图").assertExists()
-        // 关键回归：投屏授权必须是「发起系统授权」，不能跳去无关设置页。
-        compose.onNodeWithText("发起系统授权").assertIsEnabled()
-        compose.onNodeWithText("打开无障碍设置").assertDoesNotExist()
-    }
-
-    @Test
-    fun screenReadAndControlShareOneAccessibilityEntry() {
-        store.install(TestAlpPackages.signedPackage(
-            id = "org.example.control",
-            name = "示例控制插件",
-            capabilities = capabilities(
-                "org.example.control.control",
-                listOf("kernel.screen.read", "kernel.screen.control"),
+            "depends" to emptyList<Any>(),
+            "kernelPrimitives" to listOf(
+                mapOf("id" to "kernel.screen.read", "version" to "1.0.0", "purpose" to "测试读取"),
+                mapOf("id" to "kernel.screen.control", "version" to "1.0.0", "purpose" to "测试控制"),
             ),
-        ))
-        context.pluginHost.reload()
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.control")
-
-        // 两个原语共用同一项无障碍授权，不能出现两条重复入口。
-        compose.onAllNodesWithText("无障碍服务").onLast().assertExists()
-        assertEquals(1, compose.onAllNodesWithText("打开无障碍设置").fetchSemanticsNodes().size)
+        )) as JsonValue.JObject
+        val contribution = """{"id":"settings-main","title":"插件设置","root":{"type":"section","id":"root","children":[{"type":"permission-request","id":"request","label":"请求读取授权","capability":"$first","action":"request-grant"},{"type":"capability-picker","id":"provider","label":"选择控制提供者","capability":"$second","action":"select-provider"},{"type":"permission-request","id":"primitive","label":"请求系统原语","capability":"kernel.screen.read","action":"request-grant"},{"type":"button","id":"choose","label":"选择插件能力","action":"request-grant"},{"type":"permission-request","id":"unknown","label":"未知能力","capability":"org.example.missing","action":"request-grant"}]}}"""
+        store.install(TestAlpPackages.signedPackage(id = pluginId, capabilities = capabilities, settingsContributionJson = contribution))
+        app.pluginHost.reload()
     }
 
-    @Test
-    fun grantedEntryIsDisabledAndSaysSoInsteadOfAskingAgain() {
-        installPlugin("org.example.sms2", "kernel.sms.read", "org.example.sms2.query")
-        // 预先授予运行时权限：界面必须显示「已授权」而不是再弹一次申请。
-        shadowOf(context).grantPermissions(android.Manifest.permission.READ_SMS)
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        openGrantDialog("org.example.sms2")
-
-        compose.onNodeWithTag("plugin-grant:sms").assertTextEquals("已授权").assertIsNotEnabled()
+    @Test fun declarativeGrantAndProviderActionsOpenExactlyTheDeclaredCapability() {
+        install()
+        val entries = app.pluginHost.entries(pluginId)
+        assertEquals(setOf(first, second), entries.map { it.id }.toSet())
+        val policies = entries.associate { it.key to app.pluginHost.capabilityPolicy(pluginId, it.key) }
+        val opened = mutableListOf<Pair<String, String>>()
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { id, key -> opened += id to key }) }
+        }
+        compose.onNodeWithText("请求读取授权").performScrollTo().performClick()
+        assertEquals(pluginId to entries.single { it.id == first }.key, opened.last())
+        compose.onNodeWithText("选择控制提供者").performScrollTo().performClick()
+        assertEquals(pluginId to entries.single { it.id == second }.key, opened.last())
+        assertEquals(2, opened.size)
+        entries.forEach { assertEquals(policies[it.key], app.pluginHost.capabilityPolicy(pluginId, it.key)) }
+        compose.onNodeWithTag("plugin-grant:accessibility").assertDoesNotExist()
     }
 
-    @Test
-    fun pluginsWithoutDevicePrimitivesSaySoInsteadOfShowingEmptyEntries() {
-        store.install(TestAlpPackages.signedPackage())
-        context.pluginHost.reload()
-
-        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
-        compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
+    @Test fun genericActionLetsUserChooseAmongAllDeclaredCapabilities() {
+        install()
+        val entries = app.pluginHost.entries(pluginId)
+        var opened: Pair<String, String>? = null
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { id, key -> opened = id to key }) }
+        }
+        compose.onNodeWithText("选择插件能力").performScrollTo().performClick()
         compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
-
-        // 没有任何设备能力时如实说明，不渲染一排点了没反应的按钮。
-        compose.onNodeWithText("这个插件不需要额外的 Android 系统授权。").assertExists()
-        assertTrue(
-            compose.onAllNodesWithText("申请权限").fetchSemanticsNodes().isEmpty(),
-        )
+        val target = entries.single { it.id == second }
+        compose.onNodeWithTag("plugin-capability-choice:$pluginId:${target.key}").performScrollTo().performClick()
+        assertEquals(pluginId to target.key, opened)
     }
 
+    @Test fun primitiveGrantActionLetsUserChooseBetweenMatchingDeclaredCapabilities() {
+        install()
+        val entries = app.pluginHost.entries(pluginId)
+        var opened: Pair<String, String>? = null
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { id, key -> opened = id to key }) }
+        }
+        compose.onNodeWithText("请求系统原语").performScrollTo().performClick()
+        compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
+        val target = entries.single { it.id == first }
+        compose.onNodeWithTag("plugin-capability-choice:$pluginId:${target.key}").performScrollTo().performClick()
+        assertEquals(pluginId to target.key, opened)
+    }
+
+    @Test fun unknownDeclaredActionDoesNotOpenOrChangeAnUnrelatedCapability() {
+        install()
+        val policies = app.pluginHost.entries(pluginId).associate { it.key to app.pluginHost.capabilityPolicy(pluginId, it.key) }
+        var opened = 0
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { _, _ -> opened++ }) }
+        }
+        compose.onNodeWithText("未知能力").performScrollTo().performClick()
+        compose.onNodeWithText("插件请求的能力未声明，无法打开能力设置。").assertExists()
+        assertEquals(0, opened)
+        assertTrue(app.pluginHost.entries(pluginId).all { app.pluginHost.capabilityPolicy(pluginId, it.key) == policies[it.key] })
+    }
+
+    @Test fun directEntryRoutesToTheSameCapabilityEditor() {
+        install()
+        val target = app.pluginHost.entries(pluginId).single { it.id == first }
+        var opened: Pair<String, String>? = null
+        compose.setContent {
+            MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { id, key -> opened = id to key }) }
+        }
+        compose.onNodeWithTag("plugin-open-capability:$pluginId:${target.key}").performScrollTo().performClick()
+        assertEquals(pluginId to target.key, opened)
+    }
 }

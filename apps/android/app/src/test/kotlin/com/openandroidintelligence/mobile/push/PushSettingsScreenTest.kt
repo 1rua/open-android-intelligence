@@ -28,6 +28,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import com.openandroidintelligence.kernel.SmsScopeMode
+import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
 import org.robolectric.Shadows.shadowOf
 import javax.crypto.spec.SecretKeySpec
@@ -60,6 +61,33 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-notification-endpoint:core:account:endpoint:1").performScrollTo().performClick()
         assertEquals(setOf(endpoint), saved.notifications.endpoints)
         assertTrue(saved.sms.endpoints.isEmpty())
+    }
+
+    @Test
+    @Config(qualifiers = "w320dp-h600dp")
+    fun sidebarPushPickerKeepsTheSameDraftAndSavesOnlyAfterConfirmation() {
+        var saved = PushConfiguration()
+        val apps = listOf(com.openandroidintelligence.mobile.notifications.InstalledNotificationApp("com.example.chat", "聊天"))
+        val loader = { apps }
+        compose.setContent {
+            var packages by remember { mutableStateOf(emptySet<String>()) }
+            MaterialTheme {
+                NotificationPushScopeSettings(packages, false, null,
+                    { packages = it; saved = saved.copy(notifications = saved.notifications.copy(scope = saved.notifications.scope.copy(packageIds = it))) },
+                    loadInstalledApps = loader, presentation = SettingsPresentation.SIDEBAR)
+            }
+        }
+        compose.onNodeWithTag("push-save-packages").performClick()
+        compose.onNodeWithTag("notification-picker-sidebar").assertExists()
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("notification-app-list").performScrollToNode(hasTestTag("notification-app-com.example.chat")) }.isSuccess
+        }
+        compose.onNodeWithTag("notification-app-com.example.chat").performClick()
+        assertTrue(saved.notifications.scope.packageIds.isEmpty())
+        compose.onNodeWithTag("notification-app-save").performClick()
+        compose.waitForIdle()
+        assertEquals(setOf("com.example.chat"), saved.notifications.scope.packageIds)
+        assertFalse(saved.sms.enabled)
     }
 
     @Test fun retentionInputSavesOneHour() {

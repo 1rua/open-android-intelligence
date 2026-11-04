@@ -11,7 +11,6 @@ import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -33,13 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openandroidintelligence.kernel.SmsScopeMode
+import com.openandroidintelligence.conversation.components.SettingsSectionCard
+import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.notifications.InstalledNotificationApp
 import com.openandroidintelligence.mobile.notifications.NotificationAppPicker
 import com.openandroidintelligence.mobile.notifications.loadInstalledNotificationApps
@@ -64,6 +64,7 @@ fun PushSettingsScreen(
     onRefreshEndpoints: () -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     var snapshot by remember(runtime) { mutableStateOf<PushSnapshot?>(null) }
     var error by remember(runtime) { mutableStateOf<String?>(null) }
@@ -118,6 +119,7 @@ fun PushSettingsScreen(
         } },
         modifier = modifier,
         onBack = onBack,
+        presentation = presentation,
     )
 }
 
@@ -157,6 +159,7 @@ fun PushSettingsContent(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     saveCompletion: Long? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     val config = snapshot.configuration
     val savedMode = config.sms.scope.mode
@@ -182,8 +185,9 @@ fun PushSettingsContent(
     val capacity = maxEvents.toIntOrNull()
     val bytes = maxMiB.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 && it <= 8 }?.let { (it * 1_048_576).toInt() }
     Column(
-        modifier.widthIn(max = 720.dp).verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier.widthIn(max = Dimensions.ReadingWidth).verticalScroll(rememberScrollState())
+            .padding(horizontal = Dimensions.ScreenHorizontal, vertical = Dimensions.SpaceSmall),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
     ) {
         onBack?.let { TextButton(onClick = it) { Text("返回") } }
         Text("主动推送", style = MaterialTheme.typography.headlineSmall)
@@ -192,86 +196,96 @@ fun PushSettingsContent(
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("push-error")) }
 
         Text("通知", style = MaterialTheme.typography.titleMedium)
-        ToggleRow("通知主动推送", config.notifications.enabled, !saving, "push-notification-enabled") {
-            onConfigurationChange(config.copy(notifications = config.notifications.copy(enabled = it)))
-        }
-        NotificationPushScopeSettings(
-            packageIds = config.notifications.scope.packageIds,
-            saving = saving,
-            error = error,
-            saveCompletion = saveCompletion,
-            onPackagesChange = {
-                onConfigurationChange(config.copy(notifications = config.notifications.copy(
-                    scope = config.notifications.scope.copy(packageIds = it),
-                )))
-            },
-        )
-        ToggleRow("推送通知正文", config.notifications.scope.includeContent, !saving, "push-notification-content") {
-            onConfigurationChange(config.copy(notifications = config.notifications.copy(scope = config.notifications.scope.copy(includeContent = it))))
-        }
-        EndpointChoices("notification", config.notifications.endpoints, endpoints, !saving) {
-            onConfigurationChange(config.copy(notifications = config.notifications.copy(endpoints = it)))
-        }
+        SettingsSectionCard {
+            ToggleRow("通知主动推送", config.notifications.enabled, !saving, "push-notification-enabled") {
+                onConfigurationChange(config.copy(notifications = config.notifications.copy(enabled = it)))
+            }
+            NotificationPushScopeSettings(
+                packageIds = config.notifications.scope.packageIds,
+                saving = saving,
+                error = error,
+                saveCompletion = saveCompletion,
+                presentation = presentation,
+                onPackagesChange = {
+                    onConfigurationChange(config.copy(notifications = config.notifications.copy(
+                        scope = config.notifications.scope.copy(packageIds = it),
+                    )))
+                },
+            )
+            ToggleRow("推送通知正文", config.notifications.scope.includeContent, !saving, "push-notification-content") {
+                onConfigurationChange(config.copy(notifications = config.notifications.copy(scope = config.notifications.scope.copy(includeContent = it))))
+            }
+            EndpointChoices("notification", config.notifications.endpoints, endpoints, !saving) {
+                onConfigurationChange(config.copy(notifications = config.notifications.copy(endpoints = it)))
+            }
 
-        HorizontalDivider()
+        }
         Text("短信", style = MaterialTheme.typography.titleMedium)
-        ToggleRow("短信主动推送", config.sms.enabled, !saving, "push-sms-enabled") {
-            onConfigurationChange(config.copy(sms = config.sms.copy(enabled = it)))
-        }
-        SmsScopeSelector(
-            mode = smsMode,
-            keywords = keywords,
-            phoneNumbers = senders,
-            onModeChange = { smsMode = it },
-            onKeywordsChange = { keywords = it },
-            onPhoneNumbersChange = { senders = it },
-            tagPrefix = "push-sms",
-            enabled = !saving,
-        )
-        Button(
-            onClick = {
-                onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(
-                    mode = smsMode,
-                    allSenders = smsMode == SmsScopeMode.ALL,
-                    keywords = keywordSet,
-                    senderAddresses = senderSet,
-                ))))
-            },
-            enabled = !saving && validSmsScope(smsMode, keywordSet, senderSet),
-            modifier = Modifier.testTag("push-save-senders"),
-        ) { Text("保存短信范围") }
-        ToggleRow("推送短信正文", config.sms.scope.includeContent, !saving, "push-sms-content") {
-            onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(includeContent = it))))
-        }
-        EndpointChoices("sms", config.sms.endpoints, endpoints, !saving) {
-            onConfigurationChange(config.copy(sms = config.sms.copy(endpoints = it)))
-        }
-        Text("正文默认包含；关闭正文开关后仅推送元数据。", style = MaterialTheme.typography.bodySmall)
-        Text("关闭推送、缩小范围或移除接收设备，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
-        TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新推送目标") }
+        SettingsSectionCard {
+            ToggleRow("短信主动推送", config.sms.enabled, !saving, "push-sms-enabled") {
+                onConfigurationChange(config.copy(sms = config.sms.copy(enabled = it)))
+            }
+            SmsScopeSelector(
+                mode = smsMode,
+                keywords = keywords,
+                phoneNumbers = senders,
+                onModeChange = { smsMode = it },
+                onKeywordsChange = { keywords = it },
+                onPhoneNumbersChange = { senders = it },
+                tagPrefix = "push-sms",
+                enabled = !saving,
+            )
+            Button(
+                onClick = {
+                    onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(
+                        mode = smsMode,
+                        allSenders = smsMode == SmsScopeMode.ALL,
+                        keywords = keywordSet,
+                        senderAddresses = senderSet,
+                    ))))
+                },
+                enabled = !saving && validSmsScope(smsMode, keywordSet, senderSet),
+                modifier = Modifier.testTag("push-save-senders"),
+            ) { Text("保存短信范围") }
+            ToggleRow("推送短信正文", config.sms.scope.includeContent, !saving, "push-sms-content") {
+                onConfigurationChange(config.copy(sms = config.sms.copy(scope = config.sms.scope.copy(includeContent = it))))
+            }
+            EndpointChoices("sms", config.sms.endpoints, endpoints, !saving) {
+                onConfigurationChange(config.copy(sms = config.sms.copy(endpoints = it)))
+            }
+            Text("正文默认包含；关闭正文开关后仅推送元数据。", style = MaterialTheme.typography.bodySmall)
+            Text("关闭推送、缩小范围或移除接收设备，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新推送目标") }
 
-        HorizontalDivider()
+        }
         Text("加密离线队列", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(retention, { retention = it }, label = { Text("保留小时数：1–168，默认 72") },
-            modifier = Modifier.fillMaxWidth().testTag("push-retention"), enabled = !saving, singleLine = true,
-            isError = hours == null || hours !in 1..168)
-        OutlinedTextField(maxEvents, { maxEvents = it }, label = { Text("事件上限：1–4096") }, modifier = Modifier.fillMaxWidth().testTag("push-max-events"), enabled = !saving, singleLine = true)
-        OutlinedTextField(maxMiB, { maxMiB = it }, label = { Text("容量上限 MiB：最多 8") }, modifier = Modifier.fillMaxWidth().testTag("push-max-mib"), enabled = !saving, singleLine = true)
-        Button(onClick = { if (hours != null && capacity != null && bytes != null) onConfigurationChange(config.copy(retentionHours = hours, maxEvents = capacity, maxQueueBytes = bytes)) },
-            enabled = !saving && hours != null && hours in 1..168 && capacity != null && capacity in 1..4096 && bytes != null && bytes >= 4096,
-            modifier = Modifier.testTag("push-save-retention")) { Text("保存队列设置") }
-        Text("待发 ${snapshot.queuedEvents} 条，共 ${snapshot.pendingDeliveries} 次接收端投递。已过期 ${snapshot.expiredEvents} 条，容量拒绝 ${snapshot.capacityRejections} 次。", modifier = Modifier.testTag("push-queue-state"))
-        Text("队列满时拒绝新事件并保留已有未确认事件；接收端消费确认后清除正文。", style = MaterialTheme.typography.bodySmall)
-        Text("待远端清理 ${snapshot.pendingRevocations} 次；离线时保留清理记录，恢复连接后重试。", modifier = Modifier.testTag("push-revocation-state"))
-        TextButton(onClick = onRefreshState, enabled = !saving) { Text("刷新队列状态") }
+        SettingsSectionCard {
+            OutlinedTextField(retention, { retention = it }, label = { Text("保留小时数：1–168，默认 72") },
+                modifier = Modifier.fillMaxWidth().testTag("push-retention"), enabled = !saving, singleLine = true,
+                isError = hours == null || hours !in 1..168)
+            OutlinedTextField(maxEvents, { maxEvents = it }, label = { Text("事件上限：1–4096") }, modifier = Modifier.fillMaxWidth().testTag("push-max-events"), enabled = !saving, singleLine = true)
+            OutlinedTextField(maxMiB, { maxMiB = it }, label = { Text("容量上限 MiB：最多 8") }, modifier = Modifier.fillMaxWidth().testTag("push-max-mib"), enabled = !saving, singleLine = true)
+            Button(onClick = { if (hours != null && capacity != null && bytes != null) onConfigurationChange(config.copy(retentionHours = hours, maxEvents = capacity, maxQueueBytes = bytes)) },
+                enabled = !saving && hours != null && hours in 1..168 && capacity != null && capacity in 1..4096 && bytes != null && bytes >= 4096,
+                modifier = Modifier.testTag("push-save-retention")) { Text("保存队列设置") }
+            Text("待发 ${snapshot.queuedEvents} 条，共 ${snapshot.pendingDeliveries} 次接收端投递。已过期 ${snapshot.expiredEvents} 条，容量拒绝 ${snapshot.capacityRejections} 次。", modifier = Modifier.testTag("push-queue-state"))
+            Text("队列满时拒绝新事件并保留已有未确认事件；接收端消费确认后清除正文。", style = MaterialTheme.typography.bodySmall)
+            Text("待远端清理 ${snapshot.pendingRevocations} 次；离线时保留清理记录，恢复连接后重试。", modifier = Modifier.testTag("push-revocation-state"))
+            TextButton(onClick = onRefreshState, enabled = !saving) { Text("刷新队列状态") }
+        }
     }
 }
 
 @Composable
 private fun ToggleRow(label: String, value: Boolean, enabled: Boolean, tag: String, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth().testTag(tag)
+            .toggleable(value = value, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+            .padding(vertical = Dimensions.SpaceSmall),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Text(label, Modifier.weight(1f))
-        Switch(value, onChange, enabled = enabled, modifier = Modifier.testTag(tag).semantics { contentDescription = label })
+        Switch(value, onCheckedChange = null, enabled = enabled)
     }
 }
 
@@ -314,6 +328,7 @@ internal fun NotificationPushScopeSettings(
     onPackagesChange: (Set<String>) -> Unit,
     loadInstalledApps: (() -> List<InstalledNotificationApp>)? = null,
     saveCompletion: Long? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     val packageManager = LocalContext.current.applicationContext.packageManager
     val appLoader = remember(packageManager, loadInstalledApps) {
@@ -402,6 +417,7 @@ internal fun NotificationPushScopeSettings(
                 }
             },
             saving = saving || submittedPackages != null,
+            presentation = presentation,
         )
     }
 }

@@ -2,6 +2,8 @@ package com.openandroidintelligence.conversation.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -123,38 +126,38 @@ fun SettingsListItem(
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val interactive = onClick != null && enabled
-    ListItem(
-        headlineContent = { Text(headline, style = MaterialTheme.typography.bodyLarge) },
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = Dimensions.MinimumTouchTarget)
-            .alpha(if (enabled) 1f else 0.38f)
-            .then(
-                if (interactive) {
-                    Modifier.bouncyClickable(
-                        enabled = true,
-                        role = Role.Button,
-                        onClick = onClick!!,
-                    )
-                } else {
-                    Modifier
-                },
-            ),
-        supportingContent = supporting?.let {
-            { Text(it, style = MaterialTheme.typography.bodyMedium) }
-        },
-        leadingContent = icon?.let { { SettingsIconBadge(icon = it, tone = tone, enabled = enabled) } },
-        trailingContent = trailing,
-        colors = ListItemDefaults.colors(
-            containerColor = if (selected) {
-                MaterialTheme.colorScheme.surfaceContainerHighest
-            } else {
-                Color.Transparent
+        ListItem(
+            headlineContent = { Text(headline, style = MaterialTheme.typography.bodyLarge) },
+            modifier = modifier
+                .fillMaxWidth()
+                .heightIn(min = Dimensions.MinimumTouchTarget)
+                .alpha(if (enabled) 1f else 0.38f)
+                .then(
+                    if (interactive) {
+                        Modifier.bouncyClickable(
+                            enabled = true,
+                            role = Role.Button,
+                            onClick = onClick!!,
+                        )
+                    } else {
+                        Modifier
+                    },
+                ),
+            supportingContent = supporting?.let {
+                { Text(it, style = MaterialTheme.typography.bodyMedium) }
             },
-            supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            leadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        ),
-    )
+            leadingContent = icon?.let { { SettingsIconBadge(icon = it, tone = tone, enabled = enabled) } },
+            trailingContent = trailing,
+            colors = ListItemDefaults.colors(
+                containerColor = if (selected) {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                } else {
+                    Color.Transparent
+                },
+                supportingColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                leadingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            ),
+        )
 }
 
 /**
@@ -174,12 +177,12 @@ fun SettingsSwitchItem(
 ) {
     SettingsListItem(
         headline = headline,
-        modifier = modifier,
+        modifier = modifier.toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onCheckedChange),
         supporting = supporting,
         icon = icon,
         tone = tone,
         enabled = enabled,
-        onClick = if (enabled) { { onCheckedChange(!checked) } } else null,
+        onClick = null,
         trailing = {
             Switch(checked = checked, onCheckedChange = null, enabled = enabled)
         },
