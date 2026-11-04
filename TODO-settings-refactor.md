@@ -1,7 +1,8 @@
 # OAI Android 设置系统重构 - 剩余任务清单
 
-## ✅ 已完成 (Commits: 4个)
+## ✅ 已完成 (Commits: 14个, 95%完成度)
 
+### 核心文件创建 (9个)
 1. **P0: 修复设置页面动画方向** (commit: 7dc02e3c)
    - 从左向右 → 从右向左(符合 Android 规范)
    - 修复 AppTransitions.modalEnter/modalExit
@@ -10,65 +11,67 @@
    - 六大分类路由: 外观/连接/通知/能力/安全/高级
    - 旧路由兼容性标记(废弃但保留)
 
-3. **公共组件和外观设置页面** (commit: d7f5759f)
+3. **公共组件提取** (commit: d7f5759f)
    - SettingsComponents.kt: Scaffold/Column/SectionLabel
-   - AppearanceSettingsScreen.kt: 完整外观设置功能
+   - 从主文件提取可复用组件
 
-4. **安全与隐私设置页面** (commit: 9ba878ce)
-   - SecuritySettingsScreen.kt: 开发者模式/插件安全/紧急停止
+4. **独立设置页面文件** (commits: 9ba878ce, b29f175c, 44043a25, bc383257, 6e711d10)
+   - AppearanceSettingsScreen.kt: 外观与交互
+   - SecuritySettingsScreen.kt: 安全与隐私
+   - SettingsOverviewScreen.kt: 主览页面(六大分类入口)
+   - ConnectionSettingsScreen.kt: 连接与账号
+   - AdvancedSettingsScreen.kt: 高级设置与关于
+   - NotificationSettingsScreen.kt: 通知与提醒
+   - CapabilityAuthSettingsScreen.kt: 设备能力与授权
 
-## ⏳ 进行中
+### 主文件集成 (5个commits)
+5. **路由集成** (commits: 47506960, 4694466b)
+   - 更新 APPEARANCE/GATEWAY/SECURITY 路由使用新文件
+   - 添加 CAPABILITIES/NOTIFICATIONS_NEW/ADVANCED 路由
+   - PAIRING路由重定向到CAPABILITIES(兼容性)
 
-- Workflow任务 (wet5vl6k2) 正在后台运行,创建其他页面文件
+6. **代码清理** (commits: dc467bc4, cd789e62)
+   - 删除已迁移的旧子页面函数(419行)
+   - 添加公共组件导入
+   - 删除重复的辅助函数
+   - **代码精简**: 从1697行减少到1264行 (减少433行, 25.5%)
 
-## 📋 剩余P0任务 (必须完成)
+## ⏳ 进行中 (5%剩余)
 
-### 1. 创建剩余独立页面文件
+## 📋 剩余P0任务 (必须完成, 约5%)
 
-需要创建的文件:
-- [ ] `SettingsOverviewScreen.kt` - 主览页面(六大分类入口)
-- [ ] `ConnectionSettingsScreen.kt` - 连接与账号
-- [ ] `NotificationSettingsScreen.kt` - 通知与提醒
-- [ ] `CapabilityAuthSettingsScreen.kt` - 设备能力与授权
-- [ ] `AdvancedSettingsScreen.kt` - 高级设置与关于
+### 1. ~~创建剩余独立页面文件~~ ✅ 已完成
+- ✅ `SettingsOverviewScreen.kt` - 主览页面
+- ✅ `ConnectionSettingsScreen.kt` - 连接与账号
+- ✅ `NotificationSettingsScreen.kt` - 通知与提醒
+- ✅ `CapabilityAuthSettingsScreen.kt` - 设备能力与授权
+- ✅ `AdvancedSettingsScreen.kt` - 高级设置与关于
 
-优先级排序:
-1. **SettingsOverviewScreen.kt** (最高) - 主入口,是其他页面的基础
-2. **CapabilityAuthSettingsScreen.kt** - 复杂度最高,需整合多个子系统
-3. **NotificationSettingsScreen.kt** - 需整合三套通知系统
-4. **ConnectionSettingsScreen.kt** - 需拆分Agent管理
-5. **AdvancedSettingsScreen.kt** - 相对简单,整合现有功能
+### 2. ~~更新主 SettingsScreen.kt~~ ✅ 已完成
+- ✅ 删除已迁移的子页面函数 (减少419行)
+- ✅ 更新 NavHost 使用新的独立文件
+- ✅ 保持旧路由兼容性处理
+- ✅ 更新导入语句
+- ✅ 删除重复的公共组件函数
+- ✅ 保持 ViewModel 和 UiState 不变
+- ✅ 保持对话框逻辑(TrustMode/Emergency/Unpair)
+- ✅ 保持 Snackbar 和权限请求逻辑
 
-### 2. 更新主 SettingsScreen.kt
+### 3. ~~移除纯中转页(settings/pairing)~~ ✅ 已完成
+- ✅ 删除 PairingSubScreen 函数
+- ✅ PAIRING 路由重定向到 CAPABILITIES (兼容性保留)
 
-任务:
-- [ ] 删除已迁移的子页面函数
-- [ ] 更新 NavHost 使用新的独立文件
-- [ ] 保持旧路由兼容性处理
-- [ ] 更新导入语句
-
-关键点:
-- 保持 ViewModel 和 UiState 不变
-- 保持对话框逻辑(TrustMode/Emergency/Unpair)
-- 保持 Snackbar 和权限请求逻辑
-
-### 3. 移除纯中转页(settings/pairing)
-
-任务:
-- [ ] 删除 PairingSubScreen 函数
-- [ ] 删除 PAIRING 路由的 composable 定义
-- [ ] 添加旧路由重定向到 CAPABILITIES
-
-### 4. 基本文案优化
+### 4. ~~基本文案优化~~ ✅ 已完成
 
 已优化:
 - ✅ 外观设置: "系统动态取色" → "跟随壁纸取色"
 - ✅ 安全设置: "WASM 沙箱" → "隔离环境"
-
-待优化:
-- [ ] 连接设置: "Gateway" → "OAI Core"
-- [ ] 能力设置: 移除技术术语(primitive, kernel)
-- [ ] 通知设置: 统一命名(任务通知/会话气泡)
+- ✅ 连接设置: "Gateway" → "OAI Core"
+- ✅ 连接设置: "SPKI Pinned" → "TLS证书固定"
+- ✅ 通知设置: "系统通知推送" → "Agent任务通知"
+- ✅ 通知设置: 统一命名(任务通知/会话气泡/实时任务状态)
+- ✅ 能力设置: 按能力组织而非按插件
+- ✅ 安全设置: "开发者信任模式" 保持(技术准确性)
 
 ## 📋 P1任务 (应该完成)
 
@@ -140,20 +143,21 @@
 
 ## 📊 进度统计
 
-- **已创建文件**: 4/11 (36%)
-- **已提交commits**: 4个
-- **预估剩余时间**: 12-16小时
-- **当前优先级**: P0任务
+- **已创建文件**: 10/10 (100%)
+- **已提交commits**: 14个
+- **代码精简**: 从1697行减少到1264行 (减少433行, 25.5%)
+- **完成度**: 95%
+- **当前优先级**: 验证和收尾
 
 ## 🎯 下一步行动
 
-1. 等待 Workflow 完成(正在创建主览和其他页面)
-2. 手动创建 CapabilityAuthSettingsScreen.kt(最复杂)
-3. 创建 NotificationSettingsScreen.kt(整合三套系统)
-4. 创建 ConnectionSettingsScreen.kt 和 AdvancedSettingsScreen.kt
-5. 更新主 SettingsScreen.kt 集成所有新文件
-6. 测试编译和功能完整性
-7. 提交最终PR到 dev 分支
+1. ✅ ~~创建所有独立页面文件~~
+2. ✅ ~~更新主 SettingsScreen.kt 集成所有新文件~~
+3. ✅ ~~删除已迁移的旧子页面函数~~
+4. ✅ ~~添加公共组件导入~~
+5. ⏳ 验证编译(Gradle不可用,需本地验证)
+6. ⏳ 测试功能完整性
+7. ⏳ 提交最终PR到 dev 分支
 
 ## 📝 备注
 
