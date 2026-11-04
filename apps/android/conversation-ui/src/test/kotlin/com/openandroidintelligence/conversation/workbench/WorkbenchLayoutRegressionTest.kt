@@ -142,8 +142,7 @@ class WorkbenchLayoutRegressionTest {
         assertTrue("点击设置项必须触发 onOpenSettings", settingsOpened)
         assertFalse("切换到设置时不能关闭并重新打开抽屉", drawerClosed)
 
-        // 页脚同级的协议版本号与退出登录也必须常驻可见
-        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        // 页脚同级的退出登录也必须常驻可见
         compose.onNodeWithText("退出登录").assertIsDisplayed()
     }
 
@@ -198,7 +197,7 @@ class WorkbenchLayoutRegressionTest {
 
         compose.onNode(hasText("返回会话") and hasClickAction())
             .performSemanticsAction(SemanticsActions.OnClick) { it() }
-        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        compose.onNodeWithText("退出登录").assertIsDisplayed()
         compose.runOnIdle { assertFalse("返回会话列表时应退出设置", settingsOpen) }
     }
 
@@ -303,7 +302,7 @@ class WorkbenchLayoutRegressionTest {
             assertEquals("设置切换不能销毁会话内容", 0, mainDisposals)
         }
         compose.onNodeWithText("返回会话").performClick()
-        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        compose.onNodeWithText("退出登录").assertIsDisplayed()
     }
 
     @Test

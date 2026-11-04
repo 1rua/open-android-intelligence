@@ -133,50 +133,50 @@ fun ThreadDrawer(
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            // ===== 页脚：设置、协议版本与退出登录，常驻吸底 =====
-            Column(
+            // ===== 页脚：设置与退出登录，常驻吸底 =====
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                DrawerNavItem(
-                    icon = Icons.Default.Settings,
-                    label = "设置",
+                TextButton(
                     onClick = onOpenSettings,
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Dimensions.SpaceTiny, vertical = Dimensions.SpaceTiny),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                    contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
                 ) {
-                    Text(
-                        text = "Gateway Protocol v2",
-                        style = AppTextStyles.MonoSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
                     )
+                    Spacer(Modifier.width(Dimensions.SpaceTiny))
+                    Text(
+                        text = "设置",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
 
-                    TextButton(
-                        onClick = onLogout,
-                        contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(Dimensions.SmallIcon),
-                        )
-                        Spacer(Modifier.width(Dimensions.SpaceTiny))
-                        Text(
-                            text = "退出登录",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                TextButton(
+                    onClick = onLogout,
+                    contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Spacer(Modifier.width(Dimensions.SpaceTiny))
+                    Text(
+                        text = "退出登录",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
             }
         }
