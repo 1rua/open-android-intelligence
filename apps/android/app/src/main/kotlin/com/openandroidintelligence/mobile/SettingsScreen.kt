@@ -138,7 +138,6 @@ enum class SettingsPresentation { SCREEN, SIDEBAR }
 private val NoWindowInsets = WindowInsets(0, 0, 0, 0)
 
 /** 当前呈现方式下页面（Scaffold / 标题栏）应使用的底色。 */
-@Composable
 private fun settingsContainerColor(presentation: SettingsPresentation): Color =
     if (presentation == SettingsPresentation.SIDEBAR) {
         MaterialTheme.colorScheme.surfaceContainerLow
@@ -147,7 +146,6 @@ private fun settingsContainerColor(presentation: SettingsPresentation): Color =
     }
 
 /** 当前呈现方式下 Scaffold 内容区应扣的系统栏 inset。 */
-@Composable
 private fun settingsContentWindowInsets(presentation: SettingsPresentation): WindowInsets =
     if (presentation == SettingsPresentation.SIDEBAR) NoWindowInsets else WindowInsets.systemBars
 
@@ -163,7 +161,6 @@ private fun settingsContentWindowInsets(presentation: SettingsPresentation): Win
  * 4. 会话级操作提示走 Snackbar，不再用 `zIndex` 悬浮盖住顶栏；
  * 5. 宽屏内容限宽 [Dimensions.ReadingWidth] 居中，平板不再通栏拉伸。
  */
-@Composable
 fun SettingsScreen(
     environment: PlatformSettingsEnvironment,
     onBack: () -> Unit,
@@ -184,7 +181,6 @@ fun SettingsScreen(
     )
 }
 
-@Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
     onBack: () -> Unit,
@@ -494,7 +490,6 @@ fun SettingsScreen(
 }
 
 /** 主动推送沿用设置子页容器；正文继续负责自己的滚动和配置操作。 */
-@Composable
 internal fun DevicePushSubScreen(
     runtime: com.openandroidintelligence.mobile.push.DevicePushRuntime?,
     endpoints: List<com.openandroidintelligence.mobile.push.PushEndpointOption>,
@@ -527,7 +522,6 @@ internal fun DevicePushSubScreen(
 
 /** 设置子页统一的 Scaffold：标题栏、底色与系统栏 inset 只在 [SettingsPresentation] 处分支一次。 */
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
 private fun SettingsPageScaffold(
     title: String,
     presentation: SettingsPresentation,
@@ -574,7 +568,6 @@ private fun SettingsPageScaffold(
  * 才能 `performScrollTo`，换成 LazyColumn 会让屏外行不再被组合，测试锚点随之失效。
  * 真正无上限增长的列表（审计流水）另用 LazyColumn，见 [AuditLogSubScreen]。
  */
-@Composable
 private fun SettingsPageColumn(
     contentPadding: PaddingValues,
     content: @Composable ColumnScope.() -> Unit,
@@ -601,7 +594,6 @@ private fun SettingsPageColumn(
 }
 
 /** 设置主览界面。 */
-@Composable
 private fun SettingsOverviewScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
@@ -968,123 +960,6 @@ private fun SettingsOverviewScreen(
 }
 
 /** 子页面 1: 外观与动效详细配置（主题的唯一入口）。 */
-@Composable
-private fun AppearanceSubScreen(
-    uiState: SettingsUiState,
-    onBack: () -> Unit,
-    presentation: SettingsPresentation,
-    onSetTheme: (ThemePreference) -> Unit,
-    onSetDynamicColor: (Boolean) -> Unit,
-    onSetDynamicIconColor: (Boolean) -> Unit,
-    onSetPalette: (ThemePalette) -> Unit,
-    onSetReduceMotion: (Boolean) -> Unit,
-) {
-    SettingsPageScaffold(
-        title = "外观与动效",
-        presentation = presentation,
-        onBack = onBack,
-    ) { padding ->
-        SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("主题模式选择")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    ThemePreference.entries.forEachIndexed { index, option ->
-                        if (index > 0) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                        SettingsListItem(
-                            headline = themeLabel(option),
-                            supporting = when (option) {
-                                ThemePreference.SYSTEM -> "跟随系统设置自动切换深浅配色"
-                                ThemePreference.LIGHT -> "始终使用浅色高对比度主题"
-                                ThemePreference.DARK -> "始终使用深色暗调主题，低眩光省电"
-                            },
-                            icon = Icons.Default.Palette,
-                            selected = uiState.appearance.theme == option,
-                            // 自绘行显式声明单选语义：读屏会朗读「已选中，单选框」，
-                            // 而不是只把它当成一行可点文字。
-                            modifier = Modifier.selectable(
-                                selected = uiState.appearance.theme == option,
-                                role = Role.RadioButton,
-                                onClick = { onSetTheme(option) },
-                            ),
-                            trailing = {
-                                RadioButton(
-                                    selected = uiState.appearance.theme == option,
-                                    onClick = null,
-                                )
-                            },
-                        )
-                    }
-                }
-            }
-
-            SectionLabel("主题色")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsSwitchItem(
-                        headline = "系统动态取色 (Monet)",
-                        // 真实语义：默认跟随系统壁纸取色；关闭后回落到本机预设色板。
-                        supporting = "默认开启：主题色由系统壁纸推导，装什么壁纸就是什么气质。" +
-                            "关闭后可从下面的预设色板中挑一套。",
-                        checked = uiState.appearance.dynamicColor,
-                        icon = Icons.Default.ColorLens,
-                        tone = SettingsTone.PRIMARY,
-                        onCheckedChange = onSetDynamicColor,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsSwitchItem(
-                        headline = "图标动态取色",
-                        supporting = "桌面图标支持 Material You 动态取色（需系统 Android 13+ 且开启「主题图标」）；关闭后保持经典黑白与橙色行星点原貌。",
-                        checked = uiState.appearance.dynamicIconColor,
-                        icon = Icons.Default.Palette,
-                        tone = SettingsTone.PRIMARY,
-                        onCheckedChange = onSetDynamicIconColor,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    ThemePalette.entries.forEachIndexed { index, palette ->
-                        if (index > 0) {
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                        PaletteOptionRow(
-                            palette = palette,
-                            selected = !uiState.appearance.dynamicColor &&
-                                uiState.appearance.palette == palette,
-                            enabled = !uiState.appearance.dynamicColor,
-                            onSelect = { onSetPalette(palette) },
-                        )
-                    }
-                    Text(
-                        text = if (uiState.appearance.dynamicColor) {
-                            "动态取色已开启；关闭上面的开关即可选择预设色板。"
-                        } else {
-                            "当前使用预设色板；打开动态取色会改用系统壁纸配色。"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(
-                            horizontal = Dimensions.SpaceMedium,
-                            vertical = Dimensions.SpaceSmall,
-                        ),
-                    )
-                }
-            }
-
-            SectionLabel("动效与无障碍")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsSwitchItem(
-                        headline = "减少动画",
-                        supporting = "停用位移与缩放动效，替换为标准无障碍淡入淡出。系统「动画时长 0」时自动等效。",
-                        checked = uiState.appearance.reduceMotion,
-                        icon = Icons.Default.Animation,
-                        onCheckedChange = onSetReduceMotion,
-                    )
-                }
-            }
-        }
-    }
-}
 
 /**
  * 预设主题色的一行。
@@ -1093,7 +968,6 @@ private fun AppearanceSubScreen(
  * 用户看到的就是切换后界面真正会用的颜色，而不是另画一套"示意色"。
  * 动态取色开启时整行禁用（`enabled = false`），并在分组底部说明原因。
  */
-@Composable
 private fun PaletteOptionRow(
     palette: ThemePalette,
     selected: Boolean,
@@ -1160,7 +1034,6 @@ private fun PaletteOptionRow(
     }
 }
 
-@Composable
 private fun PaletteDot(
     color: androidx.compose.ui.graphics.Color,
     dark: androidx.compose.ui.graphics.Color,
@@ -1175,173 +1048,6 @@ private fun PaletteDot(
 }
 
 /** 子页面 2: OAI Core 管理与连接详细配置。 */
-@Composable
-private fun GatewaySubScreen(
-    uiState: SettingsUiState,
-    onBack: () -> Unit,
-    presentation: SettingsPresentation,
-    onRefreshSession: () -> Unit,
-    onLogout: () -> Unit,
-    onSwitchAccount: () -> Unit,
-    onRequestUnpair: () -> Unit,
-    onSelectAgent: (String) -> Unit = {},
-    onRefreshAgents: () -> Unit = {},
-) {
-    SettingsPageScaffold(
-        title = "OAI Core 管理",
-        presentation = presentation,
-        onBack = onBack,
-    ) { padding ->
-        SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("当前连接")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsListItem(
-                        headline = "登录账号",
-                        supporting = uiState.connectedUsername ?: "未登录",
-                        icon = Icons.Default.Hub,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "OAI Core 地址",
-                        supporting = uiState.connectedGatewayUrl ?: "—",
-                        icon = Icons.Default.Security,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "连接加密",
-                        supporting = when (uiState.connectedTransportSecurity) {
-                            TransportSecurity.PLAINTEXT -> "未加密（HTTP），传输内容可能被同网络的人看到"
-                            TransportSecurity.TLS_PINNED -> "已加密，且证书指纹与首次连接时一致"
-                            TransportSecurity.TLS_SYSTEM_TRUST -> "已加密（系统信任的证书）"
-                            null -> "未连接"
-                        },
-                        icon = Icons.Default.Shield,
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsListItem(
-                        headline = "配对信息",
-                        supporting = uiState.pairingSummary ?: "当前 Core 没有提供配对信息",
-                        icon = Icons.Default.Key,
-                    )
-                }
-            }
-
-            val nativeState = uiState.nativeAgentsState
-            if (uiState.isGatewayConnected && nativeState?.supported == true) {
-                SectionLabel("已接入的 Agent")
-                SettingsSectionCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                        if (nativeState.agents.isEmpty()) {
-                            SettingsListItem(
-                                headline = "未发现已接入的 Agent",
-                                supporting = "此 OAI Core 尚未接入任何 Agent，请在服务端配置",
-                                icon = Icons.Default.Hub,
-                            )
-                        } else {
-                            nativeState.agents.forEachIndexed { index, agent ->
-                                if (index > 0) {
-                                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                }
-                                val isSelected = agent.id == nativeState.selectedAgentId
-                                SettingsListItem(
-                                    headline = agent.name,
-                                    supporting = "${agent.kind} · " +
-                                        (if (agent.sessionScope == "account") "账号隔离" else "共享实例") +
-                                        if (isSelected) "（当前使用中）" else "",
-                                    icon = if (isSelected) Icons.Default.Check else Icons.Default.Hub,
-                                    tone = if (isSelected) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
-                                    onClick = { onSelectAgent(agent.id) },
-                                    trailing = {
-                                        Surface(
-                                            shape = RoundedCornerShape(AppRadius.ExtraSmall),
-                                            color = if (agent.online) MaterialTheme.colorScheme.secondaryContainer
-                                            else MaterialTheme.colorScheme.surfaceContainerHighest,
-                                        ) {
-                                            Text(
-                                                text = if (agent.online) "在线" else "离线",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (agent.online) MaterialTheme.colorScheme.onSecondaryContainer
-                                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
-                                            )
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsListItem(
-                            headline = "刷新 Agent 列表",
-                            supporting = "从 OAI Core 获取最新的 Agent 在线状态与能力",
-                            icon = Icons.Default.Refresh,
-                            onClick = onRefreshAgents,
-                        )
-                    }
-                }
-            }
-
-            if (uiState.isGatewayConnected) {
-                SectionLabel("这个 Core 支持的功能")
-                NegotiatedCapabilitiesGroup(conversationUi = uiState.conversationUi)
-                SettingsSectionCard {
-                    SettingsListItem(
-                        headline = "设备端任务执行",
-                        supporting = when {
-                            uiState.deviceRequestChannel == null -> "当前 Core 不会把任务下发到手机执行"
-                            uiState.pluginRuntimesWired -> "已支持：Core 可以把任务下发到手机执行"
-                            else -> "Core 支持下发，但插件环境未就绪"
-                        },
-                        icon = Icons.Default.Security,
-                    )
-                }
-            }
-
-            if (uiState.hasLocalSession) {
-                SectionLabel("账号与会话")
-                SettingsSectionCard {
-                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                        if (uiState.isGatewayConnected) {
-                            SettingsListItem(
-                                headline = "刷新登录凭据",
-                                supporting = if (uiState.isRefreshingSession) {
-                                    "正在向 Gateway 申请新的凭据…"
-                                } else {
-                                    "登录即将过期时，可在这里提前换取新的凭据"
-                                },
-                                icon = Icons.Default.Refresh,
-                                enabled = !uiState.isRefreshingSession,
-                                onClick = onRefreshSession,
-                            )
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        }
-                        SettingsListItem(
-                            headline = "退出登录",
-                            supporting = "只退出当前账号，保留设备配对，下次登录无需重新配对",
-                            icon = Icons.Default.Lock,
-                            onClick = onLogout,
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsListItem(
-                            headline = "切换账号",
-                            supporting = "从已保存的账号中重新选择一个登录",
-                            icon = Icons.Default.Person,
-                            onClick = onSwitchAccount,
-                        )
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        SettingsListItem(
-                            headline = "解除设备配对",
-                            supporting = "撤销设备配对凭据；插件开关与系统权限保持独立管理",
-                            icon = Icons.Default.DeleteForever,
-                            tone = SettingsTone.DANGER,
-                            onClick = onRequestUnpair,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
 
 /**
  * 子页面 3: 授权管理。
@@ -1354,69 +1060,6 @@ private fun GatewaySubScreen(
  * 3. 短信读取由插件管理里的本机能力开关控制；系统权限仍由 Android 单独确认，
  *    因此这一行跳转到插件管理，不在此处重复提供一个开关。
  */
-@Composable
-private fun PairingSubScreen(
-    onBack: () -> Unit,
-    presentation: SettingsPresentation,
-    onNavigate: (String) -> Unit,
-) {
-    SettingsPageScaffold(
-        title = "授权管理",
-        presentation = presentation,
-        onBack = onBack,
-    ) { padding ->
-        SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("手机能力授权")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    Text(
-                        text = "手机统一管理设备能力总开关与授权模式，离线也可设置。Android 系统权限、查询范围和主动推送各自独立。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsNavigationItem(
-                        headline = "全局设备能力",
-                        supporting = "按每项能力设置总开关和授权模式；切换 Core、账号或 Agent 后继续使用",
-                        icon = Icons.Default.Sms,
-                        onClick = { onNavigate(SettingsRoutes.PLUGINS) },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsNavigationItem(
-                        headline = "短信与通知主动推送",
-                        supporting = "自主设置内容范围、推送目标与离线保留时间；默认关闭",
-                        icon = Icons.Default.Notifications,
-                        onClick = { onNavigate(SettingsRoutes.DEVICE_PUSH) },
-                    )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    SettingsNavigationItem(
-                        headline = "屏幕读取与控制",
-                        supporting = "按需授予读取界面、截取画面、操作其他应用；随时可以结束",
-                        icon = Icons.Default.Visibility,
-                        onClick = { onNavigate(SettingsRoutes.SCREEN_CAPABILITY) },
-                    )
-                }
-            }
-
-            SectionLabel("授权如何生效")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    Text(
-                        text = "每项设备能力可选择每次手动、允许只读或自动允许，新能力默认每次手动。系统权限和屏幕捕获的系统同意仍分别生效；短信、通知主动推送另行配置。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "这台手机统一保存各项能力的开关与授权模式。切换 Core、账号或 Agent 不会重置；退出全部账号后暂停采集、执行和推送。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-    }
-}
 
 /**
  * 子页面：屏幕读取与控制。
@@ -1426,7 +1069,6 @@ private fun PairingSubScreen(
  *
  * 状态来自 `ScreenHostRegistry.current?.status()` —— 只读诊断，不会创建许可。
  */
-@Composable
 private fun ScreenCapabilitySubScreen(
     onBack: () -> Unit,
     presentation: SettingsPresentation,
@@ -1521,99 +1163,8 @@ private fun ScreenCapabilitySubScreen(
 }
 
 /** 子页面 4: 安全策略说明与紧急停止。 */
-@Composable
-private fun SecuritySubScreen(
-    uiState: SettingsUiState,
-    onBack: () -> Unit,
-    presentation: SettingsPresentation,
-    onToggleTrustMode: (Boolean) -> Unit,
-    onRequestEmergencyStop: () -> Unit,
-) {
-    SettingsPageScaffold(
-        title = "安全策略",
-        presentation = presentation,
-        onBack = onBack,
-    ) { padding ->
-        SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("插件运行方式")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsSwitchItem(
-                        headline = "开发者信任模式",
-                        supporting = if (uiState.isTrustModeEnabled) {
-                            "已开启：插件可以直接控制系统界面，隔离保护已放宽，请只在信任插件来源时使用"
-                        } else {
-                            "已关闭：插件在隔离环境中运行，无法控制系统界面（推荐）"
-                        },
-                        checked = uiState.isTrustModeEnabled,
-                        enabled = uiState.allowDeveloperTrustMode && !uiState.isEmergencyStopped,
-                        icon = if (uiState.isTrustModeEnabled) Icons.Default.LockOpen else Icons.Default.Lock,
-                        tone = if (uiState.isTrustModeEnabled) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
-                        onCheckedChange = onToggleTrustMode,
-                    )
-                    if (!uiState.allowDeveloperTrustMode) {
-                        Text(
-                            text = "当前这个版本（应用商店版本）不允许开启开发者信任模式。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall),
-                        )
-                    }
-                }
-            }
-
-            // 这两项是设计说明，不是运行时数据——不用 ListItem 的「条目」造型
-            // 伪装成可监控的指标，只以说明文本呈现。
-            SectionLabel("插件能做什么")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    Text(
-                        text = "隔离运行",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "插件运行在独立的受限环境中，有明确的资源上限，不能偷偷弹出界面，也不能绕过应用直接调用系统能力。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "权限由手机掌握",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = "插件能做什么由应用本身固定定义，插件无法自行扩权。你授予的每一项权限、每一次插件调用都会写进操作记录，事后可以逐条核对。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            SectionLabel("紧急停止")
-            // 卡面保持中性：DANGER 只在徽标与文案上表达，否则同色的徽标会"消失"在卡面里。
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    SettingsListItem(
-                        headline = "紧急停止所有插件",
-                        supporting = if (uiState.isEmergencyStopped) {
-                            "已停止，共停用 ${uiState.emergencyStoppedCount} 个插件。必须重启应用才能恢复。"
-                        } else {
-                            "立即停用全部插件并关闭信任模式，需要重启应用才能恢复。"
-                        },
-                        icon = Icons.Default.Warning,
-                        tone = SettingsTone.DANGER,
-                        enabled = !uiState.isEmergencyStopped,
-                        onClick = onRequestEmergencyStop,
-                    )
-                }
-            }
-        }
-    }
-}
 
 /** 子页面 5: 授权与调用记录。 */
-@Composable
 private fun AuditLogSubScreen(
     uiState: SettingsUiState,
     onBack: () -> Unit,
@@ -1676,7 +1227,6 @@ private fun AuditLogSubScreen(
  * 审计流水单行：沿用分组卡片造型（首尾行外圆角、中间行平角），
  * 但每一行都是独立列表项——滚动时只组合可见行。
  */
-@Composable
 private fun AuditLogRow(line: String, first: Boolean, last: Boolean) {
     val shape = RoundedCornerShape(
         topStart = if (first) AppRadius.Large else 0.dp,
@@ -1708,7 +1258,6 @@ private fun AuditLogRow(line: String, first: Boolean, last: Boolean) {
 }
 
 /** 分组标题：M3 设置页规范（labelMedium + onSurfaceVariant，不抢正文注意力）。 */
-@Composable
 private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
