@@ -98,3 +98,11 @@ Android 明细：control-ports 38、capability-ports 67、screen-control 41、de
 补充执行了安装包矩阵：不设置 PYTHONPATH/HERMES_SDK_ROOT，在独立的 Python 3.11.17、3.12.15 虚拟环境安装同一新构建 wheel，仅加入声明的 Core 依赖和 CI 测试依赖。两者的 `verify_distribution.py` 与 `independent_core_contract.py` 均通过，完整 Core/安装测试各 `708 passed, 11 skipped, 6 subtests passed`，修复过的四个解释器用例全部实际执行。宿主 SDK 与本地文件系统导致的跳过保持可见。3.11 复核前还发现旧工具链 bin/python 别名为非可执行数据文件，已在独立目录复制有效二进制后重新建环境并通过，没有修改共享工具链；此前的准备/运行失败日志保留。新提交的远端 CI 结果仍需按 SHA 单独核对。
 
 上轮后台已收集 CI 结果，但恢复同一线程时遇到 active writer 冲突，未成功执行后续检查。续查现改为独立临时会话；初始化探针已实际返回 `BACKGROUND_CHECK_READY`，退出码 0，后续仍按固定 SHA 收集 CI 与审查结果。
+
+### 后续 Android 任务的凭据测试同步修补
+
+`0fb0339a803dcd069cac8ba8f37863d38948797e` 的远端 Core 3.11、Core 3.12、Hermes、DSH、APK、签名包均通过。Android 的 496 项 FullDebug 定向测试中一项失败：`GatewaySessionRefreshTest.aStoppedBackgroundRecoveryPersistsALateRotationWithoutPublishingAConnection`。CI XML 确认为期望 `refresh_2`、实际读取到 `refresh_1`。
+
+测试原来释放保存闩锁后等待 `phase !is Negotiating`，但恢复入口早已将呈现状态设为 Initializing/Reconnecting，该条件在真正保存前就成立，无法证明任务完成。`persistRotation` 使用 NonCancellable + IO，原恢复 Job 要等提交和 finally 收尾完成才进入 isCompleted；这次修改只校准测试的同步边界，没有更改凭据、取消或连接的产品行为。
+
+修补在保存闩锁到达后固定原恢复 Job；取消后先明确断言“已取消但尚未完成、旧凭据仍在”，释放闩锁后等待该 Job 真正完成，再保留新凭据已落盘、后台连接未复活、token_2 没有开启事件连接及前台继续轮换的所有断言。没有增加超时或配置重试。定向运行完整 `GatewaySessionRefreshTest`：49 项通过、零失败，148.96 秒（含增量测试编译）。只改变了测试同步，先前 Core/安装、Hermes 与产品源码保持。新的 Android CI 必须按后续提交单独核对。
