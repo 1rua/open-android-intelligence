@@ -305,11 +305,53 @@ fun SettingsScreen(
             )
         }
 
+        // PAIRING 路由已废弃,重定向到设备能力页面
         composable(SettingsRoutes.PAIRING) {
-            PairingSubScreen(
+            // 兼容旧路由:重定向到新的设备能力与授权页面
+            LaunchedEffect(Unit) {
+                navController.navigate(com.openandroidintelligence.mobile.settings.SettingsRoutes.CAPABILITIES) {
+                    popUpTo(SettingsRoutes.PAIRING) { inclusive = true }
+                    launchSingleTop = true
+                }
+            }
+        }
+
+        // 新路由:设备能力与授权(六大分类之一)
+        composable(com.openandroidintelligence.mobile.settings.SettingsRoutes.CAPABILITIES) {
+            CapabilityAuthSettingsScreen(
                 onBack = { navController.popBackStack() },
                 presentation = presentation,
-                onNavigate = { route -> navController.navigate(route) { launchSingleTop = true } },
+                onNavigateToScreenCapability = { navController.navigate(SettingsRoutes.SCREEN_CAPABILITY) { launchSingleTop = true } },
+                onNavigateToPushSettings = { navController.navigate(SettingsRoutes.DEVICE_PUSH) { launchSingleTop = true } },
+                onNavigateToPlugins = { navController.navigate(SettingsRoutes.PLUGINS) { launchSingleTop = true } },
+                onNavigateToNotificationCollection = { navController.navigate(SettingsRoutes.NOTIFICATIONS) { launchSingleTop = true } },
+            )
+        }
+
+        // 新路由:通知与提醒(六大分类之一)
+        composable(com.openandroidintelligence.mobile.settings.SettingsRoutes.NOTIFICATIONS + "_new") {
+            NotificationSettingsScreen(
+                uiState = uiState,
+                onBack = { navController.popBackStack() },
+                presentation = presentation,
+                onSetNotificationsGrant = setReplyNotifications,
+                onNavigateToNotificationCollection = { navController.navigate(SettingsRoutes.NOTIFICATIONS) { launchSingleTop = true } },
+            )
+        }
+
+        // 新路由:高级设置与关于(六大分类之一)
+        composable(com.openandroidintelligence.mobile.settings.SettingsRoutes.ADVANCED) {
+            AdvancedSettingsScreen(
+                onBack = { navController.popBackStack() },
+                presentation = presentation,
+                onNavigateToAppUpdate = { navController.navigate(SettingsRoutes.APP_UPDATES) { launchSingleTop = true } },
+                onOpenOnboarding = {
+                    (context.applicationContext as? OpenAndroidIntelligenceApplication)?.let { app ->
+                        app.onboardingPreferences.startReplay()
+                        onBack()
+                    }
+                },
+                onOpenAbout = { /* TODO: 导航到关于页面 */ },
             )
         }
 
