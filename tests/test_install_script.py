@@ -329,6 +329,8 @@ def test_autostart_configuration_uses_real_admin_and_platform_files(deployment, 
     scripts_runtime._configure_service(root, store, handle)
     if platform == 'linux':
         files = [home / '.config/systemd/user/oai-core.service', home / '.config/autostart/oai-core.desktop']
+        assert f'WorkingDirectory={root}\n' in files[0].read_text()
+        assert f'WorkingDirectory="{root}"' not in files[0].read_text()
     elif platform == 'darwin':
         files = [home / 'Library/LaunchAgents/com.openandroidintelligence.core.plist']
     else:
