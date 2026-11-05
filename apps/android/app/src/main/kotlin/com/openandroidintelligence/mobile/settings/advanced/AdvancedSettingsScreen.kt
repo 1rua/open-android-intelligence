@@ -74,7 +74,7 @@ internal fun AdvancedSettingsScreen(
             SettingsSectionCard {
                 SettingsNavigationItem(
                     headline = "新手引导与部署教程",
-                    supporting = "重新查看 Gateway 部署步骤与权限说明",
+                    supporting = "查看 Gateway 部署教程与权限说明",
                     onClick = onReplayOnboarding,
                 )
                 SettingsNavigationItem(headline = "项目文档", onClick = { openUrl(DOCUMENTATION_URL) })

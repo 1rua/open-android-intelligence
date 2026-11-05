@@ -143,7 +143,7 @@ internal fun MessageProcessingEditor(
                 Text("未选择 Core；可编辑全局默认。", style = MaterialTheme.typography.bodySmall)
             }
             Text(
-                "0 秒立即发送，不合并消息。设置应用于新批次；最长等待 30 秒，每批最多 20 条。",
+                "0 秒直接发送；大于 0 秒合并短时间连续消息（最长 30 秒，最多 20 条）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

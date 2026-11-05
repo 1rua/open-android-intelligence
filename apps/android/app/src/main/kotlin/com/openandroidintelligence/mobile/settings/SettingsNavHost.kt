@@ -297,11 +297,11 @@ internal fun SettingsNavHost(
     // Register after NavHost only for same-depth shortcuts; normal predictive back stays with NavHost.
     BackHandler(enabled = shortcutSources.isNotEmpty()) { back() }
     if (trustDialog) AlertDialog(onDismissRequest = { trustDialog = false }, title = { Text("开启开发者信任模式？") },
-        text = { Text("原生插件与本应用共享进程和身份，可读取本应用拥有的权限和能够访问的全部数据。仅在你信任插件来源时开启。\n\n${DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT}") },
+        text = { Text("原生插件将使用本应用的权限并访问全部数据。请仅在信任插件来源时开启。\n\n${DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT}") },
         confirmButton = { TextButton(onClick = { viewModel.enableTrustMode(); trustDialog = false }) { Text("我已知晓并开启") } },
         dismissButton = { TextButton(onClick = { trustDialog = false }) { Text("取消") } })
     if (emergencyDialog) AlertDialog(onDismissRequest = { emergencyDialog = false }, title = { Text("紧急停止所有插件？") },
-        text = { Text("立即隔离已启用插件、关闭开发者信任模式并撤销全部临时授权，需要重启应用才能恢复。已保存的能力配置和系统权限不变。") },
+        text = { Text("将立即停止所有插件并撤销临时授权，需重启应用恢复。保存的设置与系统权限不变。") },
         confirmButton = { TextButton(onClick = { viewModel.emergencyStop(); emergencyDialog = false }) { Text("确认停止", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { emergencyDialog = false }) { Text("取消") } })
     if (unpairDialog || uiState.unpairOperation !is LocalOperationState.Idle) {
@@ -310,9 +310,9 @@ internal fun SettingsNavHost(
         AlertDialog(onDismissRequest = { if (!running) { unpairDialog = false; viewModel.dismissUnpairOperation() } },
             title = { Text(if (operation is LocalOperationState.Completed) "设备配对已解除" else "解除设备配对？") },
             text = { Text(when (operation) {
-                LocalOperationState.Idle -> "将向 Core 撤销当前设备配对凭据，断开连接，并清理当前账号范围的本机会话、附件缓存和恢复记录。全局能力策略、插件安装及 Android 系统权限保留。"
-                LocalOperationState.Running -> "正在请求 Core 撤销配对，请等待真实处理结果…"
-                LocalOperationState.Completed -> "Core 已确认撤销，当前账号范围的本机资料已按原流程清理。"
+                LocalOperationState.Idle -> "将取消设备配对并断开连接，清理手机上的本地聊天与缓存数据。系统权限与全局功能设置保留。"
+                LocalOperationState.Running -> "正在请求取消配对，请稍候…"
+                LocalOperationState.Completed -> "配对已解除，手机端数据已清理。"
                 is LocalOperationState.Failed -> operation.message
             }) },
             confirmButton = { TextButton(enabled = !running, onClick = {

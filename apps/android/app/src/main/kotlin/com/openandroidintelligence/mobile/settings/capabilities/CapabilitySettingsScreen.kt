@@ -99,7 +99,7 @@ private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime:
     var stopError by remember { mutableStateOf<String?>(null) }
     SectionLabel("停止屏幕请求")
     SettingsSectionCard {
-        Text("停止将撤销全部临时授权（包括非屏幕能力），并停止当前屏幕请求；长期设置不变。")
+        Text("停止后将撤销所有临时授权并终止屏幕请求，长期设置保持不变。")
         stopError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         TextButton(onClick = { confirmStop = true }, modifier = Modifier.testTag("stop-screen-requests")) {
             Text("立即停止当前屏幕请求")
@@ -107,7 +107,7 @@ private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime:
     }
     if (confirmStop) {
         AlertDialog(onDismissRequest = { confirmStop = false }, title = { Text("停止当前屏幕请求") },
-            text = { Text("这会撤销全部能力的临时授权，并停止当前屏幕请求。长期能力设置和系统权限不变。") },
+            text = { Text("将撤销所有临时授权并终止当前的屏幕请求，功能设置和系统权限不受影响。") },
             confirmButton = {
                 TextButton(onClick = {
                     environment.pairingGrants.revokeTemporaryApprovals()
@@ -296,13 +296,13 @@ private fun entryUsesNotificationPolicy(pluginId: String, capability: String): B
 
 internal fun localAvailabilityLabel(status: String?, reason: String?): String {
     val label = when (status) {
-        "READY" -> "已就绪，实际请求仍需符合授权模式和数据范围"
+        "READY" -> "已就绪"
         "PLUGIN_DISABLED" -> "插件未启用"
-        "LOCAL_GRANT_REQUIRED" -> "本机授权未满足"
-        "ANDROID_PERMISSION_REQUIRED" -> "Android 系统许可或服务未就绪"
-        "PROVIDER_NOT_SELECTED" -> "尚未选择此提供者"
-        "PROVIDER_UNAVAILABLE" -> "本机服务未就绪"
-        else -> "状态暂不可用"
+        "LOCAL_GRANT_REQUIRED" -> "未获手机授权"
+        "ANDROID_PERMISSION_REQUIRED" -> "系统权限或服务未就绪"
+        "PROVIDER_NOT_SELECTED" -> "尚未选择提供者"
+        "PROVIDER_UNAVAILABLE" -> "手机服务未就绪"
+        else -> "暂不可用"
     }
     return if (reason.isNullOrBlank()) label else "$label；${deviceCapabilityReasonLabel(reason)}"
 }
@@ -316,11 +316,11 @@ private fun GrantRequirementRow(
 ) {
     Text(requirement.label, style = MaterialTheme.typography.titleSmall)
     Text(when (state) {
-        DeviceCapabilityGrantState.GRANTED -> "系统许可或服务当前可用"
-        DeviceCapabilityGrantState.NOT_REQUESTED -> "系统权限尚未授予"
-        DeviceCapabilityGrantState.DENIED -> "系统权限被拒绝"
-        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需要在系统设置中开启或连接服务"
-        DeviceCapabilityGrantState.ASKED_ON_USE -> "需要 Android 系统屏幕捕获同意"
+        DeviceCapabilityGrantState.GRANTED -> "系统权限或服务已就绪"
+        DeviceCapabilityGrantState.NOT_REQUESTED -> "权限尚未授予"
+        DeviceCapabilityGrantState.DENIED -> "权限被拒绝"
+        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需在系统设置中开启"
+        DeviceCapabilityGrantState.ASKED_ON_USE -> "需要屏幕截取授权"
     })
     Text(requirement.purpose, style = MaterialTheme.typography.bodySmall)
     if (state != DeviceCapabilityGrantState.GRANTED ||
@@ -337,7 +337,7 @@ private fun GrantRequirementRow(
         TextButton(onClick = onOpenAppSettings) { Text("打开应用权限设置") }
     }
     if (requirement.grantKind == DeviceCapabilityGrantKind.MEDIA_PROJECTION) {
-        Text("也可以使用无障碍截图；系统捕获同意与本机能力授权独立。", style = MaterialTheme.typography.bodySmall)
+        Text("也可以使用无障碍截图；截屏授权与功能授权独立。", style = MaterialTheme.typography.bodySmall)
     }
 }
 

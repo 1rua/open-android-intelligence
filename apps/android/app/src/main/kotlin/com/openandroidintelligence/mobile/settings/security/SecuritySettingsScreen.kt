@@ -43,30 +43,30 @@ internal fun SecuritySettingsScreen(
                     checked = uiState.isTrustModeEnabled,
                     enabled = uiState.allowDeveloperTrustMode && !uiState.isEmergencyStopped,
                     supporting = when {
-                        !uiState.allowDeveloperTrustMode -> "当前发行版不允许开启"
-                        uiState.isEmergencyStopped -> "已紧急停止，重启应用后才能恢复"
-                        uiState.isTrustModeEnabled -> "允许原生插件在本应用进程中运行，可访问本应用拥有的权限和数据"
-                        else -> "原生插件未获准运行；隔离插件仍按本机能力策略执行"
+                        !uiState.allowDeveloperTrustMode -> "当前版本不支持"
+                        uiState.isEmergencyStopped -> "已紧急停止，重启恢复"
+                        uiState.isTrustModeEnabled -> "原生插件可使用应用的权限和数据"
+                        else -> "原生插件未开启；其他插件正常受控运行"
                     },
                     onCheckedChange = onToggleTrustMode,
                 )
-                SettingsListItem("插件运行环境", supporting = if (uiState.pluginRuntimesWired) "运行时已接入；各项能力仍需满足本机策略与系统权限" else "此版本未接入插件运行时")
+                SettingsListItem("插件运行环境", supporting = if (uiState.pluginRuntimesWired) "插件服务正常" else "未启用插件服务")
                 Text(
-                    "设备访问关系、能力策略和 Android 系统权限分别检查。关闭开发者信任模式不会取消已经允许的隔离插件能力。",
+                    "安全规则与系统权限独立检查。关闭信任模式不影响已允许功能。",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(Dimensions.SpaceSmall),
                 )
             }
-            SectionLabel("操作记录")
+            SectionLabel("使用记录")
             SettingsSectionCard {
-                SettingsNavigationItem("授权与调用记录", supporting = "查看授权变更、敏感操作和执行结果", onClick = onOpenAudit)
+                SettingsNavigationItem("授权与调用记录", supporting = "查看重要操作与执行结果", onClick = onOpenAudit)
             }
             SectionLabel("紧急停止")
             SettingsSectionCard {
                 SettingsListItem(
                     "紧急停止所有插件",
-                    supporting = if (uiState.isEmergencyStopped) "已停止 ${uiState.emergencyStoppedCount} 个插件，需要重启应用才能恢复" else "立即隔离已启用插件、关闭信任模式并撤销临时授权，需要重启应用恢复",
+                    supporting = if (uiState.isEmergencyStopped) "已停止 ${uiState.emergencyStoppedCount} 个插件，重启恢复" else "立即停用所有插件并撤销临时授权，重启恢复",
                     enabled = !uiState.isEmergencyStopped,
                     tone = SettingsTone.DANGER,
                     onClick = onRequestEmergencyStop,
@@ -86,7 +86,7 @@ internal fun AuditSettingsScreen(uiState: SettingsUiState, presentation: Setting
         ) {
             item { SectionLabel("全部记录（${uiState.auditEvents.size} 条）") }
             if (uiState.auditEvents.isEmpty()) item {
-                SettingsSectionCard { Text("还没有记录。授权变更和插件调用会显示在这里。") }
+                SettingsSectionCard { Text("暂无记录。") }
             }
             itemsIndexed(uiState.auditEvents) { _, event ->
                 SettingsSectionCard {
