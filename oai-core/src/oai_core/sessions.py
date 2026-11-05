@@ -156,6 +156,8 @@ class AgentRegistry:
         self._core = core
         self._storage_root = Path(storage_root) if storage_root is not None else Path(".")
         self._config_path = Path(config_path) if config_path is not None else None
+        self._hermes_restarted = False
+        self._provisioned_host_files = False
         for adapter in adapters or []:
             self.register(adapter)
         self.operations = AsyncNativeOperations(operations_path)
@@ -302,8 +304,85 @@ class AgentRegistry:
                 supported.add("agent-approval-cards-v1")
         return frozenset(supported)
 
+    async def _autodiscover_host_agents(self) -> None:
+        if self._core is None or self._config_path is None or not self._config_path.is_file():
+            return
+        registration = getattr(self._core, "agent_registration", None)
+        if registration is None:
+            return
+        if "PYTEST_CURRENT_TEST" in os.environ and os.environ.get("OAI_ENABLE_HOST_AUTODISCOVERY_IN_TESTS") != "1":
+            return
+        from .configuration import (
+            bind_host_hermes_owner, detect_host_agents, owned_bytes, provision_host_agent_files,
+            restart_hermes_service_if_active,
+        )
+
+        detected = detect_host_agents()
+        if not detected:
+            return
+        registered_kinds = {
+            item.get("kind") or item.get("type") for item in registration.entries() if isinstance(item, dict)
+        }
+        configured_kinds = {a.descriptor().get("kind") for a in self._adapters.values()}
+        existing_kinds = registered_kinds | configured_kinds
+        if "hermes" in existing_kinds and not registration.mappings("hermes"):
+            bind_host_hermes_owner(registration, {"id": "hermes", "type": "hermes"}, registration.identity_store)
+        missing_kinds = set(detected) - existing_kinds
+        if not missing_kinds:
+            return
+        root = self._config_path.resolve().parent
+        candidates_dir = root / "runtime" / "agent-candidates"
+        if not self._provisioned_host_files or any(not (candidates_dir / f"{k}.json").is_file() for k in missing_kinds):
+            manifests = await asyncio.to_thread(
+                provision_host_agent_files, root, registration.instance_id, registration.core_signing_key
+            )
+            self._provisioned_host_files = True
+        else:
+            manifests = []
+            for kind in sorted(missing_kinds):
+                raw = owned_bytes(candidates_dir / f"{kind}.json")
+                if raw is not None:
+                    try:
+                        manifests.append(json.loads(raw))
+                    except Exception:
+                        pass
+        changed = False
+        for entry in manifests:
+            kind = entry.get("type")
+            if kind not in missing_kinds or self.get_factory(kind) is None:
+                continue
+            try:
+                if kind == "hermes":
+                    try:
+                        await registration.register_host_candidate(entry, self._storage_root, timeout_seconds=1.5)
+                    except Exception:
+                        if not self._hermes_restarted:
+                            self._hermes_restarted = True
+                            if await asyncio.to_thread(restart_hermes_service_if_active):
+                                for _ in range(10):
+                                    await asyncio.sleep(0.5)
+                                    try:
+                                        await registration.register_host_candidate(entry, self._storage_root, timeout_seconds=1.5)
+                                        break
+                                    except Exception:
+                                        continue
+                                else:
+                                    raise
+                        else:
+                            raise
+                    bind_host_hermes_owner(registration, entry, registration.identity_store)
+                    changed = True
+                else:
+                    await registration.register_host_candidate(entry, self._storage_root, timeout_seconds=1.0)
+                    changed = True
+            except Exception as err:
+                logger.debug("Automatic host agent discovery skipped '%s': %s", entry.get("id"), err)
+        if changed:
+            self.sync_registered()
+
     async def discover(self) -> list[dict[str, Any]]:
         self.sync_registered()
+        await self._autodiscover_host_agents()
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
             try:
                 online = bool(await asyncio.wait_for(adapter.status(), timeout=5))

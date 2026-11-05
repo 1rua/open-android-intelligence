@@ -262,6 +262,30 @@ def test_authenticated_linux_service_setup_with_fake_systemctl(tmp_path, monkeyp
         store.close()
 
 
+def test_configure_service_rotates_legacy_service_and_desktop_files(tmp_path, monkeypatch):
+    root = tmp_path / "installation"
+    root.mkdir()
+    store, _ = bootstrap(root)
+    (root / "start-core.sh").write_text("# synthetic\n")
+    handle = store.begin_management("admin", "synthetic-password")
+    unit = Path.home() / ".config/systemd/user/oai-core.service"
+    unit.parent.mkdir(parents=True, exist_ok=True)
+    unit.write_text(f"[Unit]\nDescription=Legacy OAI Core\n[Service]\nExecStart={root}/start-core.sh\n")
+    desktop = Path.home() / ".config/autostart/oai-core.desktop"
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    desktop.write_text(f"[Desktop Entry]\nType=Application\nExec={root}/start-core.sh\n")
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/synthetic/systemctl")
+    monkeypatch.setattr(runtime.subprocess, "run", lambda args, **kwargs: None)
+    try:
+        runtime._configure_service(root, store, handle)
+        assert f'ExecStart="{root}/start-core.sh"' in unit.read_text()
+        assert list(unit.parent.glob("oai-core.service.previous-*"))
+        assert f'Exec="{root}/start-core.sh"' in desktop.read_text()
+        assert list(desktop.parent.glob("oai-core.desktop.previous-*"))
+    finally:
+        store.close()
+
+
 def test_uninstall_real_shell_requires_admin_and_preserves_data(tmp_path, monkeypatch):
     import errno
     import pty

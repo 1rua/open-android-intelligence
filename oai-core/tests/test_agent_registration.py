@@ -454,3 +454,92 @@ async def test_host_candidate_provisioning_and_auto_connect(tmp_path, monkeypatc
             backend.close()
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_discover_auto_registers_symlinked_hermes_and_syncs_venv(tmp_path, monkeypatch, hermes_bridge):
+    import os
+    from oai_core import configuration
+    from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
+    from oai_core.identity import IdentityStore, issue_bootstrap_proof
+    from oai_hermes_adapter.backend import SessionBackend
+
+    core_dir = tmp_path / "core"
+    storage = core_dir / "runtime" / "accounts"
+    key_file = core_dir / "runtime" / "secrets" / "core-master-key"
+    identity_db = core_dir / "runtime" / "security" / "identity.sqlite"
+    key_file.parent.mkdir(parents=True, mode=0o700)
+    create_master_key_file(key_file)
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"bootstrap\n")
+        os.close(write_fd)
+        write_fd = -1
+        proof = issue_bootstrap_proof(identity_db, storage, confirmation_fd=read_fd)
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+    store = IdentityStore(identity_db, key_store=LocalMasterKeyStore(key_file), create=True, bootstrap_proof=proof)
+    try:
+        admin = store.bootstrap("alice", "synthetic-password-123", confirmed=True)
+        config_path = core_dir / "core.json"
+        config_path.write_text(json.dumps({
+            "storageRoot": "runtime/accounts",
+            "masterKeyFile": "runtime/secrets/core-master-key",
+            "listen": {"host": "127.0.0.1", "port": 11451},
+            "agents": [],
+        }))
+        fake_home = tmp_path / "fake-home"
+        fake_home.mkdir(mode=0o700)
+        real_hermes = tmp_path / "real-hermes"
+        gateway_accounts = real_hermes / "open-android-intelligence-gateway" / "accounts"
+        gateway_accounts.mkdir(parents=True, mode=0o700)
+        (fake_home / ".hermes").symlink_to(real_hermes)
+        site_pkg = real_hermes / "hermes-agent" / "venv" / "lib" / "python3.11" / "site-packages"
+        (site_pkg / "oai_hermes_adapter").mkdir(parents=True)
+        (site_pkg / "oai_hermes_adapter" / "bridge.py").write_text("# stale\n")
+        from oai_core.gateway.account_paths import account_paths
+        alice_db = account_paths(gateway_accounts, "alice").database
+        alice_db.parent.mkdir(parents=True, mode=0o700)
+        sqlite3.connect(alice_db).close()
+        token = "runtime-hermes-token-" + "y" * 24
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("DSH_HOME", str(tmp_path / "absent-dsh"))
+        monkeypatch.setenv("OAI_ENABLE_HOST_AUTODISCOVERY_IN_TESTS", "1")
+        handle = store.begin_management("alice", "synthetic-password-123")
+        instance_id = store.require_management(handle, "agents.manage")["instanceId"]
+        signing_key = store.key_store.instance_signing_key(instance_id)
+        trusted_file = gateway_accounts.parent / "trusted-cores.json"
+        configuration._ensure_hermes_trusted_core(gateway_accounts, instance_id, signing_key)
+        hermes_key = tmp_path / "hermes-master.key"
+        create_master_key_file(hermes_key)
+        backend = SessionBackend(gateway_accounts, ["alice"], secret_store=LocalMasterKeyStore(hermes_key))
+        try:
+            spaces = hermes_bridge.AutoAccountSpaces(gateway_accounts, backend, {}, trusted_file=trusted_file)
+            app = hermes_bridge.create_hermes_bridge_app(Host(), token, ["alice"], instance_id="hermes", auto_spaces=spaces)
+            async with TestClient(TestServer(app)) as server:
+                port = server.server.port
+                (real_hermes / ".env").write_text(
+                    f"OAI_HERMES_SESSION_TOKEN={token}\n"
+                    f"OAI_HERMES_GATEWAY_ROOT={gateway_accounts}\n"
+                    'OAI_HERMES_ACCOUNTS=["alice"]\n'
+                    f"OAI_HERMES_SESSION_PORT={port}\n"
+                )
+                reg = AgentRegistration(instance_id, store, lambda p: True, lambda f: True,
+                                        create=True, core_signing_key=signing_key)
+                core = SimpleNamespace(agent_registration=reg)
+                registry = build_registry({"storageRoot": str(storage), "_configPath": str(config_path)}, core)
+                try:
+                    discovered = await registry.discover()
+                    assert len(discovered) == 1
+                    assert discovered[0]["id"] == "hermes" and discovered[0]["online"] is True
+                    assert reg.mappings("hermes") == {admin["accountId"]: "alice"}
+                    assert "handshake" in (site_pkg / "oai_hermes_adapter" / "bridge.py").read_text()
+                finally:
+                    await registry.close()
+        finally:
+            backend.close()
+    finally:
+        store.close()

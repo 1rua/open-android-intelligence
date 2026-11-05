@@ -246,6 +246,10 @@ class AgentRegistrationStore:
     def _register_instance(self, handle: str, entry: Mapping[str, Any], secret: str, challenge: str,
                            response: Mapping[str, Any]) -> None:
         self._authorise(handle)
+        self._record_verified_instance(entry, secret, challenge, response)
+
+    def _record_verified_instance(self, entry: Mapping[str, Any], secret: str, challenge: str,
+                                  response: Mapping[str, Any]) -> None:
         manifest = _manifest(entry)
         if response.get("online") is not True or not verify_bridge_proof(
                 secret, challenge, response, instance_id=manifest["instanceId"],
@@ -281,6 +285,10 @@ class AgentRegistrationStore:
     def confirm_mappings(self, handle: str, agent_id: str, accounts: Mapping[str, str],
                          reserved_accounts: Mapping[str, str] | None = None) -> None:
         self._authorise(handle)
+        self._record_mappings(agent_id, accounts, reserved_accounts)
+
+    def _record_mappings(self, agent_id: str, accounts: Mapping[str, str],
+                         reserved_accounts: Mapping[str, str] | None = None) -> None:
         _identity(agent_id)
         if not isinstance(accounts, Mapping) or not accounts:
             raise ValueError("Explicit account mappings required")
@@ -350,6 +358,8 @@ class AgentRegistrationStore:
     def mappings(self, agent_id: str) -> dict[str, str]:
         _identity(agent_id)
         with closing(self._connect()) as db, db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_instances'").fetchone() is None:
+                return {}
             rows = db.execute("SELECT l.account_id,l.native_id FROM agent_account_links l "
                               "JOIN agent_instances i ON i.instance_id=l.instance_id WHERE i.agent_id=?", (agent_id,))
             return {row[0]: row[1] for row in rows}
@@ -502,9 +512,8 @@ class AgentRegistration:
         self.store._authorise(handle)
         return discover_candidates(roots)
 
-    async def register(self, handle: str, entry: Mapping[str, Any], base_dir: Path) -> None:
-        """Challenge the configured live bridge; never accept a caller-supplied proof."""
-        self.store._authorise(handle)
+    async def _handshake(self, entry: Mapping[str, Any], base_dir: Path, *,
+                         timeout_seconds: float = 5.0) -> tuple[dict[str, Any], str, str, Mapping[str, Any]]:
         manifest = _manifest(entry)
         _endpoint(manifest)
         prefix = manifest.get("prefix", "/oai/session-adapter/v1")
@@ -519,7 +528,7 @@ class AgentRegistration:
             body.update(coreInstanceId=self.instance_id, coreSignature=sign_core_request(self.core_signing_key, payload))
         import aiohttp
         try:
-            timeout = aiohttp.ClientTimeout(total=5)
+            timeout = aiohttp.ClientTimeout(total=timeout_seconds)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(manifest["url"].rstrip("/") + prefix + "/handshake",
                                         json=body, headers={"Authorization": "Bearer " + secret},
@@ -543,8 +552,26 @@ class AgentRegistration:
             expected = hmac.new(secret.encode(), b"oai-hermes-core-accepted-v1\0" + _json(payload), hashlib.sha256).hexdigest()
             if "coreSignature" not in body or not hmac.compare_digest(str(result.get("coreProof", "")), expected):
                 raise ValueError("Agent instance handshake failed")
+        return manifest, secret, challenge, result
+
+    async def register(self, handle: str, entry: Mapping[str, Any], base_dir: Path) -> None:
+        """Challenge the configured live bridge; never accept a caller-supplied proof."""
+        self.store._authorise(handle)
+        manifest, secret, challenge, result = await self._handshake(entry, base_dir)
         # Authorization may have expired while waiting for the bridge.
         self.store._register_instance(handle, manifest, secret, challenge, result)
+
+    async def register_host_candidate(self, entry: Mapping[str, Any], base_dir: Path, *,
+                                      timeout_seconds: float = 2.0) -> None:
+        """Register a verified same-host, same-UID candidate discovered by Core."""
+        self.store.create_schema()
+        manifest, secret, challenge, result = await self._handshake(entry, base_dir, timeout_seconds=timeout_seconds)
+        self.store._record_verified_instance(manifest, secret, challenge, result)
+
+    def bind_initial_owner_mapping(self, agent_id: str, account_id: str, native_id: str) -> None:
+        """Bind the single local owner's pre-existing native Hermes account if unmapped."""
+        self.identity_store.account(account_id)
+        self.store._record_mappings(agent_id, {account_id: native_id}, self._legacy_mappings.get(agent_id))
 
     def confirm_mapping(self, handle: str, agent_id: str, account_id: str, native_id: str) -> None:
         # Ensure the account is active; same-name matching is never evidence.

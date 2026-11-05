@@ -301,6 +301,29 @@ def _service_files(root: Path) -> tuple[Path, Path]:
     return home / ".config/systemd/user/oai-core.service", home / ".config/autostart/oai-core.desktop"
 
 
+def _rotate_existing_service_file(store: IdentityStore, handle: str, path: Path, content: str) -> None:
+    if not path.is_file() or path.is_symlink():
+        return
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+            return
+        current = path.read_text(encoding="utf-8", errors="replace")
+        if current == content:
+            return
+        if any(marker in current for marker in (
+            "Open Android Intelligence",
+            "OAI Core",
+            "com.openandroidintelligence.core",
+            "start-core.sh",
+        )):
+            store.require_management(handle, "service")
+            retained = path.with_name(path.name + ".previous-" + secrets.token_hex(8))
+            path.rename(retained)
+    except OSError:
+        return
+
+
 def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
     store.require_management(handle, "service")
     start = root / "start-core.sh"
@@ -318,11 +341,26 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
         desktop_text = ("[Desktop Entry]\nType=Application\nName=OAI Core\n"
                         f"Exec={quoted}\nTerminal=false\nHidden=false\nNoDisplay=false\n"
                         "X-GNOME-Autostart-enabled=true\nX-KDE-autostart-after=panel\n")
+        _rotate_existing_service_file(store, handle, unit, unit_text)
+        _rotate_existing_service_file(store, handle, desktop, desktop_text)
         _write_owned(store, handle, "service", unit, unit_text, 0o644)
         _write_owned(store, handle, "service", desktop, desktop_text, 0o644)
         if shutil.which("systemctl"):
-            for args in (["daemon-reload"], ["enable", "oai-core.service"], ["restart", "oai-core.service"]):
-                _run(store, handle, "service", ["systemctl", "--user", *args], cwd=root)
+            try:
+                for args in (["daemon-reload"], ["enable", "oai-core.service"], ["restart", "oai-core.service"]):
+                    _run(store, handle, "service", ["systemctl", "--user", *args], cwd=root)
+            except subprocess.CalledProcessError:
+                if os.geteuid() == 0 and Path("/etc/systemd/system").is_dir():
+                    sys_unit = Path("/etc/systemd/system/oai-core.service")
+                    _rotate_existing_service_file(store, handle, sys_unit, unit_text)
+                    _write_owned(store, handle, "service", sys_unit, unit_text, 0o644)
+                    try:
+                        for args in (["daemon-reload"], ["enable", "oai-core.service"], ["restart", "oai-core.service"]):
+                            _run(store, handle, "service", ["systemctl", *args], cwd=root)
+                    except subprocess.CalledProcessError:
+                        print("[WARN] systemd 服务启用未完成，可手动运行 start-core.sh 启动。")
+                else:
+                    print("[WARN] systemd 用户服务启用未完成，可手动运行 start-core.sh 启动。")
         else:
             print("未检测到 systemctl；已生成桌面启动项。")
     elif sys.platform == "darwin":
@@ -332,6 +370,7 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
                                   "WorkingDirectory": str(root), "RunAtLoad": True, "KeepAlive": True,
                                   "StandardOutPath": str(root / "runtime/core.log"),
                                   "StandardErrorPath": str(root / "runtime/core.log")}).decode()
+        _rotate_existing_service_file(store, handle, path, content)
         _write_owned(store, handle, "service", path, content, 0o644)
         if shutil.which("launchctl"):
             _run(store, handle, "service", ["launchctl", "load", "-w", str(path)], cwd=root)
@@ -341,6 +380,7 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
             raise ValueError("未找到 Windows 启动目录")
         path = Path(appdata) / "Microsoft/Windows/Start Menu/Programs/Startup/oai-core.vbs"
         content = f'Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run chr(34) & "{start}" & Chr(34), 0\nSet WshShell = Nothing\n'
+        _rotate_existing_service_file(store, handle, path, content)
         _write_owned(store, handle, "service", path, content, 0o644)
     else:
         raise ValueError("当前平台不支持自动服务配置")
