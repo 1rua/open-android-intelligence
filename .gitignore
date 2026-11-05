@@ -8,6 +8,7 @@
 /.codebuddy/
 /.trae/
 .claude/
+.kilo/
 /third_party/tailscale
 node_modules
 **/node_modules
@@ -119,4 +120,3 @@ oai-release.keystore
 /start-core.sh
 /oai-core/dist/
 
-# 通信原始证据保留本地；仅按需显式提交 Markdown 结论文档。

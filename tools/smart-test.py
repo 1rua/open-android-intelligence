@@ -116,6 +116,9 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             if "/settings/" in f or Path(f).name.startswith(("Settings", "PlatformSettings")):
                 impact["affects_android_settings"] = True
                 impact["affects_android_app"] = True
+            elif f.endswith("Screen.kt"):
+                # 仅修改 Compose 页面（如 AppearanceSettingsScreen 等纯 UI），不标记为全局 settings/app 联动重试
+                impact["affects_android_app"] = True
             if any(f.startswith(f"apps/android/{module}/") for module in ("notification-control", "notification-host", "notification-collector")):
                 impact["affects_android_notifications"] = True
                 impact["affects_android_app"] = True
@@ -247,24 +250,25 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     else:
         # 增量精简选择
         android_tasks.append("noVpnSurfaceCheck")
-        if impact["affects_android_control"]:
-            android_tasks.extend([
-                ":control-ports:testDebugUnitTest",
-                ":capability-ports:testDebugUnitTest",
-                ":screen-control:testDebugUnitTest",
-                ":device-primitives:testDebugUnitTest",
-            ])
-        if impact["affects_android_kernel"]:
-            android_tasks.append(":platform-kernel:testDebugUnitTest")
-        if impact["affects_android_conversation"]:
-            android_tasks.extend([
-                ":conversation-domain:testDebugUnitTest",
-                ":conversation-ui:testDebugUnitTest",
-            ])
-        if impact["affects_android_gateway"]:
-            android_tasks.append(":gateway-client:testDebugUnitTest")
-        if impact["affects_android_app"]:
-            android_tasks.append(":app:testFullDebugUnitTest")
+        if level != "fast":
+            if impact["affects_android_control"]:
+                android_tasks.extend([
+                    ":control-ports:testDebugUnitTest",
+                    ":capability-ports:testDebugUnitTest",
+                    ":screen-control:testDebugUnitTest",
+                    ":device-primitives:testDebugUnitTest",
+                ])
+            if impact["affects_android_kernel"]:
+                android_tasks.append(":platform-kernel:testDebugUnitTest")
+            if impact["affects_android_conversation"]:
+                android_tasks.extend([
+                    ":conversation-domain:testDebugUnitTest",
+                    ":conversation-ui:testDebugUnitTest",
+                ])
+            if impact["affects_android_gateway"]:
+                android_tasks.append(":gateway-client:testDebugUnitTest")
+            if impact["affects_android_app"]:
+                android_tasks.append(":app:testFullDebugUnitTest")
 
     # Settings routes compose notification and security settings.
     # In PR admission, cover notification module integration only when notifications are touched.

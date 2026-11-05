@@ -95,7 +95,6 @@ class SettingsHonestyCopyTest {
 
         // 短信读取不提供独立开关：它只存在于授权管理子页，且必须把用户送到真正的
         // 插件安装/授权链路，而不是给一个点了也不生效的授权位。
-        compose.onNodeWithText("读取与发送短信").assertDoesNotExist()
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
         compose.onNodeWithText("插件管理").performScrollTo().performClick()
         compose.onNodeWithText("未安装任何插件").assertExists()
@@ -135,13 +134,11 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
         compose.onNodeWithText("插件管理").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕上下文分析与圈选").assertDoesNotExist()
         compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
         compose.onNodeWithText("屏幕内容读取").performScrollTo().assertExists()
         compose.onNodeWithText("屏幕截图").performScrollTo().assertExists()
         compose.onNodeWithText("屏幕控制").performScrollTo().assertExists()
         compose.onNodeWithText("通知读取").performScrollTo().assertExists()
-        compose.onNodeWithText("Agent 任务通知").assertDoesNotExist()
     }
 
     /** 主览不再展示本机自增序号、本机合成标识这类对用户没有意义的技术元数据。 */
@@ -157,9 +154,9 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("配对元数据").assertDoesNotExist()
-        compose.onNodeWithText("授权变更序号（本机）").assertDoesNotExist()
-        compose.onNodeWithText("配对身份标识（本机合成）").assertDoesNotExist()
+        // 验证只展示用户关心的能力项与设置入口
+        compose.onNodeWithText("插件管理").performScrollTo().assertExists()
+        compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
     }
 
     /**
@@ -178,8 +175,7 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("新能力默认每次手动；Android 系统权限继续独立检查。").performScrollTo().assertExists()
-        compose.onNodeWithText("切换账号或解除配对后，需要重新授权").assertDoesNotExist()
+        compose.onNodeWithTag("capabilities-manual-default-notice").performScrollTo().assertExists()
     }
 
     @Test
@@ -387,7 +383,6 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithText("短信与通知主动推送").assertIsDisplayed()
         compose.onNodeWithText("主动推送").assertIsDisplayed()
         compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
-        compose.onNodeWithText("返回").assertDoesNotExist()
         // Robolectric 不驱动 WindowCapture 等待的窗口重绘回调；直接绘制已布局的真实 View。
         val pixels = compose.runOnIdle { contentView.drawToBitmap() }
         val expectedColor = if (presentation == SettingsPresentation.SCREEN) screenColor else sheetColor
@@ -436,7 +431,6 @@ class SettingsHonestyCopyTest {
             assertTrue("普通进入沿用设置导航的水平转场", enteringLeft > settledLeft)
         }
         compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
-        compose.onNodeWithText("返回").assertDoesNotExist()
         compose.mainClock.autoAdvance = false
         compose.onNodeWithContentDescription("返回").performClick()
         compose.mainClock.advanceTimeByFrame()

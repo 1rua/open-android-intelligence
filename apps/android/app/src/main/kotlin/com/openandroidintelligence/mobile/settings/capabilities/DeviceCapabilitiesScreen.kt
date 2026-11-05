@@ -78,7 +78,8 @@ internal fun DeviceCapabilitiesScreen(
                 }
             }
             Text("新能力默认每次手动；系统权限独立检查。", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("capabilities-manual-default-notice"))
             SectionLabel("临时授权")
             TemporaryApprovalsSection(environment.pairingGrants, host)
             SectionLabel("其他设置")
