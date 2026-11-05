@@ -21,10 +21,33 @@ def _registry_path() -> Path:
     return Path.home() / ".config" / "oai" / "instances.json"
 
 
-def _private(path: Path) -> None:
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
         raise GatewayError("INSTANCE_REGISTRY_INVALID")
+    if info.st_mode & 0o077:
+        try:
+            path.chmod(0o700)
+            info = path.lstat()
+        except OSError as exc:
+            raise GatewayError("INSTANCE_REGISTRY_INVALID") from exc
+        if info.st_mode & 0o077:
+            raise GatewayError("INSTANCE_REGISTRY_INVALID")
+
+
+def _private(path: Path, error_code: str = "INSTANCE_REGISTRY_INVALID") -> None:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
+        raise GatewayError(error_code)
+    if info.st_mode & 0o077:
+        try:
+            path.chmod(0o600)
+            info = path.lstat()
+        except OSError as exc:
+            raise GatewayError(error_code) from exc
+        if info.st_mode & 0o077:
+            raise GatewayError(error_code)
 
 
 def _load_registry() -> list[Path]:
@@ -32,6 +55,8 @@ def _load_registry() -> list[Path]:
     if not registry.exists() and not registry.is_symlink():
         return []
     try:
+        if registry.parent.exists():
+            _ensure_private_directory(registry.parent)
         _private(registry)
         value = json.loads(registry.read_text(encoding="utf-8"))
         if not isinstance(value, dict) or value.get("version") != 1 or not isinstance(value.get("instances"), list):
@@ -119,7 +144,7 @@ def discover_instance(config: Path | None = None) -> dict:
     client = Path.home() / ".config" / "oai" / "client.json"
     if client.exists() or client.is_symlink():
         try:
-            _private(client)
+            _private(client, error_code="INSTANCE_CONFIG_INVALID")
             saved = json.loads(client.read_text(encoding="utf-8"))
             if not isinstance(saved, dict):
                 raise ValueError()
@@ -138,15 +163,20 @@ def register_instance(config: Path) -> dict:
     instance = _from_config(Path(config))
     path = Path(instance["configPath"])
     registry = _registry_path()
-    registry.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    info = registry.parent.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-        raise GatewayError("INSTANCE_REGISTRY_INVALID")
+    _ensure_private_directory(registry.parent)
     lock = os.open(registry.parent / "instances.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         info = os.fstat(lock)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
             raise GatewayError("INSTANCE_REGISTRY_INVALID")
+        if info.st_mode & 0o077:
+            try:
+                os.fchmod(lock, 0o600)
+                info = os.fstat(lock)
+            except OSError as exc:
+                raise GatewayError("INSTANCE_REGISTRY_INVALID") from exc
+            if info.st_mode & 0o077:
+                raise GatewayError("INSTANCE_REGISTRY_INVALID")
         fcntl.flock(lock, fcntl.LOCK_EX)
         entries = _load_registry()
         if path not in entries:

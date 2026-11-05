@@ -364,6 +364,70 @@ def test_discover_explicit_registration_and_ambiguity(tmp_path, monkeypatch):
     assert discover_instance(first) == info
 
 
+def test_register_and_discover_auto_tightens_permissions_on_existing_locations(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config_dir = tmp_path / ".config" / "oai"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_dir.chmod(0o755)
+    assert config_dir.stat().st_mode & 0o077 != 0
+
+    lock_file = config_dir / "instances.lock"
+    lock_file.write_text("")
+    lock_file.chmod(0o644)
+    assert lock_file.stat().st_mode & 0o077 != 0
+
+    registry_file = config_dir / "instances.json"
+    registry_file.write_text(json.dumps({"version": 1, "instances": []}))
+    registry_file.chmod(0o644)
+    assert registry_file.stat().st_mode & 0o077 != 0
+
+    first = tmp_path / "first" / "core.json"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text(json.dumps({"storageRoot": "runtime/accounts", "listen": {"host": "0.0.0.0", "port": 11451}}))
+
+    info = register_instance(first)
+    assert info["url"] == "http://127.0.0.1:11451"
+
+    assert config_dir.stat().st_mode & 0o077 == 0
+    assert lock_file.stat().st_mode & 0o077 == 0
+    assert registry_file.stat().st_mode & 0o077 == 0
+
+    assert discover_instance() == info
+
+
+def test_register_instance_rejects_symlink_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    real_dir = tmp_path / "real_oai"
+    real_dir.mkdir(parents=True, exist_ok=True)
+    real_dir.chmod(0o700)
+    config_parent = tmp_path / ".config"
+    config_parent.mkdir(parents=True, exist_ok=True)
+    symlink_dir = config_parent / "oai"
+    try:
+        symlink_dir.symlink_to(real_dir)
+    except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
+        pytest.skip(f"symlinks not supported on filesystem: {exc}")
+
+    first = tmp_path / "first" / "core.json"
+    first.parent.mkdir(parents=True, exist_ok=True)
+    first.write_text(json.dumps({"storageRoot": "runtime/accounts"}))
+
+    fails("INSTANCE_REGISTRY_INVALID", register_instance, first)
+
+
+def test_discover_instance_auto_tightens_client_json_permissions(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    client = tmp_path / ".config/oai/client.json"
+    client.parent.mkdir(parents=True, exist_ok=True)
+    client.parent.chmod(0o700)
+    client.write_text(json.dumps({"url": "https://example.test", "token": "not-to-be-returned"}))
+    client.chmod(0o644)
+    assert client.stat().st_mode & 0o077 != 0
+
+    assert discover_instance() == {"url": "https://example.test"}
+    assert client.stat().st_mode & 0o077 == 0
+
+
 def test_disabling_policy_restores_password_only_without_erasing_binding(env, monkeypatch):
     store, admin, _ = env
     _, codes, _ = prepare_enabled(env, monkeypatch)
