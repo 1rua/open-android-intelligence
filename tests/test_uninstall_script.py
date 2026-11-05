@@ -739,7 +739,11 @@ def test_only_this_installations_running_core_is_stopped(installation):
 
 
 @pytest.mark.parametrize('mode,answer,expected_success', [('--keep-config', 'y', True),
+                                                           ('--keep-config', '', True),
+                                                           ('--keep-config', 'Y', True),
+                                                           ('--keep-config', 'n', False),
                                                            ('--purge', 'PURGE', True),
+                                                           ('--purge', 'y', True),
                                                            ('--purge', 'cancel', False)])
 def test_terminal_confirmation_accepts_or_cancels(installation, mode, answer, expected_success):
     result = installation.run(mode, confirmation=answer)

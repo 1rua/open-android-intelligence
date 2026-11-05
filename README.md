@@ -221,7 +221,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
 ```
 
-默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 不代替管理员认证，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
+默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。交互模式下回车默认确认（`y`）；先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 不代替管理员认证，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
 
 <details>
 <summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>

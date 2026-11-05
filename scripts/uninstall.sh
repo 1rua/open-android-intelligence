@@ -434,16 +434,20 @@ def write_private(path, text):
 
 
 def confirm(purge):
-    expected = "PURGE" if purge else "y"
+    prompt = "确认彻底卸载并清除（输入 y 或 PURGE 确认，其他输入取消）: " if purge else "确认卸载？(y/n) [y]，其他输入取消: "
     try:
         with open("/dev/tty", "r", encoding="utf-8") as terminal_input, open("/dev/tty", "w", encoding="utf-8") as terminal_output:
-            terminal_output.write(f"确认卸载，请输入 {expected}，其他输入取消: ")
+            terminal_output.write(prompt)
             terminal_output.flush()
-            answer = terminal_input.readline().strip()
+            answer = terminal_input.readline().strip().lower()
     except OSError:
         fail("非交互执行需要显式传入 --yes；可先使用 --dry-run 预览。")
-    if answer != expected:
-        fail("已取消，未执行卸载。")
+    if purge:
+        if answer not in ("", "y", "yes", "purge"):
+            fail("已取消，未执行卸载。")
+    else:
+        if answer not in ("", "y", "yes"):
+            fail("已取消，未执行卸载。")
 
 
 def main():
