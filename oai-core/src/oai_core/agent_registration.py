@@ -23,8 +23,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-import aiohttp
-
 from .gateway.core import GatewayError
 
 
@@ -519,6 +517,7 @@ class AgentRegistration:
             payload = {"coreInstanceId": self.instance_id, "hermesInstanceId": manifest["instanceId"],
                        "challenge": challenge}
             body.update(coreInstanceId=self.instance_id, coreSignature=sign_core_request(self.core_signing_key, payload))
+        import aiohttp
         try:
             timeout = aiohttp.ClientTimeout(total=5)
             async with aiohttp.ClientSession(timeout=timeout) as session:

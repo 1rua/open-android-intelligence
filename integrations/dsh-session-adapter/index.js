@@ -37,7 +37,7 @@ export const Config = {
     validate(input = {}) {
       const value = {
         port: input.port ?? 8791, tokenEnv: input.tokenEnv ?? "OAI_DSH_ADAPTER_TOKEN", cwd: input.cwd, agentPreset: input.agentPreset,
-        instanceId: input.instanceId,
+        instanceId: input.instanceId ?? process.env.OAI_DSH_INSTANCE_ID ?? "dsh",
         ...Object.fromEntries(Object.entries(observerDefaults).map(([key, fallback]) => [key, input[key] ?? fallback])),
       };
       if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535

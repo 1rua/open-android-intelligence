@@ -344,7 +344,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             self._tool_observer = NativeToolObserver(self.services.core, history)
             await asyncio.to_thread(self._cleanup_inbound_media_cache)
             self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts,
-                instance_id=os.environ.get("OAI_HERMES_INSTANCE_ID"), auto_spaces=getattr(self, "auto_spaces", None))
+                instance_id=os.environ.get("OAI_HERMES_INSTANCE_ID") or "hermes", auto_spaces=getattr(self, "auto_spaces", None))
             self._runner = web.AppRunner(self._app)
             try:
                 await self._runner.setup()

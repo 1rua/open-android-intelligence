@@ -610,11 +610,315 @@ def _manage_accounts(root: Path, store, handle: str) -> None:
     print("账号操作已完成。")
 
 
+def _parse_dotenv(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, raw_val = line.split("=", 1)
+        key, raw_val = key.strip(), raw_val.strip()
+        if not key:
+            continue
+        if raw_val.startswith("[") and raw_val.endswith("]"):
+            values[key] = raw_val
+            continue
+        try:
+            parts = shlex.split(raw_val)
+            values[key] = parts[0] if len(parts) == 1 else raw_val.strip("\"'")
+        except ValueError:
+            values[key] = raw_val.strip("\"'")
+    return values
+
+
+def detect_host_agents() -> dict[str, list[Path]]:
+    detected: dict[str, list[Path]] = {}
+    hermes_home = Path(os.environ["HERMES_HOME"]).expanduser() if os.environ.get("HERMES_HOME") else (Path.home() / ".hermes")
+    try:
+        if (hermes_home.is_dir() and not hermes_home.is_symlink()
+                and hermes_home.stat().st_uid == os.geteuid()
+                and ((hermes_home / "hermes-agent").is_dir()
+                     or (hermes_home / "open-android-intelligence-gateway").is_dir()
+                     or (hermes_home / ".env").is_file())):
+            detected["hermes"] = [hermes_home]
+    except OSError:
+        pass
+    dsh_candidates = ([Path(os.environ["DSH_HOME"]).expanduser()]
+                      if os.environ.get("DSH_HOME")
+                      else [Path.home() / ".dsh-cline", Path.home() / ".dsh"])
+    dsh_homes: list[Path] = []
+    seen: set[Path] = set()
+    for home in dsh_candidates:
+        try:
+            if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.geteuid():
+                continue
+            resolved = home.resolve()
+            if resolved in seen:
+                continue
+            if (home / "cordis.yml").is_file() or (home / ".credentials.yaml").is_file() or (home / ".env").is_file():
+                seen.add(resolved)
+                dsh_homes.append(home)
+        except OSError:
+            continue
+    if dsh_homes:
+        detected["dsh"] = dsh_homes
+    return detected
+
+
+def _ensure_agent_secret_file(storage_root: Path, agent_id: str, preferred_token: str | None) -> tuple[str, str]:
+    from .agent_registration import create_bridge_secret
+    bridge_dir = storage_root / ".agent-secrets"
+    private_directory(bridge_dir)
+    target = bridge_dir / f"agent-{agent_id}.secret"
+    valid_preferred = (preferred_token if isinstance(preferred_token, str)
+                       and 32 <= len(preferred_token) <= 4096
+                       and not any(c in preferred_token for c in "\r\n\0") else None)
+    if target.is_file():
+        existing = private_read(target).removesuffix("\n")
+        if 32 <= len(existing) <= 4096 and not any(c in existing for c in "\r\n\0"):
+            if valid_preferred and existing != valid_preferred:
+                private_write(target, valid_preferred + "\n")
+                return os.path.relpath(target, storage_root), valid_preferred
+            return os.path.relpath(target, storage_root), existing
+    if valid_preferred:
+        private_write(target, valid_preferred + "\n")
+        return os.path.relpath(target, storage_root), valid_preferred
+    if not target.exists():
+        create_bridge_secret(target)
+    token = private_read(target).removesuffix("\n")
+    return os.path.relpath(target, storage_root), token
+
+
+def _ensure_hermes_trusted_core(gateway_root: Path, instance_id: str, signing_key) -> Path | None:
+    if signing_key is None:
+        return None
+    from cryptography.hazmat.primitives import serialization
+    public_hex = signing_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ).hex()
+    private_directory(gateway_root.parent)
+    private_directory(gateway_root)
+    trusted_path = gateway_root.resolve().parent / "trusted-cores.json"
+    existing: dict[str, str] = {}
+    if trusted_path.is_file() and not trusted_path.is_symlink():
+        raw = owned_bytes(trusted_path)
+        if raw:
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    existing = {str(k): str(v) for k, v in parsed.items() if isinstance(k, str) and isinstance(v, str)}
+            except Exception:
+                existing = {}
+    if existing.get(instance_id) != public_hex or stat.S_IMODE(trusted_path.stat().st_mode) != 0o600 if trusted_path.exists() else True:
+        existing[instance_id] = public_hex
+        private_write(trusted_path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n")
+    return trusted_path
+
+
+def provision_host_candidates(root: Path, store, handle: str, operator: dict) -> list[dict]:
+    require_configuration_access(root, store, handle, "agents.manage")
+    detected = detect_host_agents()
+    if not detected:
+        return []
+    raw_config = owned_bytes(root / "core.json")
+    if raw_config is None:
+        return []
+    config = json.loads(raw_config)
+    storage = (root / config["storageRoot"]).resolve()
+    private_directory(storage)
+    legacy_tokens: dict[str, str] = {}
+    token_path = root / "runtime" / "secrets" / "adapter-tokens.env"
+    if token_path.is_file():
+        try:
+            legacy_tokens = read_tokens(token_path)
+        except Exception:
+            legacy_tokens = {}
+    candidates_dir = root / "runtime" / "agent-candidates"
+    private_directory(candidates_dir)
+    signing_key = store.key_store.instance_signing_key(operator["instanceId"]) if store.key_store is not None else None
+    provisioned: list[dict] = []
+    if "hermes" in detected:
+        hermes_home = detected["hermes"][0]
+        env_file = hermes_home / ".env"
+        env_text = read_configuration_text(env_file) if env_file.is_file() else ""
+        env_vars = _parse_dotenv(env_text)
+        preferred = env_vars.get("OAI_HERMES_SESSION_TOKEN") or legacy_tokens.get("OAI_HERMES_SESSION_TOKEN")
+        secret_rel, token = _ensure_agent_secret_file(storage, "hermes", preferred)
+        gateway_root = Path(env_vars.get("OAI_HERMES_GATEWAY_ROOT")
+                            or (hermes_home / "open-android-intelligence-gateway" / "accounts")).expanduser()
+        try:
+            port = int(env_vars.get("OAI_HERMES_SESSION_PORT", "8792"))
+        except ValueError:
+            port = 8792
+        instance_id = env_vars.get("OAI_HERMES_INSTANCE_ID") or "hermes"
+        from .gateway.account_paths import account_paths
+        try:
+            raw_accounts = json.loads(env_vars.get("OAI_HERMES_ACCOUNTS", "[]"))
+            if not isinstance(raw_accounts, list):
+                raw_accounts = []
+        except Exception:
+            raw_accounts = []
+        accounts = [
+            acct for acct in raw_accounts
+            if isinstance(acct, str) and acct and account_paths(gateway_root, acct).database.is_file()
+        ]
+        trusted_path = _ensure_hermes_trusted_core(gateway_root, operator["instanceId"], signing_key)
+        updates = {
+            "OAI_HERMES_SESSION_TOKEN": dotenv_scalar(token),
+            "OAI_HERMES_GATEWAY_ROOT": dotenv_scalar(str(gateway_root)),
+            "OAI_HERMES_ACCOUNTS": json.dumps(accounts, ensure_ascii=False),
+            "OAI_HERMES_SESSION_PORT": str(port),
+            "OAI_HERMES_INSTANCE_ID": dotenv_scalar(instance_id),
+        }
+        if trusted_path is not None:
+            updates["OAI_HERMES_TRUSTED_CORES_FILE"] = dotenv_scalar(str(trusted_path))
+        write_configuration_text(env_file, update_environment_text(env_text, updates))
+        manifest = {
+            "id": "hermes",
+            "name": "Hermes",
+            "type": "hermes",
+            "instanceId": instance_id,
+            "sessionScope": "account",
+            "url": f"http://127.0.0.1:{port}",
+            "secretFile": secret_rel,
+        }
+        private_write(candidates_dir / "hermes.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        provisioned.append(manifest)
+    if "dsh" in detected:
+        dsh_homes = detected["dsh"]
+        preferred = None
+        for home in dsh_homes:
+            env_file = home / ".env"
+            if env_file.is_file():
+                try:
+                    preferred = _parse_dotenv(read_configuration_text(env_file)).get("OAI_DSH_ADAPTER_TOKEN")
+                except Exception:
+                    preferred = None
+                if preferred:
+                    break
+        preferred = preferred or legacy_tokens.get("OAI_DSH_ADAPTER_TOKEN")
+        secret_rel, token = _ensure_agent_secret_file(storage, "dsh", preferred)
+        try:
+            sync_dsh_adapter_env(token)
+        except Exception:
+            pass
+        manifest = {
+            "id": "dsh",
+            "name": "DSH",
+            "type": "dsh",
+            "instanceId": "dsh",
+            "sessionScope": "deployment",
+            "url": "http://127.0.0.1:8791",
+            "secretFile": secret_rel,
+        }
+        private_write(candidates_dir / "dsh.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        provisioned.append(manifest)
+    return provisioned
+
+
+def _confirm_operator_hermes_mapping(registration, handle: str, entry: dict, operator: dict) -> None:
+    if entry.get("type") != "hermes":
+        return
+    username = operator.get("username")
+    account_id = operator.get("accountId")
+    if not isinstance(username, str) or not username or not isinstance(account_id, str) or not account_id:
+        return
+    detected = detect_host_agents()
+    if "hermes" not in detected:
+        return
+    hermes_home = detected["hermes"][0]
+    env_file = hermes_home / ".env"
+    if not env_file.is_file():
+        return
+    try:
+        env_vars = _parse_dotenv(read_configuration_text(env_file))
+        accounts = json.loads(env_vars.get("OAI_HERMES_ACCOUNTS", "[]"))
+        gateway_root = Path(env_vars.get("OAI_HERMES_GATEWAY_ROOT")
+                            or (hermes_home / "open-android-intelligence-gateway" / "accounts")).expanduser()
+    except Exception:
+        return
+    from .gateway.account_paths import account_paths
+    if (not isinstance(accounts, list) or username not in accounts
+            or not account_paths(gateway_root, username).database.is_file()):
+        return
+    existing = registration.mappings(entry["id"])
+    if account_id in existing or username in existing.values():
+        return
+    try:
+        registration.confirm_mapping(handle, entry["id"], account_id, username)
+    except Exception:
+        pass
+
+
+def _register_with_host_retry(registration, handle: str, entry: dict, storage: Path) -> None:
+    import time
+    try:
+        asyncio.run(registration.register(handle, entry, storage))
+        return
+    except ValueError:
+        if entry.get("type") != "hermes" or not sys.platform.startswith("linux"):
+            raise
+    try:
+        state = subprocess.run(["systemctl", "--user", "is-active", "hermes-gateway.service"],
+                               capture_output=True, text=True, timeout=5, check=False)
+        if state.returncode != 0 or state.stdout.strip() != "active":
+            raise ValueError("Agent instance handshake failed")
+        subprocess.run(["systemctl", "--user", "restart", "hermes-gateway.service"],
+                       capture_output=True, text=True, timeout=15, check=True)
+    except Exception:
+        raise ValueError("Agent instance handshake failed") from None
+    last_error: Exception | None = None
+    for _ in range(10):
+        time.sleep(0.5)
+        try:
+            asyncio.run(registration.register(handle, entry, storage))
+            return
+        except ValueError as err:
+            last_error = err
+    raise last_error or ValueError("Agent instance handshake failed")
+
+
+def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> list[str]:
+    from .agent_registration import AgentRegistration
+    from .sessions import AgentRegistry
+
+    if not detect_host_agents():
+        return []
+    require_configuration_access(root, store, handle, "agents.manage")
+    candidates = provision_host_candidates(root, store, handle, operator)
+    if not candidates:
+        return []
+    config = json.loads(owned_bytes(root / "core.json"))
+    storage = (root / config["storageRoot"]).resolve()
+    signing_key = store.key_store.instance_signing_key(operator["instanceId"]) if store.key_store is not None else None
+    registration = AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False,
+                                     core_signing_key=signing_key)
+    registration.initialize(handle)
+    explicit_ids = {item.get("id") for item in config.get("agents", []) if isinstance(item, dict)}
+    connected: list[str] = []
+    for entry in candidates:
+        if entry["id"] in explicit_ids or AgentRegistry.get_factory(entry["type"]) is None:
+            continue
+        try:
+            _register_with_host_retry(registration, handle, entry, storage)
+            _confirm_operator_hermes_mapping(registration, handle, entry, operator)
+            connected.append(entry["id"])
+            print(f"[INFO] 已自动发现并接入 Agent: {entry['id']} ({entry['type']})")
+        except Exception:
+            print(f"[INFO] 已生成 {entry['id']} 候选配置；待该 Agent 服务运行后可在 setup 中完成接入。")
+    return connected
+
+
 def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
     from .agent_registration import AgentRegistration
     from .sessions import AgentRegistry
 
     require_configuration_access(root, store, handle, "agents.manage")
+    provision_host_candidates(root, store, handle, operator)
     config = json.loads(owned_bytes(root / "core.json"))
     storage = (root / config["storageRoot"]).resolve()
     signing_key = store.key_store.instance_signing_key(operator["instanceId"]) if store.key_store is not None else None
@@ -655,7 +959,8 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         return
     require_configuration_access(root, store, handle, "agents.manage")
     registration.initialize(handle)
-    asyncio.run(registration.register(handle, entry, storage))
+    _register_with_host_retry(registration, handle, entry, storage)
+    _confirm_operator_hermes_mapping(registration, handle, entry, operator)
     print("Agent 已通过真实握手并注册；账号关联按其隔离范围处理。")
 
 
@@ -816,15 +1121,23 @@ def run_config(instance: dict, store, handle: str) -> None:
 
 def run_setup(instance: dict, store, handle: str) -> None:
     """Run the five-category setup using the caller's live management session."""
+    from .agent_registration import AgentRegistration
+
     root = _instance_root(instance)
     while True:
         operator = require_configuration_access(root, store, handle, "setup")
         host, port, selected, _ = _network_settings(root)
+        registered_ids = [
+            entry["id"]
+            for entry in AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False).entries()
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str)
+        ]
+        connected_agents = list(dict.fromkeys([*selected, *registered_ids]))
         required, _, _ = store._policy()
         print(f"\n服务端 2FA: {'开启' if required else '关闭'}（输入 2fa 管理）")
         print(f"1. 网络设置 [{host}:{port}]")
         print("2. 账号管理")
-        print(f"3. Agent 接入 [{', '.join(selected) or '无'}]")
+        print(f"3. Agent 接入 [{', '.join(connected_agents) or '无'}]")
         print("4. 服务管理")
         print("5. 退出")
         choice = _terminal_input("请选择: ")

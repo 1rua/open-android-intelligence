@@ -433,6 +433,8 @@ def install(root: Path) -> int:
         store.require_management(handle, "install")
         register_instance(root / "core.json")
         _integrate_cli(root, store, handle)
+        if configuration.detect_host_agents():
+            configuration.auto_connect_host_agents(root, store, handle, operator)
         if _input("是否配置开机自启服务？(y/n) [n]: ").lower() in {"y", "yes"}:
             _configure_service(root, store, handle)
         if state is not None or (root / "runtime" / "installer-journal.json").exists():

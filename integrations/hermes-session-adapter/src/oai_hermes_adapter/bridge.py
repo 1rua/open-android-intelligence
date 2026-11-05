@@ -38,19 +38,36 @@ IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 UnsupportedApprovalMixin = NativeApprovalMixin
 
 
+def _load_trusted_cores(path: Path) -> dict[str, bytes]:
+    from oai_core.agent_registration import _private_file
+    fd = _private_file(Path(path))
+    try:
+        data = os.read(fd, 65537)
+    finally:
+        os.close(fd)
+    if len(data) > 65536:
+        raise ValueError("Trusted Core manifest too large")
+    document = json.loads(data)
+    if not isinstance(document, dict):
+        raise ValueError("Invalid trusted Core manifest")
+    return {key: bytes.fromhex(value) for key, value in document.items()}
+
+
 class AutoAccountSpaces:
     """Create private native accounts only for Core instance keys confirmed by the operator."""
 
-    def __init__(self, root: Path, backend: Any, trusted_cores: dict[str, bytes]):
+    def __init__(self, root: Path, backend: Any, trusted_cores: dict[str, bytes], *,
+                 trusted_file: Path | None = None):
         self.storage_root = Path(root).resolve()
         self.backend = backend
+        self.trusted_file = Path(trusted_file) if trusted_file is not None else None
         info = self.storage_root.lstat()
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and (info.st_mode & 0o077):
+            os.chmod(self.storage_root, 0o700)
+            info = self.storage_root.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("Hermes account root must be private")
-        self.trusted_cores = dict(trusted_cores)
-        if any(not isinstance(key, str) or not IDENTITY.fullmatch(key) or not isinstance(value, bytes) or len(value) != 32
-               for key, value in self.trusted_cores.items()):
-            raise ValueError("Invalid trusted Core instance keys")
+        self.trusted_cores: dict[str, bytes] = {}
         self.root = self.storage_root / "oai-core-auto-spaces"
         self.root.mkdir(mode=0o700, exist_ok=True)
         info = self.root.lstat()
@@ -66,12 +83,28 @@ class AutoAccountSpaces:
             db.execute("CREATE TABLE IF NOT EXISTS trusted_cores (core_id TEXT PRIMARY KEY, key_digest TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS request_nonces (core_id TEXT NOT NULL, nonce TEXT NOT NULL, "
                        "expires INTEGER NOT NULL, PRIMARY KEY(core_id,nonce))")
-            for core_id, key in self.trusted_cores.items():
+        self._merge_trusted_cores(trusted_cores)
+
+    def _merge_trusted_cores(self, candidates: dict[str, bytes]) -> None:
+        if any(not isinstance(key, str) or not IDENTITY.fullmatch(key) or not isinstance(value, bytes) or len(value) != 32
+               for key, value in candidates.items()):
+            raise ValueError("Invalid trusted Core instance keys")
+        with self._lock, closing(self._connect()) as db, db:
+            for core_id, key in candidates.items():
                 digest = hashlib.sha256(key).hexdigest()
                 row = db.execute("SELECT key_digest FROM trusted_cores WHERE core_id=?", (core_id,)).fetchone()
                 if row and not secrets.compare_digest(row[0], digest):
                     raise ValueError("Core instance key changed")
                 db.execute("INSERT OR IGNORE INTO trusted_cores VALUES (?,?)", (core_id, digest))
+                self.trusted_cores[core_id] = key
+
+    def _reload_trusted_cores(self) -> None:
+        if self.trusted_file is None or not self.trusted_file.is_file():
+            return
+        try:
+            self._merge_trusted_cores(_load_trusted_cores(self.trusted_file))
+        except (OSError, ValueError, TypeError):
+            return
 
     def _connect(self):
         fd = os.open(self.database, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -86,6 +119,9 @@ class AutoAccountSpaces:
     def verified(self, instance_id: str, payload: dict[str, Any], signature: str) -> bool:
         from oai_core.agent_registration import verify_core_request
         key = self.trusted_cores.get(instance_id)
+        if key is None:
+            self._reload_trusted_cores()
+            key = self.trusted_cores.get(instance_id)
         return key is not None and verify_core_request(key, payload, signature)
 
     def consume_nonce(self, core_id: str, nonce: str, timestamp: int) -> bool:
@@ -521,27 +557,17 @@ def register(ctx: Any) -> None:
     if not root:
         raise ValueError("Set OAI_HERMES_GATEWAY_ROOT to the existing Hermes Gateway accounts directory")
     accounts = json.loads(os.environ.get("OAI_HERMES_ACCOUNTS", "[]"))
+    default_trusted = Path(root).resolve().parent / "trusted-cores.json"
     trusted_file = os.environ.get("OAI_HERMES_TRUSTED_CORES_FILE")
+    trusted_path = Path(trusted_file) if trusted_file else default_trusted
     if (not isinstance(accounts, list) or len(set(accounts)) != len(accounts)
             or any(not isinstance(v, str) or not IDENTITY.fullmatch(v) for v in accounts)
-            or not accounts and not trusted_file):
+            or not accounts and not trusted_file and not default_trusted.is_file()):
         raise ValueError("Hermes requires explicit accounts or confirmed Core instance keys")
     trusted_cores = {}
-    if trusted_file:
-        from oai_core.agent_registration import _private_file
-        fd = _private_file(Path(trusted_file))
-        try:
-            data = os.read(fd, 65537)
-        finally:
-            os.close(fd)
-        if len(data) > 65536:
-            raise ValueError("Trusted Core manifest too large")
-        document = json.loads(data)
-        if not isinstance(document, dict):
-            raise ValueError("Invalid trusted Core manifest")
-        trusted_cores = {key: bytes.fromhex(value) for key, value in document.items()}
-        if not os.environ.get("OAI_HERMES_INSTANCE_ID"):
-            raise ValueError("Hermes instance identity required")
+    if trusted_file or default_trusted.is_file():
+        trusted_cores = _load_trusted_cores(trusted_path)
+        os.environ.setdefault("OAI_HERMES_INSTANCE_ID", "hermes")
     port = int(os.environ.get("OAI_HERMES_SESSION_PORT", "8792"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid OAI_HERMES_SESSION_PORT")
@@ -551,8 +577,9 @@ def register(ctx: Any) -> None:
         nonlocal instance
         if instance is None:
             instance = SessionOnlyAdapter(config, backend, token, accounts, port)
-            if trusted_cores:
-                instance.auto_spaces = AutoAccountSpaces(Path(root), backend, trusted_cores)
+            if trusted_cores or Path(root).is_dir():
+                instance.auto_spaces = AutoAccountSpaces(Path(root), backend, trusted_cores,
+                                                         trusted_file=trusted_path)
         return instance
     for platform_id in GATEWAY_PLATFORM_IDS:
         ctx.register_platform(name=platform_id, label="OAI Core Hermes Sessions", adapter_factory=factory,

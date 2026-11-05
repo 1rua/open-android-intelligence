@@ -150,8 +150,12 @@ class AgentRegistry:
 
     _factories: dict[str, AdapterFactory] = {}
 
-    def __init__(self, adapters: list[SessionAdapter] | None = None, *, operations_path: Path | None = None):
+    def __init__(self, adapters: list[SessionAdapter] | None = None, *, operations_path: Path | None = None,
+                 core: Any = None, storage_root: Path | None = None, config_path: Path | None = None):
         self._adapters: dict[str, SessionAdapter] = {}
+        self._core = core
+        self._storage_root = Path(storage_root) if storage_root is not None else Path(".")
+        self._config_path = Path(config_path) if config_path is not None else None
         for adapter in adapters or []:
             self.register(adapter)
         self.operations = AsyncNativeOperations(operations_path)
@@ -223,7 +227,39 @@ class AgentRegistry:
                         or (owner in existing.accounts and existing.accounts[owner] != native)):
                     raise ValueError("Adapter account mappings must be one-to-one across shared host scope")
 
+    def sync_registered(self) -> None:
+        """Dynamically attach newly registered or configured Agent instances."""
+        if self._core is None and self._config_path is None:
+            return
+        registration = getattr(self._core, "agent_registration", None) if self._core is not None else None
+        pending: list[tuple[dict[str, Any], bool]] = []
+        if self._config_path is not None and self._config_path.is_file():
+            try:
+                from .server import load_config
+                for item in load_config(self._config_path).get("agents", []):
+                    if isinstance(item, dict) and item.get("id") not in self._adapters:
+                        pending.append((item, False))
+            except Exception as err:
+                logger.warning("Failed to reload configured agents from '%s': %s", self._config_path, err)
+        if registration is not None:
+            try:
+                for item in registration.entries():
+                    if isinstance(item, dict) and item.get("id") not in self._adapters:
+                        pending.append((item, True))
+            except Exception as err:
+                logger.warning("Failed to reload registered agents: %s", err)
+        for original, is_registered in pending:
+            try:
+                adapter = _instantiate_adapter(original, is_registered, self._storage_root, self._core, registration)
+                self.register(adapter)
+            except Exception as err:
+                logger.warning("Skipping invalid dynamic agent entry '%s': %s", original.get("id"), err)
+        if registration is not None:
+            _reserve_hermes_legacy_mappings(list(self._adapters.values()), registration)
+
     def get(self, agent_id: str, capability: str | None = None) -> SessionAdapter:
+        if agent_id not in self._adapters:
+            self.sync_registered()
         adapter = self._adapters.get(agent_id)
         if adapter is None:
             raise AdapterError("AGENT_NOT_FOUND", 404)
@@ -233,6 +269,7 @@ class AgentRegistry:
 
     async def commands(self, language_code: str = "en") -> list[dict[str, Any]]:
         """Collect and deduplicate commands from all registered agents that provide them."""
+        self.sync_registered()
         entries: dict[str, dict[str, Any]] = {}
         for adapter in self._adapters.values():
             cmd_fn = getattr(adapter, "commands", None)
@@ -266,6 +303,7 @@ class AgentRegistry:
         return frozenset(supported)
 
     async def discover(self) -> list[dict[str, Any]]:
+        self.sync_registered()
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
             try:
                 online = bool(await asyncio.wait_for(adapter.status(), timeout=5))
@@ -463,12 +501,48 @@ def _load_entry_point_factories() -> None:
 _load_entry_point_factories()
 
 
+def _instantiate_adapter(original: Any, is_registered: bool, storage_root: Path, core: Any, registration: Any) -> SessionAdapter:
+    if not isinstance(original, dict):
+        raise ValueError("Agent configuration must be an object")
+    entry = dict(original)
+    if is_registered:
+        from .agent_registration import read_bridge_secret
+        secret = read_bridge_secret(entry, storage_root)
+        if not registration.registered(entry, secret):
+            raise ValueError("Registered Agent bridge secret or manifest changed")
+        if entry.get("type") == "hermes":
+            entry["accounts"] = registration.mappings(entry["id"])
+            entry["_registered"] = True
+    kind = entry.get("type", entry.get("kind"))
+    if not kind or not isinstance(kind, str):
+        raise ValueError("Agent entry missing 'type' or 'kind'")
+    factory = AgentRegistry.get_factory(kind)
+    if factory is not None:
+        return factory(entry, storage_root, core)
+    if kind == "openclaw":
+        raise ValueError("Unsupported Agent type; OpenClaw is not part of this migration")
+    raise ValueError(f"Unknown or uninstalled Agent type: '{kind}'")
+
+
+def _reserve_hermes_legacy_mappings(adapters: list[SessionAdapter], registration: Any) -> None:
+    from .adapters.hermes import HermesRemoteSessionAdapter
+    for registered_adapter in adapters:
+        if not isinstance(registered_adapter, HermesRemoteSessionAdapter) or registered_adapter.account_registration is None:
+            continue
+        for legacy_adapter in adapters:
+            if (isinstance(legacy_adapter, HermesRemoteSessionAdapter)
+                    and legacy_adapter.account_registration is None
+                    and legacy_adapter.account_scope == registered_adapter.account_scope):
+                registration.reserve_legacy_mappings(registered_adapter.agent_id, legacy_adapter.accounts)
+
+
 def build_registry(config: Mapping[str, Any], core: Any) -> AgentRegistry:
     """Keep legacy explicit deployments and add only verified registered instances."""
     entries = config.get("agents", [])
     if not isinstance(entries, list):
         raise ValueError("agents must be a list of explicit deployments")
     storage_root = Path(config["storageRoot"]) if "storageRoot" in config else Path(".")
+    config_path = Path(config["_configPath"]) if isinstance(config.get("_configPath"), str) else None
     registration = getattr(core, "agent_registration", None)
     registered = registration.entries() if registration is not None else []
     ids = {entry.get("id") for entry in entries if isinstance(entry, dict)}
@@ -476,41 +550,11 @@ def build_registry(config: Mapping[str, Any], core: Any) -> AgentRegistry:
         raise ValueError("Registered Agent conflicts with an explicit deployment")
     adapters = []
     for original, is_registered in [(item, False) for item in entries] + [(item, True) for item in registered]:
-        if not isinstance(original, dict):
-            raise ValueError("Agent configuration must be an object")
-        entry = dict(original)
-        if is_registered:
-            from .agent_registration import read_bridge_secret
-            secret = read_bridge_secret(entry, storage_root)
-            if not registration.registered(entry, secret):
-                raise ValueError("Registered Agent bridge secret or manifest changed")
-            if entry.get("type") == "hermes":
-                entry["accounts"] = registration.mappings(entry["id"])
-                entry["_registered"] = True
-        kind = entry.get("type", entry.get("kind"))
-        if not kind or not isinstance(kind, str):
-            raise ValueError("Agent entry missing 'type' or 'kind'")
-        
-        factory = AgentRegistry.get_factory(kind)
-        if factory is not None:
-            adapter = factory(entry, storage_root, core)
-            adapters.append(adapter)
-        elif kind == "openclaw":
-            raise ValueError("Unsupported Agent type; OpenClaw is not part of this migration")
-        else:
-            raise ValueError(f"Unknown or uninstalled Agent type: '{kind}'")
-
+        adapters.append(_instantiate_adapter(original, is_registered, storage_root, core, registration))
     if registration is not None:
-        from .adapters.hermes import HermesRemoteSessionAdapter
-        for registered_adapter in adapters:
-            if not isinstance(registered_adapter, HermesRemoteSessionAdapter) or registered_adapter.account_registration is None:
-                continue
-            for legacy_adapter in adapters:
-                if (isinstance(legacy_adapter, HermesRemoteSessionAdapter)
-                        and legacy_adapter.account_registration is None
-                        and legacy_adapter.account_scope == registered_adapter.account_scope):
-                    registration.reserve_legacy_mappings(registered_adapter.agent_id, legacy_adapter.accounts)
-    return AgentRegistry(adapters, operations_path=storage_root / "native-operations.sqlite")
+        _reserve_hermes_legacy_mappings(adapters, registration)
+    return AgentRegistry(adapters, operations_path=storage_root / "native-operations.sqlite",
+                         core=core, storage_root=storage_root, config_path=config_path)
 
 
 Authenticate = Callable[[web.Request], Awaitable[Principal]]
