@@ -18,6 +18,7 @@ from aiohttp import web
 
 from .auth import Authentication, Principal
 from .gateway.core import GatewayError, _failure, _jcs, _now, _success, iso_millis
+from .routing import DeviceRouter
 
 CORE_PREFIX = "/open-android-intelligence/core/v1"
 PUSH_PREFIX = "/open-android-intelligence/v2/push"
@@ -103,9 +104,24 @@ class EndpointService:
     def _descriptor(self, row: sqlite3.Row) -> dict[str, Any]:
         return {"route": self._route(row), "label": row["label"], "leaseExpiresAt": timestamp(row["lease_expires"])}
 
+    @staticmethod
+    def _owner(principal: Principal) -> str | None:
+        return "family:" + principal.login_session_id if principal.login_session_id else principal.token_id
+
     def _active(self, endpoint: sqlite3.Row) -> bool:
         if endpoint["retired"] or endpoint["lease_expires"] <= _now().timestamp():
             return False
+        if endpoint["owner_token"].startswith("family:"):
+            try:
+                self.authentication.assert_login_session(endpoint["account_id"], endpoint["owner_token"][7:])
+                account = self.core.open_gateway_account(endpoint["account_id"])
+                try:
+                    binding = account.store.database.execute("SELECT pairing_generation FROM device_keys WHERE device_id=?", (endpoint["device_id"],)).fetchone()
+                    return binding is not None and int(binding[0]) == endpoint["pairing_generation"]
+                finally:
+                    account.close()
+            except GatewayError:
+                return False
         token = self.authentication.database.execute("SELECT * FROM core_tokens WHERE digest=?", (endpoint["owner_token"],)).fetchone()
         if token is None:
             return False
@@ -121,9 +137,10 @@ class EndpointService:
     def _endpoint(self, principal: Principal, endpoint_id: str, *, owner: bool = False) -> sqlite3.Row:
         self.authentication.assert_current(principal)
         row = self.database.execute("SELECT * FROM push_endpoints WHERE endpoint_id=?", (endpoint_id,)).fetchone()
-        if (row is None or row["account_id"] != principal.account_id or row["device_id"] != principal.device_id
-                or row["pairing_generation"] != principal.pairing_generation
-                or owner and row["owner_token"] != principal.token_id):
+        account_client = principal.login_session_id is not None and principal.context is None
+        if (row is None or row["account_id"] != principal.account_id
+                or not account_client and (row["device_id"] != principal.device_id or row["pairing_generation"] != principal.pairing_generation)
+                or owner and row["owner_token"] != self._owner(principal)):
             raise GatewayError("ENDPOINT_ACCESS_DENIED")
         return row
 
@@ -148,9 +165,18 @@ class EndpointService:
         if principal.token_id is None:
             raise GatewayError("AUTHENTICATION_REQUIRED")
         self.sweep()
+        device_id, pairing_generation = principal.device_id, principal.pairing_generation
+        if principal.login_session_id is not None:
+            account = self.core.open_gateway_account(principal.account_id)
+            try:
+                target = DeviceRouter(self.core).resolve(account, principal)
+                device_id, pairing_generation = target.device_id, target.pairing_generation
+            finally:
+                account.close()
+        owner = self._owner(principal)
         with self.transaction():
             row = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND device_id=? AND pairing_generation=? AND registration_key=?",
-                (principal.account_id, principal.device_id, principal.pairing_generation, body["registrationKey"])).fetchone()
+                (principal.account_id, device_id, pairing_generation, body["registrationKey"])).fetchone()
             if row is None or not self._active(row):
                 now = _now().timestamp()
                 active_rows = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND retired=0 AND lease_expires>?",
@@ -162,19 +188,23 @@ class EndpointService:
                 endpoint_id, generation = "endpoint_" + uuid.uuid4().hex, 1
             else:
                 endpoint_id = row["endpoint_id"]
-                generation = row["generation"] + int(not self._active(row) or row["owner_token"] != principal.token_id)
+                generation = row["generation"] + int(not self._active(row) or row["owner_token"] != owner)
                 if generation != row["generation"]:
                     self._release("endpoint_id=?", (endpoint_id,), "revoked")
             expires = _now().timestamp() + body.get("ttlSeconds", 3600)
             self.database.execute("INSERT INTO push_endpoints VALUES (?,?,?,?,?,?,?,?,?,0) ON CONFLICT(endpoint_id) DO UPDATE SET owner_token=excluded.owner_token,generation=excluded.generation,label=excluded.label,lease_expires=excluded.lease_expires,retired=0",
-                (endpoint_id, principal.account_id, principal.device_id, principal.pairing_generation, body["registrationKey"], principal.token_id, generation, body["label"].strip(), expires))
+                (endpoint_id, principal.account_id, device_id, pairing_generation, body["registrationKey"], owner, generation, body["label"].strip(), expires))
             return self._descriptor(self._endpoint(principal, endpoint_id, owner=True))
 
     def discover(self, principal: Principal) -> dict[str, Any]:
         self.authentication.assert_current(principal)
         self.sweep()
-        rows = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND device_id=? AND pairing_generation=? ORDER BY endpoint_id",
-            (principal.account_id, principal.device_id, principal.pairing_generation)).fetchall()
+        if principal.login_session_id is not None and principal.context is None:
+            rows = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND owner_token=? ORDER BY endpoint_id",
+                (principal.account_id, self._owner(principal))).fetchall()
+        else:
+            rows = self.database.execute("SELECT * FROM push_endpoints WHERE account_id=? AND device_id=? AND pairing_generation=? ORDER BY endpoint_id",
+                (principal.account_id, principal.device_id, principal.pairing_generation)).fetchall()
         return {"coreInstanceId": self.instance_id, "accountScope": self._scope(principal.account_id),
                 "endpoints": [self._descriptor(row) for row in rows if self._active(row)]}
 
@@ -188,8 +218,11 @@ class EndpointService:
     def _delivery(self, principal: Principal, delivery_id: str) -> sqlite3.Row:
         self.authentication.assert_current(principal)
         row = self.database.execute("SELECT * FROM push_deliveries WHERE delivery_id=?", (delivery_id,)).fetchone()
-        if (row is None or row["account_id"] != principal.account_id or row["device_id"] != principal.device_id
-                or row["pairing_generation"] != principal.pairing_generation):
+        if row is None or row["account_id"] != principal.account_id:
+            raise GatewayError("DELIVERY_ACCESS_DENIED")
+        if principal.login_session_id is not None and principal.context is None:
+            self._endpoint(principal, row["endpoint_id"], owner=True)
+        elif row["device_id"] != principal.device_id or row["pairing_generation"] != principal.pairing_generation:
             raise GatewayError("DELIVERY_ACCESS_DENIED")
         return row
 

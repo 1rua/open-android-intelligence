@@ -1,6 +1,6 @@
 /** DSH native session adapter. Android auth and all device work stay in Core. */
 import { createServer } from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { diagnosticTrace } from "./diagnostics.js";
 
 export const name = "oai-session-adapter";
@@ -37,10 +37,12 @@ export const Config = {
     validate(input = {}) {
       const value = {
         port: input.port ?? 8791, tokenEnv: input.tokenEnv ?? "OAI_DSH_ADAPTER_TOKEN", cwd: input.cwd, agentPreset: input.agentPreset,
+        instanceId: input.instanceId,
         ...Object.fromEntries(Object.entries(observerDefaults).map(([key, fallback]) => [key, input[key] ?? fallback])),
       };
       if (!Number.isInteger(value.port) || value.port < 1 || value.port > 65535
           || typeof value.tokenEnv !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.tokenEnv)
+          || (value.instanceId !== undefined && (typeof value.instanceId !== "string" || !/^[A-Za-z0-9._~-]{1,128}$/.test(value.instanceId)))
           || (value.cwd !== undefined && typeof value.cwd !== "string")
           || (value.agentPreset !== undefined && typeof value.agentPreset !== "string")
           || Object.keys(observerDefaults).some((key) => !Number.isSafeInteger(value[key]) || value[key] <= 0 || value[key] > 2_147_483_647)) {
@@ -283,6 +285,20 @@ export function createSessionHandler(ctx, config, token) {
       const url = new URL(req.url, "http://localhost");
       if (url.search) throw fail("SCHEMA_INVALID", 400);
       const path = url.pathname;
+      if (req.method === "POST" && path === PREFIX + "/handshake") {
+        const body = await bodyOf(req);
+        if (!budgets.instanceId || Object.keys(body).length !== 1 || typeof body.challenge !== "string"
+            || !/^[a-f0-9]{64}$/.test(body.challenge)) throw fail("SCHEMA_INVALID", 400);
+        const declared = capabilities();
+        // Confirm the real host query just as status does, never report a stub online.
+        await records();
+        const online = declared.list && declared.history;
+        const sorted = Object.fromEntries(Object.entries(declared).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+        const payload = { capabilities: sorted, challenge: body.challenge, instanceId: budgets.instanceId,
+          online, sessionScope: "deployment" };
+        const proof = createHmac("sha256", token).update("oai-agent-handshake-v1\0").update(JSON.stringify(payload)).digest("hex");
+        return json(res, { instanceId: budgets.instanceId, sessionScope: "deployment", online, capabilities: declared, proof });
+      }
       if (req.method === "GET" && path === PREFIX + "/status") {
         const caps = capabilities();
         // Call the actual query. An installed plugin with a broken persistence

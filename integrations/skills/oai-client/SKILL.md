@@ -28,23 +28,23 @@ OAI Core 统一提供连接认证、设备绑定、能力发现、协议验证�
 
 ## 2. 身份认证与准备工作
 
-在操控设备之前，必须确保客户端凭据经 Core 认证并绑定目标账号、已配对设备与有效配对代次。共享 Agent 会话不自动继承任何个人设备调用凭据；模型不得提供或覆盖账号、设备和授权版本：
+先登录 Core 账号，再由 Core 选择本人设备。账号登录不绑定单台手机；每个已受理请求仍固定设备与配对代次。共享 Agent 会话不会继承个人凭据；调用只能选择本人设备，不能覆盖账号或授权版本。
 
 ### 2.1 检查认证状态
 运行 `oai devices`。
 - 若返回设备列表 JSON（例如 `[{"deviceId": "device-xyz", "model": "Pixel 8", "status": "online"}]`），说明已成功认证并配对。
 - 若报错 `LOGIN_REQUIRED` 或未登录，请执行登录：
   ```bash
-  oai login --url http://127.0.0.1:8045 --username <USERNAME> --device <DEVICE_ID>
+  oai login --url https://core.example --username <USERNAME>
   ```
-  *(注：远程连接使用实际 HTTPS 地址，受控开发测试环境如使用 HTTP 需加 `--allow-http` 参数)*
+  首次远端登录提供地址一次；本机安装可自动发现，之后使用 `oai login` 即可。密码隐藏输入，只有服务端开启 2FA 才按挑战输入验证码；正常续期无需重新登录。
 
 ### 2.2 发现设备与可用能力
 在执行任何控制前，**必须先通过 `capabilities` 发现可用能力及其参数契约（JSON Schema）**：
 ```bash
 oai capabilities
 ```
-返回结果包含当前配对设备支持的所有能力（Capability ID）、版本（Version）以及输入输出 JSON Schema。严禁臆测不存在的能力或参数。
+返回 `selectedDevice` 和该设备支持的能力、版本与参数 Schema。设备选择顺序为显式 `--device`、可信当前会话来源、账号默认、唯一在线设备。多设备歧义时先向用户选择，不按名称或顺序猜测；明确目标离线不改投。查询后调用可显式复用其 deviceId；提交后重试使用原幂等键及目标，配对失效也不换手机重做。不要臆测能力或参数。
 
 ---
 
@@ -97,7 +97,7 @@ oai cancel <REQUEST_ID>
 如果 Agent 通过 MCP（`oai mcp`）操控设备，工具映射如下：
 
 1. **`oai_capabilities`**：
-   - 作用：查询当前凭据所绑定的 Android 设备支持的能力列表及输入 Schema。
+   - 作用：由 Core 选择本人设备并查询能力与参数 Schema；可选 `device_id` 固定目标。`oai_devices` 先列出本人设备。
 2. **`oai_invoke`**：
    - 参数：`capability_id` (str), `capability_version` (str), `parameters` (dict), `idempotency_key` (str), `agent_name` (str), `purpose` (str)。
    - 作用：提交设备操作请求。

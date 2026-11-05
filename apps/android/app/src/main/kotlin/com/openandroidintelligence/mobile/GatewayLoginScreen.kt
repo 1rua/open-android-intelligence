@@ -81,6 +81,10 @@ fun GatewayLoginScreen(
     onInvite: ((String,String,CharArray,String?)->Unit)? = null,
     onDeviceKey: ((String,String)->Unit)? = null,
     invitationPayload: String? = null,
+    accountLoginStep: AccountLoginStep = AccountLoginStep.None,
+    onAccountProof: (CharArray, Boolean) -> Unit = { proof, _ -> proof.fill('\u0000') },
+    onRecoveryCodesSaved: () -> Unit = {},
+    onCancelAccountLogin: () -> Unit = {},
 ) {
     var url by rememberSaveable { mutableStateOf("") }
     var username by rememberSaveable { mutableStateOf("") }
@@ -397,6 +401,9 @@ fun GatewayLoginScreen(
             }
         }
     }
+    if (accountLoginStep !== AccountLoginStep.None) {
+        AccountLoginDialog(accountLoginStep, onAccountProof, onRecoveryCodesSaved, onCancelAccountLogin)
+    }
     removingProfile?.let { profile ->
         AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text("移除账号") },
             text = { Text("将退出 ${profile.username} 并删除本地凭据与缓存，服务端账号不受影响。") },
@@ -409,6 +416,70 @@ fun GatewayLoginScreen(
             confirmButton = { TextButton(onClick = { password = ""; onReconfirmIdentity(normalizedUrl, username.trim()); showIdentityConfirmation = false }) { Text("已核对，继续") } },
             dismissButton = { TextButton(onClick = { showIdentityConfirmation = false }) { Text("取消") } })
     }
+}
+
+@Composable
+private fun AccountLoginDialog(
+    step: AccountLoginStep,
+    onProof: (CharArray, Boolean) -> Unit,
+    onCodesSaved: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    var input by remember(step) { mutableStateOf("") }
+    var recovery by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        properties = androidx.compose.ui.window.DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
+        title = { Text(when (step) {
+            is AccountLoginStep.Verification -> "二次验证"
+            is AccountLoginStep.Enrollment -> "绑定验证器"
+            is AccountLoginStep.RecoveryCodes -> "保存恢复码"
+            AccountLoginStep.None -> ""
+        }) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                when (step) {
+                    is AccountLoginStep.Verification -> {
+                        Text(if (recovery) "请输入一次性恢复码。" else "请输入验证器中的动态验证码。")
+                        TextButton(onClick = { input = ""; recovery = !recovery }) {
+                            Text(if (recovery) "使用动态验证码" else "使用恢复码")
+                        }
+                        OutlinedTextField(value = input, onValueChange = { input = it },
+                            label = { Text(if (recovery) "恢复码" else "动态验证码") }, singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = if (recovery) KeyboardType.Password else KeyboardType.NumberPassword))
+                        step.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
+                    is AccountLoginStep.Enrollment -> {
+                        Text("请在验证器中添加以下地址或密钥，然后输入动态验证码。")
+                        Text(step.provisioningUri)
+                        step.secret?.let { Text(it) }
+                        OutlinedTextField(value = input, onValueChange = { input = it }, label = { Text("动态验证码") },
+                            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
+                        step.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
+                    is AccountLoginStep.RecoveryCodes -> {
+                        Text("请将以下一次性恢复码安全保存。确认保存后才能完成登录。")
+                        step.codes.forEach { Text(it) }
+                    }
+                    AccountLoginStep.None -> Unit
+                }
+            }
+        },
+        confirmButton = {
+            if (step is AccountLoginStep.RecoveryCodes) {
+                TextButton(onClick = onCodesSaved) { Text("我已保存") }
+            } else {
+                TextButton(enabled = input.isNotBlank(), onClick = {
+                    val proof = input.toCharArray()
+                    input = ""
+                    onProof(proof, step is AccountLoginStep.Verification && recovery)
+                }) { Text("验证") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("取消") } },
+    )
 }
 
 /**

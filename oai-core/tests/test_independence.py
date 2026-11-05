@@ -37,6 +37,30 @@ def test_core_declares_its_dependencies_without_a_gateway_repository():
                 assert not (node.module or "").startswith(forbidden), path
 
 
+def test_registration_tests_collect_without_optional_hermes():
+    """The Core-only CI job must collect its own tests without the Adapter."""
+    script = """
+import importlib.abc
+import sys
+import pytest
+
+class NoOptionalHermes(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'oai_hermes_adapter' or fullname.startswith('oai_hermes_adapter.'):
+            raise ModuleNotFoundError("Optional Hermes Adapter is not installed", name=fullname)
+        return None
+
+sys.meta_path.insert(0, NoOptionalHermes())
+raise SystemExit(pytest.main(['--collect-only', '-q', sys.argv[1]]))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(Path(__file__).with_name("test_agent_registration.py"))],
+        cwd=REPOSITORY, env=os.environ.copy(), capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tests collected" in result.stdout
+
+
 def test_device_service_works_while_hermes_and_legacy_gateway_are_unimportable(tmp_path):
     environment = {key: value for key, value in os.environ.items() if not key.startswith(("HERMES_", "OAI_HERMES_", "OPEN_ANDROID_GATEWAY_CONTRACT_"))}
     environment.pop("OPEN_ANDROID_INTELLIGENCE_GATEWAY_ROOT", None)

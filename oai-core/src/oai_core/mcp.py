@@ -12,21 +12,28 @@ from .client import CoreClient
 
 def create_mcp(client: CoreClient) -> FastMCP:
     server = FastMCP("OAI", instructions=(
-        "Android operations use the authenticated OAI Core credential and its paired device. "
-        "Inspect capabilities first. Submit once with an idempotency key, then read status. "
+        "Android operations use the authenticated OAI Core account and its selected device. "
+        "List devices or inspect capabilities first. Submit once with an idempotency key, then read status. "
+        "If reauthentication is required, run oai login in a terminal; do not enter secrets into MCP. "
         "A cancellation request does not prove that a claimed side effect was prevented. "
         "Acknowledge results after they have been consumed."
     ))
 
+    @server.tool(name="oai_devices")
+    async def devices() -> dict[str, Any]:
+        """List paired devices visible to the authenticated account and its default."""
+        return await asyncio.to_thread(client.devices)
+
     @server.tool(name="oai_capabilities")
-    async def capabilities() -> dict[str, Any]:
-        """Read this credential's paired Android capability schemas and permissions."""
-        return await asyncio.to_thread(client.capabilities)
+    async def capabilities(device_id: str | None = None) -> dict[str, Any]:
+        """Read capability schemas for an optional device selected by Core."""
+        return await asyncio.to_thread(client.capabilities, device_id)
 
     @server.tool(name="oai_invoke")
     async def invoke(capability_id: str, capability_version: str,
                      parameters: dict[str, Any], idempotency_key: str,
-                     agent_name: str | None = None, purpose: str | None = None) -> dict[str, Any]:
+                     agent_name: str | None = None, purpose: str | None = None,
+                     device_id: str | None = None) -> dict[str, Any]:
         """Submit through Core. agent_name and purpose are mandatory untrusted display declarations.
 
         Missing declarations return CALLER_DECLARATION_REQUIRED, including calls
@@ -35,7 +42,7 @@ def create_mcp(client: CoreClient) -> FastMCP:
         if not idempotency_key:
             raise ValueError("IDEMPOTENCY_KEY_REQUIRED")
         return await asyncio.to_thread(client.invoke, capability_id, capability_version, parameters, idempotency_key,
-                                       agent_name=agent_name, purpose=purpose)
+                                       agent_name=agent_name, purpose=purpose, device_id=device_id)
 
     @server.tool(name="oai_request_status")
     async def status(request_id: str) -> dict[str, Any]:

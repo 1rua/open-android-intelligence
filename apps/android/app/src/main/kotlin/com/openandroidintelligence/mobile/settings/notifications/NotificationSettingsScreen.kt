@@ -48,20 +48,20 @@ internal fun NotificationSettingsScreen(
                     headline = "Agent 任务通知",
                     checked = uiState.replyNotificationsEnabled,
                     enabled = uiState.replyNotificationsWired,
-                    supporting = if (uiState.replyNotificationsWired) "显示任务进度与完成提醒，可在通知中回复" else "当前版本未接入任务通知",
+                    supporting = if (uiState.replyNotificationsWired) "显示进度与完成提醒，可直接回复" else "当前版本未接入任务通知",
                     onCheckedChange = onSetNotifications,
                 )
             }
             SectionLabel("Android 系统设置")
             SettingsSectionCard {
-                SettingsListItem("系统通知权限", supporting = if (uiState.replyNotificationsAllowed) "允许通知" else "系统未允许任务通知；上面的 App 偏好仍会保留")
-                SettingsNavigationItem("系统通知设置", supporting = "在 Android 中管理权限和通知类别", onClick = ::openSystemNotifications)
+                SettingsListItem("系统通知权限", supporting = if (uiState.replyNotificationsAllowed) "已允许" else "系统未允许；App 偏好仍保留")
+                SettingsNavigationItem("系统通知设置", supporting = "管理权限与通知类别", onClick = ::openSystemNotifications)
                 ConversationBubbleSettingsItem(uiState.replyNotificationsAllowed)
                 if (android.os.Build.VERSION.SDK_INT >= 36) {
-                    SettingsListItem("实时任务状态权限", supporting = if (uiState.liveUpdatesAllowed) "系统允许突出显示进行中的任务" else "系统尚未允许，或任务通知类别已关闭")
+                    SettingsListItem("实时任务状态权限", supporting = if (uiState.liveUpdatesAllowed) "已允许突出显示进行中的任务" else "未允许或类别已关闭")
                     LiveUpdatesSettingsItem()
                 } else {
-                    SettingsListItem("实时任务状态", supporting = "需要 Android 16 或更高版本")
+                    SettingsListItem("实时任务状态", supporting = "需 Android 16+")
                 }
             }
         }

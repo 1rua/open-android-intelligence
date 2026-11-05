@@ -13,6 +13,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun accountAuthenticationRequiresAnUnambiguousExplicitAgreement() = runBlocking {
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_legacy").accountAuthSupported)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(ACCOUNT_AUTH_HEADER, ACCOUNT_AUTH_VERSION)))
+            .negotiate("neg_core").accountAuthSupported)
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1", listOf(RawHeader(ACCOUNT_AUTH_HEADER, "v2")))
+            .negotiate("neg_unknown").accountAuthSupported)
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(ACCOUNT_AUTH_HEADER, "v1"), RawHeader(ACCOUNT_AUTH_HEADER.lowercase(), "v1")))
+            .negotiate("neg_ambiguous") }.exceptionOrNull() is IllegalArgumentException)
+    }
     @Test fun androidDeviceAuthorizationRequiresAnExplicitSingletonAgreement() = runBlocking {
         org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_old").androidDeviceAuthorization)
         assertTrue(clientWithVersion("2", "1", listOf(RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL)))

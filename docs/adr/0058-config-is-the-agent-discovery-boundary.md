@@ -1,7 +1,10 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-26
+superseded_by: ADR-0060
 ---
+
+> 历史决策：仅显式配置才可发现的限制已由 [ADR-0060](0060-authenticated-core-management-and-account-routing.md) 取代；真实在线探测与账号隔离要求继续有效。
 
 # 配置即发现边界，在线状态来自宿主探测而非配置推断
 

@@ -124,7 +124,7 @@
    - **严格契约守卫**：全字段封闭校验，关键请求搭载 Ed25519 签名、时间戳与 Nonce 防重放，写操作绑定幂等键。
 3. **Agent 宿主与原生会话端**（后端大脑）
    - **轻量会话桥（Session Adapter）**：Hermes 与 DSH 通过 loopback 会话桥接入；Codex 走原生 `app-server` 进程。
-   - **直读真实会话**：所有操作直通宿主原生存储，不建立影子会话数据库；未接入实例严格隔离，配置即发现边界。
+   - **直读真实会话**：操作直通宿主原生存储，不建立影子会话数据库；Agent 只在受支持的本用户位置或授权目录内发现，连接前仍须验证和注册。
    - **凭据与授权隔离**：共享 Agent 会话仅共享会话文本可见性，绝不继承手机设备凭据；设备操作必须通过受限凭据独立调用。
 
 ---
@@ -156,7 +156,7 @@
 | 运行端 | 最低要求 | 推荐配置 |
 | --- | --- | --- |
 | **Android 手机** | Android 12+ (`minSdk 31`) | Android 14+，推荐 8GB 内存 |
-| **Agent 宿主环境** | 运行 Hermes、OpenClaw 或 DSH (DeepSeek Harness) | 具备公网或 Tailscale 局域网可达性 |
+| **Core 服务端** | Python 3.11+；Agent 宿主为可选组件 | 手机与服务端网络互通，推荐 HTTPS |
 | **开发者编译工具链** *(仅参与源码开发时需要)* | Node.js `24.18.0` + npm `11.16.0`、JDK 21、Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (带 `wasm32-unknown-unknown` 目标) |
 
 ---
@@ -175,61 +175,40 @@
 
 ### 2. 服务端部署与 Agent 接入
 
-**推荐方案（全新部署）**：部署 [OAI Core](oai-core/README.md)，一个服务地址搞定手机连接与多 Agent 会话直通。
+**推荐方案（全新部署）**：部署 [OAI Core](oai-core/README.md)，手机和 CLI 使用同一个服务地址；不接入 Agent 也能使用设备服务。
 
-#### 🚀 极速一键安装 / 更新（推荐）
-
-通过 `curl` 运行自动化安装向导，脚本将自动检测系统依赖、安装或更新 OAI Core、探测本机 Agent（如 Hermes、DSH、Codex），提示是否一同安装或接入所选 Agent，再引导完成账号与端口配置。接受后，Hermes 插件会尝试自动安装并启用；DSH 会在工具可用时自动注册 bundle，否则显示手动命令；Codex 配置写入 Core 配置。拒绝 Agent 接入时仍可只安装 OAI Core。已有账号不会被向导重置：
+在可信检出的仓库根目录运行安装向导，按提示创建首个 Core 管理员，并将只显示一次的管理员恢复码离线保管：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+./scripts/install.sh
 ```
 
-若后续需要**重新配置**端口、初始化新账号或调整 Agent 接入，可随时运行独立配置脚本：
+已有部署的安装、更新和配置需要验证**现有 Core 管理员账号及其 Core 登录密码**；本机用户、root 和简单确认都不能代替。旧部署迁移需先指定原有账号并验证原密码，保留主密钥和数据。安装入口及远端一键安装仍在完善，不能把本说明当作全流程验收结果。详见[安装与恢复](scripts/README.md)。
+
+安装后，在服务端本机用管理员身份创建日常账号；按提示隐藏输入管理员密码，再为新账号设置密码。新账号默认为普通用户，无需配置设备或 Agent：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+oai account create alice
 ```
 
-> **提示**：
-> - 若已克隆本仓库，可在根目录直接运行 `./scripts/install.sh` 进行就地安装与交互式配置。
-> - 在本地仓库中亦可随时运行 `./scripts/setup.sh` 进行独立配置。
-> - 向导安装完成后，会自动将 `~/.local/bin` 加入环境变量 PATH，并在其中部署 `oai` 命令：**直接输入 `oai` 即可一键启动 Core 服务**；带参数时（如 `oai devices`、`oai mcp`）作为 CLI 客户端管理工具。
+通过 `oai setup` 管理网络、账号、Agent 和服务；也可运行 `./scripts/setup.sh`。服务可通过安装时选择的自启动方式或在安装目录运行 `./start-core.sh` 启动。完成网络及 TLS 配置后，在下方手机步骤登录同一账号。
 
-<details open>
-<summary><b>手动安装 OAI Core 服务端（点击收起）</b></summary>
-
-需 Python 3.11+。在仓库根目录安装与启动：
+手机完成连接后，在自己的终端登录并查看设备及能力。首次跨机器使用时输入可信的 Core 地址一次，后续可复用；登录时不需要设备 ID：
 
 ```bash
-# 1. 创建虚拟环境并安装 oai-core
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ./oai-core
-
-# 2. 服务端本地创建账号（交互式输入密码）
-oai account create --config oai-core/examples/core.json --username alice
-
-# 3. 启动 Core 统一服务监听（默认 127.0.0.1:8045）
-oai serve --config oai-core/examples/core.json
-```
-
-服务就绪后，在 `oai-core/examples/core.json` 的 `agents` 数组中按需接入目标 Agent：
-- **DSH**：安装轻量 bundle [`integrations/dsh-session-adapter`](integrations/dsh-session-adapter/README.md)（默认端口 8791）；
-- **Hermes**：安装轻量插件 [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md)（默认端口 8792，需账号一对一映射）；
-- **Codex**：配置 `codex app-server` 与专属 `codexHome`，通过 `envFrom` 映射模型凭据。
-
-手机端与服务端配对后，可在操作人的独立环境配置 `oai` 或 MCP 调用凭据。能力可用性仍须由 Android 检查；本分支的授权实现与验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)，e5 `dev` 基线排查见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)：
-```bash
-oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
+oai login --url https://core.example
+oai devices
 oai capabilities
-oai mcp  # 启动标准 FastMCP stdio 接口
+# 按 capabilities 返回的实际 ID、版本和参数调用
+# 多台设备时可在 capabilities 或 invoke 后加 --device DEVICE_ID
+oai invoke CAPABILITY_ID --version VERSION --parameters '{}' --agent-name my-agent --purpose '用户请求的操作'
 ```
-</details>
+
+用户名、密码和必要的验证码按终端提示输入，不写入命令参数或环境变量。服务端 2FA 默认关闭；管理员开启后才要求二次验证，有效会话正常续期不反复输入验证码。设备能力仍由 Android 的开关、系统权限与必要确认决定。调用示例、默认设备和 MCP 见 [Core 使用说明](oai-core/README.md)。
 
 #### 卸载 OAI Core
 
-卸载脚本支持 Linux/macOS，使用系统 Python 3.11+ 标准库，可直接通过 `curl | bash` 运行。两种模式都将待移除内容移动到 `/tmp/open-android-intelligence-trash/<uid>/<批次>/`，不做安全擦除：
+卸载脚本支持 Linux/macOS，使用系统 Python 3.11+ 标准库；已有部署需要先验证 Core 管理员身份。两种模式都将待移除内容移动到 `/tmp/open-android-intelligence-trash/<uid>/<批次>/`，不做安全擦除：
 
 - **保留配置（默认，`--keep-config`）**：移走 `.venv`、`start-core.sh`，以及指向本次安装的 `oai` 快捷命令和开机项；保留源代码、`core.json` 和 `runtime` 全部数据。再次对同一目录运行安装器即可原地重装。
 - **整体回收（`--purge`）**：将整个安装目录移入回收目录。位于安装目录之外的 `storageRoot`、`masterKeyFile`、`codexHome` 以及 Hermes、DSH、Codex 宿主本身均保留，脚本会提示外置数据位置，不自动清理共享数据。
@@ -242,7 +221,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
 ```
 
-默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 跳过确认，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
+默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 不代替管理员认证，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
 
 <details>
 <summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>
@@ -252,7 +231,7 @@ curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/
 #### 配置 Hermes 宿主
 ```bash
 hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-hermes open-android-intelligence account create -u my_user -p <设置密码> --confirm-local
+# 旧版建号方式请查阅对应版本的宿主文档；不要把密码写入命令行。
 ```
 
 #### 配置 OpenClaw 宿主
@@ -274,9 +253,9 @@ cd dsh-android-gateway && npm ci && npm run build
 
 ### 3. 手机端连接网关
 
-1. 打开手机 App，输入你的网关访问地址（支持 HTTP/HTTPS，推荐内网或域名反代地址）。
-2. 输入刚才创建的账号与密码，点击「连接配对」。
-3. 手机端成功完成握手后，证书信息与凭据将安全保存在本机 Android Keystore 中，后续启动无需重复输密。
+1. 打开手机 App，输入可从手机访问的 Core 地址；推荐使用可信 HTTPS。
+2. 输入管理员创建的日常账号与密码。若服务端开启了 2FA，按提示绑定验证器或输入验证码。
+3. 完成连接与配对后，在手机上安装并启用需要的设备插件。有效会话续期不重复要求验证码。
 
 <details>
 <summary><b>HTTPS 证书公钥指纹（SPKI SHA-256）配置指引</b></summary>
@@ -299,7 +278,7 @@ OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位十六进制字�
 
 ### 4. 设备能力按需启用
 
-在手机插件管理中安装并启用设备插件后，每项能力采用独立总开关和三级模式，新能力默认每次手动。全局策略在切换Core、账号或Agent后保持；系统权限、被动范围及独立主动推送许可各自生效。Agent 使用已认证且绑定目标设备的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用。
+在手机插件管理中安装并启用设备插件后，每项能力采用独立总开关和三级模式，新能力默认每次手动。全局策略在切换 Core、账号或 Agent 后保持；系统权限、被动范围及独立主动推送许可各自生效。Agent 使用已认证的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用；必要时用 `--device` 选择本人设备。
 
 旧 `dev` 基线可能显示“当前 Gateway 账号未启用；请通过 Gateway 能力配置开启”。这是旧授权判断与新架构不一致的表现，不能把回到 Hermes 配置能力开关作为目标操作流程。Android 唯一授权修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 并完成真机验收；实现和验证状态见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 

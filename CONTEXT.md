@@ -2,7 +2,7 @@
 
 open-android-intelligence 让 Android 设备通过 OAI Core 接受多个 Agent 的合法请求，由 Android 客户端独立决定本机数据与设备操作的许可。产品包括 Android 宿主、可安装设备插件、OAI Core 和各 Agent 的原生会话适配器。
 
-设备能力授权术语遵循 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 与[全局授权规格](docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
+设备能力授权术语遵循 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 与[全局授权规格](docs/superpowers/specs/2026-11-01-global-device-authorization.md)；Core 管理与设备路由见 [ADR-0060](docs/adr/0060-authenticated-core-management-and-account-routing.md)。
 
 ## Android 端
 
@@ -165,8 +165,8 @@ Android 设备沿用既有配对、认证、签名与设备事件语义到达服
 _Avoid_: 设备调用面、原生会话面、聊天通道
 
 **设备调用面（Device Invocation Surface）**:
-服务端本机的命令行、接口与工具入口凭受限设备凭据调用设备能力所经过的接口面；它复用账号、设备绑定和 Android 发布的能力状态，不持有第二份设备能力许可，也不改变手机的本机确认边界。
-_Avoid_: 设备协议面、账号登录会话、管理员入口
+已认证账号通过命令行、接口或工具请求设备能力的入口；目标设备须属于该账号，设备能力的最终许可仍由 Android 决定。
+_Avoid_: 设备协议面、管理员入口、设备能力授权
 
 **原生会话面（Native Session Surface）**:
 宿主原生 Agent 会话的列举、读取、创建、发送与生命周期操作所经过的接口面；它不接受设备身份或账号覆盖，也不因会话可见而给出任何设备授权。
@@ -188,9 +188,25 @@ _Avoid_: 共享设备授权、跨账号 Gateway、团队租户
 原生会话面接受的一次请求的体积上限，即紧凑后的 UTF-8 JSON 必须严格小于一 MiB；超限请求在记录回执或开始流式输出之前被明确拒绝，因此不会留下结果未知的操作。
 _Avoid_: 附件大小限制、Gateway 消息上限、内存配额
 
-**受限设备凭据（Scoped Device Credential）**:
-为服务端本机的设备调用签发、同时绑定账号、设备、配对代次与授权版本的短期凭据；配对解除、改密或授权变更即刻使其失效，它只授权设备能力调用，不构成账号身份，也不授予任何原生会话可见性。
-_Avoid_: 账号密码、刷新凭据、会话桥令牌、永久令牌
+**账号级调用凭据（Account-scoped Invocation Credential）**:
+标识已认证 Core 账号及其登录会话的设备调用凭据；登录时不预选设备，具体请求仍须验证目标设备归属和配对关系。
+_Avoid_: Android 配对私钥、管理员授权、共享会话桥令牌
+
+**旧设备限定凭据（Legacy Device-bound Credential）**:
+兼容旧版调用时仍绑定原账号、设备和配对代次的凭据；它不会因新账号级登录规则自动扩大范围。
+_Avoid_: 账号级调用凭据、默认设备、管理员授权
+
+**Core 管理员（Core Administrator）**:
+经 Core 账号认证后有权管理实例配置、账号和安全策略的角色；它不因此获得其他账号的设备或会话内容。
+_Avoid_: root、系统用户、设备所有者
+
+**管理员本机恢复码（Local Administrator Recovery Code）**:
+预先登记、仅用于服务器本机恢复管理员访问的一次性证明，与普通账号二次验证备用码分开。
+_Avoid_: 账号密码、普通 MFA 备用码、设备密钥
+
+**设备路由目标（Device Routing Target）**:
+在已认证账号允许的设备中为一次请求选定的 Android 设备；请求接受后目标保持不变，离线不改投。
+_Avoid_: 登录身份、设备能力许可、设备名称
 
 **旧 Bridge（Legacy Bridge）**:
 被 Gateway Protocol v2 与宿主内 Gateway 适配器取代的独立 Docker/systemd Device Bridge；迁移期间仅作为既有安全语义、存储逻辑、测试和 tsnet 证据的冻结来源，不再获得新功能。
@@ -201,8 +217,8 @@ _Avoid_: Gateway Core、兼容层、继续部署的生产服务
 _Avoid_: 部署操作员、共享管理员、用户名
 
 **账号登录会话（Account Login Session）**:
-Android 通过账号密码、账号刷新凭据或账号绑定的设备密钥建立的短期 Gateway 会话；会话证明当前账号与设备上下文，但不会越过 Android 本地能力限制或独立后台同步许可。
-_Avoid_: 保存的密码、永久登录、全局设备授权
+证明当前 Core 账号身份的可撤销会话；CLI 登录无需预先指定设备，Android 的设备会话还包含已验证的安装实例与配对上下文。
+_Avoid_: 保存的密码、默认设备、全局设备授权
 
 **配对（Pairing）**:
 一个 Android 安装实例与一个账号所属逻辑 Gateway 之间独立建立的信任关系；所有连接方式先确定账号，每个配对隔离连接身份、消息、附件和传输状态；设备能力策略属于 Android 安装实例。
@@ -437,8 +453,8 @@ Android 设置中用于管理插件、权限、安全、审计和开发者信任
 _Avoid_: 无恢复入口的界面接管、WebView 管理台、插件拥有的紧急停用
 
 **Gateway 管理入口（Gateway Management Surface）**:
-Agent 宿主界面、统一服务进程自带的本机命令行，以及具备等价能力的其他本地入口，用于账号、邀请、证书、备份、连接状态和审计管理；不提供额外设备能力授权。命令行只面向服务端本机运维，不构成远程管理面，敏感运维操作仍要求安全的本机确认。
-_Avoid_: 仅宿主界面、仅命令行、远程无确认管理、把本机管理命令当作设备凭据
+服务端用于账号、配置、安全和服务管理的入口；Core 全局写操作要求经认证的 Core 管理员，不构成设备能力授权。
+_Avoid_: 系统用户权限、仅本机确认、设备调用凭据
 
 **密钥轮换证明（Key Rotation Proof）**:
 由旧信任材料对新密钥或证书作出的连续性声明；它减少重新建立身份的歧义，但敏感作者或证书变化仍可要求用户确认。

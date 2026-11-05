@@ -71,8 +71,8 @@ internal fun TemporaryApprovalsSection(grants: PairingGrantStateHolder, host: Pr
     }
     SettingsSectionCard {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-            Text("临时批准仅在本进程有效，并严格匹配能力、操作与完整参数摘要；不同参数不会沿用批准。")
-            if (revision == null) Text("无法读取当前本机授权版本。")
+            Text("临时授权仅在应用运行期间有效，仅对相同参数请求生效。")
+            if (revision == null) Text("无法读取当前授权状态。")
             else if (approvals.isEmpty()) Text("当前没有生效的临时授权。")
             approvals.forEach { approval ->
                 val hostRevision = host?.revision?.collectAsState()?.value
@@ -84,10 +84,10 @@ internal fun TemporaryApprovalsSection(grants: PairingGrantStateHolder, host: Pr
                     DeviceOperation.WRITE -> "修改"
                     DeviceOperation.CONTROL -> "控制"
                 }
-                Text("操作：$operation · ${if (approval.onlyRequestId != null) "仅本次请求" else "有效期内参数完全相同的请求"}")
+                Text("操作：$operation · ${if (approval.onlyRequestId != null) "单次请求有效" else "相同参数请求均有效"}")
                 approval.displaySummary.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                if (approval.displaySummary.isEmpty()) Text("没有保存可读参数说明；只有完整参数一致的请求能使用此授权。", style = MaterialTheme.typography.bodySmall)
-                Text("参数校验摘要：${approval.scope.parametersSha256}", style = MaterialTheme.typography.bodySmall)
+                if (approval.displaySummary.isEmpty()) Text("无参数详情，仅相同参数有效。", style = MaterialTheme.typography.bodySmall)
+                Text("参数摘要：${approval.scope.parametersSha256}", style = MaterialTheme.typography.bodySmall)
                 val seconds = remember(approval, clockTick) { remainingSeconds(controller.remainingMillis(approval)) }
                 Text("剩余约 $seconds 秒", style = MaterialTheme.typography.bodySmall)
                 TextButton(onClick = { revokeId = approval.id },

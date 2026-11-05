@@ -263,12 +263,12 @@ class HermesSessionAdapter:
         if not self.descriptor()["capabilities"]["send"]:
             raise AdapterError("UNSUPPORTED_CAPABILITY", 409)
         device_id = getattr(principal, "device_id", None) or getattr(getattr(principal, "context", None), "device_id", None)
-        if not device_id:
-            # The existing Hermes dispatch establishes device origin from a
-            # verified pairing. Never fabricate one for a CLI service token.
-            raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
         client_id, loop = client_message_id or "core_" + uuid.uuid4().hex, asyncio.get_running_loop()
         attachment_ids = list(attachment_ids or [])
+        # Account-only logins may converse, but attachments always retain the
+        # original Android device and pairing ownership checks.
+        if attachment_ids and (not device_id or getattr(principal, "pairing_generation", None) is None):
+            raise AdapterError("DEVICE_CONTEXT_REQUIRED", 403)
         if is_host_command(text) and not attachment_ids:
             def validate_control() -> None:
                 with self._account(principal) as account:
@@ -317,10 +317,15 @@ class HermesSessionAdapter:
                         key = f"message-device:{identity}"
                         row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", (key,)).fetchone()
                         origin = json.loads(row[0])
+                        # The legacy store supplies generation=1 for unknown
+                        # devices, including None. Do not persist fabricated
+                        # pairing authority for an account-only message.
                         for field, attribute in (("pairingGeneration", "pairing_generation"), ("grantRevision", "grant_revision")):
                             value = getattr(principal, attribute, None)
-                            if value is not None:
+                            if value is not None and device_id:
                                 origin[field] = value
+                            elif not device_id:
+                                origin.pop(field, None)
                         account.store.database.execute("UPDATE account_metadata SET value=? WHERE key=?", (json.dumps(origin), key))
                 cursor = account.store.database.execute(
                     "SELECT event_id FROM events ORDER BY sequence DESC LIMIT 1").fetchone()
@@ -338,9 +343,19 @@ class HermesSessionAdapter:
             # an HTTP observer cannot strand a transaction already in a worker.
             accepted, cursor, initial_generation = await asyncio.to_thread(accept)
             body = {"clientMessageId": client_id, "text": text, "attachmentIds": attachment_ids}
-            task = asyncio.create_task(self.runtime._notify_agent_inbound(
-                f"/open-android-intelligence/v2/conversations/{session_id}/messages",
-                json.dumps(body).encode(), {"data": accepted}, principal.account_id))
+            # A delegated origin is passed only in this turn's task context; it
+            # is never persisted in message history or promoted to a login token.
+            from .context import trusted_turn
+            origin_token = getattr(principal, "origin_context", None)
+            context = trusted_turn.set({"originContext": origin_token, "originClientMessageId": client_id,
+                                        "originConversationId": session_id, "originAccountId": principal.account_id}
+                                       if origin_token else None)
+            try:
+                task = asyncio.create_task(self.runtime._notify_agent_inbound(
+                    f"/open-android-intelligence/v2/conversations/{session_id}/messages",
+                    json.dumps(body).encode(), {"data": accepted}, principal.account_id))
+            finally:
+                trusted_turn.reset(context)
             self.runtime._track_background_task(task, "core-session-message")
             return accepted, cursor, initial_generation, task
 

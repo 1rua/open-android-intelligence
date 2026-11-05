@@ -116,7 +116,7 @@ internal fun AppearanceEditorContent(
             if (showAdvanced || supportsDynamicColor()) {
                 AppearanceSwitch(
                     headline = "系统动态取色",
-                    supporting = if (showAdvanced) "主题色由系统壁纸推导；关闭后使用预设色板。Android 12 及以上支持动态取色。" else "从当前壁纸提取配色",
+                    supporting = if (showAdvanced) "主题色由壁纸提取；关闭后使用预设色板" else "从当前壁纸提取配色",
                     checked = settings.dynamicColor,
                     onCheckedChange = { value -> save("color") { onSetDynamicColor(value) } },
                 )
@@ -143,11 +143,11 @@ internal fun AppearanceEditorContent(
             if ("palette" in failures) AppearanceSaveFailure()
             Text(
                 text = if (settings.dynamicColor && allowPaletteWhileDynamic) {
-                    "动态取色已开启；选择预设色板会关闭动态取色。"
+                    "已开启动态取色；选用预设色板将关闭动态取色。"
                 } else if (settings.dynamicColor) {
-                    "动态取色已开启；关闭上面的开关即可选择预设色板。"
+                    "已开启动态取色；关闭开关后可选预设色板。"
                 } else {
-                    "当前使用预设色板；打开动态取色会改用系统壁纸配色。"
+                    "使用预设色板；开启后将改用壁纸配色。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -159,7 +159,7 @@ internal fun AppearanceEditorContent(
             SettingsSectionCard {
                 AppearanceSwitch(
                     headline = "图标动态取色",
-                    supporting = "跟随桌面主题配色，需要 Android 13 或以上并在桌面开启主题图标。",
+                    supporting = "跟随桌面主题配色，需在系统桌面开启主题图标",
                     checked = settings.dynamicIconColor,
                     onCheckedChange = { value -> save("icon") { checkNotNull(onSetDynamicIconColor)(value) } },
                 )
@@ -169,7 +169,7 @@ internal fun AppearanceEditorContent(
             SettingsSectionCard {
                 AppearanceSwitch(
                     headline = "减少动画",
-                    supporting = "减少滑动和缩放，保留轻微淡入淡出；同时遵循系统动画设置。",
+                    supporting = "减少滑动与缩放过渡；遵循系统动效设置",
                     checked = settings.reduceMotion,
                     onCheckedChange = { value -> save("motion") { checkNotNull(onSetReduceMotion)(value) } },
                 )

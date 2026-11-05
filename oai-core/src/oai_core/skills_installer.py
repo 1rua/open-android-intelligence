@@ -71,11 +71,12 @@ def install_skills_to_hosts(home: Path | None = None,
         try:
             skill_target = dest_dir / "oai-client"
             skill_target.parent.mkdir(parents=True, exist_ok=True)
-            # Safe replacement: remove existing target directory if present
-            if skill_target.is_symlink() or skill_target.is_file():
-                skill_target.unlink()
-            elif skill_target.is_dir():
-                shutil.rmtree(skill_target, ignore_errors=True)
+            # Retain previous content for review; never permanently delete an
+            # operator's existing skill or follow a symlink during replacement.
+            if skill_target.exists() or skill_target.is_symlink():
+                import secrets
+                retained = dest_dir / ("oai-client.previous-" + secrets.token_hex(8))
+                skill_target.rename(retained)
 
             shutil.copytree(source_dir, skill_target)
             installed_paths.append(skill_target)

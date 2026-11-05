@@ -33,7 +33,7 @@ class PairingInvites:
         self._prune(current)
         invitation_id='invite_'+str(uuid.uuid4())
         code=secrets.token_hex(8).upper(); expires_at=iso_millis(current+timedelta(seconds=ttl_seconds))
-        self._put('pairing-invite:'+hashlib.sha256(code.encode()).hexdigest(),{'invitationId':invitation_id,'expiresAt':expires_at,'credential':self._credential(),'pairingGeneration':self.account.pairing_generation()})
+        self._put('pairing-invite:'+hashlib.sha256(code.encode()).hexdigest(),{'invitationId':invitation_id,'expiresAt':expires_at,'credential':self._credential(),'pairingGeneration':self.account.pairing_generation(), 'authEpoch': getattr(self.store, 'identity_store', None).account(self.account.account_id)['authEpoch'] if getattr(self.store, 'identity_store', None) is not None else None})
         fingerprint='sha256:'+hashlib.sha256(_jcs(gateway_identity or {}).encode()).hexdigest()
         return {'invitationId':invitation_id,'code':code,'expiresAt':expires_at,'gatewayIdentityFingerprint':fingerprint,'qrPayload':'oai://pair?'+urlencode({'gateway':gateway_url.rstrip('/'),'account':self.account.account_id,'invitationId':invitation_id,'code':code,'expiresAt':expires_at,'identityFingerprint':fingerprint})}
     def challenge(self,code,negotiation_id,installation,now=None):
@@ -58,8 +58,18 @@ class PairingInvites:
             except Exception as exc: raise GatewayError('AUTHENTICATION_FAILED') from exc
             self.store.database.execute('DELETE FROM account_metadata WHERE key IN (?,?)',(key,saved['inviteKey']))
             installation=saved['installation']; sessions=self.account.sessions
-            bundle=sessions._issue(installation['installationId'],'dev_'+str(uuid.uuid4()),current)
+            identity = getattr(self.store, 'identity_store', None)
+            auth_epoch = invitation.get('authEpoch') if identity is not None else None
+            if identity is not None:
+                if identity._policy()[0] or auth_epoch is None:
+                    raise GatewayError('MFA_REQUIRED')
+                identity.assert_epoch(self.account.account_id, auth_epoch)
+            bundle=sessions._issue(installation['installationId'],'dev_'+str(uuid.uuid4()),current,auth_epoch=auth_epoch)
             sessions._register_device_key(bundle['deviceId'],installation['installationId'],installation['devicePublicKey'],current)
+            identity = getattr(self.store, 'identity_store', None)
+            if identity is not None:
+                self.store.database.execute('INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)',
+                    ('core-device-auth-epoch:' + bundle['deviceId'], str(auth_epoch)))
             self.account.audit.append('session.invite.created',{'accountId':self.account.account_id,'deviceId':bundle['deviceId']},{'method':'account-invitation'},correlation_id,current)
             bundle.update({'pairingGeneration':self.account.pairing_generation(),'grantRevision':1})
             return bundle
@@ -68,6 +78,12 @@ class PairingInvites:
         current=_now(now); self._prune(current)
         row=self.store.database.execute('SELECT public_key,pairing_generation,grant_revision FROM device_keys WHERE device_id=? AND installation_id=?',(device_id,installation_id)).fetchone()
         if not row: raise GatewayError('AUTHENTICATION_FAILED')
+        identity = getattr(self.store, 'identity_store', None)
+        if identity is not None:
+            epoch = self.store.database.execute('SELECT value FROM account_metadata WHERE key=?', ('core-device-auth-epoch:' + device_id,)).fetchone()
+            if epoch is None:
+                raise GatewayError('ACCOUNT_LOGIN_UPGRADE_REQUIRED')
+            identity.assert_epoch(self.account.account_id, int(epoch[0]))
         facts={'challenge':'challenge_'+str(uuid.uuid4()),'accountId':self.account.account_id,'negotiationId':negotiation_id,'installationId':installation_id,'deviceId':device_id,
                'nonce':secrets.token_urlsafe(32),'expiresAt':iso_millis(current+timedelta(seconds=60))}
         self._put('pairing-challenge:'+facts['challenge'],{'facts':facts,'publicKey':row[0],'pairingGeneration':row[1],'credential':self._credential()})
@@ -85,6 +101,12 @@ class PairingInvites:
                 Ed25519PublicKey.from_public_bytes(base64.urlsafe_b64decode(row[0]+'=')).verify(decoded,b'OPEN_ANDROID_INTELLIGENCE_DEVICE_SESSION_V1\n'+_jcs(facts).encode())
             except Exception as exc: raise GatewayError('AUTHENTICATION_FAILED') from exc
             self.store.database.execute('DELETE FROM account_metadata WHERE key=?',(key,))
-            bundle=self.account.sessions._issue(body['installationId'],body['deviceId'],current)
+            identity = getattr(self.store, 'identity_store', None)
+            epoch_row = self.store.database.execute('SELECT value FROM account_metadata WHERE key=?', ('core-device-auth-epoch:' + body['deviceId'],)).fetchone() if identity is not None else None
+            if identity is not None:
+                if identity._policy()[0] or epoch_row is None:
+                    raise GatewayError('MFA_REQUIRED')
+                identity.assert_epoch(self.account.account_id, int(epoch_row[0]))
+            bundle=self.account.sessions._issue(body['installationId'],body['deviceId'],current,auth_epoch=int(epoch_row[0]) if epoch_row else None)
             self.account.audit.append('session.device.created',{'accountId':self.account.account_id,'deviceId':body['deviceId']},{'method':'device-key'},correlation_id,current)
             return bundle

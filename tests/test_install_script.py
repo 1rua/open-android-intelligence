@@ -1,603 +1,565 @@
-"""Portable installer regressions: no host SDK, personal paths or live accounts."""
+"""Installer regression tests using real administrator identity and safe host isolation.
+
+Migration map: deleted Shell guide/menu/plugin/autostart helpers are covered by
+scripts_runtime and configuration module behavior; shell tests invoke the actual
+entrypoints.  Legacy adapter envs are migration inputs, never startup secrets.
+"""
 from contextlib import closing
 import errno
 import json
 import os
 from pathlib import Path
-import runpy
+import pty
+import select
 import shlex
+import shutil
+import signal
 import stat
 import subprocess
 import sys
+import termios
+import time
 
 import pytest
 
+from oai_core import configuration, scripts_runtime
+from oai_core.gateway.account_paths import account_paths
+from oai_core.identity import IdentityStore, issue_bootstrap_proof
+from oai_core.management import LocalRecovery
+from oai_core.server import create_core, load_config
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-HELPER = runpy.run_path(str(REPOSITORY / "scripts" / "core_setup.py"))
+PASSWORD = 'synthetic-installer-password'
+TOKEN = 'synthetic-bridge-token-contains-quote-and-dollar-1234567890'
 
 
 @pytest.fixture(autouse=True)
-def isolated_host_configuration(tmp_path, monkeypatch):
-    """A direct test invocation must never discover the operator's host files."""
-    isolated_user = tmp_path / "isolated-user"
-    hermes = isolated_user / ".hermes"
-    dsh = isolated_user / ".dsh-cline"
-    hermes.mkdir(parents=True)
-    dsh.mkdir(parents=True)
-    monkeypatch.setenv("HOME", str(isolated_user))
-    monkeypatch.setenv("HERMES_HOME", str(hermes))
-    monkeypatch.setenv("DSH_HOME", str(dsh))
-    for name in ("OAI_HERMES_SESSION_TOKEN", "OAI_DSH_ADAPTER_TOKEN", "OAI_INIT_ADMIN_PASSWORD"):
+def isolated_host(tmp_path, monkeypatch):
+    home = tmp_path / 'home'
+    home.mkdir()
+    for name in ('.agents', '.claude', '.codex', '.hermes', '.codebuddy', '.trae', '.dsh-cline', '.dsh'):
+        (home / name).write_text('Unrelated host configuration.\n')
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'absent-hermes'))
+    monkeypatch.setenv('DSH_HOME', str(tmp_path / 'absent-dsh'))
+    for name in ('OAI_HERMES_SESSION_TOKEN', 'OAI_DSH_ADAPTER_TOKEN', 'OAI_INIT_ADMIN_PASSWORD'):
         monkeypatch.delenv(name, raising=False)
 
 
-def run_bash(source, *, environment=None):
-    result = subprocess.run(["bash", "-c", source], cwd=REPOSITORY,
-                            env=environment, capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr + result.stdout
-    return result
+def bootstrap(root):
+    root.mkdir(parents=True, exist_ok=True)
+    database, storage = root / 'runtime/security/identity.sqlite', root / 'runtime/accounts'
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b'bootstrap\n')
+        os.close(write_fd)
+        write_fd = -1
+        proof = issue_bootstrap_proof(database, storage, confirmation_fd=read_fd)
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+    store = IdentityStore(database, create=True, bootstrap_proof=proof)
+    account = store.bootstrap('alice', PASSWORD, confirmed=True)
+    handle = store.begin_management('alice', PASSWORD)
+    LocalRecovery(store).register(handle, confirmed=True)
+    return store, handle, account['accountId']
 
 
-@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
-def test_script_syntax(name):
-    result = subprocess.run(["bash", "-n", str(REPOSITORY / "scripts" / name)], capture_output=True, text=True)
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
-def test_script_header_contains_curl_command(name):
-    content = (REPOSITORY / "scripts" / name).read_text(encoding="utf-8")
-    expected = f"curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/{name} | bash"
-    assert expected in content
-
-
-def test_install_script_resolves_its_own_repository():
-    result = run_bash(f'source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}\nresolve_repo_root\nprintf "%s\\n" "$TARGET_DIR" "$IS_LOCAL_REPO"')
-    assert result.stdout.splitlines()[-2:] == [str(REPOSITORY), "1"]
+def configure(root, store, handle, port=8045, selected=()):
+    return configuration.configure(root, '127.0.0.1', port, 'alice', list(selected), None,
+                                   store=store, handle=handle)
 
 
 @pytest.fixture
-def install_directory(tmp_path):
-    binary = tmp_path / ".venv" / "bin"
+def deployment(tmp_path):
+    root = tmp_path / 'deployment'
+    store, handle, account_id = bootstrap(root)
+    configure(root, store, handle, selected=('codex',))
+    core = create_core(load_config(root / 'core.json'))
+    with closing(core.open_gateway_account(account_id)) as account:
+        assert account.store is not None
+    core.identity_store.close()
+    yield root, store, handle, account_id
+    store.close()
+
+
+def legacy_agent(root, token=TOKEN, *, source='tokenEnv'):
+    path = root / 'core.json'
+    config = json.loads(path.read_text())
+    agent = {'id': 'hermes', 'type': 'hermes', 'url': 'http://127.0.0.1:8792',
+             'accounts': {'alice': 'native-alice'}, source: 'OAI_HERMES_SESSION_TOKEN' if source == 'tokenEnv' else token}
+    config['agents'].append(agent)
+    path.write_text(json.dumps(config))
+    if source == 'tokenEnv' and token is not None:
+        configuration.private_write(root / 'runtime/secrets/adapter-tokens.env',
+                                    'OAI_HERMES_SESSION_TOKEN=' + shlex.quote(token) + '\n')
+    return config
+
+
+@pytest.mark.parametrize('name', ['install.sh', 'setup.sh'])
+def test_script_syntax(name):
+    result = subprocess.run(['bash', '-n', str(REPOSITORY / 'scripts' / name)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_install_script_header_contains_curl_command():
+    content = (REPOSITORY / 'scripts/install.sh').read_text(encoding='utf-8')
+    assert 'curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash' in content
+
+
+def prepare_source_root(root):
+    metadata = root / 'oai-core/pyproject.toml'
+    metadata.parent.mkdir(parents=True)
+    shutil.copy2(REPOSITORY / 'oai-core/pyproject.toml', metadata)
+    shutil.copytree(REPOSITORY / 'oai-core/src', root / 'oai-core/src',
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+    scripts = root / 'scripts'
+    scripts.mkdir()
+    shutil.copy2(REPOSITORY / 'scripts/installer.py', scripts / 'installer.py')
+
+
+@pytest.mark.parametrize('name', ['install.sh', 'setup.sh'])
+def test_entrypoint_no_terminal_aborts_without_writes(name, tmp_path, monkeypatch):
+    root = tmp_path / 'no-terminal'
+    root.mkdir()
+    prepare_source_root(root)
+    monkeypatch.setenv('OAI_DIR', str(root))
+    result = subprocess.run(['bash', str(REPOSITORY / 'scripts' / name), '--dir', str(root)],
+                            stdin=subprocess.DEVNULL, start_new_session=True, capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    assert '终端' in result.stderr
+    assert not (root / 'core.json').exists()
+    assert not (root / 'runtime').exists()
+    assert not (root / '.venv').exists()
+
+
+def test_setup_refuses_untrusted_missing_installer(tmp_path):
+    script = tmp_path / 'setup.sh'
+    script.write_bytes((REPOSITORY / 'scripts/setup.sh').read_bytes())
+    result = subprocess.run(['bash', str(script)], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    assert '未找到可信的已安装管理入口' in result.stderr
+    assert {item.name for item in tmp_path.iterdir()} == {'home', 'setup.sh'}
+
+
+def test_existing_install_without_trusted_helper_fails_before_dependencies(tmp_path):
+    root = tmp_path / 'legacy'
+    root.mkdir()
+    config = root / 'core.json'
+    config.write_text('{"legacy":"sentinel"}')
+    result = subprocess.run(['bash', str(REPOSITORY / 'scripts/install.sh'), '--dir', str(root)],
+                            stdin=subprocess.DEVNULL, start_new_session=True, capture_output=True, text=True, timeout=5)
+    assert result.returncode != 0
+    assert '未更新旧部署' in result.stderr or '未覆盖' in result.stderr
+    assert config.read_text() == '{"legacy":"sentinel"}'
+    assert not (root / '.venv').exists()
+
+
+def test_reconfigure_preserves_account_original_key_custom_paths_and_mappings(deployment):
+    root, store, handle, account_id = deployment
+    initial = legacy_agent(root)
+    initial['unrelatedAdminSetting'] = {'enabled': True}
+    initial['tlsSpkiSha256'] = 'sha256:' + '1' * 64
+    (root / 'core.json').write_text(json.dumps(initial))
+    key = root / initial['masterKeyFile']
+    key_before = key.read_bytes()
+    account = account_paths(root / initial['storageRoot'], account_id).database
+    account_before = account.read_bytes()
+    configure(root, store, handle, port=9045)
+    saved = json.loads((root / 'core.json').read_text())
+    assert saved['storageRoot'] == initial['storageRoot']
+    assert saved['masterKeyFile'] == initial['masterKeyFile']
+    assert saved['tlsSpkiSha256'] == initial['tlsSpkiSha256']
+    assert saved['unrelatedAdminSetting'] == {'enabled': True}
+    agent = next(entry for entry in saved['agents'] if entry['id'] == 'hermes')
+    assert agent['accounts'] == {'alice': 'native-alice'}
+    assert (root / saved['storageRoot'] / agent['secretFile']).read_text() == TOKEN + '\n'
+    assert key.read_bytes() == key_before and account.read_bytes() == account_before
+    assert any(json.loads(path.read_text()) == initial for path in (root / 'runtime/configuration-backups').glob('*.json'))
+    assert store.authenticate('alice', PASSWORD)['accountId'] == account_id
+
+
+def test_start_script_does_not_source_legacy_secrets(deployment):
+    root, _, _, _ = deployment
+    private = root / 'runtime/secrets/adapter-tokens.env'
+    sentinel = root / 'must-not-execute'
+    configuration.private_write(private, 'touch ' + shlex.quote(str(sentinel)) + '\n')
+    binary = root / '.venv/bin'
     binary.mkdir(parents=True)
-    (binary / "python").write_text("#!/usr/bin/env bash\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
-    (binary / "python").chmod(0o700)
-    return tmp_path
+    (binary / 'python').write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    (binary / 'python').chmod(0o700)
+    (binary / 'oai').write_text('#!/usr/bin/env python3\nimport json,os,sys\nprint(json.dumps({"token":os.environ.get("OAI_HERMES_SESSION_TOKEN"),"args":sys.argv[1:]}))\n')
+    (binary / 'oai').chmod(0o700)
+    result = subprocess.run([str(root / 'start-core.sh')], env=os.environ.copy(), capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == {'token': None, 'args': ['serve', '--config', str(root / 'core.json')]}
+    assert not sentinel.exists()
+    assert stat.S_IMODE((root / 'start-core.sh').stat().st_mode) == 0o700
+    assert stat.S_IMODE((root / 'core.json').stat().st_mode) == 0o600
 
 
-@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
-def test_wizards_create_account_and_keep_tokens_out_of_start_script(name, install_directory):
-    root = install_directory
-    environment = dict(os.environ, PYTHONPATH=str(REPOSITORY / "oai-core" / "src"))
-    environment.pop("OAI_HERMES_SESSION_TOKEN", None)
-    environment.pop("OAI_DSH_ADAPTER_TOKEN", None)
-    source = f'''
-source {shlex.quote(str(REPOSITORY / "scripts" / name))}
-TARGET_DIR={shlex.quote(str(root))}
-CONFIG_FILE="$TARGET_DIR/core.json"
-VENV_PYTHON="$TARGET_DIR/.venv/bin/python"
-prompt_read() {{ printf -v "$2" '%s' "${{3:-}}"; }}
-prompt_password() {{ printf -v "$2" '%s' 'synthetic-installer-password'; }}
-INSTALL_HERMES_PLUGIN=1
-INSTALL_DSH_PLUGIN=1
-INSTALL_CODEX_CONFIG=1
-INSTALL_HERMES=1
-INSTALL_DSH=1
-INSTALL_CODEX=1
-CFG_HOST=127.0.0.1
-CFG_PORT=8045
-CFG_USERNAME=alice
-CFG_PASSWORD=synthetic-installer-password
-install_selected_agent_plugins() {{ return 0; }}
-'''
-    source += "guide_initial_configuration\n" if name == "install.sh" else "save_configuration_and_account\n"
-    run_bash(source, environment=environment)
-    config = json.loads((root / "core.json").read_text())
-    assert config["listen"] == {"host": "127.0.0.1", "port": 8045}
-    assert config.get("allowInsecureHttp") is True
-    assert {entry["type"] for entry in config["agents"]} == {"dsh", "hermes", "codex"}
-    assert next(entry for entry in config["agents"] if entry["type"] == "hermes")["accounts"] == {"alice": "alice"}
-    tokens = HELPER["read_tokens"](root / "runtime" / "secrets" / "adapter-tokens.env")
-    assert set(tokens) == {"OAI_HERMES_SESSION_TOKEN", "OAI_DSH_ADAPTER_TOKEN"}
-    start = (root / "start-core.sh").read_text()
-    assert all(len(value) >= 32 and value not in start for value in tokens.values())
-    assert "synthetic-installer-password" not in start
-    assert stat.S_IMODE((root / "core.json").stat().st_mode) == 0o600
-    assert stat.S_IMODE((root / "runtime" / "secrets" / "adapter-tokens.env").stat().st_mode) == 0o600
-    assert stat.S_IMODE((root / "start-core.sh").stat().st_mode) == 0o700
-
-
-def test_reconfigure_preserves_account_key_custom_paths_and_bridge_tokens(tmp_path, monkeypatch):
-    from oai_core.server import create_core, load_config
-    monkeypatch.delenv("OAI_HERMES_SESSION_TOKEN", raising=False)
-    monkeypatch.delenv("OAI_DSH_ADAPTER_TOKEN", raising=False)
-    monkeypatch.setenv("OAI_INIT_ADMIN_PASSWORD", "synthetic-original-password")
-    configure = HELPER["configure"]
-    (tmp_path / "core.json").write_text(json.dumps({
-        "storageRoot": "existing/accounts", "masterKeyFile": "existing/secrets/old-master-key",
-        "agents": [{"id": "separate-codex", "type": "codex", "command": ["codex", "app-server"], "codexHome": "existing/codex"}],
-    }))
-    configure(tmp_path, "127.0.0.1", 8045, "alice", ["hermes"], "legacy-alice")
-    initial = json.loads((tmp_path / "core.json").read_text())
-    key_path = tmp_path / initial["masterKeyFile"]
-    initial_key = key_path.read_bytes()
-    token_path = tmp_path / "runtime" / "secrets" / "adapter-tokens.env"
-    initial_tokens = token_path.read_text()
-    # Preserve an administrator-managed path and a configured Core/Hermes mapping.
-    initial["unrelatedAdminSetting"] = {"enabled": True}
-    initial["tlsSpkiSha256"] = "sha256:" + "1" * 64
-    (tmp_path / "core.json").write_text(json.dumps(initial))
-    monkeypatch.setenv("OAI_INIT_ADMIN_PASSWORD", "synthetic-new-password-must-be-ignored")
-    configure(tmp_path, "127.0.0.1", 9045, "alice", ["hermes"], "another-account-must-be-ignored")
-    updated = json.loads((tmp_path / "core.json").read_text())
-    assert updated["storageRoot"] == initial["storageRoot"]
-    assert updated["masterKeyFile"] == initial["masterKeyFile"]
-    assert updated["tlsSpkiSha256"] == initial["tlsSpkiSha256"]
-    assert updated["unrelatedAdminSetting"] == {"enabled": True}
-    assert next(entry for entry in updated["agents"] if entry["type"] == "hermes")["accounts"] == {"alice": "legacy-alice"}
-    assert updated["agents"][0] == initial["agents"][0]
-    assert key_path.read_bytes() == initial_key
-    assert token_path.read_text() == initial_tokens
-    backups = list((tmp_path / "runtime" / "configuration-backups").glob("*.json"))
-    assert any(json.loads(path.read_text()) == initial for path in backups)
-    core = create_core(load_config(tmp_path / "core.json"))
-    with closing(core.open_gateway_account("alice")) as account:
-        assert account.credentials.verify_password("synthetic-original-password")
-        assert not account.credentials.verify_password("synthetic-new-password-must-be-ignored")
-
-
-def test_start_script_loads_private_environment_and_refuses_readable_secrets(install_directory):
-    root = install_directory
-    private_directory = root / "runtime" / "secrets"
-    HELPER["private_directory"](private_directory)
-    token = "synthetic-bridge-token-contains-a-quote'and-dollar$-1234567890"
-    HELPER["private_write"](private_directory / "adapter-tokens.env", "OAI_HERMES_SESSION_TOKEN=" + shlex.quote(token) + "\n")
-    HELPER["write_start_script"](root)
-    (root / ".venv" / "bin" / "oai").write_text("#!/usr/bin/env python3\nimport json, os, sys\nprint(json.dumps({'token':os.environ['OAI_HERMES_SESSION_TOKEN'],'args':sys.argv[1:]}))\n")
-    (root / ".venv" / "bin" / "oai").chmod(0o700)
-    output = subprocess.run([str(root / "start-core.sh")], capture_output=True, text=True, check=True)
-    actual = json.loads(output.stdout)
-    assert actual == {"token": token, "args": ["serve", "--config", str(root / "core.json")]}
-    (private_directory / "adapter-tokens.env").chmod(0o644)
-    rejected = subprocess.run([str(root / "start-core.sh")], capture_output=True, text=True)
-    assert rejected.returncode != 0
-    assert token not in rejected.stdout + rejected.stderr
-
-
-def test_rejects_insecure_token_file(tmp_path):
-    external = tmp_path / "external"
-    external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
+def test_insecure_and_symlink_legacy_secret_files_are_rejected(tmp_path):
+    external = tmp_path / 'external'
+    external.write_text('OAI_HERMES_SESSION_TOKEN=' + TOKEN + '\n')
     external.chmod(0o644)
-    with pytest.raises(ValueError, match="0600"):
-        HELPER["read_tokens"](external)
-
-
-def test_rejects_symlink_token_file(tmp_path):
-    external = tmp_path / "external"
-    external.write_text("OAI_HERMES_SESSION_TOKEN=synthetic-token-12345678901234567890\n")
+    with pytest.raises(ValueError, match='0600'):
+        configuration.read_tokens(external)
     external.chmod(0o600)
-    linked = tmp_path / "linked"
+    linked = tmp_path / 'linked'
     try:
         linked.symlink_to(external)
-    except (NotImplementedError, PermissionError, FileNotFoundError) as exc:
-        assert external.is_file() and linked.parent.is_dir()
-        # Some managed filesystems cannot create links. Exercise the real
-        # O_NOFOLLOW rejection against an existing harmless interpreter link.
-        linked = Path(sys.base_prefix) / "bin" / "python3"
-        if not linked.is_symlink():
-            pytest.skip(f"无法创建 fixture，且没有可用的现有符号链接: {type(exc).__name__}")
+    except (NotImplementedError, PermissionError, FileNotFoundError):
+        # Some managed filesystems cannot create links. Test the real O_NOFOLLOW
+        # rejection against the existing interpreter link without writing to it.
+        linked = Path(sys.base_prefix) / 'bin' / 'python3'
+        assert linked.is_symlink()
     with pytest.raises(OSError) as failure:
-        HELPER["read_tokens"](linked)
+        configuration.read_tokens(linked)
     assert failure.value.errno == errno.ELOOP
-    with pytest.raises(ValueError, match="symlink"):
-        HELPER["private_write"](linked, "ignored")
+    with pytest.raises(ValueError, match='symlink'):
+        configuration.private_write(linked, 'ignored')
+    assert external.read_text() == 'OAI_HERMES_SESSION_TOKEN=' + TOKEN + '\n'
 
 
-def test_existing_accounts_with_missing_key_are_not_rekeyed(tmp_path):
-    database = tmp_path / "existing" / "accounts" / "synthetic-account" / "gateway.sqlite"
-    database.parent.mkdir(parents=True)
-    database.write_bytes(b"synthetic database sentinel")
-    config_path = tmp_path / "core.json"
-    original = json.dumps({"storageRoot": "existing/accounts", "masterKeyFile": "existing/secrets/missing-key", "agents": []})
-    config_path.write_text(original)
-    with pytest.raises(ValueError, match="original master key"):
-        HELPER["configure"](tmp_path, "127.0.0.1", 8045, "alice", [], None)
-    assert config_path.read_text() == original
-    assert database.read_bytes() == b"synthetic database sentinel"
-    assert not (tmp_path / "existing" / "secrets" / "missing-key").exists()
+def test_existing_accounts_with_missing_key_are_not_rekeyed(deployment):
+    root, store, handle, account_id = deployment
+    config_path = root / 'core.json'
+    config = json.loads(config_path.read_text())
+    config['masterKeyFile'] = 'runtime/secrets/missing-key'
+    config_path.write_text(json.dumps(config))
+    original = config_path.read_bytes()
+    account = account_paths(root / config['storageRoot'], account_id).database
+    account_before = account.read_bytes()
+    with pytest.raises(ValueError, match='original master key'):
+        configure(root, store, handle, port=9045)
+    assert config_path.read_bytes() == original and account.read_bytes() == account_before
+    assert not (root / config['masterKeyFile']).exists()
 
 
-def test_core_only_configuration_creates_no_hermes_reference(tmp_path, monkeypatch):
-    monkeypatch.setenv("OAI_INIT_ADMIN_PASSWORD", "synthetic-core-only-password")
-    monkeypatch.setenv("OAI_HERMES_SESSION_TOKEN", "synthetic-unused-environment-token-1234567890")
-    HELPER["configure"](tmp_path, "127.0.0.1", 8045, "alice", [], None)
-    config = json.loads((tmp_path / "core.json").read_text())
-    assert config["agents"] == []
-    assert HELPER["read_tokens"](tmp_path / "runtime" / "secrets" / "adapter-tokens.env") == {}
-
-
-def test_legacy_start_script_tokens_migrate_without_rotation_or_execution(tmp_path, monkeypatch):
-    monkeypatch.delenv("OAI_HERMES_SESSION_TOKEN", raising=False)
-    monkeypatch.setenv("OAI_INIT_ADMIN_PASSWORD", "synthetic-old-installer-password")
-    configure = HELPER["configure"]
-    configure(tmp_path, "127.0.0.1", 8045, "alice", ["hermes"], "alice")
-    token_path = tmp_path / "runtime" / "secrets" / "adapter-tokens.env"
-    original_token = HELPER["read_tokens"](token_path)["OAI_HERMES_SESSION_TOKEN"]
-    token_path.rename(token_path.with_suffix(".legacy"))
-    sentinel = tmp_path / "must-not-be-executed"
-    (tmp_path / "start-core.sh").write_text(
-        'export OAI_HERMES_SESSION_TOKEN="${OAI_HERMES_SESSION_TOKEN:-' + original_token + '}"\n'
-        + "touch " + shlex.quote(str(sentinel)) + "\n"
-    )
-    # Existing configured agents and credentials survive even when none is added.
-    configure(tmp_path, "127.0.0.1", 9045, "alice", [], None)
-    assert HELPER["read_tokens"](token_path)["OAI_HERMES_SESSION_TOKEN"] == original_token
-    assert original_token not in (tmp_path / "start-core.sh").read_text()
-    assert not sentinel.exists()
-    assert json.loads((tmp_path / "core.json").read_text())["agents"][0]["type"] == "hermes"
-
-
-def test_existing_unrecoverable_bridge_token_is_not_silently_rotated(tmp_path, monkeypatch):
-    monkeypatch.delenv("OAI_HERMES_SESSION_TOKEN", raising=False)
-    config_path = tmp_path / "core.json"
-    original = json.dumps({"storageRoot": "runtime/accounts", "masterKeyFile": "runtime/secrets/master",
-                           "agents": [{"id": "hermes", "type": "hermes", "tokenEnv": "OAI_HERMES_SESSION_TOKEN", "accounts": {"alice": "alice"}}]})
-    config_path.write_text(original)
-    with pytest.raises(ValueError, match="will not be silently rotated"):
-        HELPER["configure"](tmp_path, "127.0.0.1", 8045, "alice", [], None)
-    assert config_path.read_text() == original
-    assert not (tmp_path / "runtime" / "secrets" / "adapter-tokens.env").exists()
-
-
-def test_detected_hermes_does_not_install_or_disable_host_plugin():
-    source = f'''
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-DETECTED_HERMES=1
-DETECTED_DSH=0
-DETECTED_CODEX=0
-prompt_read() {{ printf -v "$2" '%s' n; }}
-hermes() {{ printf 'host mutation attempted\\n' >&2; return 99; }}
-configure_agent_plugins
-install_selected_agent_plugins
-printf 'selected=%s\\n' "$INSTALL_HERMES_PLUGIN"
-'''
-    result = run_bash(source)
-    assert "selected=0" in result.stdout
-    assert "host mutation attempted" not in result.stderr
-
-
-def test_selected_hermes_installs_and_enables_plugin(tmp_path):
-    target_dir = tmp_path / "oai-core"
-    adapter_dir = target_dir / "integrations" / "hermes-session-adapter"
-    adapter_dir.mkdir(parents=True)
-    source = f'''
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-TARGET_DIR={shlex.quote(str(target_dir))}
-INSTALL_HERMES_PLUGIN=1
-hermes() {{
-    printf 'hermes called with args: %s\\n' "$*"
-    return 0
-}}
-install_selected_agent_plugins
-'''
-    result = run_bash(source)
-    assert "hermes called with args: plugins disable open-android-intelligence-gateway" in result.stdout
-    assert "hermes called with args: plugins install 1rua/hermes-gateway-plugin --force --no-deps --enable" in result.stdout
-
-
-@pytest.mark.parametrize("os_name", ["Linux", "Darwin", "MINGW64_NT-10.0"])
-def test_autostart_configuration_handles_different_os(tmp_path, os_name):
-    home_dir = tmp_path / "fakehome"
-    target_dir = tmp_path / "oai-core"
-    home_dir.mkdir(parents=True)
-    target_dir.mkdir(parents=True)
-    source = f'''
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-HOME={shlex.quote(str(home_dir))}
-TARGET_DIR={shlex.quote(str(target_dir))}
-APPDATA={shlex.quote(str(home_dir / "AppData"))}
-uname() {{ printf '%s\\n' "{os_name}"; }}
-prompt_read() {{ printf -v "$2" '%s' y; }}
-systemctl() {{ return 0; }}
-launchctl() {{ return 0; }}
-mkdir -p "$APPDATA/Microsoft/Windows/Start Menu/Programs/Startup"
-configure_autostart
-'''
-    result = run_bash(source)
-    assert result.returncode == 0
-    if os_name == "Darwin":
-        plist = home_dir / "Library" / "LaunchAgents" / "com.openandroidintelligence.core.plist"
-        assert plist.exists()
-        assert str(target_dir / "start-core.sh") in plist.read_text()
-    elif "MINGW" in os_name:
-        vbs = home_dir / "AppData" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "oai-core.vbs"
-        assert vbs.exists()
-        assert str(target_dir / "start-core.sh") in vbs.read_text()
-    else:
-        service = home_dir / ".config" / "systemd" / "user" / "oai-core.service"
-        desktop = home_dir / ".config" / "autostart" / "oai-core.desktop"
-        assert service.exists()
-        assert desktop.exists()
-        assert str(target_dir / "start-core.sh") in service.read_text()
-        assert str(target_dir / "start-core.sh") in desktop.read_text()
-
-
-def test_sync_hermes_adapter_env_updates_hermes_env(tmp_path, monkeypatch):
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    env_file = hermes_home / ".env"
-    env_file.write_text("EXISTING_KEY=existing_val\nOAI_HERMES_SESSION_PORT=9999\n", encoding="utf-8")
-    env_file.chmod(0o600)
-
-    HELPER["sync_hermes_adapter_env"]("synthetic-token-32-chars-long-123456", "bob")
-
-    lines = env_file.read_text(encoding="utf-8").splitlines()
-    env_map = dict(line.split("=", 1) for line in lines if "=" in line)
-    assert env_map["EXISTING_KEY"] == "existing_val"
-    assert env_map["OAI_HERMES_SESSION_TOKEN"] == "synthetic-token-32-chars-long-123456"
-    assert env_map["OAI_HERMES_ACCOUNTS"] == '["bob"]'
-    assert env_map["OAI_HERMES_SESSION_PORT"] == "8792"
-    assert env_map["OAI_HERMES_GATEWAY_ROOT"] == str(hermes_home / "open-android-intelligence-gateway" / "accounts")
-
-
-def test_sync_dsh_adapter_env_updates_env_and_credentials(tmp_path, monkeypatch):
-    dsh_home = tmp_path / ".dsh-cline"
-    dsh_home.mkdir(parents=True)
-    monkeypatch.setenv("DSH_HOME", str(dsh_home))
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    env_file = dsh_home / ".env"
-    env_file.write_text("EXISTING_VAR=foo\n", encoding="utf-8")
-
-    cred_file = dsh_home / ".credentials.yaml"
-    cred_file.write_text("version: 1\nrefs:\n  EXISTING_TOKEN: bar\n", encoding="utf-8")
-
-    HELPER["sync_dsh_adapter_env"]("synthetic-dsh-token-32-chars-long-1234")
-
-    env_lines = env_file.read_text(encoding="utf-8").splitlines()
-    assert "EXISTING_VAR=foo" in env_lines
-    assert "OAI_DSH_ADAPTER_TOKEN=synthetic-dsh-token-32-chars-long-1234" in env_lines
-
-    cred_text = cred_file.read_text(encoding="utf-8")
-    assert "EXISTING_TOKEN: bar" in cred_text
-    assert "OAI_DSH_ADAPTER_TOKEN: synthetic-dsh-token-32-chars-long-1234" in cred_text
-
-
-@pytest.mark.parametrize("name", ["install.sh", "setup.sh"])
-def test_install_cli_wrapper_creates_executable_and_injects_path(name, tmp_path):
-    home_dir = tmp_path / "fakehome"
-    target_dir = tmp_path / "oai-core"
-    home_dir.mkdir(parents=True)
-    target_dir.mkdir(parents=True)
-
-    # 准备模拟的 shell 配置文件
-    bashrc = home_dir / ".bashrc"
-    bashrc.write_text("# existing bashrc\n", encoding="utf-8")
-    zshrc = home_dir / ".zshrc"
-    zshrc.write_text("# existing zshrc\n", encoding="utf-8")
-    fish_conf_dir = home_dir / ".config" / "fish"
-    fish_conf_dir.mkdir(parents=True)
-    fish_conf = fish_conf_dir / "config.fish"
-    fish_conf.write_text("# existing fish config\n", encoding="utf-8")
-
-    source = f'''
-source {shlex.quote(str(REPOSITORY / "scripts" / name))}
-HOME={shlex.quote(str(home_dir))}
-TARGET_DIR={shlex.quote(str(target_dir))}
-install_cli_wrapper
-'''
-    result = run_bash(source)
-    assert result.returncode == 0
-
-    wrapper = home_dir / ".local" / "bin" / "oai"
-    assert wrapper.exists()
-    assert stat.S_IMODE(wrapper.stat().st_mode) == 0o755
-    content = wrapper.read_text(encoding="utf-8")
-    assert f'OAI_DIR="{target_dir}"' in content
-    assert 'exec "${OAI_DIR}/start-core.sh"' in content
-    assert 'exec "${VENV_OAI}" "$@"' in content
-
-    # 验证环境变量注入
-    assert '.local/bin' in bashrc.read_text(encoding="utf-8")
-    assert '.local/bin' in zshrc.read_text(encoding="utf-8")
-    assert 'fish_add_path -m $HOME/.local/bin' in fish_conf.read_text(encoding="utf-8")
-
-def test_wizard_aborts_promptly_when_no_tty_and_no_password(install_directory):
-    """R11 行为测试：无 /dev/tty 且标准输入非 TTY 时，必须立即明确失败退出，绝不陷入死循环。"""
-    root = install_directory
-    source = f"""
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-TARGET_DIR={shlex.quote(str(root))}
-CONFIG_FILE="$TARGET_DIR/core.json"
-VENV_PYTHON="$TARGET_DIR/.venv/bin/python"
-guide_initial_configuration
-"""
-    start_time = os.times().elapsed
+def test_core_only_does_not_guess_agents_or_create_bridge_secret(tmp_path):
+    root = tmp_path / 'core-only'
+    store, handle, _ = bootstrap(root)
     try:
-        proc = subprocess.run(
-            ["bash", "-c", source],
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except subprocess.TimeoutExpired:
-        pytest.fail("向导超过 5s 未返回，陷入无终端死循环")
-    elapsed = os.times().elapsed - start_time
-    assert elapsed < 3.0, f"向导耗时 {elapsed}s，疑似陷入无终端死循环"
-    assert proc.returncode != 0, "无可用终端时向导应当明确返回非 0 失败"
-    assert "密码不能为空" not in proc.stderr and "密码不能为空" not in proc.stdout
-    assert "无法读取密码" in proc.stderr or "未检测到可用交互终端" in proc.stderr
+        configure(root, store, handle)
+        assert json.loads((root / 'core.json').read_text())['agents'] == []
+        assert not (root / 'runtime/secrets/adapter-tokens.env').exists()
+        assert not (root / 'runtime/accounts/.agent-secrets').exists()
+    finally:
+        store.close()
 
-def _run_password_prompt_in_pty(script, reply, *, piped_stdin=False):
-    """使用独立控制终端驱动真实密码读取，并在超时或断言失败时回收子进程。"""
-    import pty
-    import select
-    import signal
-    import termios
-    import time
 
+def test_legacy_start_token_migrates_without_execution_or_rotation(deployment):
+    root, store, handle, account_id = deployment
+    legacy_agent(root, token=None)
+    sentinel = root / 'must-not-be-executed'
+    (root / 'start-core.sh').write_text('export OAI_HERMES_SESSION_TOKEN="${OAI_HERMES_SESSION_TOKEN:-' + TOKEN + '}"\n'
+                                        + 'touch ' + shlex.quote(str(sentinel)) + '\n')
+    original_key = (root / 'runtime/secrets/core-master-key').read_bytes()
+    configure(root, store, handle, port=9045)
+    config = json.loads((root / 'core.json').read_text())
+    agent = next(entry for entry in config['agents'] if entry['id'] == 'hermes')
+    assert (root / config['storageRoot'] / agent['secretFile']).read_text() == TOKEN + '\n'
+    assert TOKEN not in (root / 'start-core.sh').read_text() and not sentinel.exists()
+    assert (root / 'runtime/secrets/core-master-key').read_bytes() == original_key
+    assert store.authenticate('alice', PASSWORD)['accountId'] == account_id
+
+
+def test_bridge_token_is_not_taken_from_process_environment(deployment, monkeypatch):
+    root, store, handle, account_id = deployment
+    legacy_agent(root, token=None)
+    monkeypatch.setenv('OAI_HERMES_SESSION_TOKEN', TOKEN)
+    before = (root / 'core.json').read_bytes()
+    with pytest.raises(ValueError, match='will not be silently rotated'):
+        configure(root, store, handle, port=9045)
+    assert (root / 'core.json').read_bytes() == before
+    assert not (root / 'runtime/accounts/.agent-secrets/agent-hermes.secret').exists()
+    assert store.authenticate('alice', PASSWORD)['accountId'] == account_id
+
+
+def test_unrecoverable_legacy_token_is_not_rotated(deployment):
+    root, store, handle, _ = deployment
+    legacy_agent(root, token=None)
+    config = (root / 'core.json').read_bytes()
+    with pytest.raises(ValueError, match='will not be silently rotated'):
+        configure(root, store, handle, port=9045)
+    assert (root / 'core.json').read_bytes() == config
+    assert not (root / 'runtime/accounts/.agent-secrets/agent-hermes.secret').exists()
+
+
+def test_unregistered_agent_cannot_be_added_by_type(deployment):
+    root, store, handle, _ = deployment
+    original = (root / 'core.json').read_bytes()
+    with pytest.raises(ValueError, match='discovered and registered'):
+        configure(root, store, handle, port=9045, selected=('hermes',))
+    assert (root / 'core.json').read_bytes() == original
+
+
+def test_plugin_install_only_for_selected_agents(deployment, monkeypatch):
+    root, store, handle, _ = deployment
+    calls = []
+    monkeypatch.setattr(scripts_runtime.shutil, 'which', lambda name: '/synthetic/' + name)
+    monkeypatch.setattr(scripts_runtime.subprocess, 'run', lambda args, **kwargs: calls.append((args, kwargs)))
+    assert scripts_runtime._install_agents(root, store, handle) is True
+    assert calls == []
+    config = json.loads((root / 'core.json').read_text())
+    config['agents'].append({'id': 'hermes', 'type': 'hermes'})
+    (root / 'core.json').write_text(json.dumps(config))
+    assert scripts_runtime._install_agents(root, store, handle) is True
+    assert calls[0][0] == ['hermes', 'plugins', 'install', './integrations/hermes-session-adapter', '--enable']
+    assert calls[0][1]['cwd'] == root
+
+
+def test_missing_selected_plugin_reports_partial(deployment, monkeypatch, capsys):
+    root, store, handle, _ = deployment
+    config = json.loads((root / 'core.json').read_text())
+    config['agents'].append({'id': 'hermes', 'type': 'hermes'})
+    (root / 'core.json').write_text(json.dumps(config))
+    monkeypatch.setattr(scripts_runtime.shutil, 'which', lambda name: None)
+    assert scripts_runtime._install_agents(root, store, handle) is False
+    assert '尚未连接' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('platform', ['linux', 'darwin', 'win32'])
+def test_autostart_configuration_uses_real_admin_and_platform_files(deployment, tmp_path, monkeypatch, platform):
+    root, store, handle, _ = deployment
+    home = Path(os.environ['HOME'])
+    monkeypatch.setattr(scripts_runtime.sys, 'platform', platform)
+    monkeypatch.setenv('APPDATA', str(tmp_path / 'appdata'))
+    monkeypatch.setattr(scripts_runtime.shutil, 'which', lambda name: None)
+    scripts_runtime._configure_service(root, store, handle)
+    if platform == 'linux':
+        files = [home / '.config/systemd/user/oai-core.service', home / '.config/autostart/oai-core.desktop']
+    elif platform == 'darwin':
+        files = [home / 'Library/LaunchAgents/com.openandroidintelligence.core.plist']
+    else:
+        files = [tmp_path / 'appdata/Microsoft/Windows/Start Menu/Programs/Startup/oai-core.vbs']
+    assert all(path.is_file() and str(root / 'start-core.sh') in path.read_text() for path in files)
+
+
+def test_cli_wrapper_is_owned_and_does_not_rewrite_shell_profiles(deployment):
+    root, store, handle, _ = deployment
+    home = Path(os.environ['HOME'])
+    profile = home / '.bashrc'
+    profile.write_text('# existing profile\n')
+    scripts_runtime._integrate_cli(root, store, handle)
+    wrapper = home / '.local/bin/oai'
+    assert wrapper.is_file() and stat.S_IMODE(wrapper.stat().st_mode) == 0o755
+    assert os.path.relpath(root, wrapper.parent) in wrapper.read_text() and 'start-core.sh' in wrapper.read_text()
+    assert str(root) not in wrapper.read_text()
+    assert profile.read_text() == '# existing profile\n'
+
+
+def test_authentication_occurs_before_pip_or_host_changes(deployment, monkeypatch):
+    root, store, _, _ = deployment
+    key_before = (root / 'runtime/secrets/core-master-key').read_bytes()
+    config_before = (root / 'core.json').read_bytes()
+    calls = []
+    monkeypatch.setattr(scripts_runtime, '_input', lambda prompt: 'alice')
+    monkeypatch.setattr(scripts_runtime, 'secret_input', lambda prompt: 'synthetic-wrong-password')
+    monkeypatch.setattr(scripts_runtime.subprocess, 'run', lambda *args, **kwargs: calls.append(args))
+    with pytest.raises(Exception) as failure:
+        scripts_runtime.install(root)
+    assert getattr(failure.value, 'code', '') in {'AUTHENTICATION_FAILED', 'AUTH_FAILED', 'INVALID_CREDENTIALS'}
+    assert calls == []
+    assert (root / 'core.json').read_bytes() == config_before
+    assert (root / 'runtime/secrets/core-master-key').read_bytes() == key_before
+    assert not (Path(os.environ['HOME']) / '.local/bin/oai').exists()
+    assert store.authenticate('alice', PASSWORD)
+
+
+def test_installer_reauthenticates_before_pip_and_integrates_cli(deployment, monkeypatch):
+    root, store, _, account_id = deployment
+    root_python = root / '.venv/bin/python'
+    root_python.parent.mkdir(parents=True)
+    root_python.write_text('#!/bin/sh\\nexit 1\\n')
+    root_python.chmod(0o700)
+    calls = []
+    answers = iter(['alice', 'n'])
+    monkeypatch.setattr(scripts_runtime, '_input', lambda prompt: next(answers))
+    monkeypatch.setattr(scripts_runtime, 'secret_input', lambda prompt: PASSWORD)
+    monkeypatch.setattr(scripts_runtime.subprocess, 'run', lambda args, **kwargs: calls.append((args, kwargs)))
+    original_key = (root / 'runtime/secrets/core-master-key').read_bytes()
+    assert scripts_runtime.install(root) == 0
+    assert [entry[0][1:3] for entry in calls] == [['-m', 'pip'], ['-m', 'pip']]
+    assert all(entry[1]['cwd'] == root and entry[1]['check'] is True for entry in calls)
+    assert (Path(os.environ['HOME']) / '.local/bin/oai').is_file()
+    assert (root / 'runtime/secrets/core-master-key').read_bytes() == original_key
+    assert store.authenticate('alice', PASSWORD)['accountId'] == account_id
+
+
+def test_python_selector_uses_eligible_interpreter(tmp_path, monkeypatch):
+    launchers = tmp_path / 'commands with spaces'
+    launchers.mkdir()
+    calls = tmp_path / 'calls'
+    for name in ('python3', 'python'):
+        path = launchers / name
+        if name == 'python3':
+            path.write_text('#!/bin/sh\nexit 1\n')
+        else:
+            path.write_text('#!/bin/sh\nprintf "selected\\n" >> ' + shlex.quote(str(calls)) + '\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+        path.chmod(0o700)
+    monkeypatch.setenv('PATH', str(launchers) + os.pathsep + os.environ['PATH'])
+    script = 'source ' + shlex.quote(str(REPOSITORY / 'scripts/install.sh')) + '\nselect_python\nprintf "%s\\n" "$PYTHON_BIN"\n'
+    result = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'python'
+    assert calls.read_text().splitlines() == ['selected']
+
+
+def run_in_terminal(argv, replies, *, stdin_pipe=False, timeout=12):
+    """Drive the real entrypoint over a controlling PTY without logging secrets."""
     master, slave = pty.openpty()
-    terminal_state = termios.tcgetattr(slave)
-    terminal_state[3] |= termios.ECHO | termios.ICANON
-    termios.tcsetattr(slave, termios.TCSANOW, terminal_state)
-    pipe_read, pipe_write = os.pipe() if piped_stdin else (None, None)
+    attrs = termios.tcgetattr(slave)
+    attrs[3] |= termios.ECHO | termios.ICANON
+    termios.tcsetattr(slave, termios.TCSANOW, attrs)
+    read_fd, write_fd = os.pipe() if stdin_pipe else (None, None)
     pid = os.fork()
     if pid == 0:
         try:
             os.close(master)
             os.login_tty(slave)
-            if piped_stdin:
-                os.close(pipe_write)
-                os.dup2(pipe_read, 0)
-                os.close(pipe_read)
-                os.execvp("bash", ["bash"])
-            os.execvp("bash", ["bash", "-c", script])
+            if stdin_pipe:
+                os.close(write_fd)
+                os.dup2(read_fd, 0)
+                os.close(read_fd)
+            os.execvpe(argv[0], argv, os.environ.copy())
         finally:
             os._exit(127)
-
     output = bytearray()
-    child_status = None
-    replied = False
+    status = None
+    index = 0
+    cursor = 0
     try:
-        if piped_stdin:
-            os.close(pipe_read)
-            pipe_read = None
-            with os.fdopen(pipe_write, "w") as source:
-                pipe_write = None
-                source.write(script)
-        deadline = time.monotonic() + 5
+        if stdin_pipe:
+            os.close(read_fd)
+            read_fd = None
+            os.close(write_fd)
+            write_fd = None
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            readable, _, _ = select.select([master], [], [], 0.05)
-            if readable:
-                output.extend(os.read(master, 4096))
-            if not replied and b"R11 test password: " in output:
-                # 等待生产函数关闭回显，避免在 read 准备好前写入密码。
-                if not termios.tcgetattr(slave)[3] & termios.ECHO:
-                    answer = terminal_state[6][termios.VEOF] if reply is None else reply
-                    os.write(master, answer)
-                    replied = True
-            waited, status = os.waitpid(pid, os.WNOHANG)
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    output.extend(os.read(master, 4096))
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+            if index < len(replies):
+                prompt, reply, secret = replies[index]
+                position = output.find(prompt, cursor)
+                if position >= 0 and (not secret or not termios.tcgetattr(slave)[3] & termios.ECHO):
+                    os.write(master, reply)
+                    cursor = position + len(prompt)
+                    index += 1
+            waited, child_status = os.waitpid(pid, os.WNOHANG)
             if waited:
-                child_status = status
+                status = child_status
                 break
-        if child_status is None:
-            pytest.fail("R11 密码读取在 5 秒内没有退出")
-        assert replied, "未进入关闭回显后的真实终端读取分支"
-        while select.select([master], [], [], 0)[0]:
-            output.extend(os.read(master, 4096))
-        assert termios.tcgetattr(slave)[3] & termios.ECHO, "密码读取退出后未恢复终端回显"
-        return os.waitstatus_to_exitcode(child_status), bytes(output)
+        if status is None:
+            pytest.fail('交互入口超过时限未退出')
+        assert index == len(replies), bytes(output)
+        assert termios.tcgetattr(slave)[3] & termios.ECHO
+        return os.waitstatus_to_exitcode(status), bytes(output)
     finally:
-        if child_status is None:
+        if status is None:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
-        for descriptor in (pipe_read, pipe_write, master, slave):
+        for descriptor in (read_fd, write_fd, master, slave):
             if descriptor is not None:
                 os.close(descriptor)
 
 
-def test_prompt_password_returns_nonzero_on_eof():
-    """R11 行为测试：真实终端 read 遇到 EOF 后及时失败，并恢复终端回显。"""
-    script = f"""
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-val=""
-prompt_password "R11 test password" val
-"""
-    returncode, _ = _run_password_prompt_in_pty(script, None)
-    assert returncode == 1
+def test_password_eof_aborts_real_setup_and_restores_echo(deployment):
+    root, _, _, _ = deployment
+    prepare_source_root(root)
+    binary = root / '.venv/bin'
+    binary.mkdir(parents=True)
+    (binary / 'python').write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    (binary / 'python').chmod(0o700)
+    before = (root / 'core.json').read_bytes()
+    code, output = run_in_terminal(['bash', str(REPOSITORY / 'scripts/setup.sh'), '--dir', str(root)],
+                                   [('管理员账号'.encode(), b'alice\n', False),
+                                    ('管理员密码'.encode(), b'\x04', True)])
+    assert code != 0 and PASSWORD.encode() not in output
+    assert (root / 'core.json').read_bytes() == before
 
 
-def test_prompt_password_reads_controlling_tty_when_stdin_is_pipe():
-    """R11 行为测试：管道安装通过控制终端读取密码，不回显合成密码。"""
-    password = "synthetic-r11-pty-password"
-    script = f"""
-source {shlex.quote(str(REPOSITORY / "scripts" / "install.sh"))}
-[ ! -t 0 ]
-val=""
-prompt_password "R11 test password" val
-[ "$val" = {shlex.quote(password)} ]
-unset val
-printf 'R11_PASSWORD_READ_OK\n'
-"""
-    returncode, output = _run_password_prompt_in_pty(
-        script, (password + "\n").encode(), piped_stdin=True,
-    )
-    leaked = password.encode() in output
-    assert not leaked, "合成密码出现在终端输出中"
-    assert returncode == 0
-    assert b"R11_PASSWORD_READ_OK" in output
+def test_shell_install_rejects_wrong_password_before_pip(deployment):
+    root, _, _, account_id = deployment
+    prepare_source_root(root)
+    binary = root / '.venv/bin'
+    binary.mkdir(parents=True)
+    python = binary / 'python'
+    python.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    python.chmod(0o700)
+    config_before = (root / 'core.json').read_bytes()
+    key_before = (root / 'runtime/secrets/core-master-key').read_bytes()
+    code, output = run_in_terminal(['bash', str(REPOSITORY / 'scripts/install.sh'), '--dir', str(root)],
+                                   [('管理员账号'.encode(), b'alice\n', False),
+                                    ('管理员密码'.encode(), b'synthetic-wrong-password\n', True)])
+    assert code != 0
+    assert b'synthetic-wrong-password' not in output
+    assert (root / 'core.json').read_bytes() == config_before
+    assert (root / 'runtime/secrets/core-master-key').read_bytes() == key_before
+    assert account_paths(root / 'runtime/accounts', account_id).database.is_file()
+    assert not (Path(os.environ['HOME']) / '.local/bin/oai').exists()
 
 
-def _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, *, selected, rejected=None):
-    """Exercise interpreter selection and real venv creation without package indexes."""
-    launchers = tmp_path / "python commands with spaces"
-    launchers.mkdir()
-    calls = tmp_path / "python-calls.txt"
-    target = tmp_path / "isolated install"
-    # venv accepts a real lib64 directory on filesystems without alias support.
-    # There is no bin/python yet, so production must still create the real environment.
-    if sys.platform == "linux" and sys.maxsize > 2**32:
-        (target / ".venv/lib64").mkdir(parents=True)
-    interpreter = shlex.quote(str(Path(sys.executable).resolve()))
-    for name in ("python3", "python"):
-        launcher = launchers / name
-        if name == selected:
-            body = f'printf \'%s\\n\' "{name} $*" >> {shlex.quote(str(calls))}\nexec {interpreter} "$@"\n'
-        elif rejected == "old-version":
-            body = '[ "$1" != "-c" ] || { printf "3.8\\n"; exit 0; }\nexit 1\n'
-        elif rejected == "missing-venv":
-            body = (f'if [ "$1" = "-c" ]; then exec {interpreter} "$@"; fi\n'
-                    'exit 1\n')
-        else:
-            body = 'exit 99\n'
-        launcher.write_text("#!/bin/sh\n" + body)
-        launcher.chmod(0o700)
-    monkeypatch.setenv("PATH", str(launchers) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("PIP_NO_INDEX", "1")
-    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
-    hidden = "python3" if selected == "python" else "python"
-    hide_missing = "" if rejected is not None else f"""command() {{
-    if [ "$1" = "-v" ] && [ "$2" = "{hidden}" ]; then return 1; fi
-    builtin command "$@"
-}}
-"""
-    script = f"""
-source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}
-TARGET_DIR={shlex.quote(str(target))}
-{hide_missing}
-check_prerequisites
-printf 'CHOSEN_PYTHON=%s\\n' "$PYTHON_BIN"
-create_python_environment
-"""
-    result = subprocess.run(["bash", "-c", script], cwd=REPOSITORY, capture_output=True,
-                            text=True, timeout=30)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert f"CHOSEN_PYTHON={selected}" in result.stdout
-    venv = target / ".venv"
-    assert f"{selected} -m venv {venv}" in calls.read_text().splitlines()
-    probe = subprocess.run([str(venv / "bin/python"), "-c",
-        "import json,sys; print(json.dumps([sys.prefix, sys.base_prefix, list(sys.version_info[:2])]))"],
-        capture_output=True, text=True, check=True, timeout=5)
-    prefix, base_prefix, version = json.loads(probe.stdout)
-    assert Path(prefix) == venv
-    assert Path(base_prefix) == Path(sys.base_prefix)
-    assert version == list(sys.version_info[:2])
-    assert (venv / "pyvenv.cfg").is_file()
-    before = calls.read_text().splitlines()
-    run_bash(f'source {shlex.quote(str(REPOSITORY / "scripts/install.sh"))}\n'
-             f'TARGET_DIR={shlex.quote(str(target))}\nPYTHON_BIN={selected}\ncreate_python_environment\n')
-    assert calls.read_text().splitlines() == before
+def test_shell_setup_service_restart_requires_confirmation_and_audits(deployment, monkeypatch):
+    """The public entrypoint must use the same audited service menu as Core."""
+    root, _, _, account_id = deployment
+    prepare_source_root(root)
+    binary = root / '.venv/bin'
+    binary.mkdir(parents=True)
+    python = binary / 'python'
+    python.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    python.chmod(0o700)
+    unit = Path.home() / '.config/systemd/user/oai-core.service'
+    commands = root / 'fake-commands'
+    commands.mkdir()
+    events = root / 'systemctl-events'
+    systemctl = commands / 'systemctl'
+    systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(str(events)) + '\n'
+                         + 'if [ "$2" = show ]; then\n'
+                         + '  printf "LoadState=loaded\\nFragmentPath=%s\\nWorkingDirectory=%s\\nActiveState=active\\nSubState=running\\n" '
+                         + shlex.quote(str(unit)) + ' ' + shlex.quote(str(root)) + '\nfi\n')
+    systemctl.chmod(0o700)
+    monkeypatch.setenv('PATH', str(commands) + os.pathsep + os.environ['PATH'])
+    code, output = run_in_terminal(['bash', str(REPOSITORY / 'scripts/setup.sh'), '--dir', str(root)],
+                                   [('管理员账号'.encode(), b'alice\n', False),
+                                    ('管理员密码'.encode(), (PASSWORD + '\n').encode(), True),
+                                    ('请选择'.encode(), b'4\n', False),
+                                    ('3. 重启'.encode(), b'3\n', False),
+                                    ('确认服务操作'.encode(), b'restart\n', False),
+                                    ('请选择'.encode(), b'5\n', False)])
+    assert code == 0, output
+    assert PASSWORD.encode() not in output
+    assert '服务操作 restart 已执行'.encode() in output
+    commands_run = events.read_text().splitlines()
+    assert commands_run[-1] == '--user restart oai-core.service'
+    assert all(command.startswith('--user show oai-core.service ') for command in commands_run[:-1])
+    assert account_paths(root / 'runtime/accounts', account_id).database.is_file()
+    store = IdentityStore(root / 'runtime/security/identity.sqlite')
+    try:
+        rows = store.database.execute("SELECT action,actor,metadata FROM audit_events WHERE action LIKE 'service.%' ORDER BY id").fetchall()
+        assert [row['action'] for row in rows] == ['service.intent', 'service.result']
+        assert all(row['actor'] == account_id for row in rows)
+        assert json.loads(rows[-1]['metadata'])['status'] == 'completed'
+    finally:
+        store.close()
 
 
-@pytest.mark.parametrize("selected", ["python", "python3"])
-def test_python_interpreter_selection_and_reuse_for_venv(tmp_path, monkeypatch, selected):
-    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected=selected)
-
-
-@pytest.mark.parametrize("rejected", ["old-version", "missing-venv"])
-def test_python_interpreter_picks_eligible_python_over_ineligible_python3(tmp_path, monkeypatch, rejected):
-    _assert_selected_interpreter_creates_real_venv(tmp_path, monkeypatch, selected="python", rejected=rejected)
+def test_setup_reads_controlling_tty_when_stdin_is_pipe(deployment):
+    root, _, _, account_id = deployment
+    prepare_source_root(root)
+    binary = root / '.venv/bin'
+    binary.mkdir(parents=True)
+    (binary / 'python').write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    (binary / 'python').chmod(0o700)
+    code, output = run_in_terminal(['bash', str(REPOSITORY / 'scripts/setup.sh'), '--dir', str(root)],
+                                   [('管理员账号'.encode(), b'alice\n', False),
+                                    ('管理员密码'.encode(), (PASSWORD + '\n').encode(), True),
+                                    ('请选择'.encode(), b'5\n', False)], stdin_pipe=True)
+    assert code == 0, output
+    assert PASSWORD.encode() not in output
+    assert '网络设置'.encode() in output
+    assert account_paths(root / 'runtime/accounts', account_id).database.is_file()

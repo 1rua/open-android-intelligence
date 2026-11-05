@@ -3,10 +3,10 @@
 # curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash
 set -euo pipefail
 if ! command -v python3 >/dev/null 2>&1; then
-    printf '%s\n' '[错误] 卸载脚本需要 Python 3.11+，请先安装 Python。' >&2
+    printf '%s\n' '[错误] 只读预检需要系统 Python 3.11+，未执行目标目录中的代码。' >&2
     exit 1
 fi
-exec python3 - "$@" <<'PYTHON'
+exec python3 -I -B -c 'import sys; _uninstall_source=sys.stdin.read(); exec(compile(_uninstall_source,"oai-uninstall","exec"))' "$@" <<'PYTHON'
 from __future__ import annotations
 
 import argparse
@@ -117,7 +117,12 @@ def config_paths(root):
         config = json.loads(text)
         if not isinstance(config, dict):
             raise ValueError()
-        values = [config.get(name) for name in ("storageRoot", "masterKeyFile", "contractRoot")]
+        values = [config.get(name) for name in ("storageRoot", "masterKeyFile", "contractRoot", "identityDatabase")]
+        storage = config.get("storageRoot")
+        identity_value = config.get("identityDatabase")
+        if isinstance(storage, str) and storage:
+            identity_path = (root / identity_value) if isinstance(identity_value, str) and identity_value else (root / storage).parent / 'security/identity.sqlite'
+            values.extend((str(identity_path), str(identity_path.parent / 'local-recovery.sqlite')))
         tls = config.get("tls", {})
         if isinstance(tls, dict):
             values.extend(tls.get(name) for name in ("certFile", "keyFile"))
@@ -167,7 +172,7 @@ def startup_files(root, home):
     if unit.exists() and not unit.is_symlink():
         settings = dict(line.split("=", 1) for line in (owned_text(unit) or "").splitlines()
                         if "=" in line and not line.lstrip().startswith(("#", ";")))
-        if settings.get("WorkingDirectory") == str(root) and same_command(settings.get("ExecStart", ""), start):
+        if same_command(settings.get("WorkingDirectory", ""), root) and same_command(settings.get("ExecStart", ""), start):
             service = unit
             files.append(unit)
             for link in sorted(unit.parent.glob("*.wants/oai-core.service")):
@@ -488,19 +493,57 @@ def main():
     if not moves and not cron:
         print("未发现需要卸载的运行环境或启动项，保留的数据未改动。")
         return
+    try:
+        terminal = open('/dev/tty', 'r', encoding='utf-8')
+    except OSError:
+        fail('卸载需要管理员认证和交互终端；--yes 不能代替认证。')
+    terminal.close()
+    target_python = root / '.venv/bin/python'
+    if target_python.is_file() and not target_python.is_symlink():
+        metadata = target_python.stat()
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            fail('原部署解释器权限不安全，未执行卸载。')
+    # Help, previews, argument and installation validation run only in system
+    # Python. Select the known installation interpreter after that preflight.
+    if target_python.exists() and not globals().get('_target_runtime_selected', False):
+        source = globals().get('_uninstall_source')
+        if not isinstance(source, str):
+            fail('无法保留可信卸载入口，未执行卸载。')
+        # This constant selects an interpreter, not an authorization. The child
+        # still performs all path checks and real Core administrator validation.
+        child_source = source.replace('from __future__ import annotations', 'from __future__ import annotations\n_target_runtime_selected = True', 1)
+        child = subprocess.run([str(target_python), '-I', '-B', '-c', child_source, *sys.argv[1:]], check=False)
+        raise SystemExit(child.returncode)
     if not args.yes:
         confirm(args.purge)
+    # The shell feeds this program through stdin; recover the controlling TTY
+    # for Python's hidden secret input rather than putting secrets in the shell.
+    try:
+        sys.stdin = open('/dev/tty', 'r', encoding='utf-8')
+    except OSError:
+        fail('卸载需要管理员认证和交互终端；--yes 不能代替认证。')
+    sys.path.insert(0, str(root / 'oai-core' / 'src'))
+    try:
+        from oai_core.scripts_runtime import management
+    except ImportError:
+        fail('缺少可信的管理员认证模块，未执行卸载。')
     batch = None
     manifest = None
     try:
-        with configuration_lock(root):
+        with management(root, {'uninstall'}) as (store, handle), configuration_lock(root):
+            def authorize():
+                store.require_management(handle, 'uninstall')
+            authorize()
             if any((identity(path) if exists(path) else None) != snapshot for path, snapshot in configuration_snapshot.items()):
                 fail("配置在确认期间发生变化，已中止；请重新预览。")
             check_journal(root)
             if service and shutil.which("systemctl"):
+                authorize()
                 stop_service(service, root)
             if launch_agent:
+                authorize()
                 stop_launch_agent(launch_agent, root)
+            authorize()
             stop_processes(root)
             if any((identity(path) if exists(path) else None) != snapshot for path, snapshot in configuration_snapshot.items()):
                 fail("停止服务期间配置发生变化，已中止；请重新预览。")
@@ -509,6 +552,7 @@ def main():
             if cron and cron_plan(root) != cron:
                 fail("crontab 在确认期间发生变化，已中止；请重新预览。")
             check_move_mounts(moves)
+            authorize()
             batch = create_batch()
             print(f"回收目录: {batch}", flush=True)
             manifest = {"version": 1, "mode": "purge" if args.purge else "keep-config", "installation": str(root), "status": "in_progress", "moves": [
@@ -519,21 +563,32 @@ def main():
                 write_private(batch / "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
             persist()
             if cron:
+                authorize()
                 write_private(batch / "crontab.before", cron[0])
+                authorize()
                 command(["crontab", "-"], input_text=cron[1])
                 manifest["crontab_backup"] = "crontab.before"
                 persist()
-            # The interpreter has already read this standalone script into memory.
             if args.purge:
                 os.chdir(root.parent)
             for move in manifest["moves"]:
+                authorize()
                 source = Path(move["source"])
+                if args.purge and source == root and service and shutil.which("systemctl"):
+                    authorize()
+                    command(["systemctl", "--user", "daemon-reload"])
                 if identity(source) != snapshots[source]:
                     fail(f"文件在移动前发生变化，已中止: {source}")
+                # Close SQLite before moving the containing directory.  Reopening
+                # it under a new path would leave the handle bound to old state.
+                if args.purge and source == root:
+                    store.revoke_management(handle)
+                    store.close()
                 shutil.move(str(source), move["destination"])
                 move["completed"] = True
                 persist()
-            if service and shutil.which("systemctl"):
+            if not args.purge and service and shutil.which("systemctl"):
+                authorize()
                 command(["systemctl", "--user", "daemon-reload"])
             manifest["status"] = "completed"
             persist()
@@ -554,7 +609,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (UninstallError, OSError, ValueError) as error:
-        print(f"[错误] {error}", file=sys.stderr)
+    except Exception as error:
+        if isinstance(error, (UninstallError, OSError, ValueError)):
+            print(f"[错误] {error}", file=sys.stderr)
+        else:
+            print(f"[错误] 卸载未完成（{getattr(error, 'code', type(error).__name__)}）；请保留现场。", file=sys.stderr)
         raise SystemExit(1)
 PYTHON

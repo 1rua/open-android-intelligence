@@ -32,6 +32,62 @@ class GatewayAuthErrorTest {
         assertTrue(sent.body.decodeToString().contains("negotiation"))
     }
 
+    @Test
+    fun accountChallengeWithoutMfaCompletesWithSignedFactsAndNoProof() = runBlocking {
+        val requests = mutableListOf<Pair<String, String>>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request.target to request.body.decodeToString()
+                return when {
+                    request.target.endsWith("/challenge") -> json(200, """{"protocol":"2.1","data":{"challengeId":"challenge_1","accountId":"account_1","negotiationId":"neg_1","installationId":"install_1","deviceId":"device_1","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":[],"enrollmentRequired":false}}""")
+                    else -> json(200, """{"data":{"accountId":"account_1","deviceId":"device_1","sessionId":"session_1","accessToken":"token","refreshCredential":"refresh"}}""")
+                }
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+        }
+        val auth = GatewayAuthClient(transport, "install_1", "test", 35)
+        val password = "secret".toCharArray()
+        val challenge = auth.beginAccountLogin("neg_1", "user", password, "phone", "pub", "account_1", "device_1")
+        assertTrue(password.all { it == '\u0000' })
+        var signed = ""
+        val session = auth.completeAccountLogin(challenge, { signed = it.decodeToString(); byteArrayOf(1) })
+        assertEquals("device_1", session.deviceId)
+        assertTrue(signed.startsWith("OPEN_ANDROID_INTELLIGENCE_ACCOUNT_LOGIN_V1\n{"))
+        assertTrue(signed.contains("\"methods\":[]"))
+        assertFalse(requests.last().second.contains("otp"))
+        assertFalse(requests.last().second.contains("recoveryCode"))
+    }
+
+    @Test
+    fun accountChallengeRejectsMissingOldDeviceBinding() = runBlocking {
+        val auth = client(json(200, """{"data":{"challengeId":"challenge_1","accountId":"account_1","negotiationId":"neg_1","installationId":"install-1","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"n","methods":[],"enrollmentRequired":false}}"""))
+        val password = "secret".toCharArray()
+        val failure = runCatching { auth.beginAccountLogin("neg_1", "user", password, "phone", "pub", "account_1", "device_1") }.exceptionOrNull()
+        assertEquals("ACCOUNT_CHALLENGE_SCOPE_MISMATCH", failure?.message)
+        assertTrue(password.all { it == '\u0000' })
+    }
+
+    @Test
+    fun accountChallengeRequiresAndScrubsExactlyOneMfaProof() = runBlocking {
+        var sentBody = ""
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                sentBody = request.body.decodeToString()
+                return if (request.target.endsWith("/challenge")) json(200, """{"data":{"challengeId":"challenge_1","accountId":"account_1","negotiationId":"neg_1","installationId":"install_1","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"n","methods":["totp","recovery-code"],"enrollmentRequired":false}}""")
+                else json(200, """{"data":{"accountId":"account_1","deviceId":"device_1","sessionId":"session_1","accessToken":"token","refreshCredential":"refresh"}}""")
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+        }
+        val auth = GatewayAuthClient(transport, "install_1", "test", 35)
+        val challenge = auth.beginAccountLogin("neg_1", "user", "secret".toCharArray(), "phone", "pub")
+        assertTrue(runCatching { auth.completeAccountLogin(challenge, { byteArrayOf(1) }) }.isFailure)
+        val proof = "backup-code".toCharArray()
+        auth.completeAccountLogin(challenge, { byteArrayOf(1) }, recoveryCode = proof)
+        assertTrue(proof.all { it == '\u0000' })
+        assertTrue(sentBody.contains("\"recoveryCode\":\"backup-code\""))
+        assertFalse(sentBody.contains("\"otp\""))
+    }
+
     private class StubTransport(private val response: WireResponse) : GatewayByteTransport {
         var lastRequest: WireRequest? = null
         override suspend fun execute(request: WireRequest): WireResponse {

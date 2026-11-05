@@ -6,10 +6,18 @@ bindings. This platform deliberately registers no device tools or device routes.
 from __future__ import annotations
 
 import asyncio
+import fcntl
+import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
+import sqlite3
+import stat
+import threading
+import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -30,10 +38,161 @@ IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 UnsupportedApprovalMixin = NativeApprovalMixin
 
 
-def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts: list[str]) -> web.Application:
+class AutoAccountSpaces:
+    """Create private native accounts only for Core instance keys confirmed by the operator."""
+
+    def __init__(self, root: Path, backend: Any, trusted_cores: dict[str, bytes]):
+        self.storage_root = Path(root).resolve()
+        self.backend = backend
+        info = self.storage_root.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Hermes account root must be private")
+        self.trusted_cores = dict(trusted_cores)
+        if any(not isinstance(key, str) or not IDENTITY.fullmatch(key) or not isinstance(value, bytes) or len(value) != 32
+               for key, value in self.trusted_cores.items()):
+            raise ValueError("Invalid trusted Core instance keys")
+        self.root = self.storage_root / "oai-core-auto-spaces"
+        self.root.mkdir(mode=0o700, exist_ok=True)
+        info = self.root.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("Automatic account directory must be private")
+        self.database = self.root / "bindings.sqlite"
+        self._lock = threading.RLock()
+        with closing(self._connect()) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS bindings (core_id TEXT NOT NULL, account_id TEXT NOT NULL, "
+                       "native_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL, "
+                       "device INTEGER NOT NULL, inode INTEGER NOT NULL, "
+                       "PRIMARY KEY(core_id, account_id))")
+            db.execute("CREATE TABLE IF NOT EXISTS trusted_cores (core_id TEXT PRIMARY KEY, key_digest TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS request_nonces (core_id TEXT NOT NULL, nonce TEXT NOT NULL, "
+                       "expires INTEGER NOT NULL, PRIMARY KEY(core_id,nonce))")
+            for core_id, key in self.trusted_cores.items():
+                digest = hashlib.sha256(key).hexdigest()
+                row = db.execute("SELECT key_digest FROM trusted_cores WHERE core_id=?", (core_id,)).fetchone()
+                if row and not secrets.compare_digest(row[0], digest):
+                    raise ValueError("Core instance key changed")
+                db.execute("INSERT OR IGNORE INTO trusted_cores VALUES (?,?)", (core_id, digest))
+
+    def _connect(self):
+        fd = os.open(self.database, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError("Automatic account database must be private")
+        finally:
+            os.close(fd)
+        return sqlite3.connect(self.database, timeout=10)
+
+    def verified(self, instance_id: str, payload: dict[str, Any], signature: str) -> bool:
+        from oai_core.agent_registration import verify_core_request
+        key = self.trusted_cores.get(instance_id)
+        return key is not None and verify_core_request(key, payload, signature)
+
+    def consume_nonce(self, core_id: str, nonce: str, timestamp: int) -> bool:
+        now = int(time.time())
+        if abs(now - timestamp) > 120:
+            return False
+        try:
+            with closing(self._connect()) as db, db:
+                db.execute("DELETE FROM request_nonces WHERE expires<?", (now,))
+                db.execute("INSERT INTO request_nonces VALUES (?,?,?)", (core_id, nonce, timestamp + 121))
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def prepare(self, core_id: str, account_id: str) -> str:
+        # SQLite serializes the durable binding; this lock also serializes the
+        # multi-step filesystem recovery across different bridge processes.
+        fd = os.open(self.root / "provision.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError("Automatic account lock must be private")
+            with self._lock:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                return self._prepare_locked(core_id, account_id)
+        finally:
+            os.close(fd)
+
+    def _prepare_locked(self, core_id: str, account_id: str) -> str:
+        from oai_core.gateway.account_paths import account_paths
+        from oai_core.gateway.core import AccountStore
+        if core_id not in self.trusted_cores or not IDENTITY.fullmatch(account_id):
+            raise ValueError("Untrusted Core instance or account")
+        with self._lock, closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT native_id,state,device,inode FROM bindings WHERE core_id=? AND account_id=?",
+                             (core_id, account_id)).fetchone()
+            if row is None:
+                native_id = "oai_" + secrets.token_hex(32)
+                staging = self.root / ("pending-" + secrets.token_hex(32))
+                staging.mkdir(mode=0o700)
+                info = staging.lstat()
+                device, inode = info.st_dev, info.st_ino
+                paths = account_paths(self.storage_root, native_id)
+                if paths.root.exists() or paths.root.is_symlink():
+                    raise ValueError("Native account path already exists")
+                # Link the empty, exclusive reservation into the account root.
+                # The binding and inode are committed before any account data.
+                os.rename(staging, paths.root)
+                for parent in (self.root, self.storage_root):
+                    directory = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                db.execute("INSERT INTO bindings VALUES (?,?,?,'pending',?,?)",
+                           (core_id, account_id, native_id, device, inode))
+                db.commit()
+                state = "pending"
+            else:
+                native_id, state, device, inode = row
+                db.commit()
+                paths = account_paths(self.storage_root, native_id)
+            if state == "pending":
+                info = paths.root.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
+                        or (info.st_dev, info.st_ino) != (device, inode)):
+                    raise ValueError("Unsafe pending account directory")
+                cipher = self.backend.secret_store.get_or_create_aead(f"open-android-intelligence-gateway/{native_id}")
+                account = AccountStore(paths, cipher.reference, aead=cipher, account_id=native_id)
+                account.close()
+                db.execute("UPDATE bindings SET state='ready' WHERE core_id=? AND account_id=? AND state='pending'",
+                           (core_id, account_id))
+                db.commit()
+            elif state != "ready" or not paths.database.is_file():
+                raise ValueError("Automatic account store is missing or invalid")
+            info = paths.root.lstat()
+            if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != (device, inode):
+                raise ValueError("Automatic account ownership changed")
+            with self.backend._lock:
+                if native_id not in self.backend.accounts:
+                    self.backend.accounts = (*self.backend.accounts, native_id)
+                self.backend.acquire_accounts()
+            return native_id
+
+    def restore(self) -> None:
+        with closing(self._connect()) as db:
+            bindings = db.execute("SELECT core_id,account_id FROM bindings ORDER BY core_id,account_id").fetchall()
+        for core_id, account_id in bindings:
+            if core_id in self.trusted_cores:
+                self.prepare(core_id, account_id)
+
+    def authorize(self, core_id: str, account_id: str, native_id: str) -> bool:
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT state FROM bindings WHERE core_id=? AND account_id=? AND native_id=?",
+                             (core_id, account_id, native_id)).fetchone()
+        if not row or row[0] != "ready":
+            return False
+        return self.prepare(core_id, account_id) == native_id
+
+
+def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts: list[str], *,
+                             instance_id: str | None = None, auto_spaces: AutoAccountSpaces | None = None) -> web.Application:
     if not isinstance(token, str) or len(token) < 32:
         raise ValueError("OAI_HERMES_SESSION_TOKEN requires at least 32 characters")
-    if not accounts or any(not isinstance(value, str) or not IDENTITY.fullmatch(value) for value in accounts):
+    if not isinstance(accounts, list) or not accounts and auto_spaces is None or any(
+            not isinstance(value, str) or not IDENTITY.fullmatch(value) for value in accounts):
         raise ValueError("Hermes bridge requires an explicit account allowlist")
     allowed = frozenset(accounts)
 
@@ -54,10 +213,28 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                                      or any(len(request.query.getall(key)) != 1
                                             for key in request.query)):
                 raise AdapterError("SCHEMA_INVALID", 400)
-            if request.path not in {PREFIX + "/status", PREFIX + "/commands"}:
+            if request.path not in {PREFIX + "/status", PREFIX + "/commands", PREFIX + "/handshake", PREFIX + "/auto-spaces"}:
                 account = request.headers.get("X-OAI-Account")
                 if account not in allowed:
-                    raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
+                    core_id = request.headers.get("X-OAI-Core-Instance")
+                    core_account = request.headers.get("X-OAI-Core-Account")
+                    from oai_core.agent_registration import core_request_payload
+                    proof = request.headers.get("X-OAI-Core-Proof", "")
+                    nonce = request.headers.get("X-OAI-Core-Nonce", "")
+                    timestamp = request.headers.get("X-OAI-Core-Time", "")
+                    if (auto_spaces is None or not re.fullmatch(r"[a-f0-9]{64}", nonce)
+                            or not re.fullmatch(r"[0-9]{1,12}", timestamp)):
+                        raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
+                    uploading = request.method == "PUT" and request.path.endswith("/content")
+                    if uploading and not re.fullmatch(r"[a-f0-9]{64}", request.headers.get("X-OAI-Content-SHA256", "")):
+                        raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
+                    raw = b"" if uploading else await request.read()
+                    payload = core_request_payload(core_id, instance_id, core_account, account, request.method,
+                                                   request.raw_path, raw, request.headers, nonce, int(timestamp))
+                    if (not auto_spaces.verified(core_id, payload, proof)
+                            or not await asyncio.to_thread(auto_spaces.consume_nonce, core_id, nonce, int(timestamp))
+                            or not await asyncio.to_thread(auto_spaces.authorize, core_id, core_account, account)):
+                        raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
                 device = request.headers.get("X-OAI-Device")
                 if device is not None and not IDENTITY.fullmatch(device):
                     raise AdapterError("SCHEMA_INVALID", 400)
@@ -68,8 +245,12 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                     if not value.isdecimal() or not 1 <= int(value) <= 2 ** 53 - 1:
                         raise AdapterError("SCHEMA_INVALID", 400)
                     return int(value)
+                origins = request.headers.getall("X-OAI-Origin-Context", [])
+                if len(origins) > 1 or origins and (not origins[0] or len(origins[0]) > 4096):
+                    raise AdapterError("SCHEMA_INVALID", 400)
                 request["principal"] = SimpleNamespace(account_id=account, device_id=device,
-                    pairing_generation=number("X-OAI-Pairing-Generation"), grant_revision=number("X-OAI-Grant-Revision"))
+                    pairing_generation=number("X-OAI-Pairing-Generation"), grant_revision=number("X-OAI-Grant-Revision"),
+                    origin_context=origins[0] if origins else None)
             with trace_context(request.headers, request_id=request.headers.get("X-OAI-Request-Id")):
                 response = await handler(request)
             response.headers["Cache-Control"] = "no-store"
@@ -88,6 +269,45 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
 
     async def status(request):
         return web.json_response({"online": await adapter.status(), "capabilities": adapter.descriptor()["capabilities"]})
+
+    async def handshake(request):
+        from oai_core.agent_registration import _json, bridge_proof
+        body = await body_for(request)
+        if (instance_id is None or not isinstance(body, dict)
+                or set(body) not in ({"challenge"}, {"challenge", "coreInstanceId", "coreSignature"})
+                or not isinstance(body["challenge"], str) or not re.fullmatch(r"[0-9a-f]{64}", body["challenge"])):
+            raise AdapterError("HOST_INCOMPATIBLE", 400)
+        online = await adapter.status()
+        capabilities = adapter.descriptor()["capabilities"]
+        result = {"instanceId": instance_id, "sessionScope": "account", "online": online,
+                  "capabilities": capabilities,
+                  "proof": bridge_proof(token, body["challenge"], instance_id, "account", online, capabilities)}
+        if "coreInstanceId" in body:
+            core_id = body["coreInstanceId"]
+            if not isinstance(core_id, str) or not IDENTITY.fullmatch(core_id):
+                raise AdapterError("SCHEMA_INVALID", 400)
+            payload = {"coreInstanceId": core_id, "hermesInstanceId": instance_id, "challenge": body["challenge"]}
+            if auto_spaces is None or not auto_spaces.verified(core_id, payload, body["coreSignature"]):
+                raise AdapterError("AUTHENTICATION_REQUIRED", 403)
+            result.update(coreAccepted=True, coreProof=hmac.new(
+                token.encode(), b"oai-hermes-core-accepted-v1\0" + _json(payload), hashlib.sha256).hexdigest())
+        return web.json_response(result)
+
+    async def auto_space(request):
+        body = await body_for(request)
+        fields = {"coreInstanceId", "hermesInstanceId", "accountId", "nonce", "signature"}
+        if (not isinstance(body, dict) or set(body) != fields
+                or any(not isinstance(body[name], str) for name in fields)
+                or body["hermesInstanceId"] != instance_id
+                or not IDENTITY.fullmatch(body["coreInstanceId"])
+                or not IDENTITY.fullmatch(body["accountId"])
+                or not re.fullmatch(r"[a-f0-9]{64}", body["nonce"])):
+            raise AdapterError("SCHEMA_INVALID", 400)
+        payload = {name: body[name] for name in fields if name != "signature"}
+        if auto_spaces is None or not auto_spaces.verified(body["coreInstanceId"], payload, body["signature"]):
+            raise AdapterError("AUTHENTICATION_REQUIRED", 403)
+        native_id = await asyncio.to_thread(auto_spaces.prepare, body["coreInstanceId"], body["accountId"])
+        return web.json_response({"nativeId": native_id})
 
     async def commands(request):
         language_code = request.query.get("languageCode", "en")
@@ -223,11 +443,19 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                         or row["owner_pairing_generation"] != (principal.pairing_generation or 0)):
                     raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
                 record = account.attachments.get_record(attachment_id)
+                supplied_digest = request.headers.get("X-OAI-Content-SHA256")
+                if supplied_digest is not None and not secrets.compare_digest(supplied_digest, record["sha256"].removeprefix("sha256:")):
+                    raise AdapterError("ATTACHMENT_ACCESS_DENIED", 403)
                 return account.attachments.begin_content_upload_stream(attachment_id, record["sizeBytes"], record["sha256"])
         upload = await asyncio.to_thread(begin)
         try:
+            digest = hashlib.sha256()
             async for chunk in request.content.iter_chunked(64 * 1024):
+                digest.update(chunk)
                 await asyncio.to_thread(upload.write, chunk)
+            expected = request.headers.get("X-OAI-Content-SHA256")
+            if expected is not None and not secrets.compare_digest(digest.hexdigest(), expected):
+                raise AdapterError("ATTACHMENT_READ_FAILED", 409)
             staged = await asyncio.to_thread(upload.finish)
             def commit():
                 with adapter._account(principal) as account:
@@ -264,6 +492,8 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
     app.router.add_post(PREFIX + "/sessions/{session_id}/events/ack", events_ack)
     app.router.add_post(PREFIX + "/attachments", attachment_create)
     app.router.add_put(PREFIX + "/attachments/{attachment_id}/content", attachment_content)
+    app.router.add_post(PREFIX + "/handshake", handshake)
+    app.router.add_post(PREFIX + "/auto-spaces", auto_space)
     app.router.add_get(PREFIX + "/status", status)
     app.router.add_get(PREFIX + "/commands", commands)
     app.router.add_get(PREFIX + "/sessions", sessions)
@@ -278,15 +508,40 @@ def register(ctx: Any) -> None:
     from .runtime import SessionOnlyAdapter
     from .backend import SessionBackend
     from .platform_identity import GATEWAY_PLATFORM_IDS, gateway_enabled
-    token = os.environ.get("OAI_HERMES_SESSION_TOKEN", "")
-    if len(token) < 32:
-        raise ValueError("OAI_HERMES_SESSION_TOKEN requires at least 32 characters")
+    from oai_core.agent_registration import read_bridge_secret
+    source = {}
+    for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
+                          ("OAI_HERMES_SESSION_SECRET_FD", "secretFd"),
+                          ("OAI_HERMES_SESSION_TOKEN", "token")):
+        if variable in os.environ:
+            value = os.environ[variable]
+            source[key] = int(value) if key == "secretFd" and value.isdecimal() else value
+    token = read_bridge_secret(source, Path.cwd())
     root = os.environ.get("OAI_HERMES_GATEWAY_ROOT")
     if not root:
         raise ValueError("Set OAI_HERMES_GATEWAY_ROOT to the existing Hermes Gateway accounts directory")
     accounts = json.loads(os.environ.get("OAI_HERMES_ACCOUNTS", "[]"))
-    if not isinstance(accounts, list) or not accounts or len(set(accounts)) != len(accounts) or any(not isinstance(v, str) or not IDENTITY.fullmatch(v) for v in accounts):
-        raise ValueError("OAI_HERMES_ACCOUNTS requires unique explicit Hermes account IDs")
+    trusted_file = os.environ.get("OAI_HERMES_TRUSTED_CORES_FILE")
+    if (not isinstance(accounts, list) or len(set(accounts)) != len(accounts)
+            or any(not isinstance(v, str) or not IDENTITY.fullmatch(v) for v in accounts)
+            or not accounts and not trusted_file):
+        raise ValueError("Hermes requires explicit accounts or confirmed Core instance keys")
+    trusted_cores = {}
+    if trusted_file:
+        from oai_core.agent_registration import _private_file
+        fd = _private_file(Path(trusted_file))
+        try:
+            data = os.read(fd, 65537)
+        finally:
+            os.close(fd)
+        if len(data) > 65536:
+            raise ValueError("Trusted Core manifest too large")
+        document = json.loads(data)
+        if not isinstance(document, dict):
+            raise ValueError("Invalid trusted Core manifest")
+        trusted_cores = {key: bytes.fromhex(value) for key, value in document.items()}
+        if not os.environ.get("OAI_HERMES_INSTANCE_ID"):
+            raise ValueError("Hermes instance identity required")
     port = int(os.environ.get("OAI_HERMES_SESSION_PORT", "8792"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid OAI_HERMES_SESSION_PORT")
@@ -296,6 +551,8 @@ def register(ctx: Any) -> None:
         nonlocal instance
         if instance is None:
             instance = SessionOnlyAdapter(config, backend, token, accounts, port)
+            if trusted_cores:
+                instance.auto_spaces = AutoAccountSpaces(Path(root), backend, trusted_cores)
         return instance
     for platform_id in GATEWAY_PLATFORM_IDS:
         ctx.register_platform(name=platform_id, label="OAI Core Hermes Sessions", adapter_factory=factory,

@@ -172,6 +172,11 @@ class LocalMasterKeyStore:
             info=str(name).encode("utf-8"),
         ).derive(_read_key_bytes(self.path))
 
+    def instance_signing_key(self, instance_id: str):
+        """Derive a purpose-isolated stable Core instance key without another file."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        return Ed25519PrivateKey.from_private_bytes(self._derive("oai-core:instance-signing:v1:" + instance_id))
+
     def get_or_create_aead(self, name: str) -> LocalAeadProvider:
         # "get_or_create" is the host-facing name: this source never invents a
         # key, it derives a stable per-account key from the file that already

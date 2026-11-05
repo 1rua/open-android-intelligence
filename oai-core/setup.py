@@ -31,7 +31,10 @@ def copy_skills(destination):
     for source in (PACKAGE_ROOT / "skills", PACKAGE_ROOT.parent / "integrations" / "skills"):
         if (source / "oai-client" / "SKILL.md").is_file():
             target = Path(destination) / "skills"
-            shutil.rmtree(target, ignore_errors=True)
+            if target.exists():
+                import secrets
+                retained = target.with_name(target.name + ".previous-" + secrets.token_hex(8))
+                target.rename(retained)
             shutil.copytree(source, target)
             return
     raise RuntimeError("oai-client skill assets are required to build OAI Core")

@@ -34,18 +34,18 @@ import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 
 internal fun httpStatusLabel(state: SettingsUiState): String = when (state.coreHttpHealth.reachability) {
-    CoreHttpReachability.UNKNOWN -> if (state.coreHttpHealth.failureCode == "NETWORK_LOST") "网络已断开，等待重新检测" else "尚无本次连接的检测结果"
-    CoreHttpReachability.REACHABLE -> "Core 可访问" + (state.coreHttpHealth.httpStatus?.let { "（HTTP $it）" } ?: "")
-    CoreHttpReachability.UNREACHABLE -> "暂时无法访问 Core"
-    CoreHttpReachability.SECURITY_BLOCKED -> "连接被安全校验阻止"
+    CoreHttpReachability.UNKNOWN -> if (state.coreHttpHealth.failureCode == "NETWORK_LOST") "网络已断开" else "未检测"
+    CoreHttpReachability.REACHABLE -> "可访问" + (state.coreHttpHealth.httpStatus?.let { "（HTTP $it）" } ?: "")
+    CoreHttpReachability.UNREACHABLE -> "无法访问 Core"
+    CoreHttpReachability.SECURITY_BLOCKED -> "安全校验阻止"
 }
 
 internal fun eventStatusLabel(status: EventStreamStatus): String = when (status) {
-    EventStreamStatus.IDLE -> "尚未连接"
+    EventStreamStatus.IDLE -> "未连接"
     EventStreamStatus.CONNECTING -> "正在连接"
     EventStreamStatus.LIVE -> "已连接"
-    EventStreamStatus.RECONNECTING -> "正在重新连接"
-    EventStreamStatus.FAILED -> "连接失败，需要检查连接"
+    EventStreamStatus.RECONNECTING -> "正在重连"
+    EventStreamStatus.FAILED -> "连接失败"
 }
 
 @Composable
@@ -79,10 +79,10 @@ internal fun ConnectionSettingsScreen(
             SettingsSectionCard {
                 val agents = uiState.nativeAgentsState
                 when {
-                    agents == null -> SettingsListItem("当前 Agent", supporting = "尚未取得 Agent 列表，连接 Core 后可刷新")
-                    agents.supported == null -> SettingsListItem("正在检查 Agent 列表支持情况", supporting = "等待 Core 返回实际结果")
-                    agents.supported == false -> SettingsListItem("当前 Core 不支持 Agent 列表", supporting = "请检查 Core 版本及已接入的 Agent")
-                    agents.agents.isEmpty() -> SettingsListItem("尚未发现 Agent", supporting = "刷新列表或检查 Core 上的 Agent 配置")
+                    agents == null -> SettingsListItem("当前 Agent", supporting = "未获取，连接后刷新")
+                    agents.supported == null -> SettingsListItem("正在检查 Agent 支持情况", supporting = "请稍候…")
+                    agents.supported == false -> SettingsListItem("当前 Core 不支持 Agent 列表", supporting = "请检查 Core 版本")
+                    agents.agents.isEmpty() -> SettingsListItem("尚未发现 Agent", supporting = "请检查 Core 上的 Agent 配置")
                     else -> agents.agents.forEach { agent ->
                         val selected = agent.id == agents.selectedAgentId
                         SettingsListItem(
@@ -124,7 +124,7 @@ internal fun ConnectionSettingsScreen(
                 SettingsNavigationItem("添加账号", onClick = onAddAccount)
                 SettingsListItem(
                     "刷新登录凭据",
-                    supporting = if (uiState.isRefreshingSession) "正在续期…" else "提前更新当前账号的登录凭据",
+                    supporting = if (uiState.isRefreshingSession) "续期中…" else "提前更新当前登录凭据",
                     enabled = uiState.isGatewayConnected && !uiState.isRefreshingSession,
                     onClick = onRefreshSession,
                 )
@@ -136,21 +136,21 @@ internal fun ConnectionSettingsScreen(
             SectionLabel("连接安全")
             SettingsSectionCard {
                 SettingsListItem("传输加密", supporting = when (uiState.connectedTransportSecurity) {
-                    TransportSecurity.PLAINTEXT -> "未加密（HTTP），传输内容可能被同网络的人看到"
-                    TransportSecurity.TLS_PINNED -> "已加密，服务器公钥与已保存记录一致"
-                    TransportSecurity.TLS_SYSTEM_TRUST -> "已加密，证书通过系统校验"
-                    null -> "当前未建立可验证的连接"
+                    TransportSecurity.PLAINTEXT -> "明文（HTTP），易被窃听"
+                    TransportSecurity.TLS_PINNED -> "已加密，证书公钥一致"
+                    TransportSecurity.TLS_SYSTEM_TRUST -> "已加密，系统证书受信任"
+                    null -> "未建立加密连接"
                 })
                 SettingsListItem("Core 身份验证", supporting = when (uiState.connectedTransportSecurity) {
-                    TransportSecurity.TLS_PINNED -> "本次连接已核对保存的服务器身份"
-                    TransportSecurity.TLS_SYSTEM_TRUST -> "本次连接通过系统证书验证"
-                    TransportSecurity.PLAINTEXT -> "HTTP 连接无法通过 TLS 验证服务器身份"
-                    null -> "尚无本次连接的验证结果"
+                    TransportSecurity.TLS_PINNED -> "已核对保存的服务器身份"
+                    TransportSecurity.TLS_SYSTEM_TRUST -> "通过系统证书验证"
+                    TransportSecurity.PLAINTEXT -> "HTTP 无法验证身份"
+                    null -> "未验证"
                 })
-                SettingsListItem("设备配对", supporting = uiState.pairingSummary ?: if (uiState.hasLocalSession) "本机保留账号资料；配对状态需连接后核实" else "尚无当前配对信息")
+                SettingsListItem("设备配对", supporting = uiState.pairingSummary ?: if (uiState.hasLocalSession) "保留账号资料，待连接核实" else "无配对信息")
                 SettingsListItem(
                     "解除设备配对",
-                    supporting = "撤销当前设备凭据，并清理当前账号范围的本机会话和缓存",
+                    supporting = "取消手机与 Core 配对，清理当前账号本地数据",
                     tone = SettingsTone.DANGER,
                     enabled = uiState.isGatewayConnected,
                     onClick = onRequestUnpair,
@@ -161,7 +161,7 @@ internal fun ConnectionSettingsScreen(
     if (confirmLogout) AlertDialog(
         onDismissRequest = { confirmLogout = false },
         title = { Text("退出当前账号？") },
-        text = { Text("保留已保存账号、设备配对、本机会话及全局能力设置。此账号的远程执行和推送暂停；其他仍登录的账号不受影响。") },
+        text = { Text("将保留已存账号、配对和本地聊天记录。该账号的远程任务与通知推送将暂停。") },
         confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("退出登录") } },
         dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("取消") } },
     )
@@ -169,7 +169,7 @@ internal fun ConnectionSettingsScreen(
     if (profile != null) AlertDialog(
         onDismissRequest = { removing = null },
         title = { Text("移除本机账号？") },
-        text = { Text("将移除「${profile.username}」在这台手机上的凭据、配对密钥、私有会话和缓存；Core 账号与其他设备不受影响，全局能力设置保留。" +
+        text = { Text("将移除「${profile.username}」在手机上的登录与聊天数据；服务器端数据不受影响。" +
             if (uiState.isGatewayConnected || uiState.hasLocalSession) "\n先返回账号管理，再确认要移除的账号。" else "") },
         confirmButton = { TextButton(onClick = {
             removing = null
@@ -183,28 +183,28 @@ internal fun ConnectionSettingsScreen(
 internal fun ConnectionDiagnosticsScreen(uiState: SettingsUiState, presentation: SettingsPresentation, onBack: () -> Unit) {
     SettingsPageScaffold("连接详情与诊断", presentation, onBack) { padding ->
         SettingsPageColumn(padding) {
-            SectionLabel("连接观测")
+            SectionLabel("连接状态与诊断")
             SettingsSectionCard {
                 SettingsListItem("HTTP 连接", supporting = httpStatusLabel(uiState))
                 SettingsListItem("实时事件通道", supporting = eventStatusLabel(uiState.eventStreamStatus))
                 SettingsListItem("连接阶段", supporting = when (uiState.connectionPhase) {
-                    is ConnectionPhase.Connected -> "会话已建立，HTTP 与实时通道请分别查看"
-                    is ConnectionPhase.OfflineMirror -> "离线查看本机会话，账号未退出"
-                    ConnectionPhase.Initializing, ConnectionPhase.Negotiating -> "正在建立连接"
+                    is ConnectionPhase.Connected -> "连接正常"
+                    is ConnectionPhase.OfflineMirror -> "离线查看本地记录，账号未退出"
+                    ConnectionPhase.Initializing, ConnectionPhase.Negotiating -> "正在连接"
                     ConnectionPhase.Authenticating -> "正在验证账号"
-                    ConnectionPhase.Reconnecting -> "正在恢复连接"
-                    is ConnectionPhase.Failed -> "连接失败，请检查 Core 地址、网络及账号状态"
+                    ConnectionPhase.Reconnecting -> "正在重连"
+                    is ConnectionPhase.Failed -> "连接失败，请检查 Core 地址、网络及账号"
                     ConnectionPhase.Disconnected -> "尚未连接"
                 })
             }
-            SectionLabel("这个 Core 支持的功能")
+            SectionLabel("此 Core 支持的功能")
             com.openandroidintelligence.mobile.NegotiatedCapabilitiesGroup(uiState.conversationUi)
             SettingsSectionCard {
                 SettingsListItem("设备端任务执行", supporting = when {
-                    !uiState.isGatewayConnected -> "连接后可检查 Core 是否支持设备任务"
-                    uiState.deviceRequestChannel == null -> "当前 Core 未提供设备任务通道"
-                    !uiState.pluginRuntimesWired -> "Core 支持发送任务，但插件环境未就绪"
-                    else -> "Core 提供设备任务通道，执行仍受本机授权和系统权限约束"
+                    !uiState.isGatewayConnected -> "连接后可查看"
+                    uiState.deviceRequestChannel == null -> "当前 Core 未开启"
+                    !uiState.pluginRuntimesWired -> "插件服务未就绪"
+                    else -> "已支持，执行需授权"
                 })
             }
         }

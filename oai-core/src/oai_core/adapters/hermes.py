@@ -12,16 +12,23 @@ from urllib.parse import quote
 from yarl import URL
 
 from ..sessions import AdapterError
+from ..gateway.core import GatewayError
+
+
+class _PrincipalHeaders(dict):
+    def __init__(self, principal: Any):
+        super().__init__()
+        self.principal = principal
 from .remote import RemoteSessionAdapter, REMOTE_PREFIX
 
 
 class HermesRemoteSessionAdapter(RemoteSessionAdapter):
     """Only configured Core accounts can select their mapped Hermes account."""
 
-    def __init__(self, base_url: str, token: str, accounts: dict[str, str], *, agent_id="hermes", name="Hermes", attachment_core: Any = None):
+    def __init__(self, base_url: str, token: str, accounts: dict[str, str], *, agent_id="hermes", name="Hermes",
+                 attachment_core: Any = None, origin_registration: Any = None, account_registration: Any = None):
         if (
             not isinstance(accounts, dict)
-            or not accounts
             or any(
                 not isinstance(key, str) or not key or not isinstance(value, str) or not value
                 for key, value in accounts.items()
@@ -31,6 +38,7 @@ class HermesRemoteSessionAdapter(RemoteSessionAdapter):
             raise ValueError("Hermes requires an explicit one-to-one Core account mapping")
 
         self.accounts = dict(accounts)
+        self.account_registration = account_registration
         super().__init__(
             base_url,
             token,
@@ -42,12 +50,19 @@ class HermesRemoteSessionAdapter(RemoteSessionAdapter):
             headers_builder=self._hermes_headers,
             attachment_core=attachment_core,
             forward_client_message_ids=True,
+            origin_registration=origin_registration,
         )
 
     def _hermes_headers(self, principal: Any) -> dict[str, str]:
+        if self.account_registration is not None:
+            return _PrincipalHeaders(principal)
         account_id = self.accounts.get(getattr(principal, "account_id", None))
         if account_id is None:
             raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403)
+        return self._principal_headers(principal, account_id)
+
+    @staticmethod
+    def _principal_headers(principal: Any, account_id: str) -> dict[str, str]:
         result = {"X-OAI-Account": account_id}
         device_id = getattr(principal, "device_id", None)
         if device_id:
@@ -60,6 +75,23 @@ class HermesRemoteSessionAdapter(RemoteSessionAdapter):
             if value is not None:
                 result[name] = str(value)
         return result
+
+    async def _prepare_headers(self, headers: dict[str, str] | None, method: str, path: str,
+                               body: Any = None) -> dict[str, str] | None:
+        if not isinstance(headers, _PrincipalHeaders):
+            return headers
+        try:
+            principal = headers.principal
+            native_id, automatic = await self.account_registration.resolve_hermes_binding(principal, self.agent_id, self)
+            result = {**self._principal_headers(principal, native_id), **headers}
+            if automatic:
+                result.update(self.account_registration.automatic_headers(
+                    self.agent_id, principal.account_id, native_id, method, self.prefix + path, body, result))
+                if method == "PUT" and path.endswith("/content"):
+                    result["X-OAI-Content-SHA256"] = headers.get("X-OAI-Content-SHA256", "")
+            return result
+        except (GatewayError, ValueError, PermissionError):
+            raise AdapterError("AGENT_ACCOUNT_NOT_CONNECTED", 403) from None
 
     @property
     def account_scope(self) -> tuple[str, str, int]:
