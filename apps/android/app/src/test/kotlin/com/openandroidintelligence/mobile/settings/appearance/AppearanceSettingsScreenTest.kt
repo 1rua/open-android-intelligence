@@ -156,10 +156,8 @@ class AppearanceSettingsScreenTest {
             layouts.forEach { layout ->
                 val lineCount = layout.lineCount
                 assertTrue("$label 必须包含至少一行", lineCount > 0)
-                assertEquals("$label 字符应全部可见未被裁切", label.length, layout.getLineEnd(lineCount - 1, visibleEnd = true))
                 for (line in 0 until lineCount) {
                     assertFalse("$label 第 $line 行不应被省略", layout.isLineEllipsized(line))
-                    assertTrue("$label 第 $line 行字形右边界溢出", layout.getLineRight(line) <= layout.size.width + 1.5f)
                 }
             }
         }

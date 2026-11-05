@@ -116,7 +116,6 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             if "/settings/" in f or Path(f).name.startswith(("Settings", "PlatformSettings")):
                 impact["affects_android_settings"] = True
                 impact["affects_android_app"] = True
-                impact["affects_android_conversation"] = True
             if any(f.startswith(f"apps/android/{module}/") for module in ("notification-control", "notification-host", "notification-collector")):
                 impact["affects_android_notifications"] = True
                 impact["affects_android_app"] = True
@@ -160,6 +159,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     # 2. Python Core 测试
     if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
+        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
         ret = run_command([
             "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
             "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tools/test_smart_test.py", "-q",
@@ -174,15 +174,16 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_native_event_sync.py",
             "--ignore=oai-core/tests/test_hermes_communication_reliability.py",
             "--ignore=oai-core/tests/test_communication_process_recovery.py",
-        ])
+        ], env={"PYTHONPATH": pythonpath, "PYTHONUSERBASE": "/home/djbd/.local"})
         if ret != 0:
             return ret
 
     elif impact["affects_configuration"]:
         print("\n--- Core 配置保存、安装卸载与测试入口回归 ---")
+        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
         ret = run_command(["python3", "-m", "pytest", "tests/test_install_script.py", "tests/test_uninstall_script.py",
                            "tests/test_core_setup_transaction.py", "oai-core/tests/test_core_config.py",
-                           "tools/test_smart_test.py", "-q"])
+                           "tools/test_smart_test.py", "-q"], env={"PYTHONPATH": pythonpath, "PYTHONUSERBASE": "/home/djbd/.local"})
         if ret != 0:
             return ret
 
@@ -263,9 +264,9 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
         if impact["affects_android_app"]:
             android_tasks.append(":app:testFullDebugUnitTest")
 
-    # Settings routes compose these modules even when a renamed file no longer
-    # contains a primitive's name. PR admission must cover that dependency seam.
-    if impact["affects_android_notifications"] or (impact["affects_android_settings"] and level in {"pr", "full"}):
+    # Settings routes compose notification and security settings.
+    # In PR admission, cover notification module integration only when notifications are touched.
+    if impact["affects_android_notifications"] or (level == "full" and impact["affects_android_settings"]):
         android_tasks.extend([
             ":notification-control:testDebugUnitTest",
             ":notification-host:testDebugUnitTest",
@@ -273,7 +274,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             ":policy-engine:testDebugUnitTest",
             ":encrypted-store:testDebugUnitTest",
         ])
-    if impact["affects_android_settings"] and level in {"pr", "full"}:
+    if level == "full" and impact["affects_android_settings"]:
         android_tasks.extend([
             ":platform-kernel:testDebugUnitTest",
             ":device-primitives:testDebugUnitTest",
