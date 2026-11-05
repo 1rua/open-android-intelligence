@@ -715,6 +715,50 @@ async def test_native_attachment_flows_between_distinct_account_stores(core, tmp
 
 
 @pytest.mark.asyncio
+async def test_account_only_text_does_not_fabricate_device_origin(core):
+    captured = []
+    class Runtime:
+        _loop = asyncio.get_running_loop()
+        _session_store = object()
+        _message_handler = staticmethod(lambda: None)
+        services = SimpleNamespace(core=core)
+
+        def _track_background_task(self, task, label):
+            pass
+
+        async def _notify_agent_inbound(self, path, body, response, owner):
+            from oai_hermes_adapter.context import trusted_turn
+            captured.append(trusted_turn.get())
+            account = core.open_gateway_account(owner)
+            try:
+                account.conversations.workflow.settle(response["data"]["messageId"], "completed")
+            finally:
+                account.close()
+
+    adapter = HermesSessionAdapter(core, Runtime())
+    conversation = (await adapter.list_sessions(Principal("alice")))[0]["id"]
+    events = [event async for event in adapter.send(Principal("alice"), conversation, "text only", client_message_id="no-device")]
+    assert events[-1]["type"] == "done"
+    assert captured == [None]
+    delegated = SimpleNamespace(account_id="alice", device_id="phone", pairing_generation=2,
+                                grant_revision=3, origin_context="synthetic-origin-token")
+    events = [event async for event in adapter.send(delegated, conversation, "phone text", client_message_id="phone-turn")]
+    assert events[-1]["type"] == "done"
+    assert captured[-1] == {"originContext": "synthetic-origin-token", "originClientMessageId": "phone-turn",
+                            "originConversationId": conversation, "originAccountId": "alice"}
+    account = core.open_gateway_account("alice")
+    try:
+        row = account.store.database.execute("SELECT value FROM account_metadata WHERE key=?", ("message-device:no-device",)).fetchone()
+        origin = json.loads(row[0])
+        assert not origin.get("deviceId")
+        assert "pairingGeneration" not in origin and "grantRevision" not in origin
+    finally:
+        account.close()
+    with pytest.raises(AdapterError, match="DEVICE_CONTEXT_REQUIRED"):
+        _ = [event async for event in adapter.send(Principal("alice"), conversation, "", attachment_ids=["file"])]
+
+
+@pytest.mark.asyncio
 async def test_attachment_reference_requires_its_original_device_pairing(core):
     import hashlib
     from oai_core.sessions import native_attachments

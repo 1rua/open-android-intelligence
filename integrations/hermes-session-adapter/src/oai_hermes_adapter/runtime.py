@@ -333,6 +333,9 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             if self._runner is not None:
                 return True
             self._loop = asyncio.get_running_loop()
+            spaces = getattr(self, "auto_spaces", None)
+            if spaces is not None:
+                await asyncio.to_thread(spaces.restore)
             await asyncio.to_thread(self.services.core.acquire_accounts)
             self._refresh_generation_canceller()
             history = HermesHistoryPort(self.services.core, self._session_store)
@@ -340,7 +343,8 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             self.services.core.conversation_manager = history.manage
             self._tool_observer = NativeToolObserver(self.services.core, history)
             await asyncio.to_thread(self._cleanup_inbound_media_cache)
-            self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts)
+            self._app = create_hermes_bridge_app(HermesSessionAdapter(self.services.core, self), self._token, self._accounts,
+                instance_id=os.environ.get("OAI_HERMES_INSTANCE_ID"), auto_spaces=getattr(self, "auto_spaces", None))
             self._runner = web.AppRunner(self._app)
             try:
                 await self._runner.setup()
@@ -352,7 +356,7 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
                 await asyncio.to_thread(self.services.core.close)
                 self._loop = None
                 raise
-            for account in self._accounts:
+            for account in self.services.core.list_gateway_account_ids():
                 await self._recover_message_dispatches(account)
             self._mark_connected()
             return True
@@ -1484,7 +1488,13 @@ class SessionOnlyAdapter(NativeApprovalMixin, BasePlatformAdapter):
             event._gateway_claim_token = dispatch_claim_token
             if dispatch_record is not None:
                 self._processing_media_files[(source_account, client_message_id)] = list(materialized_files)
-            token = trusted_turn.set({**origin, "core": self.services.core, "accountId": source_account,
+            delegated = trusted_turn.get() or {}
+            token = trusted_turn.set({**origin, **({"originContext": delegated["originContext"]}
+                if isinstance(delegated.get("originContext"), str)
+                and delegated.get("originClientMessageId") == client_message_id
+                and delegated.get("originConversationId") == conversation_id
+                and delegated.get("originAccountId") == source_account else {}),
+                "core": self.services.core, "accountId": source_account,
                 "sessionId": binding.get("agentSessionId") if binding else None,
                 "conversationId": conversation_id, "clientMessageId": client_message_id,
                 "generationId": generation.get("generationId") if generation else None,

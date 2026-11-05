@@ -43,6 +43,18 @@ def main():
                   "listen": {"host": "127.0.0.1", "port": port}, "agents": []}
         config_path = root / "core.json"
         config_path.write_text(json.dumps(config))
+        from oai_core.identity import IdentityStore, issue_bootstrap_proof
+        read, write = os.pipe()
+        os.write(write, b"bootstrap\n")
+        os.close(write)
+        identity_path = root / "security/identity.sqlite"
+        try:
+            proof = issue_bootstrap_proof(identity_path, root / "accounts", confirmation_fd=read)
+        finally:
+            os.close(read)
+        identity = IdentityStore(identity_path, create=True, bootstrap_proof=proof)
+        identity.bootstrap("distribution-admin", "synthetic-distribution-password", confirmed=True)
+        identity.close()
         process = subprocess.Popen([sys.executable, "-m", "oai_core.cli", "serve", "--config", str(config_path)],
                                    cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:

@@ -45,11 +45,22 @@ if len(sys.argv) > 2:
     assert Path(oai_core.__file__).resolve().is_relative_to(Path(sys.argv[2])), oai_core.__file__
 temporary = Path(sys.argv[1])
 settings = {"storageRoot": str(temporary / "data"), "masterKeyFile": str(temporary / "secrets/master")}
+from oai_core.identity import IdentityStore, issue_bootstrap_proof
+import os
+identity_path = temporary / "security/identity.sqlite"
+read, write = os.pipe()
+os.write(write, b"bootstrap\n")
+os.close(write)
+try:
+    proof = issue_bootstrap_proof(identity_path, Path(settings["storageRoot"]), confirmation_fd=read)
+finally:
+    os.close(read)
+identity = IdentityStore(identity_path, create=True, bootstrap_proof=proof)
+first = identity.bootstrap("alice", "test-only-password", confirmed=True)
+management = identity.begin_management("alice", "test-only-password")
+identity.create_account(management, "bob", "test-only-password")
+identity.close()
 core = create_core(settings)
-for owner in ("alice", "bob"):
-    account = core.open_gateway_account(owner)
-    account.credentials.create_password("test-only-password")
-    account.close()
 
 
 def b64(value):
@@ -88,9 +99,11 @@ async def scenario():
         binding = {"pluginId": "org.example.fixture", "authorKeyId": "sha256:" + "a" * 64, "capabilityId": "org.example.fixture.read", "capabilityVersion": "1.0.0",
             "schemaSha256": "sha256:" + hashlib.sha256(_jcs(schema).encode()).hexdigest(), "schema": schema, "risk": "read"}
         publication = await signed_request(client, phone, key, "POST", PREFIX + "/pairings/current/capabilities", {"bindings": [binding], "expectedGrantRevision": 1, "localGrantRevision": 1})
-        response = await client.post(DEVICE_API + "/tokens", json={"username": "alice", "password": "test-only-password", "deviceId": phone["deviceId"]})
+        response = await client.post(DEVICE_API + "/tokens", json={"username": "alice", "password": "test-only-password"})
         assert response.status == 200, await response.text()
         headers = {"Authorization": "Bearer " + (await response.json())["token"]}
+        response = await client.put(DEVICE_API + "/devices/default", json={"deviceId": phone["deviceId"]}, headers=headers)
+        assert response.status == 200, await response.text()
         response = await client.get(DEVICE_API + "/capabilities", headers=headers)
         assert response.status == 200, await response.text()
         assert binding["capabilityId"] in await response.text()

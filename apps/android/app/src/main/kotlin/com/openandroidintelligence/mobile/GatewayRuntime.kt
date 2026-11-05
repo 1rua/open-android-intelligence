@@ -17,6 +17,7 @@ import com.openandroidintelligence.gateway.attachments.HttpAttachmentTransport
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.auth.AndroidKeystoreGatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.GatewayAuthClient
+import com.openandroidintelligence.gateway.auth.AccountLoginChallenge
 import com.openandroidintelligence.gateway.auth.GatewayCredentialStore
 import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
@@ -149,6 +150,14 @@ sealed interface ConnectionPhase {
 
 enum class GatewayLoginStatus { SIGNED_OUT, RESTORING, SIGNED_IN, REAUTHENTICATION_REQUIRED }
 enum class GatewayCredentialStatus { UNAVAILABLE, AVAILABLE, REFRESHING, RECOVERY_PENDING }
+
+/** Challenge material is transient and deliberately has no generated toString(). */
+sealed interface AccountLoginStep {
+    data object None : AccountLoginStep
+    class Verification(val error: String? = null) : AccountLoginStep
+    class Enrollment(val provisioningUri: String, val secret: String?, val error: String? = null) : AccountLoginStep
+    class RecoveryCodes(val codes: List<String>) : AccountLoginStep
+}
 
 class GatewayRuntime(
     private val context: Context,
@@ -348,6 +357,35 @@ class GatewayRuntime(
 
     private val _phase = MutableStateFlow<ConnectionPhase>(ConnectionPhase.Disconnected)
     val phase: StateFlow<ConnectionPhase> = _phase.asStateFlow()
+    private val _accountLoginStep = MutableStateFlow<AccountLoginStep>(AccountLoginStep.None)
+    val accountLoginStep: StateFlow<AccountLoginStep> = _accountLoginStep.asStateFlow()
+    private val accountLoginInput = Channel<AccountLoginInput>(capacity = 1, onUndeliveredElement = { it.proof?.fill('\u0000') })
+
+    private class AccountLoginInput(val proof: CharArray? = null, val recovery: Boolean = false)
+
+    /** Ownership of each proof transfers to the login coroutine or is cleared immediately. */
+    fun submitAccountLoginProof(proof: CharArray, recovery: Boolean = false) {
+        val step = _accountLoginStep.value
+        if ((step !is AccountLoginStep.Verification && step !is AccountLoginStep.Enrollment) ||
+            !_accountLoginStep.compareAndSet(step, AccountLoginStep.None) ||
+            !accountLoginInput.trySend(AccountLoginInput(proof, recovery)).isSuccess) {
+            proof.fill('\u0000')
+        }
+    }
+
+    fun confirmAccountRecoveryCodesSaved() {
+        val step = _accountLoginStep.value
+        if (step is AccountLoginStep.RecoveryCodes && _accountLoginStep.compareAndSet(step, AccountLoginStep.None)) {
+            accountLoginInput.trySend(AccountLoginInput())
+        }
+    }
+
+    fun cancelAccountLogin() {
+        if (_accountLoginStep.value === AccountLoginStep.None) return
+        _accountLoginStep.value = AccountLoginStep.None
+        connectionJob?.cancel()
+        _phase.value = ConnectionPhase.Disconnected
+    }
     private val _savedProfiles = MutableStateFlow(accountProfiles.list())
     val savedProfiles: StateFlow<List<AccountProfile>> = _savedProfiles.asStateFlow()
     private val _unpairOperation = MutableStateFlow<LocalOperationState>(LocalOperationState.Idle)
@@ -732,6 +770,7 @@ class GatewayRuntime(
             val retainedPins = identityTrust.pinsBeforeConnect(endpoint, username)
             val negotiation = runCatching { authClientFor(normalized, retainedPins).negotiate("neg_" + newToken()) }
             val negotiated = negotiation.getOrElse { cause ->
+                if (cause is CancellationException) throw cause
                 val rootCause = generateSequence(cause) { it.cause }.take(8).last()
                 GatewayLog.w("OaiConnection", "stage=NEGOTIATION state=failed errorType=${cause.javaClass.simpleName} rootType=${rootCause.javaClass.simpleName}")
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
@@ -750,7 +789,29 @@ class GatewayRuntime(
                     val binding=accountProfiles.binding(profileId) ?: error("DEVICE_NOT_PAIRED")
                     authClientFor(normalized,setOfNotNull(tlsPin)).loginWithDeviceKey(negotiated.negotiationId,binding.accountId,binding.deviceId) { deviceKeys.sign(profileId,it) }
                 } else if (invitation) authClientFor(normalized,setOfNotNull(tlsPin)).loginWithInvite(negotiated.negotiationId,username,String(password).trim().uppercase(),Build.MODEL ?: "Android",publicKey) { deviceKeys.sign(profileId,it) }
-                else authClientFor(normalized, setOfNotNull(tlsPin)).loginWithPassword(
+                else if (negotiated.accountAuthSupported) {
+                    val auth = authClientFor(normalized, setOfNotNull(tlsPin))
+                    val binding = accountProfiles.binding(profileId)?.takeIf { it.keyEncoding == DEVICE_KEY_ENCODING_VERSION }
+                    val retryPassword = password.copyOf()
+                    val challenge = try {
+                        auth.beginAccountLogin(
+                            negotiationId = negotiated.negotiationId,
+                            username = username,
+                            password = password,
+                            displayName = Build.MODEL ?: "Android",
+                            devicePublicKeyBase64Url = publicKey,
+                            accountId = binding?.accountId,
+                            deviceId = binding?.deviceId,
+                        )
+                    } catch (cause: GatewayAuthException) {
+                        if (binding == null || cause.code != "PAIRING_REVOKED") throw cause
+                        // Recreate a revoked pairing only after a fresh password
+                        // check and the server's current second-factor challenge.
+                        auth.beginAccountLogin(negotiated.negotiationId, username, retryPassword,
+                            Build.MODEL ?: "Android", publicKey)
+                    } finally { retryPassword.fill('\u0000') }
+                    completeAccountChallenge(auth, challenge, profileId)
+                } else authClientFor(normalized, setOfNotNull(tlsPin)).loginWithPassword(
                     negotiationId = negotiated.negotiationId,
                     username = username,
                     password = password,
@@ -783,14 +844,82 @@ class GatewayRuntime(
                             GenerationCancelCapability.fromNegotiation(negotiated),
                     )
                 },
-                onFailure = { cause -> _phase.value = ConnectionPhase.Failed(errorCode(cause)) },
+                onFailure = { cause ->
+                    if (cause is CancellationException) throw cause
+                    _phase.value = ConnectionPhase.Failed(errorCode(cause))
+                },
             )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (cause: Exception) {
                 _phase.value = ConnectionPhase.Failed(errorCode(cause))
             } finally {
+                _accountLoginStep.value = AccountLoginStep.None
+                accountLoginInput.tryReceive().getOrNull()?.proof?.fill('\u0000')
                 password.fill('\u0000')
+            }
+        }
+    }
+
+    private suspend fun completeAccountChallenge(
+        auth: GatewayAuthClient,
+        challenge: AccountLoginChallenge,
+        profileId: String,
+    ): SessionCredentials {
+        suspend fun inputBeforeExpiry(): AccountLoginInput {
+            val now = java.time.Instant.now()
+            check(now.isBefore(challenge.expiresAt)) { "ACCOUNT_CHALLENGE_EXPIRED" }
+            val remaining = java.time.Duration.between(now, challenge.expiresAt).toMillis().coerceAtLeast(1L)
+            return withTimeoutOrNull(remaining) { accountLoginInput.receive() }
+                ?: error("ACCOUNT_CHALLENGE_EXPIRED")
+        }
+        fun retryableProofFailure(cause: Throwable): Boolean =
+            cause is GatewayAuthException && cause.code in setOf("MFA_INVALID", "MFA_INVALID_CODE", "AUTHENTICATION_FAILED")
+        val sign: (ByteArray) -> ByteArray = { deviceKeys.sign(profileId, it) }
+        if (challenge.enrollmentRequired) {
+            check(java.time.Instant.now().isBefore(challenge.expiresAt)) { "ACCOUNT_CHALLENGE_EXPIRED" }
+            val enrollment = auth.beginMfaEnrollment(challenge)
+            var error: String? = null
+            while (true) {
+                _accountLoginStep.value = AccountLoginStep.Enrollment(enrollment.provisioningUri, enrollment.secret, error)
+                val input = inputBeforeExpiry()
+                val proof = input.proof ?: continue
+                _accountLoginStep.value = AccountLoginStep.None
+                val codes = try {
+                    auth.confirmMfaEnrollment(challenge, enrollment.enrollmentId, proof)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (cause: Exception) {
+                    if (!retryableProofFailure(cause)) throw cause
+                    error = "验证码未通过，请重试。"
+                    continue
+                } finally {
+                    proof.fill('\u0000')
+                }
+                _accountLoginStep.value = AccountLoginStep.RecoveryCodes(codes)
+                inputBeforeExpiry().proof?.fill('\u0000')
+                _accountLoginStep.value = AccountLoginStep.None
+                return auth.completeAccountLogin(challenge, sign)
+            }
+        }
+        if (challenge.methods.isEmpty()) return auth.completeAccountLogin(challenge, sign)
+        var error: String? = null
+        while (true) {
+            _accountLoginStep.value = AccountLoginStep.Verification(error)
+            val input = inputBeforeExpiry()
+            val proof = input.proof ?: continue
+            try {
+                _accountLoginStep.value = AccountLoginStep.None
+                return auth.completeAccountLogin(challenge, sign,
+                    otp = if (input.recovery) null else proof,
+                    recoveryCode = if (input.recovery) proof else null)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                if (!retryableProofFailure(cause)) throw cause
+                error = "验证码或恢复码未通过，请重试。"
+            } finally {
+                proof.fill('\u0000')
             }
         }
     }
@@ -927,6 +1056,7 @@ class GatewayRuntime(
     }
 
     fun chooseAnotherAccount() {
+        cancelAccountLogin()
         if (deferUntilSessionEstablished(::chooseAnotherAccount)) return
         if (connectionJob?.isActive == true && !restoringSession) {
             _operationNotice.value = "当前账号操作尚未结束，请稍后再切换。"
@@ -940,6 +1070,7 @@ class GatewayRuntime(
     }
 
     fun selectSavedAccount(profileId: String) {
+        cancelAccountLogin()
         if (deferUntilSessionEstablished { selectSavedAccount(profileId) }) return
         if (connectionJob?.isActive == true && !restoringSession) {
             _operationNotice.value = "当前账号操作尚未结束，请稍后再选择账号。"

@@ -43,6 +43,13 @@ class AccountPasswordVerifier:
     def verify(self, account_id: str, username: str, password: str, installation: Mapping[str, Any]) -> bool:
         if not isinstance(account_id, str) or not account_id:
             return False
+        identity = getattr(self._core, "identity_store", None)
+        if identity is not None:
+            try:
+                return identity.resolve_username(username) == account_id and bool(
+                    identity.authenticate(username, password, purpose="android-password", client_id=installation.get("installationId")))
+            except Exception:
+                return False
         if not isinstance(username, str) or username.strip() != account_id:
             return False
         if not isinstance(password, str) or not password:

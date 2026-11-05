@@ -97,7 +97,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["is_full_required"] = True
                 break
 
-        if f in {".github/workflows/oai-core.yml", "scripts/core_setup.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
+        if f in {".github/workflows/oai-core.yml", "scripts/core_setup.py", "scripts/installer.py", "scripts/setup.sh", "scripts/install.sh", "scripts/uninstall.sh",
                  "tests/test_install_script.py", "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py",
                  "tools/smart-test.py", "tools/test_smart_test.py"}:
             impact["affects_configuration"] = True
@@ -162,7 +162,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
         ret = run_command([
             "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
-            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tools/test_smart_test.py", "-q",
+            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
             "--ignore=oai-core/tests/test_hermes_native_origin.py",
@@ -195,6 +195,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_hermes.py",
             "oai-core/tests/test_hermes_native.py",
             "oai-core/tests/test_hermes_native_origin.py",
+            "oai-core/tests/test_hermes_zero_config_native.py",
+            "oai-core/tests/test_agent_registration.py",
             "oai-core/tests/test_hermes_interactions.py",
             "oai-core/tests/test_hermes_approval_prompts.py",
             "oai-core/tests/test_hermes_dispatch_delivery.py",

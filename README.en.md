@@ -132,7 +132,7 @@ The entire system operates across three tightly integrated layers:
    - **Strict Closed Contracts**: Full-field schema validation; Ed25519 signatures, timestamp bounds, and nonces prevent replay attacks; mutation requests require idempotency keys.
 3. **Agent Host & Native Session Layer** (The Backend Brain)
    - **Lightweight Session Adapters**: Hermes and DSH connect via loopback session bridges; Codex connects via native `app-server` subprocess.
-   - **Zero Transcript Mirroring**: All operations read and write native host stores directly; unconfigured instances are strictly excluded from discovery.
+   - **Zero Transcript Mirroring**: Operations use native host stores directly. Discovery is limited to supported locations for the current user or authorized directories; a candidate must still be verified and registered.
    - **Authorization Isolation**: Deployment-shared Agent sessions share transcript visibility only; device permissions are never inherited by shared agent processes.
 
 ---
@@ -164,7 +164,7 @@ Connection authentication establishes who is calling; pairing binds the account 
 | Environment | Minimum Requirement | Recommended |
 | --- | --- | --- |
 | **Android Phone** | Android 12+ (`minSdk 31`) | Android 14+, 8GB RAM recommended |
-| **Agent Host Environment** | Running Hermes, OpenClaw, or DSH (DeepSeek Harness) | Accessible via public internet or Tailscale LAN |
+| **Core Server** | Python 3.11+; an Agent host is optional | Reachable from the phone; HTTPS recommended |
 | **Developer Build Toolchain** *(Only needed for source development)* | Node.js `24.18.0` + npm `11.16.0`, JDK 21, Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (with `wasm32-unknown-unknown` target) |
 
 ---
@@ -182,57 +182,36 @@ Go to the project [Releases Page](https://github.com/1rua/open-android-intellige
 
 ### 2. Server Deployment & Agent Connectivity
 
-**Recommended (New Deployments)**: Deploy [OAI Core](oai-core/README.md) to serve both phone device management and multi-Agent native session streaming from a single address.
+**Recommended for new deployments**: Install [OAI Core](oai-core/README.md); the phone and CLI use the same server address. An Agent is optional for device service.
 
-#### 🚀 Fast One-Click Install / Update (Recommended)
-
-Run the automated setup wizard via `curl`. It checks prerequisites, installs or updates OAI Core, detects local Agents (Hermes, DSH, Codex), and asks whether to install or connect the selected Agent before guiding you through initial credential and port configuration. When accepted, Hermes installation and enablement are attempted automatically; DSH registers the bundle when its plugin tool is available and otherwise prints the manual command; Codex integration is written to Core configuration. Declining Agent integration still allows a Core-only installation:
+From the root of a trusted checkout, run the installer, create the first Core administrator when prompted, and store the one-time administrator recovery codes safely offline:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+./scripts/install.sh
 ```
 
-To **reconfigure** ports, admin credentials, or Agent integrations later, run the standalone configuration wizard anytime:
+Installing, updating, or configuring an existing deployment requires the **existing Core administrator account and its Core login password**; local OS access, root, and a confirmation flag do not replace authentication. For an older installation, identify an existing account and verify its password before migration; retain the original data and master key. The installation and remote one-line entry points are still being completed, so this is not a claim of end-to-end acceptance. See [installation and recovery](scripts/README.md).
+
+On the server, create an everyday account. Enter the administrator password privately when prompted, then set the new account's password. New accounts are ordinary users by default and do not need an Agent or device configured:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+oai account create alice
 ```
 
-> **Tip**:
-> - If you have already cloned this repository, you can run `./scripts/install.sh` directly in the root directory.
-> - You can also run `./scripts/setup.sh` directly in the repository for standalone configuration.
-> - Once installation completes, the wizard automatically configures `~/.local/bin` in your PATH and provides the `oai` executable: **run `oai` directly in any shell to start the Core service**; run with arguments (such as `oai devices`, `oai mcp`) to invoke client CLI capabilities.
+Use `oai setup` for network, account, Agent, and service settings, or run `./scripts/setup.sh`. Start the service using the startup option chosen at installation or `./start-core.sh` in the installation directory. Configure network access and TLS, then sign in on Android below.
 
-<details open>
-<summary><b>Manual OAI Core Installation (Click to collapse)</b></summary>
-
-Requires Python 3.11+. Install and launch from the repository root:
+After connecting the phone, sign in from your own terminal and inspect devices and capabilities. On the first connection from another machine, provide the trusted Core address once; login does not require a device ID:
 
 ```bash
-# 1. Create virtual environment and install oai-core
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ./oai-core
-
-# 2. Create account locally on the server (password via interactive prompt)
-oai account create --config oai-core/examples/core.json --username alice
-
-# 3. Start unified Core listener (default 127.0.0.1:8045)
-oai serve --config oai-core/examples/core.json
-```
-
-Once running, connect your target Agents via the `agents` array in `oai-core/examples/core.json`:
-- **DSH**: Install the lightweight [`integrations/dsh-session-adapter`](integrations/dsh-session-adapter/README.md) bundle (default port 8791);
-- **Hermes**: Install the lightweight [`integrations/hermes-session-adapter`](integrations/hermes-session-adapter/README.md) plugin (default port 8792, requires one-to-one account mapping);
-- **Codex**: Configure `codex app-server` and a dedicated `codexHome`, mapping model API keys via `envFrom`.
-
-After pairing phone and server, configure CLI or MCP credentials in the operator's own environment. Android still decides whether device operations may run. See the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for this branch's implementation and validation, and the [repair plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) for the historical e5 `dev` baseline:
-```bash
-oai login --url http://127.0.0.1:8045 --username alice --device <DEVICE_ID>
+oai login --url https://core.example
+oai devices
 oai capabilities
-oai mcp  # Start official FastMCP stdio server
+# Use an ID, version, and parameters returned by capabilities.
+# Add --device DEVICE_ID to capabilities or invoke when a choice is needed.
+oai invoke CAPABILITY_ID --version VERSION --parameters '{}' --agent-name my-agent --purpose 'user-requested action'
 ```
-</details>
+
+Enter usernames, passwords, and any verification codes at the prompt, never as command arguments or environment variables. Server-side 2FA is off by default; codes are requested only when it is enabled, and a valid session can refresh without repeated codes. Android still decides which operations may run. See the [Core guide](oai-core/README.md) for invocation, default devices, and MCP.
 
 <details>
 <summary><b>Existing Deployments: Standalone Host Gateway Plugins (Click to expand)</b></summary>
@@ -242,7 +221,7 @@ The following commands document pinned legacy standalone Gateway deployments. Th
 #### Configure Hermes Host
 ```bash
 hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-hermes open-android-intelligence account create -u my_user -p <set_password> --confirm-local
+# Consult the matching legacy host documentation; do not put passwords on the command line.
 ```
 
 #### Configure OpenClaw Host
@@ -264,9 +243,9 @@ cd dsh-android-gateway && npm ci && npm run build
 
 ### 3. Connect Phone to Gateway
 
-1. Open the mobile app and enter your Gateway access address (supports HTTP/HTTPS; internal network IP or reverse-proxy domain recommended).
-2. Enter the account username and password created above, then tap "Pair & Connect".
-3. After the handshake completes successfully on the phone, certificate information and credentials will be safely stored in the local Android Keystore, so subsequent launches do not require re-entering passwords.
+1. Open the mobile app and enter a Core address reachable from the phone; trusted HTTPS is recommended.
+2. Enter the everyday account and password created by the administrator. If server-side 2FA is enabled, enroll an authenticator or enter a code when prompted.
+3. After connection and pairing, install and enable the device plugins you need. A valid session can refresh without asking for another code.
 
 <details>
 <summary><b>HTTPS Public Key Pinning (SPKI SHA-256) Setup Guide</b></summary>
@@ -289,7 +268,7 @@ If unset, the handshake will return `null`, and the client will refuse to submit
 
 ### 4. Enable Device Capabilities on Demand
 
-Under the current feature-branch rules, installed and enabled device plugins have ordinary capabilities enabled by default. Explicit local switches, system permissions, notification app selection, separate background permission, and required sensitive-operation confirmations continue to govern execution. Agents use authenticated, device-bound Core CLI/MCP/API credentials, inspect `oai capabilities`, and follow the actual returned Schema.
+Under the current feature-branch rules, installed and enabled device plugins have ordinary capabilities enabled by default. Explicit local switches, system permissions, notification app selection, separate background permission, and required sensitive-operation confirmations continue to govern execution. Agents use authenticated Core CLI/MCP/API credentials, inspect `oai capabilities`, and follow the actual returned Schema; select one of the account's devices with `--device` when needed.
 
 The old `dev` baseline may still report that the Gateway account has not enabled a capability. This is a legacy authorization check that conflicts with the new architecture; returning to the old Hermes capability setup is not the target user flow. The Android-only authorization repair is implemented on `feature/android-device-authority-20261028`, pending merge to `dev` and physical-device acceptance. See the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for implementation and validation status.
 

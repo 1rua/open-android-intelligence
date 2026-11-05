@@ -18,6 +18,9 @@ const val NATIVE_AGENT_SESSIONS_HEADER = "X-OAI-Agent-Sessions"
 /** The Core mirrors Android decisions without an additional account capability policy. */
 const val DEVICE_AUTHORIZATION_HEADER = "X-Open-Android-Intelligence-Device-Authorization"
 const val ANDROID_AUTHORIZATION_MODEL = "android-v1"
+/** Optional Core account authentication; legacy Gateways retain their closed schema. */
+const val ACCOUNT_AUTH_HEADER = "X-OAI-Account-Auth"
+const val ACCOUNT_AUTH_VERSION = "v1"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -53,6 +56,8 @@ data class NegotiationResult(
     val nativeAgentSessions: Boolean = false,
     /** Missing/unknown acknowledgement disables device publication and execution, not chat. */
     val androidDeviceAuthorization: Boolean = false,
+    /** Only true when the server explicitly accepts the account-auth extension. */
+    val accountAuthSupported: Boolean = false,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -148,6 +153,7 @@ class NegotiationClient(
                     RawHeader("Content-Type", "application/json"),
                     RawHeader("Accept", "application/json"),
                     RawHeader(REFRESH_REPLAY_HEADER, "v1"),
+                    RawHeader(ACCOUNT_AUTH_HEADER, ACCOUNT_AUTH_VERSION),
                     RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL),
                 ),
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
@@ -216,6 +222,9 @@ class NegotiationClient(
             androidDeviceAuthorization = com.openandroidintelligence.gateway.http.RawHeaders.single(
                 response.headers, DEVICE_AUTHORIZATION_HEADER,
             ) == ANDROID_AUTHORIZATION_MODEL,
+            accountAuthSupported = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), ACCOUNT_AUTH_HEADER,
+            ) == ACCOUNT_AUTH_VERSION,
         )
     }
 

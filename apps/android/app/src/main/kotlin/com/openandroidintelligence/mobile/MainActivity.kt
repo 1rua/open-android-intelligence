@@ -183,6 +183,7 @@ class MainActivity : ComponentActivity() {
                     )
                 }
                 val phase by runtime.phase.collectAsState()
+                val accountLoginStep by runtime.accountLoginStep.collectAsState()
                 val controller by runtime.controller.collectAsState()
                 val savedProfiles by runtime.savedProfiles.collectAsState()
                 val isManagingProfiles by runtime.isManagingProfiles.collectAsState()
@@ -648,6 +649,10 @@ class MainActivity : ComponentActivity() {
                                             onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
                                             onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
                                             invitationPayload = pendingInvitation.value,
+                                            accountLoginStep = accountLoginStep,
+                                            onAccountProof = runtime::submitAccountLoginProof,
+                                            onRecoveryCodesSaved = runtime::confirmAccountRecoveryCodesSaved,
+                                            onCancelAccountLogin = runtime::cancelAccountLogin,
                                         )
                                     }
                                     return@AnimatedContent

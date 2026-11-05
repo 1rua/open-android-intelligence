@@ -50,6 +50,7 @@ class RemoteSessionAdapter:
         capabilities: Mapping[str, bool] | None = None,
         attachment_core: Any = None,
         forward_client_message_ids: bool = False,
+        origin_registration: Any = None,
     ):
         parsed = urlsplit(base_url)
         if (
@@ -83,6 +84,7 @@ class RemoteSessionAdapter:
         self.attachment_core = attachment_core
         self._configured_client_message_ids = forward_client_message_ids
         self.forward_client_message_ids = forward_client_message_ids
+        self.origin_registration = origin_registration
         self.capabilities = (
             dict(capabilities) if capabilities is not None else dict.fromkeys(CAPABILITIES, False)
         )
@@ -103,6 +105,10 @@ class RemoteSessionAdapter:
             extra = self.headers_builder(principal)
         return extra
 
+    async def _prepare_headers(self, headers: dict[str, str] | None, method: str, path: str,
+                               body: Any = None) -> dict[str, str] | None:
+        return headers
+
     def _session(self, headers: dict[str, str] | None = None) -> aiohttp.ClientSession:
         combined_headers = {"Authorization": f"Bearer {self.token}", **current_trace_headers(), **(headers or {})}
         return aiohttp.ClientSession(
@@ -120,7 +126,7 @@ class RemoteSessionAdapter:
         headers: dict[str, str] | None = None,
     ) -> Any:
         try:
-            async with self._session(headers) as session:
+            async with self._session(await self._prepare_headers(headers, method, path, body)) as session:
                 async with session.request(
                     method,
                     self.base_url + self.prefix + path,
@@ -183,7 +189,7 @@ class RemoteSessionAdapter:
         messages = result.get("messages")
         if not isinstance(messages, list):
             raise AdapterError("HOST_INCOMPATIBLE", 502)
-        if self.attachment_core is not None:
+        if self.attachment_core is not None and any(message.get("attachments") for message in messages):
             account = self.attachment_core.open_gateway_account(principal.account_id)
             try:
                 for message in messages:
@@ -235,12 +241,16 @@ class RemoteSessionAdapter:
             query["cursor"] = cursor
         if snapshot:
             query["snapshot"] = "true"
+        headers = self._headers(principal)
+        headers["X-OAI-Observer"] = consumer_id
         return await self._request("GET", f"/sessions/{quote(session_id, safe='')}/events?{urlencode(query)}",
-            headers={**self._headers(principal), "X-OAI-Observer": consumer_id})
+            headers=headers)
 
     async def ack_events(self, principal: Principal, session_id: str, *, consumer_id: str, cursor: str) -> dict[str, Any]:
+        headers = self._headers(principal)
+        headers["X-OAI-Observer"] = consumer_id
         return await self._request("POST", f"/sessions/{quote(session_id, safe='')}/events/ack", {"cursor": cursor},
-            headers={**self._headers(principal), "X-OAI-Observer": consumer_id})
+            headers=headers)
 
     def _attachment_key(self, attachment_id: str) -> str:
         return "native-attachment:" + hashlib.sha256((self.agent_id + ":" + attachment_id).encode()).hexdigest()
@@ -268,6 +278,11 @@ class RemoteSessionAdapter:
                    client_message_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
         headers = self._headers(principal)
         body: dict[str, Any] = {"text": text}
+        if self.origin_registration is not None and getattr(principal, "context", None) is not None:
+            turn_id = client_message_id or "core_" + uuid.uuid4().hex
+            headers["X-OAI-Origin-Context"] = self.origin_registration.issue_origin(
+                principal, agent_id=self.agent_id, session_id=session_id, turn_id=turn_id)
+            client_message_id = turn_id
         if client_message_id is not None and self.forward_client_message_ids:
             body["clientMessageId"] = client_message_id
         if attachments:
@@ -324,8 +339,10 @@ class RemoteSessionAdapter:
                     break
                 yield chunk
         try:
-            async with self._session(headers) as session:
-                async with session.put(self.base_url + self.prefix + f"/attachments/{quote(attachment_id, safe='')}/content",
+            path = f"/attachments/{quote(attachment_id, safe='')}/content"
+            headers["X-OAI-Content-SHA256"] = str(metadata["sha256"]).removeprefix("sha256:")
+            async with self._session(await self._prepare_headers(headers, "PUT", path)) as session:
+                async with session.put(self.base_url + self.prefix + path,
                         data=chunks(), timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds), allow_redirects=False) as response:
                     value = await response.json()
                     if response.status != 200:
@@ -346,10 +363,12 @@ class RemoteSessionAdapter:
         body: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         try:
-            async with self._session(headers) as session:
+            path = f"/sessions/{quote(session_id, safe='')}/messages"
+            request_body = body if body is not None else {"text": text}
+            async with self._session(await self._prepare_headers(headers, "POST", path, request_body)) as session:
                 async with session.post(
-                    self.base_url + self.prefix + f"/sessions/{quote(session_id, safe='')}/messages",
-                    json=body if body is not None else {"text": text},
+                    self.base_url + self.prefix + path,
+                    json=request_body,
                     timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds),
                     allow_redirects=False,
                     read_bufsize=MAX_STREAM_EVENT_BYTES // 2,

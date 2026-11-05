@@ -41,6 +41,80 @@ class OAICore(GatewayCore):
     """Device protocol compatibility with native sessions exposed separately."""
 
     native_conversation_ui: frozenset[str] = frozenset()
+    identity_store: Any = None
+
+    def account_exists(self, account_id: str) -> bool:
+        if self.identity_store is None:
+            return super().account_exists(account_id)
+        try:
+            self.identity_store.account(account_id)
+            return True
+        except GatewayError:
+            return False
+
+    def list_gateway_account_ids(self) -> list[str]:
+        if self.identity_store is None:
+            return super().list_gateway_account_ids()
+        with self.identity_store.transaction() as database:
+            return [row[0] for row in database.execute("SELECT account_id FROM accounts WHERE status='active' ORDER BY account_id")]
+
+    def open_gateway_account(self, account_id: str):
+        if self.identity_store is not None:
+            self.identity_store.account(account_id)
+        account = super().open_gateway_account(account_id)
+        if self.identity_store is not None:
+            account.store.identity_store = self.identity_store
+            account.credentials.identity_store = self.identity_store
+            account.sessions.identity_store = self.identity_store
+        return account
+
+    def event_session_failure(self, context, now=None):
+        failure = super().event_session_failure(context, now)
+        if failure is not None or self.identity_store is None:
+            return failure
+        from contextlib import closing
+        import sqlite3
+        from .gateway.account_paths import account_paths
+        try:
+            path = account_paths(self.storage_root, context.account_id).database
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+                row = database.execute("SELECT value FROM account_metadata WHERE key=?", ("core-session-epoch:" + context.session_id,)).fetchone()
+            if row is None:
+                return "SESSION_REVOKED"
+            self.identity_store.assert_epoch(context.account_id, int(row[0]))
+        except (GatewayError, ValueError, sqlite3.Error):
+            return "SESSION_REVOKED"
+        return None
+
+    def _handle_session_password(self, request: Any):
+        if self.identity_store is not None:
+            from .gateway.core import _failure, _request_body
+            body = _request_body(request)
+            context = self._pre_auth_context(request, body if isinstance(body, dict) else {})
+            try:
+                if not isinstance(body, dict) or not self.contracts.validate("session.password", body):
+                    raise GatewayError("SCHEMA_INVALID")
+                # Verify before bind_negotiation opens/initializes the business
+                # account. A wrong password may not create that account's files.
+                self.identity_store.authenticate(body["username"], body["password"],
+                    purpose="android-password", client_id=body["installation"]["installationId"])
+            except GatewayError as error:
+                return _failure(context, error.code, error.details)
+        return super()._handle_session_password(request)
+
+    def _handle_session_refresh(self, request: Any):
+        headers = {str(k).lower(): v for k, v in (request.get("headers") or {}).items()}
+        if self.identity_store is not None and "idempotency-key" in headers:
+            from .android_refresh import refresh_operation
+            return refresh_operation(self, request)
+        return super()._handle_session_refresh(request)
+
+    def _handle_pairing_invite(self, request: Any):
+        if self.identity_store is not None and self.identity_store._policy()[0]:
+            from .gateway.core import _failure, _request_body
+            body = _request_body(request)
+            return _failure(self._pre_auth_context(request, body if isinstance(body, dict) else {}), "MFA_REQUIRED")
+        return super()._handle_pairing_invite(request)
 
     def _build_negotiation_response(self, body: Any, account: Any = None) -> Any:
         response = dict(super()._build_negotiation_response(body, account))
@@ -65,6 +139,9 @@ def load_config(path: str | Path) -> dict[str, Any]:
         if not isinstance(config.get(name), str) or not config[name]:
             raise ValueError(f"Core settings require {name}")
         config[name] = str((source.parent / config[name]).resolve())
+    config["_configPath"] = str(source)
+    if config.get("identityDatabase"):
+        config["identityDatabase"] = str((source.parent / config["identityDatabase"]).resolve())
     if config.get("contractRoot") is not None:
         if not isinstance(config["contractRoot"], str) or not config["contractRoot"]:
             raise ValueError("contractRoot must be a nonempty path when provided")
@@ -95,6 +172,10 @@ def create_core(config: dict[str, Any]) -> GatewayCore:
         cert = x509.load_pem_x509_certificate(Path(config["tls"]["certFile"]).read_bytes())
         spki = "sha256:" + hashlib.sha256(cert.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
     core = OAICore(storage_root=storage, secret_store=key_store, contract_root=config.get("contractRoot"), command_catalog=(), tls_spki_sha256=spki)
+    identity_path = Path(config.get("identityDatabase", storage.parent / "security" / "identity.sqlite"))
+    if identity_path.exists() or identity_path.is_symlink():
+        from .identity import IdentityStore
+        core.identity_store = IdentityStore(identity_path, key_store=key_store)
     core.credential_verifier = AccountPasswordVerifier(core)
     # Fail at startup, rather than exposing a listener with unavailable contracts.
     core.contracts.core_schema_hash
@@ -108,8 +189,12 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
     except GatewayError as exc:
         body = {"error": {"code": exc.code, "message": exc.code, "retryable": exc.code == "DEVICE_OFFLINE", "details": exc.details}}
         status = _status(body)
-        if exc.code in {"CAPABILITY_DENIED", "GRANT_STALE", "PAIRING_GENERATION_STALE", "IDENTITY_OVERRIDE_REJECTED"}:
+        if exc.code in {"CAPABILITY_DENIED", "GRANT_STALE", "PAIRING_GENERATION_STALE", "IDENTITY_OVERRIDE_REJECTED", "DEVICE_ACCESS_DENIED", "DEVICE_REQUEST_ACCESS_DENIED", "ADMIN_REQUIRED", "MANAGEMENT_REQUIRED"}:
             status = 403
+        if exc.code in {"MFA_REQUIRED", "MFA_ENROLLMENT_REQUIRED", "AUTHENTICATION_EXPIRED", "SESSION_EXPIRED", "SESSION_REVOKED", "LOGIN_REQUIRED"}:
+            status = 401
+        if exc.code == "DEVICE_SELECTION_REQUIRED":
+            status = 409
         return web.json_response(body, status=status)
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return web.json_response({"error": {"code": "SCHEMA_INVALID"}}, status=400)
@@ -122,6 +207,9 @@ class CoreTransport(GatewayTransport):
         path = request.path
         negotiating = request.method == "POST" and path == "/open-android-intelligence/v2/negotiate"
         authorization_models = request.headers.getall(DEVICE_AUTHORIZATION_HEADER, []) if negotiating else []
+        account_auth = request.headers.getall("X-OAI-Account-Auth", []) if negotiating else []
+        if account_auth and account_auth != ["v1"]:
+            raise GatewayError("SCHEMA_INVALID")
         if authorization_models and authorization_models != [DEVICE_AUTHORIZATION_MODEL]:
             raise GatewayError("SCHEMA_INVALID", {"reason": "DEVICE_AUTHORIZATION_MODEL_INVALID"})
         if negotiating:
@@ -149,6 +237,11 @@ class CoreTransport(GatewayTransport):
         headers = {k: v for k, v in result["headers"].items() if k.lower() != "content-type"}
         if path == "/open-android-intelligence/v2/negotiate" and result["statusCode"] == 200:
             headers["X-OAI-Agent-Sessions"] = "1"
+            if account_auth and self.services.core.identity_store is not None:
+                headers["X-OAI-Account-Auth"] = "v1"
+            if (request.headers.getall("X-Open-Android-Intelligence-Refresh-Replay", []) == ["v1"]
+                    and self.services.core.identity_store is not None):
+                headers["X-Open-Android-Intelligence-Refresh-Replay"] = "v1"
             if authorization_models:
                 # Optional, explicit semantics outside the closed JSON schema.
                 # A legacy client must never infer this agreement from v2 alone.
@@ -162,6 +255,29 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     auth = Authentication(core, Path(config["storageRoot"]) / "core-tokens.sqlite")
     devices = DeviceService(core, auth)
     endpoints = EndpointService(core, auth, Path(config["storageRoot"]) / "push-endpoints.sqlite")
+    if core.identity_store is not None:
+        from .agent_registration import AgentRegistration
+
+        def origin_principal_active(principal: Principal) -> bool:
+            try:
+                auth.assert_current(principal)
+                return True
+            except GatewayError:
+                return False
+
+        def origin_active(facts: Any) -> bool:
+            from .gateway.core import VerifiedRequestContext
+            try:
+                context = VerifiedRequestContext(account_id=facts["accountId"], device_id=facts["deviceId"],
+                    session_id=facts["deviceSessionId"], request_id=facts["turnId"], correlation_id=facts["turnId"],
+                    pairing_generation=facts["pairingGeneration"], grant_revision=facts["grantRevision"])
+                return core.is_event_session_active(context)
+            except (GatewayError, KeyError, ValueError, TypeError):
+                return False
+
+        instance_id = core.identity_store._policy()[2]
+        core.agent_registration = AgentRegistration(instance_id, core.identity_store,
+            origin_principal_active, origin_active, core_signing_key=core.secret_store.instance_signing_key(instance_id))
     if registry is None:
         from .sessions import build_registry
         registry = build_registry(config, core)
@@ -174,6 +290,50 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     async def login(request: web.Request) -> web.Response:
         return web.json_response(await auth.async_login(await request.json(), request.remote or ""), headers={"Cache-Control": "no-store"})
 
+    @routes.post(DEVICE_API + "/tokens/complete")
+    async def complete_login(request: web.Request) -> web.Response:
+        return web.json_response(auth.complete_login(await request.json()), headers={"Cache-Control": "no-store"})
+
+    @routes.post(DEVICE_API + "/tokens/refresh")
+    async def refresh_login(request: web.Request) -> web.Response:
+        return web.json_response(auth.refresh(await request.json()), headers={"Cache-Control": "no-store"})
+
+    @routes.post(DEVICE_API + "/tokens/revoke")
+    async def revoke_login(request: web.Request) -> web.Response:
+        auth.revoke_refresh(await request.json())
+        return web.json_response({"revoked": True}, headers={"Cache-Control": "no-store"})
+
+    def mfa_challenge(body: Any) -> tuple[Any, str]:
+        if core.identity_store is None or not isinstance(body, dict) or not isinstance(body.get("challengeId"), str):
+            raise GatewayError("AUTHENTICATION_FAILED")
+        identity = core.identity_store
+        with identity.transaction() as database:
+            row = database.execute("SELECT client_id FROM challenges WHERE digest=? AND purpose='login'",
+                (hashlib.sha256(body["challengeId"].encode()).hexdigest(),)).fetchone()
+            if row is None:
+                raise GatewayError("AUTHENTICATION_FAILED")
+            account_id = identity.challenge_account(body["challengeId"], purpose="login", client_id=row[0])
+        return identity, account_id
+
+    @routes.post(DEVICE_API + "/mfa/enroll")
+    async def enroll_mfa(request: web.Request) -> web.Response:
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"challengeId"}:
+            raise GatewayError("SCHEMA_INVALID")
+        identity, account_id = mfa_challenge(body)
+        result = identity.begin_mfa_enrollment(account_id, body["challengeId"])
+        return web.json_response({"enrollmentId": result["enrollmentId"], "provisioningUri": result.get("uri", result.get("provisioningUri")),
+            **({"secret": result["secret"]} if result.get("secret") else {})}, headers={"Cache-Control": "no-store"})
+
+    @routes.post(DEVICE_API + "/mfa/confirm")
+    async def confirm_mfa(request: web.Request) -> web.Response:
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"challengeId", "enrollmentId", "otp"}:
+            raise GatewayError("SCHEMA_INVALID")
+        identity, account_id = mfa_challenge(body)
+        return web.json_response(identity.confirm_mfa_enrollment(account_id, body["challengeId"], body["otp"],
+            enrollment_id=body["enrollmentId"]), headers={"Cache-Control": "no-store"})
+
     @routes.delete(DEVICE_API + "/tokens/current")
     async def logout(request: web.Request) -> web.Response:
         auth.revoke(await auth.authenticate(request))
@@ -183,9 +343,15 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
     async def list_devices(request: web.Request) -> web.Response:
         return web.json_response(devices.devices(await auth.authenticate(request)))
 
+    @routes.put(DEVICE_API + "/devices/default")
+    async def set_default(request: web.Request) -> web.Response:
+        return web.json_response(devices.set_default(await auth.authenticate(request), await request.json()))
+
     @routes.get(DEVICE_API + "/capabilities")
     async def capabilities(request: web.Request) -> web.Response:
-        return web.json_response(devices.capabilities(await auth.authenticate(request)))
+        if set(request.query) - {"deviceId"} or len(request.query.getall("deviceId", [])) > 1:
+            raise GatewayError("SCHEMA_INVALID")
+        return web.json_response(devices.capabilities(await auth.authenticate(request), request.query.get("deviceId")))
 
     @routes.post(DEVICE_API + "/device-requests")
     async def submit(request: web.Request) -> web.Response:
@@ -221,6 +387,10 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
             return False
 
     app.add_routes(routes)
+    if core.identity_store is not None:
+        from .android_auth import AndroidAccountAuthentication
+        android_auth = AndroidAccountAuthentication(core)
+        app.add_routes(android_auth.routes())
     app.add_routes(create_endpoint_routes(endpoints, auth))
     app.add_routes(create_agent_routes(registry, auth.authenticate, is_active, core.contracts, core=core))
     # This compatibility range describes the pinned Core Python interface. It
@@ -283,6 +453,9 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 
 def run(config_path: str | Path) -> None:
     config = load_config(config_path)
+    identity_path = Path(config.get("identityDatabase", Path(config["storageRoot"]).parent / "security" / "identity.sqlite"))
+    if not identity_path.is_file():
+        raise GatewayError("IDENTITY_DATABASE_MISSING", {"reason": "Run the authenticated installation or migration before starting Core"})
     listener = config.get("listen", {})
     host, port = listener.get("host", "0.0.0.0"), int(listener.get("port", 11451))
     tls = config.get("tls", {})

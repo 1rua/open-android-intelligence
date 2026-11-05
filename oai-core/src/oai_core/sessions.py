@@ -343,12 +343,8 @@ def _create_dsh_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> Ses
     from .adapters.dsh import DshSessionAdapter
     agent_id = entry.get("id", "dsh")
     name = entry.get("name", "DSH")
-    token_env = entry.get("tokenEnv")
-    if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-        raise ValueError("Session bridge requires tokenEnv")
-    token = os.environ.get(token_env, "")
-    if len(token) < 32:
-        raise ValueError("Session bridge token environment variable is unavailable")
+    from .agent_registration import read_bridge_secret
+    token = read_bridge_secret(entry, base_dir)
     if not isinstance(entry.get("url"), str):
         raise ValueError("Session bridge requires an explicit url")
     return DshSessionAdapter(entry["url"], token, agent_id=agent_id, name=name)
@@ -358,22 +354,20 @@ def _create_hermes_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> 
     from .adapters.hermes import HermesRemoteSessionAdapter
     agent_id = entry.get("id", "hermes")
     name = entry.get("name", "Hermes")
-    token_env = entry.get("tokenEnv")
-    if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-        raise ValueError("Session bridge requires tokenEnv")
-    token = os.environ.get(token_env, "")
-    if len(token) < 32:
-        raise ValueError("Session bridge token environment variable is unavailable")
+    from .agent_registration import read_bridge_secret
+    token = read_bridge_secret(entry, base_dir)
     if not isinstance(entry.get("url"), str):
         raise ValueError("Session bridge requires an explicit url")
     accounts = entry.get("accounts")
-    if not isinstance(accounts, dict) or not accounts or any(
+    if not isinstance(accounts, dict) or any(
         not isinstance(k, str) or not k or not isinstance(v, str) or not v for k, v in accounts.items()
     ):
         raise ValueError("Hermes requires explicit Core-to-Hermes account mappings")
     if len(set(accounts.values())) != len(accounts):
         raise ValueError("Hermes account mappings must be one-to-one")
-    return HermesRemoteSessionAdapter(entry["url"], token, accounts, agent_id=agent_id, name=name, attachment_core=core)
+    registration = getattr(core, "agent_registration", None) if entry.get("_registered") else None
+    return HermesRemoteSessionAdapter(entry["url"], token, accounts, agent_id=agent_id, name=name, attachment_core=core,
+                                      origin_registration=registration, account_registration=registration)
 
 
 def _create_remote_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> SessionAdapter:
@@ -381,20 +375,8 @@ def _create_remote_adapter(entry: dict[str, Any], base_dir: Path, core: Any) -> 
     kind = str(entry.get("type", entry.get("kind", "remote")))
     agent_id = entry.get("id", kind)
     name = entry.get("name", agent_id.capitalize())
-    token_env = entry.get("tokenEnv")
-    token = ""
-    if token_env:
-        if not isinstance(token_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-            raise ValueError("Session bridge requires valid tokenEnv identifier")
-        token = os.environ.get(token_env, "")
-        if len(token) < 32:
-            raise ValueError("Session bridge token environment variable is unavailable or under 32 chars")
-    elif isinstance(entry.get("token"), str):
-        token = entry["token"]
-        if len(token) < 32:
-            raise ValueError("Session bridge token must be at least 32 characters")
-    else:
-        raise ValueError("Remote adapter requires tokenEnv or token")
+    from .agent_registration import read_bridge_secret
+    token = read_bridge_secret(entry, base_dir)
 
     if not isinstance(entry.get("url"), str):
         raise ValueError("Session bridge requires an explicit url")
@@ -482,15 +464,29 @@ _load_entry_point_factories()
 
 
 def build_registry(config: Mapping[str, Any], core: Any) -> AgentRegistry:
-    """Only administrator-declared instances are eligible for native discovery."""
+    """Keep legacy explicit deployments and add only verified registered instances."""
     entries = config.get("agents", [])
     if not isinstance(entries, list):
         raise ValueError("agents must be a list of explicit deployments")
     storage_root = Path(config["storageRoot"]) if "storageRoot" in config else Path(".")
+    registration = getattr(core, "agent_registration", None)
+    registered = registration.entries() if registration is not None else []
+    ids = {entry.get("id") for entry in entries if isinstance(entry, dict)}
+    if any(entry["id"] in ids for entry in registered):
+        raise ValueError("Registered Agent conflicts with an explicit deployment")
     adapters = []
-    for entry in entries:
-        if not isinstance(entry, dict):
+    for original, is_registered in [(item, False) for item in entries] + [(item, True) for item in registered]:
+        if not isinstance(original, dict):
             raise ValueError("Agent configuration must be an object")
+        entry = dict(original)
+        if is_registered:
+            from .agent_registration import read_bridge_secret
+            secret = read_bridge_secret(entry, storage_root)
+            if not registration.registered(entry, secret):
+                raise ValueError("Registered Agent bridge secret or manifest changed")
+            if entry.get("type") == "hermes":
+                entry["accounts"] = registration.mappings(entry["id"])
+                entry["_registered"] = True
         kind = entry.get("type", entry.get("kind"))
         if not kind or not isinstance(kind, str):
             raise ValueError("Agent entry missing 'type' or 'kind'")
@@ -504,6 +500,16 @@ def build_registry(config: Mapping[str, Any], core: Any) -> AgentRegistry:
         else:
             raise ValueError(f"Unknown or uninstalled Agent type: '{kind}'")
 
+    if registration is not None:
+        from .adapters.hermes import HermesRemoteSessionAdapter
+        for registered_adapter in adapters:
+            if not isinstance(registered_adapter, HermesRemoteSessionAdapter) or registered_adapter.account_registration is None:
+                continue
+            for legacy_adapter in adapters:
+                if (isinstance(legacy_adapter, HermesRemoteSessionAdapter)
+                        and legacy_adapter.account_registration is None
+                        and legacy_adapter.account_scope == registered_adapter.account_scope):
+                    registration.reserve_legacy_mappings(registered_adapter.agent_id, legacy_adapter.accounts)
     return AgentRegistry(adapters, operations_path=storage_root / "native-operations.sqlite")
 
 

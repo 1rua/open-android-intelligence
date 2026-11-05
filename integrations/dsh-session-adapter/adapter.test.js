@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { Config, createSessionHandler } from "./index.js";
 
@@ -12,7 +13,7 @@ afterEach(async () => {
   }
 });
 
-async function host({ legacyUserWrapper = false, terminalReason = "completed", omitMessageIdentity = false } = {}) {
+async function host({ legacyUserWrapper = false, terminalReason = "completed", omitMessageIdentity = false, instanceId } = {}) {
   const listeners = new Map();
   const calls = [];
   const persisted = [];
@@ -60,7 +61,7 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
       return () => listeners.get(event).delete(listener);
     },
   };
-  const server = createServer(createSessionHandler(ctx, {}, token));
+  const server = createServer(createSessionHandler(ctx, { instanceId }, token));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   servers.push(server);
   const origin = `http://127.0.0.1:${server.address().port}${prefix}`;
@@ -69,6 +70,20 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
 }
 
 describe("DSH native Session Adapter", () => {
+  it("signs a fresh challenge with the stable instance and actual host capabilities", async () => {
+    const h = await host({ instanceId: "dsh-instance" });
+    const challenge = "a".repeat(64);
+    const result = await (await h.request("/handshake", "POST", { challenge })).json();
+    expect(result).toMatchObject({ instanceId: "dsh-instance", sessionScope: "deployment", online: true });
+    const capabilities = Object.fromEntries(Object.entries(result.capabilities).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
+    const payload = { capabilities, challenge, instanceId: "dsh-instance", online: true, sessionScope: "deployment" };
+    expect(result.proof).toBe(createHmac("sha256", token).update("oai-agent-handshake-v1\0").update(JSON.stringify(payload)).digest("hex"));
+    expect((await h.request("/handshake", "POST", { challenge: "bad" })).status).toBe(400);
+    const anonymous = await fetch(h.origin + "/handshake", { method: "POST" });
+    expect(anonymous.status).toBe(401);
+    const changed = await (await h.request("/handshake", "POST", { challenge: "b".repeat(64) })).json();
+    expect(changed.proof).not.toBe(result.proof);
+  });
   it("uses only the installed host's complete native corpus and sees subsequent terminal sessions", async () => {
     const h = await host();
     expect((await (await h.request("/sessions")).json()).sessions.map((s) => s.id)).toEqual(["terminal"]);

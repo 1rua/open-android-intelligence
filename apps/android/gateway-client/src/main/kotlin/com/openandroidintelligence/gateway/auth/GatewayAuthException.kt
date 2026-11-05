@@ -41,6 +41,8 @@ class GatewayAuthException(
         val REFUSED_CODES: Set<String> = setOf(
             "AUTHENTICATION_REQUIRED",
             "AUTHENTICATION_FAILED",
+            "AUTHENTICATION_EXPIRED",
+            "ACCOUNT_LOGIN_UPGRADE_REQUIRED",
             "REFRESH_REUSED",
             "SESSION_EXPIRED",
             "SESSION_REVOKED",

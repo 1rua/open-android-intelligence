@@ -132,6 +132,12 @@ class AdminService:
     def readOnly(self) -> bool:
         return self.read_only
 
+    def _management(self, input: Mapping[str, Any] | Any, scope: str):
+        identity = getattr(self.core, "identity_store", None)
+        if identity is not None:
+            identity.require_management(_input(input, "management_handle", "managementHandle"), scope)
+        return identity
+
     def create_account(self, input: Mapping[str, Any] | Any) -> dict[str, Any]:
         operation = "account.create"
         if self.read_only:
@@ -147,6 +153,10 @@ class AdminService:
         if not isinstance(password, str) or not password:
             return _failure(operation, False, "PASSWORD_REQUIRED")
         try:
+            identity = self._management(input, "accounts.write")
+            if identity is not None:
+                created = identity.create_account(_input(input, "management_handle", "managementHandle"), account_id, password)
+                return _success(operation, False, created)
             account = self.core.open_gateway_account(account_id)
             try:
                 account.credentials.create_password(password)
@@ -175,6 +185,11 @@ class AdminService:
         if not self.core.account_exists(account_id):
             return _failure(operation, False, "ACCOUNT_NOT_FOUND")
         try:
+            identity = self._management(input, "accounts.write")
+            if identity is not None:
+                target = identity.account(account_id)
+                identity.reset_password(_input(input, "management_handle", "managementHandle"), target["username"], password)
+                return _success(operation, False, {"accountId": account_id})
             account = self.core.open_gateway_account(account_id)
             try:
                 if not account.credentials.has_password():
@@ -199,6 +214,11 @@ class AdminService:
         if not isinstance(account_id, str) or WIRE_ID_PATTERN.fullmatch(account_id) is None:
             return _failure(operation, False, "SCHEMA_INVALID")
         try:
+            identity = self._management(input, "accounts.write")
+            if identity is not None:
+                target = identity.account(account_id)
+                identity.delete_account(_input(input, "management_handle", "managementHandle"), target["username"])
+                return _success(operation, False, {"accountId": account_id, "deleted": True})
             removed = self.core.delete_gateway_account(account_id)
         except GatewayError as exc:
             return _failure(operation, False, exc.code)
@@ -232,6 +252,7 @@ class AdminService:
             return _failure(operation, False, "SCHEMA_INVALID")
         correlation_id = _input(input, "correlation_id", "correlationId")
         try:
+            self._management(input, "accounts.write")
             account = self.core.open_gateway_account(account_id)
             try:
                 result = account.revoke_pairing(
@@ -271,6 +292,7 @@ class AdminService:
             return _failure(operation, False, "SCHEMA_INVALID")
         correlation_id = _input(input, "correlation_id", "correlationId")
         try:
+            self._management(input, "accounts.write")
             account = self.core.open_gateway_account(account_id)
             try:
                 result = account.bump_grant_revision(
@@ -322,6 +344,10 @@ class AdminService:
         if input.get("localConfirmation") is not True: return _failure(operation,False,"LOCAL_CONFIRMATION_REQUIRED")
         if not self.core.account_exists(input.get("accountId")): return _failure(operation,False,"ACCOUNT_NOT_FOUND")
         from .pairing_invites import PairingInvites
+        try:
+            self._management(input, "accounts.write")
+        except GatewayError as exc:
+            return _failure(operation, False, exc.code)
         account=self.core.open_gateway_account(input["accountId"])
         try: return _success(operation,False,PairingInvites(account).issue(input["gatewayUrl"],gateway_identity=self.core.gateway_identity(account)))
         except GatewayError as exc: return _failure(operation,False,exc.code)

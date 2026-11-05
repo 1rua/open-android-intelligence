@@ -1,6 +1,6 @@
 # OAI Core 0.2 独立部署与 Hermes 安全切换
 
-**2026-10-28 授权规则更新**：以下独立部署、账号认证、密钥和安全切换步骤继续适用；设备能力按 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权。已安装且启用插件的普通前台能力默认开启，不再要求 Hermes setup 或 Core 账号能力开关；系统权限、本地限制、后台许可和敏感确认仍需满足。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`。旧数据迁移、混合版本协商和真机验收状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；本部署说明不表示目标生产服务已升级。
+**部署说明更新**：独立部署保留原账号、配对、主密钥和宿主历史；管理变更需要 Core 管理员认证。设备能力按 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权，本地策略、系统权限和必要确认仍然生效。本说明包括历史 Hermes 切换方法，不表示生产服务、自动接入或 Android 真机已完成验收。
 
 本次依赖方向为 `Hermes Session Adapter → OAI Core`。Android 设备协议、认证、配对、
 授权版本、请求排队与 Claim/Result/ACK 由 `oai_core.gateway` 提供唯一实现。
@@ -11,13 +11,15 @@ OpenClaw 沿用现有部署，本阶段不更新。
 
 使用 Python 3.11 或更高版本。从仓库根目录执行：
 
+下列 pip 命令仅用于新环境的软件包检查，不会初始化管理员，也不是已有部署的升级入口。已有部署请先使用经过认证的安装流程。
+
 ```sh
 python -m venv .venv
 .venv/bin/python -m pip install ./oai-core
 .venv/bin/python -m pip check
 ```
 
-也可先构建再将 wheel 安装到不含仓库源码的机器：
+也可先构建再将 wheel 安装到不含仓库源码的新环境：
 
 ```sh
 python -m pip install build
@@ -32,32 +34,20 @@ wheel 与源码分发包中的协议资产均由构建过程从仓根 `gateway-c
 `jsonschema`、`cryptography`、`aiohttp`、`mcp` 与 `yarl` 是 Core 直接声明的运行依赖。同一 Hermes 会话桥的多入口配置必须保持全局一对一账号映射；服务启动会按与实际 HTTP 客户端相同的 URL/IDNA 规则核验，冲突配置拒绝注册。
 `open-android-intelligence-hermes-gateway` 和 Hermes SDK 均不在 Core 的依赖图中。
 
-在部署目录创建 `core.json`：
+新部署应先在可信源码检出中运行 `./scripts/install.sh`，按提示创建首个管理员并保存本机恢复码；不能在尚无身份库时直接用 `account create` 创建首个账号。wheel 只完成软件安装，不等于已初始化管理员、配置服务或完成验收。
 
-```json
-{
-  "storageRoot": "runtime/accounts",
-  "masterKeyFile": "runtime/secrets/core-master-key",
-  "listen": {"host": "127.0.0.1", "port": 8045},
-  "agents": []
-}
-```
-
-路径相对于配置文件。`contractRoot` 可省略，使用包内契约；显式配置时仍严格验证
-真实 Schema Hash。主密钥必须在账号数据目录之外，首次部署由 Core 安全创建。
+管理员在服务器本机建立日常账号；多实例时可加 `--config`：
 
 ```sh
-.venv/bin/oai account create --config core.json --username alice
-.venv/bin/oai serve --config core.json
+oai account create alice
+oai setup
+# 从安装目录启动，或使用安装时配置的服务
+./start-core.sh
 ```
 
-密码交互输入。`agents: []` 表示尚未连接会话宿主；设备服务仍可协商、登录、配对、
-发布能力和执行已授权请求。Android 使用原 Gateway Protocol v2，外部设备 Schema
-和签名字节规则不随包命名空间调整而改变。
+输入管理员的 Core 账号密码，然后设置新账号密码；新增账号默认是普通用户。Android 使用相同的账号和可达的 Core 地址登录、配对。CLI 登录无需设备 ID：`oai login --url https://core.example`，然后用 `oai devices` 和 `oai capabilities` 查看本人设备与能力；可按需以 `--device` 指定目标。
 
-默认仅绑定本机。手机远程接入时设置监听地址并配置 TLS 证书及私钥；反向代理终止
-TLS 时设置与客户端实际证书一致的 `tlsSpkiSha256`。配置为远程监听且无 TLS 时，
-Core 会拒绝启动；受控开发环境须显式设置 `allowInsecureHttp: true`。
+配置路径相对于配置文件，`contractRoot` 可省略并使用包内契约；主密钥必须在账号数据目录之外。手机远程接入时配置可达的监听地址和 TLS 证书、私钥；反向代理终止 TLS 时配置与手机实际看到的证书一致的 `tlsSpkiSha256`。仅在受控开发环境显式启用 `allowInsecureHttp`。
 
 ## 安装与配置向导
 
@@ -66,19 +56,13 @@ Core 会拒绝启动；受控开发环境须显式设置 `allowInsecureHttp: tru
 ./scripts/setup.sh
 ```
 
-`install.sh` 安装 Core 和其直接依赖，不会因为探测到 Hermes 就安装它。
-两个向导只配置选择的会话入口，不停用旧插件、不重启服务、不修改原生 Hermes
-配置或账号目录。Hermes 接入默认为关闭，选择接入时要求输入对应的既有 Hermes 账号。
+新安装按提示创建管理员；已有部署在安装、配置、服务管理和卸载前须验证现有 Core 管理员账号及其 Core 登录密码。旧部署迁移先指定原账号、验证原密码、停止旧写入者并完成一致备份；指定账号成为管理员，其他旧账号保持普通用户。切勿先更新旧环境或下载不受信任的 helper 再交出密码。具体限制及失败恢复见[安装说明](../../scripts/README.md)。远端一键安装和自动依赖处理仍在完善，不能宣称全流程已验收。
 
-配置文件保存为 `0600`；更新前备份到 `runtime/configuration-backups`。
-已有 `storageRoot`、`masterKeyFile`、TLS 和其他配置字段、账号密码、主密钥、
-配对数据及原有 Agent 实例均予以保留。已存在账号不会因重新运行向导重设密码。
-移除旧 Agent 须显式编辑 `agents` 数组。
+`oai setup` 认证后可管理网络、账号、Agent 与服务；候选 Agent 必须验证身份并真实握手、确认注册，没有候选时显示未连接。配置及事务备份应受限访问；保留已有 `storageRoot`、`masterKeyFile`、TLS、账号密码、配对和宿主历史，不静默替换主密钥或重设密码。查看、退出菜单不应改写配置。
 
 会话桥凭据写入 `runtime/secrets/adapter-tokens.env`（`0600`，父目录 `0700`）。
 凭据由 Python 安全随机源生成；重复配置优先保留已有值，不自动旋转。
-旧安装器写入启动脚本的固定 Token 格式会被安全提取到私密文件，迁移过程不执行
-旧脚本。无法安全恢复既有值时，要求管理员在环境中提供原 Token，禁止静默替换。
+迁移时应保留已有桥凭据；无法安全恢复时停止并由管理员核对受保护的原始凭据，禁止静默替换。
 `start-core.sh`（`0700`）只引用私密文件，不包含任何 Token 或账号密码的字面值，
 并在读取前拒绝不属于当前用户、指向符号链接或对其他用户可读写的凭据文件。
 不要把生成的运行目录、配置或凭据提交到仓库。
@@ -88,7 +72,15 @@ Core 会拒绝启动；受控开发环境须显式设置 `allowInsecureHttp: tru
 令牌放入命令行参数、公开启动脚本、Shell 历史或文档。
 桥 Token 只能认证会话接口，不能登录 Core 或授予设备操作权限。
 
+## 二次验证、账号与恢复
+
+服务端 2FA 默认关闭；管理员在 `oai setup` 输入 `2fa`，先绑定验证器并安全保存账号备用码和独立管理员恢复码，才能确认开启。开启后 CLI、Android 和管理操作按提示提供验证码，正常会话续期不重复要求。关闭策略不删除已有绑定。
+
+删除账号或修改密码前核对目标和会话撤销影响；删除或降权最后一个可用管理员应被拒绝。忘记管理员密码时，仅在服务端本机执行 `oai recover ADMIN_USERNAME`，交互输入预先登记的独立管理员恢复码及新密码，再确认目标；恢复会撤销旧会话，但不自动关闭 2FA。不要把密码、验证码或恢复码放进命令参数、普通环境变量或日志。
+
 ## 安装可选 Hermes Session Adapter
+
+目标是由可信适配器按稳定 Core 账号准备专属原生空间，已有身份关联需确认，不复制密码或继承他人历史；自动专属空间仍在集成，尚未验证通过。下列显式映射是旧部署兼容与切换记录，不是新用户的必做步骤。
 
 先在 Core 的独立部署中完成设备服务验证，再准备 Hermes 切换。
 在 Hermes 自己的 Python 环境中安装配套版本；下面命令从 OAI 仓库根目录执行：
@@ -99,7 +91,7 @@ python -m pip install ./oai-core ./integrations/hermes-session-adapter
 
 适配器包约束 Core 为 `>=0.2,<0.3`，只调用 Core 的公共存储库与会话接口。
 它不构造 `GatewayCore`、设备请求队列或设备认证服务，不注册 Android 设备工具。
-Agent 设备工具应显式调用 Core CLI/MCP/API，并使用当前账号授予的受限设备凭据。
+Agent 设备工具应通过 Core CLI/MCP/API 使用个人账号认证，目标设备在请求时按规则选择；共享宿主不继承个人设备凭据。
 
 宿主所需配置：
 
@@ -127,7 +119,7 @@ Agent 设备工具应显式调用 Core CLI/MCP/API，并使用当前账号授予
 }
 ```
 
-映射由管理员显式配置，必须是一对一的 `Core Account → Hermes Account`。
+已有部署沿用的显式映射必须是一对一的 `Core Account → Hermes Account`。
 App 传入的会话 ID、账号名或桥 Token 无权改变该映射。
 跨账号的会话、历史、管理和发送请求均须拒绝。
 

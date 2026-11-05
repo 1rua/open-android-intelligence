@@ -1039,6 +1039,9 @@ class AccountStore:
         self.database.row_factory = sqlite3.Row
         try:
             register_authority_writer(self.database)
+            from ..identity_migration import register_identity_writer, check_identity_writer
+            register_identity_writer(self.database)
+            check_identity_writer(self.database)
             model = read_authority_model(self.database)
             if model is not None and model != AUTHORITY_MODEL:
                 raise GatewayError("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
@@ -1521,6 +1524,8 @@ class CredentialStore:
         self._write_password(password, now, create_only=True)
 
     def _write_password(self, password: str, now: datetime | str | None, *, create_only: bool) -> None:
+        if getattr(self.store, "identity_store", None) is not None:
+            raise GatewayError("MANAGEMENT_REQUIRED")
         digest = hash_password(password)
         with self.store.transaction():
             exists = self.has_password()
@@ -1536,6 +1541,9 @@ class CredentialStore:
                 self.store.database.execute("UPDATE refresh_credentials SET status = 'revoked'")
 
     def has_password(self) -> bool:
+        identity = getattr(self.store, "identity_store", None)
+        if identity is not None:
+            return identity.password_digest(self.store.account_id) is not None
         row = self.store.database.execute(
             "SELECT 1 FROM account_credentials WHERE credential_id = ?",
             (self.PASSWORD_CREDENTIAL_ID,),
@@ -1544,6 +1552,9 @@ class CredentialStore:
 
     def password_digest(self) -> str | None:
         """Local snapshot used only by the session-issuing transaction."""
+        identity = getattr(self.store, "identity_store", None)
+        if identity is not None:
+            return identity.password_digest(self.store.account_id)
         row = self.store.database.execute(
             "SELECT password_hash FROM account_credentials WHERE credential_id = ?",
             (self.PASSWORD_CREDENTIAL_ID,),
@@ -1551,6 +1562,9 @@ class CredentialStore:
         return str(row[0]) if row is not None else None
 
     def verify_password(self, password: str) -> bool:
+        identity = getattr(self.store, "identity_store", None)
+        if identity is not None:
+            return verify_password(password, identity.password_digest(self.store.account_id))
         row = self.store.database.execute(
             "SELECT password_hash FROM account_credentials WHERE credential_id = ?",
             (self.PASSWORD_CREDENTIAL_ID,),
@@ -4109,6 +4123,9 @@ class SessionService:
             raise GatewayError("AUTHENTICATION_FAILED")
         credentials = CredentialStore(self.store)
         credential_digest = credentials.password_digest()
+        identity = getattr(self.store, "identity_store", None)
+        auth_epoch = identity.account(self.account_id)["authEpoch"] if identity is not None else None
+        policy_version = identity._policy()[1] if identity is not None else None
         verifier = getattr(self.credential_verifier, "verify", self.credential_verifier)
         try:
             verified = verifier(self.account_id, username, password, installation)
@@ -4122,8 +4139,19 @@ class SessionService:
             # in-flight old verification, including a missing->present digest.
             if credentials.password_digest() != credential_digest:
                 raise GatewayError("AUTHENTICATION_FAILED")
-            bundle = self._issue(installation_id, f"dev_{uuid.uuid4()}", current)
-            self._register_device_key(bundle["deviceId"], installation_id, device_public_key, current)
+            if identity is not None:
+                identity.assert_epoch(self.account_id, auth_epoch)
+                if identity._policy()[0] or identity._policy()[1] != policy_version:
+                    raise GatewayError("MFA_REQUIRED")
+            device_id = f"dev_{uuid.uuid4()}"
+            self._register_device_key(device_id, installation_id, device_public_key, current)
+            bundle = self._issue(installation_id, device_id, current, auth_epoch=auth_epoch)
+            self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
+                ("core-device-info:" + device_id, _jcs({"displayName": installation.get("displayName", "Android"), "registeredAt": iso_millis(current)})))
+            identity = getattr(self.store, "identity_store", None)
+            if identity is not None:
+                self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
+                    ("core-device-auth-epoch:" + device_id, str(auth_epoch)))
             self.audit.append(
                 "session.password.created",
                 {"accountId": self.account_id, "deviceId": bundle["deviceId"], "installationId": installation_id},
@@ -4138,6 +4166,7 @@ class SessionService:
         current = _now(now)
         reused = False
         bundle: dict[str, Any] | None = None
+        auth_epoch = None
         with self.store.transaction():
             digest = self._digest(refresh_credential)
             row = self.store.database.execute(
@@ -4145,6 +4174,14 @@ class SessionService:
             ).fetchone()
             if row is None or row["installation_id"] != installation_id or row["device_id"] != device_id:
                 raise GatewayError("AUTHENTICATION_FAILED")
+            identity = getattr(self.store, "identity_store", None)
+            if identity is not None:
+                epoch = self.store.database.execute("SELECT value FROM account_metadata WHERE key=?",
+                    ("core-session-epoch:" + row["session_id"],)).fetchone()
+                if epoch is None:
+                    raise GatewayError("SESSION_REVOKED")
+                auth_epoch = int(epoch[0])
+                identity.assert_epoch(self.account_id, auth_epoch)
             if row["status"] != "active":
                 self.store.database.execute(
                     "UPDATE refresh_credentials SET status = 'revoked' WHERE installation_id = ? AND device_id = ?",
@@ -4157,7 +4194,7 @@ class SessionService:
                 )
                 reused = True
             else:
-                bundle = self._issue(installation_id, device_id, current)
+                bundle = self._issue(installation_id, device_id, current, auth_epoch=auth_epoch)
                 self.store.database.execute(
                     "UPDATE refresh_credentials SET status = 'used', replaced_by_hash = ? WHERE credential_hash = ?",
                     (self._digest(bundle["refreshCredential"]), digest),
@@ -4340,7 +4377,7 @@ class SessionService:
             payload = {"sessionId": session_id, "deviceId": row["device_id"]}
             self.events.append("session.revoked", correlation_id, payload, current)
 
-    def _issue(self, installation_id: str, device_id: str, current: datetime) -> dict[str, Any]:
+    def _issue(self, installation_id: str, device_id: str, current: datetime, *, auth_epoch: int | None = None) -> dict[str, Any]:
         session_id = f"sess_{uuid.uuid4()}"
         access_token = self._secret("access")
         refresh_credential = self._secret("refresh")
@@ -4353,6 +4390,12 @@ class SessionService:
             "INSERT INTO refresh_credentials(credential_hash, installation_id, device_id, session_id, status, created_at, replaced_by_hash) VALUES (?, ?, ?, ?, 'active', ?, NULL)",
             (self._digest(refresh_credential), installation_id, device_id, session_id, iso_millis(current)),
         )
+        identity = getattr(self.store, "identity_store", None)
+        if identity is not None:
+            epoch = auth_epoch if auth_epoch is not None else identity.account(self.account_id)["authEpoch"]
+            identity.assert_epoch(self.account_id, epoch)
+            self.store.database.execute("INSERT OR REPLACE INTO account_metadata(key,value) VALUES (?,?)",
+                ("core-session-epoch:" + session_id, str(epoch)))
         return {
             "sessionId": session_id, "deviceId": device_id,
             "accessToken": access_token, "refreshCredential": refresh_credential,
@@ -4794,6 +4837,8 @@ class GatewayCore:
         per-attachment reducer events. The path comes from `account_paths`,
         the only place allowed to turn an opaque ID into a filesystem location.
         """
+        if getattr(self, "identity_store", None) is not None:
+            raise GatewayError("MANAGEMENT_REQUIRED")
         paths = account_paths(self.storage_root, account_id)
         if not paths.root.is_dir():
             return False
@@ -5020,7 +5065,9 @@ class GatewayCore:
             installation = body["installation"]
             if not canonical_device_key(installation["devicePublicKey"]):
                 raise GatewayError("SCHEMA_INVALID")
-            account_id = body["username"]
+            username = body["username"]
+            identity = getattr(self, "identity_store", None)
+            account_id = identity.resolve_username(username) if identity is not None else username
             if not self.account_exists(account_id):
                 raise GatewayError("AUTHENTICATION_FAILED")
             self.bind_negotiation(body["negotiationId"], account_id, installation["installationId"], now)
@@ -5028,7 +5075,7 @@ class GatewayCore:
             admitted = True
             account = self.open_gateway_account(account_id)
             try:
-                bundle = account.sessions.create_password_session(account_id, body["password"], installation, context["correlationId"], now)
+                bundle = account.sessions.create_password_session(username, body["password"], installation, context["correlationId"], now)
                 return _success(context, {**bundle, "accountId": account_id})
             finally:
                 account.close()

@@ -31,6 +31,7 @@ object RawHeaders {
         "x-open-android-intelligence-refresh-replay",
         "x-open-android-intelligence-device-authorization",
         "x-oai-agent-sessions",
+        "x-oai-account-auth",
     )
 
     fun validate(headers: List<RawHeader>): List<RawHeader> {

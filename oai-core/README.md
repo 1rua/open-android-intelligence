@@ -15,73 +15,42 @@ Android Platform Kernel、`.alp` 签名、WASM 沙箱与本地确认机制继续
 
 ## 安装与启动
 
-### 一键安装脚本（推荐）
+### 安装和首次使用
 
-使用 curl 命令完成 Core 依赖检查、环境安装、可选 Agent 探测与初始化配置向导：
+在可信检出的仓库根目录运行 `./scripts/install.sh`。全新安装按提示创建首个管理员，离线保管只显示一次的管理员恢复码；已有部署在更新或配置前须验证现有 Core 管理员的账号与 Core 登录密码。旧部署迁移还需先指定现有账号、验证原密码并停止旧写入者。安装入口和远端一键路径仍在完善，本说明不表示整条安装流程已验收。见[安装与恢复](../scripts/README.md)。
+
+管理员在服务端本机创建普通账号，再配置并启动服务：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+oai account create alice
+oai setup
+# 在安装目录启动，或使用安装时配置的自启动服务
+./start-core.sh
 ```
 
-或在需要单独重新配置端口、账号或 Agent 时运行独立配置脚本：
+按提示隐藏输入管理员密码和新账号密码。新账号默认为普通用户；删除或改密会影响该账号会话，操作前务必确认目标和影响。删除或降权最后一个可用管理员会被拒绝；管理员可修改自己的密码，不必先另建管理员。`oai account list`、`oai account delete alice`、`oai account passwd alice`、`oai config` 和 `oai setup` 都在服务端本机验证管理员；有多个本机实例时可通过对应命令的 `--config` 选择配置。管理员身份不赋予读取其他账号设备的权限。
+
+服务端 2FA 默认关闭。在 `oai setup` 菜单输入 `2fa`，可绑定验证器、登记独立的管理员恢复码并按提示开启；开启前须准备绑定及恢复方式。开启后 CLI、Android 和管理入口按提示完成二次验证，未绑定的普通用户可在登录时绑定；有效会话正常刷新不重复要求验证码。关闭 2FA 不清除绑定。账号 MFA 备用码和**管理员本机恢复码**分开保管；后者仅在服务端本机使用：
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+oai recover ADMIN_USERNAME
 ```
 
-或在仓库根目录直接运行：
-```sh
-./scripts/install.sh
-# 或
-./scripts/setup.sh
-```
+恢复命令交互输入预先登记的独立管理员恢复码和新密码，确认目标账号后撤销旧会话；它不是普通账号远程找回入口，也不会自动关闭 2FA。密码、验证码和恢复码不放在命令行、普通环境变量或日志中。详见[独立部署](../docs/deployment/2026-10-26-core-independent.zh-CN.md)。
 
-向导只安装 Core；发现 Hermes 不会自动安装插件、停用旧网关或启用会话桥。
-选择接入后，Core 生成显式的一对一账号映射；Hermes 宿主包须在宿主自己的 Python
-环境另行安装。DSH 和 Codex 的安装、使用均不要求存在 Hermes。
+配置路径相对于配置文件；`contractRoot` 可省略，协议契约随包发布。运行数据和主密钥应分开保管，不提交仓库。手机远程连接时配置 `listen.host`、`tls.certFile` 和 `tls.keyFile`；反向代理终止 TLS 时还须配置与手机看到的证书一致的 `tlsSpkiSha256`。仅在受控开发环境显式使用 `allowInsecureHttp`。
 
-向导安装完成后，会自动将 `~/.local/bin` 注入 PATH 并在其中配置 `oai` 启动包装命令：
-直接在终端输入 `oai` 即可一键启动服务；带参数执行时（如 `oai devices`、`oai mcp`）作为 CLI 客户端管理工具。
-
-桥接 Token 生成或复用到 `runtime/secrets/adapter-tokens.env`，文件权限为 `0600`，
-父目录为 `0700`；`start-core.sh` 只读取该私密文件，不嵌入凭据值。
-重新运行 `setup.sh` 会备份旧配置并保留已有存储路径、主密钥、账号密码、配对和
-Agent 实例，不自动重置账号密码或旋转桥接 Token。移除既有 Agent 时显式编辑 `agents`。
-
-### 手动安装与启动
-
-Python 3.11+。在仓库根目录安装，或直接安装构建出的 Core wheel；协议契约随包发布：
+在 Android 登录 Core 并配对，安装并启用设备插件。然后在自己的终端登录，首次跨机器使用时提供可信地址，以后可复用。账号没有设备时也能登录，设备列表为空：
 
 ```sh
-python -m venv .venv
-.venv/bin/python -m pip install -e ./oai-core
-source .venv/bin/activate
-.venv/bin/oai account create --config oai-core/examples/core.json --username alice
-.venv/bin/oai serve --config oai-core/examples/core.json
-```
-
-账号密码通过交互输入，不出现在命令行参数中。示例默认只监听本机，未注册 Agent 时列表为空。
-配置中的路径相对于配置文件；`contractRoot` 可省略，默认使用包内真实协议契约。
-从源码构建时，这些资产只取自本仓库的 `gateway-contract`，不维护第二份协议源文件。
-运行数据与主密钥分别位于 `runtime/accounts` 和
-`runtime/secrets`，均不提交；主密钥不能位于账号备份目录内。
-手机远程连接时配置 `listen.host`、`tls.certFile` 和 `tls.keyFile`，使用同一个 HTTPS
-地址及端口登录。TLS 终止在反向代理时还须配置与手机看到的证书一致的 `tlsSpkiSha256`；
-只在受控开发环境显式使用 `allowInsecureHttp`。
-
-先在 Android 登录 Core 并配对，再安装、启用设备插件。当前 feature 分支规则无需 Core 或 Agent Gateway 再授予账号级设备能力；本地关闭、系统权限不足和敏感确认未完成仍会阻止执行。调用方单独取得绑定目标设备的 Core 凭据，例如：
-
-```sh
-oai login --url https://core.example --username alice --device DEVICE_ID
+oai login --url https://core.example
+oai devices
 oai capabilities
 ```
 
-`account` 是服务端本机身份管理命令。旧 `dev` 基线中的 `policy` 账号能力开关不再参与本分支的设备授权裁决；它不是目标设计的操作步骤。出现 `GATEWAY_DISABLED` 时，应先确认客户端与 Core 是否完成新授权模型协商；不要另建服务端授权入口。
+CLI 会提示输入账号和密码，登录不需要设备 ID；旧的 `login --device` 仅供兼容旧的设备限定凭据。默认客户端配置保存在 `~/.config/oai/client.json`，以 `0600` 保护；自定义路径时全局选项 `--client-config` 放在子命令前。在线 `oai logout` 撤销当前登录；离线时立即阻止本机继续使用，并提示远端撤销待联网重试，而非声称远端已即时撤销。不要在共享 Agent 宿主身份中保存个人设备调用凭据。
 
-远程 CLI/API/MCP 请求不接受账号或设备身份覆盖。登录凭据绑定该账号下已配对设备、配对代次和过期时间，默认有效期 86400 秒；凭据撤销或配对失效会终止访问。Android 能力发布的 `grantRevision` 变化不使 Token 或端点 route 失效；新请求在事务内绑定当前发布版本，已入队请求仍绑定原版本，旧 GET/Claim/Result/幂等重放继续被 `GRANT_STALE` 或历史请求 fence 拒绝。
-客户端配置默认写入 `~/.config/oai/client.json`，以 `0600` 保存，退出使用 `oai ... logout`
-撤销凭据。上述登录和后续命令使用同一个默认客户端配置。需要自定义路径时，每条客户端命令均加
-`--client-config`。`--device` 取 `oai devices` 返回的设备 ID。在操作人的独立终端环境登录，
-避免给共享原生 Agent 的运行身份保存设备凭据。
+旧 `dev` 基线中的 `policy` 账号能力开关不参与目标设备授权；本地关闭、系统权限不足或敏感确认未完成仍会阻止执行。Android 能力发布版本变化不等同于登录失效，已入队请求仍保留原目标与版本校验。
 
 ## 设备 CLI / API / MCP
 
@@ -95,7 +64,16 @@ oai ack REQUEST_ID
 oai mcp
 ```
 
-能力 ID、版本和参数以 `capabilities` 返回的实际插件 schema 为准。
+登录只确定账号，不选择设备。Core 按 **显式 `--device` → 可信当前会话来源 → 有效默认设备 → 唯一在线设备** 的顺序选目标；前三者离线时不改投其他设备，按风险排队或拒绝。无设备、无在线设备或多台在线设备时会明确返回相应状态；多台在线时用 `--device DEVICE_ID` 选择本人设备。已撤销的默认设备不再参与选择，普通历史离线设备不会造成多选歧义。
+
+```sh
+oai devices --default DEVICE_ID  # 设置自己的默认设备
+oai devices --clear-default      # 清除默认设备
+oai capabilities --device DEVICE_ID
+oai invoke CAPABILITY_ID --version VERSION --parameters '{}' --agent-name my-agent --purpose '用户请求的操作' --device DEVICE_ID
+```
+
+能力查询返回本次所选设备及版本，并不锁定后续调用的目标；需要保持一致时显式指定设备。请求入队后及同一幂等键重试始终保留原目标，不因离线或重新配对改投。能力 ID、版本和参数以 `capabilities` 返回的实际插件 schema 为准。
 `--wait` 只等待服务端状态，不创建另一套任务状态；等待结束后可用 `status` 继续读取原请求。
 相同幂等键及参数返回同一请求，参数不同返回冲突。高风险操作仍需手机本地确认。
 `ack` 在消费设备结果后清理临时结果正文。MCP 使用官方 SDK 的 stdio transport，工具均调用同一 API。
@@ -155,7 +133,7 @@ oai endpoint ack ENDPOINT_ID DELIVERY_ID EVENT_ID
 oai endpoint unregister ENDPOINT_ID
 ```
 
-接收端复用现有设备绑定 Bearer 凭据；MCP 对应工具为 `oai_register_endpoint`、`oai_endpoints`、
+接收端使用已认证的 Core 登录凭据；端点归属于稳定登录关系，不因正常刷新转移给新登录。MCP 对应工具为 `oai_register_endpoint`、`oai_endpoints`、
 `oai_receive_deliveries`、`oai_ack_delivery`、`oai_unregister_endpoint`，没有独立 Agent 身份体系。
 注册本身不授予设备数据订阅权限，Android 用户仍需选择接收 route。
 
@@ -204,10 +182,8 @@ ACK 后重复投递或 ACK 返回原回执且不恢复正文，同一投递身�
 
 ## 接入原生 Agent
 
-只有 `agents` 显式声明的实例会被发现，不遍历其他用户目录或服务。
-所有账号登录后能读取该部署的 DSH/Codex 共享会话，包括终端创建的原生历史。
-Hermes 单独保留账号绑定；所有操作均读取或修改真实宿主，不保存第二份聊天历史。
-在线状态由宿主握手/查询得出；宿主不支持的能力在服务端和 App 同时禁用。
+已有配置仍保留；新候选只从当前安装用户的受支持位置或明确授权目录发现，不遍历其他用户目录、不执行未知脚本。发现不等于连接：还需核验实例身份、真实握手并确认注册，未接入时显示空状态。
+DSH/Codex 的部署共享会话与 Hermes 的账号隔离继续遵循各宿主事实；共享会话不继承个人设备凭据。所有操作读取或修改真实宿主，不保存第二份聊天历史；在线状态来自真实握手/查询。
 
 原生会话请求在 Core 与 Hermes/DSH 会话桥均须小于 1 MiB；消息另保留 262144 字符上限。
 Core 在记录写操作或开启 SSE 前检查紧凑 JSON 的实际 UTF-8 字节数，过大请求返回
@@ -232,7 +208,7 @@ Codex 使用明确指定的 app-server 和实例目录：
 模型提供方的凭据通过 `envFrom` 显式引用，例如
 `"envFrom": {"OPENAI_API_KEY": "CODEX_MODEL_API_KEY"}`；不会继承 Core 的完整环境。
 部署执行身份与凭据检测见 [Codex 设备隔离边界](docs/codex-device-isolation.zh-CN.md)。
-共享 Agent 不自动获得任何 Android 设备凭据；独立 CLI/MCP 需使用经 Core 认证并绑定目标设备的调用凭据。凭据只界定调用身份和设备范围，不替代 Android 的设备能力决定，也不构成账号级能力开关。
+共享 Agent 不自动获得任何个人设备凭据；独立 CLI/MCP 使用个人 Core 账号认证，具体设备在请求时按规则选择。认证不替代 Android 的设备能力决定，也不构成账号级能力开关。
 共享原生 Agent 应运行在独立服务身份下，不得配置任意个人账号的常驻 OAI CLI/MCP 凭据。
 
 DSH 接入宿主的轻量 Session Adapter：
@@ -249,33 +225,9 @@ DSH 接入宿主的轻量 Session Adapter：
 删除与归档因尚未核实可完整读取的原生生命周期接口而不宣告，App 侧对应操作禁用。
 环境变量引用的适配器令牌用于 Core 到宿主的内部认证，不能作为 Core 账号或设备凭据。DSH 会话适配器不提供额外设备能力授权；Agent 需要设备工具时统一通过 Core CLI/MCP/API，并由 Android 裁决实际执行。
 
-Hermes 通过独立可选包 `oai-hermes-session-adapter` 保留账号映射。
-在 Hermes 自身的 Python 环境安装当前配套版本，再通过其原生插件加载器安装入口：
+Hermes 是可选的账号隔离会话宿主。目标路径是由可信适配器按稳定 Core 账号准备专属空间；已有映射和原账号目录必须保留，关联既有身份需要确认，不能仅凭同名或复制密码关联。自动专属空间仍在集成，未验证通过；旧版显式一对一映射仅作为已有部署的兼容方式，不应当作新用户必需步骤。
 
-```sh
-python -m pip install ./oai-core ./integrations/hermes-session-adapter
-hermes plugins install ./integrations/hermes-session-adapter --enable
-```
-
-宿主环境须先配置好明确的原账号目录、账号清单、原主密钥与会话桥 Token。
-新 Adapter 只提供原生会话，不运行设备监听器或设备请求调度器。
-
-Core 配置条目为：
-
-```json
-{
-  "type": "hermes", "id": "hermes", "name": "Hermes",
-  "url": "http://127.0.0.1:8792", "tokenEnv": "OAI_HERMES_SESSION_TOKEN",
-  "accounts": {"alice": "alice", "bob": "bob"}
-}
-```
-
-映射由管理员配置，必须一对一；不会依据 App 传入的账号选择身份。
-宿主部署与原账号目录复用见 [Hermes Session Adapter](../integrations/hermes-session-adapter/README.md)。
-先验证独立 Core 并备份，再停止原 Gateway、启动新 Adapter；保留旧安装用于回滚。
-新 Adapter 对原账号库持有独占锁，禁止新旧进程同时写入。
-Core 设备数据库另设目录，不会与 Hermes 的原账号库合并；主密钥也不自动复制或替换。
-完整步骤见[独立部署与安全切换](../docs/deployment/2026-10-26-core-independent.zh-CN.md)。
+先验证独立 Core 并备份，再停止旧写入者、按需安装匹配的 [Hermes Session Adapter](../integrations/hermes-session-adapter/README.md)。新旧进程不能同时写同一账号库。Core 设备库和 Hermes 原账号库保持分离，原主密钥不能自动替换。迁移与回滚见[独立部署](../docs/deployment/2026-10-26-core-independent.zh-CN.md)。
 OpenClaw 不注册到本次新 Core 装配，继续沿用旧接入方式；其外部实现与旧 DSH/Hermes 独立 Gateway 未在本次修订中验证，不能据此宣称已支持新的授权规则。
 
 ## 协议、迁移与验证
@@ -293,10 +245,10 @@ npm ci
 npx vitest run integrations/dsh-session-adapter/adapter.test.js
 ```
 
-固定 Hermes 原生 SDK 的契约回归需要额外设置：
+固定 Hermes 原生 SDK 的契约回归需要额外设置；将对应版本检出到相对目录 `./hermes-sdk`：
 
 ```sh
-export HERMES_SDK_ROOT=/按固定 checkout 75b083e9 检出的 Hermes 源码目录
+export HERMES_SDK_ROOT=./hermes-sdk
 python -m pip install ./oai-core ./integrations/hermes-session-adapter PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1
 python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py -q
 ```

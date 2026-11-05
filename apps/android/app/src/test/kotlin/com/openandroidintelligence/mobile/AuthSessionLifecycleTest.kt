@@ -189,6 +189,98 @@ class AuthSessionLifecycleTest {
         }
     }
 
+    @Test
+    fun accountExtensionWithoutMfaCompletesWithoutShowingAChallenge() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":[],"enrollmentRequired":false}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(rt)
+        assertTrue(rt.accountLoginStep.value is AccountLoginStep.None)
+        val targets = gateway.targetsOf("POST")
+        assertTrue(targets.contains("/open-android-intelligence/v2/sessions/password/challenge"))
+        assertTrue(targets.contains("/open-android-intelligence/v2/sessions/password/complete"))
+        assertFalse(targets.contains(PASSWORD_PATH))
+        assertFalse(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("otp"))
+    }
+
+    @Test
+    fun accountExtensionWaitsForTheServersSecondFactorAndClearsProof() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":false}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Verification })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        awaitConnected(rt)
+        assertTrue(proof.all { it == '\u0000' })
+        assertTrue(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("\"otp\":\"123456\""))
+    }
+
+    @Test
+    fun accountEnrollmentRequiresUserToSaveRecoveryCodesBeforeLogin() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":true}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/mfa/enroll", """{"data":{"enrollmentId":"enroll_1","provisioningUri":"otpauth://totp/test?secret=abc","secret":"abc"}}""")
+        gateway.respond("/open-android-intelligence/v2/sessions/mfa/confirm", """{"data":{"recoveryCodes":["recovery-one","recovery-two"]}}""")
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Enrollment })
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.RecoveryCodes })
+        assertTrue(proof.all { it == '\u0000' })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+        rt.confirmAccountRecoveryCodesSaved()
+        awaitConnected(rt)
+        assertFalse(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("otp"))
+    }
+
+    @Test
+    fun cancelingAnAccountChallengeDropsTheStateWithoutCompletingLogin() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":false}}"""
+        }
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Verification })
+        rt.cancelAccountLogin()
+        assertTrue(rt.accountLoginStep.value is AccountLoginStep.None)
+        assertTrue(rt.phase.value is ConnectionPhase.Disconnected)
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        assertTrue(proof.all { it == '\u0000' })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+    }
+
     private fun awaitConnected(runtime: GatewayRuntime): GatewayRuntime {
         val connected = awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Connected }
         assertTrue("等待登录连接超时：phase=${runtime.phase.value}", connected)
