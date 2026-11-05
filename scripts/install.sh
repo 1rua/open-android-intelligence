@@ -4,12 +4,17 @@
 set -euo pipefail
 
 read_terminal() {
-    local answer
-    if ! { printf '%s' "$1" >/dev/tty; IFS= read -r answer </dev/tty; }; then
+    local prompt="$1" answer=''
+    if ! { printf '%s' "$prompt" >/dev/tty; IFS= read -r answer </dev/tty; }; then
         printf '%s\n' '[错误] 安装需要交互终端；未执行安装。' >&2
         return 1
     fi
-    [ "$answer" = "$2" ]
+    local normalized
+    normalized="$(printf '%s' "$answer" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    case "$normalized" in
+        ''|y|yes) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 select_python() {
@@ -25,7 +30,7 @@ select_python() {
 
 install_new_dependencies() {
     # Only called after proving that no existing Core deployment is present.
-    read_terminal '缺少 Python 3.11+ / venv 或 git。安装系统依赖请输入 DEPENDENCIES: ' DEPENDENCIES || return 1
+    read_terminal '缺少 Python 3.11+ / venv 或 git。是否安装系统依赖？(y/n) [y]: ' || return 1
     local elevate=()
     if [ "$(id -u)" -ne 0 ]; then elevate=(sudo); fi
     if command -v apt-get >/dev/null 2>&1; then
@@ -71,7 +76,7 @@ main() {
     fi
     if [ ! -f "$target/oai-core/pyproject.toml" ]; then
         if [ -e "$target" ]; then printf '%s\n' '[错误] 目标目录已经存在且不是 OAI 源码，未覆盖。' >&2; return 1; fi
-        read_terminal '将从项目仓库安装 OAI Core，继续请输入 INSTALL: ' INSTALL || return 1
+        read_terminal '将从项目仓库安装 OAI Core，是否继续？(y/n) [y]: ' || return 1
         local staging
         staging="$(mktemp -d "${target}.download.XXXXXXXX")"
         git clone --single-branch --branch "${OAI_BRANCH:-dev}" https://github.com/1rua/open-android-intelligence.git "$staging"

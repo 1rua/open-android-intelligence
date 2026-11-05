@@ -563,3 +563,70 @@ def test_setup_reads_controlling_tty_when_stdin_is_pipe(deployment):
     assert PASSWORD.encode() not in output
     assert '网络设置'.encode() in output
     assert account_paths(root / 'runtime/accounts', account_id).database.is_file()
+
+
+@pytest.mark.parametrize('user_input,expected', [
+    (b'\n', 'ACCEPTED'),
+    (b'y\n', 'ACCEPTED'),
+    (b'Y\n', 'ACCEPTED'),
+    (b'yes\n', 'ACCEPTED'),
+    (b'n\n', 'REJECTED'),
+    (b'INSTALL\n', 'REJECTED'),
+    (b'no\n', 'REJECTED'),
+])
+def test_install_sh_read_terminal_default_yes_and_yn(user_input, expected):
+    runner = [
+        'bash', '-c',
+        'source ' + shlex.quote(str(REPOSITORY / 'scripts/install.sh')) + '\n'
+        'if read_terminal "确认？(y/n) [y]: "; then echo ACCEPTED; else echo REJECTED; fi\n'
+    ]
+    code, output = run_in_terminal(runner, [('确认？'.encode(), user_input, False)])
+    assert code == 0
+    assert expected.encode() in output
+
+
+@pytest.mark.parametrize('user_input,should_cancel', [
+    ('', False),
+    ('y', False),
+    ('Y', False),
+    ('yes', False),
+    ('n', True),
+    ('INSTALL', True),
+    ('other', True),
+])
+def test_installer_py_confirmation_accepts_default_and_yn(tmp_path, monkeypatch, user_input, should_cancel):
+    import importlib.util
+    root = tmp_path / 'deployment'
+    root.mkdir()
+    (root / 'oai-core').mkdir()
+    (root / 'oai-core/pyproject.toml').write_text('[project]\nname="oai-core"\n')
+    scripts = root / 'scripts'
+    scripts.mkdir()
+    shutil.copy2(REPOSITORY / 'scripts/installer.py', scripts / 'installer.py')
+    core_src = root / 'oai-core/src/oai_core'
+    core_src.mkdir(parents=True)
+    (core_src / 'scripts_runtime.py').write_text('# stub\n')
+
+    monkeypatch.setattr('sys.argv', [str(scripts / 'installer.py'), 'install', '--dir', str(root)])
+    monkeypatch.setattr('sys.stdin.isatty', lambda: True)
+    monkeypatch.setattr('builtins.input', lambda prompt: user_input)
+
+    subprocesses = []
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kw: subprocesses.append(argv))
+
+    spec = importlib.util.spec_from_file_location("installer_mod", str(scripts / 'installer.py'))
+    installer_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer_mod)
+
+    if should_cancel:
+        with pytest.raises(SystemExit) as exc_info:
+            installer_mod.main()
+        assert exc_info.value.code != 0
+        assert len(subprocesses) == 0
+    else:
+        execve_called = []
+        monkeypatch.setattr(os, 'execve', lambda path, argv, env: execve_called.append((path, argv)))
+        installer_mod.main()
+        assert len(subprocesses) == 3  # venv, pip install, pip check
+        assert len(execve_called) == 1
+

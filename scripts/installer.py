@@ -54,7 +54,8 @@ def main() -> int:
         if any(path.exists() or path.is_symlink() for path in default_evidence):
             parser.error("检测到旧账号或安全状态；未执行依赖安装")
         print("检测到全新安装，将创建虚拟环境并安装 Core 依赖。", flush=True)
-        if input("确认继续请输入 INSTALL: ").strip() != "INSTALL":
+        choice = input("确认继续？(y/n) [y]: ").strip().lower()
+        if choice not in ("", "y", "yes"):
             parser.error("已取消安装")
         subprocess.run([sys.executable, "-m", "venv", "--copies", str(root / ".venv")], check=True)
         subprocess.run([str(venv), "-m", "pip", "install", "-e", "./oai-core"], cwd=root, check=True)
