@@ -251,6 +251,7 @@ def test_authenticated_linux_service_setup_with_fake_systemctl(tmp_path, monkeyp
     try:
         runtime._configure_service(root, store, handle)
         unit = Path.home() / ".config/systemd/user/oai-core.service"
+        assert f'WorkingDirectory={root}\n' in unit.read_text()
         assert f'ExecStart="{root}/start-core.sh"' in unit.read_text()
         assert [args[-1] for args in calls] == ["daemon-reload", "oai-core.service", "oai-core.service"]
         store.revoke_management(handle)

@@ -311,7 +311,7 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
             raise ValueError("安装路径不能包含控制字符")
         unit, desktop = _service_files(root)
         quoted = '"' + str(start).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
-        workdir = '"' + str(root).replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%') + '"'
+        workdir = str(root).replace('%', '%%')
         unit_text = ("[Unit]\nDescription=Open Android Intelligence Core Service\nAfter=network.target\n\n"
                      f"[Service]\nType=simple\nWorkingDirectory={workdir}\nExecStart={quoted}\n"
                      "Restart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n")
