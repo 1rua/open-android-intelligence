@@ -10,7 +10,15 @@ from oai_core.agent_registration import AgentRegistration, bridge_proof, create_
 from oai_core.auth import Principal
 from oai_core.gateway.core import GatewayError, VerifiedRequestContext
 from oai_core.sessions import AdapterError, build_registry
-from oai_hermes_adapter.bridge import AutoAccountSpaces, create_hermes_bridge_app
+
+
+@pytest.fixture
+def hermes_bridge():
+    pytest.importorskip("oai_hermes_adapter", reason="Optional Hermes Adapter is tested in the hermes-native job")
+    # Once the package is installed, import errors inside its bridge must fail
+    # the dedicated job rather than being mistaken for an absent optional extra.
+    from oai_hermes_adapter import bridge
+    return bridge
 
 
 class Identity:
@@ -58,7 +66,7 @@ def make_identity(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_automatic_spaces_require_confirmed_core_key_not_shared_bridge_token(tmp_path):
+async def test_automatic_spaces_require_confirmed_core_key_not_shared_bridge_token(tmp_path, hermes_bridge):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
     from oai_core.agent_registration import sign_core_request
@@ -68,9 +76,9 @@ async def test_automatic_spaces_require_confirmed_core_key_not_shared_bridge_tok
     legitimate = Ed25519PrivateKey.generate()
     attacker = Ed25519PrivateKey.generate()
     public = legitimate.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    spaces = AutoAccountSpaces(root, SimpleNamespace(storage_root=root), {"core-instance": public})
+    spaces = hermes_bridge.AutoAccountSpaces(root, SimpleNamespace(storage_root=root), {"core-instance": public})
     token = "s" * 40
-    app = create_hermes_bridge_app(Host(), token, [], instance_id="hermes-1", auto_spaces=spaces)
+    app = hermes_bridge.create_hermes_bridge_app(Host(), token, [], instance_id="hermes-1", auto_spaces=spaces)
     payload = {"coreInstanceId": "core-instance", "hermesInstanceId": "hermes-1", "accountId": "alice",
                "nonce": "a" * 64}
     async with TestClient(TestServer(app)) as server:
@@ -84,7 +92,7 @@ async def test_automatic_spaces_require_confirmed_core_key_not_shared_bridge_tok
 
 
 @pytest.mark.asyncio
-async def test_registered_core_automatically_creates_and_reuses_private_native_spaces(tmp_path):
+async def test_registered_core_automatically_creates_and_reuses_private_native_spaces(tmp_path, hermes_bridge):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
     from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
@@ -98,13 +106,13 @@ async def test_registered_core_automatically_creates_and_reuses_private_native_s
     backend = SessionBackend(root, [], secret_store=LocalMasterKeyStore(key_file))
     key = Ed25519PrivateKey.generate()
     public = key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    spaces = AutoAccountSpaces(root, backend, {"core-instance": public})
+    spaces = hermes_bridge.AutoAccountSpaces(root, backend, {"core-instance": public})
     registration = AgentRegistration("core-instance", identity, lambda p: True, lambda facts: True,
                                      core_signing_key=key, create=True)
     secret = "s" * 40
     (tmp_path / "bridge.key").write_text(secret)
     (tmp_path / "bridge.key").chmod(0o600)
-    async with TestClient(TestServer(create_hermes_bridge_app(Host(), secret, [], instance_id="hermes-1",
+    async with TestClient(TestServer(hermes_bridge.create_hermes_bridge_app(Host(), secret, [], instance_id="hermes-1",
                                                              auto_spaces=spaces))) as server:
         manifest = {"id": "hermes", "type": "hermes", "instanceId": "hermes-1", "sessionScope": "account",
                     "url": str(server.make_url("/")).rstrip("/"), "secretFile": "bridge.key"}
@@ -138,7 +146,7 @@ async def test_registered_core_automatically_creates_and_reuses_private_native_s
             backend.close()
 
 
-def test_auto_space_recovers_after_interrupted_creation(tmp_path, monkeypatch):
+def test_auto_space_recovers_after_interrupted_creation(tmp_path, monkeypatch, hermes_bridge):
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives import serialization
     from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
@@ -151,7 +159,7 @@ def test_auto_space_recovers_after_interrupted_creation(tmp_path, monkeypatch):
     create_master_key_file(master)
     backend = SessionBackend(root, [], secret_store=LocalMasterKeyStore(master))
     key = Ed25519PrivateKey.generate().public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    spaces = AutoAccountSpaces(root, backend, {"core": key})
+    spaces = hermes_bridge.AutoAccountSpaces(root, backend, {"core": key})
     original = gateway_core.AccountStore
     def interrupted(*args, **kwargs):
         raise OSError("synthetic interrupted creation")
@@ -159,7 +167,7 @@ def test_auto_space_recovers_after_interrupted_creation(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         spaces.prepare("core", "alice")
     monkeypatch.setattr(gateway_core, "AccountStore", original)
-    spaces = AutoAccountSpaces(root, backend, {"core": key})
+    spaces = hermes_bridge.AutoAccountSpaces(root, backend, {"core": key})
     native_id = spaces.prepare("core", "alice")
     assert native_id.startswith("oai_")
     assert spaces.prepare("core", "alice") == native_id
@@ -174,7 +182,7 @@ def context():
 
 
 @pytest.mark.asyncio
-async def test_real_handshake_registration_mapping_and_registry(tmp_path):
+async def test_real_handshake_registration_mapping_and_registry(tmp_path, hermes_bridge):
     identity = make_identity(tmp_path)
     live = {"principal": True, "origin": True}
     reg = AgentRegistration(instance_id="core-instance", identity_store=identity,
@@ -184,7 +192,7 @@ async def test_real_handshake_registration_mapping_and_registry(tmp_path):
     secret = "synthetic-bridge-secret-" + "x" * 32
     (tmp_path / "bridge.key").write_text(secret + "\n")
     (tmp_path / "bridge.key").chmod(0o600)
-    app = create_hermes_bridge_app(host, secret, ["native-alice", "native-bob"], instance_id="hermes-1")
+    app = hermes_bridge.create_hermes_bridge_app(host, secret, ["native-alice", "native-bob"], instance_id="hermes-1")
     async with TestClient(TestServer(app)) as server:
         manifest = {"id": "hermes", "type": "hermes", "instanceId": "hermes-1", "sessionScope": "account",
                     "url": str(server.make_url("/")).rstrip("/"), "secretFile": "bridge.key"}
@@ -226,7 +234,7 @@ async def test_real_handshake_registration_mapping_and_registry(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_handshake_rejects_replacement_offline_and_expired_management(tmp_path):
+async def test_handshake_rejects_replacement_offline_and_expired_management(tmp_path, hermes_bridge):
     identity = make_identity(tmp_path)
     reg = AgentRegistration(instance_id="core", identity_store=identity, validate_principal=lambda p: True,
                             validate_origin=lambda p: True, create=True)
@@ -235,7 +243,7 @@ async def test_handshake_rejects_replacement_offline_and_expired_management(tmp_
     key = tmp_path / "key"
     key.write_text(secret)
     key.chmod(0o600)
-    async with TestClient(TestServer(create_hermes_bridge_app(host, secret, ["native"], instance_id="actual"))) as server:
+    async with TestClient(TestServer(hermes_bridge.create_hermes_bridge_app(host, secret, ["native"], instance_id="actual"))) as server:
         manifest = {"id": "hermes", "type": "hermes", "instanceId": "wrong", "sessionScope": "account",
                     "url": str(server.make_url("/")).rstrip("/"), "secretFile": "key"}
         with pytest.raises(ValueError, match="handshake"):
@@ -278,7 +286,7 @@ async def test_management_is_rechecked_after_network_handshake(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mapping_import_is_atomic_and_aliases_share_ownership(tmp_path):
+async def test_mapping_import_is_atomic_and_aliases_share_ownership(tmp_path, hermes_bridge):
     identity = make_identity(tmp_path)
     reg = AgentRegistration(instance_id="core", identity_store=identity, validate_principal=lambda p: True,
                             validate_origin=lambda p: True, create=True)
@@ -286,7 +294,7 @@ async def test_mapping_import_is_atomic_and_aliases_share_ownership(tmp_path):
     key = tmp_path / "key"
     key.write_text(secret)
     key.chmod(0o600)
-    async with TestClient(TestServer(create_hermes_bridge_app(host, secret, ["native"], instance_id="one"))) as server:
+    async with TestClient(TestServer(hermes_bridge.create_hermes_bridge_app(host, secret, ["native"], instance_id="one"))) as server:
         manifest = {"id": "a", "type": "hermes", "instanceId": "one", "sessionScope": "account",
                     "url": str(server.make_url("/")).rstrip("/"), "secretFile": "key"}
         await reg.register("admin", manifest, tmp_path)
