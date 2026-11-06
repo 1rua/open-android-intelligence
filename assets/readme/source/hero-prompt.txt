@@ -1,0 +1,6 @@
+Asset type: isolated 3D industrial design illustration for a GitHub README hero cutout.
+Subject: A sleek, tactile Dieter Rams / Braun & Teenage Engineering inspired Android smartphone handset tilted at a dynamic 15-degree isometric angle, crafted from matte warm off-white (#F7F7F5), anodized charcoal black (#141416), and vibrant signal orange (#EF490A) accents. Wrapping around the smartphone is a thin, precise tilted metallic orbital ring with a glowing signal-orange sphere node and three floating minimalist tactile 3D icon tokens: a shield-lock security switch, a chat bubble token, and a notification card token. Clean geometric screen graphic with abstract blocks only.
+Composition/framing: Centered isolated object cluster with generous margin on all four sides, angled slightly toward the left to pair with a left-side title block.
+Color palette: Matte off-white (#F7F7F5), charcoal black (#141416), warm tungsten gray (#6F6F6A), and signal orange (#EF490A). Do NOT use any green or cyan in the subject.
+Constraints: one isolated subject cluster; generous padding around all edges; strictly NO text, NO letters, NO numbers, NO words, NO watermark.
+Background: perfectly flat solid pure chroma-key green (#00FF00) background with zero gradient, zero texture, zero floor shadow, and zero reflection on the green background.

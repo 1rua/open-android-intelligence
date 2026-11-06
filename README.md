@@ -1,439 +1,227 @@
+<p align="center">
+  <img src="./assets/readme/hero.png" width="100%" alt="Open Android Intelligence：把你的安卓手机安全地连上各种 AI 助手，随时聊天，也能让 AI 在你允许后帮你看消息、操作手机">
+</p>
+
 <div align="center">
 
-<a href="#快速开始"><img src="assets/readme/hero-banner.svg" alt="Open Android Intelligence：一个统一的安卓客户端，用于连接多种主流 Agent" width="100%"></a>
+**一个帮你把安卓手机和各种 AI 助手连起来的统一客户端。**  
+在手机上随时跟电脑里的 AI 聊天；AI 也能在经过你允许后，帮你看通知、查短信、点按屏幕。
 
-# Open Android Intelligence
-
-<p>
-  <strong>一个统一的安卓客户端，用于连接多种主流 Agent。</strong><br>
-  客户端仅提供设备能力，决策全由 Agent 负责。
-</p>
-
-<h3>
-  <a href="https://github.com/1rua/open-android-intelligence/releases/latest/download/app-full-release.apk">一键安装 APK</a> · 连接多种主流 Agent · 隐私安全可控
-</h3>
+[**下载安卓 APK**](https://github.com/1rua/open-android-intelligence/releases) · [**项目介绍**](#项目介绍) · [**快速开始**](#快速开始) · [**开发目录**](#开发目录)
 
 <p>
-  <sub>
-    零中转服务器 · 数据直连自托管网关 · 无需 Root 权限 · 生产级权限隔离<br>
-    简体中文 · <a href="README.en.md">English</a>
-  </sub>
+  <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat-square&label=Release&color=D94E1F" alt="Latest Release"></a>
+  <a href="#快速开始"><img src="https://img.shields.io/badge/Android-12%2B-10B981?style=flat-square&logo=android&logoColor=white" alt="Android 12+"></a>
+  <a href="#快速开始"><img src="https://img.shields.io/badge/Python-3.11%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="MIT License"></a>
 </p>
 
-<p>
-  <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat&label=Release&color=34D399" alt="Latest Release"></a>
-  <a href="#快速开始"><img src="https://img.shields.io/badge/Android-12%2B%20(minSdk%2031)-10B981?style=flat&logo=android&logoColor=white" alt="Android 12+"></a>
-  <a href="#怎么工作"><img src="https://img.shields.io/badge/网关-直连多种主流Agent-38BDF8?style=flat" alt="直连主流Agent"></a>
-  <a href="#当前状态"><img src="https://img.shields.io/badge/契约-70%20条共享用例-34D399?style=flat" alt="Hermes 与 OpenClaw 共享 70 条契约用例"></a>
-  <a href="#安全边界"><img src="https://img.shields.io/badge/安全-不%20Root%20%C2%B7%20默认拒绝-F59E0B?style=flat" alt="安全边界"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/许可证-MIT-94A3B8?style=flat" alt="MIT License"></a>
-</p>
-
-<p>
-  <a href="#30-秒看懂">30 秒看懂</a> ·
-  <a href="#主要功能">主要功能</a> ·
-  <a href="#怎么工作">怎么工作</a> ·
-  <a href="#安全边界">安全边界</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#当前状态">当前状态</a> ·
-  <a href="#文档导航">文档导航</a>
-</p>
+<sub>**简体中文** · <a href="./README.en.md">English</a></sub>
 
 </div>
 
 ---
 
-## 30 秒看懂
+## 项目介绍
 
-> **2026-11-01 全局授权规则**：Android 安装实例统一保存每项能力总开关、每次手动/允许只读/自动允许及数据范围。新能力默认每次手动，主动推送默认关闭；切 Core、账号或 Agent 不重置。本地系统权限与合法设备访问关系保持独立。实现和自动化/模拟器/实体机边界见[执行记录](docs/reviews/2026-11-01-global-device-authorization.zh-CN.md)，操作见[指南](docs/guides/global-device-authorization.zh-CN.md)。
+平时我们在电脑上用 Claude Code、Codex、Hermes、DSH 等 AI 助手时，常常遇到两个痛点：
+1. **离开电脑就断联**：人一走开，没法在手机上接着看刚才的 AI 对话，也没法随手发张手机截图让它接着干活。
+2. **云端 Agent 碰不到手机**：想让 AI 帮你留意一条重要通知、查个验证码短信，或者自动在手机屏幕上点几下。
+3. **本地 Agent 不互通**：要操控手机只能在手机再部署一个 Agent，占内存且记忆不互通 。
 
-> [!TIP]
-> ### Open Android Intelligence（OAI）是**一个统一的安卓客户端，用于连接多种主流 Agent**（如 Hermes、DSH、Codex、OpenClaw 等）。
->
-> 并将手机硬件能力安全、受控地开放给 AI Agent，让多种远程 Agent 共享手机控制能力，而无需在手机部署独立 Agent。
+**Open Android Intelligence（简称 OAI）** 就是为了解决这两件事：
 
-项目核心构成：
-
-| 核心组件 | 定位与说明 | 代码位置 / 仓库 |
-| --- | --- | --- |
-| **Android App** | 连接 Core 或 Gateway、管理账号与原生会话，发送用户选定的多模态附件，承载设备能力沙箱 | [`apps/android`](apps/android) |
-| **OAI Core** | 单一 Python 服务进程，统一承载连接认证、设备绑定、能力发现与请求路由，并提供 CLI/MCP 与会话适配 | [`oai-core`](oai-core) |
-| **Gateway Protocol** | 定义手机与服务端之间的身份认证、设备事件流和全字段封闭数据协议 | [`gateway-contract`](gateway-contract) |
-| **会话适配器** | 宿主侧轻量 Session Adapter，直通 DSH 与 Hermes 原生会话，不维护第二份聊天历史 | [`integrations`](integrations) |
-| **三方宿主插件** | 面向既有独立网关部署的适配插件（Hermes / OpenClaw / DSH） | [Hermes 插件](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw 插件](https://github.com/1rua/openclaw-gateway-plugin) / [DSH 插件](https://github.com/1rua/dsh-android-gateway) |
-
-> [!NOTE]
-> **无中转架构**：Android App 直接与用户自托管的 OAI Core 服务端通信，项目本身不提供任何公网中转服务器。<br>
-> **手机全局授权**：设备能力独立总开关和三级模式由Android统一保存，新能力默认每次手动；系统权限和主动推送范围分别管理。
-
-
----
-
-## 主要功能
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>多会话原生聊天 <img src="https://img.shields.io/badge/已就绪-10B981?style=flat-square" alt="已就绪"></h3>
-      <p>在手机上与你连接的主流 Agent 流畅对话。支持多会话独立管理、会话归档、目录整理与灵活排序；全面支持系统相册选图、文件选择器、剪贴板图片粘贴以及系统级多文件分享附件。</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>多宿主网关直连 <img src="https://img.shields.io/badge/已支持-38BDF8?style=flat-square" alt="已支持"></h3>
-      <p>通过同一套 Gateway Protocol v2 协议，无缝接入 <strong>Hermes</strong>、<strong>OpenClaw</strong> 以及 <strong>DSH (DeepSeek Harness)</strong>。直连你自己的服务器，自主掌控全部模型调用与历史记录，拒绝云端数据劫持。</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>WebAssembly 插件沙箱 <img src="https://img.shields.io/badge/架构就绪-34D399?style=flat-square" alt="架构就绪"></h3>
-      <p>万物皆插件。受保护的设备插件打包为标准 <code>.alp</code> 包，运行于高性能 WASM 沙箱中，受到 CPU 时间、内存上限（硬配额）、存储容量及并发连接的严密限制，杜绝越权滥用。</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>零信任安全与屏幕确认 <img src="https://img.shields.io/badge/安全第一-F59E0B?style=flat-square" alt="安全第一"></h3>
-      <p>设备能力统一在 Android 客户端管理。安装启用后按每项能力的全局模式处理请求，缺少系统权限、本地拒绝或必要系统同意时不能执行。连接身份认证和设备配对持续生效；目标设计不要求网关账号另行授予设备能力。</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>封闭契约与防重放校验 <img src="https://img.shields.io/badge/70组用例-10B981?style=flat-square" alt="70组用例"></h3>
-      <p>基于 JSON Schema 2020-12 的全字段严格契约验证，多余未知字段整条丢弃；关键指令搭载 Ed25519 签名、时间戳与一次性随机数防重放校验，保障网络抖动下的幂等执行。</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>原生系统通知与动态跟进 <img src="https://img.shields.io/badge/Android%2012--16-8B5CF6?style=flat-square" alt="Android 12-16"></h3>
-      <p>深度融合 Android 原生生态：支持 Android 12–15 的会话通知（MessagingStyle）与悬浮气泡（Bubbles），并率先接入 Android 16 原生 Live Update，任务进度实时感知。</p>
-    </td>
-  </tr>
-</table>
-
----
-
-## 怎么工作
-
-<div align="center">
-  <img src="assets/readme/architecture.svg" alt="架构：Android 客户端通过 Gateway Protocol 连接 Agent 宿主" width="100%">
-</div>
-
-整个系统由清晰的三层结构协同运转：
-
-1. **Android 原生宿主端**（客户端）
-   - **交互与会话**：提供网关连接配置、多会话管理、系统级附件选发（通过系统 SAF 选择器与分享接口）。
-   - **平台内核（Platform Kernel）**：基于 Ed25519 密钥管理设备身份、插件生命周期与权限裁决。它只行使守门仲裁权，不私自预埋业务后门。
-   - **安全插件沙箱**：通过 WebAssembly 运行时隔离执行设备扩展插件，严格限制 CPU、内存、本地存储与网络并发资源。
-2. **OAI Core 服务端与协议契约层**（连接桥梁与调度中心）
-   - **单一服务监听**：`oai serve` 同时暴露 `/v2` 设备协议、`core/v1` 设备调用面及 `/v2/agents` 原生会话面。
-   - **设备安全运行时**：由 `oai_core.gateway` 唯一实现排队、超时、防重放、取消与结果确认；独立安装和启动不需要 Hermes。
-   - **严格契约守卫**：全字段封闭校验，关键请求搭载 Ed25519 签名、时间戳与 Nonce 防重放，写操作绑定幂等键。
-3. **Agent 宿主与原生会话端**（后端大脑）
-   - **轻量会话桥（Session Adapter）**：Hermes 与 DSH 通过 loopback 会话桥接入；Codex 走原生 `app-server` 进程。
-   - **直读真实会话**：操作直通宿主原生存储，不建立影子会话数据库；Agent 只在受支持的本用户位置或授权目录内发现，连接前仍须验证和注册。
-   - **凭据与授权隔离**：共享 Agent 会话仅共享会话文本可见性，绝不继承手机设备凭据；设备操作必须通过受限凭据独立调用。
-
----
-
-## 安全边界
-
-<div align="center">
-  <img src="assets/readme/security-model.svg" alt="安全模型：Agent 提请求，内核查权限，你在屏幕上确认" width="100%">
-</div>
-
-当前 feature 分支中的设备能力流程是：**在手机安装并启用插件 → Android 检查本地开关、系统权限与必要确认 → 执行允许的请求**。安装后尚未启用的插件不能执行；已安装且启用的插件无需再为 Gateway 账号勾选能力授权。Core 验证调用凭据、目标设备绑定和协议，Android 作出设备能力的最终决定。
-
-连接认证回答“谁在调用”，设备配对回答“可路由到哪台设备”，设备能力授权回答“手机当前允许做什么”，三者属于不同安全层级。取消旧 Gateway 能力开关不会开放匿名调用、跨账号调用或未配对设备调用。上方图片保留既有版本；当前 feature 分支授权规则以本段和已接受的 ADR-0059 为准，旧 `dev` 基线证据见[修复计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)，实现与验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
-
-### 设备权限管控矩阵
-
-| 敏感能力 | 严格限制与允许边界 |
+| | |
 | --- | --- |
-| **通话记录** | **仅允许只读基础元数据**（联系人/号码、时间戳、通话时长）；严禁任何形式的录音、代接、挂断或自动拨号。 |
-| **短信记录** | 仅支持受控读取收发记录；**发短信等变更操作必须在手机屏幕上手动逐条点击确认**，绝不允许后台代发。 |
-| **应用通知** | 新能力默认每次手动；通知访问权限、手机上的应用包名范围与字段设置继续限制实际数据读取，未选中的应用不得外发，不落明文日志。 |
+| **在手机上随时跟你的 AI 聊天** | 一个安卓 App，同时连上你电脑或服务器里的 **Hermes、DSH、Codex** 等多种 AI 助手。直接接着电脑上的聊天记录聊，支持发相册图片、传文件，还能设成手机默认数字助理——长按电源键就能圈选当前屏幕画面向 AI 提问。 |
+| **让 AI 帮你看消息、操作手机** | 任何支持命令行或 MCP 的 AI 助手，都能通过 `oai` 命令向你的手机申请**查通知、读短信、看通话记录、截屏，或者点击、滑动屏幕**。让Agent留在云端，用你喜欢的Agent，无需本地部署 |
+| **决定权 100% 留在你手里的手机上** | **不需要 Root 手机，也不经过任何第三方云端服务器。** 装在你电脑上的服务端只负责传话，能不能看短信、能不能点屏幕，全由你手机 App 上的开关说了算。 |
+
+### 三部分怎么配合工作？
+
+<p align="center">
+  <img src="./assets/readme/architecture.svg" width="100%" alt="工作原理：你的安卓手机、OAI Core 服务端与各种 AI 助手三部分如何配合">
+</p>
+
+整个项目只由三个清晰的部分组成：
+1. **你的安卓手机（Android App）**：负责日常聊天界面、管理手机上的能力插件（短信、通知、屏幕操作等），以及把守所有权限开关。
+2. **你的私人中枢（OAI Core 服务端）**：装在你自己的电脑或服务器上，用一个地址同时连起手机和各种 AI 助手。它只负责核对账号和传话，**不能替手机做任何权限决定**。
+3. **你的各种 AI 助手（AI Agents）**：留在你的电脑或服务器上运行。既能把对话同步到手机上，也能用 `oai` 命令或 `MCP` 工具向手机发起操作申请。
+
+### 为什么不怕 AI 乱动你的手机？
+
+<p align="center">
+  <img src="./assets/readme/security-model.svg" width="100%" alt="安全把关：AI 每次调用手机功能时的四道关卡与四条安全红线">
+</p>
+
+- **每项功能都有独立开关和三种模式**：
+  - **每次手动确认（默认）**：AI 每次想用这项功能，你的手机都会弹窗写明「是谁、想干什么」，由你点击「拒绝 / 仅本次允许 / 允许 5–60 分钟」。
+  - **只允许读取**：允许查看信息（比如查通知、看屏幕），但凡涉及修改或点击的操作一律需要你手动确认。
+  - **自动允许**：适合你完全信任的只读或自动化场景（注：**发短信**等敏感操作无论在什么模式下，都必须由你在手机屏幕上亲手确认）。
+- **换电脑、换账号也不丢配置**：你的权限设置保存在手机本地，不会因为切换了服务端或换了 AI 助手就被偷偷重置。
+- **范围精细可控**：通知可以从手机已安装的应用列表里搜索、勾选允许哪些 App 被读取；短信可以按「全部 / 关键词 / 电话号码」过滤；主动推送默认关闭，需要你单独开启并勾选允许接收的 AI。
 
 ---
 
 ## 快速开始
 
-### 0. 准备环境
+只需要 3 步，就能把你的手机和电脑上的 AI 助手连起来。
 
-| 运行端 | 最低要求 | 推荐配置 |
-| --- | --- | --- |
-| **Android 手机** | Android 12+ (`minSdk 31`) | Android 14+，推荐 8GB 内存 |
-| **Core 服务端** | Python 3.11+；Agent 宿主为可选组件 | 手机与服务端网络互通，推荐 HTTPS |
-| **开发者编译工具链** *(仅参与源码开发时需要)* | Node.js `24.18.0` + npm `11.16.0`、JDK 21、Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (带 `wasm32-unknown-unknown` 目标) |
+### 第一步：在电脑或服务器上安装并配置服务端（OAI Core）
 
----
+**环境要求**：Linux 或 macOS，已安装 `Python 3.11+` 和 `git`（若缺少依赖，安装脚本会自动询问并帮你安装）。
 
-### 1. 手机端安装 App
+**方式 A：一条命令快速安装（推荐）**
 
-前往项目 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载 APK 并安装：
-
-| 版本类别 | 适用群体 | 安装说明 |
-| --- | --- | --- |
-| **开发预览测试版** | 尝鲜体验者、开发者 | 使用仓库内置统一 Debug 签名，可覆盖安装，CI 每日构建直接下载 |
-| **正式稳定版** | 普通日常使用 | 使用官方私有生产密钥签名，严禁与开发预览版交叉覆盖安装（详见 [Android 签名配置](apps/android/README.md#release-signing)） |
-
-
----
-
-### 2. 服务端部署与 Agent 接入
-
-**推荐方案（全新部署）**：部署 [OAI Core](oai-core/README.md)，手机和 CLI 使用同一个服务地址；不接入 Agent 也能使用设备服务。
-
-在可信检出的仓库根目录运行安装向导，按提示创建首个 Core 管理员，并将只显示一次的管理员恢复码离线保管：
+在终端直接运行在线安装脚本（默认安装到 `~/.oai-core`）：
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+**方式 B：克隆仓库后本地安装**
+
+```bash
+git clone https://github.com/1rua/open-android-intelligence.git
+cd open-android-intelligence
 ./scripts/install.sh
 ```
 
-已有部署的安装、更新和配置需要验证**现有 Core 管理员账号及其 Core 登录密码**；本机用户、root 和简单确认都不能代替。旧部署迁移需先指定原有账号并验证原密码，保留主密钥和数据。安装入口及远端一键安装仍在完善，不能把本说明当作全流程验收结果。详见[安装与恢复](scripts/README.md)。
+按屏幕提示设置**管理员账号和密码**（请妥善保管只显示一次的管理员恢复码），向导会自动创建运行环境，并引导你设置监听端口、扫描和接入本机的 AI 助手（如 Hermes、DSH、Codex）。
 
-安装后，在服务端本机用管理员身份创建日常账号；按提示隐藏输入管理员密码，再为新账号设置密码。新账号默认为普通用户，无需配置设备或 Agent：
+**日常配置、建号与服务管理命令**：
 
 ```bash
+# 1. 打开交互式配置菜单（随时改端口、管理账号、接入 AI 助手、开关 2FA、启停服务）
+oai setup
+# 或者直接运行配置脚本：
+./scripts/setup.sh
+# 或远程调用本地已安装的配置入口：
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+
+# 2. 创建一个平时在手机和命令行登录用的日常账号（例如 alice）
 oai account create alice
+
+# 3. 手动启动服务端（若未开启开机自启）
+~/.oai-core/start-core.sh
 ```
 
-通过 `oai setup` 管理网络、账号、Agent 和服务；也可运行 `./scripts/setup.sh`。服务可通过安装时选择的自启动方式或在安装目录运行 `./start-core.sh` 启动。完成网络及 TLS 配置后，在下方手机步骤登录同一账号。
-
-手机完成连接后，在自己的终端登录并查看设备及能力。首次跨机器使用时输入可信的 Core 地址一次，后续可复用；登录时不需要设备 ID：
-
-```bash
-oai login --url https://core.example
-oai devices
-oai capabilities
-# 按 capabilities 返回的实际 ID、版本和参数调用
-# 多台设备时可在 capabilities 或 invoke 后加 --device DEVICE_ID
-oai invoke CAPABILITY_ID --version VERSION --parameters '{}' --agent-name my-agent --purpose '用户请求的操作'
-```
-
-用户名、密码和必要的验证码按终端提示输入，不写入命令参数或环境变量。服务端 2FA 默认关闭；管理员开启后才要求二次验证，有效会话正常续期不反复输入验证码。设备能力仍由 Android 的开关、系统权限与必要确认决定。调用示例、默认设备和 MCP 见 [Core 使用说明](oai-core/README.md)。
-
-#### 卸载 OAI Core
-
-卸载脚本支持 Linux/macOS，使用系统 Python 3.11+ 标准库；已有部署需要先验证 Core 管理员身份。两种模式都将待移除内容移动到 `/tmp/open-android-intelligence-trash/<uid>/<批次>/`，不做安全擦除：
-
-- **保留配置（默认，`--keep-config`）**：移走 `.venv`、`start-core.sh`，以及指向本次安装的 `oai` 快捷命令和开机项；保留源代码、`core.json` 和 `runtime` 全部数据。再次对同一目录运行安装器即可原地重装。
-- **整体回收（`--purge`）**：将整个安装目录移入回收目录。位于安装目录之外的 `storageRoot`、`masterKeyFile`、`codexHome` 以及 Hermes、DSH、Codex 宿主本身均保留，脚本会提示外置数据位置，不自动清理共享数据。
+<details>
+<summary><b>附：一键卸载脚本命令（点击展开）</b></summary>
 
 ```bash
-# 默认保留配置、数据和源代码
+# 默认保留账号配置与数据，仅移除运行环境（方便日后重装）
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash
 
-# 整体回收安装目录
+# 彻底移除整个安装目录（移入 /tmp 临时回收目录供人工复核，不直接永久删除）
 curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
 ```
-
-默认处理 `~/.oai-core`，可用 `--dir PATH` 或 `OAI_DIR` 指定安装目录，不会自动推断当前仓库。交互模式下回车默认确认（`y`）；先追加 `--dry-run` 可预览操作；在仓库中例如运行 `bash scripts/uninstall.sh --purge --dry-run --dir "$HOME/.oai-core"`。`--yes` 不代替管理员认证，`--help` 查看参数。回收目录可能含配置、账号数据和密钥，请自行复核并处理。
-
-<details>
-<summary><b>既有部署：为 Agent 宿主安装独立网关插件（点击展开）</b></summary>
-
-以下为固定旧版本的独立网关部署记录，不代表这些外部插件已适配 2026-10-28 的目标授权设计。它们不得用于给新 Core 增加设备能力授权；新接入使用上文 Core 与 Session Adapter。既有部署需单独评估兼容性。Hermes 和 OpenClaw 的旧部署仍需保留原账号主密钥（Master Key）：
-
-#### 配置 Hermes 宿主
-```bash
-hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-# 旧版建号方式请查阅对应版本的宿主文档；不要把密码写入命令行。
-```
-
-#### 配置 OpenClaw 宿主
-```bash
-export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
-openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
-openclaw plugins inspect open-android-intelligence-gateway --runtime --json
-```
-
-#### 配置 DSH (DeepSeek Harness) 宿主
-```bash
-git clone https://github.com/1rua/dsh-android-gateway.git
-cd dsh-android-gateway && npm ci && npm run build
-# 在 DSH 会话中安装：plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
-```
 </details>
 
----
+### 第二步：在手机上安装 App 并开启所需功能
 
-### 3. 手机端连接网关
+**环境要求**：Android 12 及以上（无需 Root，手机与你的电脑/服务器在同一局域网、Tailscale 组网或公网 HTTPS 可达）。
 
-1. 打开手机 App，输入可从手机访问的 Core 地址；推荐使用可信 HTTPS。
-2. 输入管理员创建的日常账号与密码。若服务端开启了 2FA，按提示绑定验证器或输入验证码。
-3. 完成连接与配对后，在手机上安装并启用需要的设备插件。有效会话续期不重复要求验证码。
+1. 前往 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载最新的 APK 安装到手机。
+2. 打开 App，填入你的 `OAI Core` 服务地址（例如 `https://你的服务器地址:11451`）和刚才创建的账号密码完成登录配对。
+3. 进入手机 App 的 **「设置 → 插件管理 / 授权管理」**：
+   - 启用你需要的手机插件（如通知、短信、屏幕读取与操控）。
+   - 为每项能力选择你放心的模式（默认均为**每次手动确认**）以及允许读取的应用/短信范围。
 
-<details>
-<summary><b>HTTPS 证书公钥指纹（SPKI SHA-256）配置指引</b></summary>
+### 第三步：让你的 AI 助手调用手机
 
-在启用 HTTPS 时，为杜绝中间人攻击，需将服务端 TLS 证书的 SPKI SHA-256 摘要配置在 Gateway 插件中：
-
-```bash
-# 计算服务器证书公钥的 SHA-256 指纹
-openssl x509 -in gateway.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256
-```
-
-将计算出的公钥指纹写入网关环境变量：
-```bash
-OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64位十六进制字符>
-```
-未配置指纹时握手会返回 `null`，客户端将拒绝提交密码凭据。明文 HTTP 虽可降级连接，但 App 界面会持续显示橙色未加密警告。
-</details>
-
----
-
-### 4. 设备能力按需启用
-
-在手机插件管理中安装并启用设备插件后，每项能力采用独立总开关和三级模式，新能力默认每次手动。全局策略在切换 Core、账号或 Agent 后保持；系统权限、被动范围及独立主动推送许可各自生效。Agent 使用已认证的 Core CLI/MCP/API，先读取 `oai capabilities` 的实际声明，再按 Schema 调用；必要时用 `--device` 选择本人设备。
-
-旧 `dev` 基线可能显示“当前 Gateway 账号未启用；请通过 Gateway 能力配置开启”。这是旧授权判断与新架构不一致的表现，不能把回到 Hermes 配置能力开关作为目标操作流程。Android 唯一授权修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 并完成真机验收；实现和验证状态见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
-
-> [!WARNING]
-> **开发中状态说明**：设备插件打包、Ed25519 签名校验、WASM 沙箱引擎及配额约束已有自动化覆盖；Android 本地授权、能力发布和设备请求执行栅栏已在 `feature/android-device-authority-20261028` 分支接通。完整 App Fast 套件仍在验证，真机全链路尚未验收。授权实现及证据见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)，其他能力同步进展见[通知能力同步记录](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md)。
-
----
-
-### 5. 源码编译与调试（开发者）
-
-<details>
-<summary><b>契约一致性测试（Hermes / OpenClaw 70 组用例）</b></summary>
+你可以把自带的「手机操控技能说明」一键安装到本机的 Claude Code、Codex、Hermes、DSH 等助手中，让 AI 自动学会怎么调用你的手机：
 
 ```bash
-npm ci
-
-# 检出固定版本的 OpenClaw 插件源码并安装依赖
-git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin
-git -C .openclaw-gateway-plugin checkout "$(python3 -c 'import json; print(json.load(open("openclaw-plugin-pin.json"))["revision"])')"
-npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
-
-# 运行 TypeScript 与 Python 两端一致性比对测试
-OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conformance
+./.venv/bin/oai skill install
 ```
-</details>
 
-<details>
-<summary><b>构建官方设备插件包（.alp）</b></summary>
+也可以直接在终端里登录并试试调用手机能力：
 
 ```bash
-# 编译 Rust/WASM 产物
-cargo build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
-cargo test --locked --offline --manifest-path plugins/Cargo.toml
+# 1. 登录你的账号（按提示输入密码）
+oai login --url https://你的服务器地址:11451 --username alice
 
-# 使用发行密钥进行确定性封装签名
-npm ci --prefix plugin-tooling
-OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
-  npm run build:references --prefix plugin-tooling
+# 2. 查看已配对的手机
+oai devices
+
+# 3. 查看当前手机开启了哪些可用能力及参数格式
+oai capabilities
+
+# 4. 发起一次操作（例如：申请查看最近 5 条通知，等待手机弹窗确认）
+oai invoke org.openandroidintelligence.notifications.query \
+  --version 1.0.0 \
+  --parameters '{"limit": 5}' \
+  --agent-name "我的桌面助手" \
+  --purpose "帮你查看最近 5 条手机通知" \
+  --idempotency-key "demo-notif-001" \
+  --wait 30
 ```
-产物输出在 `plugins/dist/` 目录：包含 `notifications`、`sms`、`call-log` 等官方参考插件。
-</details>
 
-<details>
-<summary><b>编译 Android 客户端</b></summary>
-
-```bash
-cd apps/android
-./gradlew --no-daemon check :app:assembleFullDebug
-```
-
-所有 APK 模块统一采用仓库预置的 `debug.keystore` 签名，确保本地开发、CI 构建与测试包指纹完全一致，彻底避免 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`。
-
-验证调试包签名指纹：
-```bash
-apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
-```
-</details>
+如果你的 AI 客户端支持 **MCP（Model Context Protocol）**，只需完成一次 `oai login`，然后把 `oai mcp` 配置为 stdio MCP Server，AI 就能直接调用 `oai_devices`、`oai_capabilities`、`oai_invoke` 等标准工具了。
 
 ---
 
-## 当前状态
+## 开发目录
 
-本表真实记录各项能力的自动化测试、宿主集成和物理真机验证状态。我们严格区分测试替身（Test Doubles）与真实验证，不拿模拟通过粉饰真机能力。
-
-| 业务领域与核心能力 | 当前验证依据与范围 | 真实完备度与状态 |
-| --- | --- | --- |
-| **OAI Core 服务端与会话桥** | OAI Core 209 项测试通过；DSH 会话桥 16 项测试通过 | ✅ 代码与协议测试通过；物理真机与生产模型端到端联调待闭环 |
-| **Hermes / OpenClaw 契约一致性** | 两端各自 70 组 TS/Python 共享契约用例逐条对齐比对 | ✅ 覆盖两端网关适配器协议一致性，不代表终端执行全链路 |
-| **Hermes 网关适配器** | pytest 单元测试 + 真实 aiohttp SSE/WS 握手、签名与凭据撤销测试 | ✅ 协议层已覆盖；宿主上下文历史与工具执行结果回传待完善 |
-| **OpenClaw 适配器插件** | 独立仓固定版本、宿主真实运行时动态载入、70 组共享测试用例 | ✅ 安装与通讯协议通过验证；Android 真机端对端待闭环 |
-| **DSH (DeepSeek Harness) 插件** | 版本 0.2.0；201 项自动化测试；[DSH 与 Android 模拟器集成记录](https://github.com/1rua/dsh-android-gateway/blob/main/docs/reviews/2026-10-21-feature-completion.md) | ✅ 会话核心主流程已跑通；设备能力闭环待手机端插件与真机验证 |
-| **设备插件打包与 WASM 运行时** | 确定性打包签名、WASM ABI 规范对接、内存存储预算配额及恢复测试 | ✅ 核心底层库有自动化覆盖；本分支已接通 Android 本地授权、能力发布与执行栅栏；App Fast 及真机执行验收仍待完成 |
-| **官方参考插件业务** | 通知读取、短信、通话记录经平台内核权限拦截审查 | ⚠️ 需验证手机统一授权规则、系统权限与实际执行；统一授权修复已在 feature 分支实施，待合入和真机验收 |
-| **Android 客户端界面与账号** | Gradle 编译、Robolectric 测试与模块自动化测试 | ✅ 账号管理、身份认证、事件总线与离线加密存储已接入；物理真机测试待开展 |
-| **Companion 私网通道** | tsnet pump 传输管线与可信 IPC 令牌签发未就绪 | ⛔ 入口已切断关闭，暂不签发私网通道 |
-| **物理真机端到端体验** | Android Keystore 硬件加解密、证书静默轮换、SAF 动态授权、真实宿主互联 | ⏳ 待真机验收测试闭环 |
-
----
-
-## 文档导航
-
-所有项目规范与实施记录均完整归档在仓库内。请根据需要查阅对应文档：
-
-### 用户指南与配置
-
-| 文档名称 | 核心内容 | 快速入口 |
-| --- | --- | --- |
-| **设备权限与读取配置** | 手机端通知、通话记录等设备读取权限开启与白名单配置 | [查看指南](docs/mvp/device-reads-and-reply-notifications.md) |
-| **Android 端开发指南** | Android App 架构划分、签名配置与多变体构建说明 | [查看指南](apps/android/README.md) |
-| **应用更新机制说明** | 正式版与预览版双通道更新策略与版本比对逻辑 | [查看说明](docs/reviews/2026-10-21-app-update-check.md) |
-| **系统通知兼容性报告** | Android 12–16 各版本通知、气泡及厂商定制 ROM 限制边界 | [查看报告](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md) |
-
-### 开发者与架构规范
-
-| 文档名称 | 核心内容 | 快速入口 |
-| --- | --- | --- |
-| **设备能力授权修复计划** | e5 `dev` 基线的历史排查、目标职责、兼容迁移与验收清单 | [查看计划](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) |
-| **Android 唯一授权权威（ADR-0059）** | 已接受的设备授权决策；分支实现与当前验证见[实施记录](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) | [查看 ADR](docs/adr/0059-android-is-the-sole-device-capability-authority.md) |
-| **领域术语与概念边界** | 统一术语定义、核心实体交互与安全责任边界 | [`CONTEXT.md`](CONTEXT.md) |
-| **OAI Core 架构事实基线** | 每条架构结论的代码出处与实测依据 | [查看基线](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
-| **OAI Core 统一服务说明** | 单一服务监听、CLI/MCP 使用与原生会话接入 | [`oai-core/README.md`](oai-core/README.md) |
-| **统一 Core 迁移方案** | 协议增量、分阶段交付、数据兼容与回滚 | [查看方案](docs/plans/2026-10-25-unified-core-migration.zh-CN.md) |
-| **原生会话适配器部署** | DSH、Hermes 与 Codex 宿主接入、鉴权与验证 | [查看方案](docs/plans/2026-10-25-native-session-adapters.zh-CN.md) |
-| **第三方 Agent 适配器开发指南** | 统一 Agent 插件接入协议、能力声明与独立适配器开发模板 | [查看开发指南](docs/guides/agent-adapter-development-guide.zh-CN.md) |
-| **模块化插件架构规格** | 插件系统总体架构设计规格书 | [查看规格](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
-| **Gateway Protocol v2 规范** | 手机与 Agent 网关通信契约与 JSON Schema 封闭规范 | [查看契约](docs/contracts/gateway-protocol-v2.md) |
-| **设备插件包 v1 规范** | `.alp` 插件包元数据定义、Ed25519 签名及沙箱约束 | [查看规范](docs/contracts/device-plugin-package-v1.md) |
-| **DSH 宿主网关插件** | 为 DeepSeek Harness 打造的官方接入插件与用例集 | [访问仓库](https://github.com/1rua/dsh-android-gateway) |
-| **网关密钥管理 (ADR 0023)** | SQLite 与明晰 Gateway Secret 管理决策记录 | [查看 ADR](docs/adr/0023-use-sqlite-with-explicit-gateway-secret-management.md) |
-| **明文配对安全警告 (ADR 0047)** | 允许内网明文配对但持续显示醒目安全警告决策 | [查看 ADR](docs/adr/0047-allow-plaintext-gateway-pairing-with-explicit-warning.md) |
-| **视觉资产与设计规范** | README 静态矢量图的色值 Token 与字号红线规则 | [设计规范](assets/readme/README.md) |
-| **Agent 行为准则** | 开发与贡献者规范、测试验证红线与 Git 提交要求 | [`AGENTS.md`](AGENTS.md) |
-
----
-
-## 项目目录
-
-<details>
-<summary><b>点击展开完整代码仓库结构</b></summary>
+如果你想阅读源码、修改功能或自己写一个手机插件，可以按下面的目录直接找到对应代码：
 
 ```text
 open-android-intelligence/
-├── apps/android/                  # Android 原生宿主应用（AGP 8.9.2、SDK 36、Kotlin 2.1.20）
-│   ├── app/                       # 主入口 APK：多会话聊天、账号凭据、系统设置、附件管理
-│   ├── platform-kernel/           # 平台内核：权限裁决引擎、插件生命周期、安全加密原语
-│   ├── plugin-package/            # .alp 插件包解析、Ed25519 验签与安装管理器
-│   ├── plugin-runtime-wasm/       # WebAssembly 高性能沙箱运行时
-│   ├── conversation-ui/           # Material 3 会话界面交互组件库
-│   ├── assistant-holder/          # 系统全局助手角色与按键手势触发器
-│   ├── tailscale-companion/       # 可选用户态 Tailscale 连接插件（Companion APK）
-│   └── ...                        # 领域模型、Room 数据存储与契约端口模块
-├── gateway-contract/              # Gateway Protocol v2 契约与 Hermes / OpenClaw 一致性测试套件
-│   ├── schemas/                   # JSON Schema 2020-12 严格封闭式定义
-│   ├── vectors/                   # 跨语言通用测试向量（70 组标准用例）
-│   ├── src/                       # TypeScript 契约实现参考
-│   └── tools/                     # Hermes / OpenClaw 一致性自动化测试执行工具
-├── oai-core/                      # OAI Core 统一服务、CLI、MCP 及会话适配器（Python 3.11+）
-│   ├── src/oai_core/              # 服务监听、鉴权、设备调度与各 Agent 会话适配器实现
-│   ├── examples/                  # 部署配置示例（core.json）
-│   └── tests/                     # Core 协议、设备事件、防重放与原生 SDK 契约回归
-├── plugins/                       # 官方参考设备插件源码（Rust/WASM + .alp 构建产物）
-├── plugin-tooling/                # 插件打包与确定性签名工具链（Packaging CLI）
-├── integrations/                  # 共享集成环境与轻量原生会话适配器
-│   ├── dsh-session-adapter/       # DSH 宿主侧 Cordis Bundle（只读写原生会话，端口 8791）
-│   └── hermes-session-adapter/    # Hermes 宿主侧仅会话插件（按账号隔离会话，端口 8792）
-├── docs/                          # 产品规格书、ADR 架构决策记录与技术评审文档
-├── scripts/                       # 自动化安装向导与运维脚本（install.sh）
-├── assets/readme/                 # README 所需的精美矢量 SVG 资产与设计 Token 规范
-├── legacy/                        # 已冻结归档的历史版本 Bridge 与过渡组件
-├── openclaw-plugin-pin.json       # 锁定 OpenClaw 插件的版本、标签与 Git Commit SHA
-└── CONTEXT.md                     # 统一领域术语与设计边界说明书
+├── apps/android/                  # 📱 安卓手机 App 源码（Kotlin + Jetpack Compose）
+│   ├── app/                       #    App 主界面：聊天窗口、账号配对、设置与权限开关界面
+│   ├── platform-kernel/           #    手机端权限守门员：管插件安装启用、本地权限判断与操作账本
+│   ├── plugin-runtime-wasm/       #    插件安全沙箱：限制插件能用多少内存、时间和存储空间
+│   ├── conversation-ui/           #    聊天消息、思考过程卡片、斜杠命令补全等界面组件
+│   ├── assistant-holder/          #    系统默认数字助理入口（长按电源键唤出、屏幕圈选截图）
+│   └── ...                        #    短信、通知、通话记录、屏幕控制等各功能的安卓底层模块
+│
+├── oai-core/                      # 🖥️ OAI Core 服务端与 oai 命令行工具（Python 3.11+）
+│   ├── src/oai_core/cli.py        #    oai 命令行入口（login / devices / capabilities / invoke / mcp）
+│   ├── src/oai_core/server.py     #    Core 服务端主监听程序（配对、转发请求、连接 AI 会话）
+│   ├── src/oai_core/mcp.py        #    供各类 AI 助手挂载的 MCP 工具服务
+│   └── tests/                     #    服务端与命令行自动化测试
+│
+├── plugins/                       # 🧩 官方手机能力插件源码（Rust 编写，编译为安全的 .alp 插件包）
+│   ├── notifications/             #    通知查询与主动推送插件
+│   ├── sms/                       #    短信查询、过滤与主动推送插件
+│   ├── call-log/                  #    通话记录只读查询插件
+│   ├── screen-reader/             #    屏幕文字与布局读取插件
+│   ├── screen-capture/            #    屏幕截图插件
+│   └── screen-control/            #    屏幕点击、滑动、输入文字与返回键操控插件
+│
+├── integrations/                  # 🔌 第三方 AI 助手对接组件与技能包
+│   ├── skills/oai-client/         #    教 AI 助手如何安全调用手机的 Skill 说明书（SKILL.md）
+│   ├── hermes-session-adapter/    #    把 Hermes 聊天会话接入手机的适配器
+│   └── dsh-session-adapter/       #    把 DSH (DeepSeek Harness) 聊天会话接入手机的适配器
+│
+├── gateway-contract/              # 📜 手机与服务端之间的通信格式定义与 70 组标准测试题（TypeScript）
+├── plugin-tooling/                # 📦 插件打包与数字签名工具（把代码打成手机可安装的 .alp 包）
+├── scripts/                       # 🚀 一键安装（install.sh）、配置（setup.sh）与卸载脚本
+├── tools/                         # 🛠️ 开发自测脚本（如 smart-test.py 分级测试工具）
+├── assets/readme/                 # 🎨 README 视觉图片与可编辑 SVG 源文件
+├── docs/                          # 📚 详细设计文档、架构决策记录（ADR）与测试验收报告
+├── CONTEXT.md                     # 📖 项目核心概念词典（遇到不熟的内部词汇可以查这里）
+└── AGENTS.md                      # 🤖 代码规范、测试门禁与 Git 提交约定
 ```
-</details>
 
+### 常用开发自测命令
 
-## 许可证
-MIT
+改完代码后，不需要每次都把所有模块从头慢吞吞编译一遍，仓库内置了按改动范围自动挑选测试的命令：
 
+```bash
+# 1. 日常改动快速自测（自动根据 git diff 只跑你改动涉及的模块测试）
+npm run test:fast
+
+# 2. 提交 PR 前的完整准入检查（包含关联依赖模块与通信协议检查）
+npm run test:pr
+
+# 3. 发布前的全量回归测试（包含全套单元测试与安卓 APK 打包校验）
+npm run test:full
+```
+
+---
+
+## 开源协议
+
+本项目基于 [MIT License](./LICENSE) 开源。

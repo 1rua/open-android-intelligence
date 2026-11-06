@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 540" width="100%" height="auto" role="img" aria-labelledby="title desc">
+  <title id="title">How Open Android Intelligence Works: Your Phone, OAI Core, and Your AI Agents</title>
+  <desc id="desc">Plain-language diagram showing the three parts: 1. Your Android Phone (chat UI, capability plugins, and 100% local permission control), 2. OAI Core on your computer or server (verifies accounts and routes requests without holding permission authority), and 3. Your AI Agents (Hermes, DSH, Codex, Claude Code, etc.).</desc>
+
+  <defs>
+    <pattern id="archGridEn" width="16" height="16" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="0.8" fill="#111111" opacity="0.07"/>
+    </pattern>
+  </defs>
+
+  <style>
+    .mono { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; letter-spacing: 0.4px; fill: #4A4A46; }
+    .mono-d { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.5px; fill: #111111; }
+    .num { font-family: "JetBrains Mono", "Roboto Mono", "DejaVu Sans Mono", ui-monospace, monospace; font-size: 18px; font-weight: 700; letter-spacing: 0.8px; fill: #B8501F; }
+    .disp { font-family: "Arial Black", "Inter", "Helvetica Neue", Arial, sans-serif; font-weight: 900; font-size: 40px; letter-spacing: -0.6px; fill: #111111; }
+    .card-title { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 22px; font-weight: 800; fill: #111111; }
+    .item { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 20px; font-weight: 700; fill: #111111; }
+    .foot-item { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 18px; font-weight: 700; fill: #111111; }
+    .body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-size: 18px; font-weight: 400; fill: #4A4A46; }
+  </style>
+
+  <rect width="1200" height="540" rx="20" fill="#F7F7F5"/>
+  <rect width="1200" height="540" rx="20" fill="url(#archGridEn)"/>
+  <rect x="20" y="20" width="1160" height="500" fill="none" stroke="#111111" stroke-width="1.4"/>
+
+  <g stroke="#111111" stroke-width="1.2">
+    <path d="M10 20H30M20 10V30"/>
+    <path d="M1170 20H1190M1180 10V30"/>
+    <path d="M10 520H30M20 510V530"/>
+    <path d="M1170 520H1190M1180 510V530"/>
+  </g>
+
+  <text x="44" y="48" class="mono-d">HOW IT WORKS / THREE-PART OVERVIEW</text>
+  <text x="1156" y="48" class="mono" text-anchor="end">ZERO THIRD-PARTY CLOUD RELAY · SELF-HOSTED</text>
+  <path d="M44 64H1156" stroke="#111111" stroke-width="1.2"/>
+
+  <text x="44" y="114" class="disp">How Do the Three Parts Work Together?</text>
+  <text x="44" y="146" class="body">No heavy AI model runs on your phone—your phone handles chat, actions, and permissions while your server runs the AI.</text>
+  <path d="M44 168H1156" stroke="#111111" stroke-width="1.2"/>
+
+  <!-- Column 1: Android Phone -->
+  <rect x="44" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="44" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="64" y="214" class="num">01 / PHONE</text>
+  <text x="64" y="240" class="card-title">Your Android Phone</text>
+
+  <rect x="64" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="64" y="298" class="item">Chat &amp; Digital Assistant</text>
+  <text x="64" y="324" class="body">Send messages, files &amp; screen clips</text>
+  <path d="M64 340H360" stroke="#E2E2DA" stroke-width="1"/>
+
+  <rect x="64" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="64" y="382" class="item">On-Demand Phone Plugins</text>
+  <text x="64" y="408" class="body">Notifications, SMS &amp; screen actions</text>
+  <path d="M64 424H360" stroke="#E2E2DA" stroke-width="1"/>
+
+  <text x="64" y="452" class="foot-item">100% controlled on your phone</text>
+
+  <!-- Arrow 1 <-> 2 -->
+  <path d="M380 330H432" stroke="#111111" stroke-width="2"/>
+  <path d="M390 323L380 330L390 337" fill="none" stroke="#111111" stroke-width="2"/>
+  <path d="M422 323L432 330L422 337" fill="none" stroke="#111111" stroke-width="2"/>
+
+  <!-- Column 2: OAI Core -->
+  <rect x="432" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="432" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="452" y="214" class="num">02 / OAI CORE</text>
+  <text x="452" y="240" class="card-title">Your Private Hub (Server)</text>
+
+  <rect x="452" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="452" y="298" class="item">Runs on Your PC or Server</text>
+  <text x="452" y="324" class="body">One address for phones &amp; AI agents</text>
+  <path d="M452 340H748" stroke="#E2E2DA" stroke-width="1"/>
+
+  <rect x="452" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="452" y="382" class="item">Verifies Identity &amp; Routes</text>
+  <text x="452" y="408" class="body">Checks accounts &amp; forwards replies</text>
+  <path d="M452 424H748" stroke="#E2E2DA" stroke-width="1"/>
+
+  <text x="452" y="452" class="foot-item">Routes calls, never grants access</text>
+
+  <!-- Arrow 2 <-> 3 -->
+  <path d="M768 330H820" stroke="#111111" stroke-width="2"/>
+  <path d="M778 323L768 330L778 337" fill="none" stroke="#111111" stroke-width="2"/>
+  <path d="M810 323L820 330L810 337" fill="none" stroke="#111111" stroke-width="2"/>
+
+  <!-- Column 3: AI Agents -->
+  <rect x="820" y="188" width="336" height="284" fill="#FFFFFF" stroke="#111111" stroke-width="1.4"/>
+  <rect x="820" y="188" width="336" height="64" fill="#EFEFE9" stroke="#111111" stroke-width="1.2"/>
+  <text x="840" y="214" class="num">03 / AI AGENTS</text>
+  <text x="840" y="240" class="card-title">Your AI Assistants</text>
+
+  <rect x="840" y="272" width="16" height="4" fill="#B8501F"/>
+  <text x="840" y="298" class="item">Bring Sessions to Phone</text>
+  <text x="840" y="324" class="body">Direct Hermes, DSH &amp; Codex chats</text>
+  <path d="M840 340H1136" stroke="#E2E2DA" stroke-width="1"/>
+
+  <rect x="840" y="356" width="16" height="4" fill="#B8501F"/>
+  <text x="840" y="382" class="item">Control via CLI or MCP</text>
+  <text x="840" y="408" class="body">Call via oai CLI or MCP tools</text>
+  <path d="M840 424H1136" stroke="#E2E2DA" stroke-width="1"/>
+
+  <text x="840" y="452" class="foot-item">Every call states name &amp; purpose</text>
+
+  <path d="M44 486H1156" stroke="#111111" stroke-width="1.2"/>
+  <text x="44" y="508" class="body">In short: Install one app on your phone, run OAI Core on your machine, and use all your favorite AI agents safely.</text>
+</svg>

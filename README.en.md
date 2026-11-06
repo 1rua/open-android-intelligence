@@ -1,426 +1,226 @@
+<p align="center">
+  <img src="./assets/readme/hero-en.png" width="100%" alt="Open Android Intelligence: Connect your Android phone to your AI agents safely—chat anytime and let AI read notifications, check SMS, or act on your screen with your approval">
+</p>
+
 <div align="center">
 
-<a href="#quick-start"><img src="assets/readme/hero-banner.svg" alt="Open Android Intelligence: A unified Android client for connecting multiple mainstream Agents" width="100%"></a>
+**One unified Android client to connect your phone with your favorite AI agents.**  
+Chat with your self-hosted AI assistants from your phone anytime—and let them read notifications, check SMS, or tap your screen only when you say yes.
 
-# Open Android Intelligence
-
-<p>
-  <strong>A unified Android client for connecting multiple mainstream Agents.</strong><br>
-  The client only provides device capabilities; decisions are entirely handled by Agents.
-</p>
-
-<h3>
-  <a href="https://github.com/1rua/open-android-intelligence/releases/latest/download/app-full-release.apk">One-Click APK Install</a> · Connect Multiple Mainstream Agents · Privacy & Safety Controlled
-</h3>
+[**Download Android APK**](https://github.com/1rua/open-android-intelligence/releases) · [**What It Is**](#what-it-is) · [**Quick Start**](#quick-start) · [**Project Layout**](#project-layout)
 
 <p>
-  <sub>
-    Zero relay servers · Direct connection to self-hosted gateways · No root required · Production-grade permission isolation<br>
-    <a href="README.md">简体中文</a> · English
-  </sub>
+  <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat-square&label=Release&color=D94E1F" alt="Latest Release"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Android-12%2B-10B981?style=flat-square&logo=android&logoColor=white" alt="Android 12+"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.11%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="MIT License"></a>
 </p>
 
-<p>
-  <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat&label=Release&color=34D399" alt="Latest Release"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Android-12%2B%20(minSdk%2031)-10B981?style=flat&logo=android&logoColor=white" alt="Android 12+"></a>
-  <a href="#how-it-works"><img src="https://img.shields.io/badge/Gateway-Direct%20to%20Mainstream%20Agents-38BDF8?style=flat" alt="Direct Connection to Mainstream Agents"></a>
-  <a href="#current-status"><img src="https://img.shields.io/badge/Contract-70%20Shared%20Vectors-34D399?style=flat" alt="Hermes & OpenClaw 70 Contract Vectors"></a>
-  <a href="#security-boundaries"><img src="https://img.shields.io/badge/Security-No%20Root%20%C2%B7%20Default%20Deny-F59E0B?style=flat" alt="Security Boundaries"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-94A3B8?style=flat" alt="MIT License"></a>
-</p>
-
-<p>
-  <a href="#30-second-overview">30-Second Overview</a> ·
-  <a href="#key-features">Key Features</a> ·
-  <a href="#how-it-works">How It Works</a> ·
-  <a href="#security-boundaries">Security Boundaries</a> ·
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#current-status">Current Status</a> ·
-  <a href="#documentation-navigation">Documentation Navigation</a>
-</p>
+<sub><a href="./README.md">简体中文</a> · <strong>English</strong></sub>
 
 </div>
 
 ---
 
-## 30-Second Overview
+## What It Is
 
-> **Device authorization rules, 2026-10-28:** Android is the sole authority for device capability authorization. Capabilities of installed and enabled device plugins default to enabled; local explicit switches, Android system permissions, local data scope, and required sensitive-operation confirmations still govern execution. OAI Core authenticates callers, binds devices, discovers capabilities, validates the protocol, and routes requests. Agent plugins bridge their hosts without additional account-level device capability grants. The rules are implemented on `feature/android-device-authority-20261028`, pending merge to `dev` and physical-device acceptance. See the [accepted ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) and the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md); historical e5 `dev` evidence is in the [repair plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md).
+When you run AI assistants like Claude Code, Codex, Hermes, or DSH on your computer or server, two everyday frustrations come up:
+1. **You lose touch away from your desk**: Once you step away from your computer, you cannot easily continue the conversation from your phone or send a quick phone screenshot to your AI.
+2. **Your AI cannot safely reach your phone**: Sometimes you want your AI to check a verification text, summarize recent app notifications, or tap through a routine screen flow—without handing your private phone data to a third-party cloud relay.
 
-The `dev` branch now features a unified deployment entrypoint: **OAI Core + CLI/MCP + Agent Session Adapters + Android App + Device Plugins**.
-The phone connects to a single OAI Core address, which simultaneously serves three API surfaces:
-1. **Android Device Protocol** (`/open-android-intelligence/v2`): Authentication, Ed25519 request signatures, pairing, and platform event streams;
-2. **Device Invocation Surface** (`/open-android-intelligence/core/v1`): Local REST, CLI, and official FastMCP stdio interface for controlling device operations;
-3. **Native Agent Sessions Surface** (`/open-android-intelligence/v2/agents`): Directly reads and writes native sessions on Hermes, DSH, and Codex without duplicate chat storage.
+**Open Android Intelligence (OAI)** solves both problems in plain, practical terms:
 
-Hermes preserves account isolation. Explicitly connected DSH and Codex native sessions are shared within the deployment; device permissions and invocation tokens strictly remain account-isolated. Standalone Gateway instructions below remain for existing deployments; OpenClaw preserves its legacy compatibility path.
-See [OAI Core](oai-core/README.md) and the [Architecture Baseline](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) for details.
-
-> [!TIP]
-> ### Open Android Intelligence (OAI) is **a unified Android client for connecting multiple mainstream Agents** (such as Hermes, DSH, Codex, OpenClaw, etc.).
->
-> It securely and controllability exposes phone hardware capabilities to AI Agents, allowing multiple remote Agents to share phone control without deploying standalone Agents on the phone.
-
-Core system components:
-
-| Core Component | Role & Description | Repository / Path |
-| --- | --- | --- |
-| **Android App** | Connects to Core or Gateway, manages accounts and native sessions, sends multimodal attachments, and hosts the device capability sandbox | [`apps/android`](apps/android) |
-| **OAI Core** | Single Python service daemon providing connection authentication, device binding, capability discovery, request routing, CLI/MCP, and session adapters | [`oai-core`](oai-core) |
-| **Gateway Protocol** | Defines authentication, device event streaming, and closed-schema data contracts between phone and server | [`gateway-contract`](gateway-contract) |
-| **Session Adapters** | Host-side lightweight session bridges for DSH and Hermes; reads native transcripts without mirror databases | [`integrations`](integrations) |
-| **Third-Party Host Plugins** | Traditional standalone Gateway adapter plugins for existing deployments (Hermes / OpenClaw / DSH) | [Hermes Plugin](https://github.com/1rua/hermes-gateway-plugin) / [OpenClaw Plugin](https://github.com/1rua/openclaw-gateway-plugin) / [DSH Plugin](https://github.com/1rua/dsh-android-gateway) |
-
-> [!NOTE]
-> **Zero Relay Architecture**: The Android App communicates directly with your self-hosted OAI Core service. The project operates no public relay servers.<br>
-> **Android Authorization (target design)**: Installed and enabled device plugins have their capabilities enabled by default. Android decides whether an operation may run; sensitive operations such as sending SMS still require manual confirmation on the phone.
-
----
-
-## Key Features
-
-<table>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Native Multi-Session Chat <img src="https://img.shields.io/badge/Ready-10B981?style=flat-square" alt="Ready"></h3>
-      <p>Enjoy fluid conversations with your connected mainstream Agents on your phone. Features independent multi-session management, session archiving, folder categorization, and flexible sorting; comprehensive support for system photo picker, file selector, clipboard image pasting, and system-level multi-file share attachments.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Direct Multi-Host Gateway <img src="https://img.shields.io/badge/Supported-38BDF8?style=flat-square" alt="Supported"></h3>
-      <p>Seamlessly connect to <strong>Hermes</strong>, <strong>OpenClaw</strong>, and <strong>DSH (DeepSeek Harness)</strong> through a unified Gateway Protocol v2. Connect directly to your own server, retaining full sovereignty over model execution and history without cloud data hijacking.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>WebAssembly Plugin Sandbox <img src="https://img.shields.io/badge/Architecture%20Ready-34D399?style=flat-square" alt="Architecture Ready"></h3>
-      <p>Everything is a plugin. Protected device plugins are packaged as standard <code>.alp</code> bundles, running inside a high-performance WASM sandbox with strict constraints on CPU execution time, memory ceilings (hard quotas), storage capacity, and concurrent network connections to prevent privilege abuse.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Zero-Trust Security & Screen Confirmation <img src="https://img.shields.io/badge/Security%20First-F59E0B?style=flat-square" alt="Security First"></h3>
-      <p>Android manages device capability authorization. Installed and enabled plugins default to enabled capabilities; local explicit switches, missing system permissions, or pending required confirmations can still block execution. Connection authentication and device pairing remain required. The target design adds no Gateway account-level device capability grant.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h3>Closed Contracts & Anti-Replay Verification <img src="https://img.shields.io/badge/70%20Vectors-10B981?style=flat-square" alt="70 Vectors"></h3>
-      <p>Strict closed contract validation powered by JSON Schema 2020-12, dropping any extraneous unknown fields; critical commands are equipped with Ed25519 signatures, timestamps, and one-time nonces for anti-replay protection, ensuring idempotent execution across network jitter.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h3>Native System Notifications & Live Updates <img src="https://img.shields.io/badge/Android%2012--16-8B5CF6?style=flat-square" alt="Android 12-16"></h3>
-      <p>Deeply integrated into the native Android ecosystem: supports conversational notifications (MessagingStyle) and floating Bubbles on Android 12–15, with native Android 16 Live Updates integration for real-time task progress tracking.</p>
-    </td>
-  </tr>
-</table>
-
----
-
-## How It Works
-
-<div align="center">
-  <img src="assets/readme/architecture.svg" alt="Architecture: Android client connects to Agent hosts via Gateway Protocol" width="100%">
-</div>
-
-The entire system operates across three tightly integrated layers:
-
-1. **Android Native Host Client** (Frontline)
-   - **Interaction & Sessions**: Provides Gateway connection configuration, multi-session management, and system-level attachment selection (via system SAF pickers and share interfaces).
-   - **Platform Kernel**: Manages device identity based on Ed25519 keys, plugin lifecycles, and permission arbitration. Acts strictly as an enforcement gatekeeper without business backdoors.
-   - **Secure Plugin Sandbox**: Isolates device extension plugins inside a WebAssembly runtime, enforcing strict bounds on CPU, memory, persistent local storage, and concurrent network resources.
-2. **OAI Core & Gateway Protocol v2 Layer** (The Bridge & Scheduler)
-   - **Unified Listener**: `oai serve` exposes the `/v2` device protocol, `/core/v1` invocation surface, and `/v2/agents` native session surface over a single address.
-   - **Device Security Runtime**: The repository’s independent `oai_core.gateway` owns queuing, expiration, replay defense, cancellation, and acknowledgement. Installing or starting Core does not require the Hermes plugin.
-   - **Strict Closed Contracts**: Full-field schema validation; Ed25519 signatures, timestamp bounds, and nonces prevent replay attacks; mutation requests require idempotency keys.
-3. **Agent Host & Native Session Layer** (The Backend Brain)
-   - **Lightweight Session Adapters**: Hermes and DSH connect via loopback session bridges; Codex connects via native `app-server` subprocess.
-   - **Zero Transcript Mirroring**: Operations use native host stores directly. Discovery is limited to supported locations for the current user or authorized directories; a candidate must still be verified and registered.
-   - **Authorization Isolation**: Deployment-shared Agent sessions share transcript visibility only; device permissions are never inherited by shared agent processes.
-
----
-
-## Security Boundaries
-
-<div align="center">
-  <img src="assets/readme/security-model.svg" alt="Security Model: Agent submits requests, kernel checks permissions, user confirms on screen" width="100%">
-</div>
-
-The target device capability flow is: **Install and enable the plugin on Android → Android checks local switches, system permissions, and required confirmation → Execute the permitted request**. Installation alone does not enable a plugin. Once installed and enabled, a plugin does not require a separate Gateway account grant. Core verifies caller credentials, device bindings, and the protocol; Android makes the device capability decision.
-
-Connection authentication establishes who is calling; pairing binds the account to a device; capability authorization determines what that phone currently permits. Removing the old Gateway capability switch does not allow anonymous, cross-account, or unpaired calls. The existing image is retained; the authorization rules in this text, ADR-0059, and the implementation report describe the feature branch behavior. The historical repair plan records the earlier e5 `dev` baseline.
-
-### Device Permission Control Matrix
-
-| Sensitive Capability | Strict Limits & Permitted Boundaries |
+| What You Can Do | Plain-Language Explanation |
 | --- | --- |
-| **Call Logs** | **Basic metadata read-only** (contacts/numbers, timestamps, call duration); recording, answering, hanging up, or auto-dialing is strictly prohibited in any form. |
-| **SMS Records** | Controlled read access to sent and received records; **modifying operations like sending SMS must be manually clicked and confirmed on the phone screen one by one**, background dispatch is strictly prohibited. |
-| **App Notifications** | The installed and enabled plugin defaults to enabled capabilities. Notification access permission and Android-local app/field selection still limit the actual data returned; unselected apps are excluded, and plaintext logging remains prohibited. |
+| **Chat with Your AI Agents on Your Phone** | Install one Android app to connect to **Hermes, DSH, Codex**, and other AI agents running on your machine. Pick up your existing computer chats right on your phone, send photos or files, or set OAI as your default Android digital assistant to circle anything on your screen and ask about it. |
+| **Let AI Read Messages & Use Your Screen** | Any AI agent that can run CLI commands or MCP tools can use `oai` to request **reading notifications, checking SMS, viewing call logs, taking screenshots, or tapping and swiping your screen**. You can also opt into pushing selected notifications or texts proactively to a chosen agent. |
+| **100% of Permission Decisions Stay on Your Phone** | **No root required, and zero third-party cloud relays.** Your self-hosted server only routes messages—whether an AI is allowed to read a text or tap the screen is decided strictly by the switches inside your Android app. |
+
+### How Do the Three Parts Work Together?
+
+<p align="center">
+  <img src="./assets/readme/architecture-en.svg" width="100%" alt="How It Works: Your Android Phone, OAI Core Server, and Your AI Assistants">
+</p>
+
+The system is split into three simple parts:
+1. **Your Android Phone (Android App)**: Provides the chat UI, runs capability plugins (SMS, notifications, screen control, etc.), and enforces all permission switches locally.
+2. **Your Private Hub (OAI Core Server)**: Runs on your own PC or server. A single address connects your phone and your AI agents. It verifies accounts and forwards requests, **without holding any authority to grant phone permissions**.
+3. **Your AI Assistants (AI Agents)**: Run on your computer or server. They sync native chat sessions to your phone and call phone capabilities through the `oai` CLI or `MCP` server.
+
+### Why Your Phone Stays Safe
+
+<p align="center">
+  <img src="./assets/readme/security-model-en.svg" width="100%" alt="Privacy and Control: Four checks before any phone action runs, and four things never allowed by design">
+</p>
+
+- **Independent Switch & Three Modes per Capability**:
+  - **Ask Every Time (Default)**: Whenever an AI requests a phone capability, your phone pops up a confirmation card showing which agent is asking and why. You can tap **Deny**, **Allow Once**, or **Allow for 5–60 Minutes**.
+  - **Read-Only**: Allows reading information (like viewing notifications or screen layout), while any action that changes state or taps the screen still requires your manual tap.
+  - **Auto-Allow**: For trusted read or automation flows (note: sensitive state-changing actions like **sending SMS** always require manual confirmation on your phone screen).
+- **Switching Servers or Agents Never Resets Your Rules**: Permission settings belong to your phone installation—switching OAI Core servers, accounts, or AI agents never resets or bypasses your local switches.
+- **Fine-Grained Scope Control**: Pick exactly which installed apps may share notifications (with search and select/invert controls), filter SMS by **All / Keywords / Phone Numbers**, and keep proactive push off by default until you explicitly enable it and whitelist a verified receiver endpoint.
 
 ---
 
 ## Quick Start
 
-### 0. Prerequisites
+Get your phone and your AI agents connected in 3 steps.
 
-| Environment | Minimum Requirement | Recommended |
-| --- | --- | --- |
-| **Android Phone** | Android 12+ (`minSdk 31`) | Android 14+, 8GB RAM recommended |
-| **Core Server** | Python 3.11+; an Agent host is optional | Reachable from the phone; HTTPS recommended |
-| **Developer Build Toolchain** *(Only needed for source development)* | Node.js `24.18.0` + npm `11.16.0`, JDK 21, Android SDK (`compileSdk 36` / `targetSdk 35`) | Rust 1.80+ (with `wasm32-unknown-unknown` target) |
+### Step 1: Install and Configure the Server (OAI Core)
 
----
+**Requirements**: Linux or macOS with `Python 3.11+` and `git` (if dependencies are missing, the installer will prompt to install them for you).
 
-### 1. Install App on Phone
+**Option A: One-Line Quick Install (Recommended)**
 
-Go to the project [Releases Page](https://github.com/1rua/open-android-intelligence/releases) to download and install the APK:
-
-| Release Channel | Target Audience | Installation Notes |
-| --- | --- | --- |
-| **Developer Preview** | Early adopters, developers | Uses unified Debug keystore built into repo, supports in-place upgrade, directly downloadable from daily CI builds |
-| **Stable Release** | General daily use | Signed with official private production keys, cross-installing over Developer Preview is strictly prohibited (see [Android Signing Configuration](apps/android/README.md#release-signing)) |
-
----
-
-### 2. Server Deployment & Agent Connectivity
-
-**Recommended for new deployments**: Install [OAI Core](oai-core/README.md); the phone and CLI use the same server address. An Agent is optional for device service.
-
-From the root of a trusted checkout, run the installer, create the first Core administrator when prompted, and store the one-time administrator recovery codes safely offline:
+Run the interactive install script directly in your terminal (installs to `~/.oai-core` by default):
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
+```
+
+**Option B: Clone and Install Locally**
+
+```bash
+git clone https://github.com/1rua/open-android-intelligence.git
+cd open-android-intelligence
 ./scripts/install.sh
 ```
 
-Installing, updating, or configuring an existing deployment requires the **existing Core administrator account and its Core login password**; local OS access, root, and a confirmation flag do not replace authentication. For an older installation, identify an existing account and verify its password before migration; retain the original data and master key. The installation and remote one-line entry points are still being completed, so this is not a claim of end-to-end acceptance. See [installation and recovery](scripts/README.md).
+Follow the terminal prompts to create your **administrator account and password** (keep the one-time administrator recovery code in a safe place). The wizard sets up the Python runtime, configures the listener port, and scans/connects local AI agents (Hermes, DSH, Codex).
 
-On the server, create an everyday account. Enter the administrator password privately when prompted, then set the new account's password. New accounts are ordinary users by default and do not need an Agent or device configured:
+**Daily Configuration, Account & Service Commands**:
 
 ```bash
+# 1. Open the interactive setup menu (change ports, manage accounts, connect AI agents, toggle 2FA, manage service)
+oai setup
+# Or run the setup script directly:
+./scripts/setup.sh
+# Or invoke the installed setup entry via curl:
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
+
+# 2. Create a regular user account for your phone and CLI (e.g., alice)
 oai account create alice
+
+# 3. Start OAI Core manually (if auto-start is not enabled)
+~/.oai-core/start-core.sh
 ```
 
-Use `oai setup` for network, account, Agent, and service settings, or run `./scripts/setup.sh`. Start the service using the startup option chosen at installation or `./start-core.sh` in the installation directory. Configure network access and TLS, then sign in on Android below.
-
-After connecting the phone, sign in from your own terminal and inspect devices and capabilities. On the first connection from another machine, provide the trusted Core address once; login does not require a device ID:
+<details>
+<summary><b>Optional: Quick Uninstall Script Commands (click to expand)</b></summary>
 
 ```bash
-oai login --url https://core.example
+# Uninstall runtime while keeping configuration & data (for easy re-install)
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash
+
+# Move the entire installation into the temporary /tmp trash folder for manual review
+curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
+```
+</details>
+
+### Step 2: Install the Android App & Enable Capabilities
+
+**Requirements**: Android 12 or newer (no root required; your phone and server just need to reach each other over LAN, Tailscale, or HTTPS).
+
+1. Download the latest APK from [Releases](https://github.com/1rua/open-android-intelligence/releases) and install it on your phone.
+2. Open the app, enter your `OAI Core` URL (e.g., `https://your-server:11451`), and sign in with the user account you created.
+3. Open **Settings → Plugins / Authorization** in the phone app:
+   - Enable the capability plugins you want to use (Notifications, SMS, Screen Reader, Screen Control, etc.).
+   - Choose your preferred permission mode (**Ask every time** is the default) and select which apps or SMS scopes are allowed.
+
+### Step 3: Let Your AI Agents Call Your Phone
+
+Install the built-in `oai-client` skill into your local AI coding agents (Claude Code, Codex, Hermes, DSH, etc.) with one command so they automatically know how to use your phone:
+
+```bash
+./.venv/bin/oai skill install
+```
+
+Or log in and test calling your phone directly from a terminal:
+
+```bash
+# 1. Log in to OAI Core (password is prompted securely)
+oai login --url https://your-server:11451 --username alice
+
+# 2. List your paired Android devices
 oai devices
+
+# 3. Discover enabled capabilities and their parameter schemas
 oai capabilities
-# Use an ID, version, and parameters returned by capabilities.
-# Add --device DEVICE_ID to capabilities or invoke when a choice is needed.
-oai invoke CAPABILITY_ID --version VERSION --parameters '{}' --agent-name my-agent --purpose 'user-requested action'
+
+# 4. Invoke a capability (e.g., read the latest 5 notifications and wait for approval)
+oai invoke org.openandroidintelligence.notifications.query \
+  --version 1.0.0 \
+  --parameters '{"limit": 5}' \
+  --agent-name "My Desktop Assistant" \
+  --purpose "Check the 5 most recent phone notifications" \
+  --idempotency-key "demo-notif-001" \
+  --wait 30
 ```
 
-Enter usernames, passwords, and any verification codes at the prompt, never as command arguments or environment variables. Server-side 2FA is off by default; codes are requested only when it is enabled, and a valid session can refresh without repeated codes. Android still decides which operations may run. See the [Core guide](oai-core/README.md) for invocation, default devices, and MCP.
-
-<details>
-<summary><b>Existing Deployments: Standalone Host Gateway Plugins (Click to expand)</b></summary>
-
-The following commands document pinned legacy standalone Gateway deployments. They do not establish compatibility with the 2026-10-28 target authorization design. New deployments use Core and Session Adapters above; existing external plugins require a separate compatibility review. Legacy Hermes and OpenClaw deployments must retain their original account Master Key:
-
-#### Configure Hermes Host
-```bash
-hermes plugins install 1rua/hermes-gateway-plugin --ref 190441415652ae34fbd1cb8cc485f6208fff944b --enable
-# Consult the matching legacy host documentation; do not put passwords on the command line.
-```
-
-#### Configure OpenClaw Host
-```bash
-export OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE=/private/path/gateway-master-key.bin
-openclaw plugins install git:github.com/1rua/openclaw-gateway-plugin@c7c087b9fe28adcc658a1cbdb71689a377b65214
-openclaw plugins inspect open-android-intelligence-gateway --runtime --json
-```
-
-#### Configure DSH (DeepSeek Harness) Host
-```bash
-git clone https://github.com/1rua/dsh-android-gateway.git
-cd dsh-android-gateway && npm ci && npm run build
-# In DSH session: plugin_manager action=install_bundle target=/absolute/path/to/dsh-android-gateway
-```
-</details>
+If your AI client supports **MCP (Model Context Protocol)**, run `oai login` once and register `oai mcp` as a stdio MCP server—your agent will immediately gain access to `oai_devices`, `oai_capabilities`, `oai_invoke`, and related tools.
 
 ---
 
-### 3. Connect Phone to Gateway
+## Project Layout
 
-1. Open the mobile app and enter a Core address reachable from the phone; trusted HTTPS is recommended.
-2. Enter the everyday account and password created by the administrator. If server-side 2FA is enabled, enroll an authenticator or enter a code when prompted.
-3. After connection and pairing, install and enable the device plugins you need. A valid session can refresh without asking for another code.
-
-<details>
-<summary><b>HTTPS Public Key Pinning (SPKI SHA-256) Setup Guide</b></summary>
-
-When enabling HTTPS, to prevent Man-in-the-Middle (MitM) attacks, configure the server TLS certificate's SPKI SHA-256 digest in the Gateway plugin:
-
-```bash
-# Calculate server certificate public key SHA-256 fingerprint
-openssl x509 -in gateway.crt -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256
-```
-
-Set the calculated public key fingerprint into the gateway environment variable:
-```bash
-OPEN_ANDROID_INTELLIGENCE_GATEWAY_TLS_SPKI_SHA256=sha256:<64-hex-characters>
-```
-If unset, the handshake will return `null`, and the client will refuse to submit password credentials. While plaintext HTTP allows degraded connection, the App UI will persistently display an orange unencrypted security warning.
-</details>
-
----
-
-### 4. Enable Device Capabilities on Demand
-
-Under the current feature-branch rules, installed and enabled device plugins have ordinary capabilities enabled by default. Explicit local switches, system permissions, notification app selection, separate background permission, and required sensitive-operation confirmations continue to govern execution. Agents use authenticated Core CLI/MCP/API credentials, inspect `oai capabilities`, and follow the actual returned Schema; select one of the account's devices with `--device` when needed.
-
-The old `dev` baseline may still report that the Gateway account has not enabled a capability. This is a legacy authorization check that conflicts with the new architecture; returning to the old Hermes capability setup is not the target user flow. The Android-only authorization repair is implemented on `feature/android-device-authority-20261028`, pending merge to `dev` and physical-device acceptance. See the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for implementation and validation status.
-
-> [!WARNING]
-> **In-Development Status Notice**: Device plugin packaging, Ed25519 signature verification, WASM sandboxing, and quotas have automated coverage. Android-local authorization, capability publication, and device-request execution fences are connected on `feature/android-device-authority-20261028`. The complete App Fast suite is still under validation, and physical-device end-to-end acceptance remains open. See the [authorization implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) and the [notification capability sync record](docs/reviews/2026-10-20-agent-notification-capabilities.zh-CN.md).
-
----
-
-### 5. Build and Debug from Source (Developers)
-
-<details>
-<summary><b>Contract Conformance Tests (70 Test Cases for Hermes / OpenClaw)</b></summary>
-
-```bash
-npm ci
-
-# Check out pinned OpenClaw plugin source code and install dependencies
-git clone https://github.com/1rua/openclaw-gateway-plugin.git .openclaw-gateway-plugin
-git -C .openclaw-gateway-plugin checkout "$(python3 -c 'import json; print(json.load(open("openclaw-plugin-pin.json"))["revision"])')"
-npm ci --prefix .openclaw-gateway-plugin --ignore-scripts
-
-# Run conformance comparison tests across TypeScript and Python implementations
-OPENCLAW_PLUGIN_ROOT="$PWD/.openclaw-gateway-plugin" npm run gateway:v2:conformance
-```
-</details>
-
-<details>
-<summary><b>Build Official Device Plugins (.alp)</b></summary>
-
-```bash
-# Compile Rust/WASM artifacts
-cargo build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
-cargo test --locked --offline --manifest-path plugins/Cargo.toml
-
-# Deterministically package and sign using release signing key
-npm ci --prefix plugin-tooling
-OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
-  npm run build:references --prefix plugin-tooling
-```
-Artifacts are output to the `plugins/dist/` directory: including official reference plugins like `notifications`, `sms`, `call-log`, etc.
-</details>
-
-<details>
-<summary><b>Compile Android Client</b></summary>
-
-```bash
-cd apps/android
-./gradlew --no-daemon check :app:assembleFullDebug
-```
-
-All APK modules uniformly use the repository's pre-configured `debug.keystore` signature, ensuring local development, CI builds, and test packages share identical fingerprints, completely eliminating `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
-
-Verify debug package signature fingerprint:
-```bash
-apps/android/tools/verify-debug-signing.sh apps/android/app/build/outputs/apk/full/debug/app-full-debug.apk
-```
-</details>
-
----
-
-## Current Status
-
-This table genuinely records the automated testing, host integration, and physical device verification status of each capability. We strictly distinguish test doubles from real verification, never disguising simulated passes as physical device capabilities.
-
-| Domain & Core Capability | Verification Basis & Scope | Real-World Status & Completeness |
-| --- | --- | --- |
-| **OAI Core Service & Session Adapters** | 63 Python tests pass (real HTTP/signatures/idempotency/device events/MCP/Hermes native SDK); 16 DSH bridge tests pass | ✅ Protocol double tests pass; physical device and production model loops pending end-to-end verification |
-| **Hermes / OpenClaw Contract Conformance** | 70 shared TS/Python contract test cases verified item by item | ✅ Covers protocol consistency across gateway adapters; does not represent end-to-end device execution |
-| **Hermes Gateway Adapter** | pytest unit tests + real aiohttp SSE/WS handshake, signing, and credential revocation tests | ✅ Protocol layer covered; host context history and tool execution result callbacks pending completion |
-| **OpenClaw Adapter Plugin** | Standalone repo pinned version, loaded in live host runtime, 70 shared test cases | ✅ Installation and communication protocol verified; physical Android end-to-end loop pending |
-| **DSH (DeepSeek Harness) Plugin** | Version 0.2.0; 201 automated tests; [DSH & Android Emulator Integration Record](https://github.com/1rua/dsh-android-gateway/blob/main/docs/reviews/2026-10-21-feature-completion.md) | ✅ Core session flow validated; device capability loop pending mobile plugins and physical device verification |
-| **Device Plugin Packaging & WASM Runtime** | Deterministic packaging and signing, WASM ABI conformance, memory/storage quota budget and recovery tests | ✅ Core underlying libraries passed tests; App business-layer execution scheduling pipeline being assembled |
-| **Official Reference Plugins** | Notification reading, SMS, call logs reviewed by Platform Kernel permission interception | ⚠️ Android-local authorization, system permissions, and execution require acceptance; the authorization repair is implemented on the feature branch and awaits merge and physical-device acceptance |
-| **Android Client UI & Accounts** | Gradle build, Robolectric tests, and module automated tests | ✅ Account management, authentication, event bus, and encrypted offline storage integrated; physical testing pending |
-| **Companion Private Network** | tsnet pump transport pipeline and trusted IPC token issuance not ready | ⛔ Entrypoint disabled; private network tunnel provisioning not issued |
-| **Physical Device End-to-End Experience** | Android Keystore hardware crypto, silent certificate rotation, SAF dynamic authorization, live host connectivity | ⏳ Pending physical device acceptance test loop |
-
----
-
-## Documentation Navigation
-
-All project specifications and implementation records are completely archived within the repository. Please refer to the corresponding documents as needed:
-
-### User Guides & Configuration
-
-| Document | Core Content | Quick Link |
-| --- | --- | --- |
-| **Device Permissions & Reading Configuration** | Enabling phone notification and call log reading permissions and whitelist configuration | [View Guide](docs/mvp/device-reads-and-reply-notifications.md) |
-| **Android Development Guide** | Android App architectural separation, signing configuration, and flavor build descriptions | [View Guide](apps/android/README.md) |
-| **App Update Mechanics** | Dual-channel update strategy for Stable and Preview versions and version comparison logic | [View Overview](docs/reviews/2026-10-21-app-update-check.md) |
-| **System Notifications Compatibility Report** | Notification and bubble behavior across Android 12–16 versions and OEM ROM restriction boundaries | [View Report](docs/reviews/2026-10-18-session-notifications-compatibility.zh-CN.md) |
-
-### Developer & Architecture Specifications
-
-| Document | Core Content | Quick Link |
-| --- | --- | --- |
-| **Device Capability Authorization Repair Plan** | Historical e5 `dev` baseline investigation, target responsibilities, migration, and acceptance criteria | [View Plan](docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md) |
-| **Android Authorization Authority (ADR-0059)** | Accepted device authorization decision; see the [implementation report](docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md) for branch implementation and validation | [View ADR](docs/adr/0059-android-is-the-sole-device-capability-authority.md) |
-| **Domain Terminology & Conceptual Boundaries** | Unified terminology definitions, core entity interactions, and security responsibility boundaries | [`CONTEXT.md`](CONTEXT.md) |
-| **OAI Core Architecture Baseline** | Code traceability and verified test evidence for each architecture conclusion | [View Baseline](docs/architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md) |
-| **OAI Core Deployment Guide** | Single service listener, CLI/MCP usage, and native session adapters | [`oai-core/README.md`](oai-core/README.md) |
-| **Unified Core Migration Plan** | Protocol deltas, phased delivery, data compatibility, and rollback | [View Plan](docs/plans/2026-10-25-unified-core-migration.zh-CN.md) |
-| **Native Session Adapters Deployment** | Host integration, credentials, and verification for DSH, Hermes, and Codex | [View Plan](docs/plans/2026-10-25-native-session-adapters.zh-CN.md) |
-| **Modular Plugin Architecture Specification** | Overall architectural design specification for the plugin system | [View Specification](docs/superpowers/specs/2026-08-24-modular-plugin-architecture.md) |
-| **Gateway Protocol v2 Specification** | Communication contract and JSON Schema closed specification between phone and Agent Gateway | [View Contract](docs/contracts/gateway-protocol-v2.md) |
-| **Device Plugin Package v1 Specification** | `.alp` plugin package metadata definition, Ed25519 signing, and sandbox constraints | [View Specification](docs/contracts/device-plugin-package-v1.md) |
-| **DSH Host Gateway Plugin** | Official adapter plugin and test suites built for DeepSeek Harness | [Visit Repository](https://github.com/1rua/dsh-android-gateway) |
-| **Gateway Key Management (ADR 0023)** | SQLite and explicit Gateway Secret management architecture decision record | [View ADR](docs/adr/0023-use-sqlite-with-explicit-gateway-secret-management.md) |
-| **Plaintext Pairing Security Warning (ADR 0047)** | Architectural decision on allowing LAN plaintext pairing with persistent prominent warnings | [View ADR](docs/adr/0047-allow-plaintext-gateway-pairing-with-explicit-warning.md) |
-| **Visual Assets & Design Specifications** | Color tokens and font size baseline rules for README static vector graphics | [Design Specifications](assets/readme/README.md) |
-| **Agent Code of Conduct** | Developer and contributor guidelines, test verification baselines, and Git commit standards | [`AGENTS.md`](AGENTS.md) |
-
----
-
-## Project Structure
-
-<details>
-<summary><b>Click to expand complete repository structure</b></summary>
+If you want to explore the codebase, tweak a feature, or build a custom phone plugin, here is where everything lives:
 
 ```text
 open-android-intelligence/
-├── apps/android/                  # Native Android Host application (AGP 8.9.2, SDK 36, Kotlin 2.1.20)
-│   ├── app/                       # Main entry APK: Multi-session chat, account credentials, settings, attachments
-│   ├── platform-kernel/           # Platform Kernel: Permission arbitrator, plugin lifecycles, security crypto primitives
-│   ├── plugin-package/            # .alp plugin package parser, Ed25519 signature validator, and installer
-│   ├── plugin-runtime-wasm/       # High-performance WebAssembly sandboxed runtime
-│   ├── conversation-ui/           # Material 3 conversational UI interaction component library
-│   ├── assistant-holder/          # System-level assistant holder role and button/gesture triggers
-│   ├── tailscale-companion/       # Optional user-space Tailscale connectivity plugin (Companion APK)
-│   └── ...                        # Domain models, Room data storage, and contract port modules
-├── gateway-contract/              # Gateway Protocol v2 contract & Hermes / OpenClaw conformance test suite
-│   ├── schemas/                   # Strict closed-schema definitions based on JSON Schema 2020-12
-│   ├── vectors/                   # Cross-language standard test vectors (70 golden test cases)
-│   ├── src/                       # TypeScript contract reference implementation
-│   └── tools/                     # Automated Hermes / OpenClaw conformance test runners
-├── oai-core/                      # OAI Core service daemon, CLI, MCP, and session adapters (Python 3.11+)
-│   ├── src/oai_core/              # Service listener, auth, device scheduler, and Agent session adapters
-│   ├── examples/                  # Deployment configuration examples (core.json)
-│   └── tests/                     # Core protocol, device events, anti-replay, and native SDK regressions
-├── plugins/                       # Official reference device plugin source code (Rust/WASM + .alp artifacts)
-├── plugin-tooling/                # Plugin packaging and deterministic signing toolchain (Packaging CLI)
-├── integrations/                  # Shared integration test environments and lightweight session adapters
-│   ├── dsh-session-adapter/       # DSH host-side Cordis Bundle (reads/writes native sessions, port 8791)
-│   └── hermes-session-adapter/    # Hermes host-side session plugin (account-isolated sessions, port 8792)
-├── docs/                          # Product specifications, ADR architectural decision records, and technical reviews
-├── scripts/                       # Automated installation and management scripts (install.sh)
-├── assets/readme/                 # Beautiful vector SVG assets and design token specs for README
-├── legacy/                        # Frozen and archived legacy bridge code and transitional components
-├── openclaw-plugin-pin.json       # Pinned OpenClaw plugin version, tag, and Git commit SHA
-└── CONTEXT.md                     # Unified domain terminology and design boundary specification
+├── apps/android/                  # 📱 Android App source code (Kotlin + Jetpack Compose)
+│   ├── app/                       #    Main APK: chat UI, pairing, settings & permission switches
+│   ├── platform-kernel/           #    On-device gatekeeper: plugin lifecycle, local policy & audit log
+│   ├── plugin-runtime-wasm/       #    WebAssembly sandbox enforcing CPU, memory & storage limits
+│   ├── conversation-ui/           #    Chat timeline, thought cards & slash-command autocomplete UI
+│   ├── assistant-holder/          #    Default digital assistant entry & screen-selection capture
+│   └── ...                        #    Feature modules for SMS, notifications, call logs & screen control
+│
+├── oai-core/                      # 🖥️ OAI Core server & oai CLI / MCP entrypoint (Python 3.11+)
+│   ├── src/oai_core/cli.py        #    `oai` CLI commands (login / devices / capabilities / invoke / mcp)
+│   ├── src/oai_core/server.py     #    Single-port listener handling pairing, routing & agent sessions
+│   ├── src/oai_core/mcp.py        #    Stdio MCP server exposing phone capabilities to AI agents
+│   └── tests/                     #    Automated tests for Core, CLI, auth & session routing
+│
+├── plugins/                       # 🧩 Official reference phone plugins (Rust -> signed .alp packages)
+│   ├── notifications/             #    Notification query & proactive push plugin
+│   ├── sms/                       #    SMS query, filtering & proactive push plugin
+│   ├── call-log/                  #    Read-only call log metadata plugin
+│   ├── screen-reader/             #    Screen text & UI tree inspection plugin
+│   ├── screen-capture/            #    Screen capture plugin
+│   └── screen-control/            #    Screen tap, swipe, text input & back navigation plugin
+│
+├── integrations/                  # 🔌 AI agent session adapters & skill packages
+│   ├── skills/oai-client/         #    `oai-client` skill instructions (SKILL.md) for AI agents
+│   ├── hermes-session-adapter/    #    Bridges Hermes native conversations to OAI Core
+│   └── dsh-session-adapter/       #    Bridges DSH (DeepSeek Harness) conversations to OAI Core
+│
+├── gateway-contract/              # 📜 Communication schemas & 70 cross-host conformance test vectors
+├── plugin-tooling/                # 📦 CLI tooling to package and sign `.alp` device plugins
+├── scripts/                       # 🚀 Interactive installer (`install.sh`), setup (`setup.sh`) & uninstaller
+├── tools/                         # 🛠️ Developer verification scripts (e.g., `smart-test.py`)
+├── assets/readme/                 # 🎨 README visual assets and editable SVG/PNG source layers
+├── docs/                          # 📚 Design specs, Architecture Decision Records (ADRs) & review reports
+├── CONTEXT.md                     # 📖 Plain domain glossary explaining project terminology
+└── AGENTS.md                      # 🤖 Contributor guidelines, test tiers & Git commit conventions
 ```
-</details>
+
+### Common Developer Commands
+
+You don't need to rebuild the entire repository for small edits—use the built-in tiered test runner:
+
+```bash
+# 1. Fast check during daily development (runs only tests affected by your git diff)
+npm run test:fast
+
+# 2. Pre-PR verification (runs affected modules, dependents, and contract checks)
+npm run test:pr
+
+# 3. Full release regression suite (runs all tests and APK integrity checks)
+npm run test:full
+```
+
+---
 
 ## License
-MIT
+
+Released under the [MIT License](./LICENSE).
