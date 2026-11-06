@@ -633,3 +633,74 @@ def test_group_or_world_writable_executable_is_still_rejected(tmp_path, mode):
     with pytest.raises(HermesAdapterInstallError) as caught:
         _executable(executable)
     assert caught.value.code == "HERMES_PATH_UNSAFE"
+
+
+def test_probe_succeeds_when_invoked_via_parent_relative_venv_python(tmp_path):
+    """Real Hermes lives at ../hermes relative to Core root; .. in sys.executable must not trip _PROBE."""
+    import venv
+    from oai_core.hermes_installation import _PROBE
+
+    root = tmp_path / "core"
+    manifest = root / "integrations/hermes-session-adapter/plugin.yaml"
+    manifest.parent.mkdir(parents=True, mode=0o700)
+    manifest.write_text("manifest_version: 2\nname: oai-hermes-session-adapter\nversion: 0.2.0\nkind: platform\n")
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(mode=0o700)
+    (hermes_home / "config.yaml").write_text("plugins:\n  enabled:\n    - open-android-intelligence-gateway\n")
+    environment = hermes_home / "hermes-agent/venv"
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
+    site_dirs = list(environment.glob("lib*/python*/site-packages"))
+    assert site_dirs
+    site_dir = site_dirs[0]
+    (site_dir / "hermes_constants.py").write_text(
+        "import os\nfrom pathlib import Path\ndef get_hermes_home(): return Path(os.environ['HERMES_HOME'])\n"
+    )
+    cli_pkg = site_dir / "hermes_cli"
+    cli_pkg.mkdir(exist_ok=True)
+    (cli_pkg / "__init__.py").write_text("")
+    (cli_pkg / "main.py").write_text("")
+    # Make PyYAML available inside the isolated venv for _PROBE.
+    yaml_spec = __import__("importlib.util").util.find_spec("yaml")
+    assert yaml_spec and yaml_spec.submodule_search_locations
+    __import__("shutil").copytree(Path(list(yaml_spec.submodule_search_locations)[0]), site_dir / "yaml", dirs_exist_ok=True)
+    rel_python = os.path.relpath(environment / "bin/python", root)
+    assert rel_python.startswith("..")
+    res = subprocess.run(
+        [rel_python, "-I", "-B", "-c", _PROBE],
+        cwd=root,
+        env={"HERMES_HOME": str(hermes_home), "PATH": os.environ.get("PATH", "")},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert res.returncode == 10, res.stderr
+
+
+@pytest.mark.parametrize("use_uv", [True, False])
+def test_offline_dependency_fallback_succeeds_when_online_index_is_unreachable(installation, monkeypatch, use_uv):
+    from oai_core import hermes_installation as installer
+
+    install_attempts = []
+
+    def before(arguments):
+        if "install" in arguments:
+            install_attempts.append(list(arguments))
+
+    calls = fake_host(monkeypatch, installer, installation, uv=use_uv, pip=not use_uv, before=before)
+    real_popen = installer.subprocess.Popen
+
+    def offline_fallback_popen(arguments, **kwargs):
+        if "install" in arguments and "--no-build-isolation" not in arguments:
+            calls.append(list(arguments))
+            before(arguments)
+            return Child(1)
+        return real_popen(arguments, **kwargs)
+
+    monkeypatch.setattr(installer.subprocess, "Popen", offline_fallback_popen)
+    installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
+    assert len(install_attempts) == 2
+    assert "--no-build-isolation" not in install_attempts[0]
+    assert "--no-build-isolation" in install_attempts[1]
+    assert "--no-deps" in install_attempts[1]
+    if use_uv:
+        assert "--offline" in install_attempts[1]

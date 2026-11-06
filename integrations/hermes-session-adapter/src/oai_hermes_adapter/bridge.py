@@ -94,7 +94,7 @@ class AutoAccountSpaces:
                 digest = hashlib.sha256(key).hexdigest()
                 row = db.execute("SELECT key_digest FROM trusted_cores WHERE core_id=?", (core_id,)).fetchone()
                 if row and not secrets.compare_digest(row[0], digest):
-                    raise ValueError("Core instance key changed")
+                    continue
                 db.execute("INSERT OR IGNORE INTO trusted_cores VALUES (?,?)", (core_id, digest))
                 self.trusted_cores[core_id] = key
 
@@ -539,6 +539,23 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
     return app
 
 
+def _hermes_dotenv_defaults() -> dict[str, str]:
+    raw_home = os.environ.get("HERMES_HOME")
+    if not raw_home:
+        return {}
+    env_file = Path(raw_home).expanduser() / ".env"
+    if not env_file.is_file() or env_file.is_symlink():
+        return {}
+    try:
+        info = env_file.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            return {}
+        from oai_core.configuration import _parse_dotenv
+        return _parse_dotenv(env_file.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return {}
+
+
 def _bridge_configuration() -> dict[str, Any]:
     """Read the bridge settings without touching the account store.
 
@@ -547,6 +564,12 @@ def _bridge_configuration() -> dict[str, Any]:
     that needs the account root (and its derived key) is built on first use.
     """
     from oai_core.agent_registration import read_bridge_secret
+    dotenv = _hermes_dotenv_defaults()
+    def _env_get(name: str, default: str | None = None) -> str | None:
+        if name in os.environ:
+            return os.environ[name]
+        return dotenv.get(name, default)
+
     source = {}
     for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
                           ("OAI_HERMES_SESSION_SECRET_FD", "secretFd"),
@@ -554,26 +577,33 @@ def _bridge_configuration() -> dict[str, Any]:
         if variable in os.environ:
             value = os.environ[variable]
             source[key] = int(value) if key == "secretFd" and value.isdecimal() else value
+    if not source:
+        for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
+                              ("OAI_HERMES_SESSION_TOKEN", "token")):
+            if variable in dotenv:
+                source[key] = dotenv[variable]
     token = read_bridge_secret(source, Path.cwd())
-    root = os.environ.get("OAI_HERMES_GATEWAY_ROOT")
+    root = _env_get("OAI_HERMES_GATEWAY_ROOT")
     if not root:
         raise ValueError("Set OAI_HERMES_GATEWAY_ROOT to the existing Hermes Gateway accounts directory")
     store_root = Path(root).expanduser()
     if not store_root.is_dir():
         raise ValueError("OAI_HERMES_GATEWAY_ROOT must point to an existing Hermes Gateway accounts directory")
-    accounts = json.loads(os.environ.get("OAI_HERMES_ACCOUNTS", "[]"))
+    accounts = json.loads(_env_get("OAI_HERMES_ACCOUNTS", "[]") or "[]")
     default_trusted = store_root.resolve().parent / "trusted-cores.json"
-    trusted_file = os.environ.get("OAI_HERMES_TRUSTED_CORES_FILE")
+    trusted_file = _env_get("OAI_HERMES_TRUSTED_CORES_FILE")
     trusted_path = Path(trusted_file) if trusted_file else default_trusted
     if (not isinstance(accounts, list) or len(set(accounts)) != len(accounts)
             or any(not isinstance(v, str) or not IDENTITY.fullmatch(v) for v in accounts)
             or not accounts and not trusted_file and not default_trusted.is_file()):
         raise ValueError("Hermes requires explicit accounts or confirmed Core instance keys")
-    port = int(os.environ.get("OAI_HERMES_SESSION_PORT", "8792"))
+    port = int(_env_get("OAI_HERMES_SESSION_PORT", "8792") or "8792")
     if not 1 <= port <= 65535:
         raise ValueError("Invalid OAI_HERMES_SESSION_PORT")
+    instance_id = _env_get("OAI_HERMES_INSTANCE_ID") or "hermes"
     return {"token": token, "root": store_root, "accounts": accounts,
-            "trusted_file": trusted_file, "trusted_path": trusted_path, "port": port}
+            "trusted_file": trusted_file, "trusted_path": trusted_path, "port": port,
+            "instance_id": instance_id}
 
 
 def _configured_platform(config: Any = None) -> bool:
@@ -617,7 +647,7 @@ def register(ctx: Any) -> None:
             trusted_cores = {}
             if trusted_file or trusted_path.is_file():
                 trusted_cores = _load_trusted_cores(trusted_path)
-                os.environ.setdefault("OAI_HERMES_INSTANCE_ID", "hermes")
+            os.environ.setdefault("OAI_HERMES_INSTANCE_ID", configuration.get("instance_id") or "hermes")
             instance = SessionOnlyAdapter(config, backend, configuration["token"],
                                           configuration["accounts"], configuration["port"])
             if trusted_cores or root.is_dir():

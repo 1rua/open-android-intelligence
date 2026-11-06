@@ -44,7 +44,7 @@ from pathlib import Path
 import yaml
 from hermes_constants import get_hermes_home
 assert sys.version_info >= (3, 11) and sys.prefix != sys.base_prefix
-assert Path(sys.prefix) == Path(sys.executable).parent.parent
+assert Path(os.path.abspath(sys.prefix)) == Path(os.path.abspath(sys.executable)).parent.parent
 assert get_hermes_home() == Path(os.environ["HERMES_HOME"])
 assert importlib.util.find_spec("hermes_cli.main") is not None
 manifest = yaml.safe_load(Path("integrations/hermes-session-adapter/plugin.yaml").read_bytes())
@@ -288,10 +288,18 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
         if uv is not None:
             install = [os.path.relpath(uv, root), "pip", "install", "--no-config", "--no-progress",
                        "--no-python-downloads", "--python", os.path.relpath(python, root)]
+            offline_flags = ["--offline", "--no-build-isolation", "--no-deps"]
         else:
             install = [*python_args, "-m", "pip", "install", "--no-input", "--disable-pip-version-check"]
-        _run(root, store, handle, [*install, "./oai-core", "./integrations/hermes-session-adapter"],
-             env, code="HERMES_DEPENDENCY_FAILED")
+            offline_flags = ["--no-build-isolation", "--no-deps"]
+        try:
+            _run(root, store, handle, [*install, "./oai-core", "./integrations/hermes-session-adapter"],
+                 env, code="HERMES_DEPENDENCY_FAILED")
+        except HermesAdapterInstallError as install_err:
+            if install_err.code != "HERMES_DEPENDENCY_FAILED":
+                raise
+            _run(root, store, handle, [*install, *offline_flags, "./oai-core", "./integrations/hermes-session-adapter"],
+                 env, code="HERMES_DEPENDENCY_FAILED")
         # Refuse to overwrite a configuration changed while the resolver ran.
         if (_bytes(config) if config.exists() or config.is_symlink() else None) != original:
             raise HermesAdapterInstallError("HERMES_ENABLE_FAILED")

@@ -201,3 +201,109 @@ def test_configured_platform_reports_connected_and_prepares_its_own_key(tmp_path
         assert not (root / "session-master-key").exists()
     finally:
         backend.close()
+
+
+def test_trusted_cores_reload_skips_pinned_conflict_and_loads_new_core(tmp_path):
+    """A stale/conflicting historical core_id must neither overwrite its pin nor block new Core instances."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from oai_core.agent_registration import sign_core_request
+    from oai_hermes_adapter.bridge import AutoAccountSpaces
+
+    root = tmp_path / "accounts"
+    root.mkdir(mode=0o700)
+    trusted_file = tmp_path / "trusted-cores.json"
+    old_priv = Ed25519PrivateKey.generate()
+    impostor_priv = Ed25519PrivateKey.generate()
+    new_priv = Ed25519PrivateKey.generate()
+    old_pub = old_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    impostor_pub = impostor_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    new_pub = new_priv.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+
+    spaces = AutoAccountSpaces(root, types.SimpleNamespace(storage_root=root), {"old-core": old_pub},
+                               trusted_file=trusted_file)
+    trusted_file.write_text(json.dumps({"old-core": impostor_pub.hex(), "new-core": new_pub.hex()}))
+    trusted_file.chmod(0o600)
+
+    payload_new = {"coreInstanceId": "new-core", "hermesInstanceId": "hermes", "challenge": "a" * 64}
+    assert spaces.verified("new-core", payload_new, sign_core_request(new_priv, payload_new)) is True
+
+    payload_old = {"coreInstanceId": "old-core", "hermesInstanceId": "hermes", "challenge": "b" * 64}
+    assert spaces.verified("old-core", payload_old, sign_core_request(impostor_priv, payload_old)) is False
+    assert spaces.verified("old-core", payload_old, sign_core_request(old_priv, payload_old)) is True
+
+
+def test_provision_preserves_secret_file_and_updates_custom_trusted_file_and_dsh_homes(tmp_path, monkeypatch):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from oai_core import configuration
+
+    home = _isolated_home(tmp_path, monkeypatch)
+    hermes_home = home / ".hermes"
+    hermes_home.mkdir(mode=0o700)
+    custom_secret = hermes_home / "session.secret"
+    existing_token = "existing-hermes-secret-" + "x" * 20
+    custom_secret.write_text(existing_token + "\n")
+    custom_secret.chmod(0o600)
+    custom_trusted = hermes_home / "custom-trusted-cores.json"
+    custom_trusted.write_text("{}\n")
+    custom_trusted.chmod(0o600)
+    (hermes_home / ".env").write_text(
+        f"OAI_HERMES_SESSION_SECRET_FILE={custom_secret}\n"
+        f"OAI_HERMES_TRUSTED_CORES_FILE={custom_trusted}\n"
+    )
+    (hermes_home / ".env").chmod(0o600)
+
+    dsh_official = home / ".dsh"
+    dsh_legacy = home / ".dsh-cline"
+    dsh_official.mkdir(mode=0o700)
+    dsh_legacy.mkdir(mode=0o700)
+    official_dsh_tok = "official-dsh-token-" + "d" * 20
+    (dsh_official / ".env").write_text(f"OAI_DSH_ADAPTER_TOKEN={official_dsh_tok}\n")
+    (dsh_official / ".env").chmod(0o600)
+    (dsh_legacy / ".env").write_text("OAI_DSH_ADAPTER_TOKEN=stale-legacy-token-" + "z" * 20 + "\n")
+    (dsh_legacy / ".env").chmod(0o600)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("DSH_HOME", raising=False)
+
+    core_root = tmp_path / "core"
+    core_root.mkdir(mode=0o700)
+    configuration.private_write(
+        core_root / "core.json",
+        json.dumps({"storageRoot": "runtime/accounts", "agents": []}) + "\n",
+    )
+    signing_key = Ed25519PrivateKey.generate()
+    manifests = configuration.provision_host_agent_files(core_root, "core-inst-1", signing_key)
+    assert {m["id"] for m in manifests} == {"hermes", "dsh"}
+
+    env_after = configuration._parse_dotenv((hermes_home / ".env").read_text())
+    assert env_after["OAI_HERMES_SESSION_TOKEN"] == existing_token
+    assert "OAI_HERMES_SESSION_SECRET_FILE" not in env_after
+    assert "core-inst-1" in json.loads(custom_trusted.read_text())
+    assert (core_root / "runtime/accounts/.agent-secrets/agent-dsh.secret").read_text().strip() == official_dsh_tok
+    assert configuration._parse_dotenv((dsh_legacy / ".env").read_text())["OAI_DSH_ADAPTER_TOKEN"] == official_dsh_tok
+
+
+def test_bridge_configuration_reads_hermes_dotenv_before_process_restart(tmp_path, monkeypatch, clean_hermes_env):
+    from oai_hermes_adapter import bridge
+
+    home = _isolated_home(tmp_path, monkeypatch)
+    hermes_home = home / ".hermes"
+    gateway_root = hermes_home / "open-android-intelligence-gateway" / "accounts"
+    gateway_root.mkdir(parents=True, mode=0o700)
+    trusted = gateway_root.parent / "trusted-cores.json"
+    trusted.write_text("{}\n")
+    trusted.chmod(0o600)
+    token = "dotenv-bridge-token-" + "t" * 20
+    (hermes_home / ".env").write_text(
+        f"OAI_HERMES_SESSION_TOKEN={token}\n"
+        f"OAI_HERMES_GATEWAY_ROOT={gateway_root}\n"
+        'OAI_HERMES_ACCOUNTS=[]\n'
+        "OAI_HERMES_SESSION_PORT=9892\n"
+    )
+    (hermes_home / ".env").chmod(0o600)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    assert bridge._configured_platform() is True
+    cfg = bridge._bridge_configuration()
+    assert cfg["token"] == token
+    assert cfg["port"] == 9892

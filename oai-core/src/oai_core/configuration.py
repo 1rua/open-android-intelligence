@@ -823,7 +823,7 @@ def detect_host_agents() -> dict[str, list[Path]]:
             continue
     dsh_candidates = ([Path(os.environ["DSH_HOME"]).expanduser()]
                       if os.environ.get("DSH_HOME")
-                      else [Path.home() / ".dsh-cline", Path.home() / ".dsh"])
+                      else [Path.home() / ".dsh", Path.home() / ".dsh-cline"])
     dsh_homes: list[Path] = []
     seen: set[Path] = set()
     for home in dsh_candidates:
@@ -983,19 +983,11 @@ def _ensure_agent_secret_file(storage_root: Path, agent_id: str, preferred_token
     return os.path.relpath(target, storage_root), token
 
 
-def _ensure_hermes_trusted_core(gateway_root: Path, instance_id: str, signing_key,
-                                owner_uid: int | None = None, owner_gid: int | None = None) -> Path | None:
-    if signing_key is None:
-        return None
-    uid = os.geteuid() if owner_uid is None else owner_uid
-    gid = os.getegid() if owner_gid is None else owner_gid
-    from cryptography.hazmat.primitives import serialization
-    public_hex = signing_key.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    ).hex()
-    _ensure_host_dir(gateway_root.parent, uid, gid, 0o700)
-    _ensure_host_dir(gateway_root, uid, gid, 0o700)
-    trusted_path = gateway_root.resolve().parent / "trusted-cores.json"
+def _write_trusted_core_manifest(trusted_path: Path, instance_id: str, public_hex: str,
+                                 uid: int, gid: int) -> None:
+    if trusted_path.is_symlink() or trusted_path.parent.is_symlink():
+        return
+    _ensure_host_dir(trusted_path.parent, uid, gid, 0o700)
     existing: dict[str, str] = {}
     if trusted_path.is_file() and not trusted_path.is_symlink():
         raw_text = _read_host_text(trusted_path, uid)
@@ -1016,6 +1008,33 @@ def _ensure_hermes_trusted_core(gateway_root: Path, instance_id: str, signing_ke
     if needs_write:
         existing[instance_id] = public_hex
         _write_host_text(trusted_path, json.dumps(existing, ensure_ascii=False, indent=2) + "\n", uid, gid, 0o600)
+
+
+def _ensure_hermes_trusted_core(gateway_root: Path, instance_id: str, signing_key,
+                                owner_uid: int | None = None, owner_gid: int | None = None, *,
+                                extra_trusted_file: Path | None = None) -> Path | None:
+    if signing_key is None:
+        return None
+    uid = os.geteuid() if owner_uid is None else owner_uid
+    gid = os.getegid() if owner_gid is None else owner_gid
+    from cryptography.hazmat.primitives import serialization
+    public_hex = signing_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    ).hex()
+    _ensure_host_dir(gateway_root.parent, uid, gid, 0o700)
+    _ensure_host_dir(gateway_root, uid, gid, 0o700)
+    trusted_path = gateway_root.resolve().parent / "trusted-cores.json"
+    _write_trusted_core_manifest(trusted_path, instance_id, public_hex, uid, gid)
+    if extra_trusted_file is not None:
+        try:
+            resolved_extra = extra_trusted_file.expanduser()
+            if (resolved_extra.is_absolute() and not resolved_extra.is_symlink()
+                    and resolved_extra.resolve() != trusted_path.resolve()
+                    and resolved_extra.parent.is_dir()
+                    and resolved_extra.parent.stat().st_uid in {os.geteuid(), uid}):
+                _write_trusted_core_manifest(resolved_extra, instance_id, public_hex, uid, gid)
+        except OSError:
+            pass
     return trusted_path
 
 
@@ -1062,7 +1081,13 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         env_file = hermes_home / ".env"
         env_text = _read_host_text(env_file, owner_uid)
         env_vars = _parse_dotenv(env_text)
-        preferred = env_vars.get("OAI_HERMES_SESSION_TOKEN") or legacy_tokens.get("OAI_HERMES_SESSION_TOKEN")
+        preferred = env_vars.get("OAI_HERMES_SESSION_TOKEN")
+        if not preferred and env_vars.get("OAI_HERMES_SESSION_SECRET_FILE"):
+            secret_candidate = Path(env_vars["OAI_HERMES_SESSION_SECRET_FILE"]).expanduser()
+            if not secret_candidate.is_absolute():
+                secret_candidate = hermes_home / secret_candidate
+            preferred = _read_host_text(secret_candidate, owner_uid).removesuffix("\n") or None
+        preferred = preferred or legacy_tokens.get("OAI_HERMES_SESSION_TOKEN")
         secret_rel, token = _ensure_agent_secret_file(storage, "hermes", preferred)
         gateway_root = Path(env_vars.get("OAI_HERMES_GATEWAY_ROOT")
                             or (hermes_home / "open-android-intelligence-gateway" / "accounts")).expanduser()
@@ -1072,7 +1097,12 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
             port = 8792
         hermes_instance_id = env_vars.get("OAI_HERMES_INSTANCE_ID") or "hermes"
         accounts, _ = _discover_hermes_native_accounts(hermes_home)
-        trusted_path = _ensure_hermes_trusted_core(gateway_root, instance_id, signing_key, owner_uid, owner_gid)
+        existing_trusted = (Path(env_vars["OAI_HERMES_TRUSTED_CORES_FILE"]).expanduser()
+                            if env_vars.get("OAI_HERMES_TRUSTED_CORES_FILE") else None)
+        trusted_path = _ensure_hermes_trusted_core(
+            gateway_root, instance_id, signing_key, owner_uid, owner_gid,
+            extra_trusted_file=existing_trusted,
+        )
         updates = {
             "OAI_HERMES_SESSION_TOKEN": dotenv_scalar(token),
             "OAI_HERMES_GATEWAY_ROOT": dotenv_scalar(str(gateway_root)),
@@ -1082,7 +1112,9 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         }
         if trusted_path is not None:
             updates["OAI_HERMES_TRUSTED_CORES_FILE"] = dotenv_scalar(str(trusted_path))
-        new_env_text = update_environment_text(env_text, updates)
+        new_env_text = update_environment_text(
+            env_text, updates, unset={"OAI_HERMES_SESSION_SECRET_FILE", "OAI_HERMES_SESSION_SECRET_FD"}
+        )
         if new_env_text != env_text or not env_file.is_file():
             _write_host_text(env_file, new_env_text, owner_uid, owner_gid, 0o600)
         manifest = {
@@ -1099,19 +1131,25 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
     if "dsh" in detected:
         dsh_homes = detected["dsh"]
         preferred = None
+        home_tokens: list[str | None] = []
+        missing_credentials = False
         for home in dsh_homes:
             env_file = home / ".env"
+            current_tok = None
             if env_file.is_file():
                 try:
                     owner_uid = home.stat().st_uid
-                    preferred = _parse_dotenv(_read_host_text(env_file, owner_uid)).get("OAI_DSH_ADAPTER_TOKEN")
+                    current_tok = _parse_dotenv(_read_host_text(env_file, owner_uid)).get("OAI_DSH_ADAPTER_TOKEN")
                 except Exception:
-                    preferred = None
-                if preferred:
-                    break
+                    current_tok = None
+                if preferred is None and current_tok:
+                    preferred = current_tok
+            home_tokens.append(current_tok)
+            if not (home / ".credentials.yaml").is_file():
+                missing_credentials = True
         preferred = preferred or legacy_tokens.get("OAI_DSH_ADAPTER_TOKEN")
         secret_rel, token = _ensure_agent_secret_file(storage, "dsh", preferred)
-        if preferred != token:
+        if missing_credentials or any(tok != token for tok in home_tokens):
             try:
                 sync_dsh_adapter_env(token)
             except Exception:
@@ -1230,13 +1268,18 @@ def _confirm_operator_hermes_mapping(registration, handle: str, entry: dict, ope
 def restart_hermes_service_if_active() -> bool:
     if not sys.platform.startswith("linux"):
         return False
+    svc_env = os.environ.copy()
+    if "XDG_RUNTIME_DIR" not in svc_env:
+        runtime_dir = Path(f"/run/user/{os.geteuid()}")
+        if runtime_dir.is_dir():
+            svc_env["XDG_RUNTIME_DIR"] = str(runtime_dir)
     for cmd_prefix in (["systemctl", "--user"], *([["systemctl"]] if os.geteuid() == 0 else [])):
         try:
             state = subprocess.run([*cmd_prefix, "is-active", "hermes-gateway.service"],
-                                   capture_output=True, text=True, timeout=5, check=False)
-            if state.returncode == 0 and state.stdout.strip() == "active":
+                                   capture_output=True, text=True, timeout=5, check=False, env=svc_env)
+            if state.stdout.strip() in {"active", "activating", "reloading"}:
                 subprocess.run([*cmd_prefix, "restart", "hermes-gateway.service"],
-                               capture_output=True, text=True, timeout=15, check=True)
+                               capture_output=True, text=True, timeout=15, check=True, env=svc_env)
                 return True
         except Exception:
             continue
@@ -1258,13 +1301,16 @@ def restart_hermes_service_if_active() -> bool:
     return False
 
 
-def _register_with_host_retry(registration, handle: str, entry: dict, storage: Path) -> None:
+def _register_with_host_retry(registration, handle: str, entry: dict, storage: Path, *,
+                              already_restarted: bool = False) -> None:
     import time
     try:
         asyncio.run(registration.register(handle, entry, storage))
         return
     except ValueError:
-        if entry.get("type") != "hermes" or not restart_hermes_service_if_active():
+        if entry.get("type") != "hermes":
+            raise
+        if not already_restarted and not restart_hermes_service_if_active():
             raise
     last_error: Exception | None = None
     for _ in range(24):
@@ -1315,6 +1361,18 @@ def _is_local_hermes_bridge(entry: dict, *, home: Path | None = None) -> bool:
                 and url.path in {"", "/"} and not url.query and not url.fragment)
     except (OSError, ValueError, TypeError):
         return False
+
+
+def _has_legacy_hermes_plugin(entry: dict) -> bool:
+    if entry.get("type") != "hermes":
+        return False
+    homes = detect_host_agents().get("hermes", [])
+    if len(homes) != 1 or not _is_local_hermes_bridge(entry, home=homes[0]):
+        return False
+    home = homes[0]
+    legacy_dir = home / "plugins" / "open-android-intelligence-gateway"
+    current_dir = home / "plugins" / "oai-hermes-session-adapter"
+    return legacy_dir.is_dir() and not legacy_dir.is_symlink() and not current_dir.is_dir()
 
 
 def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
@@ -1400,7 +1458,8 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
     return True
 
 
-def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> list[str]:
+def auto_connect_host_agents(root: Path, store, handle: str, operator: dict, *,
+                             hermes_restarted: bool = False) -> list[str]:
     from .agent_registration import AgentHandshakeError, AgentRegistration
     from .sessions import AgentRegistry
 
@@ -1422,7 +1481,10 @@ def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> 
         if entry["id"] in explicit_ids or AgentRegistry.get_factory(entry["type"]) is None:
             continue
         try:
-            _register_with_host_retry(registration, handle, entry, storage)
+            _register_with_host_retry(
+                registration, handle, entry, storage,
+                already_restarted=bool(hermes_restarted) and entry.get("type") == "hermes",
+            )
             _confirm_operator_hermes_mapping(registration, handle, entry, operator)
             connected.append(entry["id"])
             _ui_ok(f"[INFO] 已自动发现并连接本机 AI 助手: {entry['id']} ({entry['type']})")
@@ -1506,10 +1568,17 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         _register_with_host_retry(registration, handle, entry, storage)
     except AgentHandshakeError as error:
         print(f"[错误] {error}（{error.code}）。")
-        if error.code not in {"AGENT_BRIDGE_UPGRADE_REQUIRED", "AGENT_BRIDGE_UNAVAILABLE"}:
+        legacy_hermes_upgrade = (
+            error.code == "AGENT_BRIDGE_AUTHENTICATION_FAILED"
+            and _has_legacy_hermes_plugin(entry)
+        )
+        if error.code not in {"AGENT_BRIDGE_UPGRADE_REQUIRED", "AGENT_BRIDGE_UNAVAILABLE"} and not legacy_hermes_upgrade:
             return
+        restarted_after_upgrade = False
         if entry.get("type") == "hermes":
             installed = _upgrade_hermes_bridge(root, store, handle, entry)
+            if installed:
+                restarted_after_upgrade = restart_hermes_service_if_active()
         elif entry.get("type") == "dsh":
             installed = _upgrade_dsh_bridge(root, store, handle, entry,
                                             allow_install=error.code == "AGENT_BRIDGE_UNAVAILABLE")
@@ -1518,7 +1587,9 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         if not installed:
             return
         try:
-            _register_with_host_retry(registration, handle, entry, storage)
+            _register_with_host_retry(
+                registration, handle, entry, storage, already_restarted=restarted_after_upgrade
+            )
         except AgentHandshakeError as retry_error:
             print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重启或重新加载对应 AI 助手服务后重试。")
             return
@@ -2050,10 +2121,17 @@ def write_configuration_text(path: Path, text: str, transaction: ConfigurationTr
         transaction.add_file(path, text)
 
 
-def update_environment_text(content: str, values: dict[str, str]) -> str:
+def update_environment_text(content: str, values: dict[str, str], *, unset: set[str] | None = None) -> str:
     output, seen = [], set()
+    removed = unset or set()
     for line in content.splitlines():
-        matched = next((key for key in values if line.startswith(key + "=") or line.startswith("export " + key + "=")), None)
+        stripped = line.lstrip()
+        if stripped.startswith("export "):
+            stripped = stripped[7:].lstrip()
+        key_part = stripped.split("=", 1)[0].rstrip() if "=" in stripped else None
+        if key_part in removed:
+            continue
+        matched = key_part if key_part in values else None
         if matched is None:
             output.append(line)
         elif matched not in seen:
@@ -2068,7 +2146,7 @@ def dotenv_scalar(value: str) -> str:
 
 
 def sync_dsh_adapter_env(token: str, *, transaction: ConfigurationTransaction | None = None) -> None:
-    candidates = [Path.home() / ".dsh-cline", Path.home() / ".dsh"]
+    candidates = [Path.home() / ".dsh", Path.home() / ".dsh-cline"]
     if os.environ.get("DSH_HOME"):
         candidates.insert(0, Path(os.environ["DSH_HOME"]))
     seen = set()

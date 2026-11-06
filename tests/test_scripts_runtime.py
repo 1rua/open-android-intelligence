@@ -230,3 +230,22 @@ def test_uninstall_yes_cannot_bypass_authentication(monkeypatch, workspace):
     assert (root / '.venv').is_dir()
     assert (root / 'start-core.sh').is_file()
     assert '认证' in result.stderr
+
+
+def test_fresh_install_upgrades_detected_host_adapters_before_auto_connect(monkeypatch, workspace):
+    root = workspace
+    events = []
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda argv, **kw: events.append(('cmd', argv[-1])))
+    monkeypatch.setattr(runtime.configuration, 'detect_host_agents', lambda: {'hermes': [root.parent / 'home/.hermes']})
+    monkeypatch.setattr(runtime.configuration, 'provision_host_candidates',
+                        lambda actual_root, store, handle, operator: (events.append(('provision', actual_root)), [])[1])
+    monkeypatch.setattr(runtime, '_upgrade_installed_host_adapters',
+                        lambda actual_root, store, handle: (events.append(('upgrade', actual_root)), True)[1])
+    monkeypatch.setattr(runtime.configuration, 'auto_connect_host_agents',
+                        lambda actual_root, store, handle, operator, *, hermes_restarted=False: (
+                            events.append(('connect', hermes_restarted)), ['hermes']
+                        )[1])
+    answers(monkeypatch, ['admin', 'bootstrap', 'SAVED', 'n'], ['pw-synthetic', 'pw-synthetic'])
+    assert runtime.install(root) == 0
+    order = [(kind, payload) for kind, payload in events if kind in {'provision', 'upgrade', 'connect'}]
+    assert order == [('provision', root), ('upgrade', root), ('connect', True)]

@@ -234,3 +234,32 @@ def test_hermes_installation_rechecks_the_confirmed_host(deployment, monkeypatch
              "url": "http://127.0.0.1:8792", "secretFile": "bridge.secret"}
     assert configuration._upgrade_hermes_bridge(root, store, handle, entry) is False
     assert calls == []
+
+
+def test_legacy_hermes_plugin_403_upgrades_and_restarts_service_in_setup(deployment, monkeypatch, capsys):
+    """Legacy open-android-intelligence-gateway returning 403 must still offer upgrade + service restart."""
+    root, store, handle, operator = deployment
+    calls = []
+    restarts = []
+    with host_bridge("hermes", status=403) as (host, url):
+        def install(actual_root, actual_store, actual_handle, target):
+            assert (actual_root, actual_store, actual_handle) == (root, store, handle)
+            calls.append(target)
+
+        arrange_installer("hermes", root, monkeypatch, install)
+        legacy_dir = root / "host" / "plugins" / "open-android-intelligence-gateway"
+        legacy_dir.mkdir(parents=True, mode=0o700)
+        arrange_candidate(root, "hermes", url, monkeypatch, ["1", "hermes", "y"])
+
+        def restart():
+            restarts.append(True)
+            host.current = len(calls) == 1
+            return host.current
+
+        monkeypatch.setattr(configuration, "restart_hermes_service_if_active", restart)
+        configuration._configure_agents(root, store, handle, operator)
+        assert len(calls) == 1
+        assert len(restarts) >= 1
+    entries = AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False).entries()
+    assert [entry["id"] for entry in entries] == ["hermes"]
+    assert "Agent 已通过真实握手并注册" in capsys.readouterr().out

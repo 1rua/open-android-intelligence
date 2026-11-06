@@ -401,9 +401,13 @@ def _verify_journal(root: Path, *, has_identity: bool) -> str | None:
     return state["status"]
 
 
-def _run(store: IdentityStore, handle: str, scope: str, arguments: list[str], *, cwd: Path) -> None:
+def _run(store: IdentityStore, handle: str, scope: str, arguments: list[str], *,
+         cwd: Path, env: dict[str, str] | None = None) -> None:
     store.require_management(handle, scope)
-    subprocess.run(arguments, cwd=cwd, check=True)
+    kwargs: dict[str, object] = {"cwd": cwd, "check": True}
+    if env is not None:
+        kwargs["env"] = env
+    subprocess.run(arguments, **kwargs)
 
 
 def _write_owned(store: IdentityStore, handle: str, scope: str, path: Path, content: str, mode: int) -> None:
@@ -810,8 +814,9 @@ def _upgrade_git_checkout(root: Path, store: IdentityStore, handle: str) -> bool
     return True
 
 
-def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: str) -> None:
+def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: str) -> bool:
     """升级本机已经安装过 OAI 连接插件的 Hermes / DSH 环境。"""
+    hermes_restarted = False
     detected = configuration.detect_host_agents()
     if "hermes" in detected and (root / "integrations/hermes-session-adapter/plugin.yaml").is_file():
         hermes_home = detected["hermes"][0]
@@ -821,8 +826,8 @@ def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: s
             _step("检测到已安装的 Hermes 连接插件，正在同步更新...")
             try:
                 install_hermes_adapter(root, store, handle, hermes_home)
-                restarted = configuration.restart_hermes_service_if_active()
-                _ok("已同步更新本机 Hermes 连接插件" + ("并重启 hermes-gateway 服务。" if restarted else "。"))
+                hermes_restarted = configuration.restart_hermes_service_if_active()
+                _ok("已同步更新本机 Hermes 连接插件" + ("并重启 hermes-gateway 服务。" if hermes_restarted else "。"))
             except HermesAdapterInstallError as err:
                 _warn(f"Hermes 连接插件未能自动更新：{err}（可稍后在 oai setup 中处理）。")
     if "dsh" in detected and (root / "integrations/dsh-session-adapter/install.mjs").is_file():
@@ -838,6 +843,7 @@ def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: s
                 _ok(f"已同步更新 DSH 连接插件（配置: {profile.name}）。")
             except DshAdapterInstallError as err:
                 _warn(f"DSH 配置 {profile.name} 的连接插件未能自动更新：{err}（可稍后在 oai setup 中处理）。")
+    return hermes_restarted
 
 
 def _unit_matches_root(unit: Path, root: Path) -> bool:
@@ -1019,17 +1025,27 @@ def install(root: Path, *, restore_source: Path | None = None, upgrade_source: P
         )
         package_reference = "./oai-core" if trusted_package == local_package else os.path.relpath(trusted_package, root)
         _step("正在安装/更新 OAI Core 命令行与运行时组件...")
-        _run(store, handle, "install", [str(python), "-m", "pip", "install", "-e", package_reference], cwd=root)
-        _run(store, handle, "install", [str(python), "-m", "pip", "check"], cwd=root)
+        pip_env = {**os.environ, "PIP_DISABLE_PIP_VERSION_CHECK": "1"}
+        try:
+            _run(store, handle, "install", [str(python), "-m", "pip", "install", "-e", package_reference],
+                 cwd=root, env=pip_env)
+        except subprocess.CalledProcessError:
+            _run(store, handle, "install",
+                 [str(python), "-m", "pip", "install", "--no-build-isolation", "--no-deps", "-e", package_reference],
+                 cwd=root, env=pip_env)
+        _run(store, handle, "install", [str(python), "-m", "pip", "check"], cwd=root, env=pip_env)
         store.require_management(handle, "install")
         register_instance(root / "core.json")
         _integrate_cli(root, store, handle)
         _ok("全局快捷命令 oai 已配置到 ~/.local/bin/oai。")
         if configuration.detect_host_agents():
-            if has_identity:
-                _upgrade_installed_host_adapters(root, store, handle)
+            configuration.provision_host_candidates(root, store, handle, operator)
+            hermes_restarted = bool(_upgrade_installed_host_adapters(root, store, handle))
             _step("正在扫描并尝试自动连接本机已安装的 AI 助手...")
-            configuration.auto_connect_host_agents(root, store, handle, operator)
+            if hermes_restarted:
+                configuration.auto_connect_host_agents(root, store, handle, operator, hermes_restarted=True)
+            else:
+                configuration.auto_connect_host_agents(root, store, handle, operator)
         _box("步骤 4/4 · 后台自启与服务设置", (
             "开启开机自启后，系统重启或登录时会自动在后台运行 OAI Core 服务。",
         ))

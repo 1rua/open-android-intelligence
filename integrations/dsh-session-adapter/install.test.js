@@ -385,4 +385,49 @@ describe("bounded official DSH profile upgrade", () => {
     expect(readJson(join(f.directory, "package.json")).dsh.profile.bundles).toEqual(["base", NEW, "tail"]);
   });
 
+  it("prefixes ./ when cwd is the repository root so official anchorPathSpec resolves bundle outside profile", async () => {
+    const f = fixture({ includeUninstalled: true, manifest: { private: true } });
+    // Rewrite metadata relative to `root` (the exact cwd used by dsh_installation.py).
+    writeFileSync(join(f.backup, "metadata.json"), JSON.stringify({
+      version: 1, profile: "web", includeUninstalled: true,
+      home: relative(root, f.home), directory: relative(root, f.directory),
+      launcher: relative(root, f.launcher), bundle: "integrations/dsh-session-adapter",
+      files: { "package.json": digest(f.original), "pnpm-lock.yaml": null },
+    }), { mode: 0o600 });
+    // Enforce @deepseek-ai/dsh-plugin-manager's exact anchorPathSpec regex:
+    // file: specs without a leading ./ or ../ are NOT anchored to cwd and fail in pnpm!
+    const managerIndex = join(dirname(dirname(f.launcher)), "node_modules", "@deepseek-ai", "dsh-plugin-manager", "index.js");
+    writeFileSync(managerIndex, `import {existsSync,readFileSync,writeFileSync} from 'node:fs';
+      import {join,resolve} from 'node:path';
+      const trace=${JSON.stringify(f.trace)};
+      const anchorRe=/^(?:file|link):(?<path>\\.{1,2}(?:[/\\\\].*)?)$/;
+      export async function runProfilePnpm(context,args,options){
+        const records=existsSync(trace)?JSON.parse(readFileSync(trace)):[];
+        records.push({context,args,options});
+        writeFileSync(trace,JSON.stringify(records));
+        const m=anchorRe.exec(args[1]??'');
+        if(!m||!existsSync(join(resolve(context.cwd,m.groups.path),'package.json'))){
+          return {exitCode:1};
+        }
+        const p=join(context.dir,'package.json');
+        const manifest=JSON.parse(readFileSync(p));
+        manifest.dependencies ??= {};
+        manifest.dependencies[${JSON.stringify(NEW)}]=args[1];
+        writeFileSync(p,JSON.stringify(manifest));
+        return {exitCode:0};
+      }\n`);
+    await installDshAdapter({
+      cwd: root,
+      launcher: relative(root, f.launcher),
+      home: relative(root, f.home),
+      profile: "web",
+      backup: relative(root, f.backup),
+      includeUninstalled: true,
+    });
+    const records = readJson(f.trace);
+    const installCall = records.find((r) => r.context);
+    expect(installCall.args).toEqual(["add", "file:./integrations/dsh-session-adapter"]);
+    expect(readJson(join(f.directory, "package.json")).dsh.profile.bundles).toEqual([NEW]);
+  });
+
 });

@@ -206,6 +206,12 @@ function within(parent, child) {
   return path === "" || (path !== ".." && !path.startsWith("../") && !isAbsolute(path));
 }
 
+function bundleFileSpec(cwd, bundle) {
+  const path = relative(cwd, bundle).replaceAll("\\", "/");
+  if (!path) return "file:.";
+  return path.startsWith(".") ? "file:" + path : "file:./" + path;
+}
+
 async function officialApis(launcher, directory) {
   try {
     safePath(launcher, { owner: false });
@@ -305,7 +311,7 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
       if (bounded.aborted) fail("DSH_INSTALL_TIMEOUT");
       try {
         const result = await api.runProfilePnpm({ profile, dir: directory, installAnchor: api.anchor, cwd, home },
-          ["add", "file:" + relative(cwd, bundle)],
+          ["add", bundleFileSpec(cwd, bundle)],
           { execution: "service", outputBytes: 8192, activateNewBundles: false,
             idleTimeoutMs: 30_000, lookupTimeoutMs: 10_000, signal: bounded });
         // Never forward output or logPath. Timeout wins even over an exitCode 0.
