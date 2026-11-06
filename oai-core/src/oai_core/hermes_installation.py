@@ -23,19 +23,19 @@ LEGACY_PLUGIN = "open-android-intelligence-gateway"
 _TIMEOUT = 300
 _EXCLUDED = {".git", "__pycache__", "node_modules", "build", "dist", ".gradle", ".venv", ".pytest_cache"}
 _MESSAGES = {
-    "HERMES_PERMISSION_DENIED": "缺少本安装实例的有效 Agent 管理权限，已停止安装。",
-    "HERMES_PATH_UNSAFE": "Hermes 安装路径包含链接、异常路径或不安全文件，已停止安装。",
-    "HERMES_HOST_NOT_FOUND": "未找到所选 Hermes 主目录中的标准宿主 Python 环境。",
-    "HERMES_HOST_OWNER_UNSUPPORTED": "本安装辅助暂不支持操作其他用户的 Hermes 宿主，请使用宿主所有者运行。",
-    "HERMES_HOST_INCOMPATIBLE": "Hermes 宿主、插件清单或配置不兼容，已停止安装。",
-    "HERMES_SOURCE_INVALID": "当前安装目录缺少有效的本地 Core 或 Hermes 适配器源码。",
-    "HERMES_PACKAGE_MANAGER_UNAVAILABLE": "未找到可用的 uv，且 Hermes 宿主 Python 没有可用的 pip。",
-    "HERMES_BACKUP_FAILED": "无法安全保留原 Hermes 插件或配置，已停止安装。",
-    "HERMES_DEPENDENCY_FAILED": "Hermes 宿主中的本地包安装失败，已有插件和配置保持原样。",
-    "HERMES_INSTALL_TIMEOUT": "Hermes 插件安装超时，恢复材料已保留，请检查后重试。",
-    "HERMES_ENABLE_FAILED": "Hermes 官方插件启停或安装结果核验失败，恢复材料已保留。",
-    "HERMES_RECOVERY_REQUIRED": "Hermes 安装失败且无法安全恢复，原文件与失败材料已保留，请人工核对。",
-    "HERMES_INSTALL_FAILED": "Hermes 插件安装失败，请检查保留的本机安装材料。",
+    "HERMES_PERMISSION_DENIED": "当前账号没有管理 AI 助手的权限，已停止安装。",
+    "HERMES_PATH_UNSAFE": "Hermes 安装目录包含符号链接（快捷方式）或文件权限异常，已停止安装。",
+    "HERMES_HOST_NOT_FOUND": "在所选 Hermes 目录中未找到可用的 Python 运行环境。",
+    "HERMES_HOST_OWNER_UNSUPPORTED": "当前 Hermes 目录属于其他系统用户，请切换到该用户后再运行安装。",
+    "HERMES_HOST_INCOMPATIBLE": "当前 Hermes 版本或配置文件格式不兼容，已停止安装。",
+    "HERMES_SOURCE_INVALID": "当前安装目录缺少 OAI Core 或 Hermes 连接插件源码，请重新运行 install.sh 修复。",
+    "HERMES_PACKAGE_MANAGER_UNAVAILABLE": "未找到包管理工具 uv，且 Hermes 环境缺少 pip，无法安装插件。",
+    "HERMES_BACKUP_FAILED": "无法备份原有的 Hermes 插件或配置文件，为安全起见已停止安装。",
+    "HERMES_DEPENDENCY_FAILED": "向 Hermes 环境安装连接组件失败，原有的插件和配置未受影响。",
+    "HERMES_INSTALL_TIMEOUT": "Hermes 连接插件安装超时，备份文件已保留在 runtime/hermes-adapter-backups，请检查后重试。",
+    "HERMES_ENABLE_FAILED": "Hermes 插件启用或自检未通过，备份文件已保留在 runtime/hermes-adapter-backups。",
+    "HERMES_RECOVERY_REQUIRED": "Hermes 插件安装失败且自动回滚未完成，原文件备份保存在 runtime/hermes-adapter-backups，请人工检查。",
+    "HERMES_INSTALL_FAILED": "Hermes 连接插件安装失败，原有文件备份保存在 runtime/hermes-adapter-backups。",
 }
 # The probe reads manifests/config only. A distinct exit status carries the one
 # nonsecret fact needed by the caller, avoiding capture of any host output.

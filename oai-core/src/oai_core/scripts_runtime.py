@@ -23,6 +23,37 @@ from .instance import discover_instance, register_instance
 from .management import LocalRecovery, secret_input
 
 
+def _use_color() -> bool:
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _style(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _use_color() else text
+
+
+def _box(title: str, lines: tuple[str, ...] | list[str] = ()) -> None:
+    border = _style("╭──────────────────────────────────────────────────────────╮", "36;1")
+    bottom = _style("╰──────────────────────────────────────────────────────────╯", "36;1")
+    bar = _style("│", "36;1")
+    print(f"\n{border}")
+    print(f"{bar}  {_style(title, '1')}")
+    for line in lines:
+        print(f"{bar}  {line}")
+    print(bottom)
+
+
+def _step(message: str) -> None:
+    print(f"{_style('▸', '36;1')} {message}")
+
+
+def _ok(message: str) -> None:
+    print(f"{_style('✓', '32;1')} {message}")
+
+
+def _warn(message: str) -> None:
+    print(f"{_style('!', '33;1')} {message}")
+
+
 def _input(prompt: str) -> str:
     if not sys.stdin.isatty():
         raise PermissionError("需要交互式终端")
@@ -30,7 +61,8 @@ def _input(prompt: str) -> str:
 
 
 def _confirm(prompt: str, value: str) -> None:
-    if _input(prompt) != value:
+    answer = _input(prompt).strip()
+    if answer != value and answer.lower() not in {"", "y", "yes", value.lower()}:
         raise PermissionError("操作已取消")
 
 
@@ -113,11 +145,15 @@ def _journal(root: Path, status: str) -> None:
 
 
 def _new_install(root: Path, storage: Path, key: Path, database: Path):
+    _box("步骤 2/4 · 创建首个管理员", (
+        "请设置管理员用户名与登录密码。",
+        "后续手机 App 配对登录以及后台设置均使用此账号。",
+    ))
     username = _input("初始管理员账号: ")
     password = secret_input("设置管理员密码: ")
     if password != secret_input("再次输入管理员密码: "):
         raise ValueError("两次密码不一致")
-    _confirm("确认创建首个管理员，请输入 bootstrap: ", "bootstrap")
+    _confirm("确认创建首个管理员账号？(直接回车确认，或输入 y / bootstrap) [y]: ", "bootstrap")
     read_fd, write_fd = os.pipe()
     try:
         os.write(write_fd, b"bootstrap\n")
@@ -144,11 +180,16 @@ def _new_install(root: Path, storage: Path, key: Path, database: Path):
             raise
         finally:
             password = ""
+    _ok(f"管理员账号「{username}」创建成功。")
     return store, handle
 
 
 def _legacy_authenticate(storage: Path) -> tuple[str, str]:
     # This path only opens existing account DBs in SQLite read-only mode.
+    _box("升级旧版账号数据", (
+        "检测到旧版账号数据库，请输入一个现有账号及密码。",
+        "该账号将升级为管理员，其余账号与历史记录完整保留。",
+    ))
     accounts = IdentityStore._legacy_accounts(storage)
     username = _input("指定要迁移为管理员的现有账号: ")
     password = secret_input("现有账号密码: ")
@@ -209,7 +250,7 @@ def _old_writers_stopped(storage: Path) -> bool:
 def _migrate(root: Path, storage: Path, key: Path, database: Path):
     username, password = _legacy_authenticate(storage)
     try:
-        _confirm("请先停止所有旧 Core、Adapter 和管理程序，确认已停止请输入 STOP: ", "STOP")
+        _confirm("请先停止所有旧 Core、Adapter 和管理程序，确认已停止请输入 STOP（或直接回车确认）[y]: ", "STOP")
         if not _old_writers_stopped(storage):
             raise RuntimeError("旧数据库仍被进程使用或被锁定")
         from .identity_migration import migrate_legacy_installation
@@ -217,6 +258,7 @@ def _migrate(root: Path, storage: Path, key: Path, database: Path):
                                             old_writers_stopped=lambda: _old_writers_stopped(storage))
         store.key_store = LocalMasterKeyStore(key)
         handle = store.begin_management(username, password)
+        _ok("旧版账号数据已安全升级为新版格式。")
         return store, handle
     finally:
         password = ""
@@ -283,12 +325,12 @@ def _install_agents(root: Path, store: IdentityStore, handle: str) -> bool:
     partial = False
     if "hermes" in selected:
         if not shutil.which("hermes"):
-            print("Hermes 尚未连接：未找到 hermes 命令。")
+            _warn("Hermes 尚未连接：未在系统中找到 hermes 命令。")
             partial = True
         else:
             _run(store, handle, "agents.manage", ["hermes", "plugins", "install", "./integrations/hermes-session-adapter", "--enable"], cwd=root)
     if "dsh" in selected:
-        print("DSH 插件安装需在 setup 的 Agent 接入中确认目标 profile；请按菜单完成安装与真实握手。")
+        _warn("DSH 插件需要在 setup 的「Agent 接入」菜单中选择对应的配置 (Profile) 完成安装与连接验证。")
         partial = True
     return not partial
 
@@ -355,11 +397,13 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
                         for args in (["daemon-reload"], ["enable", "oai-core.service"], ["restart", "oai-core.service"]):
                             _run(store, handle, "service", ["systemctl", *args], cwd=root)
                     except subprocess.CalledProcessError:
-                        print("[WARN] systemd 服务启用未完成，可手动运行 start-core.sh 启动。")
+                        _warn("后台服务未能自动启动，稍后可手动运行 start-core.sh 启动。")
                 else:
-                    print("[WARN] systemd 用户服务启用未完成，可手动运行 start-core.sh 启动。")
+                    _warn("后台用户服务未能自动启动，稍后可手动运行 start-core.sh 启动。")
+            else:
+                _ok("已配置并启动 Linux 后台开机自启服务 (oai-core.service)。")
         else:
-            print("未检测到 systemctl；已生成桌面启动项。")
+            _ok("未检测到 systemctl，已为您生成桌面登录自启项。")
     elif sys.platform == "darwin":
         import plistlib
         path = Path.home() / "Library/LaunchAgents/com.openandroidintelligence.core.plist"
@@ -371,6 +415,7 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
         _write_owned(store, handle, "service", path, content, 0o644)
         if shutil.which("launchctl"):
             _run(store, handle, "service", ["launchctl", "load", "-w", str(path)], cwd=root)
+        _ok("已配置 macOS 登录自启服务 (LaunchAgent)。")
     elif sys.platform.startswith(("win", "cygwin", "msys")):
         appdata = os.environ.get("APPDATA")
         if not appdata:
@@ -379,6 +424,7 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
         content = f'Set WshShell = CreateObject("WScript.Shell")\nWshShell.Run chr(34) & "{start}" & Chr(34), 0\nSet WshShell = Nothing\n'
         _rotate_existing_service_file(store, handle, path, content)
         _write_owned(store, handle, "service", path, content, 0o644)
+        _ok("已添加 Windows 开机自启脚本。")
     else:
         raise ValueError("当前平台不支持自动服务配置")
 
@@ -462,12 +508,17 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
     has_identity = database.exists() or database.is_symlink()
     state = _verify_journal(root, has_identity=has_identity)
     if has_identity:
+        _box("验证管理员身份", (
+            "检测到当前目录已有安装记录，请先完成身份验证。",
+            "验证通过后将自动更新程序组件，原有配置与数据保持不变。",
+        ))
         store = IdentityStore(database, key_store=LocalMasterKeyStore(key))
         try:
             handle = authenticate(store, None)
         except BaseException:
             store.close()
             raise
+        _ok("管理员身份验证通过。")
     elif (root / "core.json").exists() or (storage.exists() and any(storage.iterdir())):
         store, handle = _migrate(root, storage, key, database)
     else:
@@ -479,17 +530,26 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
             # route even when optional TOTP is left disabled.
             if sys.stdin.isatty() and sys.stdout.isatty():
                 registered = LocalRecovery(store).register(handle, confirmed=True)
+                _box("步骤 3/4 · 备份管理员应急恢复码（仅显示一次）", (
+                    "当您忘记管理员密码时，可在服务器本机终端运行：",
+                    f"  oai recover {operator['username']}",
+                    "并输入下方任意一个恢复码来重置密码。请务必拍照或离线保存：",
+                ))
                 print("管理员本机恢复码只显示一次，请离线保存：")
                 for code in registered["recoveryCodes"]:
-                    print(code)
-                _confirm("保存后请输入 SAVED: ", "SAVED")
+                    print(f"  {code}")
+                _confirm("请确认已保存恢复码（直接回车确认，或保存后请输入 SAVED）[y]: ", "SAVED")
+                _ok("应急恢复码已完成登记。")
             else:
                 raise PermissionError("首次初始化需要受保护终端以保存恢复码")
         if restore_source is not None:
+            _step("正在恢复缺失的程序源码文件（原有配置与账号数据保持不变）...")
             with configuration_lock(root):
                 _restore_install_source(root, restore_source, store, handle)
+            _ok("程序源码文件已恢复。")
         python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not python.is_file():
+            _step("正在创建 Python 虚拟环境 (.venv)...")
             _run(store, handle, "install", [sys.executable, "-m", "venv", "--copies", str(root / ".venv")], cwd=root)
         if (root / "runtime/configuration-journal.json").exists():
             store.require_management(handle, "config")
@@ -500,10 +560,11 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
                 host, port, selected, hermes = configuration._network_settings(root)
             else:
                 host, port, selected, hermes = "0.0.0.0", 11451, [], None
+            _step(f"正在生成初始服务配置（默认监听 {host}:{port}）...")
             configured = configure(root, host, port, operator["username"], selected, hermes,
                                    store=store, handle=handle)
             if not configured:
-                print("配置已保存，但可选 skill 同步未完成。")
+                _warn("配置已保存，但可选的 AI 助手技能（skill）暂未同步完成。")
             store.require_management(handle, "install")
             _journal(root, "configured")
         else:
@@ -511,18 +572,32 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
         # Existing installs are authenticated before pip, CLI or registration writes.
         trusted_package = (root / "oai-core").resolve() if restore_source is not None else Path(__file__).resolve().parents[2]
         package_reference = "./oai-core" if trusted_package == (root / "oai-core").resolve() else os.path.relpath(trusted_package, root)
+        _step("正在安装/更新 OAI Core 命令行与运行时组件...")
         _run(store, handle, "install", [str(python), "-m", "pip", "install", "-e", package_reference], cwd=root)
         _run(store, handle, "install", [str(python), "-m", "pip", "check"], cwd=root)
         store.require_management(handle, "install")
         register_instance(root / "core.json")
         _integrate_cli(root, store, handle)
+        _ok("全局快捷命令 oai 已配置到 ~/.local/bin/oai。")
         if configuration.detect_host_agents():
+            _step("正在扫描并尝试自动连接本机已安装的 AI 助手...")
             configuration.auto_connect_host_agents(root, store, handle, operator)
+        _box("步骤 4/4 · 后台自启与服务设置", (
+            "开启开机自启后，系统重启或登录时会自动在后台运行 OAI Core 服务。",
+        ))
         if _input("是否配置开机自启服务？(y/n) [n]: ").lower() in {"y", "yes"}:
             _configure_service(root, store, handle)
         if state is not None or (root / "runtime" / "installer-journal.json").exists():
             store.require_management(handle, "install")
             _journal(root, "complete")
+        final_host, final_port, _, _ = configuration._network_settings(root)
+        _box("🎉 OAI Core 安装已完成", (
+            f"• 安装目录: {root}",
+            f"• 服务地址: {final_host}:{final_port}",
+            "• 启动服务: 运行 oai 或 ./start-core.sh",
+            "• 修改配置: 运行 oai setup 或 ./scripts/setup.sh",
+            f"• 手机连接: 在手机 App 填入 http://<电脑局域网IP>:{final_port} 登录配对",
+        ))
         print("Core 配置及 CLI 已安装；服务和 Agent 可在 setup 中管理。")
         return 0 if configured else 2
     finally:
@@ -533,7 +608,11 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
 
 
 def setup(root: Path) -> int:
+    _box("验证管理员身份", (
+        "请先完成身份验证以打开 OAI Core 设置面板。",
+    ))
     with management(root, {"setup", "config", "accounts.read", "accounts.write", "service", "security", "agents.manage", "agent:manage"}) as (store, handle):
+        _ok("登录成功，正在加载当前设置...")
         discover_instance(root / "core.json")
         _run_setup(root, store, handle)
     return 0
@@ -555,5 +634,5 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as error:
         code = getattr(error, "code", type(error).__name__)
-        print(f"[错误] 操作未完成（{code}）；请保留恢复记录与现有数据。", file=sys.stderr)
+        print(f"[错误] 操作未完成（原因：{code}）。原有配置与账号数据保持不变。", file=sys.stderr)
         raise SystemExit(1) from None

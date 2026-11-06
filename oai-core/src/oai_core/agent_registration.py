@@ -70,10 +70,10 @@ class AgentHandshakeError(ValueError):
 
 
 _HANDSHAKE_ERROR_MESSAGES = {
-    "AGENT_BRIDGE_UPGRADE_REQUIRED": "桥接端缺少握手接口，请升级 Agent 桥接端。",
-    "AGENT_BRIDGE_AUTHENTICATION_FAILED": "Agent 桥接认证失败，请检查 Core 与桥接端的凭据配置。",
-    "AGENT_BRIDGE_UNAVAILABLE": "Agent 桥接端暂不可用，请检查服务状态和网络连接。",
-    "AGENT_HANDSHAKE_FAILED": "Agent 握手失败，桥接端响应无效或不受支持。",
+    "AGENT_BRIDGE_UPGRADE_REQUIRED": "AI 助手连接插件版本过旧（缺少握手验证接口），请升级连接插件。",
+    "AGENT_BRIDGE_AUTHENTICATION_FAILED": "AI 助手连接密钥验证未通过，请检查 Core 与助手插件的密钥是否一致。",
+    "AGENT_BRIDGE_UNAVAILABLE": "暂时连不上该 AI 助手服务，请确认助手已启动或按提示安装连接插件。",
+    "AGENT_HANDSHAKE_FAILED": "与 AI 助手通信握手失败，返回的数据格式不受支持。",
 }
 
 

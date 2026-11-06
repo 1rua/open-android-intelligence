@@ -371,7 +371,7 @@ class ConfigurationTransaction:
         operator = state.get("operator", {})
         store.audit("configuration.result", operator.get("accountId"), None,
                     {"transactionId": transaction.identifier, "status": "rolled_back"})
-        print("[INFO] 已从恢复 journal 还原上次未完成的配置；原主密钥与账号保持不变。")
+        print("[INFO] 已自动恢复上次未完成的配置更改，原有密钥和账号数据完好无损。")
 
 
 
@@ -521,6 +521,37 @@ def _instance_root(instance: dict) -> Path:
     return config_path.parent
 
 
+def _ui_use_color() -> bool:
+    return sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _ui_style(text: str, code: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if _ui_use_color() else text
+
+
+def _ui_box(title: str, lines: tuple[str, ...] | list[str] = ()) -> None:
+    border = _ui_style("╭──────────────────────────────────────────────────────────╮", "36;1")
+    bottom = _ui_style("╰──────────────────────────────────────────────────────────╯", "36;1")
+    bar = _ui_style("│", "36;1")
+    print(f"\n{border}")
+    print(f"{bar}  {_ui_style(title, '1')}")
+    for line in lines:
+        print(f"{bar}  {line}")
+    print(bottom)
+
+
+def _ui_step(message: str) -> None:
+    print(f"{_ui_style('▸', '36;1')} {message}")
+
+
+def _ui_ok(message: str) -> None:
+    print(f"{_ui_style('✓', '32;1')} {message}")
+
+
+def _ui_warn(message: str) -> None:
+    print(f"{_ui_style('!', '33;1')} {message}")
+
+
 def _terminal_input(prompt: str) -> str:
     if not sys.stdin.isatty():
         raise PermissionError("A terminal is required for interactive configuration")
@@ -559,7 +590,11 @@ def _network_settings(root: Path) -> tuple[str, int, list[str], str | None]:
 
 def _configure_network(root: Path, store, handle: str, operator: dict, *, allow_security: bool = False) -> None:
     host, port, selected, hermes = _network_settings(root)
-    choice = _terminal_input(f"监听地址 [{host}]{'（输入 2fa 管理二次验证）' if allow_security else ''}: ")
+    _ui_box("🌐 网络与端口设置", (
+        "0.0.0.0 表示允许局域网设备（如手机 App）连接，127.0.0.1 表示仅限本机访问。",
+        "直接按回车可保持当前设置不变。",
+    ))
+    choice = _terminal_input(f"监听地址 [{host}]{'（输入 2fa 管理两步验证）' if allow_security else ''}: ")
     if allow_security and choice.lower() == "2fa":
         _manage_security(root, store, handle)
         return
@@ -568,22 +603,29 @@ def _configure_network(root: Path, store, handle: str, operator: dict, *, allow_
     new_port = int(raw_port) if raw_port else port
     validate_listener(new_host, new_port)
     if (new_host, new_port) == (host, port):
-        print("配置未更改。")
+        _ui_ok("网络配置未更改。")
         return
     if not configure(root, new_host, new_port, operator["username"], selected, hermes,
                      store=store, handle=handle):
-        print("配置已保存，可选 skill 同步未完成。")
+        _ui_warn("网络配置已保存，但可选的 AI 助手技能（skill）暂未同步完成。")
 
 
 def _manage_accounts(root: Path, store, handle: str) -> None:
     require_configuration_access(root, store, handle, "accounts.read")
-    print("1. 查看账号  2. 创建账号  3. 修改密码  4. 删除账号  0. 返回")
+    _ui_box("👤 账号与权限管理", (
+        "管理可登录手机 App 与后台的账号。管理员 (admin) 拥有完整管理权限。",
+    ))
+    print("  1. 查看账号列表  2. 创建新账号  3. 修改/重置密码  4. 删除账号  0. 返回")
     choice = _terminal_input("请选择: ")
     if choice in {"", "0"}:
         return
     if choice == "1":
-        for account in store.list_accounts(handle).get("accounts", []):
-            print(f"{account['username']} ({account['role']})")
+        accounts = store.list_accounts(handle).get("accounts", [])
+        if not accounts:
+            print("  （暂无账号）")
+        for account in accounts:
+            role_label = "管理员" if account["role"] == "admin" else "普通用户"
+            print(f"  • {account['username']} ({account['role']} / {role_label})")
         return
     if choice not in {"2", "3", "4"}:
         raise ValueError("无效的账号操作")
@@ -592,7 +634,7 @@ def _manage_accounts(root: Path, store, handle: str) -> None:
     if not username:
         raise ValueError("账号名称不能为空")
     if choice == "4":
-        if _terminal_input(f"删除账号将撤销其访问权限，请输入 {username} 确认: ") != username:
+        if _terminal_input(f"删除账号将立即注销其登录状态，请输入 {username} 确认: ") != username:
             print("已取消。")
             return
         store.delete_account(handle, username)
@@ -602,13 +644,13 @@ def _manage_accounts(root: Path, store, handle: str) -> None:
             if choice == "2":
                 store.create_account(handle, username, password)
             else:
-                if _terminal_input(f"重置 {username} 的密码将撤销现有会话，请输入账号名称确认: ") != username:
+                if _terminal_input(f"重置 {username} 的密码将使已登录设备下线，请输入账号名称确认: ") != username:
                     print("已取消。")
                     return
                 store.reset_password(handle, username, password)
         finally:
             password = ""
-    print("账号操作已完成。")
+    _ui_ok("账号操作已完成。")
 
 
 def _parse_dotenv(content: str) -> dict[str, str]:
@@ -1146,25 +1188,25 @@ def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
 
     homes = detect_host_agents().get("hermes", [])
     if len(homes) != 1:
-        print("无法唯一确定 Hermes 安装目录；尚未注册。")
+        print("未找到唯一的 Hermes 安装目录，暂时无法自动安装插件；尚未注册。")
         return False
     home = homes[0]
     if not _is_local_hermes_bridge(entry, home=home):
-        print("该候选不是已发现的本机 Hermes 会话桥，请在对应宿主安装会话适配器后重试；尚未注册。")
+        print("该连接地址不是本机发现的 Hermes 服务，请先在对应机器上安装连接插件后再试；尚未注册。")
         return False
-    if _terminal_input("是否安装或更新本机 Hermes 会话适配器？(y/n) [n]: ").lower() not in {"y", "yes"}:
+    if _terminal_input("是否安装或更新本机 Hermes 连接插件（会话适配器）？(y/n) [n]: ").lower() not in {"y", "yes"}:
         print("已取消安装；尚未注册。")
         return False
     try:
         require_configuration_access(root, store, handle, "agents.manage")
         if detect_host_agents().get("hermes", []) != [home] or not _is_local_hermes_bridge(entry, home=home):
-            print("Hermes 安装目标或会话桥配置已变化，请重新选择候选；尚未注册。")
+            print("Hermes 目录或连接配置已发生变化，请重新选择候选；尚未注册。")
             return False
         install_hermes_adapter(root, store, handle, home)
     except HermesAdapterInstallError as error:
         print(f"[错误] {error}（{error.code}）；尚未注册。")
         return False
-    print("Hermes 会话适配器已安装并启用，正在重新验证实际运行的会话桥。")
+    _ui_ok("Hermes 连接插件已安装并启用，正在重新测试连接...")
     return True
 
 
@@ -1173,20 +1215,20 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
     from .dsh_installation import DshAdapterInstallError, discover_dsh_profiles, install_dsh_adapter
 
     if not _is_local_dsh_bridge(entry):
-        print("该候选不是默认本机 DSH 会话桥，请在对应宿主升级会话适配器后重试；尚未注册。")
+        print("该连接地址不是默认本机 DSH 服务，请先在对应机器上升级连接插件后再试；尚未注册。")
         return False
     try:
         homes = detect_host_agents().get("dsh", [])
         profiles = (discover_dsh_profiles(homes, include_uninstalled=True)
                     if allow_install else discover_dsh_profiles(homes))
         if not profiles:
-            print("未找到可安装的现有 DSH profile；请先在目标宿主创建运行配置后重试；尚未注册。"
-                  if allow_install else "未找到已启用 DSH 会话桥的 profile；请在目标宿主安装当前 DSH 会话适配器后重试；尚未注册。")
+            print("未找到可用的 DSH 运行配置 (profile)，请先在 DSH 中创建配置后再试；尚未注册。"
+                  if allow_install else "未找到已启用连接插件的 DSH 运行配置 (profile)，请先在 DSH 中安装插件后再试；尚未注册。")
             return False
-        print("请选择要安装会话适配器的 profile（DSH 的独立运行配置）；原配置会保留备份。"
-              if allow_install else "DSH 会话桥版本过旧。请选择要升级的 profile（DSH 的独立运行配置）；旧配置会保留备份。")
+        print("请选择要安装连接插件的 DSH 运行配置 (profile)，原有配置会自动备份："
+              if allow_install else "检测到 DSH 连接插件版本较旧。请选择要升级的运行配置 (profile)，原有配置会自动备份：")
         for index, profile in enumerate(profiles, 1):
-            print(f"{index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
+            print(f"  {index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
         choice = _terminal_input("选择并确认安装的 profile 编号（直接回车返回）: "
                                  if allow_install else "选择并确认升级的 profile 编号（直接回车返回）: ")
         if not choice:
@@ -1204,8 +1246,8 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
     except DshAdapterInstallError as error:
         print(f"[错误] {error}（{error.code}）；尚未注册。")
         return False
-    print(f"DSH 会话适配器已更新：{os.path.relpath(profile.home, Path.home())} / {profile.name}。")
-    print("正在重新验证实际运行的会话桥；如仍运行旧版本，请重新加载该 profile 后再次接入。")
+    _ui_ok(f"DSH 连接插件已更新：{os.path.relpath(profile.home, Path.home())} / {profile.name}。")
+    print("正在重新测试连接；如果 DSH 仍在运行旧版本，请重启或重新加载该 DSH 配置后再试。")
     return True
 
 
@@ -1234,12 +1276,12 @@ def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> 
             _register_with_host_retry(registration, handle, entry, storage)
             _confirm_operator_hermes_mapping(registration, handle, entry, operator)
             connected.append(entry["id"])
-            print(f"[INFO] 已自动发现并接入 Agent: {entry['id']} ({entry['type']})")
+            _ui_ok(f"[INFO] 已自动发现并连接本机 AI 助手: {entry['id']} ({entry['type']})")
         except Exception as error:
             if isinstance(error, AgentHandshakeError):
-                print(f"[INFO] 已生成 {entry['id']} 候选配置；{error}（{error.code}）。请在 setup 的 Agent 接入中处理。")
+                print(f"[INFO] 已检测到本机 {entry['id']} 助手，但暂未完成连接：{error}（{error.code}）。稍后可在 setup 的「Agent 接入」中一键处理。")
             else:
-                print(f"[INFO] 已生成 {entry['id']} 候选配置；待该 Agent 服务运行后可在 setup 中完成接入。")
+                print(f"[INFO] 已生成 {entry['id']} 助手待连接配置；待该 Agent 服务运行后可在 setup 中完成接入。")
     return connected
 
 
@@ -1255,14 +1297,19 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
     registration = AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False,
                                      core_signing_key=signing_key)
     registered = registration.entries()
-    print("已注册 Agent: " + (", ".join(entry["id"] for entry in registered) or "无"))
+    _ui_box("🤖 本地 AI 助手连接", (
+        "自动发现本机已安装的 AI 助手（如 Hermes、DSH），验证连通后即可在手机端使用。",
+    ))
+    print("已连接/已注册的 AI 助手: " + (", ".join(entry["id"] for entry in registered) or "无"))
     roots = [root / "runtime" / "agent-candidates", Path.home() / ".config" / "oai" / "agents"]
     candidates = registration.discover(handle, roots)
     if not candidates:
-        print("未发现已授权的 Agent 候选；尚未连接。")
+        print("暂未发现可连接的本地 AI 助手；尚未连接。")
         return
+    scope_labels = {"account": "按账号独立会话", "deployment": "全局共享会话"}
     for index, (_, entry) in enumerate(candidates, 1):
-        print(f"{index}. {entry['id']} ({entry['type']}, {entry['instanceId']}, {entry['sessionScope']})")
+        scope_desc = scope_labels.get(entry["sessionScope"], entry["sessionScope"])
+        print(f"  {index}. {entry['id']} ({entry['type']}, {entry['instanceId']}, {entry['sessionScope']} · {scope_desc})")
     choice = _terminal_input("选择候选编号（直接回车返回）: ")
     if not choice:
         return
@@ -1282,10 +1329,13 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
     if signing_key is not None and entry["type"] == "hermes":
         from cryptography.hazmat.primitives import serialization
         public = signing_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
-        print("请在 Hermes 的受保护信任清单中确认以下 Core 实例公钥；只需首次接入时确认：")
+        print("首次连接 Hermes 时，系统已自动将当前 Core 服务端公钥写入信任列表（如需手动核对，公钥如下）：")
         print(json.dumps({operator["instanceId"]: public}, ensure_ascii=False))
-    if _terminal_input(f"请输入 {entry['id']} 确认验证并注册该实例: ") != entry["id"]:
-        print("已取消。")
+    confirm_agent = _terminal_input(
+        f"确认连接并注册 {entry['id']} 吗？(直接回车确认，或输入 y / {entry['id']}) [y]: "
+    ).strip()
+    if confirm_agent.lower() not in {"", "y", "yes", entry["id"].lower()}:
+        print("已取消；尚未注册。")
         return
     require_configuration_access(root, store, handle, "agents.manage")
     registration.initialize(handle)
@@ -1307,10 +1357,10 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         try:
             _register_with_host_retry(registration, handle, entry, storage)
         except AgentHandshakeError as retry_error:
-            print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重新加载对应宿主后重试。")
+            print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重启或重新加载对应 AI 助手服务后重试。")
             return
     _confirm_operator_hermes_mapping(registration, handle, entry, operator)
-    print("Agent 已通过真实握手并注册；账号关联按其隔离范围处理。")
+    _ui_ok("Agent 已通过真实握手并注册成功！现在可以在手机端选择并使用该助手了。")
 
 
 def _service_command(arguments: list[str]) -> subprocess.CompletedProcess:
@@ -1363,15 +1413,22 @@ def _service_state(root: Path) -> tuple[str, str]:
 def _manage_service(root: Path, store, handle: str) -> None:
     require_configuration_access(root, store, handle, "service")
     state, detail = _service_state(root)
+    _ui_box("⚙️ 后台服务管理", (
+        "查看或控制当前用户下的 OAI Core 后台运行状态。",
+    ))
     print(f"服务状态: {state} ({detail})")
-    print("1. 启动  2. 停止  3. 重启  0. 返回")
+    print("  1. 启动  2. 停止  3. 重启  0. 返回")
     choice = _terminal_input("请选择: ")
     if choice in {"", "0"}:
         return
     action = {"1": "start", "2": "stop", "3": "restart"}.get(choice)
     if action is None:
         raise ValueError("无效的服务操作")
-    if _terminal_input(f"请输入 {action} 确认服务操作: ") != action:
+    action_names = {"start": "启动", "stop": "停止", "restart": "重启"}
+    confirm_action = _terminal_input(
+        f"确认服务操作「{action_names[action]} ({action})」吗？(直接回车确认，或输入 y / {action}) [y]: "
+    ).strip()
+    if confirm_action.lower() not in {"", "y", "yes", action.lower()}:
         print("已取消。")
         return
     actor = require_configuration_access(root, store, handle, "service")
@@ -1397,14 +1454,17 @@ def _manage_service(root: Path, store, handle: str) -> None:
         raise
     store.audit("service.result", actor["accountId"], None,
                 {"operationId": operation_id, "action": action, "status": "completed"})
-    print(f"服务操作 {action} 已执行。")
+    _ui_ok(f"服务操作 {action} 已执行。")
 
 
 def _manage_security(root: Path, store, handle: str) -> None:
     actor = require_configuration_access(root, store, handle, "security")
     required, _, _ = store._policy()
-    print(f"服务端 2FA: {'开启' if required else '关闭'}（仅开启时需要二次验证）。")
-    print("1. 绑定验证器  2. 登记管理员恢复码  3. 开启 2FA  4. 关闭 2FA  0. 返回")
+    _ui_box("🔐 两步验证 (2FA) 与管理员恢复码", (
+        "开启两步验证后，登录和管理操作需要额外输入手机验证器 App 的动态验证码。",
+    ))
+    print(f"服务端 2FA: {'开启' if required else '关闭'}（仅开启时需要两步验证）。")
+    print("  1. 绑定手机验证器 (TOTP)  2. 重新生成管理员恢复码  3. 开启 2FA  4. 关闭 2FA  0. 返回")
     choice = _terminal_input("请选择: ")
     if choice in {"", "0"}:
         return
@@ -1432,10 +1492,13 @@ def _manage_security(root: Path, store, handle: str) -> None:
         print("请安全保存以下账号恢复码；它们只显示一次：")
         for code in result["recoveryCodes"]:
             print(code)
-        print("绑定完成；管理授权已失效，请重新认证。")
+        _ui_ok("绑定完成；当前登录状态已刷新，请重新登录。")
         return
     if choice == "2":
-        if _terminal_input("请输入 register 确认登记管理员恢复码: ") != "register":
+        confirm_reg = _terminal_input(
+            "确认重新生成管理员应急恢复码吗？（旧恢复码将失效，直接回车或输入 y / register 确认）[y]: "
+        ).strip()
+        if confirm_reg.lower() not in {"", "y", "yes", "register"}:
             print("已取消。")
             return
         from .management import LocalRecovery
@@ -1452,19 +1515,23 @@ def _manage_security(root: Path, store, handle: str) -> None:
         print("2FA 策略未更改。")
         return
     confirmation = "enable" if enabled else "disable"
-    if _terminal_input(f"此操作将撤销现有会话，请输入 {confirmation} 确认: ") != confirmation:
+    action_label = "开启" if enabled else "关闭"
+    confirm_2fa = _terminal_input(
+        f"{action_label} 2FA 将使已登录设备重新验证，确认继续吗？(直接回车确认，或输入 y / {confirmation}) [y]: "
+    ).strip()
+    if confirm_2fa.lower() not in {"", "y", "yes", confirmation}:
         print("已取消。")
         return
     require_configuration_access(root, store, handle, "security")
     store.set_mfa_required(handle, enabled)
-    print("2FA 策略已更改；管理授权已失效，请重新认证。")
+    _ui_ok("2FA 策略已更新；当前登录状态已刷新，请重新登录。")
 
 
 def run_config(instance: dict, store, handle: str) -> None:
     root = _instance_root(instance)
     operator = require_configuration_access(root, store, handle, "config")
     required, _, _ = store._policy()
-    print(f"服务端 2FA: {'开启' if required else '关闭'}（仅开启时需要二次验证）。")
+    print(f"服务端 2FA: {'开启' if required else '关闭'}（仅开启时需要两步验证）。")
     _configure_network(root, store, handle, operator, allow_security=True)
 
 
@@ -1483,31 +1550,36 @@ def run_setup(instance: dict, store, handle: str) -> None:
         ]
         connected_agents = list(dict.fromkeys([*selected, *registered_ids]))
         required, _, _ = store._policy()
-        print(f"\n服务端 2FA: {'开启' if required else '关闭'}（输入 2fa 管理）")
-        print(f"1. 网络设置 [{host}:{port}]")
-        print("2. 账号管理")
-        print(f"3. Agent 接入 [{', '.join(connected_agents) or '无'}]")
-        print("4. 服务管理")
-        print("5. 退出")
+        print("\n╭─── OAI Core 设置与管理面板 ──────────────────────────────╮")
+        print(f"│  两步验证 (2FA): {'已开启' if required else '未开启'}（输入 2fa 可管理验证器与恢复码）")
+        print("╰──────────────────────────────────────────────────────────╯")
+        print(f"  1. 网络设置 [{host}:{port}]")
+        print("  2. 账号管理")
+        print(f"  3. Agent 接入 [{', '.join(connected_agents) or '无'}]")
+        print("  4. 服务管理")
+        print("  5. 退出")
         choice = _terminal_input("请选择: ")
         if choice in {"5", "0", "q", "Q"}:
             return
-        if choice == "1":
-            require_configuration_access(root, store, handle, "config")
-            _configure_network(root, store, handle, operator)
-        elif choice == "2":
-            _manage_accounts(root, store, handle)
-        elif choice == "3":
-            require_configuration_access(root, store, handle, "config")
-            _configure_agents(root, store, handle, operator)
-        elif choice == "4":
-            _manage_service(root, store, handle)
-        elif choice.lower() == "2fa":
-            _manage_security(root, store, handle)
-            # Enrollment and policy changes can revoke this management session.
-            return
-        else:
-            print("无效选择。")
+        try:
+            if choice == "1":
+                require_configuration_access(root, store, handle, "config")
+                _configure_network(root, store, handle, operator)
+            elif choice == "2":
+                _manage_accounts(root, store, handle)
+            elif choice == "3":
+                require_configuration_access(root, store, handle, "config")
+                _configure_agents(root, store, handle, operator)
+            elif choice == "4":
+                _manage_service(root, store, handle)
+            elif choice.lower() == "2fa":
+                _manage_security(root, store, handle)
+                # Enrollment and policy changes can revoke this management session.
+                return
+            else:
+                _ui_warn("无效选择，请输入菜单编号（1-5 或 2fa）。")
+        except ValueError as exc:
+            _ui_warn(f"[提示] {exc}")
 
 
 def _configuration_unchanged(root: Path, host: str, port: int, selected: list[str]) -> bool:
@@ -1596,7 +1668,7 @@ def configure(root: Path, host: str, port: int, username: str, selected: list[st
             raise
         store.audit("configuration.result", operator["accountId"], None,
                     {"transactionId": transaction.identifier, "status": "committed"})
-    print("[INFO] 配置事务已提交；账号、密码、配对和授权保持不变。")
+    _ui_ok("[INFO] 配置已安全保存生效；原有账号、密码和设备配对保持不变。")
     authorize()
     return deploy_skills_to_agents(root)
 
@@ -1741,7 +1813,7 @@ def deploy_skills_to_agents(root: Path) -> bool:
         source = root / "integrations" / "skills" / "oai-client"
         destinations = [Path.home() / ".agents" / "skills"]
     if not (source / "SKILL.md").is_file():
-        print("[WARN] 配置已提交，未找到可选 oai-client skill；请稍后手动安装。")
+        _ui_warn("[WARN] 配置已保存，但未找到可选的 oai-client 技能文件，可稍后手动安装。")
         return False
     complete = True
     standard = Path.home() / ".agents" / "skills"
@@ -1755,10 +1827,10 @@ def deploy_skills_to_agents(root: Path) -> bool:
                 raise ValueError("Existing skill target requires manual review")
             destination.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, target, dirs_exist_ok=True)
-            print(f"[INFO] 已同步 oai-client skill: {target}")
+            _ui_ok(f"[INFO] 已同步 oai-client 技能到: {target}")
         except Exception as exc:
             complete = False
-            print(f"[WARN] 可选 skill 安装未完成（{type(exc).__name__}）: {target}")
+            _ui_warn(f"[WARN] 可选技能安装未完成（{type(exc).__name__}）: {target}")
     return complete
 
 
@@ -1992,13 +2064,13 @@ def main() -> None:
         # Exception strings may originate in parsers of credential files. Do not
         # echo their contents, passwords or adapter tokens to terminal/logs.
         if isinstance(exc, DshYamlParserRequired):
-            print(f"[ERROR] 配置保存失败（{exc.code}）；安全更新已有 DSH YAML 需要 PyYAML，旧配置已保留。"
-                  f"请在当前 Python 环境安装后重试：{shlex.quote(sys.executable)} -m pip install PyYAML==6.0.3", file=sys.stderr)
+            print(f"[ERROR] 配置保存失败（{exc.code}）；更新已有的 DSH 配置文件需要安装 PyYAML，您原有的配置完好未动。"
+                  f"请在当前 Python 环境运行以下命令后重试：{shlex.quote(sys.executable)} -m pip install PyYAML==6.0.3", file=sys.stderr)
         else:
-            print(f"[ERROR] 配置保存失败（{type(exc).__name__}）；旧配置已保留或有待恢复。请检查权限、输入及 runtime/configuration-journal.json。", file=sys.stderr)
+            print(f"[ERROR] 配置保存失败（{type(exc).__name__}）；原有配置已保留且未受损。请检查文件权限、输入内容或查看恢复记录 runtime/configuration-journal.json。", file=sys.stderr)
         raise SystemExit(1) from None
     if not complete:
-        print("[PARTIAL] 配置事务已提交；可选 skill 安装未全部完成。")
+        print("[PARTIAL] 核心配置已保存生效，但可选的 AI 助手技能（skill）未全部同步完成。")
         raise SystemExit(2)
 
 

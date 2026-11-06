@@ -645,3 +645,28 @@ def test_setup_menu_keeps_existing_agent_and_saves_network(deployment, monkeypat
     after = hashes(root, account_id)
     assert after['runtime/secrets/core-master-key'] == before['runtime/secrets/core-master-key']
     assert_identity(store, account_id)
+
+
+def test_setup_menu_supports_default_confirm_and_recovers_from_invalid_input(deployment, monkeypatch, capsys):
+    root, store, handle, _ = deployment
+    unit = Path.home() / '.config/systemd/user/oai-core.service'
+    observed = []
+    def systemctl(args, **kwargs):
+        observed.append(args)
+        if 'show' in args:
+            output = (f'LoadState=loaded\nFragmentPath={unit}\nWorkingDirectory={root}\n'
+                      'ActiveState=active\nSubState=running\n')
+        else:
+            output = ''
+        return subprocess.CompletedProcess(args, 0, stdout=output, stderr='')
+    # 1 -> invalid port 99999 (caught by run_setup) -> 4 -> 3 (restart) -> '' (default Enter confirm) -> 5 (exit)
+    answers = iter(['1', '127.0.0.1', '99999', '4', '3', '', '5'])
+    monkeypatch.setattr(configuration.sys, 'platform', 'linux')
+    monkeypatch.setattr(configuration, '_terminal_input', lambda prompt: next(answers))
+    monkeypatch.setattr(configuration.subprocess, 'run', systemctl)
+    configuration.run_setup({'configPath': str(root / 'core.json')}, store, handle)
+    output = capsys.readouterr().out
+    assert '[提示]' in output
+    assert '服务操作 restart 已执行' in output
+    assert [args[2] for args in observed] == ['show', 'show', 'restart']
+

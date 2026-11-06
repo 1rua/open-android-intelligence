@@ -22,21 +22,21 @@ OLD_BUNDLE = "dsh-android-gateway"
 BUNDLE = "oai-dsh-session-adapter"
 _EXCLUDED = {"node_modules", "build", "dist", ".gradle"}
 _MESSAGES = {
-    "DSH_PROFILE_INVALID": "DSH_PROFILE 不是有效的配置名称。",
-    "DSH_PROFILE_NOT_FOUND": "未找到 DSH_PROFILE 指定的可升级配置。",
-    "DSH_PROFILE_AMBIGUOUS": "多个 DSH 主目录包含指定配置，无法唯一确定升级目标。",
-    "DSH_PROFILE_UNSAFE": "DSH 配置路径、所有者或配置文件不安全，已停止升级。",
-    "DSH_PERMISSION_DENIED": "缺少有效的 Agent 管理权限，已停止升级。",
-    "DSH_CLI_NOT_FOUND": "未找到本机 DSH 命令，请先安装官方 DSH。",
-    "DSH_NODE_NOT_FOUND": "未找到本机 Node.js，无法升级 DSH 插件。",
-    "DSH_BUNDLE_INVALID": "当前仓库的 DSH 适配器安装文件无效。",
-    "DSH_BACKUP_FAILED": "无法安全备份 DSH 配置，已停止升级。",
-    "DSH_PLUGIN_MANAGER_UNAVAILABLE": "当前 DSH 缺少所需官方插件管理 API，请先升级官方 DSH。",
-    "DSH_PROFILE_CHANGED": "DSH 配置在备份后发生变化，已停止升级，请重新检查目标。",
-    "DSH_INSTALL_INCOMPATIBLE": "官方 DSH 插件管理器拒绝了版本兼容性检查，备份已保留。",
-    "DSH_INSTALL_TIMEOUT": "DSH 插件升级超时，备份已保留，请检查配置后重试。",
-    "DSH_INSTALL_FAILED": "DSH 插件升级失败，备份已保留，请检查本机 DSH 状态。",
-    "DSH_INSTALL_RECOVERY_REQUIRED": "DSH 升级失败且无法安全恢复配置，原配置与失败记录已保留，请先人工核对备份。",
+    "DSH_PROFILE_INVALID": "所选的 DSH 配置名称 (profile) 格式无效。",
+    "DSH_PROFILE_NOT_FOUND": "未找到指定的 DSH 运行配置 (profile)。",
+    "DSH_PROFILE_AMBIGUOUS": "检测到多个 DSH 目录包含同名配置，无法唯一确定要更新的目标。",
+    "DSH_PROFILE_UNSAFE": "DSH 配置目录或文件权限不安全（或包含符号链接），已停止操作。",
+    "DSH_PERMISSION_DENIED": "当前账号没有管理 AI 助手的权限，已停止操作。",
+    "DSH_CLI_NOT_FOUND": "未在系统中找到 DSH 命令，请先安装官方 DSH 客户端。",
+    "DSH_NODE_NOT_FOUND": "未在系统中找到 Node.js，无法安装或更新 DSH 连接插件。",
+    "DSH_BUNDLE_INVALID": "当前目录下的 DSH 连接插件安装包缺失或损坏。",
+    "DSH_BACKUP_FAILED": "无法备份原有的 DSH 配置文件，为安全起见已停止操作。",
+    "DSH_PLUGIN_MANAGER_UNAVAILABLE": "当前 DSH 版本过旧（缺少官方插件管理接口），请先升级 DSH 客户端。",
+    "DSH_PROFILE_CHANGED": "DSH 配置文件在准备期间被其他程序修改，已停止操作，请重试。",
+    "DSH_INSTALL_INCOMPATIBLE": "当前 DSH 版本与连接插件不兼容，原配置备份已保留在 runtime/dsh-adapter-backups。",
+    "DSH_INSTALL_TIMEOUT": "DSH 连接插件安装超时，原配置备份已保留在 runtime/dsh-adapter-backups，请检查后重试。",
+    "DSH_INSTALL_FAILED": "DSH 连接插件安装失败，原配置备份已保留在 runtime/dsh-adapter-backups，请检查 DSH 状态。",
+    "DSH_INSTALL_RECOVERY_REQUIRED": "DSH 插件安装失败且自动还原未完成，原配置备份保存在 runtime/dsh-adapter-backups，请人工核对。",
 }
 
 
