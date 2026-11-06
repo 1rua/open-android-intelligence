@@ -1101,8 +1101,58 @@ def _register_with_host_retry(registration, handle: str, entry: dict, storage: P
     raise last_error or ValueError("Agent instance handshake failed")
 
 
+def _is_local_dsh_bridge(entry: dict) -> bool:
+    """Only offer local installation for the candidate this installer provisions."""
+    from urllib.parse import urlsplit
+
+    if (entry.get("type") != "dsh" or entry.get("instanceId") != "dsh"
+            or entry.get("sessionScope") != "deployment"
+            or entry.get("prefix", "/oai/session-adapter/v1") != "/oai/session-adapter/v1"):
+        return False
+    try:
+        url = urlsplit(entry.get("url", ""))
+        return (url.scheme == "http" and url.hostname in {"127.0.0.1", "::1", "localhost"}
+                and url.port == 8791 and not url.username and not url.password
+                and url.path in {"", "/"} and not url.query and not url.fragment)
+    except (ValueError, TypeError):
+        return False
+
+
+def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict) -> bool:
+    """An operator selects exactly one existing profile; registration stays separate."""
+    from .dsh_installation import DshAdapterInstallError, discover_dsh_profiles, install_dsh_adapter
+
+    if not _is_local_dsh_bridge(entry):
+        print("该候选不是默认本机 DSH 会话桥，请在对应宿主升级会话适配器后重试；尚未注册。")
+        return False
+    try:
+        profiles = discover_dsh_profiles(detect_host_agents().get("dsh", []))
+        if not profiles:
+            print("未找到已启用 DSH 会话桥的 profile；请在目标宿主安装当前 DSH 会话适配器后重试；尚未注册。")
+            return False
+        print("DSH 会话桥版本过旧。请选择要升级的 profile（DSH 的独立运行配置）；旧配置会保留备份。")
+        for index, profile in enumerate(profiles, 1):
+            print(f"{index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
+        choice = _terminal_input("选择并确认升级的 profile 编号（直接回车返回）: ")
+        if not choice:
+            print("已取消升级；尚未注册。")
+            return False
+        if not choice.isdecimal() or not 1 <= int(choice) <= len(profiles):
+            print("无效的 DSH profile 编号；尚未注册。")
+            return False
+        profile = profiles[int(choice) - 1]
+        require_configuration_access(root, store, handle, "agents.manage")
+        install_dsh_adapter(root, store, handle, profile)
+    except DshAdapterInstallError as error:
+        print(f"[错误] {error}（{error.code}）；尚未注册。")
+        return False
+    print(f"DSH 会话适配器已更新：{os.path.relpath(profile.home, Path.home())} / {profile.name}。")
+    print("正在重新验证实际运行的会话桥；如仍运行旧版本，请重新加载该 profile 后再次接入。")
+    return True
+
+
 def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> list[str]:
-    from .agent_registration import AgentRegistration
+    from .agent_registration import AgentHandshakeError, AgentRegistration
     from .sessions import AgentRegistry
 
     if not detect_host_agents():
@@ -1127,13 +1177,16 @@ def auto_connect_host_agents(root: Path, store, handle: str, operator: dict) -> 
             _confirm_operator_hermes_mapping(registration, handle, entry, operator)
             connected.append(entry["id"])
             print(f"[INFO] 已自动发现并接入 Agent: {entry['id']} ({entry['type']})")
-        except Exception:
-            print(f"[INFO] 已生成 {entry['id']} 候选配置；待该 Agent 服务运行后可在 setup 中完成接入。")
+        except Exception as error:
+            if isinstance(error, AgentHandshakeError):
+                print(f"[INFO] 已生成 {entry['id']} 候选配置；{error}（{error.code}）。请在 setup 的 Agent 接入中处理。")
+            else:
+                print(f"[INFO] 已生成 {entry['id']} 候选配置；待该 Agent 服务运行后可在 setup 中完成接入。")
     return connected
 
 
 def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
-    from .agent_registration import AgentRegistration
+    from .agent_registration import AgentHandshakeError, AgentRegistration
     from .sessions import AgentRegistry
 
     require_configuration_access(root, store, handle, "agents.manage")
@@ -1178,7 +1231,18 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         return
     require_configuration_access(root, store, handle, "agents.manage")
     registration.initialize(handle)
-    _register_with_host_retry(registration, handle, entry, storage)
+    try:
+        _register_with_host_retry(registration, handle, entry, storage)
+    except AgentHandshakeError as error:
+        print(f"[错误] {error}（{error.code}）。")
+        if (entry.get("type") != "dsh" or error.code != "AGENT_BRIDGE_UPGRADE_REQUIRED"
+                or not _upgrade_dsh_bridge(root, store, handle, entry)):
+            return
+        try:
+            _register_with_host_retry(registration, handle, entry, storage)
+        except AgentHandshakeError as retry_error:
+            print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重新加载所选 profile 后重试。")
+            return
     _confirm_operator_hermes_mapping(registration, handle, entry, operator)
     print("Agent 已通过真实握手并注册；账号关联按其隔离范围处理。")
 

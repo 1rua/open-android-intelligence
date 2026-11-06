@@ -288,11 +288,8 @@ def _install_agents(root: Path, store: IdentityStore, handle: str) -> bool:
         else:
             _run(store, handle, "agents.manage", ["hermes", "plugins", "install", "./integrations/hermes-session-adapter", "--enable"], cwd=root)
     if "dsh" in selected:
-        if not shutil.which("plugin_manager"):
-            print("DSH 尚未连接：未找到 plugin_manager 命令。")
-            partial = True
-        else:
-            _run(store, handle, "agent:manage", ["plugin_manager", "action=install_bundle", "target=" + str(root / "integrations/dsh-session-adapter")], cwd=root)
+        print("DSH 插件安装需在 setup 的 Agent 接入中确认目标 profile；请按菜单完成安装与真实握手。")
+        partial = True
     return not partial
 
 

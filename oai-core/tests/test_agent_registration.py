@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from oai_core.agent_registration import AgentRegistration, bridge_proof, create_bridge_secret, discover_candidates, read_bridge_secret
+from oai_core.agent_registration import AgentHandshakeError, AgentRegistration, bridge_proof, create_bridge_secret, discover_candidates, read_bridge_secret
 from oai_core.auth import Principal
 from oai_core.gateway.core import GatewayError, VerifiedRequestContext
 from oai_core.sessions import AdapterError, build_registry
@@ -246,12 +246,14 @@ async def test_handshake_rejects_replacement_offline_and_expired_management(tmp_
     async with TestClient(TestServer(hermes_bridge.create_hermes_bridge_app(host, secret, ["native"], instance_id="actual"))) as server:
         manifest = {"id": "hermes", "type": "hermes", "instanceId": "wrong", "sessionScope": "account",
                     "url": str(server.make_url("/")).rstrip("/"), "secretFile": "key"}
-        with pytest.raises(ValueError, match="handshake"):
+        with pytest.raises(AgentHandshakeError) as failure:
             await reg.register("admin", manifest, tmp_path)
+        assert failure.value.code == "AGENT_HANDSHAKE_FAILED"
         manifest["instanceId"] = "actual"
         host.online = False
-        with pytest.raises(ValueError, match="handshake"):
+        with pytest.raises(AgentHandshakeError) as failure:
             await reg.register("admin", manifest, tmp_path)
+        assert failure.value.code == "AGENT_HANDSHAKE_FAILED"
         host.online = True
         identity.allowed = False
         with pytest.raises(PermissionError):

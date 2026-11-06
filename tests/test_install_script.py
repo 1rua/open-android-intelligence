@@ -310,6 +310,17 @@ def test_plugin_install_only_for_selected_agents(deployment, monkeypatch):
     assert calls[0][1]['cwd'] == root
 
 
+def test_dsh_plugin_install_uses_profile_confirmation_instead_of_fake_cli(deployment, monkeypatch, capsys):
+    root, store, handle, _ = deployment
+    config = json.loads((root / 'core.json').read_text())
+    config['agents'].append({'id': 'dsh', 'type': 'dsh'})
+    (root / 'core.json').write_text(json.dumps(config))
+    monkeypatch.setattr(scripts_runtime.shutil, 'which', lambda _: '/synthetic/command')
+    monkeypatch.setattr(scripts_runtime.subprocess, 'run', lambda *_args, **_kwargs: pytest.fail('DSH requires an explicit profile before installation'))
+    assert scripts_runtime._install_agents(root, store, handle) is False
+    assert 'setup' in capsys.readouterr().out
+
+
 def test_missing_selected_plugin_reports_partial(deployment, monkeypatch, capsys):
     root, store, handle, _ = deployment
     config = json.loads((root / 'core.json').read_text())
