@@ -143,6 +143,7 @@ class IdentityStore:
         self.database_path = Path(database).absolute()
         self.key_store = key_store
         self.database: sqlite3.Connection | None = None
+        self._database_file_identity: tuple[int, int] | None = None
         self._create = create
         self._bootstrap_proof = bootstrap_proof
         self._lock = threading.RLock()
@@ -155,7 +156,12 @@ class IdentityStore:
         try:
             _private_dir(self.database_path.parent)
             _private_file(self.database_path)
+            info = self.database_path.stat()
             self.database = sqlite3.connect(self.database_path.as_uri() + "?mode=rw", uri=True, isolation_level=None, timeout=10, check_same_thread=False)
+            opened = self.database_path.stat()
+            if (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino):
+                raise _error("IDENTITY_DATABASE_INVALID")
+            self._database_file_identity = (opened.st_dev, opened.st_ino)
             self.database.row_factory = sqlite3.Row
             self.database.execute("PRAGMA foreign_keys=ON")
             if self.database.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()[0] != "1":
@@ -175,6 +181,16 @@ class IdentityStore:
             self.close()
             raise
 
+    def require_current_database(self) -> None:
+        """旧连接不能在身份库被删除或替换后继续为存储写入授权。"""
+        try:
+            info = self.database_path.lstat()
+        except OSError:
+            raise _error("IDENTITY_DATABASE_MISSING") from None
+        if (self.database is None or not stat.S_ISREG(info.st_mode)
+                or (info.st_dev, info.st_ino) != self._database_file_identity):
+            raise _error("IDENTITY_DATABASE_MISSING")
+
     def _initialize(self, accounts: list[tuple[str, str, str | None, str, str]]) -> None:
         if not self._create or self.database is not None:
             raise _error("IDENTITY_ALREADY_INITIALIZED")
@@ -193,6 +209,8 @@ class IdentityStore:
             self.database.executemany("INSERT INTO accounts(account_id,username,password_hash,role,status,auth_epoch,mfa_version) VALUES (?,?,?,?,?,1,0)", accounts)
             self._audit("identity.initialized", None, None, {"accountCount": len(accounts)})
             self.database.commit()
+            info = self.database_path.stat()
+            self._database_file_identity = (info.st_dev, info.st_ino)
         except BaseException:
             if self.database is not None:
                 self.database.rollback()

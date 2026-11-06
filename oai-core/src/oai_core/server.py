@@ -59,13 +59,18 @@ class OAICore(GatewayCore):
             return [row[0] for row in database.execute("SELECT account_id FROM accounts WHERE status='active' ORDER BY account_id")]
 
     def open_gateway_account(self, account_id: str):
-        if self.identity_store is not None:
-            self.identity_store.account(account_id)
+        identity_store = self.identity_store
+        if identity_store is not None:
+            identity_store.require_current_database()
+            identity_store.account(account_id)
+            validate_secret_store = getattr(self.secret_store, "validate", None)
+            if callable(validate_secret_store):
+                validate_secret_store()
         account = super().open_gateway_account(account_id)
-        if self.identity_store is not None:
-            account.store.identity_store = self.identity_store
-            account.credentials.identity_store = self.identity_store
-            account.sessions.identity_store = self.identity_store
+        if identity_store is not None:
+            account.store.identity_store = identity_store
+            account.credentials.identity_store = identity_store
+            account.sessions.identity_store = identity_store
         return account
 
     def event_session_failure(self, context, now=None):

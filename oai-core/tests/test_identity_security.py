@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -17,10 +18,11 @@ import pytest
 from oai_core.gateway.account_paths import sha256_hex
 from oai_core.gateway.core import GatewayError
 from oai_core.gateway.credentials import hash_password
-from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
+from oai_core.gateway.local_keys import LocalMasterKeyStore, MasterKeyUnavailable, create_master_key_file
 from oai_core.identity import IdentityStore, issue_bootstrap_proof
 from oai_core.instance import discover_instance, register_instance
 from oai_core.management import LocalRecovery, read_secret_fd, require_management_fd
+from oai_core.server import OAICore
 
 
 @pytest.fixture
@@ -256,6 +258,50 @@ def test_offline_readonly_missing_key_and_policy_fail_closed(env):
     fails("IDENTITY_POLICY_INVALID", store.authenticate, "admin", "admin-password")
     fails("IDENTITY_DATABASE_MISSING", IdentityStore, home / "missing" / "identity.sqlite")
     assert not (home / "missing").exists()
+
+
+def test_open_gateway_account_rejects_cached_identity_after_database_is_renamed(env):
+    store, admin, home = env
+    identity_database = store.database_path
+    identity_database.rename(identity_database.with_name("identity.sqlite.retained"))
+    assert store.account(admin["accountId"])["accountId"] == admin["accountId"]
+
+    core = OAICore(storage_root=home / "runtime" / "accounts", secret_store=LocalMasterKeyStore(home / "runtime" / "key"))
+    core.identity_store = store
+    with pytest.raises(GatewayError) as caught:
+        core.open_gateway_account(admin["accountId"])
+
+    assert caught.value.code == "IDENTITY_DATABASE_MISSING"
+    assert not core.storage_root.exists()
+
+
+def test_open_gateway_account_rejects_replaced_identity_database(env):
+    """路径重新出现，也不能让仍连接旧数据库的进程继续写账号库。"""
+    store, admin, home = env
+    database = store.database_path
+    retained = database.with_name("identity.sqlite.retained")
+    database.rename(retained)
+    shutil.copy2(retained, database)
+    assert store.account(admin["accountId"])["accountId"] == admin["accountId"]
+    core = OAICore(storage_root=home / "runtime" / "accounts", secret_store=LocalMasterKeyStore(home / "runtime" / "key"))
+    core.identity_store = store
+    with pytest.raises(GatewayError) as caught:
+        core.open_gateway_account(admin["accountId"])
+    assert caught.value.code == "IDENTITY_DATABASE_MISSING"
+    assert not core.storage_root.exists()
+
+
+def test_open_gateway_account_validates_master_key_before_creating_account_storage(env):
+    store, admin, home = env
+    key = home / "runtime" / "key"
+    key.rename(key.with_name("key.retained"))
+
+    core = OAICore(storage_root=home / "runtime" / "accounts", secret_store=LocalMasterKeyStore(key))
+    core.identity_store = store
+    with pytest.raises(MasterKeyUnavailable):
+        core.open_gateway_account(admin["accountId"])
+
+    assert not core.storage_root.exists()
 
 
 def test_legacy_digest_migration_keeps_id_and_non_admin(tmp_path):
