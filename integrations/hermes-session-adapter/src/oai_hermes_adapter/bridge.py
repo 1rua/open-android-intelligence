@@ -539,11 +539,13 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
     return app
 
 
-def register(ctx: Any) -> None:
-    """Load native Hermes only when its optional plugin is explicitly installed."""
-    from .runtime import SessionOnlyAdapter
-    from .backend import SessionBackend
-    from .platform_identity import GATEWAY_PLATFORM_IDS, gateway_enabled
+def _bridge_configuration() -> dict[str, Any]:
+    """Read the bridge settings without touching the account store.
+
+    Only environment/config is validated here so plugin discovery and
+    ``hermes gateway setup`` can list and configure the platform. Everything
+    that needs the account root (and its derived key) is built on first use.
+    """
     from oai_core.agent_registration import read_bridge_secret
     source = {}
     for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
@@ -556,35 +558,79 @@ def register(ctx: Any) -> None:
     root = os.environ.get("OAI_HERMES_GATEWAY_ROOT")
     if not root:
         raise ValueError("Set OAI_HERMES_GATEWAY_ROOT to the existing Hermes Gateway accounts directory")
+    store_root = Path(root).expanduser()
+    if not store_root.is_dir():
+        raise ValueError("OAI_HERMES_GATEWAY_ROOT must point to an existing Hermes Gateway accounts directory")
     accounts = json.loads(os.environ.get("OAI_HERMES_ACCOUNTS", "[]"))
-    default_trusted = Path(root).resolve().parent / "trusted-cores.json"
+    default_trusted = store_root.resolve().parent / "trusted-cores.json"
     trusted_file = os.environ.get("OAI_HERMES_TRUSTED_CORES_FILE")
     trusted_path = Path(trusted_file) if trusted_file else default_trusted
     if (not isinstance(accounts, list) or len(set(accounts)) != len(accounts)
             or any(not isinstance(v, str) or not IDENTITY.fullmatch(v) for v in accounts)
             or not accounts and not trusted_file and not default_trusted.is_file()):
         raise ValueError("Hermes requires explicit accounts or confirmed Core instance keys")
-    trusted_cores = {}
-    if trusted_file or default_trusted.is_file():
-        trusted_cores = _load_trusted_cores(trusted_path)
-        os.environ.setdefault("OAI_HERMES_INSTANCE_ID", "hermes")
     port = int(os.environ.get("OAI_HERMES_SESSION_PORT", "8792"))
     if not 1 <= port <= 65535:
         raise ValueError("Invalid OAI_HERMES_SESSION_PORT")
-    backend = SessionBackend(Path(root), accounts)
+    return {"token": token, "root": store_root, "accounts": accounts,
+            "trusted_file": trusted_file, "trusted_path": trusted_path, "port": port}
+
+
+def _configured_platform(config: Any = None) -> bool:
+    """Passive ``is_connected`` probe: never builds the store or writes keys."""
+    del config
+    try:
+        _bridge_configuration()
+    except (ValueError, TypeError, json.JSONDecodeError, OSError):
+        return False
+    return True
+
+
+def register(ctx: Any) -> None:
+    """Register the optional session platform; loading never requires key setup.
+
+    Registration stays side-effect free and succeeds even before the operator
+    fills in ``OAI_HERMES_*``: the setup menu then shows the platform as
+    "not configured" with the exact variables it needs, instead of the plugin
+    failing to load and disappearing from the list entirely. Settings are read
+    again on the first factory call, so values an install prompt just wrote to
+    ``.env`` take effect without a process restart.
+    """
+    from .runtime import SessionOnlyAdapter
+    from .backend import SessionBackend
+    from .platform_identity import GATEWAY_PLATFORM_IDS, gateway_enabled
     instance = None
+
     def factory(config):
         nonlocal instance
         if instance is None:
-            instance = SessionOnlyAdapter(config, backend, token, accounts, port)
-            if trusted_cores or Path(root).is_dir():
-                instance.auto_spaces = AutoAccountSpaces(Path(root), backend, trusted_cores,
+            try:
+                configuration = _bridge_configuration()
+            except (ValueError, TypeError, json.JSONDecodeError) as error:
+                raise ValueError(
+                    f"OAI Core Hermes 会话平台尚未配置：{error}。"
+                    "请在 Hermes 的环境文件（~/.hermes/.env）中设置 OAI_HERMES_* 后重启网关。"
+                ) from error
+            root, trusted_file, trusted_path = (configuration["root"], configuration["trusted_file"],
+                                                configuration["trusted_path"])
+            backend = SessionBackend(root, configuration["accounts"])
+            trusted_cores = {}
+            if trusted_file or trusted_path.is_file():
+                trusted_cores = _load_trusted_cores(trusted_path)
+                os.environ.setdefault("OAI_HERMES_INSTANCE_ID", "hermes")
+            instance = SessionOnlyAdapter(config, backend, configuration["token"],
+                                          configuration["accounts"], configuration["port"])
+            if trusted_cores or root.is_dir():
+                instance.auto_spaces = AutoAccountSpaces(root, backend, trusted_cores,
                                                          trusted_file=trusted_path)
         return instance
+
     for platform_id in GATEWAY_PLATFORM_IDS:
         ctx.register_platform(name=platform_id, label="OAI Core Hermes Sessions", adapter_factory=factory,
             check_fn=gateway_enabled, validate_config=lambda config: True,
-            install_hint="Install the optional oai-hermes-session-adapter and configure OAI_HERMES_*", emoji="📱")
+            is_connected=_configured_platform,
+            required_env=["OAI_HERMES_SESSION_TOKEN", "OAI_HERMES_GATEWAY_ROOT", "OAI_HERMES_ACCOUNTS"],
+            install_hint="配置 OAI_HERMES_* 后重启 Hermes 网关即可连接 OAI Core", emoji="📱")
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         from .tool_events import pre_tool_call, post_tool_call

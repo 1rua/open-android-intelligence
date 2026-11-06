@@ -17,9 +17,7 @@ from oai_core.gateway.account_paths import account_paths
 from oai_core.gateway.audit import AuditStore
 from oai_core.gateway.core import (AccountStore, AgentSessionBindings, ApprovalRequests, AttachmentStore,
     ContractRegistry, ConversationPort, DEFAULT_ATTACHMENT_POLICY, EventStore, GatewayError)
-from oai_core.gateway.local_keys import (LocalMasterKeyStore, default_master_key_path,
-                                        master_key_file)
-
+from oai_core.gateway.local_keys import default_session_key_path, resolve_local_master_key_store
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +179,11 @@ class SessionBackend:
         if not self.storage_root.is_dir():
             raise ValueError("Hermes accounts directory does not exist; no new account store is created")
         self.accounts = tuple(accounts)
-        self.secret_store = secret_store or LocalMasterKeyStore(master_key_file() or default_master_key_path())
+        # The session host prepares its own derived key (separate from the
+        # device Core's) so loading a pure session bridge never depends on the
+        # device encryption key an operator may not have provisioned.
+        self.secret_store = secret_store or resolve_local_master_key_store(
+            fallback_path=default_session_key_path())
         self.secret_store.validate()
         self.attachment_policy = DEFAULT_ATTACHMENT_POLICY
         self.contracts = ContractRegistry()

@@ -13,7 +13,8 @@
 - 控制台入口 `oai = oai_core.cli:main`，同一个包里同时提供守护进程命令、CLI 客户端与
   MCP stdio 服务（[cli.py](../../oai-core/src/oai_core/cli.py)、
   [mcp.py](../../oai-core/src/oai_core/mcp.py)）。
-- 运行直接依赖为 `aiohttp>=3.11,<4`、`mcp>=1.20,<2`、`jsonschema>=4.23,<5` 和
+- 运行直接依赖为 `aiohttp>=3.11,<4`、`mcp>=1.20`（1.x 与 2.x 均可，见
+  [mcp.py](../../oai-core/src/oai_core/mcp.py) 的兼容层）、`jsonschema>=4.23,<5` 和
   `cryptography>=42` 和 `yarl>=1.17,<2`，不包含 Hermes 插件、SDK 或 Git 仓库依赖。
 - 设备安全运行时由 [oai_core.gateway](../../oai-core/src/oai_core/gateway) 唯一实现。
   [verifier.py](../../oai-core/src/oai_core/gateway/verifier.py) 处理原始 HTTP 字节签名，

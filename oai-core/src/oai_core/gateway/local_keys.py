@@ -1,4 +1,4 @@
-"""Operator-provided master key file for the Gateway (ADR 0023).
+"""Local master key source for the Gateway (ADR 0023, ADR 0048, ADR 0061).
 
 The accepted design prefers a host Secret Store and, when the host has none,
 lets the deployment operator supply a permission-restricted dedicated key file.
@@ -6,16 +6,21 @@ Hermes exposes no Secret Store to plugins, so this file is the supported
 fallback: it is never written into ordinary configuration, logs, backups or
 diagnostics, and it never lives next to the database it protects.
 
+A missing key file is not an operator error: the first start provisions it
+automatically. Only an *existing but unsafe* source (symlink, foreign owner,
+group/other permission bits, invalid length) stops the Gateway, because
+deriving from it would either leak key material or silently break existing
+records. When no writable location exists at all, an in-process volatile key
+keeps the Gateway loadable instead of deadlocking plugin startup.
+
 Every account gets its own derived key, so one deployment can host many
-logically isolated Gateways without sharing key material (ADR 0030). A missing
-file, a symlink, a foreign owner or group/other permission bits are refused
-outright: an unusable key source must stop the Gateway from starting rather
-than silently degrade into answers the phone cannot use.
+logically isolated Gateways without sharing key material (ADR 0030).
 """
 
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import stat
 from pathlib import Path
@@ -31,6 +36,8 @@ NONCE_BYTES = 12
 ALGORITHM = "AES-256-GCM"
 REFERENCE_PREFIX = "local-key-v1:"
 
+logger = logging.getLogger(__name__)
+
 
 class MasterKeyUnavailable(RuntimeError):
     """The configured key source is missing, unsafe, or unusable."""
@@ -38,11 +45,23 @@ class MasterKeyUnavailable(RuntimeError):
 
 DEFAULT_KEY_DIRECTORY_NAME = ".open-android-intelligence"
 DEFAULT_KEY_FILE_NAME = "gateway-master-key"
+DEFAULT_SESSION_KEY_FILE_NAME = "session-master-key"
 
 
 def default_master_key_path() -> Path:
     """Deliberately outside the Hermes home: the key never travels with the database."""
     return Path.home() / DEFAULT_KEY_DIRECTORY_NAME / DEFAULT_KEY_FILE_NAME
+
+
+def default_session_key_path() -> Path:
+    """A separate key for a pure session host (Hermes/Dsh), away from both homes.
+
+    A session host only bridges an agent's native conversations, so it must be
+    able to prepare its own key without borrowing the device Core's key file.
+    Keeping it outside the host's home means backups of that home never carry
+    the material that protects it.
+    """
+    return Path.home() / DEFAULT_KEY_DIRECTORY_NAME / DEFAULT_SESSION_KEY_FILE_NAME
 
 
 def _write_new_key(target: Path) -> Path:
@@ -68,7 +87,7 @@ def _write_new_key(target: Path) -> Path:
 
 
 def create_master_key_file(path: str | Path) -> Path:
-    """Explicit one-shot provisioning used by ``hermes-account.py init-key``.
+    """Explicit one-shot provisioning kept for existing operators and tests.
 
     Refuses to overwrite an existing file so a mistyped command cannot destroy a
     key that still protects live data.
@@ -102,7 +121,7 @@ def _read_key_bytes(path: Path) -> bytes:
         info = path.lstat()
     except FileNotFoundError as exc:
         raise MasterKeyUnavailable(
-            f"主密钥文件不存在：{path}。请执行 ./hermes-account.py init-key 生成后重启网关。"
+            f"主密钥文件不存在：{path}。请确认该路径可写，或移除对应的环境变量以使用默认位置。"
         ) from exc
     if stat.S_ISLNK(info.st_mode):
         raise MasterKeyUnavailable(f"主密钥文件不能是符号链接：{path}")
@@ -154,14 +173,22 @@ class LocalAeadProvider:
         return self._aead.decrypt(raw[:NONCE_BYTES], raw[NONCE_BYTES:], bytes(associated))
 
 
-class LocalMasterKeyStore:
-    """Per-account derived keys from one operator-provided key file."""
+class _DerivedKeyStore:
+    """Per-account derived keys from one 32-byte source.
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path).expanduser()
+    Available on both stores so callers do not branch on how the material was
+    obtained. The reference string depends only on the account name, exactly as
+    before, so an existing account record keeps its reference when a deployment
+    moves from a provisioned file to the volatile fallback.
+    """
+
+    ephemeral = False
+
+    def _master_bytes(self) -> bytes:  # pragma: no cover - implemented below
+        raise NotImplementedError
 
     def validate(self) -> None:
-        _read_key_bytes(self.path)
+        self._master_bytes()
 
     def _derive(self, name: str) -> bytes:
         from cryptography.hazmat.primitives import hashes
@@ -170,7 +197,7 @@ class LocalMasterKeyStore:
         return HKDF(
             algorithm=hashes.SHA256(), length=KEY_BYTES, salt=None,
             info=str(name).encode("utf-8"),
-        ).derive(_read_key_bytes(self.path))
+        ).derive(self._master_bytes())
 
     def instance_signing_key(self, instance_id: str):
         """Derive a purpose-isolated stable Core instance key without another file."""
@@ -179,29 +206,92 @@ class LocalMasterKeyStore:
 
     def get_or_create_aead(self, name: str) -> LocalAeadProvider:
         # "get_or_create" is the host-facing name: this source never invents a
-        # key, it derives a stable per-account key from the file that already
-        # exists, so an unprovisioned deployment keeps failing closed.
+        # per-account key, it derives a stable one from the deployment source.
         reference = REFERENCE_PREFIX + hashlib.sha256(str(name).encode("utf-8")).hexdigest()[:16]
         return LocalAeadProvider(reference, self._derive(name))
 
 
-def resolve_local_master_key_store(environ: Mapping[str, str] | None = None) -> LocalMasterKeyStore:
+class LocalMasterKeyStore(_DerivedKeyStore):
+    """Per-account derived keys from one operator-provided key file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path).expanduser()
+
+    def _master_bytes(self) -> bytes:
+        return _read_key_bytes(self.path)
+
+
+class VolatileMasterKeyStore(_DerivedKeyStore):
+    """In-memory key used when no writable key location exists.
+
+    This is a deliberate degraded mode, not a silent replacement: the Gateway
+    still starts and never claims a missing key source. Records written in this
+    mode cannot be decrypted after the process exits, so callers log the
+    warning returned by :func:`resolve_local_master_key_store` and the operator
+    fixes the path permissions. Unsafe *existing* files are still refused
+    outright instead of falling back here.
+    """
+
+    ephemeral = True
+
+    def __init__(self) -> None:
+        self._key = os.urandom(KEY_BYTES)
+
+    def _master_bytes(self) -> bytes:
+        return self._key
+
+
+def _state_key_path(environ: Mapping[str, str] | None = None) -> Path:
+    """A third, XDG-style location used only when the primary ones are read-only."""
+    source = environ if environ is not None else os.environ
+    base = source.get("XDG_STATE_HOME")
+    root = Path(base).expanduser() if base else Path.home() / ".local" / "state"
+    return root / "open-android-intelligence" / DEFAULT_KEY_FILE_NAME
+
+
+def resolve_local_master_key_store(
+    environ: Mapping[str, str] | None = None, *, fallback_path: str | Path | None = None,
+) -> _DerivedKeyStore:
     """The key source used when the host exposes no Secret Store.
 
-    Provisioning is automatic so a freshly installed plugin is usable after
-    ``hermes gateway setup`` alone; it still refuses to start on a file the
-    operator placed with unsafe ownership or permissions.
+    Resolution order: the configured environment path; otherwise an existing
+    key is reused wherever it already lives (the caller's dedicated
+    ``fallback_path`` first, then the historical default), because switching
+    sources would make existing records undecryptable. When no file exists yet,
+    one is provisioned at the first writable candidate — the caller's
+    ``fallback_path``, the historical default, then an XDG state directory.
+    Only when none is writable does the store degrade to an in-process volatile
+    key, so plugin startup is never blocked by key preparation.
     """
-    path = master_key_file(environ) or default_master_key_path()
-    try:
-        ensured = ensure_master_key_file(path)
-    except OSError as exc:
-        raise MasterKeyUnavailable(
-            f"无法自动创建主密钥文件 {path}: {exc}。请把 "
-            f"{MASTER_KEY_FILE_ENV} 指向一个可写的专用路径，或执行 "
-            "./hermes-account.py init-key 手动生成。"
-        ) from exc
-    return LocalMasterKeyStore(ensured)
+    configured = master_key_file(environ)
+    if configured is not None:
+        # An explicitly configured path is the operator's choice: use only it so
+        # a later-appearing file cannot silently change which key is in use.
+        return _provision([configured]) or VolatileMasterKeyStore()
+    dedicated = Path(fallback_path).expanduser() if fallback_path is not None else None
+    existing = [path for path in (dedicated, default_master_key_path())
+                if path is not None and (path.exists() or path.is_symlink())]
+    if existing:
+        # An existing but unsafe file still fails closed in the caller's
+        # validate(); it is never replaced by a freshly generated key.
+        return LocalMasterKeyStore(existing[0])
+    return _provision([path for path in (dedicated, default_master_key_path(), _state_key_path(environ))
+                       if path is not None]) or VolatileMasterKeyStore()
+
+
+def _provision(candidates: list[Path]) -> LocalMasterKeyStore | None:
+    errors: list[str] = []
+    for path in candidates:
+        try:
+            return LocalMasterKeyStore(ensure_master_key_file(path))
+        except OSError as exc:
+            errors.append(f"{path}: {exc}")
+    if errors:
+        logger.warning(
+            "主密钥位置不可写（%s）。本次运行改用进程内临时密钥：新建数据重启后无法解密，"
+            "请修正该目录权限或通过 %s 指定可写路径。", "；".join(errors), MASTER_KEY_FILE_ENV,
+        )
+    return None
 
 
 def master_key_unavailable_reason(core: Any) -> str | None:
@@ -209,10 +299,9 @@ def master_key_unavailable_reason(core: Any) -> str | None:
     store = getattr(core, "secret_store", None)
     if store is None:
         return (
-            "主密钥来源不可用：宿主未提供 Secret Store，且受限密钥文件无法自动创建。"
+            "主密钥来源不可用：宿主未提供 Secret Store，且未能建立本地密钥来源。"
             f"请检查 {default_master_key_path()} 所在目录是否可写，或通过 "
-            f"{MASTER_KEY_FILE_ENV} 指定一个可写的专用路径。缺少主密钥时网关拒绝启动，"
-            "避免所有已认证请求以 400 失败。"
+            f"{MASTER_KEY_FILE_ENV} 指定一个可写的专用路径。"
         )
     validate = getattr(store, "validate", None)
     if callable(validate):

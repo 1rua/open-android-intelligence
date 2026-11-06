@@ -123,7 +123,7 @@ fun specificFailureText(code: String): String? {
         value.contains("EVENT_APPLY_FAILED") ->
             "会话同步数据未能处理，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App 与 Core 的版本兼容性。"
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
-        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
+        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关暂时无法保存附件或发送消息（主密钥来源不可用）。请重启网关；若持续发生，请让网关部署者检查密钥文件的路径、所有者与权限。"
         value.contains("APPROVAL_UNSUPPORTED") ->
             "审批卡暂时无法显示，命令仍在等待执行。请回复 /approve 或 /deny 完成审批。"
         value.contains("APPROVAL_EXPIRED") ->

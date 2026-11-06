@@ -37,7 +37,18 @@ Core 端的 `oai_core.adapters.hermes.HermesRemoteSessionAdapter` 只通过内�
 | `OAI_HERMES_ACCOUNTS` | 可访问的既有 Hermes 账号 ID 的 JSON 数组，必须显式列出且不重复 |
 | `OAI_HERMES_SESSION_TOKEN` | 至少 32 字符的内部会话桥密钥，Core 远程配置使用同一值 |
 | `OAI_HERMES_SESSION_PORT` | 默认为 `8792`；监听地址固定为 `127.0.0.1` |
-| `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE` | 原账号库使用的既有主密钥文件；保留原受限路径、所有者和 `0600` 权限 |
+| `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE` | 可选。仅当需要复用原账号库的既有密钥时设置；不设置时按下方说明自动准备 |
+
+### 主密钥无需人工准备
+
+会话宿主第一次真正建立会话存储时，会在 `~/.open-android-intelligence/session-master-key` 自动生成 32 字节密钥（文件 `0600`，目录仅在本进程创建时收紧到 `0700`）。它与会话桥的设备 Core 密钥 `gateway-master-key` 分开，两者都不在各自的 home 或账号目录内，因此备份宿主数据不会连同密钥一起被带走。
+
+- 已存在的密钥永不覆盖：重复启动不会轮换正在保护线上数据的密钥。
+- 既有文件是符号链接、不属于当前用户、组或其他用户可读写、或内容长度不合法时仍然拒绝使用并给出原因，不会自动"修复"或替换。
+- 所有位置都不可写时降级为进程内临时密钥并在日志中说明：网关照常加载，但本次新建数据重启后无法解密，需要修正目录权限。
+- 设置 `OPEN_ANDROID_INTELLIGENCE_GATEWAY_MASTER_KEY_FILE`（或别名 `OPEN_ANDROID_GATEWAY_MASTER_KEY_FILE`）后只使用该路径，不会因为默认位置后来出现文件而悄悄换钥。详见 [ADR 0061](../../docs/adr/0061-plugin-provisions-its-own-key-source.md)。
+
+平台注册与配置探测是分开的：即使 `OAI_HERMES_*` 尚未填写，插件也会加载并出现在 `hermes gateway setup` 的清单里，状态显示为未配置并提示缺哪几个变量；只有在真正连接时才要求这些配置齐全。
 
 Core 的 Hermes Agent 配置须明确提供 `accounts` 对照表，例如 `{"core-alice":"hermes-alice","core-bob":"hermes-bob"}`。不同 Core 账号不能映射同一 Hermes 账号。会话桥 Token 只认证内部桥接请求，不能作为 Core 账号 Token、Android 会话或设备授权凭据。Hermes 的设备工具统一配置 OAI Core CLI/MCP/API，并使用经认证、绑定目标设备的独立 Core 凭据；会话接入本身不授予设备调用身份，也不能改变 Android 的能力决定。
 
