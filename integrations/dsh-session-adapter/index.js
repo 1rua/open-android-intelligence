@@ -1,6 +1,9 @@
 /** DSH native session adapter. Android auth and all device work stay in Core. */
 import { createServer } from "node:http";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { diagnosticTrace } from "./diagnostics.js";
 
 export const name = "oai-session-adapter";
@@ -76,7 +79,37 @@ async function bodyOf(req) {
 /** The injected query's corpus is the explicitly installed DSH instance only. */
 export function createSessionHandler(ctx, config, token) {
   if (typeof token !== "string" || token.length < 32) throw fail("ADAPTER_TOKEN_REQUIRED", 500);
-  const expected = Buffer.from(`Bearer ${token}`);
+  let currentToken = token;
+  let expected = Buffer.from(`Bearer ${currentToken}`);
+
+  const reloadToken = () => {
+    try {
+      const envName = config?.tokenEnv ?? "OAI_DSH_ADAPTER_TOKEN";
+      if (process.env[envName] && process.env[envName].length >= 32) {
+        return process.env[envName];
+      }
+      const homedir = os.homedir();
+      const candidates = [
+        process.env.DSH_HOME ? path.join(process.env.DSH_HOME, ".env") : null,
+        path.join(homedir, ".dsh", ".env"),
+        path.join(homedir, ".dsh-cline", ".env"),
+      ].filter(Boolean);
+      for (const envPath of candidates) {
+        if (fs.existsSync(envPath)) {
+          const content = fs.readFileSync(envPath, "utf-8");
+          const match = content.match(new RegExp(`^${envName}=(.*)$`, "m"));
+          if (match) {
+            let val = match[1].trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.slice(1, -1);
+            }
+            if (val.length >= 32) return val;
+          }
+        }
+      }
+    } catch {}
+    return null;
+  };
   const validated = Config["~standard"].validate(config);
   if (validated.issues) throw fail("SCHEMA_INVALID", 500);
   const budgets = validated.value;
@@ -281,7 +314,19 @@ export function createSessionHandler(ctx, config, token) {
   return async (req, res) => {
     try {
       const supplied = Buffer.from(req.headers.authorization ?? "");
-      if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw fail("AUTHENTICATION_REQUIRED", 401);
+      let authenticated = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+      if (!authenticated) {
+        const reloaded = reloadToken();
+        if (reloaded && reloaded !== currentToken) {
+          const nextExpected = Buffer.from(`Bearer ${reloaded}`);
+          if (supplied.length === nextExpected.length && timingSafeEqual(supplied, nextExpected)) {
+            currentToken = reloaded;
+            expected = nextExpected;
+            authenticated = true;
+          }
+        }
+      }
+      if (!authenticated) throw fail("AUTHENTICATION_REQUIRED", 401);
       const url = new URL(req.url, "http://localhost");
       if (url.search) throw fail("SCHEMA_INVALID", 400);
       const path = url.pathname;
@@ -296,7 +341,7 @@ export function createSessionHandler(ctx, config, token) {
         const sorted = Object.fromEntries(Object.entries(declared).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0));
         const payload = { capabilities: sorted, challenge: body.challenge, instanceId: budgets.instanceId,
           online, sessionScope: "deployment" };
-        const proof = createHmac("sha256", token).update("oai-agent-handshake-v1\0").update(JSON.stringify(payload)).digest("hex");
+        const proof = createHmac("sha256", currentToken).update("oai-agent-handshake-v1\0").update(JSON.stringify(payload)).digest("hex");
         return json(res, { instanceId: budgets.instanceId, sessionScope: "deployment", online, capabilities: declared, proof });
       }
       if (req.method === "GET" && path === PREFIX + "/status") {

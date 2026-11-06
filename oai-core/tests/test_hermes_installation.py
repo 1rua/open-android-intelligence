@@ -704,3 +704,35 @@ def test_offline_dependency_fallback_succeeds_when_online_index_is_unreachable(i
     assert "--no-deps" in install_attempts[1]
     if use_uv:
         assert "--offline" in install_attempts[1]
+
+
+def test_root_user_can_install_adapter_for_foreign_owned_host(installation, monkeypatch):
+    from oai_core import hermes_installation as installer
+
+    owner_uid = 1000
+    owner_gid = 1000
+    real_stat = Path.stat
+    def foreign_stat(path, *args, **kwargs):
+        info = real_stat(path, *args, **kwargs)
+        if str(path).startswith(str(installation.home)):
+            fields = list(info)
+            fields[4] = owner_uid
+            fields[5] = owner_gid
+            return os.stat_result(fields)
+        return info
+
+    monkeypatch.setattr(Path, "stat", foreign_stat)
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+
+    chowned_paths = []
+    def fake_chown(path, uid, gid, *args, **kwargs):
+        chowned_paths.append((str(path), uid, gid))
+    monkeypatch.setattr(os, "chown", fake_chown)
+
+    calls = fake_host(monkeypatch, installer, installation)
+    installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
+
+    assert any(uid == owner_uid for _, uid, _ in chowned_paths)
+    target = installation.home / "plugins" / installer.PLUGIN
+    assert target.is_dir()

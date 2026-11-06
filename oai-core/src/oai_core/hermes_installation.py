@@ -94,7 +94,8 @@ def _authorize(root: Path, store, handle: str) -> None:
         raise HermesAdapterInstallError("HERMES_PERMISSION_DENIED") from None
 
 
-def _safe(path: Path, *, directory: bool, missing: bool = False, owned: bool = True) -> Path:
+def _safe(path: Path, *, directory: bool, missing: bool = False, owned: bool = True,
+          owner_uid: int | None = None) -> Path:
     raw = os.fspath(path)
     if (not raw or raw.strip() != raw or ".." in Path(raw).parts or "\\" in raw
             or "~" in Path(raw).parts or any(ord(c) < 32 or ord(c) == 127 for c in raw)):
@@ -109,52 +110,65 @@ def _safe(path: Path, *, directory: bool, missing: bool = False, owned: bool = T
             raise
         if stat.S_ISLNK(info.st_mode) or part != path and not stat.S_ISDIR(info.st_mode):
             raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
+    if owned:
+        if os.geteuid() != 0:
+            if info.st_uid != os.geteuid():
+                raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
+        elif owner_uid is not None:
+            if info.st_uid not in {0, owner_uid}:
+                raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
     if ((directory and not stat.S_ISDIR(info.st_mode))
             or (not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))
-            or owned and info.st_uid != os.geteuid() or info.st_mode & 0o022):
+            or info.st_mode & 0o022):
         raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
     return path
 
 
-def _executable(path: Path, *, venv: bool = False) -> Path:
+def _executable(path: Path, *, venv: bool = False, owner_uid: int | None = None) -> Path:
     # venv/uv intentionally link executables. Keep the venv path when invoking
     # Python, but execute the validated destination for ordinary tool links.
-    _safe(path.parent, directory=True, owned=venv)
+    _safe(path.parent, directory=True, owned=venv, owner_uid=owner_uid)
     info = path.lstat()
     resolved = path
+    allowed = {0, os.geteuid()} if owner_uid is None else {0, os.geteuid(), owner_uid}
     if stat.S_ISLNK(info.st_mode):
-        if info.st_uid not in {0, os.geteuid()}:
+        if info.st_uid not in allowed:
             raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
-        resolved = _safe(path.resolve(strict=True), directory=False, owned=False)
-        if resolved.stat().st_uid not in {0, os.geteuid()}:
+        resolved = _safe(path.resolve(strict=True), directory=False, owned=False, owner_uid=owner_uid)
+        if resolved.stat().st_uid not in allowed:
             raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
     else:
-        _safe(path, directory=False, owned=venv)
+        _safe(path, directory=False, owned=venv, owner_uid=owner_uid)
     if not os.access(resolved, os.X_OK):
         raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
     return path if venv else resolved
 
 
-def _bytes(path: Path) -> bytes:
-    _safe(path, directory=False)
+def _bytes(path: Path, owner_uid: int | None = None) -> bytes:
+    _safe(path, directory=False, owner_uid=owner_uid)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, "rb") as source:
         info = os.fstat(source.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != os.geteuid() or info.st_mode & 0o022):
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_mode & 0o022:
             raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
+        if os.geteuid() != 0:
+            if info.st_uid != os.geteuid():
+                raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
+        elif owner_uid is not None:
+            if info.st_uid not in {0, owner_uid}:
+                raise HermesAdapterInstallError("HERMES_PATH_UNSAFE")
         return source.read()
 
 
-def _tree(path: Path) -> None:
-    _safe(path, directory=True)
+def _tree(path: Path, owner_uid: int | None = None) -> None:
+    _safe(path, directory=True, owner_uid=owner_uid)
     for directory, dirs, files in os.walk(path, followlinks=False):
         for name in dirs:
-            _safe(Path(directory) / name, directory=True)
+            _safe(Path(directory) / name, directory=True, owner_uid=owner_uid)
         dirs[:] = [d for d in dirs if d not in _EXCLUDED and not d.endswith(".egg-info")]
         for name in files:
             if not name.endswith((".pyc", ".pyo")):
-                _safe(Path(directory) / name, directory=False)
+                _safe(Path(directory) / name, directory=False, owner_uid=owner_uid)
 
 
 def _environment(home: Path, python: Path, uv: Path | None) -> dict[str, str]:
@@ -168,12 +182,12 @@ def _environment(home: Path, python: Path, uv: Path | None) -> dict[str, str]:
     }
 
 
-def _run(root, store, handle, args, env, *, code, accepted=(0,)) -> int:
+def _run(root, store, handle, args, env, *, code, accepted=(0,), owner_uid: int | None = None) -> int:
     # Recheck host paths, then authority immediately before every child.
-    home = _safe(Path(env["HERMES_HOME"]), directory=True)
-    _safe(home / "config.yaml", directory=False, missing=True)
-    _safe(home / "plugins", directory=True, missing=True)
-    _executable(home / "hermes-agent/venv/bin/python", venv=True)
+    home = _safe(Path(env["HERMES_HOME"]), directory=True, owner_uid=owner_uid)
+    _safe(home / "config.yaml", directory=False, missing=True, owner_uid=owner_uid)
+    _safe(home / "plugins", directory=True, missing=True, owner_uid=owner_uid)
+    _executable(home / "hermes-agent/venv/bin/python", venv=True, owner_uid=owner_uid)
     _authorize(root, store, handle)
     try:
         child = subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.DEVNULL,
@@ -221,16 +235,44 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
     try:
         if os.getuid() != os.geteuid():
             raise HermesAdapterInstallError("HERMES_HOST_OWNER_UNSUPPORTED")
-        root = _safe(root, directory=True)
         # Diagnose the existing cross-user detection case explicitly, before writes.
         home = _safe(hermes_home, directory=True, owned=False)
-        if home.stat().st_uid != os.geteuid():
+        owner_uid = home.stat().st_uid
+        owner_gid = home.stat().st_gid
+        if os.geteuid() != 0 and owner_uid != os.geteuid():
             raise HermesAdapterInstallError("HERMES_HOST_OWNER_UNSUPPORTED")
+        root = _safe(root, directory=True, owner_uid=owner_uid)
+
+        def _chown(path: Path) -> None:
+            if os.geteuid() == 0 and owner_uid != 0:
+                try:
+                    os.chown(path, owner_uid, owner_gid)
+                except OSError:
+                    pass
+
+        def _chown_tree(path: Path) -> None:
+            if os.geteuid() == 0 and owner_uid != 0:
+                for dirpath, dirs, files in os.walk(path, followlinks=False):
+                    for fname in files:
+                        fp = Path(dirpath) / fname
+                        try:
+                            if fp.lstat().st_uid == 0:
+                                os.chown(fp, owner_uid, owner_gid)
+                        except OSError:
+                            pass
+                    for dname in dirs:
+                        dp = Path(dirpath) / dname
+                        try:
+                            if dp.lstat().st_uid == 0:
+                                os.chown(dp, owner_uid, owner_gid)
+                        except OSError:
+                            pass
+
         python = home / "hermes-agent" / "venv" / "bin" / "python"
         if not python.exists() and not python.is_symlink():
             raise HermesAdapterInstallError("HERMES_HOST_NOT_FOUND")
-        _executable(python, venv=True)
-        _safe(python.parent.parent / "pyvenv.cfg", directory=False)
+        _executable(python, venv=True, owner_uid=owner_uid)
+        _safe(python.parent.parent / "pyvenv.cfg", directory=False, owner_uid=owner_uid)
         if not os.access(python, os.X_OK):
             raise HermesAdapterInstallError("HERMES_HOST_NOT_FOUND")
         for relative, name, package in (
@@ -238,39 +280,40 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
             ("integrations/hermes-session-adapter", PLUGIN, "oai_hermes_adapter"),
         ):
             source = root / relative
-            _tree(source)
-            project = tomllib.loads(_bytes(source / "pyproject.toml").decode())["project"]
+            _tree(source, owner_uid=owner_uid)
+            project = tomllib.loads(_bytes(source / "pyproject.toml", owner_uid=owner_uid).decode())["project"]
             if project.get("name") != name or not isinstance(project.get("version"), str):
                 raise HermesAdapterInstallError("HERMES_SOURCE_INVALID")
-            _safe(source / "src" / package / "__init__.py", directory=False)
+            _safe(source / "src" / package / "__init__.py", directory=False, owner_uid=owner_uid)
         # Core's standard build reads these repository assets when present.
         for asset in (root / "gateway-contract", root / "integrations/skills"):
             if asset.exists() or asset.is_symlink():
-                _tree(asset)
-        manifest = _bytes(root / "integrations/hermes-session-adapter/plugin.yaml")
-        plugins = _safe(home / "plugins", directory=True, missing=True)
+                _tree(asset, owner_uid=owner_uid)
+        manifest = _bytes(root / "integrations/hermes-session-adapter/plugin.yaml", owner_uid=owner_uid)
+        plugins = _safe(home / "plugins", directory=True, missing=True, owner_uid=owner_uid)
         target = plugins / PLUGIN
         if plugins.exists() and (target.exists() or target.is_symlink()):
-            _tree(target)
-        config = _safe(home / "config.yaml", directory=False, missing=True)
-        original = _bytes(config) if config.exists() else None
+            _tree(target, owner_uid=owner_uid)
+        config = _safe(home / "config.yaml", directory=False, missing=True, owner_uid=owner_uid)
+        original = _bytes(config, owner_uid=owner_uid) if config.exists() else None
         uv_path = shutil.which("uv")
         uv = _executable(Path(uv_path)) if uv_path else None
         env = _environment(home, python, uv)
         python_args = [os.path.relpath(python, root), "-I", "-B"]
         legacy_enabled = _run(root, store, handle, [*python_args, "-c", _PROBE], env,
-                              code="HERMES_HOST_INCOMPATIBLE", accepted=(0, 10)) == 10
+                              code="HERMES_HOST_INCOMPATIBLE", accepted=(0, 10), owner_uid=owner_uid) == 10
         if uv is None:
             _run(root, store, handle, [*python_args, "-m", "pip", "--version"], env,
-                 code="HERMES_PACKAGE_MANAGER_UNAVAILABLE")
+                 code="HERMES_PACKAGE_MANAGER_UNAVAILABLE", owner_uid=owner_uid)
         # Retain the exact original config before any installation side effect.
         backup = home / (".oai-hermes-install-" + secrets.token_hex(12))
         def authorize():
             _authorize(root, store, handle)
-            _safe(home, directory=True)
-            _safe(backup, directory=True)
+            _safe(home, directory=True, owner_uid=owner_uid)
+            _safe(backup, directory=True, owner_uid=owner_uid)
         _authorize(root, store, handle)
         backup.mkdir(mode=0o700)
+        _chown(backup)
         def write_new(path, content):
             authorize()
             descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -278,11 +321,13 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
                 output.write(content)
                 output.flush()
                 os.fsync(output.fileno())
+            _chown(path)
         if original is not None:
             write_new(backup / "config.yaml", original)
         stage = backup / "new-plugin"
         authorize()
         stage.mkdir(mode=0o700)
+        _chown(stage)
         write_new(stage / "plugin.yaml", manifest)
         write_new(stage / "__init__.py", b"from oai_hermes_adapter import register\n")
         if uv is not None:
@@ -294,33 +339,36 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
             offline_flags = ["--no-build-isolation", "--no-deps"]
         try:
             _run(root, store, handle, [*install, "./oai-core", "./integrations/hermes-session-adapter"],
-                 env, code="HERMES_DEPENDENCY_FAILED")
+                 env, code="HERMES_DEPENDENCY_FAILED", owner_uid=owner_uid)
         except HermesAdapterInstallError as install_err:
             if install_err.code != "HERMES_DEPENDENCY_FAILED":
                 raise
             _run(root, store, handle, [*install, *offline_flags, "./oai-core", "./integrations/hermes-session-adapter"],
-                 env, code="HERMES_DEPENDENCY_FAILED")
+                 env, code="HERMES_DEPENDENCY_FAILED", owner_uid=owner_uid)
+        _chown_tree(python.parent.parent)
         # Refuse to overwrite a configuration changed while the resolver ran.
-        if (_bytes(config) if config.exists() or config.is_symlink() else None) != original:
+        if (_bytes(config, owner_uid=owner_uid) if config.exists() or config.is_symlink() else None) != original:
             raise HermesAdapterInstallError("HERMES_ENABLE_FAILED")
         authorize()
         if not plugins.exists():
             plugins.mkdir(mode=0o700)
-        _safe(plugins, directory=True)
+            _chown(plugins)
+        _safe(plugins, directory=True, owner_uid=owner_uid)
         if target.exists() or target.is_symlink():
-            _tree(target)
+            _tree(target, owner_uid=owner_uid)
             authorize()
             target.rename(backup / "previous-plugin")
             previous_moved = True
         authorize()
         stage.rename(target)
+        _chown_tree(target)
         new_moved = True
         cli = [*python_args, "-m", "hermes_cli.main", "plugins"]
         if legacy_enabled:
-            _run(root, store, handle, [*cli, "disable", LEGACY_PLUGIN], env, code="HERMES_ENABLE_FAILED")
-        _run(root, store, handle, [*cli, "enable", PLUGIN], env, code="HERMES_ENABLE_FAILED")
-        _safe(config, directory=False)
-        _run(root, store, handle, [*python_args, "-c", _VERIFY], env, code="HERMES_ENABLE_FAILED")
+            _run(root, store, handle, [*cli, "disable", LEGACY_PLUGIN], env, code="HERMES_ENABLE_FAILED", owner_uid=owner_uid)
+        _run(root, store, handle, [*cli, "enable", PLUGIN], env, code="HERMES_ENABLE_FAILED", owner_uid=owner_uid)
+        _safe(config, directory=False, owner_uid=owner_uid)
+        _run(root, store, handle, [*python_args, "-c", _VERIFY], env, code="HERMES_ENABLE_FAILED", owner_uid=owner_uid)
         return None
     except Exception as error:
         if isinstance(error, HermesAdapterInstallError):
@@ -333,15 +381,15 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
             try:
                 # Revocation forbids further writes; leave all recovery material intact.
                 authorize()
-                current = _bytes(config) if config.exists() or config.is_symlink() else None
+                current = _bytes(config, owner_uid=owner_uid) if config.exists() or config.is_symlink() else None
                 if current != original:
                     # Even a successful CLI cannot prove who last wrote the
                     # configuration. Never rename/write active config during
                     # recovery; leave it and every recovery copy for review.
                     raise HermesAdapterInstallError("HERMES_RECOVERY_REQUIRED")
                 if new_moved:
-                    _safe(plugins, directory=True)
-                    _tree(target)
+                    _safe(plugins, directory=True, owner_uid=owner_uid)
+                    _tree(target, owner_uid=owner_uid)
                     authorize()
                     target.rename(backup / "failed-plugin")
                 if previous_moved:

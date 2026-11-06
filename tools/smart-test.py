@@ -163,8 +163,11 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
         pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
+        extra_env = {"PYTHONPATH": pythonpath}
+        if "PYTHONUSERBASE" in os.environ:
+            extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
         ret = run_command([
-            "python3", "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
+            sys.executable, "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
             "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
@@ -177,16 +180,19 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "--ignore=oai-core/tests/test_native_event_sync.py",
             "--ignore=oai-core/tests/test_hermes_communication_reliability.py",
             "--ignore=oai-core/tests/test_communication_process_recovery.py",
-        ], env={"PYTHONPATH": pythonpath, "PYTHONUSERBASE": "/home/djbd/.local"})
+        ], env=extra_env)
         if ret != 0:
             return ret
 
     elif impact["affects_configuration"]:
         print("\n--- Core 配置保存、安装卸载与测试入口回归 ---")
         pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
-        ret = run_command(["python3", "-m", "pytest", "tests/test_install_script.py", "tests/test_uninstall_script.py",
+        extra_env = {"PYTHONPATH": pythonpath}
+        if "PYTHONUSERBASE" in os.environ:
+            extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
+        ret = run_command([sys.executable, "-m", "pytest", "tests/test_install_script.py", "tests/test_uninstall_script.py",
                            "tests/test_core_setup_transaction.py", "oai-core/tests/test_core_config.py",
-                           "tools/test_smart_test.py", "-q"], env={"PYTHONPATH": pythonpath, "PYTHONUSERBASE": "/home/djbd/.local"})
+                           "tools/test_smart_test.py", "-q"], env=extra_env)
         if ret != 0:
             return ret
 
@@ -194,8 +200,22 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     # affects_hermes 不能只被识别却从不触发测试。SDK 用例需显式提供固定 SDK。
     if impact["is_full_required"] or impact["affects_hermes"] or level == "full":
         print("\n--- Hermes 原生会话与工具回归 ---")
-        ret = run_command([
-            "python3", "-m", "pytest", "-q",
+        hermes_env = os.environ.copy()
+        sdk_candidates = [
+            os.environ.get("HERMES_SDK_ROOT"),
+            str(REPO_ROOT.parents[1] / ".toolchains/hermes-sdk-75b083e"),
+            "/mnt/data/projects/open-android-intelligence/.toolchains/hermes-sdk-75b083e",
+        ]
+        sdk_root = next((c for c in sdk_candidates if c and Path(c).is_dir()), None)
+        base_paths = [str(REPO_ROOT / 'oai-core/src'), str(REPO_ROOT / 'integrations/hermes-session-adapter/src')]
+        if sdk_root:
+            hermes_env["HERMES_SDK_ROOT"] = sdk_root
+            base_paths.insert(0, sdk_root)
+        if "PYTHONPATH" in hermes_env:
+            base_paths.append(hermes_env["PYTHONPATH"])
+        hermes_env["PYTHONPATH"] = ":".join(base_paths)
+        hermes_cmd = [
+            sys.executable, "-m", "pytest", "-q",
             "oai-core/tests/test_hermes.py",
             "oai-core/tests/test_hermes_native.py",
             "oai-core/tests/test_hermes_native_origin.py",
@@ -207,10 +227,14 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_hermes_communication_reliability.py",
             "oai-core/tests/test_communication_process_recovery.py",
             "oai-core/tests/test_interaction_pipeline.py",
-            "oai-core/tests/test_structured_tool_history.py",
-            "oai-core/tests/test_native_tool_events.py",
-            "oai-core/tests/test_native_event_sync.py",
-        ])
+        ]
+        if sdk_root:
+            hermes_cmd.extend([
+                "oai-core/tests/test_structured_tool_history.py",
+                "oai-core/tests/test_native_tool_events.py",
+                "oai-core/tests/test_native_event_sync.py",
+            ])
+        ret = run_command(hermes_cmd, env=hermes_env)
         if ret != 0:
             return ret
 
@@ -226,7 +250,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
 
     if impact["is_full_required"] or impact["affects_measurements"] or level == "full":
         print("\n--- 通信测量器统计、来源与隐私回归 ---")
-        ret = run_command(["python3", "-m", "pytest", "-q", "tools/test_measure_communication.py"])
+        ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_measure_communication.py"])
         if ret != 0:
             return ret
 

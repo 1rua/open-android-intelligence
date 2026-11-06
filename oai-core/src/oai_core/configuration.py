@@ -1151,7 +1151,7 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         secret_rel, token = _ensure_agent_secret_file(storage, "dsh", preferred)
         if missing_credentials or any(tok != token for tok in home_tokens):
             try:
-                sync_dsh_adapter_env(token)
+                sync_dsh_adapter_env(token, homes=detected.get("dsh"))
             except Exception:
                 pass
         manifest = {
@@ -1273,7 +1273,28 @@ def restart_hermes_service_if_active() -> bool:
         runtime_dir = Path(f"/run/user/{os.geteuid()}")
         if runtime_dir.is_dir():
             svc_env["XDG_RUNTIME_DIR"] = str(runtime_dir)
-    for cmd_prefix in (["systemctl", "--user"], *([["systemctl"]] if os.geteuid() == 0 else [])):
+    prefixes: list[list[str]] = [["systemctl", "--user"]]
+    if os.geteuid() == 0:
+        prefixes.append(["systemctl"])
+        detected_hermes = detect_host_agents().get("hermes", [])
+        if detected_hermes:
+            try:
+                owner_uid = detected_hermes[0].stat().st_uid
+                if owner_uid != 0:
+                    import pwd
+                    owner_user = pwd.getpwuid(owner_uid).pw_name
+                    runuser = shutil.which("runuser")
+                    if runuser:
+                        prefixes.append([runuser, "-u", owner_user, "--", "env",
+                                         f"XDG_RUNTIME_DIR=/run/user/{owner_uid}",
+                                         f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{owner_uid}/bus",
+                                         "systemctl", "--user"])
+                    systemctl = shutil.which("systemctl")
+                    if systemctl:
+                        prefixes.append(["systemctl", f"--machine={owner_user}@.host", "--user"])
+            except Exception:
+                pass
+    for cmd_prefix in prefixes:
         try:
             state = subprocess.run([*cmd_prefix, "is-active", "hermes-gateway.service"],
                                    capture_output=True, text=True, timeout=5, check=False, env=svc_env)
@@ -1419,14 +1440,20 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
         return False
     try:
         homes = detect_host_agents().get("dsh", [])
+        effective_allow_install = allow_install
         profiles = (discover_dsh_profiles(homes, include_uninstalled=True)
                     if allow_install else discover_dsh_profiles(homes))
+        if not profiles and not allow_install:
+            fallback = discover_dsh_profiles(homes, include_uninstalled=True)
+            if fallback:
+                profiles = fallback
+                effective_allow_install = True
         if not profiles:
             print("未找到可用的 DSH 运行配置 (profile)，请先在 DSH 中创建配置后再试；尚未注册。"
-                  if allow_install else "未找到已启用连接插件的 DSH 运行配置 (profile)，请先在 DSH 中安装插件后再试；尚未注册。")
+                  if effective_allow_install else "未找到已启用连接插件的 DSH 运行配置 (profile)，请先在 DSH 中安装插件后再试；尚未注册。")
             return False
         print("请选择要安装连接插件的 DSH 运行配置 (profile)，原有配置会自动备份："
-              if allow_install else "检测到 DSH 连接插件版本较旧。请选择要升级的运行配置 (profile)，原有配置会自动备份：")
+              if effective_allow_install else "检测到 DSH 连接插件版本较旧。请选择要升级的运行配置 (profile)，原有配置会自动备份：")
         profile_options = [
             (str(index), f"{index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
             for index, profile in enumerate(profiles, 1)
@@ -1434,19 +1461,19 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
         profile_options.append(("", "0. 取消并返回"))
         choice = _select_option(
             "选择并确认安装的 profile 编号（↑/↓ 选择，或选 0 返回）: "
-            if allow_install else "选择并确认升级的 profile 编号（↑/↓ 选择，或选 0 返回）: ",
+            if effective_allow_install else "选择并确认升级的 profile 编号（↑/↓ 选择，或选 0 返回）: ",
             profile_options,
             default_index=0,
         )
         if choice in {"", "0"}:
-            print("已取消安装；尚未注册。" if allow_install else "已取消升级；尚未注册。")
+            print("已取消安装；尚未注册。" if effective_allow_install else "已取消升级；尚未注册。")
             return False
         if not choice.isdecimal() or not 1 <= int(choice) <= len(profiles):
             print("无效的 DSH profile 编号；尚未注册。")
             return False
         profile = profiles[int(choice) - 1]
         require_configuration_access(root, store, handle, "agents.manage")
-        if allow_install:
+        if effective_allow_install:
             install_dsh_adapter(root, store, handle, profile, include_uninstalled=True)
         else:
             install_dsh_adapter(root, store, handle, profile)
@@ -1547,10 +1574,7 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
     if "secretFile" not in entry or Path(entry["secretFile"]).is_absolute():
         raise ValueError("Agent 候选必须使用相对于账号存储目录的 secretFile")
     if signing_key is not None and entry["type"] == "hermes":
-        from cryptography.hazmat.primitives import serialization
-        public = signing_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
-        print("首次连接 Hermes 时，系统已自动将当前 Core 服务端公钥写入信任列表（如需手动核对，公钥如下）：")
-        print(json.dumps({operator["instanceId"]: public}, ensure_ascii=False))
+        _ui_ok("已自动配置连接安全凭据与双向信任关系。")
     confirm_agent = _select_option(
         f"确认连接并注册 {entry['id']} 吗？(直接回车确认，或输入 y / {entry['id']}) [y]: ",
         (
@@ -2145,26 +2169,50 @@ def dotenv_scalar(value: str) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9_./:@+-]+", value) else json.dumps(value, ensure_ascii=False)
 
 
-def sync_dsh_adapter_env(token: str, *, transaction: ConfigurationTransaction | None = None) -> None:
-    candidates = [Path.home() / ".dsh", Path.home() / ".dsh-cline"]
-    if os.environ.get("DSH_HOME"):
-        candidates.insert(0, Path(os.environ["DSH_HOME"]))
+def sync_dsh_adapter_env(token: str, *, transaction: ConfigurationTransaction | None = None,
+                         homes: list[Path] | None = None) -> None:
+    candidates = list(homes) if homes is not None else []
+    if not candidates:
+        try:
+            candidates.extend(detect_host_agents().get("dsh", []))
+        except Exception:
+            pass
+    if not candidates:
+        candidates = [Path.home() / ".dsh", Path.home() / ".dsh-cline"]
+        if os.environ.get("DSH_HOME"):
+            candidates.insert(0, Path(os.environ["DSH_HOME"]))
     seen = set()
     for home in candidates:
-        resolved = home.resolve()
+        try:
+            resolved = home.resolve()
+        except OSError:
+            continue
         if not home.is_dir() or resolved in seen:
             continue
         seen.add(resolved)
+        owner_uid = home.stat().st_uid if os.geteuid() == 0 else os.geteuid()
+        owner_gid = home.stat().st_gid if os.geteuid() == 0 else os.getegid()
         env_file = home / ".env"
         content = read_configuration_text(env_file, transaction)
-        write_configuration_text(env_file, update_environment_text(content, {"OAI_DSH_ADAPTER_TOKEN": dotenv_scalar(token)}), transaction)
-        update_dsh_credentials_yaml(home / ".credentials.yaml", "OAI_DSH_ADAPTER_TOKEN", token, transaction=transaction)
+        new_env = update_environment_text(content, {"OAI_DSH_ADAPTER_TOKEN": dotenv_scalar(token)})
+        if transaction is not None:
+            write_configuration_text(env_file, new_env, transaction)
+        else:
+            _write_host_text(env_file, new_env, owner_uid, owner_gid, 0o600)
+        update_dsh_credentials_yaml(home / ".credentials.yaml", "OAI_DSH_ADAPTER_TOKEN", token,
+                                    transaction=transaction, owner_uid=owner_uid, owner_gid=owner_gid)
 
 
-def update_dsh_credentials_yaml(path: Path, key: str, value: str, *, transaction: ConfigurationTransaction | None = None) -> None:
+def update_dsh_credentials_yaml(path: Path, key: str, value: str, *,
+                                transaction: ConfigurationTransaction | None = None,
+                                owner_uid: int | None = None, owner_gid: int | None = None) -> None:
     content = read_configuration_text(path, transaction)
     if not content.strip():
-        write_configuration_text(path, f"version: 1\nrefs:\n  {key}: {dotenv_scalar(value)}\n", transaction)
+        new_content = f"version: 1\nrefs:\n  {key}: {dotenv_scalar(value)}\n"
+        if transaction is not None:
+            write_configuration_text(path, new_content, transaction)
+        else:
+            _write_host_text(path, new_content, owner_uid or os.geteuid(), owner_gid or os.getegid(), 0o600)
         return
     # PyYAML is optional for Core. Refuse an existing document if its structure
     # cannot be parsed safely rather than guessing with line-based edits.
@@ -2195,7 +2243,10 @@ def update_dsh_credentials_yaml(path: Path, key: str, value: str, *, transaction
         text = yaml.safe_dump(credentials, allow_unicode=True, sort_keys=False)
     except yaml.YAMLError:
         raise ValueError("DSH credentials contain unsupported or invalid YAML; preserve the original file") from None
-    write_configuration_text(path, text, transaction)
+    if transaction is not None:
+        write_configuration_text(path, text, transaction)
+    else:
+        _write_host_text(path, text, owner_uid or os.geteuid(), owner_gid or os.getegid(), 0o600)
 
 
 

@@ -871,3 +871,49 @@ async def test_client_message_identity_cannot_rebind_or_redispatch_an_accepted_t
         assert origin["pairingGeneration"] == 3
     finally:
         account.close()
+
+
+@pytest.mark.asyncio
+async def test_hermes_bridge_token_hot_reload(tmp_path, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    from oai_hermes_adapter.bridge import create_hermes_bridge_app
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(mode=0o700)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    class StubAdapter:
+        async def status(self):
+            return True
+        def descriptor(self):
+            return {"capabilities": {}}
+
+    token_old = "initial-token-" + "1" * 32
+    token_new = "updated-token-" + "2" * 32
+    app = create_hermes_bridge_app(StubAdapter(), token_old, ["alice"], instance_id="hermes")
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        # Request with new token initially fails with 401
+        res = await client.get("/oai/session-adapter/v1/status",
+                               headers={"Authorization": f"Bearer {token_new}"})
+        assert res.status == 401
+
+        # Write new token to .env
+        env_file = hermes_home / ".env"
+        env_file.write_text(f"OAI_HERMES_SESSION_TOKEN={token_new}\n")
+
+        # Request with new token now succeeds with 200 through hot reload
+        res = await client.get("/oai/session-adapter/v1/status",
+                               headers={"Authorization": f"Bearer {token_new}"})
+        assert res.status == 200
+
+        # Handshake with new token also succeeds and produces proof using new token
+        res = await client.post("/oai/session-adapter/v1/handshake",
+                                headers={"Authorization": f"Bearer {token_new}"},
+                                json={"challenge": "0" * 64})
+        assert res.status == 200
+        payload = await res.json()
+        assert "proof" in payload
+    finally:
+        await client.close()

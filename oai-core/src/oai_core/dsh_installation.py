@@ -62,7 +62,8 @@ def _valid_name(name: str) -> bool:
             and not any(ord(c) < 32 or ord(c) == 127 for c in name))
 
 
-def _safe_path(path: Path, *, directory: bool = False, owned: bool = True) -> Path:
+def _safe_path(path: Path, *, directory: bool = False, owned: bool = True,
+               owner_uid: int | None = None) -> Path:
     # Do not resolve symlinks before inspecting every component, including the
     # supplied home's parents. In particular a benign final lstat is not enough.
     if ".." in Path(path).parts:
@@ -73,19 +74,23 @@ def _safe_path(path: Path, *, directory: bool = False, owned: bool = True) -> Pa
         if stat.S_ISLNK(info.st_mode) or (part != path and not stat.S_ISDIR(info.st_mode)):
             raise ValueError("unsafe path")
     info = path.lstat()
+    if owned:
+        allowed = {os.getuid()} if (owner_uid is None or os.getuid() != 0) else {0, owner_uid}
+        if info.st_uid not in allowed:
+            raise ValueError("unsafe path")
     if ((directory and not stat.S_ISDIR(info.st_mode))
-            or (not directory and not stat.S_ISREG(info.st_mode))
-            or (owned and info.st_uid != os.getuid())):
+            or (not directory and not stat.S_ISREG(info.st_mode))):
         raise ValueError("unsafe path")
     return path
 
 
-def _owned_bytes(path: Path, *, limit: int = 8 * 1024 * 1024) -> bytes:
-    path = _safe_path(path)
+def _owned_bytes(path: Path, *, limit: int = 8 * 1024 * 1024, owner_uid: int | None = None) -> bytes:
+    path = _safe_path(path, owner_uid=owner_uid)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as source:
         info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+        allowed = {os.getuid()} if (owner_uid is None or os.getuid() != 0) else {0, owner_uid}
+        if not stat.S_ISREG(info.st_mode) or info.st_uid not in allowed or info.st_size > limit:
             raise ValueError("unsafe file")
         content = source.read(limit + 1)
     if len(content) > limit:
@@ -93,15 +98,21 @@ def _owned_bytes(path: Path, *, limit: int = 8 * 1024 * 1024) -> bytes:
     return content
 
 
-def _profile_manifest(profile: DshProfile, *, include_uninstalled: bool = False) -> tuple[dict, bytes]:
+def _profile_manifest(profile: DshProfile, *, include_uninstalled: bool = False,
+                      owner_uid: int | None = None) -> tuple[dict, bytes]:
     if not _valid_name(profile.name):
         raise ValueError("invalid profile")
-    home = _safe_path(profile.home, directory=True)
-    parent = _safe_path(home / "profiles", directory=True)
-    directory = _safe_path(profile.directory, directory=True)
+    if owner_uid is None and os.getuid() == 0:
+        try:
+            owner_uid = profile.home.stat().st_uid
+        except OSError:
+            pass
+    home = _safe_path(profile.home, directory=True, owner_uid=owner_uid)
+    parent = _safe_path(home / "profiles", directory=True, owner_uid=owner_uid)
+    directory = _safe_path(profile.directory, directory=True, owner_uid=owner_uid)
     if directory != parent / profile.name:
         raise ValueError("profile outside home")
-    content = _owned_bytes(directory / "package.json")
+    content = _owned_bytes(directory / "package.json", owner_uid=owner_uid)
     manifest = json.loads(content)
     if not isinstance(manifest, dict):
         raise ValueError("invalid manifest")
@@ -129,9 +140,15 @@ def discover_dsh_profiles(homes: list[Path], *, include_uninstalled: bool = Fals
     result = []
     seen = set()
     for candidate in homes:
+        owner_uid = None
+        if os.getuid() == 0:
+            try:
+                owner_uid = candidate.stat().st_uid
+            except OSError:
+                continue
         try:
-            home = _safe_path(candidate, directory=True)
-            parent = _safe_path(home / "profiles", directory=True)
+            home = _safe_path(candidate, directory=True, owner_uid=owner_uid)
+            parent = _safe_path(home / "profiles", directory=True, owner_uid=owner_uid)
             children = sorted(parent.iterdir(), key=lambda p: p.name)
         except (OSError, ValueError):
             continue
@@ -142,7 +159,7 @@ def discover_dsh_profiles(homes: list[Path], *, include_uninstalled: bool = Fals
                 continue
             profile = DshProfile(home, directory.name, directory)
             try:
-                _profile_manifest(profile, include_uninstalled=include_uninstalled)
+                _profile_manifest(profile, include_uninstalled=include_uninstalled, owner_uid=owner_uid)
             except (OSError, ValueError):
                 continue
             seen.add(directory)
@@ -278,14 +295,30 @@ def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile, *,
     registration, default-profile selection or host restart is performed here.
     """
     _authorize(store, handle)
+    owner_uid = None
+    if os.getuid() == 0:
+        try:
+            owner_uid = profile.home.stat().st_uid
+        except OSError:
+            pass
     try:
-        _profile_manifest(profile, include_uninstalled=include_uninstalled)
+        _profile_manifest(profile, include_uninstalled=include_uninstalled, owner_uid=owner_uid)
     except (OSError, ValueError, TypeError):
         raise DshAdapterInstallError("DSH_PROFILE_UNSAFE") from None
     dsh = shutil.which("dsh")
+    if dsh is None and os.getuid() == 0:
+        for extra in (profile.home.parent / ".local/bin/dsh", profile.home.parent / ".npm-global/bin/dsh"):
+            if extra.is_file() and os.access(extra, os.X_OK):
+                dsh = str(extra)
+                break
     if dsh is None:
         raise DshAdapterInstallError("DSH_CLI_NOT_FOUND")
     node = shutil.which("node")
+    if node is None and os.getuid() == 0:
+        for extra in (profile.home.parent / ".local/bin/node", profile.home.parent / ".nvm/versions/node"):
+            if extra.is_file() and os.access(extra, os.X_OK):
+                node = str(extra)
+                break
     if node is None:
         raise DshAdapterInstallError("DSH_NODE_NOT_FOUND")
     # Popen runs in the Core root; a relative PATH entry belongs to the
@@ -311,10 +344,10 @@ def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile, *,
     except (OSError, ValueError, AttributeError):
         raise DshAdapterInstallError("DSH_BUNDLE_INVALID") from None
     try:
-        _, content = _profile_manifest(profile, include_uninstalled=include_uninstalled)
+        _, content = _profile_manifest(profile, include_uninstalled=include_uninstalled, owner_uid=owner_uid)
         lock_path = profile.directory / "pnpm-lock.yaml"
         try:
-            lock = _owned_bytes(lock_path, limit=32 * 1024 * 1024)
+            lock = _owned_bytes(lock_path, limit=32 * 1024 * 1024, owner_uid=owner_uid)
         except FileNotFoundError:
             lock = None
     except (OSError, ValueError):

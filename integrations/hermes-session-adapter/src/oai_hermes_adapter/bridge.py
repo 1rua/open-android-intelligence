@@ -231,12 +231,39 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             not isinstance(value, str) or not IDENTITY.fullmatch(value) for value in accounts):
         raise ValueError("Hermes bridge requires an explicit account allowlist")
     allowed = frozenset(accounts)
+    current_token = [token]
+
+    def _reload_token() -> str | None:
+        try:
+            from oai_core.agent_registration import read_bridge_secret
+            dotenv = _hermes_dotenv_defaults()
+            source = {}
+            for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
+                                  ("OAI_HERMES_SESSION_SECRET_FD", "secretFd"),
+                                  ("OAI_HERMES_SESSION_TOKEN", "token")):
+                if variable in os.environ:
+                    value = os.environ[variable]
+                    source[key] = int(value) if key == "secretFd" and value.isdecimal() else value
+            if not source:
+                for variable, key in (("OAI_HERMES_SESSION_SECRET_FILE", "secretFile"),
+                                      ("OAI_HERMES_SESSION_TOKEN", "token")):
+                    if variable in dotenv:
+                        source[key] = dotenv[variable]
+            if source:
+                return read_bridge_secret(source, Path.cwd())
+        except Exception:
+            pass
+        return None
 
     @web.middleware
     async def authenticate(request, handler):
         supplied = request.headers.get("Authorization", "")
-        if not secrets.compare_digest(supplied, "Bearer " + token):
-            return web.json_response({"code": "AUTHENTICATION_REQUIRED"}, status=401)
+        if not secrets.compare_digest(supplied, "Bearer " + current_token[0]):
+            new_tok = _reload_token()
+            if new_tok and secrets.compare_digest(supplied, "Bearer " + new_tok):
+                current_token[0] = new_tok
+            else:
+                return web.json_response({"code": "AUTHENTICATION_REQUIRED"}, status=401)
         try:
             generation_query = (request.method == "GET"
                                 and request.path.startswith(PREFIX + "/sessions/")
@@ -317,7 +344,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         capabilities = adapter.descriptor()["capabilities"]
         result = {"instanceId": instance_id, "sessionScope": "account", "online": online,
                   "capabilities": capabilities,
-                  "proof": bridge_proof(token, body["challenge"], instance_id, "account", online, capabilities)}
+                  "proof": bridge_proof(current_token[0], body["challenge"], instance_id, "account", online, capabilities)}
         if "coreInstanceId" in body:
             core_id = body["coreInstanceId"]
             if not isinstance(core_id, str) or not IDENTITY.fullmatch(core_id):
@@ -326,7 +353,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             if auto_spaces is None or not auto_spaces.verified(core_id, payload, body["coreSignature"]):
                 raise AdapterError("AUTHENTICATION_REQUIRED", 403)
             result.update(coreAccepted=True, coreProof=hmac.new(
-                token.encode(), b"oai-hermes-core-accepted-v1\0" + _json(payload), hashlib.sha256).hexdigest())
+                current_token[0].encode(), b"oai-hermes-core-accepted-v1\0" + _json(payload), hashlib.sha256).hexdigest())
         return web.json_response(result)
 
     async def auto_space(request):

@@ -30,13 +30,22 @@ const fail = (code) => { throw new DshInstallError(code); };
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 
+let targetOwnerUid = null;
+
 function safePath(path, { directory = false, owner = true } = {}) {
   path = resolve(path);
   for (let current = path; ; current = dirname(current)) {
     const info = lstatSync(current);
     if (info.isSymbolicLink() || (current !== path && !info.isDirectory())) fail("DSH_PROFILE_UNSAFE");
-    if (current === path && ((directory ? !info.isDirectory() : !info.isFile())
-        || (owner && info.uid !== process.getuid()))) fail("DSH_PROFILE_UNSAFE");
+    if (current === path) {
+      if (directory ? !info.isDirectory() : !info.isFile()) fail("DSH_PROFILE_UNSAFE");
+      if (owner) {
+        const valid = (process.getuid() === 0 && targetOwnerUid !== null)
+          ? (info.uid === 0 || info.uid === targetOwnerUid)
+          : (info.uid === process.getuid());
+        if (!valid) fail("DSH_PROFILE_UNSAFE");
+      }
+    }
     if (dirname(current) === current) return path;
   }
 }
@@ -46,7 +55,10 @@ function safeRead(path, limit = 8 * 1024 * 1024) {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = fstatSync(fd);
-    if (!info.isFile() || info.uid !== process.getuid() || info.size > limit) fail("DSH_PROFILE_UNSAFE");
+    const valid = (process.getuid() === 0 && targetOwnerUid !== null)
+      ? (info.uid === 0 || info.uid === targetOwnerUid)
+      : (info.uid === process.getuid());
+    if (!info.isFile() || !valid || info.size > limit) fail("DSH_PROFILE_UNSAFE");
     const bytes = readFileSync(fd);
     if (bytes.length > limit) fail("DSH_PROFILE_UNSAFE");
     return bytes;
@@ -61,7 +73,10 @@ function safeSnapshot(path, limit = 8 * 1024 * 1024) {
     const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const info = fstatSync(fd);
-      if (!info.isFile() || info.uid !== process.getuid() || info.size > limit) fail("DSH_PROFILE_UNSAFE");
+      const valid = (process.getuid() === 0 && targetOwnerUid !== null)
+        ? (info.uid === 0 || info.uid === targetOwnerUid)
+        : (info.uid === process.getuid());
+      if (!info.isFile() || !valid || info.size > limit) fail("DSH_PROFILE_UNSAFE");
       const bytes = readFileSync(fd);
       if (bytes.length > limit) fail("DSH_PROFILE_UNSAFE");
       return { present: true, bytes, mode: info.mode & 0o777 };
@@ -277,6 +292,13 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
     launcher = relativeArgument(cwd, launcher);
     home = relativeArgument(cwd, home);
     backup = relativeArgument(cwd, backup);
+    if (process.getuid() === 0) {
+      try {
+        targetOwnerUid = lstatSync(home).uid;
+      } catch {
+        targetOwnerUid = null;
+      }
+    }
     safePath(home, { directory: true });
     const profiles = safePath(join(home, "profiles"), { directory: true });
     const directory = safePath(join(profiles, profile), { directory: true });

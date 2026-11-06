@@ -227,3 +227,30 @@ def test_non_default_endpoint_never_changes_local_profiles(deployment, monkeypat
         configuration._configure_agents(root, store, handle, operator)
     assert "不是默认本机 DSH" in capsys.readouterr().out
     assert AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False).entries() == []
+
+
+def test_upgrade_falls_back_to_uninstalled_profiles_when_enabled_profiles_are_empty(deployment, monkeypatch, tmp_path, capsys):
+    from oai_core import dsh_installation
+    root, store, handle, operator = deployment
+    uninstalled_profile = dsh_installation.DshProfile(tmp_path, "default", tmp_path / "profiles/default")
+    installed_calls = []
+
+    def fake_discover(homes, include_uninstalled=False):
+        if include_uninstalled:
+            return [uninstalled_profile]
+        return []
+
+    def fake_install(root, store, handle, profile, include_uninstalled=False):
+        installed_calls.append((profile.name, include_uninstalled))
+
+    monkeypatch.setattr(dsh_installation, "discover_dsh_profiles", fake_discover)
+    monkeypatch.setattr(dsh_installation, "install_dsh_adapter", fake_install)
+    monkeypatch.setattr(configuration, "_is_local_dsh_bridge", lambda _: True)
+    entry = candidate(root, "http://127.0.0.1:8791")
+    monkeypatch.setattr(configuration, "_select_option", lambda prompt, options, default_index=0: "1")
+
+    res = configuration._upgrade_dsh_bridge(root, store, handle, entry, allow_install=False)
+    assert res is True
+    assert len(installed_calls) == 1
+    assert installed_calls[0] == ("default", True)
+    assert "DSH 连接插件已更新" in capsys.readouterr().out
