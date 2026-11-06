@@ -19,6 +19,8 @@ import com.openandroidintelligence.gateway.http.GatewayProfile
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.WireRequest
 import com.openandroidintelligence.gateway.http.WireResponse
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -958,6 +960,109 @@ data: {"type":"done","outcome":"completed","text":"你好世界"}
         // runCurrent 会级联执行本轮结束后的排队发送（与其它 SSE 测试的驱动方式一致）。
         runCurrent()
         assertEquals("首轮结束后应自动发出排队的第二条", 2, posts.size)
+    }
+
+    @Test fun completedModelCommandsReleaseRecoveryAndQueuedFollowups() = runTest {
+        completedModelCommandScenario(eventSync = false)
+    }
+
+    @Test fun completedModelCommandReleasesQueueWithPersistentEventSync() = runTest {
+        completedModelCommandScenario(eventSync = true)
+    }
+
+    @Test fun completedModelCommandKeepsQueueBehindAnExistingRemoteGeneration() = runTest {
+        completedModelCommandScenario(eventSync = false, remoteRunningInitially = true)
+    }
+
+    private suspend fun TestScope.completedModelCommandScenario(eventSync: Boolean, remoteRunningInitially: Boolean = false) {
+        var remoteRunning = remoteRunningInitially
+        val releaseCommand = CompletableDeferred<Unit>()
+        val holdOrdinaryMessage = CompletableDeferred<Unit>()
+        val requests = mutableListOf<WireRequest>()
+        val postedClients = mutableListOf<String>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                if (request.method != "POST") {
+                    if (request.target.endsWith("/generation")) {
+                        val body = if (remoteRunning)
+                            """{"generation":{"generationId":"prior-generation","conversationId":"s_1","state":"running"}}"""
+                        else """{"generation":null}"""
+                        return WireResponse(200, emptyList(), body.toByteArray())
+                    }
+                    if (request.target.contains("/generation?") && postedClients.last().startsWith("ordinary")) {
+                        val id = postedClients.last()
+                        return WireResponse(200, emptyList(),
+                            """{"generation":{"generationId":"gen_$id","conversationId":"s_1","clientMessageId":"$id","userMessageId":"user_$id","state":"completed","revision":2}}""".toByteArray())
+                    }
+                    if (request.target.endsWith("/history"))
+                        return WireResponse(200, emptyList(), """{"messages":[]}""".toByteArray())
+                    return WireResponse(404, emptyList(), """{"error":{"code":"GENERATION_NOT_FOUND"}}""".toByteArray())
+                }
+                val body = requireNotNull(JsonFields.obj(Json.parse(request.body.decodeToString())))
+                val id = requireNotNull(JsonFields.string(body, "clientMessageId"))
+                val text = requireNotNull(JsonFields.string(body, "text"))
+                postedClients += id
+                if (id == "model_a") releaseCommand.await()
+                val frames = if (text.startsWith("/model ")) {
+                    listOf(
+                        """{"type":"delta","clientMessageId":"$id","messageId":"reply_$id","text":"Model switched to ${text.substringAfter(' ')}"}""",
+                        """{"type":"done","outcome":"completed","clientMessageId":"$id","messageId":"reply_$id"}""",
+                    )
+                } else {
+                    if (eventSync) holdOrdinaryMessage.await()
+                    listOf(
+                        """{"type":"generation","generationId":"gen_$id","clientMessageId":"$id","userMessageId":"user_$id","state":"running","revision":1}""",
+                        """{"type":"done","outcome":"completed","generationId":"gen_$id","clientMessageId":"$id","userMessageId":"user_$id","revision":2}""",
+                    )
+                }
+                return WireResponse(200, listOf(RawHeader("Content-Type", "text/event-stream")),
+                    frames.joinToString("") { "event: message\ndata: $it\n\n" }.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val agent = sampleAgent.copy(capabilities = sampleAgent.capabilities.copy(
+            generationRecovery = true, eventSync = eventSync))
+        val storage = NativeEventSynchronizerTest.Storage()
+        val repo = CoreAgentConversationRepository(client(transport), { agent }, { "s_1" },
+            backgroundScope, StandardTestDispatcher(testScheduler),
+            storeForAgent = if (eventSync) ({ storage }) else null)
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("model_a"), "/model synthetic-a"))
+        runCurrent()
+        repo.submitMessage("s_1", OutgoingMessage(ClientMessageId("ordinary_a"), "ordinary after switch",
+            delivery = MessageDeliveryMode.QUEUE))
+        assertEquals(1, repo.pendingDeliveries("s_1").size)
+        releaseCommand.complete(Unit)
+        runCurrent()
+        if (remoteRunningInitially) {
+            assertEquals("a completed command cannot end a different remote generation", listOf("model_a"), postedClients)
+            assertEquals(1, repo.pendingDeliveries("s_1").size)
+            remoteRunning = false
+            repo.retryPendingDeliveries("s_1")
+            runCurrent()
+            assertEquals(listOf("model_a", "ordinary_a"), postedClients)
+            assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+            return
+        }
+        assertEquals("the successful command must release the queued message", listOf("model_a", "ordinary_a"), postedClients)
+        assertTrue("the command must not query a generation it never created",
+            requests.none { it.method == "GET" && it.target.contains("clientMessageId=model_a") })
+        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+        if (eventSync) {
+            assertTrue("only the existing remote-generation queue barrier needs a probe",
+                requests.filter { it.method == "GET" }.all { it.target.endsWith("/generation") })
+            return
+        }
+        for ((id, text) in listOf("model_b" to "/model synthetic-b", "model_c" to "/model synthetic-c",
+                "ordinary_c" to "ordinary after repeated switches")) {
+            repo.submitMessage("s_1", OutgoingMessage(ClientMessageId(id), text))
+            runCurrent()
+        }
+        assertEquals(listOf("model_a", "ordinary_a", "model_b", "model_c", "ordinary_c"), postedClients)
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertEquals(null, repo.generationId.value)
+        assertTrue(repo.pendingDeliveries("s_1").isEmpty())
+        assertEquals(2, requests.count { it.target.contains("/generation?") })
     }
 
     @Test fun aSlashCommandCannotSteerAnUnconfirmedGeneration() = runTest {
