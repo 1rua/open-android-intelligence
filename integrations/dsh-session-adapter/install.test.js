@@ -12,7 +12,8 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const readJson = (path) => JSON.parse(readFileSync(path, "utf8"));
 
-function fixture({ bundles = ["base", OLD, "tail"], result = { exitCode: 0 }, missingManager = false,
+function fixture({ bundles = ["base", OLD, "tail"], manifest: customManifest, includeUninstalled = false,
+  result = { exitCode: 0 }, missingManager = false,
   missingAtomicWrite = false, lockMutation = "", mutatePnpmFiles = false, throwPnpm = false,
   throwActivation = false, casMutation = false, waitForAbort = false, initialLock = null,
   profileModes = { manifest: 0o600, lockfile: 0o600 } } = {}) {
@@ -27,7 +28,7 @@ function fixture({ bundles = ["base", OLD, "tail"], result = { exitCode: 0 }, mi
   for (const path of [dirname(launcher), directory, backup]) mkdirSync(path, { recursive: true, mode: 0o700 });
   writeFileSync(launcher, "// launcher fixture\n");
   writeFileSync(join(installation, "package.json"), JSON.stringify({ name: "@deepseek-ai/dsh", type: "module" }));
-  const manifest = { private: true, custom: { account: "unchanged" },
+  const manifest = customManifest !== undefined ? customManifest : { private: true, custom: { account: "unchanged" },
     dependencies: { [OLD]: "0.3.0", other: "1.0.0" },
     dsh: { keep: true, profile: { bundles, metadata: { user: "keep" } } } };
   const original = JSON.stringify(manifest);
@@ -37,7 +38,7 @@ function fixture({ bundles = ["base", OLD, "tail"], result = { exitCode: 0 }, mi
   writeFileSync(join(backup, "package.json"), original, { mode: 0o600 });
   if (originalLock !== null) writeFileSync(join(backup, "pnpm-lock.yaml"), originalLock, { mode: 0o600 });
   const bundle = "integrations/dsh-session-adapter";
-  writeFileSync(join(backup, "metadata.json"), JSON.stringify({ version: 1, profile: "web",
+  writeFileSync(join(backup, "metadata.json"), JSON.stringify({ version: 1, profile: "web", includeUninstalled,
     home: relative(cwd, home), directory: relative(cwd, directory),
     launcher: relative(cwd, launcher), bundle: relative(cwd, join(root, bundle)),
     files: { "package.json": digest(original), "pnpm-lock.yaml": originalLock === null ? null : digest(originalLock) },
@@ -74,12 +75,13 @@ function fixture({ bundles = ["base", OLD, "tail"], result = { exitCode: 0 }, mi
   official("dsh-app-boot", `${traceCode}
     import {join} from 'node:path';
     export function readProfileManifest(bin,dir){if(!globalThis[trace])throw Error('read outside lock');return JSON.parse(readFileSync(join(dir,'package.json')));}
-    export function writeProfileBundles(dir,manifest,bundles){if(!globalThis[trace])throw Error('write outside lock');record({activate:bundles});const updated={...manifest,dsh:{...manifest.dsh,profile:{...manifest.dsh.profile,bundles}}};writeFileSync(join(dir,'package.json'),JSON.stringify(updated));${throwActivation ? "throw Error('private activation failure');" : ""}return updated;}`);
+    export function writeProfileBundles(dir,manifest,bundles){if(!globalThis[trace])throw Error('write outside lock');record({activate:bundles});const updated={...manifest,dsh:{...manifest.dsh,profile:{...manifest.dsh?.profile,bundles}}};writeFileSync(join(dir,'package.json'),JSON.stringify(updated));${throwActivation ? "throw Error('private activation failure');" : ""}return updated;}`);
   if (!missingManager) official("dsh-plugin-manager", `${traceCode}
     import {join} from 'node:path';
     export async function runProfilePnpm(context,args,options){if(!globalThis[trace])throw Error('install outside lock');record({context,args,options});
     ${mutatePnpmFiles ? `const target=join(context.dir,'package.json');
     const partial=JSON.parse(readFileSync(target,'utf8'));
+    partial.dependencies ??= {};
     partial.dependencies[${JSON.stringify(NEW)}]='file:partial-install';
     partial.partialInstallState='failed-write';
     writeFileSync(target,JSON.stringify(partial));
@@ -87,7 +89,7 @@ function fixture({ bundles = ["base", OLD, "tail"], result = { exitCode: 0 }, mi
     ${throwPnpm ? "throw Error('private pnpm failure');" : ""}
     ${waitForAbort ? "await new Promise(resolve=>options.signal.aborted?resolve():options.signal.addEventListener('abort',resolve,{once:true}));" : ""}
     const result=${JSON.stringify(result)};
-    if(!${mutatePnpmFiles}&&result.exitCode===0&&!result.timedOut){const p=join(context.dir,'package.json');const manifest=JSON.parse(readFileSync(p));manifest.dependencies[${JSON.stringify(NEW)}]=args[1];writeFileSync(p,JSON.stringify(manifest));}
+    if(!${mutatePnpmFiles}&&result.exitCode===0&&!result.timedOut){const p=join(context.dir,'package.json');const manifest=JSON.parse(readFileSync(p));manifest.dependencies ??= {};manifest.dependencies[${JSON.stringify(NEW)}]=args[1];writeFileSync(p,JSON.stringify(manifest));}
     return result;}`, { "./operations": "./index.js" });
   return { cwd, home, profile: "web", launcher, backup, directory, trace, manifest, original, originalLock, profileModes };
 }
@@ -118,6 +120,78 @@ function expectOriginalProfile(f) {
 }
 
 describe("bounded official DSH profile upgrade", () => {
+  it.each([
+    [{}, [NEW]],
+    [{ dsh: {} }, [NEW]],
+    [{ dsh: { keep: true, profile: { metadata: { keep: true } } } }, [NEW]],
+    [{ dsh: { profile: { bundles: [] } } }, [NEW]],
+    [{ dsh: { profile: { bundles: ["base", "base", "tail"] } } }, ["base", "base", "tail", NEW]],
+  ])("installs into an explicitly opted-in fresh profile %j", async (fields, expected) => {
+    const manifest = { private: true, custom: { account: "unchanged" }, ...fields };
+    const f = fixture({ manifest, includeUninstalled: true });
+    await call(f, { includeUninstalled: true });
+    const installed = readJson(join(f.directory, "package.json"));
+    expect(installed.dsh.profile.bundles).toEqual(expected);
+    expect(installed.custom).toEqual({ account: "unchanged" });
+    expect(installed.private).toBe(true);
+    expect(installed.dsh.keep).toBe(fields.dsh?.keep);
+    expect(installed.dsh.profile.metadata).toEqual(fields.dsh?.profile?.metadata);
+    expect(installed.dependencies[NEW]).toMatch(/^file:/);
+    expect(readFileSync(join(f.backup, "package.json"), "utf8")).toBe(f.original);
+    expect(readJson(f.trace).filter((record) => record.context)).toHaveLength(1);
+    expect(readJson(f.trace).filter((record) => record.activate)).toHaveLength(1);
+  });
+
+  it("rejects a fresh target without explicitly enabling first installation", async () => {
+    const f = fixture({ manifest: { private: true } });
+    await expect(call(f)).rejects.toMatchObject({ code: "DSH_PROFILE_UNSAFE" });
+    expect(readFileSync(join(f.directory, "package.json"), "utf8")).toBe(f.original);
+    expect(readJson(f.trace).some((record) => record.context)).toBe(false);
+  });
+
+  it.each([false, true])("binds first-install mode to the confirmed backup (%s)", async (recorded) => {
+    const f = fixture({ includeUninstalled: recorded });
+    await expect(call(f, { includeUninstalled: !recorded })).rejects.toMatchObject({ code: "DSH_PROFILE_CHANGED" });
+    expect(existsSync(f.trace)).toBe(false);
+    expect(readFileSync(join(f.directory, "package.json"), "utf8")).toBe(f.original);
+  });
+
+  it("keeps old upgrade backups without a mode field compatible", async () => {
+    const f = fixture();
+    const path = join(f.backup, "metadata.json");
+    const { includeUninstalled: _mode, ...metadata } = readJson(path);
+    writeFileSync(path, JSON.stringify(metadata));
+    await call(f);
+    expect(readJson(join(f.directory, "package.json")).dsh.profile.bundles).toEqual(["base", NEW, "tail"]);
+  });
+
+  it.each([
+    null, [], { dsh: null }, { dsh: [] }, { dsh: { profile: null } },
+    { dsh: { profile: [] } }, { dsh: { profile: { bundles: null } } },
+    { dsh: { profile: { bundles: "base" } } }, { dsh: { profile: { bundles: ["base", 1] } } },
+  ])("rejects malformed profile fields even in first-install mode: %j", async (manifest) => {
+    const f = fixture({ manifest, includeUninstalled: true });
+    await expect(call(f, { includeUninstalled: true })).rejects.toMatchObject({ code: "DSH_PROFILE_UNSAFE" });
+    expect(readJson(f.trace).some((record) => record.context)).toBe(false);
+  });
+
+  it.each([
+    ["failed install", { result: { exitCode: 1 } }, "DSH_INSTALL_FAILED"],
+    ["incompatible install", { result: { exitCode: 1, incompatible: [{ name: "private" }] } }, "DSH_INSTALL_INCOMPATIBLE"],
+    ["timed out install", { result: { exitCode: 1, timedOut: true } }, "DSH_INSTALL_TIMEOUT"],
+    ["failed activation", { throwActivation: true, initialLock: Buffer.from("original lock\n") }, "DSH_INSTALL_FAILED"],
+  ])("restores an unchanged fresh manifest after %s", async (_label, outcome, code) => {
+    const f = fixture({ manifest: { private: true, custom: { account: "unchanged" } },
+      includeUninstalled: true, mutatePnpmFiles: true, ...outcome });
+    await expect(call(f, { includeUninstalled: true })).rejects.toMatchObject({ code, message: code });
+    expect(readFileSync(join(f.directory, "package.json"), "utf8")).toBe(f.original);
+    expect(readJson(join(f.directory, "package.json")).dsh).toBeUndefined();
+    if (f.originalLock === null) expect(existsSync(join(f.directory, "pnpm-lock.yaml"))).toBe(false);
+    else expect(readFileSync(join(f.directory, "pnpm-lock.yaml"))).toEqual(f.originalLock);
+    expect(recoveryDirectory(f)).not.toBeNull();
+    expect(readJson(join(recoveryDirectory(f), "package.json")).partialInstallState).toBe("failed-write");
+  });
+
   it("holds the official lock and preserves unrelated metadata, old dependencies and other profiles", async () => {
     const f = fixture();
     const other = join(f.home, "profiles", "other");
@@ -290,6 +364,16 @@ describe("bounded official DSH profile upgrade", () => {
     expect(readJson(f.trace).filter((r) => r.activate)).toHaveLength(1);
   });
 
+
+  it("the Python-facing CLI accepts first installation with the explicit mode flag", () => {
+    const f = fixture({ manifest: { private: true }, includeUninstalled: true });
+    const result = spawnSync(process.execPath, [relative(f.cwd, join(root, "integrations/dsh-session-adapter/install.mjs")),
+      "--launcher", relative(f.cwd, f.launcher), "--home", relative(f.cwd, f.home),
+      "--profile", "web", "--backup", relative(f.cwd, f.backup), "--include-uninstalled"],
+    { cwd: f.cwd, encoding: "utf8", timeout: 5000 });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
+    expect(readJson(join(f.directory, "package.json")).dsh.profile.bundles).toEqual([NEW]);
+  });
 
   it("the Python-facing CLI accepts relative arguments without running main on import", () => {
     const f = fixture();

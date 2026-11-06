@@ -53,6 +53,23 @@ def test_discovery_is_read_only_direct_and_keeps_multiple_homes(tmp_path, monkey
     assert before == {p: p.read_bytes() for p in before}
 
 
+@pytest.mark.parametrize("profile_fields", [
+    {}, {"dsh": {}}, {"dsh": {"profile": {"custom": {"keep": True}}}},
+    {"dsh": {"profile": {"bundles": []}}},
+    {"dsh": {"profile": {"bundles": ["base", "base"]}}},
+])
+def test_discovery_includes_fresh_profiles_only_when_requested(tmp_path, monkeypatch, profile_fields):
+    monkeypatch.delenv("DSH_PROFILE", raising=False)
+    profile = make_profile(tmp_path / "dsh", "web")
+    manifest = {"private": True, "dependencies": {"other": "1.0.0"}, **profile_fields}
+    content = json.dumps(manifest).encode()
+    (profile.directory / "package.json").write_bytes(content)
+
+    assert discover_dsh_profiles([profile.home]) == []
+    assert discover_dsh_profiles([profile.home], include_uninstalled=True) == [profile]
+    assert (profile.directory / "package.json").read_bytes() == content
+
+
 @pytest.mark.parametrize("value", ["", " ", ".", "..", "../web", "a/b", "a\\b", "web\n", "node_modules", "build", "dist", ".gradle"])
 def test_discovery_rejects_invalid_explicit_selector(tmp_path, monkeypatch, value):
     profile = make_profile(tmp_path / "dsh", "web")
@@ -152,6 +169,37 @@ class SuccessfulChild:
 
 def stub_tools(monkeypatch, installer, launcher):
     monkeypatch.setattr(installer.shutil, "which", lambda tool: str(launcher) if tool == "dsh" else "/usr/bin/node")
+
+
+def test_first_install_requires_opt_in_and_records_it_in_backup_and_child(tmp_path, monkeypatch):
+    import oai_core.dsh_installation as installer
+
+    profile = make_profile(tmp_path / "dsh", "web")
+    original = b'{"private":true,"dependencies":{"other":"1.0.0"}}\n'
+    (profile.directory / "package.json").write_bytes(original)
+    root, launcher = make_install_root(tmp_path)
+    stub_tools(monkeypatch, installer, launcher)
+    calls = []
+    monkeypatch.setattr(installer.subprocess, "Popen",
+                        lambda arguments, **kwargs: calls.append((arguments, kwargs)) or SuccessfulChild())
+    store = Management()
+
+    with pytest.raises(DshAdapterInstallError) as caught:
+        installer.install_dsh_adapter(root, store, "admin", profile)
+    assert caught.value.code == "DSH_PROFILE_UNSAFE"
+    assert not (root / "runtime").exists()
+    assert calls == []
+
+    installer.install_dsh_adapter(root, store, "admin", profile, include_uninstalled=True)
+    assert len(calls) == 1
+    arguments, options = calls[0]
+    assert arguments[-1] == "--include-uninstalled"
+    assert arguments[arguments.index("--profile") + 1] == "web"
+    assert options["cwd"] == root
+    backup = next((root / "runtime" / "dsh-adapter-backups").iterdir())
+    assert json.loads((backup / "metadata.json").read_text())["includeUninstalled"] is True
+    assert (backup / "package.json").read_bytes() == original
+    assert (profile.directory / "package.json").read_bytes() == original
 
 
 def test_upgrade_has_private_complete_backups_and_relative_secret_free_child(tmp_path, monkeypatch):
@@ -353,3 +401,65 @@ def test_relative_node_path_is_anchored_before_running_in_core_directory(tmp_pat
     monkeypatch.setattr(installer.subprocess, "Popen", popen)
     installer.install_dsh_adapter(root, Management(), "admin", profile)
     assert len(calls) == 1
+
+
+def test_first_install_discovery_requires_one_existing_explicit_target(tmp_path, monkeypatch):
+    a = make_profile(tmp_path / "first", "web", ["base"])
+    b = make_profile(tmp_path / "second", "web", [])
+    monkeypatch.setenv("DSH_PROFILE", "web")
+    with pytest.raises(DshAdapterInstallError) as caught:
+        discover_dsh_profiles([a.home, b.home], include_uninstalled=True)
+    assert caught.value.code == "DSH_PROFILE_AMBIGUOUS"
+    assert discover_dsh_profiles([a.home], include_uninstalled=True) == [a]
+    with pytest.raises(DshAdapterInstallError) as caught:
+        discover_dsh_profiles([a.home])
+    assert caught.value.code == "DSH_PROFILE_NOT_FOUND"
+    monkeypatch.setenv("DSH_PROFILE", "missing")
+    with pytest.raises(DshAdapterInstallError) as caught:
+        discover_dsh_profiles([a.home], include_uninstalled=True)
+    assert caught.value.code == "DSH_PROFILE_NOT_FOUND"
+    assert not (a.home / "profiles" / "missing").exists()
+
+
+@pytest.mark.parametrize("manifest", [
+    None, [], {"dsh": None}, {"dsh": []}, {"dsh": {"profile": None}},
+    {"dsh": {"profile": []}}, {"dsh": {"profile": {"bundles": None}}},
+    {"dsh": {"profile": {"bundles": "base"}}},
+    {"dsh": {"profile": {"bundles": ["base", 1]}}},
+])
+def test_first_install_still_rejects_malformed_profiles(tmp_path, monkeypatch, manifest):
+    import oai_core.dsh_installation as installer
+
+    monkeypatch.delenv("DSH_PROFILE", raising=False)
+    profile = make_profile(tmp_path / "dsh", "web")
+    content = json.dumps(manifest).encode()
+    (profile.directory / "package.json").write_bytes(content)
+    monkeypatch.setattr(installer.shutil, "which", lambda _: pytest.fail("invalid profile reached host discovery"))
+    assert discover_dsh_profiles([profile.home], include_uninstalled=True) == []
+    with pytest.raises(DshAdapterInstallError) as caught:
+        installer.install_dsh_adapter(tmp_path, Management(), "admin", profile, include_uninstalled=True)
+    assert caught.value.code == "DSH_PROFILE_UNSAFE"
+    assert not (tmp_path / "runtime").exists()
+    assert (profile.directory / "package.json").read_bytes() == content
+
+
+@pytest.mark.parametrize("revoked_at", [1, 2, 3])
+def test_first_install_rechecks_management_before_each_side_effect(tmp_path, monkeypatch, revoked_at):
+    import oai_core.dsh_installation as installer
+
+    profile = make_profile(tmp_path / "dsh", "web", [])
+    root, launcher = make_install_root(tmp_path)
+    stub_tools(monkeypatch, installer, launcher)
+    store = Management()
+    original = store.require_management
+    def revoked(handle, scope):
+        original(handle, scope)
+        if len(store.calls) >= revoked_at:
+            raise PermissionError("private administrator detail")
+    store.require_management = revoked
+    monkeypatch.setattr(installer.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("revoked installation launched a child"))
+    with pytest.raises(DshAdapterInstallError) as caught:
+        installer.install_dsh_adapter(root, store, "admin", profile, include_uninstalled=True)
+    assert caught.value.code == "DSH_PERMISSION_DENIED"
+    assert "private administrator detail" not in str(caught.value)
+    assert len(list((root / "runtime" / "dsh-adapter-backups").glob("*/metadata.json"))) == (1 if revoked_at == 3 else 0)

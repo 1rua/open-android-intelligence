@@ -1,4 +1,4 @@
-"""Bounded, explicit local DSH profile upgrades through the official manager.
+"""Bounded, explicit local DSH profile installs through the official manager.
 
 Discovery never chooses a default profile. The caller owns confirmation, local
 endpoint eligibility, registration/handshake and any later host restart.
@@ -93,7 +93,7 @@ def _owned_bytes(path: Path, *, limit: int = 8 * 1024 * 1024) -> bytes:
     return content
 
 
-def _profile_manifest(profile: DshProfile) -> tuple[dict, bytes]:
+def _profile_manifest(profile: DshProfile, *, include_uninstalled: bool = False) -> tuple[dict, bytes]:
     if not _valid_name(profile.name):
         raise ValueError("invalid profile")
     home = _safe_path(profile.home, directory=True)
@@ -105,17 +105,24 @@ def _profile_manifest(profile: DshProfile) -> tuple[dict, bytes]:
     manifest = json.loads(content)
     if not isinstance(manifest, dict):
         raise ValueError("invalid manifest")
-    dsh = manifest.get("dsh")
-    config = dsh.get("profile") if isinstance(dsh, dict) else None
-    bundles = config.get("bundles") if isinstance(config, dict) else None
-    if (not isinstance(bundles, list) or not all(isinstance(b, str) for b in bundles)
-            or not {OLD_BUNDLE, BUNDLE}.intersection(bundles)):
+    # Official profiles may omit dsh, profile or bundles entirely. Treat only
+    # absent fields as empty; an explicitly malformed field is still unsafe.
+    dsh = manifest.get("dsh", {})
+    config = dsh.get("profile", {}) if isinstance(dsh, dict) else None
+    bundles = config.get("bundles", []) if isinstance(config, dict) else None
+    if not isinstance(bundles, list) or not all(isinstance(b, str) for b in bundles):
+        raise ValueError("invalid profile bundles")
+    if not include_uninstalled and not {OLD_BUNDLE, BUNDLE}.intersection(bundles):
         raise ValueError("not an upgrade target")
     return manifest, content
 
 
-def discover_dsh_profiles(homes: list[Path]) -> list[DshProfile]:
-    """Enumerate only existing direct, owned, non-symlink upgrade targets."""
+def discover_dsh_profiles(homes: list[Path], *, include_uninstalled: bool = False) -> list[DshProfile]:
+    """List owned direct profiles, optionally including first-install targets.
+
+    The default only returns profiles already enabling the old or new adapter.
+    Discovery neither creates profiles nor selects one for installation.
+    """
     selected = os.environ.get("DSH_PROFILE")
     if selected is not None and not _valid_name(selected):
         raise DshAdapterInstallError("DSH_PROFILE_INVALID")
@@ -135,7 +142,7 @@ def discover_dsh_profiles(homes: list[Path]) -> list[DshProfile]:
                 continue
             profile = DshProfile(home, directory.name, directory)
             try:
-                _profile_manifest(profile)
+                _profile_manifest(profile, include_uninstalled=include_uninstalled)
             except (OSError, ValueError):
                 continue
             seen.add(directory)
@@ -182,7 +189,7 @@ def _private_directory(path: Path) -> Path:
 
 
 def _backup(root: Path, profile: DshProfile, launcher: Path, content: bytes,
-            lock: bytes | None) -> Path:
+            lock: bytes | None, *, include_uninstalled: bool = False) -> Path:
     # Existing runtime directories need not be private, but their owner and
     # non-symlink ancestry must be valid. Every new backup directory is 0700.
     runtime = root / "runtime"
@@ -195,6 +202,7 @@ def _backup(root: Path, profile: DshProfile, launcher: Path, content: bytes,
     destination = _private_directory(parent / uuid4().hex)
     metadata = {
         "version": 1,
+        "includeUninstalled": include_uninstalled,
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "profile": profile.name,
         "home": os.path.relpath(profile.home, root),
@@ -259,16 +267,19 @@ def _run_helper(arguments: list[str], root: Path) -> None:
         raise DshAdapterInstallError(_CHILD_ERRORS.get(status, "DSH_INSTALL_FAILED"))
 
 
-def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile) -> None:
+def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile, *,
+                        include_uninstalled: bool = False) -> None:
     """Install this repository's bundle into exactly one confirmed profile.
 
+    First installation requires include_uninstalled=True, independently of
+    discovery. Missing profile fields are left for the official host to write.
     Permission is checked at entry and immediately before both backup creation
     and process launch. Failures retain backups; no account, key, history,
     registration, default-profile selection or host restart is performed here.
     """
     _authorize(store, handle)
     try:
-        _profile_manifest(profile)
+        _profile_manifest(profile, include_uninstalled=include_uninstalled)
     except (OSError, ValueError, TypeError):
         raise DshAdapterInstallError("DSH_PROFILE_UNSAFE") from None
     dsh = shutil.which("dsh")
@@ -300,7 +311,7 @@ def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile) -> 
     except (OSError, ValueError, AttributeError):
         raise DshAdapterInstallError("DSH_BUNDLE_INVALID") from None
     try:
-        _, content = _profile_manifest(profile)
+        _, content = _profile_manifest(profile, include_uninstalled=include_uninstalled)
         lock_path = profile.directory / "pnpm-lock.yaml"
         try:
             lock = _owned_bytes(lock_path, limit=32 * 1024 * 1024)
@@ -310,7 +321,8 @@ def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile) -> 
         raise DshAdapterInstallError("DSH_PROFILE_UNSAFE") from None
     _authorize(store, handle)
     try:
-        backup = _backup(root, profile, launcher, content, lock)
+        backup = _backup(root, profile, launcher, content, lock,
+                         include_uninstalled=include_uninstalled)
     except (OSError, ValueError):
         raise DshAdapterInstallError("DSH_BACKUP_FAILED") from None
     arguments = [node, "integrations/dsh-session-adapter/install.mjs",
@@ -318,5 +330,7 @@ def install_dsh_adapter(root: Path, store, handle: str, profile: DshProfile) -> 
                  "--home", os.path.relpath(profile.home, root),
                  "--profile", profile.name,
                  "--backup", os.path.relpath(backup, root)]
+    if include_uninstalled:
+        arguments.append("--include-uninstalled")
     _authorize(store, handle)
     _run_helper(arguments, root)

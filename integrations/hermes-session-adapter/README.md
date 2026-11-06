@@ -17,18 +17,17 @@ Core 端的 `oai_core.adapters.hermes.HermesRemoteSessionAdapter` 只通过内�
 
 ## 安装与配置
 
-在 Hermes 自己使用的 Python 环境安装同一发布批次的两个包，再用 Hermes 标准插件加载器安装此目录：
+从已安装的 OAI 仓库运行配置入口，选择「3. Agent 接入」、Hermes 候选，并确认注册：
 
 ```bash
-python -m pip install ./oai-core ./integrations/hermes-session-adapter
-hermes plugins install ./integrations/hermes-session-adapter
+./scripts/setup.sh
 ```
 
-命令从 OAI 仓库根目录执行。尚未发布到包索引时，使用对应提交构建的 Core 与 Adapter 本地 wheel；运行时不会下载旧 Gateway 包。Core 版本约束为 `>=0.2,<0.3`。wheel 内包含标准 `plugin.yaml`；只安装 wheel 时，可从已安装模块目录加载，无须保留源码 checkout：
+会话桥不可用或版本过旧时，入口会再次询问是否安装或更新本机 Hermes 会话适配器。确认后，在 Hermes 自己的 Python 环境中安装当前仓库的 Core 和 Adapter 两个包，将标准入口放入所选 `HERMES_HOME` 的用户插件目录，再通过 Hermes 官方命令启用。已有旧插件和配置保留备份。宿主环境没有 pip 时优先使用 uv。
 
-```bash
-hermes plugins install "$(python -c 'from pathlib import Path; import oai_hermes_adapter; print(Path(oai_hermes_adapter.__file__).parent)')"
-```
+`hermes plugins install` 的参数是官方插件清单中的名称、Git URL 或仓库简称，固定 SDK 不支持把本地源码路径直接作为参数；原文中的 `hermes plugins install ./integrations/hermes-session-adapter` 和直接传入 wheel 安装目录的示例不适用。尚未发布到包索引的 Core 与 Adapter 使用同一批次的本地源码或 wheel，不能依赖插件管理器从索引下载 Core。由其他部署工具预装 wheel 时，仍需通过 Hermes 标准用户插件目录提供 `plugin.yaml` 和加载入口，并启用 `oai-hermes-session-adapter`。
+
+安装命令完成后仍须通过真实会话桥握手。若 Hermes 进程尚未重新加载，入口保持未注册并提示重载后重试；不要只凭插件文件存在判断连接成功。
 
 宿主进程通过权限为 `0600` 的环境文件或服务管理器提供以下配置；不要把真实 Token 写进共享启动脚本或提交到仓库：
 

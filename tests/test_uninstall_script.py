@@ -334,14 +334,23 @@ def test_syntax_and_help_do_not_require_an_installation(installation):
     assert not installation.commands()
 
 
-def test_uninstall_uses_the_installations_python_for_authentication(installation):
+@pytest.mark.parametrize('source_mode', [0o755, 0o775], ids=['0755', '0775'])
+def test_uninstall_uses_the_installations_python_for_authentication(installation, source_mode):
     # Emulate a copied venv interpreter (without symlinks) with cryptography
     # installed. The subprocess runs its real authentication through this venv.
     import _cffi_backend
     import cryptography
 
+    # Model a shared CI interpreter using a private copy; never chmod the
+    # interpreter running pytest or its base installation.
+    source_python = installation.base / 'shared-python'
+    shutil.copy2(sys._base_executable, source_python)
+    source_python.chmod(source_mode)
     python = installation.root / '.venv/bin/python'
-    shutil.copy2(sys._base_executable, python)
+    shutil.copy2(source_python, python)
+    # copy2 preserves shared-toolchain permissions; this fixture is private.
+    python.chmod(0o700)
+    assert stat.S_IMODE(source_python.stat().st_mode) == source_mode
     installation.put(installation.root / '.venv/pyvenv.cfg',
                      'home = ' + str(Path(sys._base_executable).resolve().parent)
                      + '\ninclude-system-site-packages = false\n')
