@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import copy
 import hashlib
 import getpass
@@ -17,6 +17,7 @@ import re
 import subprocess
 import secrets
 import shlex
+import sqlite3
 import stat
 import sys
 import warnings
@@ -894,22 +895,7 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         except ValueError:
             port = 8792
         hermes_instance_id = env_vars.get("OAI_HERMES_INSTANCE_ID") or "hermes"
-        from .gateway.account_paths import account_paths
-        try:
-            raw_accounts = json.loads(env_vars.get("OAI_HERMES_ACCOUNTS", "[]"))
-            if not isinstance(raw_accounts, list):
-                raw_accounts = []
-        except Exception:
-            raw_accounts = []
-        accounts = [
-            acct for acct in raw_accounts
-            if isinstance(acct, str) and acct and account_paths(gateway_root, acct).database.is_file()
-        ]
-        if gateway_root.is_dir():
-            for db_file in sorted(gateway_root.glob("*/gateway.sqlite")):
-                acct_name = db_file.parent.name
-                if db_file.is_file() and not acct_name.startswith("oai_") and acct_name not in accounts:
-                    accounts.append(acct_name)
+        accounts, _ = _discover_hermes_native_accounts(hermes_home)
         trusted_path = _ensure_hermes_trusted_core(gateway_root, instance_id, signing_key, owner_uid, owner_gid)
         updates = {
             "OAI_HERMES_SESSION_TOKEN": dotenv_scalar(token),
@@ -986,16 +972,28 @@ def _discover_hermes_native_accounts(hermes_home: Path) -> tuple[list[str], Path
             accounts = []
     except Exception:
         accounts = []
-    from .gateway.account_paths import account_paths
-    valid = [
-        acct for acct in accounts
-        if isinstance(acct, str) and acct and account_paths(gateway_root, acct).database.is_file()
-    ]
+    from .gateway.account_paths import WIRE_ID_PATTERN, account_paths
+    valid = []
+    for acct in accounts:
+        if (isinstance(acct, str) and WIRE_ID_PATTERN.fullmatch(acct) and acct not in valid
+                and account_paths(gateway_root, acct).database.is_file()):
+            valid.append(acct)
     if gateway_root.is_dir():
         for db_file in sorted(gateway_root.glob("*/gateway.sqlite")):
-            acct_name = db_file.parent.name
-            if db_file.is_file() and not acct_name.startswith("oai_") and acct_name not in valid:
-                valid.append(acct_name)
+            if not db_file.is_file() or db_file.is_symlink() or db_file.parent.is_symlink():
+                continue
+            try:
+                # 目录名是账号 ID 的哈希；只从现有数据库读取真实身份。
+                with closing(sqlite3.connect(db_file.absolute().as_uri() + "?mode=ro", uri=True, timeout=0.1)) as db:
+                    row = db.execute("SELECT value FROM account_metadata WHERE key='gateway_account_id'").fetchone()
+            except (OSError, sqlite3.Error):
+                continue
+            acct = row[0] if row else None
+            if (not isinstance(acct, str) or WIRE_ID_PATTERN.fullmatch(acct) is None
+                    or acct.startswith("oai_") or acct in valid):
+                continue
+            if account_paths(gateway_root, acct).database == db_file.resolve():
+                valid.append(acct)
     return valid, gateway_root
 
 
