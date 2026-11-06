@@ -180,11 +180,17 @@ function validName(name) {
     && !excluded.has(name) && !/[\/\\\x00-\x1f\x7f]/.test(name);
 }
 
-function bundlesOf(manifest) {
-  const bundles = manifest?.dsh?.profile?.bundles;
-  if (!plainObject(manifest) || !Array.isArray(bundles)
-      || !bundles.every((name) => typeof name === "string")
-      || !bundles.some((name) => name === OLD || name === BUNDLE)) fail("DSH_PROFILE_UNSAFE");
+function bundlesOf(manifest, includeUninstalled = false) {
+  if (!plainObject(manifest)) fail("DSH_PROFILE_UNSAFE");
+  const dsh = manifest.dsh === undefined ? {} : manifest.dsh;
+  if (!plainObject(dsh)) fail("DSH_PROFILE_UNSAFE");
+  const profile = dsh.profile === undefined ? {} : dsh.profile;
+  if (!plainObject(profile)) fail("DSH_PROFILE_UNSAFE");
+  const bundles = profile.bundles === undefined ? [] : profile.bundles;
+  if (!Array.isArray(bundles) || !bundles.every((name) => typeof name === "string")
+      || (!includeUninstalled && !bundles.some((name) => name === OLD || name === BUNDLE))) {
+    fail("DSH_PROFILE_UNSAFE");
+  }
   return bundles;
 }
 
@@ -235,29 +241,32 @@ async function officialApis(launcher, directory) {
   }
 }
 
-function verifyInput(directory, metadata) {
+function verifyInput(directory, metadata, includeUninstalled) {
   const files = profileSnapshot(directory);
   if (!files.manifest.present || hash(files.manifest.bytes) !== metadata.files["package.json"]
       || (files.lockfile.present ? hash(files.lockfile.bytes) : null) !== metadata.files["pnpm-lock.yaml"]) {
     fail("DSH_PROFILE_CHANGED");
   }
-  bundlesOf(JSON.parse(files.manifest.bytes.toString("utf8")));
+  bundlesOf(JSON.parse(files.manifest.bytes.toString("utf8")), includeUninstalled);
   return files;
 }
 
 function activeBundles(bundles) {
   let active = false;
-  return bundles.flatMap((name) => {
+  const next = bundles.flatMap((name) => {
     if (name !== OLD && name !== BUNDLE) return [name];
     if (active) return [];
     active = true;
     return [BUNDLE];
   });
+  if (!active) next.push(BUNDLE);
+  return next;
 }
 
-export async function installDshAdapter({ cwd = process.cwd(), launcher, home, profile, backup, signal } = {}) {
+export async function installDshAdapter({ cwd = process.cwd(), launcher, home, profile, backup, signal,
+  includeUninstalled = false } = {}) {
   try {
-    if (!validName(profile)) fail("DSH_PROFILE_UNSAFE");
+    if (!validName(profile) || typeof includeUninstalled !== "boolean") fail("DSH_PROFILE_UNSAFE");
     cwd = resolve(cwd);
     launcher = relativeArgument(cwd, launcher);
     home = relativeArgument(cwd, home);
@@ -268,9 +277,11 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
     safePath(join(directory, "package.json"));
     safeDirectory(backup, { privateMode: true });
     const metadata = JSON.parse(safeRead(join(backup, "metadata.json")));
+    const recordedMode = metadata.includeUninstalled === undefined ? false : metadata.includeUninstalled;
     const bundle = safePath(dirname(fileURLToPath(import.meta.url)), { directory: true });
     if (JSON.parse(safeRead(join(bundle, "package.json"))).name !== BUNDLE) fail("DSH_BUNDLE_INVALID");
     if (metadata.version !== 1 || metadata.profile !== profile || !plainObject(metadata.files)
+        || recordedMode !== includeUninstalled
         || relativeArgument(cwd, metadata.home) !== home
         || relativeArgument(cwd, metadata.directory) !== directory
         || relativeArgument(cwd, metadata.launcher) !== launcher
@@ -287,10 +298,10 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
       // snapshot may be stale by the time this process finally acquires it.
       safePath(home, { directory: true });
       safePath(profiles, { directory: true });
-      verifyInput(directory, metadata);
+      verifyInput(directory, metadata, includeUninstalled);
       const before = api.readProfileManifest("dsh", directory);
-      bundlesOf(before);
-      const original = verifyInput(directory, metadata);
+      bundlesOf(before, includeUninstalled);
+      const original = verifyInput(directory, metadata, includeUninstalled);
       if (bounded.aborted) fail("DSH_INSTALL_TIMEOUT");
       try {
         const result = await api.runProfilePnpm({ profile, dir: directory, installAnchor: api.anchor, cwd, home },
@@ -306,7 +317,7 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
         safePath(directory, { directory: true });
         safeRead(join(directory, "package.json"));
         const manifest = api.readProfileManifest("dsh", directory);
-        const bundles = bundlesOf(manifest);
+        const bundles = bundlesOf(manifest, includeUninstalled);
         const next = activeBundles(bundles);
         if (bundles.length !== next.length || bundles.some((name, index) => name !== next[index])) {
           safePath(join(directory, "package.json"));
@@ -327,10 +338,16 @@ export async function installDshAdapter({ cwd = process.cwd(), launcher, home, p
 
 function argumentsOf(args) {
   const options = {};
-  for (let i = 0; i < args.length; i += 2) {
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--include-uninstalled") {
+      if (Object.hasOwn(options, "includeUninstalled")) fail("DSH_PROFILE_UNSAFE");
+      options.includeUninstalled = true;
+      continue;
+    }
     if (!["--launcher", "--home", "--profile", "--backup"].includes(args[i])
         || !args[i + 1] || Object.hasOwn(options, args[i].slice(2))) fail("DSH_PROFILE_UNSAFE");
-    options[args[i].slice(2)] = args[i + 1];
+    const name = args[i].slice(2);
+    options[name] = args[++i];
   }
   return options;
 }

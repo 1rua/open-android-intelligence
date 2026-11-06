@@ -1118,7 +1118,57 @@ def _is_local_dsh_bridge(entry: dict) -> bool:
         return False
 
 
-def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict) -> bool:
+def _is_local_hermes_bridge(entry: dict, *, home: Path | None = None) -> bool:
+    """Only repair the detected host's configured loopback bridge."""
+    from urllib.parse import urlsplit
+
+    if home is None:
+        homes = detect_host_agents().get("hermes", [])
+        if len(homes) != 1:
+            return False
+        home = homes[0]
+    try:
+        values = _parse_dotenv(_read_host_text(home / ".env", home.stat().st_uid))
+        port = int(values.get("OAI_HERMES_SESSION_PORT", "8792"))
+        url = urlsplit(entry.get("url", ""))
+        return (entry.get("type") == "hermes" and entry.get("sessionScope") == "account"
+                and entry.get("instanceId") == values.get("OAI_HERMES_INSTANCE_ID", "hermes")
+                and entry.get("prefix", "/oai/session-adapter/v1") == "/oai/session-adapter/v1"
+                and url.scheme == "http" and url.hostname in {"127.0.0.1", "::1", "localhost"}
+                and url.port == port and not url.username and not url.password
+                and url.path in {"", "/"} and not url.query and not url.fragment)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
+    from .hermes_installation import HermesAdapterInstallError, install_hermes_adapter
+
+    homes = detect_host_agents().get("hermes", [])
+    if len(homes) != 1:
+        print("无法唯一确定 Hermes 安装目录；尚未注册。")
+        return False
+    home = homes[0]
+    if not _is_local_hermes_bridge(entry, home=home):
+        print("该候选不是已发现的本机 Hermes 会话桥，请在对应宿主安装会话适配器后重试；尚未注册。")
+        return False
+    if _terminal_input("是否安装或更新本机 Hermes 会话适配器？(y/n) [n]: ").lower() not in {"y", "yes"}:
+        print("已取消安装；尚未注册。")
+        return False
+    try:
+        require_configuration_access(root, store, handle, "agents.manage")
+        if detect_host_agents().get("hermes", []) != [home] or not _is_local_hermes_bridge(entry, home=home):
+            print("Hermes 安装目标或会话桥配置已变化，请重新选择候选；尚未注册。")
+            return False
+        install_hermes_adapter(root, store, handle, home)
+    except HermesAdapterInstallError as error:
+        print(f"[错误] {error}（{error.code}）；尚未注册。")
+        return False
+    print("Hermes 会话适配器已安装并启用，正在重新验证实际运行的会话桥。")
+    return True
+
+
+def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_install: bool = False) -> bool:
     """An operator selects exactly one existing profile; registration stays separate."""
     from .dsh_installation import DshAdapterInstallError, discover_dsh_profiles, install_dsh_adapter
 
@@ -1126,23 +1176,31 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict) -> bool:
         print("该候选不是默认本机 DSH 会话桥，请在对应宿主升级会话适配器后重试；尚未注册。")
         return False
     try:
-        profiles = discover_dsh_profiles(detect_host_agents().get("dsh", []))
+        homes = detect_host_agents().get("dsh", [])
+        profiles = (discover_dsh_profiles(homes, include_uninstalled=True)
+                    if allow_install else discover_dsh_profiles(homes))
         if not profiles:
-            print("未找到已启用 DSH 会话桥的 profile；请在目标宿主安装当前 DSH 会话适配器后重试；尚未注册。")
+            print("未找到可安装的现有 DSH profile；请先在目标宿主创建运行配置后重试；尚未注册。"
+                  if allow_install else "未找到已启用 DSH 会话桥的 profile；请在目标宿主安装当前 DSH 会话适配器后重试；尚未注册。")
             return False
-        print("DSH 会话桥版本过旧。请选择要升级的 profile（DSH 的独立运行配置）；旧配置会保留备份。")
+        print("请选择要安装会话适配器的 profile（DSH 的独立运行配置）；原配置会保留备份。"
+              if allow_install else "DSH 会话桥版本过旧。请选择要升级的 profile（DSH 的独立运行配置）；旧配置会保留备份。")
         for index, profile in enumerate(profiles, 1):
             print(f"{index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
-        choice = _terminal_input("选择并确认升级的 profile 编号（直接回车返回）: ")
+        choice = _terminal_input("选择并确认安装的 profile 编号（直接回车返回）: "
+                                 if allow_install else "选择并确认升级的 profile 编号（直接回车返回）: ")
         if not choice:
-            print("已取消升级；尚未注册。")
+            print("已取消安装；尚未注册。" if allow_install else "已取消升级；尚未注册。")
             return False
         if not choice.isdecimal() or not 1 <= int(choice) <= len(profiles):
             print("无效的 DSH profile 编号；尚未注册。")
             return False
         profile = profiles[int(choice) - 1]
         require_configuration_access(root, store, handle, "agents.manage")
-        install_dsh_adapter(root, store, handle, profile)
+        if allow_install:
+            install_dsh_adapter(root, store, handle, profile, include_uninstalled=True)
+        else:
+            install_dsh_adapter(root, store, handle, profile)
     except DshAdapterInstallError as error:
         print(f"[错误] {error}（{error.code}）；尚未注册。")
         return False
@@ -1235,13 +1293,21 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         _register_with_host_retry(registration, handle, entry, storage)
     except AgentHandshakeError as error:
         print(f"[错误] {error}（{error.code}）。")
-        if (entry.get("type") != "dsh" or error.code != "AGENT_BRIDGE_UPGRADE_REQUIRED"
-                or not _upgrade_dsh_bridge(root, store, handle, entry)):
+        if error.code not in {"AGENT_BRIDGE_UPGRADE_REQUIRED", "AGENT_BRIDGE_UNAVAILABLE"}:
+            return
+        if entry.get("type") == "hermes":
+            installed = _upgrade_hermes_bridge(root, store, handle, entry)
+        elif entry.get("type") == "dsh":
+            installed = _upgrade_dsh_bridge(root, store, handle, entry,
+                                            allow_install=error.code == "AGENT_BRIDGE_UNAVAILABLE")
+        else:
+            return
+        if not installed:
             return
         try:
             _register_with_host_retry(registration, handle, entry, storage)
         except AgentHandshakeError as retry_error:
-            print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重新加载所选 profile 后重试。")
+            print(f"[错误] {retry_error}（{retry_error.code}）；尚未注册，请重新加载对应宿主后重试。")
             return
     _confirm_operator_hermes_mapping(registration, handle, entry, operator)
     print("Agent 已通过真实握手并注册；账号关联按其隔离范围处理。")
