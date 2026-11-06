@@ -55,7 +55,7 @@ class SettingsNavigationTest {
             }
         }
         compose.onNodeWithText("Agent 任务通知").assertIsOn()
-        compose.onNodeWithText("系统未允许任务通知；上面的 App 偏好仍会保留").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("系统未允许；App 偏好仍保留").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("通知读取范围").assertDoesNotExist()
         compose.onNodeWithText("通知主动推送").assertDoesNotExist()
     }

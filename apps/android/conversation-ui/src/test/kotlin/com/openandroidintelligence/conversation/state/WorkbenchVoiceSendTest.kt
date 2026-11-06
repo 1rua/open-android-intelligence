@@ -171,7 +171,7 @@ class WorkbenchVoiceSendTest {
         controller.cancel()
     }
 
-    @Test fun unknownPreviousSubmissionRejectsAnotherVoiceBeforeStaging() = runTest {
+    @Test fun unknownPreviousSubmissionAllowsVoiceEntryAfterTheRequestStops() = runTest {
         val uploads = Uploads()
         val repository = Repository().apply { submitGate = CompletableDeferred() }
         val controller = controller(repository, uploads)
@@ -180,10 +180,32 @@ class WorkbenchVoiceSendTest {
         runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
         first.cancelAndJoin(); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN, controller.state.value.generation)
-        assertFalse(controller.sendVoiceAttachment(selection("second.m4a"), "thread_a"))
-        assertEquals("Unresolved sends must block recording staging and duplicate submission", 1, uploads.voicePrepares)
+        assertTrue(controller.canSendVoiceAttachment("thread_a"))
+        assertEquals("检查入口能力不应再次准备或提交音频", 1, uploads.voicePrepares)
         assertEquals(1, repository.sent.size)
         assertTrue(uploads.discarded.isEmpty())
+        controller.cancel()
+    }
+
+    @Test fun liveGenerationAndCancellationStillBlockVoiceEntry() = runTest {
+        val uploads = Uploads()
+        val repository = TrackingRepository(Repository())
+        val controller = controller(repository, uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+
+        repository.generationState.value = GenerationState.RUNNING
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+
+        repository.generationState.value = GenerationState.CANCEL_REQUESTED
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+
+        repository.generationState.value = GenerationState.IDLE
+        repository.generationId.value = "gen_live"
+        runCurrent()
+        assertFalse(controller.canSendVoiceAttachment("thread_a"))
+        assertEquals(0, uploads.voicePrepares)
         controller.cancel()
     }
 
@@ -270,7 +292,7 @@ class WorkbenchVoiceSendTest {
         controller.cancel()
     }
 
-    private fun TestScope.controller(repository: Repository, uploads: Uploads, media: HistoricalMediaPort? = null) = WorkbenchController(
+    private fun TestScope.controller(repository: ConversationRepository, uploads: Uploads, media: HistoricalMediaPort? = null) = WorkbenchController(
         workbenchTestScope(), repository,
         object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
@@ -336,5 +358,13 @@ class WorkbenchVoiceSendTest {
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("UNEXPECTED_BATCH")
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.CANCELLED)
+    }
+
+    private class TrackingRepository(private val delegate: Repository) :
+        ConversationRepository by delegate,
+        MessageOutcomeQuery by delegate,
+        GenerationTracker {
+        override val generationId = MutableStateFlow<String?>(null)
+        override val generationState = MutableStateFlow(GenerationState.IDLE)
     }
 }

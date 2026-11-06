@@ -47,7 +47,7 @@ class CapabilityAuthorizationControlsTest {
         compose.onNodeWithTag("capability-mode:$plugin:$read:AUTOMATIC").performClick()
         compose.onNodeWithTag("capability-enabled:$plugin:$read").assertIsOff().performClick()
         assertEquals(original.copy(enabled = true, mode = CapabilityAuthorizationMode.AUTOMATIC), saved)
-        compose.onNodeWithText("设置保存在本机，离线也可修改。", substring = true).assertExists()
+        compose.onNodeWithText("设置保存在本地。系统权限与确认提示仍需单独允许。", substring = true).assertExists()
     }
 
     @Test fun changingOneEntryDoesNotChangeAnotherCapabilityInTheSamePlugin() {

@@ -527,7 +527,7 @@ class WorkbenchDuplicateAndDeliveryTest {
     }
 
     @Test
-    fun anUnknownSteeringOutcomeCannotBeResubmittedUnderAnotherDeliveryMode() = runTest {
+    fun anUnknownSteeringOutcomeDoesNotBlockANewSendUnderAnotherDeliveryMode() = runTest {
         val repository = Repository()
         repository.generationId.value = "gen_live"
         repository.generationState.value = GenerationState.RUNNING
@@ -540,15 +540,52 @@ class WorkbenchDuplicateAndDeliveryTest {
         runCurrent()
         assertTrue(controller.state.value.hasUnknownSubmissionOutcome)
         assertEquals(text, controller.state.value.draft)
+        val unknownClientId = repository.steeringClientIds.single()
 
         controller.sendDraft(MessageDeliveryMode.QUEUE)
         runCurrent()
 
         assertEquals(listOf(text), repository.steered)
-        assertTrue(repository.submitted.isEmpty())
+        assertEquals(listOf(text), repository.submitted)
+        assertEquals(listOf(MessageDeliveryMode.QUEUE), repository.submittedModes)
+        assertNotEquals(unknownClientId, repository.submittedClientIds.single())
         assertTrue(controller.state.value.pendingDeliveries.isEmpty())
-        assertEquals(text, controller.state.value.draft)
-        assertTrue(controller.state.value.notice.orEmpty().startsWith("SEND_OUTCOME_UNKNOWN:"))
+        assertEquals("", controller.state.value.draft)
+        assertTrue("旧 steer 结果仍保留为未知", controller.state.value.hasUnknownSubmissionOutcome)
+        assertEquals(setOf(unknownClientId, repository.submittedClientIds.single()),
+            rows(controller).filter { it.isUser }.mapNotNull { it.clientMessageId }.toSet())
+        assertEquals(0, repository.messageQueries)
+        controller.close()
+    }
+
+    @Test
+    fun multipleUnknownSubmissionsWithTheSameTextDoNotBlockAnotherExplicitSend() = runTest {
+        val repository = Repository()
+        repository.generationId.value = "gen_live"
+        repository.generationState.value = GenerationState.RUNNING
+        val controller = controller(repository, resetGenerationOnOpen = false)
+        runCurrent()
+        val text = "重复正文也代表一次新的用户操作"
+
+        repeat(2) {
+            repository.loseNextSteerReceipt = true
+            controller.editDraft(text)
+            controller.sendDraft(MessageDeliveryMode.STEER)
+            runCurrent()
+        }
+        val unknownIds = repository.steeringClientIds.toList()
+        assertEquals(2, unknownIds.size)
+        assertEquals(2, unknownIds.toSet().size)
+        assertTrue(controller.state.value.hasUnknownSubmissionOutcome)
+
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        runCurrent()
+
+        assertEquals(listOf(text, text, text), repository.steered)
+        assertEquals(3, repository.steeringClientIds.toSet().size)
+        assertTrue("新发送不得复用任一未知提交身份", repository.steeringClientIds.last() !in unknownIds)
+        assertEquals(3, rows(controller).count { it.isUser })
+        assertEquals(0, repository.messageQueries)
         controller.close()
     }
 

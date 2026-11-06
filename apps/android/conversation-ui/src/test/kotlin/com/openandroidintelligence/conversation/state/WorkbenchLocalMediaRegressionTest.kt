@@ -185,7 +185,7 @@ class WorkbenchLocalMediaRegressionTest {
         } finally { controller.close() }
     }
 
-    @Test fun resendingTheSameDraftQueriesBeforeRetryAndWaitsForThisAttemptDespiteTheOldVerifiedState() = runTest {
+    @Test fun explicitlyRecoveringUnknownAttachmentQueriesBeforeRetryAndWaitsForThisAttempt() = runTest {
         val host=Host().apply { submitFailure=IOException("ACK_LOST") }
         val coordinator=Coordinator()
         val journal=MemoryJournal()
@@ -201,7 +201,7 @@ class WorkbenchLocalMediaRegressionTest {
             host.submitFailure=null
             coordinator.retryGate=retryGate
             coordinator.beforeRetry={ assertEquals("必须先查询原客户端消息身份",listOf(originalId),host.queried) }
-            controller.sendDraft(); runCurrent()
+            controller.retryPendingSubmissions(); runCurrent()
             assertEquals("旧 VERIFIED 不能替代本次附件恢复完成",1,host.submissions)
             assertEquals(1,coordinator.retries)
             assertEquals(0,coordinator.releases)

@@ -85,6 +85,12 @@ class WorkbenchSendPersistenceTest {
         runCurrent(); controller.openThread("conv_a"); runCurrent()
         controller.editDraft("已经取消的回合"); controller.sendDraft(); runCurrent()
         advanceTimeBy(1_501); runCurrent()
+        val sent = repository.batches.single().messages.single()
+        repository.events.emit(VerifiedConversationEvent.MessageStatus(
+            "evt_delivered", 2, ConversationId("conv_a"), "server_${sent.clientMessageId.value}",
+            sent.clientMessageId, AgentMessageStatus.DELIVERED, 1, null, "gen_old",
+        ))
+        runCurrent()
         repository.events.emit(VerifiedConversationEvent.GenerationCancelled(
             "evt_cancelled", 3, "gen_old", ConversationId("conv_a"),
         ))
@@ -192,6 +198,76 @@ class WorkbenchSendPersistenceTest {
         second.close()
     }
 
+    @Test fun unknownOrdinarySubmissionDoesNotReuseItsIdentityForNewSends() = runTest {
+        val persistence = MemoryPersistence()
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
+        val controller = controller(repository, persistence)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        val originalText = "回执丢失的原消息"
+        controller.editDraft(originalText); controller.sendDraft(); runCurrent()
+        val originalId = repository.messages.single().clientMessageId
+        assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN,
+            persistence.loadSendAtoms("conv_a").single { it.clientMessageId == originalId }.submissionState)
+
+        repository.loseMessageReceipt = false
+        controller.editDraft("后续不同正文"); controller.sendDraft(); runCurrent()
+        controller.editDraft(originalText); controller.sendDraft(); runCurrent()
+
+        val sent = repository.messages
+        assertEquals(listOf(originalText, "后续不同正文", originalText), sent.map { it.text })
+        assertEquals("主动的新发送必须各自取得独立身份", 3, sent.map { it.clientMessageId }.toSet().size)
+        assertNotEquals("相同正文的新点击不能复用旧未知身份", originalId, sent.last().clientMessageId)
+        assertEquals("主动新发送不应自动查询或重发旧消息", 0, repository.queries)
+        assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN,
+            persistence.loadSendAtoms("conv_a").single { it.clientMessageId == originalId }.submissionState)
+        val renderedUsers = (controller.state.value.timeline as Loadable.Ready).value.filter { it.isUser }
+        assertEquals("旧记录和两条主动新消息必须全部保留", 3, renderedUsers.size)
+        assertEquals("按独立客户端身份保留每条消息的正文",
+            sent.associate { it.clientMessageId to it.text },
+            renderedUsers.associate { it.clientMessageId to it.text })
+        controller.close()
+    }
+
+    @Test fun lateRecoveryOfUnknownSendDoesNotSwallowANewSameTextSubmission() = runTest {
+        val persistence = MemoryPersistence()
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
+        val controller = controller(repository, persistence)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        val text = "新旧内容相同但身份不同"
+        controller.editDraft(text); controller.sendDraft(); runCurrent()
+        val originalId = repository.messages.single().clientMessageId
+        repository.loseMessageReceipt = false
+        val queryGate = CompletableDeferred<TimelineMessage?>()
+        repository.queryGates[originalId.value] = queryGate
+
+        controller.retryPendingSubmissions(); runCurrent()
+        assertEquals("旧提交结果查询已挂起", 1, repository.queries)
+        controller.editDraft(text); controller.sendDraft(); runCurrent()
+        val newId = repository.messages.last().clientMessageId
+        assertNotEquals("恢复中的旧消息不能吞并主动的新发送", originalId, newId)
+
+        queryGate.complete(TimelineMessage(
+            id = "server_${originalId.value}",
+            sender = "user",
+            parts = listOf(MessagePart.Text(text)),
+            timestamp = 0,
+            state = "queued",
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = originalId,
+        ))
+        runCurrent()
+
+        assertEquals(listOf(originalId, newId), repository.messages.map { it.clientMessageId })
+        assertEquals(setOf(originalId, newId),
+            persistence.loadSendAtoms("conv_a").map { it.clientMessageId }.toSet())
+        assertEquals(setOf(LocalSubmissionState.ACCEPTED),
+            persistence.loadSendAtoms("conv_a").map { it.submissionState }.toSet())
+        val rows = (controller.state.value.timeline as Loadable.Ready).value.filter { it.isUser }
+        assertEquals(listOf(text, text), rows.map { it.text })
+        assertEquals(setOf(originalId, newId), rows.mapNotNull { it.clientMessageId }.toSet())
+        controller.close()
+    }
+
     @Test fun ordinaryRecoveryDoesNotReplaceANewerDraft() = runTest {
         val persistence = MemoryPersistence()
         val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
@@ -211,13 +287,13 @@ class WorkbenchSendPersistenceTest {
         restarted.close()
     }
 
-    @Test fun aFailedOutcomeQueryCannotSendTheUnknownMessageAgain() = runTest {
+    @Test fun aFailedExplicitOutcomeQueryRetainsTheUnknownMessageWithoutResending() = runTest {
         val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
         val controller = controller(repository)
         runCurrent(); controller.openThread("conv_a"); runCurrent()
         controller.editDraft("查询失败时先保留"); controller.sendDraft(); runCurrent()
         repository.queryFailure = true
-        controller.sendDraft(); runCurrent()
+        controller.retryPendingSubmissions(); runCurrent()
 
         assertEquals(1, repository.queries)
         assertEquals("查询失败不能自动重发", 1, repository.messages.size)
@@ -237,7 +313,7 @@ class WorkbenchSendPersistenceTest {
         val originalId = repository.messages.single().clientMessageId
         repository.loseMessageReceipt = false
         repository.commitOrdinaryMessage = true
-        controller.sendDraft(); runCurrent()
+        controller.retryPendingSubmissions(); runCurrent()
 
         assertEquals(1, repository.queries)
         assertEquals(listOf(originalId, originalId), repository.messages.map { it.clientMessageId })
@@ -261,7 +337,7 @@ class WorkbenchSendPersistenceTest {
         first.close()
         repository.loseReceiptOnConversation = null
         val restarted = controller(repository, persistence)
-        runCurrent(); restarted.sendDraft(); runCurrent()
+        runCurrent(); restarted.retryPendingSubmissions(); runCurrent()
 
         assertEquals("B 的结果必须先查询", 1, repository.queries)
         assertEquals("A 的回执不能导致 B 重复提交", 2, repository.messages.size)
@@ -369,6 +445,7 @@ class WorkbenchSendPersistenceTest {
         var cancelBatchRequest = false
         var loseReceiptOnConversation: String? = null
         val ordinaryGates = mutableMapOf<String, CompletableDeferred<Unit>>()
+        val queryGates = mutableMapOf<String, CompletableDeferred<TimelineMessage?>>()
         private val accepted = linkedMapOf<String, TimelineMessage>()
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(
             listOf("conv_a", "conv_b").mapIndexed { index, id -> ConversationSummary(ConversationId(id), id, index.toLong()) },
@@ -404,6 +481,7 @@ class WorkbenchSendPersistenceTest {
         override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
             queries++
             if (queryFailure) throw java.io.IOException("QUERY_UNAVAILABLE")
+            queryGates[clientMessageId.value]?.let { return it.await() }
             return accepted[clientMessageId.value]?.takeIf { it.conversationId?.value == conversationId }
         }
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)

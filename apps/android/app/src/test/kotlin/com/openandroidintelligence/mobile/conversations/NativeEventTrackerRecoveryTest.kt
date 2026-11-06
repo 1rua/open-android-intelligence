@@ -5,6 +5,8 @@ import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.gateway.agents.*
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.test.*
@@ -61,14 +63,24 @@ class NativeEventTrackerRecoveryTest {
 
     @Test fun eventSyncSettlesAnInterruptedPostAndReleasesItsActualUnknownSendBarrier() = runTest {
         val h = Harness(this)
+        h.unknownReceipt = true
         h.repository.submitMessage("chat", OutgoingMessage(ClientMessageId("client"), "old prompt")); runCurrent()
         assertEquals(1, h.requests.count { it.target.endsWith("/messages") })
-        assertTrue(runCatching { h.repository.submitMessage("chat", OutgoingMessage(ClientMessageId("blocked"), "blocked")) }.isFailure)
+        assertEquals(GenerationState.OUTCOME_UNKNOWN, h.repository.generationState.value)
+        h.repository.submitMessage("chat", OutgoingMessage(ClientMessageId("blocked"), "blocked")); runCurrent()
+        val messagePosts = h.requests.filter { it.target.endsWith("/messages") }
+        assertEquals(listOf("client", "blocked"), messagePosts.map {
+            JsonFields.string(JsonFields.obj(Json.parse(it.body.decodeToString())), "clientMessageId")
+        })
         h.terminal = true; h.nextPage.complete(Unit); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
         h.repository.submitMessage("chat", OutgoingMessage(ClientMessageId("next-client"), "next")); runCurrent()
-        assertEquals(2, h.requests.count { it.target.endsWith("/messages") })
-        assertEquals(1, h.requests.count { it.target.endsWith("/messages") && it.body.decodeToString().contains("old prompt") })
+        val allMessagePosts = h.requests.filter { it.target.endsWith("/messages") }
+        assertEquals(listOf("client", "blocked", "next-client"), allMessagePosts.map {
+            JsonFields.string(JsonFields.obj(Json.parse(it.body.decodeToString())), "clientMessageId")
+        })
+        assertEquals("旧 client 恢复只能查询，不能自动重发", 1,
+            allMessagePosts.count { it.body.decodeToString().contains("old prompt") })
     }
 
     @Test fun aStaleRunningReceiptCannotReopenACommittedTerminal() = runTest {
@@ -100,7 +112,7 @@ class NativeEventTrackerRecoveryTest {
     @Test fun multipleActiveReceiptsRequireTheExplicitCurrentGenerationIdentity() = runTest {
         mixedReceiptScenario("running", liveFirst = false, otherActive = true, authoritative = "generation-live")
     }
-    @Test fun ambiguousActiveReceiptsCannotInventACancelRouteOrAuthorizeAnotherPost() = runTest {
+    @Test fun ambiguousOldReceiptsCannotInventACancelRouteButAllowANewExplicitPost() = runTest {
         mixedReceiptScenario("running", liveFirst = true, otherActive = true)
     }
 
@@ -128,30 +140,39 @@ class NativeEventTrackerRecoveryTest {
                         """{"generation":{"generationId":"generation-$suffix","conversationId":"chat","clientMessageId":"client-$suffix","userMessageId":"user-$suffix","state":"$state","revision":${if (suffix == "live") 3 else 99}}}"""
                     }
                     request.target.endsWith("/cancel") -> """{"session":{"outcome":"cancelled","generationId":"generation-live"}}"""
-                    else -> error("Task POST is forbidden")
+                    request.target.endsWith("/messages") -> {
+                        check(otherActive && authoritative == null)
+                        "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"generation-new\",\"clientMessageId\":\"new\",\"userMessageId\":\"user-new\",\"state\":\"running\",\"revision\":1}\n\n" +
+                            "event: message\ndata: {\"type\":\"done\",\"generationId\":\"generation-new\",\"outcome\":\"completed\",\"revision\":7}\n\n"
+                    }
+                    else -> error("Unexpected request ${request.target}")
                 }
-                return WireResponse(200, listOf(RawHeader("Content-Type","application/json")), body.toByteArray())
+                return WireResponse(200, listOf(RawHeader("Content-Type", if (request.target.endsWith("/messages")) "text/event-stream" else "application/json")), body.toByteArray())
             }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
         }
         val client = AgentSessionClient(GatewayHttpClient(GatewayProfile("account","phone","login","https://core.example",accessToken="synthetic"),
             transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=dispatcher))
-        val agent = CoreAgent("hermes","test","hermes",true,"account",AgentCapabilities(history=true,send=true,cancel=true,generationRecovery=true,eventSync=true))
+        val agent = CoreAgent("hermes","test","hermes",true,"account",AgentCapabilities(history=true,send=true,stream=true,cancel=true,generationRecovery=true,eventSync=true))
         val store = NativeEventSynchronizerTest.Storage().apply { cursor = null }
         val repository = CoreAgentConversationRepository(client,{agent},{"chat"},backgroundScope,dispatcher,storeForAgent={store}, nativeRetryJitter={it})
         repository.activeConversationChanged(); runCurrent()
         if (otherActive && authoritative == null) {
             assertNull(repository.generationId.value)
             assertEquals(GenerationState.OUTCOME_UNKNOWN,repository.generationState.value)
-            assertTrue(runCatching { repository.submitMessage("chat",OutgoingMessage(ClientMessageId("new"),"do not send")) }.isFailure)
             assertEquals(CancelGenerationOutcome.OUTCOME_UNKNOWN,repository.cancelGeneration("chat","generation-live","cancel").outcome)
+            repository.submitMessage("chat",OutgoingMessage(ClientMessageId("new"),"new explicit prompt"))
+            runCurrent()
+            assertEquals(GenerationState.COMPLETED, repository.generationState.value)
+            val posted = requests.single { it.target.endsWith("/messages") }
+            assertEquals("new", JsonFields.string(JsonFields.obj(Json.parse(posted.body.decodeToString())), "clientMessageId"))
         } else {
             assertEquals("generation-live",repository.generationId.value)
             assertEquals(if (liveState == "running") GenerationState.RUNNING else GenerationState.QUEUED,repository.generationState.value)
             assertEquals(CancelGenerationOutcome.CANCELLED,repository.cancelGeneration("chat","generation-live","cancel").outcome)
             assertTrue(requests.single { it.target.endsWith("/cancel") }.body.decodeToString().contains("generation-live"))
         }
-        assertTrue(requests.none { it.target.endsWith("/messages") })
+        if (!otherActive || authoritative != null) assertTrue(requests.none { it.target.endsWith("/messages") })
     }
 
     private class Harness(scope: TestScope) {
@@ -160,6 +181,7 @@ class NativeEventTrackerRecoveryTest {
         val stalePage = CompletableDeferred<Unit>()
         private var sentStalePage = false
         var terminal = false
+        var unknownReceipt = false
         var rejectCommit = false
         var observers = 0
         var maximumObservers = 0
@@ -193,11 +215,28 @@ class NativeEventTrackerRecoveryTest {
                         """{"events":[$events],"cursor":"base","hasMore":false}"""
                     }
                     request.target.endsWith("/history") -> """{"messages":[{"id":"user","role":"user","text":"old prompt","clientMessageId":"client","generationId":"generation"}]}"""
-                    request.target.contains("/generation?") -> """{"generation":{"generationId":"generation","conversationId":"chat","clientMessageId":"client","userMessageId":"user","state":"${if (terminal) "completed" else "running"}","revision":${if (terminal) 7 else 1}}}"""
+                    request.target.contains("/generation?") -> {
+                        val clientId = request.target.substringAfter("clientMessageId=").substringBefore('&')
+                        val oldClient = clientId == "client"
+                        val generation = if (oldClient) "generation" else "generation-$clientId"
+                        val state = when {
+                            oldClient && terminal -> "completed"
+                            oldClient && unknownReceipt -> "unknown"
+                            oldClient -> "running"
+                            else -> "completed"
+                        }
+                        val userMessageId = if (oldClient) "user" else "user-$clientId"
+                        """{"generation":{"generationId":"$generation","conversationId":"chat","clientMessageId":"$clientId","userMessageId":"$userMessageId","state":"$state","revision":${if (oldClient && !terminal) 1 else 7}}}"""
+                    }
                     request.target.endsWith("/cancel") -> """{"session":{"generationId":"generation","outcome":"cancelled"}}"""
-                    request.target.endsWith("/messages") -> if (request.body.decodeToString().contains("next-client"))
-                        "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"next-generation\",\"clientMessageId\":\"next-client\",\"userMessageId\":\"next-user\",\"state\":\"running\",\"revision\":1}\n\n"
-                        else "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"generation\",\"clientMessageId\":\"client\",\"userMessageId\":\"user\",\"state\":\"running\",\"revision\":1}\n\n"
+                    request.target.endsWith("/messages") -> {
+                        val clientId = JsonFields.string(JsonFields.obj(Json.parse(request.body.decodeToString())), "clientMessageId")
+                            ?: error("Missing clientMessageId")
+                        val generation = if (clientId == "client") "generation" else "generation-$clientId"
+                        val first = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"$generation\",\"clientMessageId\":\"$clientId\",\"userMessageId\":\"user-$clientId\",\"state\":\"running\",\"revision\":1}\n\n"
+                        if (clientId == "client") first else first +
+                            "event: message\ndata: {\"type\":\"done\",\"generationId\":\"$generation\",\"outcome\":\"completed\",\"revision\":7}\n\n"
+                    }
                     else -> error("Unexpected request ${request.target}")
                 }
                 return WireResponse(200, listOf(RawHeader("Content-Type", if (request.target.endsWith("/messages")) "text/event-stream" else "application/json")), body.toByteArray())

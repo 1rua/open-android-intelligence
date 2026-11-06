@@ -12,6 +12,7 @@ import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
@@ -204,12 +205,11 @@ class ComposerBarSendStopTest {
         assertEquals(0, removals)
     }
 
-    @Test fun cancelUnknownAndSubmittingStatesKeepSendSafetyGates() {
+    @Test fun unknownOutcomeAllowsNewSendButCancelAndSubmittingStillBlockIt() {
         var sends = 0
-        var draft by mutableStateOf("稍后发送")
+        var draft by mutableStateOf("待发送的新消息")
         var generation by mutableStateOf(GenerationState.CANCEL_REQUESTED)
         var canSend by mutableStateOf(true)
-        var hasUnknownOutcome by mutableStateOf(false)
         compose.setContent {
             MaterialTheme {
                 ComposerBar(
@@ -217,7 +217,6 @@ class ComposerBarSendStopTest {
                     onDraftChange = {},
                     generation = generation,
                     canSend = canSend,
-                    hasUnknownSubmissionOutcome = hasUnknownOutcome,
                     onSend = { sends++ },
                     onStop = {},
                     onPickCamera = {},
@@ -232,11 +231,12 @@ class ComposerBarSendStopTest {
         compose.onNodeWithContentDescription("等待取消确认").assertIsNotEnabled()
 
         compose.runOnIdle {
-            draft = "结果未确认"
             generation = GenerationState.OUTCOME_UNKNOWN
         }
         compose.waitForIdle()
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+        compose.onNodeWithText("结果未确认，请刷新会话，暂勿重复发送").assertDoesNotExist()
+        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
+        assertEquals(1, sends)
 
         compose.runOnIdle {
             draft = "正在提交"
@@ -245,22 +245,6 @@ class ComposerBarSendStopTest {
         }
         compose.waitForIdle()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
-
-        compose.runOnIdle {
-            draft = "待核实的消息"
-            canSend = true
-            hasUnknownOutcome = true
-        }
-        compose.waitForIdle()
-        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
-        assertEquals(0, sends)
-
-        // A reconciled authoritative failure releases the real composer action, preserving the draft.
-        compose.runOnIdle {
-            hasUnknownOutcome = false
-            generation = GenerationState.FAILED
-        }
-        compose.onNodeWithContentDescription("发送").assertIsEnabled().performClick()
         assertEquals(1, sends)
     }
 
@@ -327,7 +311,6 @@ class ComposerBarSendStopTest {
         canSend: Boolean = false,
         attachments: List<AttachmentDraft> = emptyList(),
         inFlightAttachmentIds: Set<String> = emptySet(),
-        hasUnknownSubmissionOutcome: Boolean = false,
         onRemoveAttachment: (String) -> Unit = {},
         onSend: () -> Unit = {},
         onStop: () -> Unit = {},
@@ -347,7 +330,6 @@ class ComposerBarSendStopTest {
                     onVoiceInput = {},
                     attachments = attachments,
                     inFlightAttachmentIds = inFlightAttachmentIds,
-                    hasUnknownSubmissionOutcome = hasUnknownSubmissionOutcome,
                     onRemoveAttachment = onRemoveAttachment,
                     voiceInputEnabled = false,
                 )

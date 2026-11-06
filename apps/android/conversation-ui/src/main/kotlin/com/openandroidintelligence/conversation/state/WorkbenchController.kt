@@ -168,7 +168,7 @@ data class WorkbenchUiState(
     val approvalCardsSupported: Boolean = false,
     val isOnline: Boolean = true,
     val hasRecoverableSubmissions: Boolean = false,
-    /** Unknown send outcomes require an explicit reconciliation before another send. */
+    /** 未确认的发送结果单独保留，不阻止用户继续发送新消息。 */
     val hasUnknownSubmissionOutcome: Boolean = false,
     /** 本地发送身份装载完成之前不允许把旧消息误作一条新提交。 */
     val historyHydrated: Boolean = true,
@@ -1531,6 +1531,10 @@ class WorkbenchController(
                 ?: recoveredAttachmentSubmissions[activeThreadId]
             saved.threadId?.let(::reconcileDeletedRecoveryUnits)
             val displayedSubmission = failedSubmission?.takeIf { it.conversationId == activeThreadId }
+            val displayedOutcomeUnknown = displayedSubmission?.let { submission ->
+                activeThreadId?.let { atomsFor(it)[submission.clientMessageId]?.submissionState } ==
+                    LocalSubmissionState.OUTCOME_UNKNOWN
+            } == true
             val restoredRows = renderTimeline()
             _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
@@ -1549,7 +1553,7 @@ class WorkbenchController(
                 composer = if (restoreComposer && displayedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
                 hasRecoverableSubmissions = recoveredAttachmentSubmissions.containsKey(activeThreadId) || frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
                     activeThreadId?.let { recoverableOrdinaryAtoms(it).isNotEmpty() } == true,
-                notice = if (!restoreComposer) null else if (displayedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId }) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
+                notice = if (!restoreComposer || displayedOutcomeUnknown) null else if (displayedSubmission != null) "SEND_OUTCOME_UNKNOWN:点击发送可查询并重试原消息" else if (frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId }) "SEND_OUTCOME_UNKNOWN:请确认并查询待处理批次" else null)
             attachmentCoordinator?.let { coordinator ->
                 _state.value.attachments.forEach { observeAttachment(coordinator,it.id.value) }
             }
@@ -2655,7 +2659,7 @@ class WorkbenchController(
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
             _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
-            _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED,GenerationState.OUTCOME_UNKNOWN)
+            _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED)
 
     /** A voice recording is one attachment-only submission and never consumes the text draft. */
     suspend fun sendVoiceAttachment(
@@ -3016,33 +3020,21 @@ class WorkbenchController(
                 com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL
             else -> delivery
         }
-        val hasUnknownModeChange = activeThreadId?.let { threadId ->
-            atomsFor(threadId).values.any { atom ->
-                !atom.isDeleted && atom.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN &&
-                    atom.delivery != effectiveDelivery
-            }
-        } == true
-        if (hasUnknownModeChange) {
-            update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:请先确认并查询未确认消息") }
-            return
-        }
         val attachmentIds = current.attachments.map { it.id.value }.filterNot { it in current.inFlightAttachmentIds }
         val remoteAttachmentIds = attachmentIds.map { attachmentCoordinator?.remoteAttachmentId(it) }
         val recoverable = activeThreadId?.let(::recoverableOrdinaryAtoms).orEmpty().filter { atom ->
-            !steeringWasNotForwarded(atom) && atom.delivery == effectiveDelivery &&
+            atom.submissionState == LocalSubmissionState.FAILED &&
+                !steeringWasNotForwarded(atom) && atom.delivery == effectiveDelivery &&
             atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>().joinToString("") { it.value } == current.draft &&
                 atom.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>().map { it.draftId.value } == remoteAttachmentIds
-        }
-        if (recoverable.size > 1) {
-            update { it.copy(notice = "SEND_OUTCOME_UNKNOWN:请先确认并查询未确认消息") }
-            return
         }
         attachmentTargetRevision++
         pendingSubmission = failedSubmission?.takeIf {
             it.delivery == effectiveDelivery && it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
                 it.conversationId?.let { id ->
                     val atom = atomsFor(id)[it.clientMessageId]
-                    atom?.isDeleted == true || steeringWasNotForwarded(atom)
+                    atom?.isDeleted == true || atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN ||
+                        steeringWasNotForwarded(atom)
                 } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value,
@@ -3050,6 +3042,8 @@ class WorkbenchController(
         } ?: DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId,
             delivery = effectiveDelivery)
         val frozen = requireNotNull(pendingSubmission)
+        if (effectiveDelivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
+            activeThreadId != null) localTurnClientsByThread[requireNotNull(activeThreadId)] = setOf(frozen.clientMessageId)
         GatewayLog.protocolEvidence("send.clicked", mapOf("clientMessageId" to frozen.clientMessageId,
             "conversationId" to frozen.conversationId, "clickedAtNs" to clickedAt))
         val localEntry = TimelineEntry(
@@ -3084,12 +3078,16 @@ class WorkbenchController(
     private suspend fun submitMessageToRepository(
         threadId: String,
         message: OutgoingMessage,
-    ): com.openandroidintelligence.conversation.ports.MessageAcceptance =
-        if (message.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER) {
+    ): com.openandroidintelligence.conversation.ports.MessageAcceptance {
+        if (message.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL) {
+            localTurnClientsByThread[threadId] = setOf(message.clientMessageId.value)
+        }
+        return if (message.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER) {
             repository.steerMessage(threadId, message)
         } else {
             repository.submitMessage(threadId, message)
         }
+    }
 
     /** A click freezes the draft; upload progress can release that same submission only once. */
     private fun submitWhenAttachmentsVerified(): Job? {
@@ -3513,6 +3511,9 @@ class WorkbenchController(
             // from a side map is how a member used to end up in the wrong thread.
             beginLegacyTurn(conversationId)
             if (activeThreadId == conversationId) generationFactRevision++
+            val normalClients = messages.filter { it.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL }
+                .mapTo(linkedSetOf()) { it.clientMessageId.value }
+            if (normalClients.isNotEmpty()) localTurnClientsByThread[conversationId] = normalClients
             val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
@@ -3865,6 +3866,33 @@ class WorkbenchController(
         while (retiredLegacyMessageIds.size > 4096) retiredLegacyMessageIds.remove(retiredLegacyMessageIds.first())
     }
 
+    /** 主动发送的身份独立于宿主首帧；空 generation 不是旧回执的通行证。 */
+    private val localTurnClientsByThread = linkedMapOf<String, Set<String>>()
+
+    private fun terminalBelongsToCurrentTurn(
+        threadId: String,
+        generationId: String?,
+        clientMessageId: String? = null,
+        sourceMessageId: String? = null,
+    ): Boolean {
+        val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+        if (currentGeneration != null && generationId != null) return currentGeneration == generationId
+        val clients = localTurnClientsByThread[threadId] ?: return true
+        if (clientMessageId != null) {
+            if (clientMessageId !in clients) return false
+            val sourceClient = sourceMessageId?.let { mirrored[it]?.clientMessageId?.value }
+            if (sourceClient != null && sourceClient != clientMessageId) return false
+            val source = atomsFor(threadId)[clientMessageId]?.messageId?.takeUnless { it == clientMessageId }
+            if (source != null && sourceMessageId != null && source != sourceMessageId) return false
+            val knownGeneration = messageGenerations[threadId to clientMessageId]?.id
+            return generationId == null || knownGeneration == null || knownGeneration == generationId
+        }
+        return generationId != null && clients.any { clientId ->
+            messageGenerations[threadId to clientId]?.id == generationId ||
+                atomsFor(threadId)[clientId]?.messageId?.let { messageGenerations[threadId to it]?.id } == generationId
+        }
+    }
+
     /** Retire progress for the exact turn; a final response may have another message id. */
     private fun finishStreaming(
         threadId: String,
@@ -3872,13 +3900,14 @@ class WorkbenchController(
         terminal: GenerationState,
         occurredAt: Long = 0L,
         clientMessageId: String? = null,
+        belongsToCurrentTurn: Boolean = terminalBelongsToCurrentTurn(threadId, generationId, clientMessageId),
     ) {
         if (generationId != null) {
             activeWork.terminal(threadId, generationId)
             rememberExecutionTerminal(threadId, generationId, terminal)
         }
-        val activeGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
-        val allowLegacy = generationId == null || activeGeneration == null || activeGeneration == generationId
+        val allowLegacy = belongsToCurrentTurn
+        if (belongsToCurrentTurn) localTurnClientsByThread.remove(threadId)
         if (allowLegacy) {
             val terminalTime = occurredAt.takeIf { it > 0L }
                 ?: mirrored.values.filter { it.sender == "assistant" }.maxOfOrNull { it.timestamp } ?: 0L
@@ -4475,6 +4504,19 @@ class WorkbenchController(
         // 未携带线程身份的正文或删除事件不能借用当前屏幕的线程身份。
         if ((event is VerifiedConversationEvent.TimelineUpsert && event.message.conversationId == null) ||
             (event is VerifiedConversationEvent.TimelineTombstoned && event.conversationId == null)) return
+        // 在事件推进 source/client 关联之前核对，不能用本帧自己改写的身份为本帧背书。
+        val settlesCurrentTurn = when (event) {
+            is VerifiedConversationEvent.MessageStatus -> terminalBelongsToCurrentTurn(
+                event.conversationId.value,
+                event.generationId ?: messageGenerations[event.conversationId.value to event.messageId]?.id
+                    ?: messageGenerations[event.conversationId.value to event.clientMessageId.value]?.id,
+                event.clientMessageId.value, event.messageId,
+            )
+            is VerifiedConversationEvent.GenerationCancelled -> event.conversationId?.value?.let {
+                terminalBelongsToCurrentTurn(it, event.generationId)
+            } == true
+            else -> true
+        }
         applySendEvent(event)
         val currentActiveId = activeThreadId ?: run {
             refreshThreads()
@@ -4572,11 +4614,11 @@ class WorkbenchController(
                         if (cancelled) GenerationState.CANCELLED else if (cancelling) null else GenerationState.FAILED
                     else -> null
                 }
-                val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
-                val settlesCurrent = receiptGeneration == null || currentGeneration == null || currentGeneration == receiptGeneration
-                if (terminal == null || settlesCurrent) observeGenerationIdentity(receiptGeneration)
+                val settlesCurrent = settlesCurrentTurn
+                if (settlesCurrent) observeGenerationIdentity(receiptGeneration)
                 if (terminal != null) finishStreaming(
                     currentActiveId,receiptGeneration,terminal,event.occurredAt,event.clientMessageId.value,
+                    belongsToCurrentTurn = settlesCurrent,
                 )
                 val localKey = "local_${event.clientMessageId.value}"
                 update { state ->
@@ -4741,14 +4783,14 @@ class WorkbenchController(
                     schedulePendingDeliveryDrain(eventConvId)
                 }
                 if (eventConvId == currentActiveId) {
-                    finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED,event.occurredAt)
-                    val currentGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
-                    if (currentGeneration == null || currentGeneration == event.generationId) observeGenerationIdentity(event.generationId)
+                    finishStreaming(currentActiveId,event.generationId,GenerationState.CANCELLED,event.occurredAt,
+                        belongsToCurrentTurn = settlesCurrentTurn)
+                    if (settlesCurrentTurn) observeGenerationIdentity(event.generationId)
                     update { state ->
                         state.copy(
-                            generation = if (currentGeneration != null && currentGeneration != event.generationId) state.generation else GenerationState.CANCELLED,
+                            generation = if (settlesCurrentTurn) GenerationState.CANCELLED else state.generation,
                             timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
-                            notice = if (currentGeneration == null || currentGeneration == event.generationId) {
+                            notice = if (settlesCurrentTurn) {
                                 state.notice?.takeUnless { it.startsWith("AGENT_MESSAGE_FAILED:") }
                             } else state.notice,
                         )

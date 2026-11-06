@@ -209,7 +209,7 @@ class SettingsCapabilityUiTest {
         compose.onNodeWithText("新能力默认每次手动", substring = true).performScrollTo().assertExists()
         compose.onNodeWithText("以下两种情况会清空本机授权", substring = true).assertDoesNotExist()
         assertTrue(
-            compose.onAllNodesWithText("Android 系统权限", substring = true).fetchSemanticsNodes().isNotEmpty(),
+            compose.onAllNodesWithText("系统权限独立检查", substring = true).fetchSemanticsNodes().isNotEmpty(),
         )
     }
 
