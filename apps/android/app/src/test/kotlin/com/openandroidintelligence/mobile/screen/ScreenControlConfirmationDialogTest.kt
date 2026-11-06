@@ -60,8 +60,8 @@ class ScreenControlConfirmationDialogTest {
             }
         }
         compose.onNodeWithTag("device-confirmation-agent").assertExists()
-        compose.onNodeWithText("操作目的：检查专用测试样本").assertExists()
-        compose.onNodeWithText("Agent 名称和操作目的由请求方声明，仅供展示与审计，不证明身份或扩大权限。").assertExists()
+        compose.onNodeWithText("用途：检查专用测试样本").assertExists()
+        compose.onNodeWithText("上述信息由请求方声明，仅供审计记录。").assertExists()
         compose.onNodeWithText("读取短信").assertExists()
         compose.onNodeWithText("短信发送方：[\"TEST-SENDER\"]").assertExists()
         compose.onNodeWithText("发送短信").assertDoesNotExist()

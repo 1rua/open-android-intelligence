@@ -104,7 +104,6 @@ fun ComposerBar(
     onQuickChip: ((String) -> Unit)? = null,
     voiceInputEnabled: Boolean = true,
     inFlightAttachmentIds: Set<String> = emptySet(),
-    hasUnknownSubmissionOutcome: Boolean = false,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     /** Controller and conversation identity; a change discards selection, IME composition and undo. */
     editorKey: Any? = null,
@@ -167,7 +166,6 @@ fun ComposerBar(
     }
     val running = generation == GenerationState.RUNNING || generation == GenerationState.QUEUED
     val waitingCancel = generation == GenerationState.CANCEL_REQUESTED
-    val unknown = generation == GenerationState.OUTCOME_UNKNOWN
     val hasPendingInput = draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }
     val showBusyDeliveryChoice = running && hasPendingInput
     var deliveryMode by remember(editorKey, running) { mutableStateOf(MessageDeliveryMode.STEER) }
@@ -197,9 +195,9 @@ fun ComposerBar(
     // Keep cancellation visible when the user has no pending input.
     val showStop = waitingCancel || (running && !hasPendingInput)
     val actionEnabled = when {
-        waitingCancel || unknown -> false
+        waitingCancel -> false
         showStop -> running && !hasPendingInput
-        else -> hasPendingInput && canSend && !hasUnknownSubmissionOutcome
+        else -> hasPendingInput && canSend
     }
 
     var focused by remember(editorKey) { mutableStateOf(false) }
@@ -831,7 +829,7 @@ fun generationLabel(state: GenerationState): String? = when (state) {
     GenerationState.CANCELLED -> "本次生成已停止"
     GenerationState.FAILED -> "本次生成失败，请检查连接后重试"
     GenerationState.UNSUPPORTED -> "当前 Gateway 不支持停止生成"
-    GenerationState.OUTCOME_UNKNOWN -> "结果未确认，请刷新会话，暂勿重复发送"
+    GenerationState.OUTCOME_UNKNOWN -> null
 }
 
 fun formatAttachmentSize(bytes: Long): String = when {

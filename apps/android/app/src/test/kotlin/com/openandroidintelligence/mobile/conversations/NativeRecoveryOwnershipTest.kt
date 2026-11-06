@@ -2,7 +2,11 @@ package com.openandroidintelligence.mobile.conversations
 
 import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.ports.CancelGenerationOutcome
+import com.openandroidintelligence.conversation.ports.ConversationScope
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
+import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.gateway.agents.AgentCapabilities
 import com.openandroidintelligence.gateway.agents.AgentSessionClient
 import com.openandroidintelligence.gateway.agents.CoreAgent
@@ -18,6 +22,7 @@ import java.io.InputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
@@ -25,16 +30,15 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -132,10 +136,17 @@ class NativeRecoveryOwnershipTest {
     ))
 
     @Test
-    fun olderClientReceiptCannotCloseAnAlreadyRunningNewGeneration() = runBlocking {
+    fun oldUnknownRecoveryDoesNotBlockOrOverwriteNewGenerationAndControlsStayExact() = runBlocking {
+        val oldRecoveryStarted = CountDownLatch(1)
+        val releaseOldRecovery = CountDownLatch(1)
+        val oldTerminalObserved = CompletableDeferred<Unit>()
         val newStreamWaiting = CountDownLatch(1)
         val releaseNewStream = CountDownLatch(1)
-        val posts = AtomicInteger()
+        val oldPosts = AtomicInteger()
+        val newPosts = AtomicInteger()
+        val steerRequest = AtomicReference<WireRequest?>()
+        val cancelRequest = AtomicReference<WireRequest?>()
+        val oldGenerationFrame = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"gen_old\",\"userMessageId\":\"user_old\",\"clientMessageId\":\"client_old\",\"state\":\"running\",\"revision\":1}\n\n".toByteArray()
         val generationFrame = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"gen_new\",\"userMessageId\":\"user_new\",\"clientMessageId\":\"client_new\"}\n\n".toByteArray()
         val stream = object : InputStream() {
             private var position = 0
@@ -160,10 +171,21 @@ class NativeRecoveryOwnershipTest {
         val transport = object : GatewayByteTransport {
             override suspend fun execute(request: WireRequest): WireResponse {
                 val body = when {
-                    request.target.contains("/generation?") && request.target.contains("clientMessageId=client_old") ->
+                    request.target.contains("/generation?") && request.target.contains("clientMessageId=client_old") -> {
+                        oldRecoveryStarted.countDown()
+                        check(releaseOldRecovery.await(5, TimeUnit.SECONDS)) { "old recovery receipt was not released" }
                         """{"generation":{"generationId":"gen_old","conversationId":"chat","clientMessageId":"client_old","userMessageId":"user_old","state":"completed","revision":7}}"""
+                    }
                     request.target.endsWith("/history") ->
                         """{"messages":[{"id":"user_old","role":"user","text":"synthetic old prompt","clientMessageId":"client_old","generationId":"gen_old","createdAt":"1"}]}"""
+                    request.target.endsWith("/steer") -> {
+                        steerRequest.set(request)
+                        """{"steering":{"generationId":"gen_new","outcome":"accepted"}}"""
+                    }
+                    request.target.endsWith("/cancel") -> {
+                        cancelRequest.set(request)
+                        """{"session":{"generationId":"gen_new","outcome":"cancelled"}}"""
+                    }
                     else -> error("Unexpected synthetic request ${request.method} ${request.target}")
                 }
                 return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")), body.toByteArray())
@@ -171,8 +193,14 @@ class NativeRecoveryOwnershipTest {
             override suspend fun <T> consumeResponse(request: WireRequest,
                 consume: suspend (Int, List<RawHeader>, InputStream) -> T): T {
                 check(request.method == "POST")
-                posts.incrementAndGet()
-                return consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), stream)
+                return if (request.body.decodeToString().contains("client_old")) {
+                    oldPosts.incrementAndGet()
+                    consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), ByteArrayInputStream(oldGenerationFrame))
+                } else {
+                    check(request.body.decodeToString().contains("client_new"))
+                    newPosts.incrementAndGet()
+                    consume(200, listOf(RawHeader("Content-Type", "text/event-stream")), stream)
+                }
             }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
         }
@@ -181,26 +209,48 @@ class NativeRecoveryOwnershipTest {
             transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = Dispatchers.IO,
         )
         val agent = CoreAgent("hermes", "synthetic", "hermes", true, "account",
-            AgentCapabilities(list = true, history = true, send = true, stream = true, generationRecovery = true))
+            AgentCapabilities(list = true, history = true, send = true, stream = true, generationRecovery = true,
+                steer = true, cancel = true))
         val owner = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val repository = CoreAgentConversationRepository(AgentSessionClient(http), { agent }, { "chat" },
             owner, Dispatchers.Unconfined)
+        val collector = owner.launch(start = CoroutineStart.UNDISPATCHED) {
+            repository.observeEvents(ConversationScope("p", "https://core.example", "account", "device")).collect { event ->
+                if (event is VerifiedConversationEvent.MessageStatus &&
+                    event.clientMessageId.value == "client_old" && event.status == AgentMessageStatus.COMPLETED)
+                    oldTerminalObserved.complete(Unit)
+            }
+        }
         try {
+            repository.submitMessage("chat", OutgoingMessage(ClientMessageId("client_old"), "synthetic old prompt"))
+            assertTrue(withContext(Dispatchers.IO) { oldRecoveryStarted.await(3, TimeUnit.SECONDS) })
+            assertEquals(1, oldPosts.get())
+
             repository.submitMessage("chat", OutgoingMessage(ClientMessageId("client_new"), "synthetic new prompt"))
             assertTrue(withContext(Dispatchers.IO) { newStreamWaiting.await(3, TimeUnit.SECONDS) })
             assertEquals("gen_new", repository.generationId.value)
             assertEquals(GenerationState.RUNNING, repository.generationState.value)
 
-            assertNotNull(withTimeout(3000) { repository.queryMessage("chat", ClientMessageId("client_old")) })
-            val overwritten = withTimeoutOrNull(1000) {
-                repository.generationState.first { it != GenerationState.RUNNING }
-            }
-            assertNull("An older accepted client can be reconciled without replacing the running generation owner", overwritten)
+            releaseOldRecovery.countDown()
+            withTimeout(3000) { oldTerminalObserved.await() }
+            assertEquals("旧轮次迟到终态不能覆盖新 generation", "gen_new", repository.generationId.value)
+            assertEquals(GenerationState.RUNNING, repository.generationState.value)
+            assertEquals(1, oldPosts.get())
+            assertEquals(1, newPosts.get())
+
+            val steering = repository.steerMessage("chat", OutgoingMessage(
+                ClientMessageId("client_steer"), "continue", delivery = com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+            ))
+            assertEquals("gen_new", steering.generationId)
+            assertTrue(checkNotNull(steerRequest.get()).body.decodeToString().contains("gen_new"))
+            assertEquals(CancelGenerationOutcome.CANCELLED, repository.cancelGeneration("chat", "gen_new", "cancel_new").outcome)
+            assertTrue(checkNotNull(cancelRequest.get()).body.decodeToString().contains("gen_new"))
             assertEquals("gen_new", repository.generationId.value)
-            assertEquals(1, posts.get())
         } finally {
-            releaseNewStream.countDown()
+            releaseOldRecovery.countDown()
             owner.cancel()
+            releaseNewStream.countDown()
+            collector.cancel()
         }
     }
 }

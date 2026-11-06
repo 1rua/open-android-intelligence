@@ -135,17 +135,27 @@ class NativeRecoveryDeliverySemanticsTest {
             .filter { it.status == AgentMessageStatus.COMPLETED }.map { it.clientMessageId.value }.toSet().intersect(setOf("original","other")))
     }
 
-    @Test fun aMissingAmbiguousGenerationCannotBeTreatedAsItsTerminal() = runTest {
+    @Test fun aMissingAmbiguousGenerationDoesNotBlockNormalSendOrLoseItsIdentity() = runTest {
         val h = ambiguousHarness()
         h.states["original"] = "completed"; h.revisions["original"] = 7
         h.states.remove("other"); h.historyVisible = false
         h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
         assertEquals(GenerationState.OUTCOME_UNKNOWN,h.repository.generationState.value)
-        assertTrue(runCatching { h.repository.submitMessage("A",h.message("blocked")) }.isFailure)
-        assertTrue(h.posts("/messages").isEmpty())
+        h.states["blocked"] = "completed"; h.revisions["blocked"] = 9
+        val accepted = h.repository.submitMessage("A",h.message("blocked"))
+        assertEquals("blocked",accepted.correlationId)
+        runCurrent()
+        assertEquals(listOf("blocked"),h.posts("/messages").map { it.jsonString("clientMessageId") })
+        assertTrue("缺失的旧 generation 仍须保留原身份查询",
+            h.requests.any { it.target.contains("/generation?") && it.target.contains("clientMessageId=other") })
+
         h.states["other"] = "cancelled"; h.revisions["other"] = 7
         h.publishChanges(); h.repository.connectionRestored(); advanceTimeBy(51); runCurrent()
-        assertEquals(GenerationState.IDLE,h.repository.generationState.value)
+        assertEquals(GenerationState.COMPLETED,h.repository.generationState.value)
+        val after = h.repository.submitMessage("A",h.message("after"))
+        assertEquals("after",after.correlationId)
+        runCurrent()
+        assertEquals(listOf("blocked","after"),h.posts("/messages").map { it.jsonString("clientMessageId") })
     }
 
     @Test fun emptyHistoryAndMissingReceiptsCannotForgetTheAmbiguousIdentitySet() = runTest {
@@ -175,6 +185,32 @@ class NativeRecoveryDeliverySemanticsTest {
         assertEquals(GenerationState.IDLE,h.repository.generationState.value)
     }
 
+    @Test fun reenteringTheSessionKeepsTheNewRecoveryInFrontOfTheOldUnknownTurn() = runTest {
+        val h = Harness(this)
+        h.states["original"] = "unknown"
+        h.restore(); runCurrent()
+        assertEquals(GenerationState.OUTCOME_UNKNOWN, h.repository.generationState.value)
+
+        h.unfinishedClients.add("new")
+        h.states["new"] = "running"; h.revisions["new"] = 2
+        h.repository.submitMessage("A", h.message("new")); runCurrent()
+        h.publishChanges(); advanceTimeBy(51); runCurrent()
+        assertEquals("generation-new", h.repository.generationId.value)
+        assertEquals(GenerationState.RUNNING, h.repository.generationState.value)
+
+        h.repository.activeConversationChanged()
+        h.repository.connectionRestored(); runCurrent()
+        h.finishOriginal(); advanceTimeBy(51); runCurrent()
+        assertEquals("旧恢复任务重启后仍不能占用新轮次", "generation-new", h.repository.generationId.value)
+        assertEquals(GenerationState.RUNNING, h.repository.generationState.value)
+        assertEquals(listOf("new"), h.posts("/messages").map { it.jsonString("clientMessageId") })
+
+        h.states["new"] = "completed"; h.revisions["new"] = 9
+        h.publishChanges(); advanceTimeBy(51); runCurrent()
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+        assertNull(h.repository.generationId.value)
+    }
+
     private fun TestScope.ambiguousHarness(): Harness = Harness(this).apply {
         states["other"] = "queued"
         restore()
@@ -190,6 +226,7 @@ class NativeRecoveryDeliverySemanticsTest {
         var rejectCommit = false
         var steerReceipt: String? = null
         var holdOriginal = false
+        val unfinishedClients = mutableSetOf<String>()
         val releaseOriginal = CompletableDeferred<Unit>()
         val receiptChanged = CompletableDeferred<Unit>()
         val states = linkedMapOf("original" to "running")
@@ -250,7 +287,7 @@ class NativeRecoveryDeliverySemanticsTest {
                         if (id == "original" && holdOriginal) releaseOriginal.await()
                         val generation = generation(id)
                         val first = "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"$generation\",\"clientMessageId\":\"$id\",\"userMessageId\":\"user-$id\",\"state\":\"running\",\"revision\":1}\n\n"
-                        if (id == "original") first else first + "event: message\ndata: {\"type\":\"done\",\"generationId\":\"$generation\",\"outcome\":\"completed\",\"revision\":9}\n\n"
+                        if (id == "original" || id in unfinishedClients) first else first + "event: message\ndata: {\"type\":\"done\",\"generationId\":\"$generation\",\"outcome\":\"completed\",\"revision\":9}\n\n"
                     }
                     else -> error("Unexpected request ${request.target}")
                 }

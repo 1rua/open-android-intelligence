@@ -10,6 +10,166 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchGenerationLifecycleTest {
+    @Test fun oldCompletionCannotSettleANewHermesSubmissionWithoutAGeneration() = runTest {
+        assertOldTerminalKeepsNewSubmission(cancelled = false)
+    }
+
+    @Test fun oldCancellationCannotSettleANewHermesSubmissionWithoutAGeneration() = runTest {
+        assertOldTerminalKeepsNewSubmission(cancelled = true)
+    }
+
+    private suspend fun TestScope.assertOldTerminalKeepsNewSubmission(cancelled: Boolean) {
+        for (requestInFlight in listOf(false, true)) {
+            val repository = Repository().apply {
+                nativeAcceptance = true
+                if (requestInFlight) sendGate = CompletableDeferred()
+            }
+            val controller = controller(repository)
+            runCurrent()
+            repository.events.emit(question())
+            repository.events.emit(stream("old_progress", "gen_a", "旧轮次的部分回复"))
+            runCurrent()
+            repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+            runCurrent()
+            // 相同正文也必须使用本次主动发送的 client 身份。
+            controller.editDraft("问题")
+            controller.sendDraft()
+            runCurrent()
+            val newClient = repository.sent.single().clientMessageId
+            assertNotEquals(ClientMessageId("cm_question"), newClient)
+            assertNull(repository.generationId.value)
+            assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+
+            repository.events.emit(if (cancelled) VerifiedConversationEvent.GenerationCancelled(
+                "old_cancelled", 4, "gen_a", ConversationId("conv_a"),
+            ) else terminal("gen_a", AgentMessageStatus.COMPLETED))
+            runCurrent()
+
+            assertEquals("旧终态不能结束等待首个 generation 的新请求",
+                GenerationState.QUEUED, controller.state.value.generation)
+            assertTrue(rows(controller).any { it.key == "old_progress" && !it.isStreaming })
+            if (!cancelled) assertEquals(AgentMessageStatus.COMPLETED,
+                rows(controller).single { it.clientMessageId == ClientMessageId("cm_question") }.messageStatus)
+            assertNotEquals(AgentMessageStatus.COMPLETED,
+                rows(controller).single { it.clientMessageId == newClient }.messageStatus)
+            repository.sendGate?.complete(Unit)
+            runCurrent()
+            controller.close()
+        }
+    }
+
+    @Test fun matchingClientTerminalSettlesANewHermesSubmissionWithoutATrackedGeneration() = runTest {
+        for (status in listOf(AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED)) {
+            val repository = Repository().apply { nativeAcceptance = true }
+            val controller = controller(repository)
+            runCurrent()
+            controller.editDraft("新问题")
+            controller.sendDraft()
+            runCurrent()
+            val newClient = repository.sent.single().clientMessageId
+            assertNull(repository.generationId.value)
+            repository.events.emit(terminal("gen_new", status).copy(
+                messageId = "new_user", clientMessageId = newClient,
+            ))
+            runCurrent()
+            assertEquals(if (status == AgentMessageStatus.COMPLETED) GenerationState.COMPLETED else GenerationState.FAILED,
+                controller.state.value.generation)
+            assertEquals(status, rows(controller).single { it.clientMessageId == newClient }.messageStatus)
+            controller.close()
+        }
+    }
+
+    @Test fun cancellationForTheMatchingClientGenerationSettlesWithoutATrackedGeneration() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("新问题")
+        controller.sendDraft()
+        runCurrent()
+        val newClient = repository.sent.single().clientMessageId
+        repository.events.emit(terminal("gen_new", AgentMessageStatus.DELIVERED).copy(
+            eventId = "new_delivered", messageId = "new_user", clientMessageId = newClient,
+        ))
+        runCurrent()
+        assertNull(repository.generationId.value)
+        repository.events.emit(VerifiedConversationEvent.GenerationCancelled(
+            "new_cancelled", 4, "gen_new", ConversationId("conv_a"),
+        ))
+        runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun aMatchingClientCannotSettleWithAnotherClientsSourceMessage() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        repository.events.emit(question())
+        runCurrent()
+        controller.editDraft("新问题")
+        controller.sendDraft()
+        runCurrent()
+        val newClient = repository.sent.single().clientMessageId
+        repository.events.emit(terminal("gen_new", AgentMessageStatus.COMPLETED).copy(
+            clientMessageId = newClient,
+        ))
+        runCurrent()
+        assertEquals(GenerationState.QUEUED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun anOldTerminalWithoutAGenerationCannotSettleTheNewTrackedGeneration() = runTest {
+        val repository = Repository().apply { nativeAcceptance = true }
+        val controller = controller(repository)
+        runCurrent()
+        controller.editDraft("旧消息"); controller.sendDraft(); runCurrent()
+        val oldClient = repository.sent.single().clientMessageId
+        repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+        runCurrent()
+        controller.editDraft("新消息"); controller.sendDraft(); runCurrent()
+        repository.generationId.value = "gen_new"
+        repository.generationState.value = GenerationState.RUNNING
+        runCurrent()
+
+        repository.events.emit(terminal(null, AgentMessageStatus.COMPLETED).copy(
+            messageId = "old_user", clientMessageId = oldClient,
+        ))
+        runCurrent()
+
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        assertEquals("gen_new", repository.generationId.value)
+        assertEquals(AgentMessageStatus.COMPLETED, rows(controller).single { it.clientMessageId == oldClient }.messageStatus)
+        controller.close()
+    }
+
+    @Test fun anOldTerminalCannotSettleTheNewDraftBeforeItsSubmissionCoroutineRuns() = runTest {
+        for (keepOldGeneration in listOf(false, true)) {
+            for (cancelled in listOf(false, true)) {
+                val repository = Repository().apply { nativeAcceptance = true }
+                val controller = controller(repository)
+                runCurrent()
+                repository.events.emit(question()); runCurrent()
+                repository.generationId.value = if (keepOldGeneration) "gen_a" else null
+                repository.generationState.value = GenerationState.OUTCOME_UNKNOWN
+                runCurrent()
+                // 旧回执先进入消费队列，点击新发送后才处理；请求尚未调用仓库。
+                repository.events.emit(if (cancelled) VerifiedConversationEvent.GenerationCancelled(
+                    "old_cancelled", 4, "gen_a", ConversationId("conv_a"),
+                ) else terminal("gen_a", AgentMessageStatus.COMPLETED))
+                controller.editDraft("新消息")
+                controller.sendDraft()
+                runCurrent()
+
+                assertEquals("旧编号尚未清除也不能结束新消息", GenerationState.QUEUED,
+                    controller.state.value.generation)
+                assertEquals(1, repository.sent.size)
+                if (!cancelled) assertEquals(AgentMessageStatus.COMPLETED,
+                    rows(controller).single { it.clientMessageId == ClientMessageId("cm_question") }.messageStatus)
+                controller.close()
+            }
+        }
+    }
+
     @Test fun confirmedCancellationAndLegacyAssociationSurviveAControllerRestart() = runTest {
         for (eventConfirmation in listOf(false, true)) {
             val saved = MemoryPersistence()
@@ -469,15 +629,19 @@ class WorkbenchGenerationLifecycleTest {
         var sendGate:CompletableDeferred<Unit>?=null
         var submitFailure:Throwable?=null
         var submissions=0
+        val sent=mutableListOf<OutgoingMessage>()
+        var nativeAcceptance=false
         override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"),"A",1)),null)
         override suspend fun createConversation(scope:ConversationScope,clientConversationId:String)=Conversation(ConversationId("conv_new"),"新对话",1)
         override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
         override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance {
             submissions++
+            sent += message
             sendGate?.await()
             submitFailure?.let { throw it }
-            return MessageAcceptance("message",message.clientMessageId.value)
+            return MessageAcceptance(if (nativeAcceptance) message.clientMessageId.value else "message",
+                message.clientMessageId.value, authoritative = !nativeAcceptance)
         }
         override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance {
             sendGate?.await()

@@ -131,6 +131,7 @@ class CoreAgentConversationRepository(
         val agent = currentAgent()?.takeIf { it.id == agentId }
             ?: turns.values.firstOrNull { it.agent.id == agentId }?.agent
             ?: recoveringTurns.values.firstOrNull { it.agent.id == agentId }?.agent
+            ?: detachedRecoveringTurns.firstOrNull { it.agent.id == agentId }?.agent
         val intermediate = event is VerifiedConversationEvent.TimelineUpsert && event.message.state == "STREAMING"
         if (agent != null && !intermediate) persistEvent(agent, event)
         publishEvent(agentId, event)
@@ -168,8 +169,42 @@ class CoreAgentConversationRepository(
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
     private val turns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
     private val recoveringTurns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
-    private val recoveryJobs = ConcurrentHashMap<Pair<String, String>, Job>()
-    private val settledClients = ConcurrentHashMap<Pair<String, String>, String>()
+    /** 旧轮次继续按自身身份恢复，不占用新消息的发送位置。 */
+    private val detachedRecoveringTurns = ConcurrentHashMap.newKeySet<NativeTurn>()
+    private val recoveryJobs = ConcurrentHashMap<NativeTurn, Job>()
+    private val settledClients = ConcurrentHashMap.newKeySet<Triple<String, String, String>>()
+
+    private fun isSettled(key: Pair<String, String>, clientId: String?): Boolean =
+        clientId != null && Triple(key.first, key.second, clientId) in settledClients
+
+    private fun markSettled(key: Pair<String, String>, clientId: String) {
+        settledClients.add(Triple(key.first, key.second, clientId))
+    }
+
+    /** 调用方持有 recoveryJobs 锁；被替换的恢复任务保留自己的观察与回执身份。 */
+    private fun retainRecoveryTurn(turn: NativeTurn) {
+        val previous = recoveringTurns.put(turn.agent.id to turn.conversationId, turn)
+        if (previous != null && previous !== turn) detachedRecoveringTurns.add(previous)
+        detachedRecoveringTurns.remove(turn)
+    }
+
+    /** 唤醒旧观察任务不改变当前轮次的归属。调用方持有 recoveryJobs 锁。 */
+    private fun observeRecoveryTurn(turn: NativeTurn) {
+        if (turn in detachedRecoveringTurns) return
+        val key = turn.agent.id to turn.conversationId
+        if ((turns[key] ?: recoveringTurns[key])?.let { it !== turn } == true) {
+            detachedRecoveringTurns.add(turn)
+            recoveringTurns.remove(key, turn)
+        } else recoveringTurns[key] = turn
+    }
+
+    private fun hasDetachedRecovery(key: Pair<String, String>): Boolean =
+        detachedRecoveringTurns.any { it.agent.id == key.first && it.conversationId == key.second }
+
+    private fun isControlAmbiguous(turn: NativeTurn): Boolean {
+        val key = turn.agent.id to turn.conversationId
+        return ambiguousEventGenerations.containsKey(key) && (turns[key] ?: recoveringTurns[key]) !== turn
+    }
     private val ambiguousEventGenerations = ConcurrentHashMap<Pair<String, String>, Map<String, NativeGenerationReceipt>>()
     private val approvals = ConcurrentHashMap<String, ApprovalRoute>()
     private val resolvedApprovals = Collections.synchronizedSet(mutableSetOf<Pair<String, String>>())
@@ -194,7 +229,7 @@ class CoreAgentConversationRepository(
 
     private fun ownsTurn(turn: NativeTurn): Boolean {
         val key = turn.agent.id to turn.conversationId
-        return turns[key] === turn || recoveringTurns[key] === turn
+        return turns[key] === turn || recoveringTurns[key] === turn || turn in detachedRecoveringTurns
     }
 
     /** Every field write rechecks the selection after a synchronous subscriber may have changed it. */
@@ -218,7 +253,9 @@ class CoreAgentConversationRepository(
     }
 
     private fun withSelectedTurn(turn: NativeTurn, publish: SelectedProjection.() -> Unit) {
-        withSelectedConversation(turn.agent.id, turn.conversationId, { ownsTurn(turn) }, publish)
+        val key = turn.agent.id to turn.conversationId
+        withSelectedConversation(turn.agent.id, turn.conversationId,
+            { (turns[key] ?: recoveringTurns[key]) === turn }, publish)
     }
 
     fun activeConversationChanged() {
@@ -233,7 +270,7 @@ class CoreAgentConversationRepository(
                 currentAgent()?.id == agentId && activeConversationId() == conversationId
             }
             projection.set(_generationState, when {
-                ambiguousEventGenerations.containsKey(agentId to conversationId) -> GenerationState.OUTCOME_UNKNOWN
+                turn == null && ambiguousEventGenerations.containsKey(agentId to conversationId) -> GenerationState.OUTCOME_UNKNOWN
                 turn == null -> GenerationState.IDLE
                 turn.cancelled -> GenerationState.CANCELLED
                 else -> turn.state
@@ -251,18 +288,20 @@ class CoreAgentConversationRepository(
     }
 
     private fun resumeSelectedReads() {
-        val recovery = synchronized(selectedProjectionLock) {
+        val recoveries = synchronized(selectedProjectionLock) {
             val agentId = currentAgent()?.id
             val conversationId = activeConversationId()
-            recoveringTurns[agentId to conversationId]
+            listOfNotNull(recoveringTurns[agentId to conversationId]) + detachedRecoveringTurns.filter {
+                it.agent.id == agentId && it.conversationId == conversationId
+            }
         }
-        recovery?.let(::startRecovery)
+        recoveries.forEach(::startRecovery)
         restartEventSync()
     }
 
     /** A Core connection transition restarts reads only; it never submits a prompt. */
     fun connectionRestored() {
-        recoveringTurns.values.filterNot { turn ->
+        (recoveringTurns.values + detachedRecoveringTurns).distinct().filterNot { turn ->
             usesEventSync(turn.agent) || when (turn.recoveryBlocked) {
                 NativeReadFailureKind.AUTHENTICATION -> turn.rejectedCredentialVersion == null ||
                     turn.rejectedCredentialVersion == client.credentialVersion()
@@ -309,13 +348,15 @@ class CoreAgentConversationRepository(
 
     private fun eventSyncNeeded(key: Pair<String, String>): Boolean =
         currentAgent()?.id == key.first && activeConversationId() == key.second ||
-            turns.containsKey(key) || recoveringTurns.containsKey(key) ||
+            turns.containsKey(key) || recoveringTurns.containsKey(key) || hasDetachedRecovery(key) ||
             ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key)
 
     @Synchronized
     private fun restartEventSync(wakeup: Boolean = false) {
         val desired = linkedMapOf<Pair<String, String>, CoreAgent>()
-        (turns.values + recoveringTurns.values).forEach { desired[it.agent.id to it.conversationId] = it.agent }
+        (turns.values + recoveringTurns.values + detachedRecoveringTurns).forEach {
+            desired[it.agent.id to it.conversationId] = it.agent
+        }
         eventSyncOwners.forEach { (key, owner) -> if (eventSyncNeeded(key)) desired[key] = owner.agent }
         val selected = currentAgent()
         val conversationId = activeConversationId()
@@ -426,8 +467,9 @@ class CoreAgentConversationRepository(
 
     private suspend fun trackedRecoveryIdentities(agent: CoreAgent, conversationId: String): List<NativeRecoveryIdentity> {
         val key = agent.id to conversationId
-        val turn = turns[key] ?: recoveringTurns[key]
-        val tracked = turn?.clientMessageId?.let { listOf(NativeRecoveryIdentity(it, turn.hostGenerationId)) }.orEmpty()
+        val tracked = (listOfNotNull(turns[key], recoveringTurns[key]) +
+            detachedRecoveringTurns.filter { it.agent.id == agent.id && it.conversationId == conversationId })
+            .mapNotNull { turn -> turn.clientMessageId?.let { NativeRecoveryIdentity(it, turn.hostGenerationId) } }
         val ambiguous = ambiguousEventGenerations[key]?.values.orEmpty().map { NativeRecoveryIdentity(it.clientMessageId, it.generationId) }
         val saved = try { storeForAgent?.invoke(agent)?.recoveryIdentities(conversationId).orEmpty() }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -507,6 +549,9 @@ class CoreAgentConversationRepository(
     private fun reconcileCommittedSnapshot(agent: CoreAgent, conversationId: String, snapshot: RecoverySnapshot) {
         val key = agent.id to conversationId
         val pending = snapshot.receipts.filter { it.state in setOf("queued", "running", "unknown") }
+        snapshot.receipts.filter { receipt -> detachedRecoveringTurns.any {
+            it.agent.id == agent.id && it.conversationId == conversationId && it.clientMessageId == receipt.clientMessageId
+        } }.forEach { applyCommittedReceipt(agent, it) }
         val unresolved = ambiguousEventGenerations[key]
         if (unresolved != null) {
             val reconciled = unresolved.toMutableMap()
@@ -518,8 +563,13 @@ class CoreAgentConversationRepository(
             }
             // Missing/404/空 history 不是终态。保留每条原 generation 身份及其已落盘修订，直到全部证实结束。
             ambiguousEventGenerations[key] = reconciled
-            if (reconciled.values.any { it.state !in setOf("completed", "failed", "cancelled") }) return
+            if (reconciled.values.any { it.state !in setOf("completed", "failed", "cancelled") }) {
+                val currentClient = (turns[key] ?: recoveringTurns[key])?.clientMessageId
+                snapshot.receipts.filter { it.clientMessageId == currentClient }.forEach { applyCommittedReceipt(agent, it) }
+                return
+            }
             synchronized(recoveryJobs) {
+                val foreground = turns[key] ?: recoveringTurns[key]
                 reconciled.values.forEach { receipt ->
                     val turn = generationRoutes[Triple(agent.id, conversationId, receipt.generationId)]?.takeIf { it.clientMessageId == receipt.clientMessageId } ?: NativeTurn(agent, conversationId, receipt.clientMessageId)
                     rememberGeneration(turn, receipt.generationId)
@@ -530,13 +580,21 @@ class CoreAgentConversationRepository(
                         "failed" -> GenerationState.FAILED
                         else -> GenerationState.CANCELLED
                     }
-                    settledClients[key] = receipt.clientMessageId
+                    markSettled(key, receipt.clientMessageId)
+                    turns.remove(key, turn)
+                    recoveringTurns.remove(key, turn)
+                    detachedRecoveringTurns.remove(turn)
+                    recoveryJobs.remove(turn)?.cancel()
                 }
                 ambiguousEventGenerations.remove(key)
+                snapshot.receipts.singleOrNull { it.clientMessageId == foreground?.clientMessageId }
+                    ?.let { applyCommittedReceipt(agent, it) }
                 queueUnknownBarriers.remove(key)
                 withSelectedConversation(agent.id, conversationId) {
                     if (turns[key] == null && recoveringTurns[key] == null) {
-                        set(_generationState, GenerationState.IDLE)
+                        set(_generationState, (foreground?.state ?: _generationState.value).takeIf {
+                            it in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)
+                        } ?: GenerationState.IDLE)
                         set(_generationId, null)
                         if (!usesEventSync(agent)) { set(_streamHealth, StreamHealth.IDLE); set(_streamFailure, null) }
                     }
@@ -567,11 +625,17 @@ class CoreAgentConversationRepository(
         var drain = false
         synchronized(recoveryJobs) {
             val active = turns[key] ?: recoveringTurns[key]
-            if (active != null && active.clientMessageId != receipt.clientMessageId) return
+            val detached = detachedRecoveringTurns.singleOrNull {
+                it.agent.id == agent.id && it.conversationId == receipt.conversationId &&
+                    it.clientMessageId == receipt.clientMessageId
+            }
+            if (active != null && active.clientMessageId != receipt.clientMessageId && detached == null) return
             val remembered = generationRoutes[Triple(agent.id, receipt.conversationId, receipt.generationId)]?.takeIf {
                 it.agent.id == agent.id && it.conversationId == receipt.conversationId && it.clientMessageId == receipt.clientMessageId
             }
-            val turn = active ?: remembered ?: NativeTurn(agent, receipt.conversationId, receipt.clientMessageId)
+            val turn = active?.takeIf { it.clientMessageId == receipt.clientMessageId }
+                ?: detached ?: remembered ?: NativeTurn(agent, receipt.conversationId, receipt.clientMessageId)
+            val foreground = turn === active || active == null && detached == null
             if (receipt.revision < turn.receiptRevision || turn.hostGenerationId?.let { it != receipt.generationId } == true) return
             if (turn.state in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) && !terminal) return
             rememberGeneration(turn, receipt.generationId)
@@ -586,16 +650,17 @@ class CoreAgentConversationRepository(
                 else -> GenerationState.OUTCOME_UNKNOWN
             }
             if (terminal) {
-                settledClients[key] = receipt.clientMessageId
+                markSettled(key, receipt.clientMessageId)
                 queueUnknownBarriers.remove(key)
                 turns.remove(key, turn)
                 recoveringTurns.remove(key, turn)
-                recoveryJobs.remove(key)?.cancel()
+                detachedRecoveringTurns.remove(turn)
+                recoveryJobs.remove(turn)?.cancel()
                 drain = true
-            } else {
-                recoveringTurns[key] = turn
+            } else if (foreground) {
+                retainRecoveryTurn(turn)
             }
-            withSelectedConversation(agent.id, receipt.conversationId) {
+            if (foreground) withSelectedConversation(agent.id, receipt.conversationId) {
                 set(_generationState, turn.state)
                 set(_generationId, receipt.generationId.takeUnless { terminal })
                 updateTurnHealth(turn, if (terminal) StreamHealth.IDLE else StreamHealth.LIVE, null)
@@ -849,7 +914,7 @@ class CoreAgentConversationRepository(
                 ?: messages.lastOrNull { it.role == "user" && it.clientMessageId != null && it.generationId != null }
                     ?.let { NativeRecoveryIdentity(requireNotNull(it.clientMessageId), it.generationId) }
             known?.let { identity ->
-                if (settledClients[agent.id to conversationId] != identity.clientMessageId) {
+                if (!isSettled(agent.id to conversationId, identity.clientMessageId)) {
                     val turn = NativeTurn(agent, conversationId, identity.clientMessageId)
                     identity.generationId?.let { rememberGeneration(turn, it) }
                     startRecovery(turn)
@@ -912,18 +977,19 @@ class CoreAgentConversationRepository(
         val key = turn.agent.id to turn.conversationId
         if (turn.agent.capabilities.eventSync && storeForAgent != null) {
             synchronized(recoveryJobs) {
-                if (turns[key]?.let { it !== turn } == true || recoveringTurns[key]?.let { it !== turn } == true ||
-                    settledClients[key] == clientId) return
-                recoveringTurns[key] = turn
+                if (!ownsTurn(turn) && (turns.containsKey(key) || recoveringTurns.containsKey(key)) ||
+                    isSettled(key, clientId)) return
+                observeRecoveryTurn(turn)
             }
             startEventSync(turn.agent, turn.conversationId)
             return
         }
         val job = synchronized(recoveryJobs) {
-            // A historical lookup cannot take ownership from another live client.
-            if (turns[key]?.let { it !== turn } == true || recoveringTurns[key]?.let { it !== turn } == true) return
-            if (recoveryJobs[key]?.isActive == true || recoveryJobs[key]?.isCompleted == false) return
-            recoveringTurns[key] = turn
+            // 历史查询不能抢占当前轮次；已经跟踪的旧轮次可以继续独立恢复。
+            if (!ownsTurn(turn) && (turns.containsKey(key) || recoveringTurns.containsKey(key)) ||
+                isSettled(key, clientId)) return
+            if (recoveryJobs[turn]?.isActive == true || recoveryJobs[turn]?.isCompleted == false) return
+            observeRecoveryTurn(turn)
             parentScope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
                 var failures = 0
                 var unchangedUnknown = 0
@@ -986,7 +1052,7 @@ class CoreAgentConversationRepository(
                                 "conversationId" to turn.conversationId, "clientMessageId" to clientId,
                                 "generationId" to receipt.generationId, "state" to receipt.state, "revision" to receipt.revision))
                             if (terminal) {
-                                settledClients[key] = clientId
+                                markSettled(key, clientId)
                                 queueUnknownBarriers.remove(key)
                                 withSelectedTurn(turn) { set(_generationId, null); updateTurnHealth(turn, StreamHealth.IDLE, null) }
                                 drainAfterRecovery = true
@@ -1022,8 +1088,11 @@ class CoreAgentConversationRepository(
                 } finally {
                     val completedJob = currentCoroutineContext()[Job]
                     synchronized(recoveryJobs) {
-                        recoveryJobs.remove(key, completedJob)
-                        if (drainAfterRecovery) recoveringTurns.remove(key, turn)
+                        recoveryJobs.remove(turn, completedJob)
+                        if (drainAfterRecovery) {
+                            recoveringTurns.remove(key, turn)
+                            detachedRecoveringTurns.remove(turn)
+                        }
                     }
                     // Relinquish both recovery slots before a fast queued turn
                     // can complete and request its own reconciliation.
@@ -1031,7 +1100,7 @@ class CoreAgentConversationRepository(
                         parentScope.launch(ioDispatcher) { drainQueuedSends(turn.agent, turn.conversationId) }
                     }
                 }
-            }.also { recoveryJobs[key] = it }
+            }.also { recoveryJobs[turn] = it }
         }
         job.start()
     }
@@ -1062,14 +1131,29 @@ class CoreAgentConversationRepository(
         val key = agent.id to conversationId
         val turn = NativeTurn(agent, conversationId, message.clientMessageId.value)
         val previous = synchronized(recoveryJobs) {
-            if (ambiguousEventGenerations.containsKey(key)) throw AgentSessionException("OUTCOME_UNKNOWN")
+            val live = turns[key]
+            if (message.delivery == MessageDeliveryMode.NORMAL && live?.state == GenerationState.OUTCOME_UNKNOWN &&
+                turns.remove(key, live)) retainRecoveryTurn(live)
             val recovering = recoveringTurns[key]
-            if (recovering != null) {
-                if (message.delivery != MessageDeliveryMode.QUEUE || recovering.cancelled ||
-                    recovering.state !in setOf(GenerationState.RUNNING, GenerationState.QUEUED) || recovering.hostGenerationId == null)
-                    throw AgentSessionException("OUTCOME_UNKNOWN")
-                recovering
-            } else turns.putIfAbsent(key, turn)
+            when {
+                turns.containsKey(key) -> turns[key]
+                message.delivery == MessageDeliveryMode.NORMAL &&
+                    (recovering == null || recovering.state == GenerationState.OUTCOME_UNKNOWN) -> {
+                    if (recovering != null) {
+                        detachedRecoveringTurns.add(recovering)
+                        recoveringTurns.remove(key, recovering)
+                    }
+                    turns.putIfAbsent(key, turn)
+                }
+                ambiguousEventGenerations.containsKey(key) -> throw AgentSessionException("OUTCOME_UNKNOWN")
+                recovering != null -> {
+                    if (message.delivery != MessageDeliveryMode.QUEUE || recovering.cancelled ||
+                        recovering.state !in setOf(GenerationState.RUNNING, GenerationState.QUEUED) || recovering.hostGenerationId == null)
+                        throw AgentSessionException("OUTCOME_UNKNOWN")
+                    recovering
+                }
+                else -> turns.putIfAbsent(key, turn)
+            }
         }
         if (previous != null) {
             if (message.delivery != MessageDeliveryMode.QUEUE) {
@@ -1311,7 +1395,7 @@ class CoreAgentConversationRepository(
             } catch (failure: Exception) {
                 GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
                     "type=${failure.javaClass.simpleName} code=${classifyNativeReadFailure(failure).code}")
-                if (settledClients[key] == turn.clientMessageId) { drainAfterTurn = true }
+                if (isSettled(key, turn.clientMessageId)) { drainAfterTurn = true }
                 else if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
                 else if (failure is NativePersistenceFailed) {
                     queueUnknownBarriers.add(key)
@@ -1345,7 +1429,7 @@ class CoreAgentConversationRepository(
                 }
             } finally {
                 snapshots.close()
-                val needsRecovery = recoverAfterTurn && agent.capabilities.generationRecovery && settledClients[key] != turn.clientMessageId
+                val needsRecovery = recoverAfterTurn && agent.capabilities.generationRecovery && !isSettled(key, turn.clientMessageId)
                 synchronized(recoveryJobs) {
                     withSelectedTurn(turn) {
                         if (!needsRecovery && _generationId.value == turn.generationId) {
@@ -1355,7 +1439,8 @@ class CoreAgentConversationRepository(
                     }
                     // Transfer ownership atomically: another send cannot enter
                     // between the live reader and its durable reconciliation.
-                    if (turns.remove(key, turn) && needsRecovery) recoveringTurns[key] = turn
+                    if (turns.remove(key, turn) && needsRecovery) retainRecoveryTurn(turn)
+                    if (!needsRecovery) detachedRecoveringTurns.remove(turn)
                 }
                 if (needsRecovery) startRecovery(turn)
                 if (drainAfterTurn && !recoverAfterTurn) {
@@ -1406,7 +1491,7 @@ class CoreAgentConversationRepository(
 
     private suspend fun drainQueuedSends(agent: CoreAgent, conversationId: String) {
         val key = agent.id to conversationId
-        if (turns.containsKey(key) || recoveringTurns.containsKey(key)) return
+        if (turns.containsKey(key) || recoveringTurns.containsKey(key) || hasDetachedRecovery(key)) return
         if (key in queueUnknownBarriers) return
         val head = synchronized(queuedSends) { queuedSends[key]?.firstOrNull() }
         if (head?.state == PendingDeliveryState.OUTCOME_UNKNOWN) return
@@ -1481,7 +1566,7 @@ class CoreAgentConversationRepository(
     private suspend fun retryPendingDeliveriesFor(agent: CoreAgent, conversationId: String) {
         val key = agent.id to conversationId
         val queued = synchronized(queuedSends) { queuedSends[key]?.toList().orEmpty() }
-        if (queued.isEmpty() || turns.containsKey(key) || recoveringTurns.containsKey(key)) return
+        if (queued.isEmpty() || turns.containsKey(key) || recoveringTurns.containsKey(key) || hasDetachedRecovery(key)) return
         if (queued.first().state == PendingDeliveryState.OUTCOME_UNKNOWN) return
         val current = try {
             withContext(ioDispatcher) { client.currentGeneration(agent, conversationId) }
@@ -1529,15 +1614,16 @@ class CoreAgentConversationRepository(
         if (!agent.capabilities.steer) throw AgentSessionException("UNSUPPORTED_CAPABILITY")
         if (message.attachmentIds.isNotEmpty()) throw AgentSessionException("STEER_ATTACHMENTS_UNSUPPORTED")
         val turn = synchronized(recoveryJobs) {
-            if (ambiguousEventGenerations.containsKey(key)) throw AgentSessionException("OUTCOME_UNKNOWN")
-            listOfNotNull(turns[key], recoveringTurns[key]).distinct().singleOrNull()
-                ?.takeIf { it.state == GenerationState.RUNNING && !it.cancelled && it.hostGenerationId != null }
+            (turns[key] ?: recoveringTurns[key])
+                ?.takeIf { it.state == GenerationState.RUNNING && !it.cancelled &&
+                    it.hostGenerationId != null && !isControlAmbiguous(it) }
                 ?: throw AgentSessionException("OUTCOME_UNKNOWN")
         }
         val generationId = requireNotNull(turn.hostGenerationId)
         val result = withContext(ioDispatcher) {
-            if (!ownsTurn(turn) || turn.hostGenerationId != generationId || turn.state != GenerationState.RUNNING ||
-                turn.cancelled || ambiguousEventGenerations.containsKey(key)) throw AgentSessionException("OUTCOME_UNKNOWN")
+            if ((turns[key] ?: recoveringTurns[key]) !== turn || turn.hostGenerationId != generationId ||
+                turn.state != GenerationState.RUNNING || turn.cancelled || isControlAmbiguous(turn))
+                throw AgentSessionException("OUTCOME_UNKNOWN")
             client.steer(agent, conversationId, generationId, message.text, message.clientMessageId.value)
         }
         if (result.generationId != generationId || result.outcome != "accepted") throw AgentSessionException("OUTCOME_UNKNOWN")
@@ -1578,8 +1664,7 @@ class CoreAgentConversationRepository(
             }?.value
         } ?: return CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)
         val agent = turn.agent
-        if (ambiguousEventGenerations.containsKey(agent.id to conversationId) ||
-            turn.hostGenerationId != generationId || generationId.startsWith("local_"))
+        if (isControlAmbiguous(turn) || turn.hostGenerationId != generationId || generationId.startsWith("local_"))
             return CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)
         if (!supportsGenerationCancel || !agent.capabilities.cancel) return CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
         return try {
@@ -1701,7 +1786,7 @@ class CoreAgentConversationRepository(
         val message = withContext(ioDispatcher) { client.history(agent, conversationId) }
             .map { timelineMessage(it, conversationId) }
             .firstOrNull { it.sender == "user" && it.clientMessageId == clientMessageId }
-        if (receipt != null && settledClients[agent.id to conversationId] != clientMessageId.value) {
+        if (receipt != null && !isSettled(agent.id to conversationId, clientMessageId.value)) {
             val key = agent.id to conversationId
             val recovery = synchronized(recoveryJobs) {
                 val owner = turns[key] ?: recoveringTurns[key]

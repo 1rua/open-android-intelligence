@@ -146,7 +146,6 @@ fun FloatingConversationPanel(
                     onVoiceInput = onVoiceInput,
                     attachments = state.attachments,
                     inFlightAttachmentIds = state.inFlightAttachmentIds,
-                    hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
                     pendingDeliveries = state.pendingDeliveries,
                     onRetryPendingDelivery = controller::retryPendingDeliveries,
                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),

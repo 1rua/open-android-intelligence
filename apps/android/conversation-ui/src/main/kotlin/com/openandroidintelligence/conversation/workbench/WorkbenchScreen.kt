@@ -643,7 +643,6 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
-                                if (state.hasRecoverableSubmissions) TextButton(onClick=controller::retryPendingSubmissions,enabled=state.isOnline) { Text("查询未确认消息") }
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
@@ -689,7 +688,6 @@ fun WorkbenchScreen(
                                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                                     attachments = state.attachments,
                                     inFlightAttachmentIds = state.inFlightAttachmentIds,
-                                    hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
                                     pendingDeliveries = state.pendingDeliveries,
                                     onRetryPendingDelivery = controller::retryPendingDeliveries,
                                     onRemoveAttachment = controller::removeAttachment,
