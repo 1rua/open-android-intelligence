@@ -21,10 +21,13 @@
   - `步骤 4/4 · 后台自启与服务设置` 及最终 `🎉 OAI Core 安装已完成` 汇总卡片（展示安装目录、服务地址、启动命令、配置命令与手机 App 配对地址）。
 - **命令行帮助**：为 `scripts/install.sh` 与 `scripts/setup.sh` 增加 `-h` / `--help` 参数说明。
 
-### 2. 自然交互确认与菜单防退保护
+### 2. `↑`/`↓` 方向键菜单切换、自然交互确认与菜单防退保护
+- **支持 `↑` / `↓` 方向键实时高亮切换选项（`❯`）**：
+  - 在 `scripts/install.sh`（`read_terminal`）、`scripts/installer.py`（`_confirm_install_venv`）、`oai-core/src/oai_core/scripts_runtime.py`（`_select_option`）和 `oai-core/src/oai_core/configuration.py`（`_select_option`）中实现终端原始模式（`termios` / `read -rsn1`）的交互式选项选择器。
+  - 用户在所有主菜单、子菜单（账号管理、Agent 候选与 DSH Profile 选择、后台服务管理、两步验证管理、二次验证方式选择）以及所有“是/否”确认项中，均可直接按 `↑` / `↓` 键循环切换高亮选项并按回车键确认，同时继续兼容直接输入数字编号或原有英文口令后按回车。
 - **默认回车确认（向后兼容旧口令）**：
   - `scripts_runtime._confirm` 支持直接按回车或输入 `y` / `yes` 确认，同时兼容原有的 `bootstrap`、`SAVED`、`STOP` 口令。
-  - `configuration._manage_service`、`configuration._configure_agents`、`configuration._manage_security` 中的服务操作、Agent 连接确认、恢复码重新生成与 2FA 启停确认均支持直接按回车或输入 `y` / `yes`，同时兼容原有动作词（`start`/`stop`/`restart`、`<agent_id>`、`register`、`enable`/`disable`）。
+  - `configuration._manage_service`、`configuration._configure_agents`、`configuration._manage_security` 中的服务操作、Agent 连接确认、恢复码重新生成与 2FA 启停确认均支持 `↑` / `↓` 方向键选择、直接按回车或输入 `y` / `yes`，同时兼容原有动作词（`start`/`stop`/`restart`、`<agent_id>`、`register`、`enable`/`disable`）。
   - 删除账号与重置他人密码仍保留输入目标用户名确认，防止误操作。
 - **主菜单输入容错**：`configuration.run_setup` 捕获子菜单中的输入校验 `ValueError` 并输出友好提示，留在当前主菜单循环中，避免因单次输入失误导致整个配置会话中断。
 
@@ -41,6 +44,6 @@
 1. **Shell 脚本语法检查**：
    - `bash -n scripts/install.sh scripts/setup.sh scripts/uninstall.sh`：通过（退出码 0）。
 2. **安装、配置、插件安装与握手错误全集验证**：
-   - 运行 `tests/` 全部测试及 `oai-core/tests/test_setup_plugin_installation.py`、`test_dsh_setup.py`、`test_dsh_installation.py`、`test_hermes_installation.py`、`test_agent_handshake_errors.py`、`test_core_config.py`，新增 `test_setup_menu_supports_default_confirm_and_recovers_from_invalid_input` 覆盖默认回车确认与主菜单异常恢复，共 **325 项测试全部通过**。
+   - 运行 `tests/` 全部测试及 `oai-core/tests/test_setup_plugin_installation.py`、`test_dsh_setup.py`、`test_dsh_installation.py`、`test_hermes_installation.py`、`test_agent_handshake_errors.py`、`test_core_config.py`，新增 `test_setup_menu_supports_default_confirm_and_recovers_from_invalid_input`、`test_shell_setup_supports_arrow_key_navigation` 与 `read_terminal` 方向键用例，覆盖 `↑`/`↓` 方向键切换、默认回车确认与主菜单异常恢复，共 **328 项测试全部通过**。
 3. **依赖锁与静态门禁**：
    - `npm run mvp:lock:check` 与 `node --check integrations/dsh-session-adapter/index.js`：通过。

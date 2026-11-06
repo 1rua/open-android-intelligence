@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import builtins
+from collections.abc import Sequence
 from contextlib import closing, contextmanager
 import copy
 import hashlib
@@ -558,6 +560,114 @@ def _terminal_input(prompt: str) -> str:
     return input(prompt).strip()
 
 
+_DEFAULT_TERMINAL_INPUT = _terminal_input
+
+
+def _select_option(
+    prompt: str,
+    options: Sequence[tuple[str, str]],
+    *,
+    default_index: int = 0,
+) -> str:
+    """支持 ↑/↓ 方向键切换选项并回车确认，同时兼容直接输入编号或字母。"""
+    if (
+        _terminal_input is not _DEFAULT_TERMINAL_INPUT
+        or type(builtins.input).__name__ != "builtin_function_or_method"
+        or not sys.stdin.isatty()
+        or not sys.stdout.isatty()
+    ):
+        for _, label in options:
+            print(f"  {label}")
+        return _terminal_input(prompt)
+    try:
+        import select
+        import termios
+
+        fd = sys.stdin.fileno()
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        for _, label in options:
+            print(f"  {label}")
+        return _terminal_input(prompt)
+
+    selected = max(0, min(default_index, len(options) - 1))
+
+    def _render(*, initial: bool = False, typed: str = "") -> None:
+        if not initial:
+            sys.stdout.write(f"\r\033[{len(options)}A")
+        for idx, (_, label) in enumerate(options):
+            sys.stdout.write("\r\033[2K")
+            if idx == selected:
+                marker = _ui_style("❯", "36;1")
+                styled_label = _ui_style(label, "36;1")
+                sys.stdout.write(f"  {marker} {styled_label}\n")
+            else:
+                sys.stdout.write(f"    {label}\n")
+        sys.stdout.write(f"\r\033[2K{prompt}{typed}")
+        sys.stdout.flush()
+
+    typed_chars: list[str] = []
+    new_attrs = list(old_attrs)
+    new_attrs[3] &= ~(termios.ICANON | termios.ECHO)
+    new_attrs[6][termios.VMIN] = 1
+    new_attrs[6][termios.VTIME] = 0
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+        _render(initial=True)
+        while True:
+            raw = os.read(fd, 1)
+            if not raw:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise EOFError
+            ch = raw.decode("utf-8", errors="ignore")
+            if ch in ("\r", "\n"):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                if typed_chars:
+                    return "".join(typed_chars).strip()
+                return options[selected][0]
+            if ch == "\x03":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise KeyboardInterrupt
+            if ch == "\x04":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise EOFError
+            if ch in ("\x7f", "\b"):
+                if typed_chars:
+                    typed_chars.pop()
+                    _render(typed="".join(typed_chars))
+                continue
+            if ch == "\x1b":
+                seq = ""
+                if select.select([fd], [], [], 0.05)[0]:
+                    b1 = os.read(fd, 1).decode("utf-8", errors="ignore")
+                    seq += b1
+                    if b1 in ("[", "O") and select.select([fd], [], [], 0.05)[0]:
+                        seq += os.read(fd, 1).decode("utf-8", errors="ignore")
+                if seq in ("[A", "OA", "[D", "OD"):
+                    selected = (selected - 1) % len(options)
+                    typed_chars.clear()
+                    _render()
+                elif seq in ("[B", "OB", "[C", "OC"):
+                    selected = (selected + 1) % len(options)
+                    typed_chars.clear()
+                    _render()
+                continue
+            if ch.isprintable():
+                typed_chars.append(ch)
+                current = "".join(typed_chars).strip().lower()
+                for idx, (val, _) in enumerate(options):
+                    if current == val.lower():
+                        selected = idx
+                        break
+                _render(typed="".join(typed_chars))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
 def _terminal_secret(prompt: str) -> str:
     if not sys.stdin.isatty():
         raise PermissionError("A terminal is required for password entry")
@@ -615,8 +725,17 @@ def _manage_accounts(root: Path, store, handle: str) -> None:
     _ui_box("👤 账号与权限管理", (
         "管理可登录手机 App 与后台的账号。管理员 (admin) 拥有完整管理权限。",
     ))
-    print("  1. 查看账号列表  2. 创建新账号  3. 修改/重置密码  4. 删除账号  0. 返回")
-    choice = _terminal_input("请选择: ")
+    choice = _select_option(
+        "请选择（↑/↓ 切换，回车确认）: ",
+        (
+            ("1", "1. 查看账号列表"),
+            ("2", "2. 创建新账号"),
+            ("3", "3. 修改/重置密码"),
+            ("4", "4. 删除账号"),
+            ("0", "0. 返回"),
+        ),
+        default_index=0,
+    )
     if choice in {"", "0"}:
         return
     if choice == "1":
@@ -1194,7 +1313,15 @@ def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
     if not _is_local_hermes_bridge(entry, home=home):
         print("该连接地址不是本机发现的 Hermes 服务，请先在对应机器上安装连接插件后再试；尚未注册。")
         return False
-    if _terminal_input("是否安装或更新本机 Hermes 连接插件（会话适配器）？(y/n) [n]: ").lower() not in {"y", "yes"}:
+    hermes_choice = _select_option(
+        "是否安装或更新本机 Hermes 连接插件（会话适配器）？(↑/↓ 选择或输入 y/n) [n]: ",
+        (
+            ("y", "1. 是，立即安装/更新 (Yes)"),
+            ("n", "2. 否，暂不安装 (No)"),
+        ),
+        default_index=1,
+    )
+    if hermes_choice.lower() not in {"y", "yes", "1"}:
         print("已取消安装；尚未注册。")
         return False
     try:
@@ -1227,11 +1354,18 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
             return False
         print("请选择要安装连接插件的 DSH 运行配置 (profile)，原有配置会自动备份："
               if allow_install else "检测到 DSH 连接插件版本较旧。请选择要升级的运行配置 (profile)，原有配置会自动备份：")
-        for index, profile in enumerate(profiles, 1):
-            print(f"  {index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
-        choice = _terminal_input("选择并确认安装的 profile 编号（直接回车返回）: "
-                                 if allow_install else "选择并确认升级的 profile 编号（直接回车返回）: ")
-        if not choice:
+        profile_options = [
+            (str(index), f"{index}. {os.path.relpath(profile.home, Path.home())} / {profile.name}")
+            for index, profile in enumerate(profiles, 1)
+        ]
+        profile_options.append(("", "0. 取消并返回"))
+        choice = _select_option(
+            "选择并确认安装的 profile 编号（↑/↓ 选择，或选 0 返回）: "
+            if allow_install else "选择并确认升级的 profile 编号（↑/↓ 选择，或选 0 返回）: ",
+            profile_options,
+            default_index=0,
+        )
+        if choice in {"", "0"}:
             print("已取消安装；尚未注册。" if allow_install else "已取消升级；尚未注册。")
             return False
         if not choice.isdecimal() or not 1 <= int(choice) <= len(profiles):
@@ -1307,11 +1441,20 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         print("暂未发现可连接的本地 AI 助手；尚未连接。")
         return
     scope_labels = {"account": "按账号独立会话", "deployment": "全局共享会话"}
-    for index, (_, entry) in enumerate(candidates, 1):
-        scope_desc = scope_labels.get(entry["sessionScope"], entry["sessionScope"])
-        print(f"  {index}. {entry['id']} ({entry['type']}, {entry['instanceId']}, {entry['sessionScope']} · {scope_desc})")
-    choice = _terminal_input("选择候选编号（直接回车返回）: ")
-    if not choice:
+    candidate_options = [
+        (
+            str(index),
+            f"{index}. {entry['id']} ({entry['type']}, {entry['instanceId']}, {entry['sessionScope']} · {scope_labels.get(entry['sessionScope'], entry['sessionScope'])})",
+        )
+        for index, (_, entry) in enumerate(candidates, 1)
+    ]
+    candidate_options.append(("", "0. 返回上一级"))
+    choice = _select_option(
+        "选择候选编号（↑/↓ 选择，或选 0 返回）: ",
+        candidate_options,
+        default_index=0,
+    )
+    if choice in {"", "0"}:
         return
     try:
         number = int(choice)
@@ -1331,10 +1474,15 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         public = signing_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
         print("首次连接 Hermes 时，系统已自动将当前 Core 服务端公钥写入信任列表（如需手动核对，公钥如下）：")
         print(json.dumps({operator["instanceId"]: public}, ensure_ascii=False))
-    confirm_agent = _terminal_input(
-        f"确认连接并注册 {entry['id']} 吗？(直接回车确认，或输入 y / {entry['id']}) [y]: "
+    confirm_agent = _select_option(
+        f"确认连接并注册 {entry['id']} 吗？(直接回车确认，或输入 y / {entry['id']}) [y]: ",
+        (
+            ("y", "1. 是，立即连接 (Yes)"),
+            ("n", "2. 否，取消返回 (No)"),
+        ),
+        default_index=0,
     ).strip()
-    if confirm_agent.lower() not in {"", "y", "yes", entry["id"].lower()}:
+    if confirm_agent.lower() not in {"", "y", "yes", "1", entry["id"].lower()}:
         print("已取消；尚未注册。")
         return
     require_configuration_access(root, store, handle, "agents.manage")
@@ -1417,18 +1565,31 @@ def _manage_service(root: Path, store, handle: str) -> None:
         "查看或控制当前用户下的 OAI Core 后台运行状态。",
     ))
     print(f"服务状态: {state} ({detail})")
-    print("  1. 启动  2. 停止  3. 重启  0. 返回")
-    choice = _terminal_input("请选择: ")
+    choice = _select_option(
+        "请选择（↑/↓ 切换，回车确认）: ",
+        (
+            ("1", "1. 启动"),
+            ("2", "2. 停止"),
+            ("3", "3. 重启"),
+            ("0", "0. 返回"),
+        ),
+        default_index=0,
+    )
     if choice in {"", "0"}:
         return
     action = {"1": "start", "2": "stop", "3": "restart"}.get(choice)
     if action is None:
         raise ValueError("无效的服务操作")
     action_names = {"start": "启动", "stop": "停止", "restart": "重启"}
-    confirm_action = _terminal_input(
-        f"确认服务操作「{action_names[action]} ({action})」吗？(直接回车确认，或输入 y / {action}) [y]: "
+    confirm_action = _select_option(
+        f"确认服务操作「{action_names[action]} ({action})」吗？(直接回车确认，或输入 y / {action}) [y]: ",
+        (
+            ("y", f"1. 是，执行{action_names[action]} (Yes)"),
+            ("n", "2. 否，取消返回 (No)"),
+        ),
+        default_index=0,
     ).strip()
-    if confirm_action.lower() not in {"", "y", "yes", action.lower()}:
+    if confirm_action.lower() not in {"", "y", "yes", "1", action.lower()}:
         print("已取消。")
         return
     actor = require_configuration_access(root, store, handle, "service")
@@ -1464,8 +1625,17 @@ def _manage_security(root: Path, store, handle: str) -> None:
         "开启两步验证后，登录和管理操作需要额外输入手机验证器 App 的动态验证码。",
     ))
     print(f"服务端 2FA: {'开启' if required else '关闭'}（仅开启时需要两步验证）。")
-    print("  1. 绑定手机验证器 (TOTP)  2. 重新生成管理员恢复码  3. 开启 2FA  4. 关闭 2FA  0. 返回")
-    choice = _terminal_input("请选择: ")
+    choice = _select_option(
+        "请选择（↑/↓ 切换，回车确认）: ",
+        (
+            ("1", "1. 绑定手机验证器 (TOTP)"),
+            ("2", "2. 重新生成管理员恢复码"),
+            ("3", "3. 开启 2FA"),
+            ("4", "4. 关闭 2FA"),
+            ("0", "0. 返回"),
+        ),
+        default_index=0,
+    )
     if choice in {"", "0"}:
         return
     if choice == "1":
@@ -1495,10 +1665,15 @@ def _manage_security(root: Path, store, handle: str) -> None:
         _ui_ok("绑定完成；当前登录状态已刷新，请重新登录。")
         return
     if choice == "2":
-        confirm_reg = _terminal_input(
-            "确认重新生成管理员应急恢复码吗？（旧恢复码将失效，直接回车或输入 y / register 确认）[y]: "
+        confirm_reg = _select_option(
+            "确认重新生成管理员应急恢复码吗？（旧恢复码将失效，直接回车或输入 y / register 确认）[y]: ",
+            (
+                ("y", "1. 是，重新生成 (Yes)"),
+                ("n", "2. 否，取消返回 (No)"),
+            ),
+            default_index=0,
         ).strip()
-        if confirm_reg.lower() not in {"", "y", "yes", "register"}:
+        if confirm_reg.lower() not in {"", "y", "yes", "1", "register"}:
             print("已取消。")
             return
         from .management import LocalRecovery
@@ -1516,10 +1691,15 @@ def _manage_security(root: Path, store, handle: str) -> None:
         return
     confirmation = "enable" if enabled else "disable"
     action_label = "开启" if enabled else "关闭"
-    confirm_2fa = _terminal_input(
-        f"{action_label} 2FA 将使已登录设备重新验证，确认继续吗？(直接回车确认，或输入 y / {confirmation}) [y]: "
+    confirm_2fa = _select_option(
+        f"{action_label} 2FA 将使已登录设备重新验证，确认继续吗？(直接回车确认，或输入 y / {confirmation}) [y]: ",
+        (
+            ("y", f"1. 是，确认{action_label} (Yes)"),
+            ("n", "2. 否，取消返回 (No)"),
+        ),
+        default_index=0,
     ).strip()
-    if confirm_2fa.lower() not in {"", "y", "yes", confirmation}:
+    if confirm_2fa.lower() not in {"", "y", "yes", "1", confirmation}:
         print("已取消。")
         return
     require_configuration_access(root, store, handle, "security")
@@ -1551,14 +1731,20 @@ def run_setup(instance: dict, store, handle: str) -> None:
         connected_agents = list(dict.fromkeys([*selected, *registered_ids]))
         required, _, _ = store._policy()
         print("\n╭─── OAI Core 设置与管理面板 ──────────────────────────────╮")
-        print(f"│  两步验证 (2FA): {'已开启' if required else '未开启'}（输入 2fa 可管理验证器与恢复码）")
+        print(f"│  两步验证 (2FA): {'已开启' if required else '未开启'}（支持 ↑/↓ 方向键切换选项，回车确认）")
         print("╰──────────────────────────────────────────────────────────╯")
-        print(f"  1. 网络设置 [{host}:{port}]")
-        print("  2. 账号管理")
-        print(f"  3. Agent 接入 [{', '.join(connected_agents) or '无'}]")
-        print("  4. 服务管理")
-        print("  5. 退出")
-        choice = _terminal_input("请选择: ")
+        choice = _select_option(
+            "请选择（↑/↓ 切换，回车确认）: ",
+            (
+                ("1", f"1. 网络设置 [{host}:{port}]"),
+                ("2", "2. 账号管理"),
+                ("3", f"3. Agent 接入 [{', '.join(connected_agents) or '无'}]"),
+                ("4", "4. 服务管理"),
+                ("2fa", f"2fa. 两步验证 (2FA) [{'已开启' if required else '未开启'}]"),
+                ("5", "5. 退出"),
+            ),
+            default_index=0,
+        )
         if choice in {"5", "0", "q", "Q"}:
             return
         try:
@@ -2021,7 +2207,14 @@ def _authenticate_management(store, scope: str):
                 raise
             method = available[0]
             if len(available) > 1:
-                choice = _terminal_input("二次验证方式（1 验证器，2 恢复码）: ")
+                choice = _select_option(
+                    "二次验证方式（↑/↓ 选择或输入 1 验证器，2 恢复码）: ",
+                    (
+                        ("1", "1. 手机验证器动态码 (TOTP)"),
+                        ("2", "2. 应急恢复码 (Recovery Code)"),
+                    ),
+                    default_index=0,
+                )
                 if choice not in {"1", "2"}:
                     raise PermissionError("已取消二次验证")
                 method = available[int(choice) - 1]

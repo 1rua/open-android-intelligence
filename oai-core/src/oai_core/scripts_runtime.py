@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import builtins
+from collections.abc import Sequence
 from contextlib import contextmanager
 import json
 import os
@@ -60,9 +62,124 @@ def _input(prompt: str) -> str:
     return input(prompt).strip()
 
 
+_DEFAULT_INPUT = _input
+
+
+def _select_option(
+    prompt: str,
+    options: Sequence[tuple[str, str]],
+    *,
+    default_index: int = 0,
+) -> str:
+    """支持 ↑/↓ 方向键切换选项并回车确认，同时兼容直接输入编号或字母。"""
+    if (
+        _input is not _DEFAULT_INPUT
+        or type(builtins.input).__name__ != "builtin_function_or_method"
+        or not sys.stdin.isatty()
+        or not sys.stdout.isatty()
+    ):
+        for _, label in options:
+            print(f"  {label}")
+        return _input(prompt)
+    try:
+        import select
+        import termios
+
+        fd = sys.stdin.fileno()
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        for _, label in options:
+            print(f"  {label}")
+        return _input(prompt)
+
+    selected = max(0, min(default_index, len(options) - 1))
+
+    def _render(*, initial: bool = False, typed: str = "") -> None:
+        if not initial:
+            sys.stdout.write(f"\r\033[{len(options)}A")
+        for idx, (_, label) in enumerate(options):
+            sys.stdout.write("\r\033[2K")
+            if idx == selected:
+                marker = _style("❯", "36;1")
+                styled_label = _style(label, "36;1")
+                sys.stdout.write(f"  {marker} {styled_label}\n")
+            else:
+                sys.stdout.write(f"    {label}\n")
+        sys.stdout.write(f"\r\033[2K{prompt}{typed}")
+        sys.stdout.flush()
+
+    typed_chars: list[str] = []
+    new_attrs = list(old_attrs)
+    new_attrs[3] &= ~(termios.ICANON | termios.ECHO)
+    new_attrs[6][termios.VMIN] = 1
+    new_attrs[6][termios.VTIME] = 0
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+        _render(initial=True)
+        while True:
+            raw = os.read(fd, 1)
+            if not raw:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise EOFError
+            ch = raw.decode("utf-8", errors="ignore")
+            if ch in ("\r", "\n"):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                if typed_chars:
+                    return "".join(typed_chars).strip()
+                return options[selected][0]
+            if ch == "\x03":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise KeyboardInterrupt
+            if ch == "\x04":
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                raise EOFError
+            if ch in ("\x7f", "\b"):
+                if typed_chars:
+                    typed_chars.pop()
+                    _render(typed="".join(typed_chars))
+                continue
+            if ch == "\x1b":
+                seq = ""
+                if select.select([fd], [], [], 0.05)[0]:
+                    b1 = os.read(fd, 1).decode("utf-8", errors="ignore")
+                    seq += b1
+                    if b1 in ("[", "O") and select.select([fd], [], [], 0.05)[0]:
+                        seq += os.read(fd, 1).decode("utf-8", errors="ignore")
+                if seq in ("[A", "OA", "[D", "OD"):
+                    selected = (selected - 1) % len(options)
+                    typed_chars.clear()
+                    _render()
+                elif seq in ("[B", "OB", "[C", "OC"):
+                    selected = (selected + 1) % len(options)
+                    typed_chars.clear()
+                    _render()
+                continue
+            if ch.isprintable():
+                typed_chars.append(ch)
+                current = "".join(typed_chars).strip().lower()
+                for idx, (val, _) in enumerate(options):
+                    if current == val.lower():
+                        selected = idx
+                        break
+                _render(typed="".join(typed_chars))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+
 def _confirm(prompt: str, value: str) -> None:
-    answer = _input(prompt).strip()
-    if answer != value and answer.lower() not in {"", "y", "yes", value.lower()}:
+    answer = _select_option(
+        prompt,
+        (
+            ("y", "1. 是，确认继续 (Yes)"),
+            ("n", "2. 否，取消退出 (No)"),
+        ),
+        default_index=0,
+    ).strip()
+    if answer != value and answer.lower() not in {"", "y", "yes", "1", value.lower()}:
         raise PermissionError("操作已取消")
 
 
@@ -109,7 +226,14 @@ def authenticate(store: IdentityStore, scopes: set[str] | None) -> str:
             if len(methods) == 1:
                 method = methods[0]
             else:
-                answer = _input("二次验证方式（1 验证器，2 恢复码）: ")
+                answer = _select_option(
+                    "二次验证方式（↑/↓ 选择或输入 1 验证器，2 恢复码）: ",
+                    (
+                        ("1", "1. 手机验证器动态码 (TOTP)"),
+                        ("2", "2. 应急恢复码 (Recovery Code)"),
+                    ),
+                    default_index=0,
+                )
                 if answer not in {"1", "2"}:
                     raise PermissionError("已取消二次验证")
                 method = methods[int(answer) - 1]
@@ -431,7 +555,18 @@ def _configure_service(root: Path, store: IdentityStore, handle: str) -> None:
 
 def _service_menu(root: Path, store: IdentityStore, handle: str) -> None:
     store.require_management(handle, "service")
-    choice = _input("服务：1 状态  2 启动  3 停止  4 重启  5 配置自启动  0 返回: ")
+    choice = _select_option(
+        "服务：1 状态  2 启动  3 停止  4 重启  5 配置自启动  0 返回: ",
+        (
+            ("1", "1. 查看服务状态"),
+            ("2", "2. 启动后台服务"),
+            ("3", "3. 停止后台服务"),
+            ("4", "4. 重启后台服务"),
+            ("5", "5. 配置开机自启动"),
+            ("0", "0. 返回"),
+        ),
+        default_index=0,
+    )
     if choice in {"", "0"}:
         return
     if choice == "5":
@@ -585,7 +720,15 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
         _box("步骤 4/4 · 后台自启与服务设置", (
             "开启开机自启后，系统重启或登录时会自动在后台运行 OAI Core 服务。",
         ))
-        if _input("是否配置开机自启服务？(y/n) [n]: ").lower() in {"y", "yes"}:
+        autostart_choice = _select_option(
+            "是否配置开机自启服务？(↑/↓ 选择或输入 y/n) [n]: ",
+            (
+                ("y", "1. 是，开启后台自启 (Yes)"),
+                ("n", "2. 否，暂不开启 (No)"),
+            ),
+            default_index=1,
+        )
+        if autostart_choice.lower() in {"y", "yes", "1"}:
             _configure_service(root, store, handle)
         if state is not None or (root / "runtime" / "installer-journal.json").exists():
             store.require_management(handle, "install")

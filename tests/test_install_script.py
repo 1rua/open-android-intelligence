@@ -584,6 +584,8 @@ def test_setup_reads_controlling_tty_when_stdin_is_pipe(deployment):
     (b'y\n', 'ACCEPTED'),
     (b'Y\n', 'ACCEPTED'),
     (b'yes\n', 'ACCEPTED'),
+    (b'\x1b[B\n', 'REJECTED'),
+    (b'\x1b[B\x1b[A\n', 'ACCEPTED'),
     (b'n\n', 'REJECTED'),
     (b'INSTALL\n', 'REJECTED'),
     (b'no\n', 'REJECTED'),
@@ -597,6 +599,47 @@ def test_install_sh_read_terminal_default_yes_and_yn(user_input, expected):
     code, output = run_in_terminal(runner, [('确认？'.encode(), user_input, False)])
     assert code == 0
     assert expected.encode() in output
+
+
+def test_shell_setup_supports_arrow_key_navigation(deployment, monkeypatch):
+    """Setup menus and confirmations must support ↑/↓ arrow keys without typing digits."""
+    root, _, _, account_id = deployment
+    prepare_source_root(root)
+    binary = root / '.venv/bin'
+    binary.mkdir(parents=True)
+    python = binary / 'python'
+    python.write_text('#!/usr/bin/env bash\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+    python.chmod(0o700)
+    unit = Path.home() / '.config/systemd/user/oai-core.service'
+    commands = root / 'fake-commands'
+    commands.mkdir()
+    events = root / 'systemctl-events'
+    systemctl = commands / 'systemctl'
+    systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(str(events)) + '\n'
+                         + 'if [ "$2" = show ]; then\n'
+                         + '  printf "LoadState=loaded\\nFragmentPath=%s\\nWorkingDirectory=%s\\nActiveState=active\\nSubState=running\\n" '
+                         + shlex.quote(str(unit)) + ' ' + shlex.quote(str(root)) + '\nfi\n')
+    systemctl.chmod(0o700)
+    monkeypatch.setenv('PATH', str(commands) + os.pathsep + os.environ['PATH'])
+    code, output = run_in_terminal(
+        ['bash', str(REPOSITORY / 'scripts/setup.sh'), '--dir', str(root)],
+        [
+            ('管理员账号'.encode(), b'alice\n', False),
+            ('管理员密码'.encode(), (PASSWORD + '\n').encode(), True),
+            # 主菜单：连按 3 次 ↓ 切换到“4. 服务管理”并回车
+            ('请选择'.encode(), b'\x1b[B\x1b[B\x1b[B\n', False),
+            # 服务子菜单：连按 2 次 ↓ 切换到“3. 重启”并回车
+            ('3. 重启'.encode(), b'\x1b[B\x1b[B\n', False),
+            # 确认服务操作：默认停留在第 1 项“是，执行重启”，直接回车确认
+            ('确认服务操作'.encode(), b'\n', False),
+            # 回到主菜单：按 1 次 ↑ 循环切换到末尾“5. 退出”并回车
+            ('请选择'.encode(), b'\x1b[A\n', False),
+        ],
+    )
+    assert code == 0, output
+    assert '服务操作 restart 已执行'.encode() in output
+    assert events.read_text().splitlines()[-1] == '--user restart oai-core.service'
+    assert account_paths(root / 'runtime/accounts', account_id).database.is_file()
 
 
 @pytest.mark.parametrize('user_input,should_cancel', [

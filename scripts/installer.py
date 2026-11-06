@@ -8,12 +8,88 @@ runtime has examined it.
 from __future__ import annotations
 
 import argparse
+import builtins
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import tomllib
+
+
+def _confirm_install_venv(prompt: str) -> str:
+    options = (("y", "1. 是，开始初始化环境 (Yes)"), ("n", "2. 否，取消并退出 (No)"))
+    if type(builtins.input).__name__ != "builtin_function_or_method" or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return input(prompt).strip().lower()
+    try:
+        import select
+        import termios
+        fd = sys.stdin.fileno()
+        old_attrs = termios.tcgetattr(fd)
+    except Exception:
+        return input(prompt).strip().lower()
+    use_color = not os.environ.get("NO_COLOR")
+    idx = 0
+    typed = ""
+    def _fmt(active: int) -> str:
+        lines = []
+        for i, (_, label) in enumerate(options):
+            if i == active:
+                row = f"\033[36;1m  ❯ {label}\033[0m" if use_color else f"  ❯ {label}"
+            else:
+                row = f"    {label}"
+            lines.append(row + "\n")
+        lines.append(prompt)
+        return "".join(lines)
+    new_attrs = termios.tcgetattr(fd)
+    new_attrs[3] &= ~(termios.ICANON | termios.ECHO)
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+        sys.stdout.write(_fmt(idx))
+        sys.stdout.flush()
+        while True:
+            ch = os.read(fd, 1)
+            if not ch or ch == b"\x04":
+                raise EOFError
+            if ch == b"\x03":
+                raise KeyboardInterrupt
+            if ch in (b"\r", b"\n"):
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                return typed.strip().lower() if typed.strip() else options[idx][0]
+            if ch == b"\x1b":
+                seq = b""
+                if select.select([fd], [], [], 0.05)[0]:
+                    b1 = os.read(fd, 1)
+                    seq += b1
+                    if b1 in (b"[", b"O") and select.select([fd], [], [], 0.05)[0]:
+                        seq += os.read(fd, 1)
+                if seq in (b"[A", b"OA", b"[D", b"OD", b"[B", b"OB", b"[C", b"OC"):
+                    idx = 1 - idx
+                    typed = ""
+                    sys.stdout.write(f"\r\033[{len(options)}A")
+                    for i, (_, label) in enumerate(options):
+                        if i == idx:
+                            row = f"\033[36;1m  ❯ {label}\033[0m" if use_color else f"  ❯ {label}"
+                        else:
+                            row = f"    {label}"
+                        sys.stdout.write(f"\r\033[2K{row}\n")
+                    sys.stdout.write(f"\r\033[2K{prompt}")
+                    sys.stdout.flush()
+                continue
+            if ch in (b"\x7f", b"\x08"):
+                if typed:
+                    typed = typed[:-1]
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            text = ch.decode("utf-8", errors="ignore")
+            if text and text.isprintable():
+                typed += text
+                sys.stdout.write(text)
+                sys.stdout.flush()
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, old_attrs)
 
 
 def _prepare_recovery_environment(source: Path, root: Path) -> int:
@@ -87,8 +163,8 @@ def main() -> int:
         print("\n╭─── 步骤 1/4 · 准备 Python 运行环境 ──────────────────────╮", flush=True)
         print("│ 检测到全新安装，即将创建独立虚拟环境并安装核心依赖组件。 │", flush=True)
         print("╰──────────────────────────────────────────────────────────╯", flush=True)
-        choice = input("确认继续？(y/n) [y]: ").strip().lower()
-        if choice not in ("", "y", "yes"):
+        choice = _confirm_install_venv("确认继续？(↑/↓ 切换，回车确认，或输入 y/n) [y]: ")
+        if choice not in ("", "y", "yes", "1"):
             parser.error("已取消安装")
         print("▸ 正在创建 Python 虚拟环境 (.venv)...", flush=True)
         subprocess.run([sys.executable, "-m", "venv", "--copies", str(root / ".venv")], check=True)

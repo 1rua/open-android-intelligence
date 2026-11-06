@@ -46,16 +46,61 @@ ui_error() {
 }
 
 read_terminal() {
-    local prompt="$1" answer=''
+    local prompt="$1" answer='' idx=0 key='' seq=''
     setup_colors
-    if ! { printf '%s? %s%s' "${C_CYAN}${C_BOLD}" "$prompt" "${C_RESET}" >/dev/tty; IFS= read -r answer </dev/tty; }; then
+    if ! { : >/dev/tty; : </dev/tty; } 2>/dev/null; then
         ui_error '安装需要可交互的终端窗口；当前未检测到终端，未执行任何安装操作。'
         return 1
+    fi
+    render_yes_no() {
+        if [ "$idx" -eq 0 ]; then
+            printf '\r\033[2K  %s❯ 1. 是，继续执行 (Yes)%s\n' "${C_CYAN}${C_BOLD}" "${C_RESET}" >/dev/tty
+            printf '\r\033[2K    2. 否，取消退出 (No)\n' >/dev/tty
+        else
+            printf '\r\033[2K    1. 是，继续执行 (Yes)\n' >/dev/tty
+            printf '\r\033[2K  %s❯ 2. 否，取消退出 (No)%s\n' "${C_CYAN}${C_BOLD}" "${C_RESET}" >/dev/tty
+        fi
+        printf '\r\033[2K%s? %s%s%s' "${C_CYAN}${C_BOLD}" "$prompt" "${C_RESET}" "$answer" >/dev/tty
+    }
+    render_yes_no
+    while true; do
+        if ! IFS= read -r -s -n 1 key </dev/tty; then
+            printf '\n' >/dev/tty
+            return 1
+        fi
+        if [ -z "$key" ] || [ "$key" = $'\r' ]; then
+            printf '\n' >/dev/tty
+            break
+        fi
+        if [ "$key" = $'\x1b' ]; then
+            IFS= read -r -s -n 2 -t 0.05 seq </dev/tty || true
+            case "$seq" in
+                '[A'|'OA'|'[D'|'OD'|'[B'|'OB'|'[C'|'OC')
+                    idx=$((1 - idx))
+                    answer=''
+                    printf '\r\033[2A' >/dev/tty
+                    render_yes_no
+                    ;;
+            esac
+            continue
+        fi
+        if [ "$key" = $'\x7f' ] || [ "$key" = $'\x08' ]; then
+            if [ -n "$answer" ]; then
+                answer="${answer%?}"
+                printf '\b \b' >/dev/tty
+            fi
+            continue
+        fi
+        answer="${answer}${key}"
+        printf '%s' "$key" >/dev/tty
+    done
+    if [ -z "$answer" ]; then
+        [ "$idx" -eq 0 ] && return 0 || return 1
     fi
     local normalized
     normalized="$(printf '%s' "$answer" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
     case "$normalized" in
-        ''|y|yes) return 0 ;;
+        y|yes|1) return 0 ;;
         *) return 1 ;;
     esac
 }
