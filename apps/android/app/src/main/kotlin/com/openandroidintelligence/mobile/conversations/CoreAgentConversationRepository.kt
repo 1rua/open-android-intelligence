@@ -1107,6 +1107,7 @@ class CoreAgentConversationRepository(
                 "conversationId" to conversationId, "clientMessageId" to message.clientMessageId.value))
             var drainAfterTurn = false
             var recoverAfterTurn = false
+            var completedNativeCommand = false
             var nativeRevision: Long? = null
             var nativeEventId: String? = null
             var nativeExecutionRevision = -1L
@@ -1295,7 +1296,14 @@ class CoreAgentConversationRepository(
                     turn.state = GenerationState.COMPLETED
                     withSelectedTurn(turn) { set(_generationState, GenerationState.COMPLETED) }
                     drainAfterTurn = true
-                    recoverAfterTurn = agent.capabilities.generationRecovery
+                    // Hermes commands finish without creating a generation. A correlated
+                    // successful terminal can release them without querying a missing turn.
+                    completedNativeCommand = agent.kind == "hermes" &&
+                        message.text.trimStart().startsWith("/") && message.attachmentIds.isEmpty() &&
+                        result.clientMessageId == message.clientMessageId.value &&
+                        result.generationId == null && turn.hostGenerationId == null &&
+                        result.userMessageId == null && turn.userMessageId == null
+                    recoverAfterTurn = agent.capabilities.generationRecovery && !completedNativeCommand
                 }
             } catch (cancelled: CancellationException) {
                 // Closing a reader says nothing about whether Hermes stopped.
@@ -1352,9 +1360,11 @@ class CoreAgentConversationRepository(
                 if (needsRecovery) startRecovery(turn)
                 if (drainAfterTurn && !recoverAfterTurn) {
                     queueUnknownBarriers.remove(key)
-                    // A confirmed terminal state is the only local proof that
-                    // draining the next queued turn cannot overlap this one.
-                    parentScope.launch(ioDispatcher) { drainQueuedSends(agent, conversationId) }
+                    parentScope.launch(ioDispatcher) {
+                        // A command's own completion cannot settle a different active generation.
+                        if (completedNativeCommand) retryPendingDeliveriesFor(agent, conversationId)
+                        else drainQueuedSends(agent, conversationId)
+                    }
                 }
             }
         }

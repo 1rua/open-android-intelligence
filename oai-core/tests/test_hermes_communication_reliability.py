@@ -775,3 +775,60 @@ async def test_native_compression_binding_rejects_invalid_successors(host, monke
     with closing(runtime.services.core.open_gateway_account(owner)) as account:
         assert account.agent_sessions.lookup(conversation) == expected_binding
     assert [row["id"] for row in database._read_all("SELECT id FROM sessions ORDER BY id")] == session_ids
+
+
+@pytest.mark.asyncio
+async def test_completed_model_commands_leave_no_generation_and_allow_immediate_followups(host):
+    from aiohttp.test_utils import TestClient, TestServer
+    from oai_core.adapters.hermes import HermesRemoteSessionAdapter
+    from oai_core.auth import Principal
+    from oai_hermes_adapter.bridge import create_hermes_bridge_app
+
+    runtime, adapter, conversations, _ = host
+    owner, conversation = conversations[0]
+    seen = []
+
+    async def handler(event):
+        seen.append((event.message_id, event.text))
+        if event.text.startswith("/model "):
+            return "Model switched to " + event.text.split(" ", 1)[1]
+        return "ordinary reply"
+
+    runtime.set_message_handler(handler)
+    principal = Principal(owner, device_id="phone")
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        binding = account.agent_sessions.lookup(conversation)
+    steps = [
+        ("client-model-a", "/model synthetic-a"),
+        ("client-after-a", "first ordinary message"),
+        ("client-model-b", "/model synthetic-b"),
+        ("client-model-c", "/model synthetic-c"),
+        ("client-after-c", "second ordinary message"),
+    ]
+    bridge = create_hermes_bridge_app(adapter, runtime._token, [owner])
+    async with TestClient(TestServer(bridge)) as client:
+        remote = HermesRemoteSessionAdapter(str(client.make_url("/")).rstrip("/"),
+            runtime._token, {owner: owner})
+        for client_id, text in steps:
+            async def send():
+                return [frame async for frame in remote.send(
+                    principal, conversation, text, client_message_id=client_id)]
+            frames = await asyncio.wait_for(send(), 2)
+            assert frames[-1]["type"] == "done", frames
+            assert frames[-1]["outcome"] == "completed"
+            assert frames[-1]["clientMessageId"] == client_id
+            assert await remote.current_generation(principal, conversation) is None
+            if text.startswith("/model "):
+                assert not any("generationId" in frame for frame in frames)
+                assert frames[-1]["text"] == "Model switched to " + text.split(" ", 1)[1]
+            else:
+                receipt = await remote.generation(principal, conversation, client_message_id=client_id)
+                assert receipt["state"] == "completed"
+                assert receipt["clientMessageId"] == client_id
+    assert seen == steps
+    with closing(runtime.services.core.open_gateway_account(owner)) as account:
+        assert account.agent_sessions.lookup(conversation) == binding
+        assert account.store.database.execute(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id=? AND sender='user'",
+            (conversation,)).fetchone()[0] == 2
+    assert runtime.services.core._sinks == []
