@@ -60,6 +60,27 @@ _MANIFEST_FIELDS = frozenset({"id", "type", "name", "url", "instanceId", "sessio
                               "secretFile", "tokenEnv", "prefix"})
 
 
+class AgentHandshakeError(ValueError):
+    """A sanitized, machine-readable failure while contacting an Agent bridge."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(message)
+
+
+_HANDSHAKE_ERROR_MESSAGES = {
+    "AGENT_BRIDGE_UPGRADE_REQUIRED": "桥接端缺少握手接口，请升级 Agent 桥接端。",
+    "AGENT_BRIDGE_AUTHENTICATION_FAILED": "Agent 桥接认证失败，请检查 Core 与桥接端的凭据配置。",
+    "AGENT_BRIDGE_UNAVAILABLE": "Agent 桥接端暂不可用，请检查服务状态和网络连接。",
+    "AGENT_HANDSHAKE_FAILED": "Agent 握手失败，桥接端响应无效或不受支持。",
+}
+
+
+def _handshake_error(code: str) -> AgentHandshakeError:
+    return AgentHandshakeError(code, _HANDSHAKE_ERROR_MESSAGES[code])
+
+
 def _identity(value: Any) -> str:
     if not isinstance(value, str) or _ID.fullmatch(value) is None:
         raise ValueError("Invalid Agent identity")
@@ -254,7 +275,7 @@ class AgentRegistrationStore:
         if response.get("online") is not True or not verify_bridge_proof(
                 secret, challenge, response, instance_id=manifest["instanceId"],
                 session_scope=manifest["sessionScope"]):
-            raise ValueError("Agent instance handshake failed")
+            raise _handshake_error("AGENT_HANDSHAKE_FAILED")
         digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
         with closing(self._connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
@@ -533,25 +554,37 @@ class AgentRegistration:
                 async with session.post(manifest["url"].rstrip("/") + prefix + "/handshake",
                                         json=body, headers={"Authorization": "Bearer " + secret},
                                         allow_redirects=False) as response:
-                    if response.status != 200 or response.content_length is not None and response.content_length > 65536:
-                        raise ValueError("Agent instance handshake failed")
+                    if response.status == 404:
+                        raise _handshake_error("AGENT_BRIDGE_UPGRADE_REQUIRED")
+                    if response.status in {401, 403}:
+                        raise _handshake_error("AGENT_BRIDGE_AUTHENTICATION_FAILED")
+                    if 500 <= response.status <= 599:
+                        raise _handshake_error("AGENT_BRIDGE_UNAVAILABLE")
+                    if response.status != 200:
+                        raise _handshake_error("AGENT_HANDSHAKE_FAILED")
+                    if response.content_length is not None and response.content_length > 65536:
+                        raise _handshake_error("AGENT_HANDSHAKE_FAILED")
                     data = bytearray()
                     async for chunk in response.content.iter_chunked(16384):
                         data.extend(chunk)
                         if len(data) > 65536:
-                            raise ValueError("Agent instance handshake failed")
+                            raise _handshake_error("AGENT_HANDSHAKE_FAILED")
                     result = json.loads(data)
-        except (aiohttp.ClientError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError):
-            raise ValueError("Agent instance handshake failed") from None
+        except AgentHandshakeError:
+            raise
+        except (aiohttp.ClientError, TimeoutError):
+            raise _handshake_error("AGENT_BRIDGE_UNAVAILABLE") from None
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            raise _handshake_error("AGENT_HANDSHAKE_FAILED") from None
         if not isinstance(result, Mapping):
-            raise ValueError("Agent instance handshake failed")
+            raise _handshake_error("AGENT_HANDSHAKE_FAILED")
         if "coreSignature" in body and result.get("coreAccepted") is not True:
-            raise ValueError("Agent instance handshake did not confirm Core key")
+            raise _handshake_error("AGENT_HANDSHAKE_FAILED")
         if result.get("coreAccepted") is True:
             payload = {"coreInstanceId": self.instance_id, "hermesInstanceId": manifest["instanceId"], "challenge": challenge}
             expected = hmac.new(secret.encode(), b"oai-hermes-core-accepted-v1\0" + _json(payload), hashlib.sha256).hexdigest()
             if "coreSignature" not in body or not hmac.compare_digest(str(result.get("coreProof", "")), expected):
-                raise ValueError("Agent instance handshake failed")
+                raise _handshake_error("AGENT_HANDSHAKE_FAILED")
         return manifest, secret, challenge, result
 
     async def register(self, handle: str, entry: Mapping[str, Any], base_dir: Path) -> None:

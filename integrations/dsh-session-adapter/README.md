@@ -8,6 +8,12 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 
 安装与初始化配置（`install.sh` / `setup.sh`）在检测到 DSH 环境并配置接入时，会全自动生成随机 Token 并注入/同步到 DSH 的环境文件（`$DSH_HOME/.env`）与凭据库（`$DSH_HOME/.credentials.yaml` 中的 `refs.OAI_DSH_ADAPTER_TOKEN`），无需开发者或用户手动复制粘贴。若手动启动或自定义启动环境，请确保 DSH 启动前导出 `OAI_DSH_ADAPTER_TOKEN`。
 
+从旧版 `dsh-android-gateway` 会话插件升级时，`/status` 返回在线仍可能缺少 Core 注册所需的 `/handshake`。此时 `setup` 显示 `AGENT_BRIDGE_UPGRADE_REQUIRED`，并列出本机已经启用会话插件的 DSH profile（独立运行配置）。选择并确认一个目标后，安装入口通过该 DSH 安装自带的官方插件管理 API 安装当前 bundle，将启用列表中的旧 bundle 替换为 `oai-dsh-session-adapter`，保留旧依赖、其他插件配置和账号历史。
+
+升级前的 `package.json`、可选 `pnpm-lock.yaml` 和文件摘要保存在 Core 安装目录的 `runtime/dsh-adapter-backups/<记录编号>/`，目录仅部署所有者可读写。安装后会再次执行真实握手；若 DSH 进程仍运行旧代码，保持未注册，回到菜单并提示重新加载所选 profile。重新加载后再执行 Agent 接入。配置取消、安装失败、凭据不匹配或握手失败均不会写入成功注册记录，也不会以 `/status` 代替身份验证。
+
+同时存在多个 DSH 主目录时不会自动批量升级。可通过 `DSH_HOME` 指定宿主目录，使用 `DSH_PROFILE` 指定其中的 profile；仍需在菜单确认安装目标。没有官方插件管理 API 的旧版 DSH 会显示 `DSH_PLUGIN_MANAGER_UNAVAILABLE`，应先更新 DSH。`setup.sh` 只调用本机已安装的 Core 管理程序；仅重新下载该入口不会更新 Core 源码或宿主插件。
+
 列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete、archive 与 cancel），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。
 
 消息观察连接与宿主执行分开管理。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。当前集成的宿主 `sessionController.cancel` 只接受会话身份，不能保证在真实取消时校验执行轮次，因此不声明 `cancel` 能力；显式取消请求返回 `UNSUPPORTED_CAPABILITY`，不会调用会话级取消接口。只有宿主提供并核实按真实执行轮次原子取消的接口后，才可重新启用。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。这只建立关联，不表示宿主提供幂等提交或持久执行恢复，`generationRecovery`、`idempotentSend` 均为 `false`。
