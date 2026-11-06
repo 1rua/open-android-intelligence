@@ -1,0 +1,343 @@
+"""旧部署仅保留运行数据时的源码恢复安全回归测试。"""
+import builtins
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+from oai_core import scripts_runtime as runtime
+
+
+REPOSITORY = Path(__file__).resolve().parents[1]
+
+
+def write_checkout(source: Path, files: dict[str, str]) -> None:
+    for name, content in files.items():
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+def runtime_only(root: Path) -> dict[str, bytes]:
+    files = {
+        "runtime/accounts/alice/gateway.sqlite": b"synthetic-account",
+        "runtime/secrets/core-master-key": b"synthetic-master-key",
+        "runtime/security/identity.sqlite": b"synthetic-identity",
+    }
+    for name, content in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    return files
+
+
+def snapshot(root: Path) -> dict[str, bytes]:
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file()}
+
+
+def test_shell_stdin_recovers_runtime_only_target_through_staging(tmp_path):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    before = runtime_only(root)
+    trusted = tmp_path / "trusted-checkout"
+    write_checkout(trusted, {
+        "scripts/installer.py": "# synthetic trusted installer\n",
+        "oai-core/pyproject.toml": "[project]\nname = 'synthetic-core'\n",
+        "oai-core/src/oai_core/scripts_runtime.py": "# synthetic runtime\n",
+    })
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    python_log = tmp_path / "python-arguments.jsonl"
+    git_log = tmp_path / "git-arguments.jsonl"
+    fake_python = commands / "python3"
+    fake_python.write_text(
+        f"#!{Path(sys.executable).resolve()}\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_PYTHON_LOG'], 'a', encoding='utf-8') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "if args[:2] == ['-I', '-c']:\n"
+        "    raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    fake_git = commands / "git"
+    fake_git.write_text(
+        f"#!{Path(sys.executable).resolve()}\n"
+        "import json, os, shutil, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['FAKE_GIT_LOG'], 'a', encoding='utf-8') as out:\n"
+        "    out.write(json.dumps(args) + '\\n')\n"
+        "if args and args[0] == 'clone':\n"
+        "    shutil.copytree(os.environ['FAKE_TRUSTED_SOURCE'], args[-1], dirs_exist_ok=True)\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o700)
+    env = os.environ.copy()
+    env["PATH"] = str(commands) + os.pathsep + env.get("PATH", "")
+    env["FAKE_PYTHON_LOG"] = str(python_log)
+    env["FAKE_GIT_LOG"] = str(git_log)
+    env["FAKE_TRUSTED_SOURCE"] = str(trusted)
+
+    result = subprocess.run(
+        ["bash", "-s", "--", "--dir", str(root)],
+        input=(REPOSITORY / "scripts/install.sh").read_text(encoding="utf-8"),
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(git_log.read_text(encoding="utf-8").splitlines()[0])[0] == "clone"
+    python_calls = [json.loads(line) for line in python_log.read_text(encoding="utf-8").splitlines()]
+    expected_stages = list(tmp_path.glob("deployment.download.*"))
+    assert len(expected_stages) == 1
+    stage = expected_stages[0]
+    assert stage.parent == root.parent
+    assert ["-I", str(stage / "scripts/installer.py"), "install", "--dir", str(root)] in python_calls
+    assert snapshot(root) == before
+
+
+def test_installer_main_passes_trusted_source_for_data_only_target(tmp_path, monkeypatch):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    runtime_only(root)
+    source = tmp_path / "trusted-source"
+    write_checkout(source, {
+        "oai-core/pyproject.toml": "[project]\nname = 'synthetic-core'\n",
+        "oai-core/src/oai_core/scripts_runtime.py": "# trusted runtime marker\n",
+    })
+    installer_path = source / "scripts/installer.py"
+    installer_path.parent.mkdir(parents=True)
+    shutil.copy2(REPOSITORY / "scripts/installer.py", installer_path)
+    spec = importlib.util.spec_from_file_location("recovery_installer", installer_path)
+    installer = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(installer)
+    calls = []
+
+    def install(actual_root, *, restore_source=None):
+        calls.append((actual_root, restore_source))
+        return 23
+
+    class Terminal:
+        @staticmethod
+        def isatty():
+            return True
+
+    monkeypatch.setattr(installer.sys, "argv", [str(installer_path), "install", "--dir", str(root)])
+    monkeypatch.setattr(installer.sys, "stdin", Terminal())
+    monkeypatch.setattr(installer.sys, "path", list(installer.sys.path))
+    monkeypatch.setattr(runtime, "install", install)
+
+    assert installer.main() == 23
+    assert calls == [(root, source)]
+
+
+def test_restore_copies_code_preserves_data_and_publishes_marker_last(tmp_path, monkeypatch):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    config = {
+        "storageRoot": "custom/accounts",
+        "masterKeyFile": "custom/master.key",
+        "identityDatabase": "custom/identity.sqlite",
+    }
+    runtime.configuration.private_write(root / "core.json", json.dumps(config))
+    preserved = {
+        "start-core.sh": b"existing launcher",
+        "runtime/accounts/alice/gateway.sqlite": b"runtime account",
+        "custom/accounts/alice.sqlite": b"custom account",
+        "custom/master.key": b"custom key",
+        "custom/identity.sqlite": b"custom identity",
+    }
+    for name, content in preserved.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    before = snapshot(root)
+    source = tmp_path / "trusted-source"
+    tracked = [
+        "oai-core/pyproject.toml",
+        "core.json",
+        "start-core.sh",
+        "runtime/accounts/alice/gateway.sqlite",
+        "custom/accounts/alice.sqlite",
+        "custom/master.key",
+        "custom/identity.sqlite",
+        "scripts/installer.py",
+        "oai-core/src/oai_core/recovered.py",
+    ]
+    write_checkout(source, {name: f"trusted:{name}\n" for name in tracked})
+    marker = root / "oai-core/pyproject.toml"
+    recovered = root / "oai-core/src/oai_core/recovered.py"
+    installer = root / "scripts/installer.py"
+    authorization_checks = []
+
+    class Store:
+        def require_management(self, handle, scope):
+            assert handle == "test-handle"
+            assert scope == "install"
+            authorization_checks.append(marker.exists())
+
+    def mock_git(args, **kwargs):
+        assert args == ["git", "-C", str(source.resolve()), "ls-files", "-z"]
+        assert kwargs["check"] is True and kwargs["capture_output"] is True
+        return subprocess.CompletedProcess(args, 0, "\0".join(tracked) + "\0", "")
+
+    replaces = []
+    real_replace = os.replace
+
+    def record_replace(original, destination):
+        relative = Path(destination).relative_to(root).as_posix()
+        if relative == "oai-core/pyproject.toml":
+            assert recovered.is_file()
+            assert installer.is_file()
+        replaces.append(relative)
+        return real_replace(original, destination)
+
+    monkeypatch.setattr(runtime.subprocess, "run", mock_git)
+    monkeypatch.setattr(runtime.os, "replace", record_replace)
+    runtime._restore_install_source(root, source, Store(), "test-handle")
+
+    assert marker.read_text(encoding="utf-8") == "trusted:oai-core/pyproject.toml\n"
+    assert recovered.read_text(encoding="utf-8") == "trusted:oai-core/src/oai_core/recovered.py\n"
+    assert installer.read_text(encoding="utf-8") == "trusted:scripts/installer.py\n"
+    for name, content in before.items():
+        assert (root / name).read_bytes() == content
+    assert authorization_checks and not any(authorization_checks)
+    assert replaces[-1] == "oai-core/pyproject.toml"
+    assert not list(root.rglob("*.restore.*.tmp"))
+
+
+def test_restore_authorization_failure_does_not_run_git_or_copy(tmp_path, monkeypatch):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    before = runtime_only(root)
+    source = tmp_path / "trusted-source"
+    source.mkdir()
+    git_calls = []
+
+    class DeniedStore:
+        def require_management(self, handle, scope):
+            raise PermissionError("授权已撤销")
+
+    def forbidden_git(*args, **kwargs):
+        git_calls.append(args)
+        raise AssertionError("授权拒绝后不应调用 git")
+
+    monkeypatch.setattr(runtime.subprocess, "run", forbidden_git)
+    with pytest.raises(PermissionError, match="授权已撤销"):
+        runtime._restore_install_source(root, source, DeniedStore(), "revoked-handle")
+
+    assert git_calls == []
+    assert snapshot(root) == before
+
+
+def test_install_authentication_failure_never_restores_source_or_runs_pip(tmp_path, monkeypatch):
+    root = tmp_path / "deployment"
+    root.mkdir()
+    identity = root / "runtime/security/identity.sqlite"
+    identity.parent.mkdir(parents=True)
+    identity.write_bytes(b"synthetic-existing-identity")
+    key = root / "runtime/secrets/core-master-key"
+    key.parent.mkdir(parents=True)
+    key.write_bytes(b"synthetic-existing-key")
+    storage = root / "runtime/accounts"
+    storage.mkdir(parents=True)
+    (storage / "account.marker").write_bytes(b"preserve")
+    before = snapshot(root)
+    source = tmp_path / "trusted-source"
+    source.mkdir()
+    restore_calls = []
+    process_calls = []
+
+    class Store:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    store = Store()
+    monkeypatch.setattr(runtime, "_paths", lambda actual_root: (storage, key, identity))
+    monkeypatch.setattr(runtime, "_verify_journal", lambda actual_root, *, has_identity: None)
+    monkeypatch.setattr(runtime, "IdentityStore", lambda database, *, key_store: store)
+    monkeypatch.setattr(runtime, "LocalMasterKeyStore", lambda path: object())
+
+    def reject_authentication(actual_store, scopes):
+        raise PermissionError("密码错误")
+
+    monkeypatch.setattr(runtime, "authenticate", reject_authentication)
+    monkeypatch.setattr(runtime, "_restore_install_source",
+                        lambda *args: restore_calls.append(args))
+    monkeypatch.setattr(runtime.subprocess, "run",
+                        lambda *args, **kwargs: process_calls.append(args))
+
+    with pytest.raises(PermissionError, match="密码错误"):
+        runtime.install(root, restore_source=source)
+
+    assert store.closed
+    assert restore_calls == []
+    assert process_calls == []
+    assert snapshot(root) == before
+
+
+def test_missing_dependencies_prepare_environment_outside_retained_deployment(tmp_path, monkeypatch):
+    """原环境依赖已丢失时，仅在外部恢复环境安装依赖并重新进入认证入口。"""
+    root = tmp_path / "deployment"
+    root.mkdir()
+    before = runtime_only(root)
+    source = tmp_path / "trusted-source"
+    write_checkout(source, {
+        "scripts/installer.py": (REPOSITORY / "scripts/installer.py").read_text(encoding="utf-8"),
+        "oai-core/pyproject.toml": '[project]\nname="synthetic-core"\ndependencies=["jsonschema>=4.23,<5"]\n',
+        "oai-core/src/oai_core/scripts_runtime.py": "# trusted runtime marker\n",
+    })
+    script = source / "scripts/installer.py"
+    spec = importlib.util.spec_from_file_location("recovery_environment_installer", script)
+    installer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(installer)
+    monkeypatch.setattr(installer.sys, "argv", [str(script), "install", "--dir", str(root)])
+    monkeypatch.setattr(installer.sys, "stdin", type("Terminal", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(installer.sys, "path", list(installer.sys.path))
+    monkeypatch.delenv("OAI_INSTALL_RECOVERY_ENV", raising=False)
+    monkeypatch.setenv("OAI_INIT_ADMIN_PASSWORD", "synthetic-unused-legacy-password")
+    real_import = builtins.__import__
+
+    def missing_dependency(name, *args, **kwargs):
+        if name == "oai_core.scripts_runtime":
+            raise ModuleNotFoundError("模拟系统 Python 缺少 jsonschema", name="jsonschema")
+        return real_import(name, *args, **kwargs)
+
+    calls, launches = [], []
+    monkeypatch.setattr(builtins, "__import__", missing_dependency)
+    monkeypatch.setattr(installer.subprocess, "run", lambda args, **kwargs: calls.append((args, kwargs)))
+
+    def launch(executable, arguments, env):
+        launches.append((executable, arguments, env))
+        raise SystemExit(42)
+
+    monkeypatch.setattr(installer.os, "execve", launch)
+    with pytest.raises(SystemExit) as result:
+        installer.main()
+    assert result.value.code == 42
+    assert len(calls) == 2
+    assert calls[0][0][:4] == [sys.executable, "-m", "venv", "--copies"]
+    environment = Path(calls[0][0][-1])
+    assert environment.parent == root.parent and root not in environment.parents
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert calls[1][0] == [str(python), "-m", "pip", "install", "jsonschema>=4.23,<5"]
+    assert launches[0][1] == [str(python), "-I", str(script), "install", "--dir", str(root)]
+    assert launches[0][2]["OAI_INSTALL_RECOVERY_ENV"] == "1"
+    assert "OAI_INIT_ADMIN_PASSWORD" not in launches[0][2]
+    assert snapshot(root) == before
+    monkeypatch.setenv("OAI_INSTALL_RECOVERY_ENV", "1")
+    with pytest.raises(ModuleNotFoundError):
+        installer.main()
+    assert len(calls) == 2 and len(launches) == 1

@@ -417,7 +417,50 @@ def _run_setup(root: Path, store: IdentityStore, handle: str) -> None:
     configuration.run_setup(discover_instance(root / "core.json"), store, handle)
 
 
-def install(root: Path) -> int:
+def _restore_install_source(root: Path, source: Path, store: IdentityStore, handle: str) -> None:
+    """管理员认证后补回受版本控制的源码，保留数据与现有配置。"""
+    store.require_management(handle, "install")
+    source = source.resolve()
+    result = subprocess.run(["git", "-C", str(source), "ls-files", "-z"],
+                            check=True, capture_output=True, text=True)
+    storage, key, database = _paths(root)
+    protected = (root / "runtime", root / "core.json", root / "start-core.sh", storage, key, database)
+    marker = Path("oai-core/pyproject.toml")
+    entries = []
+    for name in result.stdout.split("\0"):
+        if not name:
+            continue
+        relative = Path(name)
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[0] == ".git":
+            raise ValueError("恢复源码包含无效路径")
+        destination = root / relative
+        if any(destination == path or path in destination.parents for path in protected):
+            continue
+        original = source / relative
+        if not original.is_file() or original.is_symlink() or destination.resolve() != destination.absolute():
+            raise ValueError("恢复源码或目标路径不安全")
+        if destination.exists():
+            if not destination.is_file() or destination.stat().st_uid != os.geteuid():
+                raise ValueError("拒绝覆盖已有的非本用户程序文件")
+            if destination.read_bytes() != original.read_bytes():
+                raise ValueError(f"已有文件与恢复源码冲突，请保留现状人工检查: {relative}")
+        entries.append((relative, original, destination))
+    if not any(relative == marker for relative, _, _ in entries):
+        raise ValueError("恢复源码缺少 OAI Core 安装元数据")
+    # 最后原子发布就绪标记，中断后的再次安装仍会继续走恢复入口。
+    entries.sort(key=lambda item: item[0] == marker)
+    for relative, original, destination in entries:
+        store.require_management(handle, "install")
+        if destination.exists():
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".restore." + secrets.token_hex(8) + ".tmp")
+        shutil.copy2(original, temporary)
+        store.require_management(handle, "install")
+        os.replace(temporary, destination)
+
+
+def install(root: Path, *, restore_source: Path | None = None) -> int:
     storage, key, database = _paths(root)
     has_identity = database.exists() or database.is_symlink()
     state = _verify_journal(root, has_identity=has_identity)
@@ -445,6 +488,9 @@ def install(root: Path) -> int:
                 _confirm("保存后请输入 SAVED: ", "SAVED")
             else:
                 raise PermissionError("首次初始化需要受保护终端以保存恢复码")
+        if restore_source is not None:
+            with configuration_lock(root):
+                _restore_install_source(root, restore_source, store, handle)
         python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not python.is_file():
             _run(store, handle, "install", [sys.executable, "-m", "venv", "--copies", str(root / ".venv")], cwd=root)
@@ -466,7 +512,7 @@ def install(root: Path) -> int:
         else:
             configured = True
         # Existing installs are authenticated before pip, CLI or registration writes.
-        trusted_package = Path(__file__).resolve().parents[2]
+        trusted_package = (root / "oai-core").resolve() if restore_source is not None else Path(__file__).resolve().parents[2]
         package_reference = "./oai-core" if trusted_package == (root / "oai-core").resolve() else os.path.relpath(trusted_package, root)
         _run(store, handle, "install", [str(python), "-m", "pip", "install", "-e", package_reference], cwd=root)
         _run(store, handle, "install", [str(python), "-m", "pip", "check"], cwd=root)

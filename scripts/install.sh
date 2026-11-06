@@ -50,7 +50,7 @@ install_new_dependencies() {
 }
 
 main() {
-    local script_dir='' target="${OAI_DIR:-${HOME}/.oai-core}" argument previous=''
+    local script_dir='' recovery_source='' target="${OAI_DIR:-${HOME}/.oai-core}" argument previous=''
     # --dir is a non-secret installation selector; credentials never enter Shell.
     for argument in "$@"; do
         if [ "$previous" = --dir ]; then target="$argument"; fi
@@ -65,12 +65,22 @@ main() {
     fi
     if [ -L "$target" ]; then printf '%s\n' '[错误] 安装目录不能是符号链接。' >&2; return 1; fi
     if [ -f "$target/core.json" ] || [ -e "$target/runtime" ] || [ -f "$target/start-core.sh" ]; then
-        # Never install dependencies, download a helper or update code first.
-        if [ ! -f "$target/scripts/installer.py" ] && [ ! -f "${script_dir}/installer.py" ]; then
-            printf '%s\n' '[错误] 旧部署尚无安全迁移入口；请从可信检出运行 scripts/install.sh --dir <旧目录>。未更新旧部署。' >&2
-            return 1
-        fi
         if [ -x "$target/.venv/bin/python" ]; then PYTHON_BIN="$target/.venv/bin/python"; else select_python; fi
+        if [ ! -f "$target/oai-core/pyproject.toml" ]; then
+            if [ -n "$script_dir" ] && [ -f "$script_dir/../oai-core/pyproject.toml" ] && [ -f "$script_dir/installer.py" ]; then
+                recovery_source="$(cd "$script_dir/.." && pwd)"
+            else
+                # 只在旧目录之外准备源码，管理员认证前不改写保留数据。
+                if ! command -v git >/dev/null 2>&1; then
+                    printf '%s\n' '[错误] 恢复程序文件需要 git；尚未修改旧部署。' >&2
+                    return 1
+                fi
+                printf '%s\n' '[INFO] 检测到保留数据，将下载恢复源码；验证原管理员后补齐程序文件。' >&2
+                recovery_source="$(mktemp -d "${target}.download.XXXXXXXX")"
+                git clone --single-branch --branch "${OAI_BRANCH:-dev}" https://github.com/1rua/open-android-intelligence.git "$recovery_source"
+            fi
+            exec "$PYTHON_BIN" -I "$recovery_source/scripts/installer.py" install --dir "$target"
+        fi
     else
         if ! select_python || ! command -v git >/dev/null 2>&1; then install_new_dependencies; fi
     fi

@@ -128,6 +128,38 @@ def test_new_install_rejects_mismatched_password_without_journal(monkeypatch, wo
     assert not (workspace / 'runtime').exists()
 
 
+
+def test_retained_data_recovery_installs_from_restored_local_source(monkeypatch, workspace):
+    """恢复后安装持久目录里的代码，不把虚拟环境绑定到临时下载目录。"""
+    root = workspace
+    calls = []
+    monkeypatch.setattr(runtime.subprocess, 'run', lambda args, **kwargs: calls.append(args))
+    answers(monkeypatch, ['admin', 'bootstrap', 'SAVED', 'n'], ['pw-synthetic', 'pw-synthetic'])
+    assert runtime.install(root) == 0
+    key = root / 'runtime/secrets/core-master-key'
+    original_key = key.read_bytes()
+    (root / '.venv').rename(root / '.venv-retained')
+    source = root.parent / 'downloaded-source'
+    source.mkdir()
+
+    def restore(target, trusted_source, store, handle):
+        store.require_management(handle, 'install')
+        assert target == root and trusted_source == source
+        package = target / 'oai-core'
+        package.mkdir()
+        (package / 'pyproject.toml').write_text('[project]\nname="synthetic-restored-core"\n')
+        calls.append(['restored'])
+
+    monkeypatch.setattr(runtime, '_restore_install_source', restore)
+    calls.clear()
+    answers(monkeypatch, ['admin', 'n'], ['pw-synthetic'])
+    assert runtime.install(root, restore_source=source) == 0
+    assert calls[0] == ['restored']
+    assert calls[1][1:3] == ['-m', 'venv']
+    assert calls[2][-3:] == ['install', '-e', './oai-core']
+    assert key.read_bytes() == original_key
+
+
 def test_legacy_authentication_precedes_migration_writes(monkeypatch, workspace):
     root = workspace
     storage = root / 'runtime/accounts'

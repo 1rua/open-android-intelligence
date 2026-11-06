@@ -143,7 +143,7 @@ def test_setup_refuses_untrusted_missing_installer(tmp_path):
     assert {item.name for item in tmp_path.iterdir()} == {'home', 'setup.sh'}
 
 
-def test_existing_install_without_trusted_helper_fails_before_dependencies(tmp_path):
+def test_existing_install_without_terminal_fails_before_recovery_writes(tmp_path):
     root = tmp_path / 'legacy'
     root.mkdir()
     config = root / 'core.json'
@@ -151,7 +151,8 @@ def test_existing_install_without_trusted_helper_fails_before_dependencies(tmp_p
     result = subprocess.run(['bash', str(REPOSITORY / 'scripts/install.sh'), '--dir', str(root)],
                             stdin=subprocess.DEVNULL, start_new_session=True, capture_output=True, text=True, timeout=5)
     assert result.returncode != 0
-    assert '未更新旧部署' in result.stderr or '未覆盖' in result.stderr
+    assert '终端' in result.stderr
+    assert not (root / 'oai-core').exists()
     assert config.read_text() == '{"legacy":"sentinel"}'
     assert not (root / '.venv').exists()
 
