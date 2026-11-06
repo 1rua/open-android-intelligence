@@ -138,6 +138,14 @@ def test_cli_logout_revokes_and_keeps_local_barrier(tmp_path, capsys):
         assert received[0][1].endswith("/tokens/current")
 
 
+def _mcp_field(value, *names):
+    """Read a protocol field under either SDK spelling (mcp 1.x camelCase, 2.x snake_case)."""
+    for name in names:
+        if hasattr(value, name):
+            return getattr(value, name)
+    raise AttributeError(f"none of {names} exists on {type(value).__name__}")
+
+
 def test_mcp_tools_use_core_api_and_never_take_account_identity():
     async def scenario(url):
         server = create_mcp(CoreClient(url, "private-core-token"))
@@ -147,7 +155,8 @@ def test_mcp_tools_use_core_api_and_never_take_account_identity():
             "oai_register_endpoint", "oai_endpoints", "oai_unregister_endpoint", "oai_receive_deliveries", "oai_ack_delivery",
         }
         for tool in tools:
-            assert not {"accountId", "account_id", "username", "password", "otp", "recovery_code"} & set(tool.inputSchema.get("properties", {}))
+            schema = _mcp_field(tool, "input_schema", "inputSchema")
+            assert not {"accountId", "account_id", "username", "password", "otp", "recovery_code"} & set(schema.get("properties", {}))
         await server.call_tool("oai_invoke", {"capability_id": "screen.read", "capability_version": "1.0.0",
             "parameters": {}, "idempotency_key": "mcp-retry-1", "agent_name": "MCP-test", "purpose": "验证MCP调用声明"})
         await server.call_tool("oai_cancel_request", {"request_id": "req_native"})
@@ -248,9 +257,9 @@ def test_official_mcp_client_negotiates_and_calls_stdio_process(tmp_path):
         async with stdio_client(parameters) as (read, write):
             async with ClientSession(read, write) as session:
                 initialization = await session.initialize()
-                assert initialization.serverInfo.name == "OAI"
+                assert _mcp_field(initialization, "server_info", "serverInfo").name == "OAI"
                 result = await session.call_tool("oai_capabilities", {})
-                assert not result.isError
+                assert not _mcp_field(result, "is_error", "isError")
                 assert "screen.read" in result.content[0].text
 
     with core_http() as (url, received):
