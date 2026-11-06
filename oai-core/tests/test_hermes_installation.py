@@ -602,8 +602,15 @@ def test_real_standard_venv_and_executable_links(tmp_path):
             pytest.skip("当前文件系统无法创建真实符号链接；由原生 CI 验证")
         raise
     environment = tmp_path / "standard-venv"
-    venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+    # Hosted Python belongs to a shared tool cache whose permissions are not
+    # this test's contract. Keep its metadata untouched and link to an owned,
+    # private executable copy while retaining a real pyvenv.cfg environment.
+    venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
     interpreter = environment / "bin/python"
+    private_executable = interpreter.with_name("private-python")
+    interpreter.rename(private_executable)
+    private_executable.chmod(0o700)
+    interpreter.symlink_to(private_executable.name)
     assert interpreter.is_symlink()
     assert _executable(interpreter, venv=True) == interpreter
     result = subprocess.run([str(interpreter), "-I", "-B", "-c",
@@ -612,6 +619,17 @@ def test_real_standard_venv_and_executable_links(tmp_path):
     prefix, base = json.loads(result.stdout)
     assert Path(prefix) == environment and prefix != base
     alias = tmp_path / "executable-alias"
-    executable = Path(sys.executable).resolve()
-    alias.symlink_to(os.path.relpath(executable, tmp_path))
-    assert _executable(alias) == executable
+    alias.symlink_to(os.path.relpath(private_executable, tmp_path))
+    assert _executable(alias) == private_executable
+
+
+@pytest.mark.parametrize("mode", [0o720, 0o702, 0o777])
+def test_group_or_world_writable_executable_is_still_rejected(tmp_path, mode):
+    from oai_core.hermes_installation import HermesAdapterInstallError, _executable
+
+    executable = tmp_path / "shared-python"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(mode)
+    with pytest.raises(HermesAdapterInstallError) as caught:
+        _executable(executable)
+    assert caught.value.code == "HERMES_PATH_UNSAFE"

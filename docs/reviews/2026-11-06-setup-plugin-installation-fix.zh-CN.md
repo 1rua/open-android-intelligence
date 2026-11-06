@@ -48,3 +48,14 @@ Hermes 安装辅助器最终聚焦回归 **22 项通过**，其中标准插件�
 快速入口最后固定调用 Android 的 `noVpnSurfaceCheck` 静态扫描，第一次因默认用户目录的 Gradle 缓存只读而中断。此问题与源码测试失败分别记录；补跑时沿用项目已有 JDK 21、SDK 和 `gradle-user-home`，静态扫描以退出码 0 通过（14 秒）；未重新下载安装缓存或编译 APK。另一套 `gradle-home` 的 `fileHashes.bin` 已有损坏记录，本次保留原缓存。
 
 最终 `npm run test:pr` **退出码 0，所有阶段通过**：Core 1021 项通过、2 项跳过，Hermes 246 项通过，DSH 84 项通过；Android 仅执行 `noVpnSurfaceCheck`，未编译模块或 APK。PR 触发后按精确提交检查远端 CI 和 review，采用后台轮询及只读 Agent 回调，不在前台等待。
+
+
+## PR #90 的 CI 跟进
+
+提交 `00421c7dd060072baff33b2cf8514739880f2fb1` 对应 CI `42226612823` 中，Core 的 Python 3.11、3.12 各有两项失败：`test_real_standard_venv_and_executable_links`、`test_uninstall_uses_the_installations_python_for_authentication`。同次 Hermes、DSH、Android 和 APK 检查均通过。
+
+两项失败来自测试构造对共享解释器元数据的假设。真实 venv 测试直接链接 GitHub 托管的共享 Python，目标被 `_safe()` 拒绝；日志未打印具体权限或链接数，因此不将共享解释器的某一权限值当作已知事实。卸载测试使用 `copy2` 覆盖私有 stub，继承源解释器权限，导致模拟的“私有安装解释器”不满足权限要求。用 worktree 内的副本分别设置 `0755`、`0775` 后复现旧测试为 1 项失败、1 项通过，`0775` 返回与 CI 相同的安全拒绝信息。
+
+本次仅修正测试：真实链接用例先创建普通复制的 venv，将受控私有解释器设为 `0700` 后再建立真实链接，保留 `sys.prefix` 的实际子进程检查；卸载用例显式收紧私有副本权限，并同时覆盖两种源权限、确认源文件权限未变。另补三种组或其他用户可写的解释器仍须被拒绝的回归。安装器和卸载器的生产安全校验未修改，未更改共享 Python 权限。
+
+聚焦验证：卸载回归在 Python 3.11.15 上 **62 项通过**；Hermes 安装回归 **25 项通过、1 项跳过**。真实符号链接测试仍受当前文件系统能力限制，留给更新后的 CI 执行；本地跳过不计为真实链接验证通过。
