@@ -188,6 +188,17 @@ main() {
             fi
             exec "$PYTHON_BIN" -I "$recovery_source/scripts/installer.py" install --dir "$target"
         fi
+        if [ -z "$script_dir" ]; then
+            # 通过 curl | bash 升级已有安装：先将最新安装包拉取到独立临时目录，验证原管理员密码前不改动原有目录。
+            if ! command -v git >/dev/null 2>&1; then
+                ui_error '在线升级需要先安装 git；您原有的配置和账号数据完好未动。'
+                return 1
+            fi
+            ui_step "检测到已有安装目录 (${target})，正在拉取最新版本安装包（验证管理员密码前不会修改现有数据）..."
+            recovery_source="$(mktemp -d "${target}.download.XXXXXXXX")"
+            git clone --single-branch --branch "${OAI_BRANCH:-dev}" https://github.com/1rua/open-android-intelligence.git "$recovery_source"
+            OAI_TEMP_DOWNLOAD_SOURCE=1 exec "$PYTHON_BIN" -I "$recovery_source/scripts/installer.py" install --dir "$target"
+        fi
     else
         if ! select_python || ! command -v git >/dev/null 2>&1; then install_new_dependencies; fi
     fi

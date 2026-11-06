@@ -125,6 +125,11 @@ def main() -> int:
     if not (source / "oai-core" / "pyproject.toml").is_file():
         parser.error("未找到完整的 OAI Core 程序文件，请从项目源码目录运行安装脚本")
     restore_source = source if not (root / "oai-core" / "pyproject.toml").is_file() else None
+    upgrade_source = (
+        source
+        if (args.operation == "install" and restore_source is None and source.resolve() != root.resolve())
+        else None
+    )
     if restore_source is not None and args.operation != "install":
         parser.error("当前安装的程序文件不完整，请先运行 install.sh 修复安装")
     runtime_source = source / "oai-core" / "src"
@@ -153,7 +158,12 @@ def main() -> int:
             if os.environ.get("OAI_INSTALL_RECOVERY_ENV") == "1":
                 raise
             return _prepare_recovery_environment(source, root)
-        return install(root, restore_source=restore_source) if restore_source is not None else install(root)
+        kwargs = {}
+        if restore_source is not None:
+            kwargs["restore_source"] = restore_source
+        if upgrade_source is not None:
+            kwargs["upgrade_source"] = upgrade_source
+        return install(root, **kwargs)
     if not venv.is_file():
         if args.operation != "install":
             parser.error("未找到已安装的运行环境，请先运行 install.sh 完成安装")
@@ -177,7 +187,10 @@ def main() -> int:
     env.pop("OAI_INIT_ADMIN_PASSWORD", None)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONPATH"] = str(runtime_source)
-    os.execve(str(venv), [str(venv), "-m", "oai_core.scripts_runtime", args.operation, "--dir", str(root)], env)
+    command = [str(venv), "-m", "oai_core.scripts_runtime", args.operation, "--dir", str(root)]
+    if upgrade_source is not None:
+        command.extend(["--upgrade-source", str(upgrade_source)])
+    os.execve(str(venv), command, env)
     return 0
 
 

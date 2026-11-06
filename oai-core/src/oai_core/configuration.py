@@ -942,6 +942,21 @@ def _sync_hermes_venv_packages(root: Path, hermes_home: Path, owner_uid: int, ow
                             os.chown(os.path.join(dirpath, fname), owner_uid, owner_gid)
         except Exception:
             continue
+    plugin_manifest = root / "integrations" / "hermes-session-adapter" / "plugin.yaml"
+    if not plugin_manifest.is_file():
+        plugin_manifest = repo_fallback / "integrations" / "hermes-session-adapter" / "plugin.yaml"
+    installed_plugin = hermes_home / "plugins" / "oai-hermes-session-adapter"
+    if (plugin_manifest.is_file() and not plugin_manifest.is_symlink()
+            and installed_plugin.is_dir() and not installed_plugin.is_symlink()):
+        try:
+            manifest_text = plugin_manifest.read_text(encoding="utf-8")
+            target_manifest = installed_plugin / "plugin.yaml"
+            if not target_manifest.is_symlink():
+                current_manifest = _read_host_text(target_manifest, owner_uid)
+                if current_manifest != manifest_text:
+                    _write_host_text(target_manifest, manifest_text, owner_uid, owner_gid, 0o600)
+        except Exception:
+            pass
 
 
 def _ensure_agent_secret_file(storage_root: Path, agent_id: str, preferred_token: str | None) -> tuple[str, str]:
@@ -1991,12 +2006,13 @@ def prepare_configuration(transaction: ConfigurationTransaction, host: str, port
 def deploy_skills_to_agents(root: Path) -> bool:
     # Optional post-commit installation must not remove existing host files.
     import shutil
+    local_skill = root / "integrations" / "skills" / "oai-client"
     try:
         from oai_core.skills_installer import get_agent_skill_destinations, get_skill_source_dir
-        source = get_skill_source_dir()
+        source = local_skill if (local_skill / "SKILL.md").is_file() else get_skill_source_dir()
         destinations = get_agent_skill_destinations()
     except Exception:
-        source = root / "integrations" / "skills" / "oai-client"
+        source = local_skill
         destinations = [Path.home() / ".agents" / "skills"]
     if not (source / "SKILL.md").is_file():
         _ui_warn("[WARN] 配置已保存，但未找到可选的 oai-client 技能文件，可稍后手动安装。")

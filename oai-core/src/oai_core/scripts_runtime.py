@@ -5,6 +5,7 @@ import argparse
 import builtins
 from collections.abc import Sequence
 from contextlib import contextmanager
+import importlib
 import json
 import os
 from pathlib import Path
@@ -638,14 +639,296 @@ def _restore_install_source(root: Path, source: Path, store: IdentityStore, hand
         os.replace(temporary, destination)
 
 
-def install(root: Path, *, restore_source: Path | None = None) -> int:
+_EXCLUDED_UPGRADE_DIRS = {
+    ".git", "__pycache__", ".pytest_cache", "node_modules", "build", "dist", ".gradle", ".venv",
+}
+
+
+def _list_source_entries(source: Path) -> list[Path]:
+    if (source / ".git").exists() and not (source / ".git").is_symlink() and shutil.which("git"):
+        result = subprocess.run(
+            ["git", "-C", str(source), "ls-files", "-z"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return [Path(name) for name in result.stdout.split("\0") if name]
+    found: list[Path] = []
+    for top in ("oai-core", "scripts", "integrations", "gateway-contract"):
+        top_path = source / top
+        if not top_path.is_dir() or top_path.is_symlink():
+            continue
+        for dirpath, dirnames, filenames in os.walk(top_path, followlinks=False):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _EXCLUDED_UPGRADE_DIRS and not d.endswith(".egg-info")
+                and not (Path(dirpath) / d).is_symlink()
+            ]
+            for fname in sorted(filenames):
+                if fname.endswith((".pyc", ".pyo")):
+                    continue
+                candidate = Path(dirpath) / fname
+                if candidate.is_file() and not candidate.is_symlink():
+                    found.append(candidate.relative_to(source))
+    return found
+
+
+def _sync_install_source(root: Path, source: Path, store: IdentityStore, handle: str) -> int:
+    """管理员认证后，将外部新版安装包中的源码同步更新至安装目录，保留原有配置与账号数据。"""
+    store.require_management(handle, "install")
+    source = source.resolve()
+    if source == root.resolve():
+        return 0
+    relative_paths = _list_source_entries(source)
+    storage, key, database = _paths(root)
+    protected = (
+        root / "runtime",
+        root / ".venv",
+        root / ".git",
+        root / "core.json",
+        root / "start-core.sh",
+        storage,
+        key,
+        database,
+    )
+    marker = Path("oai-core/pyproject.toml")
+    if not any(rel == marker for rel in relative_paths):
+        raise ValueError("升级安装包缺少 OAI Core 安装元数据")
+    to_update: list[tuple[Path, Path, Path]] = []
+    for relative in relative_paths:
+        if relative.is_absolute() or ".." in relative.parts or relative.parts[0] == ".git":
+            raise ValueError("升级源码包含无效路径")
+        destination = root / relative
+        if any(destination == path or path in destination.parents for path in protected):
+            continue
+        original = source / relative
+        if not original.is_file() or original.is_symlink() or destination.resolve() != destination.absolute():
+            raise ValueError("升级源码或目标路径不安全")
+        if destination.exists():
+            if not destination.is_file() or destination.stat().st_uid != os.geteuid():
+                raise ValueError("拒绝覆盖已有的非本用户程序文件")
+            same_mode = (stat.S_IMODE(destination.stat().st_mode) & 0o111) == (stat.S_IMODE(original.stat().st_mode) & 0o111)
+            if destination.read_bytes() == original.read_bytes() and same_mode:
+                continue
+        to_update.append((relative, original, destination))
+    to_update.sort(key=lambda item: item[0] == marker)
+    for _, original, destination in to_update:
+        store.require_management(handle, "install")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(destination.name + ".upgrade." + secrets.token_hex(8) + ".tmp")
+        shutil.copy2(original, temporary)
+        store.require_management(handle, "install")
+        os.replace(temporary, destination)
+    return len(to_update)
+
+
+def _archive_temp_download_source(root: Path, source: Path) -> None:
+    if os.environ.get("OAI_TEMP_DOWNLOAD_SOURCE") != "1":
+        return
+    try:
+        if (not source.is_dir() or source.is_symlink()
+                or source.parent != root.parent
+                or not source.name.startswith(root.name + ".download.")
+                or source.stat().st_uid != os.geteuid()):
+            return
+        archive_parent = root / "runtime" / "upgrade-downloads"
+        configuration.private_directory(archive_parent)
+        os.replace(source, archive_parent / (source.name + "-" + secrets.token_hex(4)))
+    except OSError:
+        return
+
+
+def _upgrade_git_checkout(root: Path, store: IdentityStore, handle: str) -> bool:
+    """管理员认证后，在安全的 Git 部署目录拉取远端最新提交并快进合并。"""
+    git_dir = root / ".git"
+    if not git_dir.exists() or git_dir.is_symlink() or not shutil.which("git"):
+        return False
+    try:
+        if git_dir.stat().st_uid != os.geteuid():
+            return False
+    except OSError:
+        return False
+    store.require_management(handle, "install")
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    remote_res = subprocess.run(
+        ["git", "-C", str(root), "remote", "get-url", "origin"],
+        capture_output=True, text=True, timeout=10, check=False, env=env,
+    )
+    if remote_res.returncode != 0 or not remote_res.stdout.strip():
+        return False
+    status_res = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True, text=True, timeout=15, check=False, env=env,
+    )
+    if status_res.returncode != 0:
+        _warn("无法检查当前目录的 Git 状态，已跳过自动拉取远端源码。")
+        return False
+    if status_res.stdout.strip():
+        _warn("检测到安装目录存在未提交的本地代码改动，已跳过自动拉取远端更新，将使用当前本地代码更新组件。")
+        return False
+    branch = os.environ.get("OAI_BRANCH", "").strip()
+    if not branch:
+        branch_res = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+        branch = branch_res.stdout.strip() if branch_res.returncode == 0 and branch_res.stdout.strip() else "dev"
+    head_res = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=10, check=False, env=env,
+    )
+    before_head = head_res.stdout.strip() if head_res.returncode == 0 else ""
+    _step(f"正在从远端仓库检查最新版本（分支: {branch}）...")
+    try:
+        fetch_res = subprocess.run(
+            ["git", "-C", str(root), "fetch", "--quiet", "origin", branch],
+            capture_output=True, text=True, timeout=60, check=False, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        _warn("连接远端仓库超时，将继续使用本地现有源码完成检查与更新。")
+        return False
+    if fetch_res.returncode != 0:
+        _warn("未能拉取远端仓库更新（可能处于离线或网络受限环境），将继续使用本地现有源码更新组件。")
+        return False
+    fetch_head_res = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "FETCH_HEAD"],
+        capture_output=True, text=True, timeout=10, check=False, env=env,
+    )
+    after_head = fetch_head_res.stdout.strip() if fetch_head_res.returncode == 0 else ""
+    if not after_head or after_head == before_head:
+        _ok(f"当前源码已是最新版本（{before_head[:8] or '最新'}）。")
+        return False
+    store.require_management(handle, "install")
+    merge_res = subprocess.run(
+        ["git", "-C", str(root), "merge", "--ff-only", "FETCH_HEAD"],
+        capture_output=True, text=True, timeout=30, check=False, env=env,
+    )
+    if merge_res.returncode != 0:
+        _warn("本地分支与远端历史存在分叉，未强行覆盖；如需同步最新代码请手动执行 git pull 后重试。")
+        return False
+    _ok(f"源码已更新至最新版本：{before_head[:8]} -> {after_head[:8]}。")
+    return True
+
+
+def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: str) -> None:
+    """升级本机已经安装过 OAI 连接插件的 Hermes / DSH 环境。"""
+    detected = configuration.detect_host_agents()
+    if "hermes" in detected and (root / "integrations/hermes-session-adapter/plugin.yaml").is_file():
+        hermes_home = detected["hermes"][0]
+        if ((hermes_home / "plugins" / "oai-hermes-session-adapter").is_dir()
+                or (hermes_home / "plugins" / "open-android-intelligence-gateway").is_dir()):
+            from .hermes_installation import HermesAdapterInstallError, install_hermes_adapter
+            _step("检测到已安装的 Hermes 连接插件，正在同步更新...")
+            try:
+                install_hermes_adapter(root, store, handle, hermes_home)
+                restarted = configuration.restart_hermes_service_if_active()
+                _ok("已同步更新本机 Hermes 连接插件" + ("并重启 hermes-gateway 服务。" if restarted else "。"))
+            except HermesAdapterInstallError as err:
+                _warn(f"Hermes 连接插件未能自动更新：{err}（可稍后在 oai setup 中处理）。")
+    if "dsh" in detected and (root / "integrations/dsh-session-adapter/install.mjs").is_file():
+        from .dsh_installation import DshAdapterInstallError, discover_dsh_profiles, install_dsh_adapter
+        try:
+            installed_profiles = discover_dsh_profiles(detected["dsh"], include_uninstalled=False)
+        except DshAdapterInstallError:
+            installed_profiles = []
+        for profile in installed_profiles:
+            _step(f"检测到已安装的 DSH 连接插件（配置: {profile.name}），正在同步更新...")
+            try:
+                install_dsh_adapter(root, store, handle, profile, include_uninstalled=False)
+                _ok(f"已同步更新 DSH 连接插件（配置: {profile.name}）。")
+            except DshAdapterInstallError as err:
+                _warn(f"DSH 配置 {profile.name} 的连接插件未能自动更新：{err}（可稍后在 oai setup 中处理）。")
+
+
+def _unit_matches_root(unit: Path, root: Path) -> bool:
+    if not unit.is_file() or unit.is_symlink():
+        return False
+    try:
+        entries = dict(line.split("=", 1) for line in unit.read_text(encoding="utf-8", errors="replace").splitlines() if "=" in line)
+        return (shlex.split(entries.get("WorkingDirectory", "")) == [str(root)]
+                and shlex.split(entries.get("ExecStart", "")) == [str(root / "start-core.sh")])
+    except (OSError, ValueError):
+        return False
+
+
+def _restart_active_service_if_owned(root: Path, store: IdentityStore, handle: str) -> bool:
+    """升级完成后，若属于当前实例的后台服务正在运行，则自动平滑重启使其加载新代码。"""
+    if sys.platform.startswith("linux"):
+        unit, _ = _service_files(root)
+        candidates: list[tuple[Path, list[str]]] = [(unit, ["--user"])]
+        if os.geteuid() == 0:
+            candidates.append((Path("/etc/systemd/system/oai-core.service"), []))
+        if not any(_unit_matches_root(candidate_unit, root) for candidate_unit, _ in candidates):
+            return False
+        if not shutil.which("systemctl"):
+            return False
+        for candidate_unit, flags in candidates:
+            if not _unit_matches_root(candidate_unit, root):
+                continue
+            state = subprocess.run(
+                ["systemctl", *flags, "show", "oai-core.service",
+                 "--property=FragmentPath,WorkingDirectory,ActiveState"],
+                cwd=root, check=False, capture_output=True, text=True, timeout=15,
+            )
+            if state.returncode != 0:
+                continue
+            loaded = dict(line.split("=", 1) for line in state.stdout.splitlines() if "=" in line)
+            if (loaded.get("FragmentPath") == str(candidate_unit)
+                    and loaded.get("WorkingDirectory") == str(root)
+                    and loaded.get("ActiveState") in {"active", "activating", "reloading"}):
+                _step("检测到后台服务 oai-core.service 正在运行，正在重启以加载新版本...")
+                try:
+                    _run(store, handle, "service", ["systemctl", *flags, "daemon-reload"], cwd=root)
+                    _run(store, handle, "service", ["systemctl", *flags, "restart", "oai-core.service"], cwd=root)
+                except subprocess.CalledProcessError:
+                    _warn("后台服务自动重启失败，请手动执行 systemctl --user restart oai-core.service。")
+                    return False
+                _ok("后台服务 oai-core.service 已自动重启，新版本已生效。")
+                return True
+        return False
+    if sys.platform == "darwin":
+        import plistlib
+        plist = Path.home() / "Library/LaunchAgents/com.openandroidintelligence.core.plist"
+        if not plist.is_file() or plist.is_symlink() or not shutil.which("launchctl"):
+            return False
+        try:
+            disk = plistlib.loads(owned_bytes(plist) or b"")
+        except Exception:
+            return False
+        label = "com.openandroidintelligence.core"
+        if (disk.get("Label") != label
+                or disk.get("ProgramArguments") != [str(root / "start-core.sh")]
+                or disk.get("WorkingDirectory") != str(root)):
+            return False
+        jobs = subprocess.run(["launchctl", "list"], cwd=root, check=False, capture_output=True, text=True, timeout=15)
+        if jobs.returncode != 0:
+            return False
+        running = any(
+            len(parts := line.split()) >= 3 and parts[-1] == label and parts[0] != "-"
+            for line in jobs.stdout.splitlines()
+        )
+        if not running:
+            return False
+        _step("检测到 macOS 后台服务正在运行，正在重启以加载新版本...")
+        try:
+            _run(store, handle, "service", ["launchctl", "unload", str(plist)], cwd=root)
+            _run(store, handle, "service", ["launchctl", "load", "-w", str(plist)], cwd=root)
+        except subprocess.CalledProcessError:
+            _warn("macOS 后台服务自动重启失败，请手动重新加载 LaunchAgent。")
+            return False
+        _ok("macOS 后台服务已自动重启，新版本已生效。")
+        return True
+    return False
+
+
+def install(root: Path, *, restore_source: Path | None = None, upgrade_source: Path | None = None) -> int:
     storage, key, database = _paths(root)
     has_identity = database.exists() or database.is_symlink()
     state = _verify_journal(root, has_identity=has_identity)
     if has_identity:
         _box("验证管理员身份", (
             "检测到当前目录已有安装记录，请先完成身份验证。",
-            "验证通过后将自动更新程序组件，原有配置与数据保持不变。",
+            "验证通过后将自动拉取/同步最新代码并升级组件，原有配置与数据保持不变。",
         ))
         store = IdentityStore(database, key_store=LocalMasterKeyStore(key))
         try:
@@ -677,11 +960,30 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
                 _ok("应急恢复码已完成登记。")
             else:
                 raise PermissionError("首次初始化需要受保护终端以保存恢复码")
+        source_updated = False
         if restore_source is not None:
             _step("正在恢复缺失的程序源码文件（原有配置与账号数据保持不变）...")
             with configuration_lock(root):
                 _restore_install_source(root, restore_source, store, handle)
             _ok("程序源码文件已恢复。")
+            source_updated = True
+        elif upgrade_source is not None:
+            _step("正在同步最新版本程序文件（原有配置与账号数据保持不变）...")
+            with configuration_lock(root):
+                updated_count = _sync_install_source(root, upgrade_source, store, handle)
+            if updated_count > 0:
+                _ok(f"程序文件已更新（共更新 {updated_count} 个文件）。")
+                source_updated = True
+            else:
+                _ok("当前目录的程序文件已是最新版本。")
+            _archive_temp_download_source(root, upgrade_source)
+        elif has_identity:
+            source_updated = _upgrade_git_checkout(root, store, handle)
+        if source_updated and (root / "oai-core" / "src" / "oai_core" / "configuration.py").is_file():
+            local_src = str((root / "oai-core" / "src").resolve())
+            if not sys.path or sys.path[0] != local_src:
+                sys.path.insert(0, local_src)
+            importlib.reload(configuration)
         python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not python.is_file():
             _step("正在创建 Python 虚拟环境 (.venv)...")
@@ -704,9 +1006,18 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
             _journal(root, "configured")
         else:
             configured = True
+            agents_home = Path.home() / ".agents"
+            if ((root / "integrations" / "skills" / "oai-client" / "SKILL.md").is_file()
+                    and (not agents_home.exists() or agents_home.is_dir())):
+                configuration.deploy_skills_to_agents(root)
         # Existing installs are authenticated before pip, CLI or registration writes.
-        trusted_package = (root / "oai-core").resolve() if restore_source is not None else Path(__file__).resolve().parents[2]
-        package_reference = "./oai-core" if trusted_package == (root / "oai-core").resolve() else os.path.relpath(trusted_package, root)
+        local_package = (root / "oai-core").resolve()
+        trusted_package = (
+            local_package
+            if (restore_source is not None or upgrade_source is not None or (local_package / "pyproject.toml").is_file())
+            else Path(__file__).resolve().parents[2]
+        )
+        package_reference = "./oai-core" if trusted_package == local_package else os.path.relpath(trusted_package, root)
         _step("正在安装/更新 OAI Core 命令行与运行时组件...")
         _run(store, handle, "install", [str(python), "-m", "pip", "install", "-e", package_reference], cwd=root)
         _run(store, handle, "install", [str(python), "-m", "pip", "check"], cwd=root)
@@ -715,6 +1026,8 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
         _integrate_cli(root, store, handle)
         _ok("全局快捷命令 oai 已配置到 ~/.local/bin/oai。")
         if configuration.detect_host_agents():
+            if has_identity:
+                _upgrade_installed_host_adapters(root, store, handle)
             _step("正在扫描并尝试自动连接本机已安装的 AI 助手...")
             configuration.auto_connect_host_agents(root, store, handle, operator)
         _box("步骤 4/4 · 后台自启与服务设置", (
@@ -730,11 +1043,14 @@ def install(root: Path, *, restore_source: Path | None = None) -> int:
         )
         if autostart_choice.lower() in {"y", "yes", "1"}:
             _configure_service(root, store, handle)
+        elif has_identity:
+            _restart_active_service_if_owned(root, store, handle)
         if state is not None or (root / "runtime" / "installer-journal.json").exists():
             store.require_management(handle, "install")
             _journal(root, "complete")
         final_host, final_port, _, _ = configuration._network_settings(root)
-        _box("🎉 OAI Core 安装已完成", (
+        done_title = "🎉 OAI Core 更新已完成" if has_identity else "🎉 OAI Core 安装已完成"
+        _box(done_title, (
             f"• 安装目录: {root}",
             f"• 服务地址: {final_host}:{final_port}",
             "• 启动服务: 运行 oai 或 ./start-core.sh",
@@ -765,11 +1081,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=("install", "setup"))
     parser.add_argument("--dir", type=Path, required=True)
+    parser.add_argument("--upgrade-source", type=Path, default=None)
     args = parser.parse_args()
     root = args.dir.expanduser().absolute()
     if root.is_symlink() or root.resolve() != root:
         raise ValueError("安装路径不能包含符号链接")
-    return install(root) if args.operation == "install" else setup(root)
+    upgrade_source = args.upgrade_source.expanduser().absolute() if args.upgrade_source is not None else None
+    return install(root, upgrade_source=upgrade_source) if args.operation == "install" else setup(root)
 
 
 if __name__ == "__main__":
