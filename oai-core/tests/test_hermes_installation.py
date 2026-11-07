@@ -706,22 +706,45 @@ def test_offline_dependency_fallback_succeeds_when_online_index_is_unreachable(i
         assert "--offline" in install_attempts[1]
 
 
-def test_root_user_can_install_adapter_for_foreign_owned_host(installation, monkeypatch):
+@pytest.mark.parametrize(("owner_uid", "owner_gid"), [(1000, 1000), (1001, 1001)])
+def test_root_user_can_install_adapter_for_foreign_owned_host(installation, monkeypatch, owner_uid, owner_gid):
     from oai_core import hermes_installation as installer
 
-    owner_uid = 1000
-    owner_gid = 1000
     real_stat = Path.stat
+    real_lstat = Path.lstat
+    real_fstat = os.fstat
+    owners = {}
+
+    def owned_stat(info, owner):
+        fields = list(info)
+        fields[4], fields[5] = owner
+        return os.stat_result(fields)
+
+    def foreign_ownership(path, info):
+        if path.is_relative_to(installation.root):
+            # Model the root-owned Core checkout independently of the runner UID.
+            owner = (0, 0)
+        elif path.is_relative_to(installation.home):
+            owner = (owner_uid, owner_gid)
+        else:
+            return info
+        owners[(info.st_dev, info.st_ino)] = owner
+        return owned_stat(info, owner)
+
     def foreign_stat(path, *args, **kwargs):
-        info = real_stat(path, *args, **kwargs)
-        if str(path).startswith(str(installation.home)):
-            fields = list(info)
-            fields[4] = owner_uid
-            fields[5] = owner_gid
-            return os.stat_result(fields)
-        return info
+        return foreign_ownership(path, real_stat(path, *args, **kwargs))
+
+    def foreign_lstat(path):
+        return foreign_ownership(path, real_lstat(path))
+
+    def foreign_fstat(descriptor):
+        info = real_fstat(descriptor)
+        owner = owners.get((info.st_dev, info.st_ino))
+        return owned_stat(info, owner) if owner is not None else info
 
     monkeypatch.setattr(Path, "stat", foreign_stat)
+    monkeypatch.setattr(Path, "lstat", foreign_lstat)
+    monkeypatch.setattr(os, "fstat", foreign_fstat)
     monkeypatch.setattr(os, "geteuid", lambda: 0)
     monkeypatch.setattr(os, "getuid", lambda: 0)
 
@@ -733,7 +756,7 @@ def test_root_user_can_install_adapter_for_foreign_owned_host(installation, monk
     calls = fake_host(monkeypatch, installer, installation)
     installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
 
-    assert any(uid == owner_uid for _, uid, _ in chowned_paths)
+    assert any((uid, gid) == (owner_uid, owner_gid) for _, uid, gid in chowned_paths)
     target = installation.home / "plugins" / installer.PLUGIN
     assert target.is_dir()
 

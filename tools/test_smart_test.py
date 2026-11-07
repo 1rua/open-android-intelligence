@@ -15,6 +15,25 @@ def load_runner():
     return module
 
 
+def mock_hermes_sdk(runner, monkeypatch, available):
+    sdk_root = Path(__file__).with_name("mock-hermes-sdk")
+    original_is_dir = runner.Path.is_dir
+
+    def is_dir(path):
+        if path == sdk_root:
+            return available
+        if path.name == "hermes-sdk-75b083e":
+            return False
+        return original_is_dir(path)
+
+    if available:
+        monkeypatch.setenv("HERMES_SDK_ROOT", str(sdk_root))
+    else:
+        monkeypatch.delenv("HERMES_SDK_ROOT", raising=False)
+    monkeypatch.setattr(runner.Path, "is_dir", is_dir)
+    return sdk_root
+
+
 def adapter_dependent_tests():
     root = Path(__file__).parents[1]
     return [
@@ -64,22 +83,42 @@ def test_runner_routes_adapter_dependent_tests_and_propagates_failure(test_file,
     assert test_file in commands[-1]
 
 
-def test_adapter_only_edits_execute_native_suite_and_propagate_failure():
+@pytest.mark.parametrize("sdk_available", [False, True], ids=["sdk-missing", "sdk-present"])
+def test_adapter_only_edits_execute_native_suite_and_propagate_failure(sdk_available, monkeypatch):
     runner = load_runner()
+    sdk_root = mock_hermes_sdk(runner, monkeypatch, sdk_available)
     commands = []
+    command_envs = []
+    sdk_conditional_tests = {
+        "oai-core/tests/test_structured_tool_history.py",
+        "oai-core/tests/test_native_tool_events.py",
+        "oai-core/tests/test_native_event_sync.py",
+    }
+    failing_test = (
+        "oai-core/tests/test_native_tool_events.py"
+        if sdk_available
+        else "oai-core/tests/test_hermes_native_origin.py"
+    )
 
     def execute(command, **kwargs):
         commands.append(command)
-        return 7 if "oai-core/tests/test_native_tool_events.py" in command else 0
+        command_envs.append(kwargs.get("env"))
+        return 7 if failing_test in command else 0
 
     runner.run_command = execute
     impact = runner.analyze_impact(["integrations/hermes-session-adapter/src/oai_hermes_adapter/tool_events.py"])
     assert runner.execute_strategy("fast", impact) == 7
     assert len(commands) == 2
-    assert "oai-core/tests/test_structured_tool_history.py" in commands[-1]
-    assert "oai-core/tests/test_native_event_sync.py" in commands[-1]
-    assert "oai-core/tests/test_hermes_native_origin.py" in commands[-1]
-    assert not any("oai-core/tests" in command for command in commands)
+    assert commands[0] == ["npm", "run", "mvp:lock:check"]
+    selected_tests = {argument for argument in commands[-1] if argument.startswith("oai-core/tests/")}
+    assert "oai-core/tests/test_hermes_native_origin.py" in selected_tests
+    if sdk_available:
+        assert sdk_conditional_tests <= selected_tests
+        assert command_envs[-1]["HERMES_SDK_ROOT"] == str(sdk_root)
+        assert str(sdk_root) in command_envs[-1]["PYTHONPATH"].split(":")
+    else:
+        assert sdk_conditional_tests.isdisjoint(selected_tests)
+        assert "HERMES_SDK_ROOT" not in command_envs[-1]
 
 
 @pytest.mark.parametrize("level", ["fast", "pr", "full"])
