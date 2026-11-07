@@ -1,6 +1,22 @@
 # OAI Core 与 Agent 通信稳定性修复记录
 
-基线：`dev@a688dd634b00f9b1902734c700ec6336f712b219`，已与远端核对。开发分支为 `feature/core-agent-stability-20261108`，目标 PR 分支为 `dev`。本记录区分源码复现、自动化回归、CI、模拟器与真机证据。测试尚未完成时，不将计划或包文件存在视为验收通过。
+文中 CST 均指北京时间（UTC+8）。基线：`dev@a688dd634b00f9b1902734c700ec6336f712b219`，已与远端核对。开发分支为 `feature/core-agent-stability-20261108`，目标 PR 分支为 `dev`。本记录区分源码复现、自动化回归、CI、模拟器与真机证据。测试尚未完成时，不将计划或包文件存在视为验收通过。
+
+## 验收现状（2026-11-08）
+
+最新生产修复提交为 `8f6f7703`，PR #95 目标 dev、保持草稿。以下按验收范围划分，后文保留各版本的复现与验证历史；旧段“待验证”不代表当前仍未处理，最终结论以本节及最终证据为准。
+
+| 验收项 | 当前证据 | 尚缺证据 |
+| --- | --- | --- |
+| 24 小时稳定 | 当前冻结 Core/Agent 采样持续进行，周期消息按三十分钟发送；已观察标准凭据自动续期 | 完整 24 小时及终态汇总，最早 2026-11-09 06:22:35 CST |
+| 自动恢复 | Core 真重启时原 generation 继续完成；Hermes 真重启后原历史恢复；AVD 短断/后台/短息屏恢复 | 最终 APK 本地消息 UI 已定位；真机和长时 Doze |
+| 状态准确 | 单次探测失败保能力、三次暂时失败阈值、永久拒绝和各 Agent 隔离回归；导入历史状态已现场修正 | 最终固定版本验收收口 |
+| 消息可靠 | 20 条顺序＋3 会话并发真实消息均完成、单 POST、历史各一行；游标重放自动化与真实 TCP 切换去重 | 周期 24 小时完整记录；1900.033 秒真实长流已正常 done |
+| 任务连续 | 接受后断开观察并重启 Core，原生成编号完成、用户与回复各一行 | 不将宿主真正崩溃的 unknown 伪造为完成，真机在途任务补验 |
+| 设备可靠 | 手动只读请求成功并 ACK；断网批准后原请求等待核验、恢复并仅一次 invoke | 最终 APK 同场景已 success/ACK，其他真实设备/副作用能力验收 |
+| 故障诊断 | 已脱敏 requestId 阶段日志和独立 Core 结果；认证来源隔离、INFO 恢复日志、日志 sink 失败保护 | 最终 24 小时诊断汇总 |
+| 回归准入 | Python 聚焦回归、33 项设备 Robolectric、62 项真实 Core HTTP/WS 回归通过；最新 Core/Adapter/APK/Android CI 通过 | 8f6f7703 全部相关 CI 已成功；最终 24 小时和真机审查收口 |
+| 交付 | 中文提交、dev 草稿 PR #95、根因/兼容/回退文档及可复现测试已提供 | 未完成验收保持显式标记，不合并 PR、不宣称整体完成 |
 
 ## 已复现的源码问题
 
@@ -139,3 +155,34 @@ python tools/observe-communication.py \
 完整门禁复核继续发现并定位一处既有测试时序：并发审批用例在宿主已持久化提示后仅 sleep 10ms，随后 next() 读取客户端尚未收到的事件，负载下 StopIteration。改用该文件已有 ObservedEvents，等待实际 approval_requested 被消费者收到；不改生产审批逻辑或决定结果。以 50ms 延迟消费注入，原用例确定失败、修正后通过；同文件 **18 项通过**。后续门禁仍完整执行，不增加自动重跑掩盖失败。
 
 独立安全审查另外锁定两条相邻路径并完成红绿：进度上报中的 TLS 身份失败原先被 IOException 分支吞掉，实际会继续调用插件（回归 expected invoke=0、实际=1）；现明确安全失败终止。执行前 GET 触发续签时，刷新端的临时 408/429/5xx 原先作为 GatewayAuthException 直接终结，现只在非 credentialRefused 且临时服务状态时恢复原只读核验；真实凭据拒绝不重试。恢复后同 Claim、原请求和单次执行保持不变。加上真实 GatewaySessionRenewal 的回归，最终 **33 runs、0 failures、0 ignored、0 assumptions**；没有只靠异常类型模拟成功，也没有扩大离线授权。
+
+## 真实设备短断复测
+
+专用模拟器保留数据升级至 `68be12ce`（versionCode 7961）后，先前导入的权威 CONFIRMED 用户行已不再显示等待 Agent 接收；账号和测试会话保留。此 APK 不含后续 `8f6f7703` 的 TLS/续签分类补充，最终冻结仍需后者产物验收。
+
+通知只读恢复复测请求 `devreq_e8b3c3d8-3372-4464-b42a-ee97eb54e151` 仅提交一次、仅本次批准一次：07:20:21–07:20:25 的断网核验依次记录 NETWORK_WAIT，07:20:27.838 记录 NETWORK_RECOVERED，07:20:27.903 仅一次 invoke STARTED，07:20:27.993 completed succeeded，07:20:28.111 结果收据 ACKNOWLEDGED。Core 独立 GET 核对同一请求 succeeded，并按摘要完成消费者 ACK。没有重发设备调用、再次批准、切换自动授权或保存通知正文。这是执行前短网抖恢复的真实模拟器证据，不扩展为真机或所有副作用操作通过。
+
+平台实时协议另跑当前源码的真实 HTTP/WS、认证探测、游标重放与慢消费者保护，**62 项通过、24 项不在该筛选范围**。隔离 loopback 的持续真实长流正在后台跑 1900 秒（Core SSE → RemoteAdapter → NDJSON 十秒心跳），07:09:12 开始、最早 07:40:52 结束；两秒冒烟通过但不能代替正式时长证据。
+
+WS/SSE 另完成当前完整 `gateway-client` 源码重新编译后的真实 TCP 隔离验证：WS 握手 426 后切 SSE，保存 evt_sse，SSE 关闭后恢复 WS 101 并从 evt_sse 续传；故意重放的 evt_sse 未重复交付，最终保存 evt_ws。三次真实请求的 Ed25519 签名均验证通过，未发业务 POST。该证据属于实际客户端传输＋合成 loopback 服务，不宣称手机跨真实代理已完成同场景。原始测试首次用 take(2) 提前取消消费者导致最后游标尚未提交；验收改为等待持久游标完成再取消，未为此修改生产游标提交顺序。
+
+长期采样已跨越原访问凭据有效期，标准客户端的到期时间持续前移、无待续签操作，私有配置权限为 0600 且不含密码；该检查只记录到期时间与状态，不记录令牌或刷新凭据。当前 PR #95 仍为 dev 草稿，最新 head `8f6f7703` 的 reviews、普通评论和行内评论均为空；没有把“没有评论”解释为审查批准。
+
+## 最终 APK 与长流终态
+
+最终 APK `8f6f7703` 来自成功 CI run `42424514990`，versionCode 7981，SHA-256 `d8319d06187d4bdf6fd4c7681fde9e259d874255f8f172795829bd3c015e6e66`；签名与旧包一致、保留数据升级成功，无需重新登录。短断网恢复上界 22 秒、前台返回 15 秒、短息屏唤醒 26 秒，外部历史错误等待状态未再出现。新版本地消息权威历史独立核对为用户和助手各一行；UI 定位仍按实际确认，不由 completed 日志冒充。
+
+最终版本设备请求 `devreq_d658e5dd-b3cc-4f03-8e4f-82a47495f4f0` 只提交一次。手机断网批准后记录 NETWORK_WAIT，07:40:59.000 NETWORK_RECOVERED、07:40:59.066 唯一 invoke STARTED、07:40:59.180 succeeded、07:40:59.280 结果 ACKNOWLEDGED；Core 独立 GET 同请求 succeeded，并按摘要消费者 ACK。未重复批准、未切换自动模式、未记录通知正文。
+
+真实持续长流于 **2026-11-08 07:40:52 CST**完成，消息观察 **1900.033 秒**：Core 消息 POST=1、桥消息 POST=1、Remote send 调用=1；同 generation 依次收到 generation、3 个 delta 和 done，无 error。期间桥 NDJSON 空行心跳 189 次、Core SSE 心跳 376 次。实际跨过旧 1800 秒绝对时长，`acceptance_passed=true`；这是隔离 loopback 的真实传输时长，不是虚拟时钟或真实模型计算性能，也不替代 24 小时与真机。
+
+
+## 完整准入结果
+
+生产源码提交 `8f6f7703464454c2c292431e06f04111edcfc495` 的全部相关 CI 已成功：Core Python 3.11/3.12、Hermes native、DSH、Android 专项、Fast and PR admission gates，以及 APK Artifact。准入 job 中 Fast admission 与 PR admission 两个命令步骤均为 completed/success。结果以固定提交及后台抓取的 job/step 终态为准，不用较早提交、部分 job 或定向回归代替。
+
+当前源码工作区另只有本文验证记录和观察器注释澄清：观察器需要读取 JSON 提取健康字段，但不会记录会话正文或密码；没有改动采样、认证、重试或任务业务行为。后续文档提交不会被描述为新的生产修复版本。
+
+最终 APK 的本地消息 UI 已补验：在原“通信验收20261108”会话使用既有“回到最新”入口，找到前述 clientMessageId 对应的用户消息及 `msg_d4ae48a8f5ec404dad6387f1f0284d98:completed` 回复，可见区域各一条。此前未定位是停在旧滚动位置，不是根据内容重新提交了一条替代消息；身份与计数仍以 Core history 和真实 messageId 交叉核对，不以画面推断宿主执行次数。
+
+准入产物的 XML 已独立下载核对：共 **269 个 suite、2748 项 Android/JVM 测试，0 failures、0 errors、0 skipped**。其中 DeviceExecutionRecoveryTest 33、NativeConversationMirrorTest 14、GatewaySessionRecoveryTest 24、AndroidAttachmentContentTypeTest 4、HermesHistoryMediaHttpTest 1 均实际执行且成功。产物名中的 `bd9a2cc...` 是 GitHub PR 合并测试提交，所属 workflow run 42424518942 的 head 为生产修复 `8f6f7703`；不将两种 SHA 混为同一对象。

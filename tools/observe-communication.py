@@ -2,7 +2,7 @@
 """24 小时 Core/Agent 只读通信观察器。
 每次采样先调用现有 CoreClient.devices()，让客户端按标准配置完成凭据续签；
 随后用客户端当前 token GET Agent 列表。工具不发送消息、不创建会话、不读取
-密码或响应正文。后台启停由调用方负责。
+密码，不记录响应中的会话正文。后台启停由调用方负责。
 """
 from __future__ import annotations
 import argparse
