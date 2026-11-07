@@ -359,3 +359,12 @@ def test_android_ci_steps_select_connection_account_and_settings_regressions(ste
         "*NativeEventDeletionPersistenceTest",
     }
     assert required_tests <= selected_tests
+
+
+def test_observer_only_edits_run_the_readonly_tool_regression(monkeypatch):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["tools/observe-communication.py"])
+    assert runner.execute_strategy("fast", impact) == 0
+    assert any("tools/test_observe_communication.py" in command for command in commands)

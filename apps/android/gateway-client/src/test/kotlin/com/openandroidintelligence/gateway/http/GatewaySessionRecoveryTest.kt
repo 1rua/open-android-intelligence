@@ -188,6 +188,35 @@ class GatewaySessionRecoveryTest {
         assertEquals(1, refreshes)
     }
 
+    @Test fun upstreamBridgeAuthenticationFailureDoesNotRefreshSessionOrReplayThePost() = runTest {
+        val initial = profile()
+        var refreshes = 0
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            refreshes++
+            error("an upstream 502 must not refresh Core credentials")
+        }
+        val responseBody = """{"error":{"code":"AGENT_UNAVAILABLE","details":{"source":"agent_bridge","reason":"authentication_failed","upstreamStatus":401}}}"""
+            .toByteArray()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(502, emptyList(), responseBody)
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val response = client.execute(SignedGatewayRequest(
+            "POST", "/open-android-intelligence/v2/agents/hermes/sessions/chat/events/ack", """{"cursor":"base"}""".toByteArray()))
+
+        assertEquals(502, response.status)
+        assertArrayEquals(responseBody, response.body)
+        assertEquals(1, wires.size)
+        assertEquals("POST", wires.single().method)
+        assertEquals("Bearer old", wires.single().header("Authorization"))
+        assertEquals(0, refreshes)
+    }
+
     @Test fun eventAuthenticationRecoveryIsBoundedUntilRealStreamDataArrives() = runTest {
         val initial = profile()
         var refreshes = 0

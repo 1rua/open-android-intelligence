@@ -31,6 +31,7 @@ from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, native_ev
 from oai_core.native_diagnostics import trace_context
 
 PREFIX = "/oai/session-adapter/v1"
+STREAM_HEARTBEAT_SECONDS = 10.0
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 
 
@@ -331,7 +332,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
     app = web.Application(middlewares=[authenticate], client_max_size=SESSION_REQUEST_MAX_BYTES)
 
     async def status(request):
-        return web.json_response({"online": await adapter.status(), "capabilities": adapter.descriptor()["capabilities"]})
+        return web.json_response({"online": await adapter.status(), "capabilities": {**adapter.descriptor()["capabilities"], "streamHeartbeat": True}})
 
     async def handshake(request):
         from oai_core.agent_registration import _json, bridge_proof
@@ -341,7 +342,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                 or not isinstance(body["challenge"], str) or not re.fullmatch(r"[0-9a-f]{64}", body["challenge"])):
             raise AdapterError("HOST_INCOMPATIBLE", 400)
         online = await adapter.status()
-        capabilities = adapter.descriptor()["capabilities"]
+        capabilities = {**adapter.descriptor()["capabilities"], "streamHeartbeat": True}
         result = {"instanceId": instance_id, "sessionScope": "account", "online": online,
                   "capabilities": capabilities,
                   "proof": bridge_proof(current_token[0], body["challenge"], instance_id, "account", online, capabilities)}
@@ -460,11 +461,22 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         # Authorization and binding checks run before committing response headers.
         first = await anext(stream, None)
         response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
+        pending = None
         try:
             await response.prepare(request)
             if first is not None:
                 await response.write((json.dumps(first) + "\n").encode())
-            async for event in stream:
+            event = first
+            while event is not None and event.get("type") not in {"done", "error"}:
+                pending = asyncio.create_task(anext(stream, None))
+                while not pending.done():
+                    done, _ = await asyncio.wait({pending}, timeout=STREAM_HEARTBEAT_SECONDS)
+                    if not done:
+                        await response.write(b"\n")
+                event = pending.result()
+                pending = None
+                if event is None:
+                    break
                 await response.write((json.dumps(event) + "\n").encode())
             await response.write_eof()
             return response
@@ -472,6 +484,9 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             await response.write((json.dumps({"type": "error", "code": exc.code}) + "\n").encode())
             return response
         finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
             await stream.aclose()
 
     async def attachment_create(request):
