@@ -212,11 +212,23 @@ private fun readableTime(value: String): String = runCatching {
 private const val MAX_BACKUP_BYTES = 2 * 1_024 * 1_024
 
 private fun readBackupText(context: Context, uri: android.net.Uri): String? {
-    val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
-        stream.readNBytes(MAX_BACKUP_BYTES + 1)
-    } ?: return null
-    if (bytes.size > MAX_BACKUP_BYTES) throw SettingsBackupFormatException("文件过大，不是本 App 导出的设置文件。")
-    return bytes.toString(Charsets.UTF_8)
+    val stream = context.contentResolver.openInputStream(uri) ?: return null
+    // 逐块读取并在超限时立刻停下：既不用 InputStream.readNBytes（Android 13 才有的 API，
+    // minSdk 31 上会 NoSuchMethodError），也不会把任意大的文件整个读进内存。
+    val bytes = stream.use { input ->
+        val buffer = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(8 * 1024)
+        while (true) {
+            val read = input.read(chunk)
+            if (read < 0) break
+            buffer.write(chunk, 0, read)
+            if (buffer.size() > MAX_BACKUP_BYTES) {
+                throw SettingsBackupFormatException("文件过大，不是本 App 导出的设置文件。")
+            }
+        }
+        buffer.toByteArray()
+    }
+    return String(bytes, Charsets.UTF_8)
 }
 
 /** 组合根：把各设置的真实权威交给协调器，缺一项只让对应节不参与导出/导入。 */
