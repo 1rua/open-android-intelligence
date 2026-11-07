@@ -384,6 +384,19 @@ jobs:
             pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 \
             httpx==0.28.1 requests==2.33.0 rich
           cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+      - name: Prepare private test recycle directory
+        run: |
+          python - <<'PYCODE'
+          from pathlib import Path
+          import os
+          import stat
+          path = Path("/tmp") / "open-android-intelligence-trash"
+          path.mkdir(mode=0o700, exist_ok=True)
+          info = path.lstat()
+          if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+              raise SystemExit("The test recycle directory must belong to this runner")
+          path.chmod(0o700)
+          PYCODE
       - name: Fast admission
         env:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk

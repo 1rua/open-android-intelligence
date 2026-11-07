@@ -60,6 +60,9 @@ class _NoRedirect(HTTPRedirectHandler):
 OPENER = build_opener(_NoRedirect())
 def _safe_code(value, fallback: str) -> str:
     return value if isinstance(value, str) and SAFE_CODE_RE.fullmatch(value) else fallback
+def _hop_error_codes(row: dict) -> dict:
+    value = row.get("hopErrors")
+    return value if isinstance(value, dict) else {}
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 def _write_json(path: Path, value: dict) -> None:
@@ -214,6 +217,7 @@ def observe_once(client, *, agent_id: str | None, session_id: str | None,
         "requestId": request_id,
         "latencyMs": {"devices": devices_latency, "agents": agents_latency, "session": session_latency,
                       "total": round((time.monotonic() - total_started) * 1000, 3)},
+        "hopErrors": {"devices": core_error, "agents": agent_error, "session": session_error},
         "errorCode": error_code,
     }
 def summarize(observations: list[dict], *, started_at: str, ended_at: str, actual_duration: float,
@@ -221,11 +225,22 @@ def summarize(observations: list[dict], *, started_at: str, ended_at: str, actua
               changed_paths: list[str], target_agent_id: str | None, fatal_code: str | None = None) -> dict:
     """统计真实失败；Core 请求失败和单个 Agent offline 分开记录。"""
     statuses = [row.get("httpStatus", {}) for row in observations]
-    core_failures = sum(status.get("devices") != 200 for status in statuses)
-    agent_attempts = sum(status.get("agents") is not None for status in statuses)
-    agent_failures = sum(status.get("agents") not in {None, 200} for status in statuses)
-    session_attempts = sum(status.get("session") is not None for status in statuses)
-    session_failures = sum(status.get("session") not in {None, 200} for status in statuses)
+    core_failures = sum(status.get("devices") != 200 or _hop_error_codes(row).get("devices") is not None
+                        for row, status in zip(observations, statuses))
+    agent_attempts = sum(status.get("agents") is not None or _hop_error_codes(row).get("agents") is not None
+                         for row, status in zip(observations, statuses))
+    agent_failures = sum(
+        (status.get("agents") is not None or _hop_error_codes(row).get("agents") is not None)
+        and (status.get("agents") != 200 or _hop_error_codes(row).get("agents") is not None)
+        for row, status in zip(observations, statuses)
+    )
+    session_attempts = sum(status.get("session") is not None or _hop_error_codes(row).get("session") is not None
+                           for row, status in zip(observations, statuses))
+    session_failures = sum(
+        (status.get("session") is not None or _hop_error_codes(row).get("session") is not None)
+        and (status.get("session") != 200 or _hop_error_codes(row).get("session") is not None)
+        for row, status in zip(observations, statuses)
+    )
     empty_agents = sum(status.get("agents") == 200 and not row.get("agentOnline")
                        for row, status in zip(observations, statuses))
     offline = Counter(agent for row in observations for agent, value in row.get("agentOnline", {}).items() if value is False)
@@ -342,15 +357,16 @@ def run_observer(*, config_path: Path, output_dir: Path, duration: float, interv
     deadline = started_monotonic + duration
     try:
         while True:
-            # 设置耗时超过短 duration 时仍采集一轮，但短运行永远不会因此 passed。
-            if observations and time.monotonic() >= deadline:
-                break
+            # 退出前先核对源版本，覆盖最后一次采样后的等待窗口。
             if entries:
                 state = check_manifest(entries)
                 manifest_status, changed_paths = state["status"], state["changedPaths"]
                 if manifest_status != "ok":
                     stop_reason = "source_changed"
                     break
+            # 设置耗时超过短 duration 时仍采集一轮，但短运行永远不会因此 passed。
+            if observations and time.monotonic() >= deadline:
+                break
             row = observe_once(client, agent_id=agent_id, session_id=session_id, read_path=read_path, timeout=timeout)
             observations.append(row)
             _append_jsonl(output_dir / "observations.jsonl", row)

@@ -431,9 +431,13 @@ class RemoteSessionAdapter:
             async with self._session(await self._prepare_headers(headers, "PUT", path)) as session:
                 async with session.put(self.base_url + self.prefix + path,
                         data=chunks(), timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds), allow_redirects=False) as response:
+                    if response.status in {401, 403}:
+                        raise self._response_error(response.status, {})
                     value = await response.json()
+                    if not isinstance(value, Mapping):
+                        raise AdapterError("HOST_INCOMPATIBLE", 502)
                     if response.status != 200:
-                        raise AdapterError(str(value.get("code", "ATTACHMENT_READ_FAILED")), response.status)
+                        raise self._response_error(response.status, value)
                     if value.get("status") != "uploaded":
                         raise AdapterError("ATTACHMENT_READ_FAILED", 502)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:

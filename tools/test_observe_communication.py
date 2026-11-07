@@ -35,6 +35,7 @@ class Stub:
         self.redirect_agents = False
         self.agents = [{"id": "hermes", "online": True,
                         "capabilities": {"list": True, "history": True, "send": False}}]
+        self.invalid_history = False
 
 
 @contextmanager
@@ -75,7 +76,7 @@ def http_stub():
             elif path == AGENTS:
                 self.send_json(200, {"agents": state.agents})
             elif path.endswith("/history"):
-                self.send_json(200, {"messages": [{"text": PRIVATE}]})
+                self.send_json(200, {"messages": "invalid" if state.invalid_history else [{"text": PRIVATE}]})
             elif path.endswith("/generation"):
                 self.send_json(200, {"generation": None})
             elif path == "/redirected":
@@ -121,6 +122,7 @@ def sample(*, online: bool = True) -> dict:
         "capabilities": {"hermes": {"list": True, "history": True}},
         "requestId": "obs_test",
         "latencyMs": {"devices": 1, "agents": 1, "session": 1, "total": 3},
+        "hopErrors": {"devices": None, "agents": None, "session": None},
         "errorCode": None if online else "AGENT_OFFLINE",
     }
 
@@ -148,8 +150,9 @@ def test_refresh_agents_readonly_and_jsonl_has_no_secrets(tmp_path):
         assert result["passed"] is False
         values = rows(output / "observations.jsonl")
         assert values
-        assert set(values[0]) == {"time", "httpStatus", "agentOnline", "capabilities", "requestId", "latencyMs", "errorCode"}
+        assert set(values[0]) == {"time", "httpStatus", "agentOnline", "capabilities", "requestId", "latencyMs", "hopErrors", "errorCode"}
         assert values[0]["httpStatus"] == {"devices": 200, "agents": 200, "session": 200}
+        assert values[0]["hopErrors"] == {"devices": None, "agents": None, "session": None}
         assert values[0]["agentOnline"] == {"hermes": True}
         assert values[0]["capabilities"]["hermes"] == {"list": True, "history": True, "send": False}
         paths = [request["path"] for request in state.requests]
@@ -196,6 +199,66 @@ def test_manifest_change_invalidates_run(tmp_path):
     result = summarize([sample()], stop_reason="source_changed", manifest_status=changed["status"],
                        changed_paths=changed["changedPaths"])
     assert result["verdict"] == "invalid" and result["passed"] is False
+
+
+@pytest.mark.parametrize("hop", ["agents", "session"])
+def test_protocol_failure_on_http_200_is_counted_for_its_hop(tmp_path, hop):
+    with http_stub() as (url, state):
+        if hop == "agents":
+            state.agents = [{"id": "hermes", "online": True, "capabilities": {"list": "yes"}}]
+        else:
+            state.invalid_history = True
+        client = probe.CoreClient.from_config(config(tmp_path, url, expired=False))
+        client.timeout = 0.5
+        row = probe.observe_once(
+            client, agent_id="hermes", session_id="session-1" if hop == "session" else None,
+            read_path="history", timeout=0.5,
+        )
+        assert row["httpStatus"][hop] == 200
+        expected = {"devices": None, "agents": None, "session": None}
+        expected[hop] = "AGENT_RESPONSE_INVALID"
+        assert row["hopErrors"] == expected
+        assert row["errorCode"] == "AGENT_RESPONSE_INVALID"
+        result = summarize([row])
+        if hop == "agents":
+            assert result["agents"]["attempts"] == 1
+            assert result["agents"]["apiFailures"] == 1
+            assert result["agents"]["status"] == "failed"
+        else:
+            assert result["sessionReads"]["attempts"] == 1
+            assert result["sessionReads"]["failures"] == 1
+            assert result["sessionReads"]["status"] == "failed"
+        assert result["verdict"] == "failed"
+
+
+def test_source_change_during_final_sleep_is_caught_at_run_exit(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "source.py"
+    source.write_text("one\n", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"files": [{
+        "path": "source.py", "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }]}), encoding="utf-8")
+    original_check_manifest = probe.check_manifest
+    monkeypatch.setattr(probe, "check_manifest",
+                        lambda entries: original_check_manifest(entries, root=root))
+    clock = {"elapsed": 0.0}
+    monkeypatch.setattr(probe.time, "monotonic", lambda: 1000.0 + clock["elapsed"])
+    def final_sleep(seconds):
+        clock["elapsed"] += seconds
+        source.write_text("two\n", encoding="utf-8")
+    monkeypatch.setattr(probe.time, "sleep", final_sleep)
+    with http_stub() as (url, _state):
+        result = probe.run_observer(
+            config_path=config(tmp_path, url), output_dir=tmp_path / "evidence",
+            duration=10.0, interval=10.0, timeout=0.5, agent_id="hermes", session_id=None,
+            read_path="history", manifest_path=manifest,
+        )
+    assert result["stopReason"] == "source_changed"
+    assert result["manifest"] == {"status": "mismatch", "changedPaths": ["source.py"]}
+    assert result["verdict"] == "invalid"
+    assert result["passed"] is False
 
 
 def test_real_http_redirect_is_rejected(tmp_path):
