@@ -15,6 +15,7 @@ import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
@@ -341,6 +342,229 @@ class DeviceExecutionRecoveryTest {
             assertTrue(failures.isEmpty())
         }
     }
+
+    @Test fun authorizationRecheckWaitsThroughThreeTransientFailuresWithoutRepeatingExecution() = runBlocking {
+        fixture("authorization_recheck_jitter") { driver, transport, journal, scope, failures, host ->
+            val entry = host.entries(NOTIFICATION_PLUGIN_ID).single()
+            host.setCapabilityPolicy(entry.identity.pluginId, entry.key,
+                CapabilityPolicy(mode = CapabilityAuthorizationMode.MANUAL))
+            val id = "req_authorization_recheck_jitter"
+            transport.onLookup = { requested ->
+                if (requested == id) {
+                    when (transport.lookups.count { it == id }) {
+                        1 -> null
+                        2 -> throw IOException("批准后核验暂时断网")
+                        3, 4 -> WireResponse(503, emptyList(),
+                            """{"protocol":"2.1","error":{"code":"GATEWAY_UNAVAILABLE"}}""".toByteArray())
+                        else -> null
+                    }
+                } else null
+            }
+
+            driver.enqueue(id)
+            withTimeout(3_000) { driver.confirmation.first { it?.requestId == id } }
+            driver.respond(id, allowed = true, durationMinutes = 0)
+            awaitJobs(scope)
+
+            // Initial lookup, four pre-invocation reads and delivery authorization.
+            assertEquals(6, transport.lookups.count { it == id })
+            assertEquals(1, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertTrue("Unexpected terminal result: " + transport.results.single().body.decodeToString(),
+                transport.results.single().body.decodeToString().contains("succeeded"))
+            assertEquals(1, transport.authorizationStates.count { it.second == "awaiting_confirmation" })
+            assertNull(driver.confirmation.value)
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun authorizationProgressTransientFailuresAreAdvisoryBut401StillStopsBeforeInvocation() = runBlocking {
+        fixture("authorization_progress_advisory") { driver, transport, journal, scope, failures, host ->
+            val entry = host.entries(NOTIFICATION_PLUGIN_ID).single()
+            host.setCapabilityPolicy(entry.identity.pluginId, entry.key,
+                CapabilityPolicy(mode = CapabilityAuthorizationMode.MANUAL))
+            val advisoryId = "req_authorization_progress_advisory"
+            val deniedId = "req_authorization_progress_401"
+            transport.onAuthorization = { id, state ->
+                when {
+                    id == deniedId && state == "executing" -> WireResponse(401, emptyList(), ByteArray(0))
+                    id == advisoryId || id == deniedId -> WireResponse(503, emptyList(), ByteArray(0))
+                    else -> null
+                }
+            }
+
+            driver.enqueue(advisoryId)
+            withTimeout(3_000) { driver.confirmation.first { it?.requestId == advisoryId } }
+            driver.respond(advisoryId, allowed = true, durationMinutes = 0)
+            awaitJobs(scope)
+
+            assertEquals(3, transport.lookups.count { it == advisoryId })
+            assertEquals(1, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertEquals("succeeded", submittedResultOutcome(transport.results.single()))
+            assertTrue(journal.keys().isEmpty())
+
+            driver.enqueue(deniedId)
+            withTimeout(3_000) { driver.confirmation.first { it?.requestId == deniedId } }
+            driver.respond(deniedId, allowed = true, durationMinutes = 0)
+            awaitJobs(scope)
+
+            assertEquals(2, transport.lookups.count { it == deniedId })
+            assertEquals(2, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(2, transport.results.size)
+            assertTerminalResult(transport.results[1], "denied", "CAPABILITY_DENIED",
+                "DEVICE_REQUEST_BINDING_CHANGED")
+            assertEquals(listOf(
+                advisoryId to "awaiting_confirmation", advisoryId to "executing",
+                deniedId to "awaiting_confirmation", deniedId to "executing",
+            ), transport.authorizationStates.toList())
+            assertNull(driver.confirmation.value)
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun permanentAuthorizationRecheckFailureAndTlsStopWithoutInvocation() = runBlocking {
+        fixture("authorization_recheck_permanent_failure") { driver, transport, journal, scope, failures, _ ->
+            val ids = listOf("req_recheck_401", "req_recheck_403", "req_recheck_tls")
+            transport.onLookup = { requested ->
+                if (transport.lookups.count { it == requested } == 1) null
+                else when (requested) {
+                    "req_recheck_401" -> WireResponse(401, emptyList(), ByteArray(0))
+                    "req_recheck_403" -> WireResponse(403, emptyList(), ByteArray(0))
+                    "req_recheck_tls" -> throw SSLHandshakeException("synthetic revalidation TLS failure")
+                    else -> null
+                }
+            }
+
+            ids.forEachIndexed { index, id ->
+                driver.accept(id)
+                awaitJobs(scope)
+
+                assertEquals("Initial lookup and one authorization recheck only for $id",
+                    2, transport.lookups.count { it == id })
+                assertEquals(index + 1, transport.claims.size)
+                assertEquals(index + 1, transport.results.size)
+                assertTerminalResult(
+                    transport.results[index],
+                    outcome = if (id == "req_recheck_tls") "failed" else "denied",
+                    code = if (id == "req_recheck_tls") "DEVICE_AUTHORIZATION_CHECK_FAILED" else "CAPABILITY_DENIED",
+                    reason = if (id == "req_recheck_tls") null else "GATEWAY_AUTHORIZATION_REVOKED",
+                )
+                assertNull(journal.read(id))
+                assertEquals(0, transport.invocations.get())
+            }
+            assertTrue(transport.authorizationStates.isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun cancellingDuringAuthorizationRecheckBackoffStopsWithoutInvocation() = runBlocking {
+        fixture("authorization_recheck_cancel") { driver, transport, journal, scope, failures, _ ->
+            val id = "req_recheck_cancel"
+            val recheckFailed = CompletableDeferred<Unit>()
+            transport.onLookup = { requested ->
+                if (requested == id && transport.lookups.count { it == id } >= 2) {
+                    if (transport.lookups.count { it == id } == 2) recheckFailed.complete(Unit)
+                    throw IOException("执行前核验暂时断网")
+                }
+                null
+            }
+
+            driver.enqueue(id)
+            withTimeout(3_000) { recheckFailed.await() }
+            driver.cancel(id)
+            awaitJobs(scope)
+
+            assertEquals(1, transport.claims.size)
+            assertEquals(2, transport.lookups.count { it == id })
+            assertEquals(1, transport.results.size)
+            assertTerminalResult(transport.results.single(), "cancelled", "DEVICE_REQUEST_CANCELLED")
+            assertEquals(0, transport.invocations.get())
+            assertTrue(transport.authorizationStates.isEmpty())
+            val saved = JsonFields.obj(Json.parse(journal.read(id)!!.decodeToString()))!!
+            assertEquals("fenced", JsonFields.string(saved, "stage"))
+            assertEquals("REQUEST_CANCELLED", JsonFields.string(saved, "fenceReason"))
+            assertTrue(JsonFields.bool(saved, "cancelRequested") == true)
+            assertNull("A cancelled request must retain no sensitive result body", JsonFields.field(saved, "result"))
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun authorizationRecheckStopsAtOriginalExpiryWithoutInvocation() = runBlocking {
+        fixture("authorization_recheck_expiry") { driver, transport, journal, scope, failures, _ ->
+            val id = "req_recheck_expiry"
+            transport.onLookup = { requested ->
+                if (requested == id && transport.lookups.count { it == id } == 1) {
+                    transport.expiresAt = Instant.now().plusSeconds(2).toString()
+                    null
+                } else if (requested == id) {
+                    WireResponse(503, emptyList(), ByteArray(0))
+                } else null
+            }
+
+            driver.accept(id)
+            awaitJobs(scope, timeoutMillis = 8_000)
+
+            assertEquals(1, transport.claims.size)
+            assertTrue("Expiry needs at least the initial lookup and one transient recheck",
+                transport.lookups.count { it == id } >= 2)
+            assertEquals(0, transport.invocations.get())
+            assertTrue(transport.authorizationStates.isEmpty())
+            assertTrue("Expiry must not produce more than its terminal failure result", transport.results.size <= 1)
+            transport.results.singleOrNull()?.let { assertEquals("failed", submittedResultOutcome(it)) }
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun malformedOrReboundAuthorizationRecheckStopsWithoutInvocation() = runBlocking {
+        fixture("authorization_recheck_invalid") { driver, transport, journal, scope, failures, _ ->
+            val malformed = "req_recheck_malformed"
+            val rebound = "req_recheck_generation"
+            val foreign = "req_recheck_foreign_id"
+            transport.onLookup = { requested ->
+                if (transport.lookups.count { it == requested } == 1) null
+                else when (requested) {
+                    malformed -> WireResponse(200, emptyList(),
+                        """{"protocol":"2.1","data":{"request":""".toByteArray())
+                    rebound, foreign -> WireResponse(200, emptyList(), Json.canonical(Json.of(mapOf(
+                        "protocol" to "2.1",
+                        "data" to mapOf("request" to mapOf(
+                            "requestId" to if (requested == foreign) "another-request" else rebound,
+                            "deviceId" to "dev", "pairingGeneration" to if (requested == foreign) 1 else 2,
+                            "grantRevision" to 7, "state" to "claimed", "expiresAt" to transport.expiresAt,
+                        )),
+                    ))).toByteArray())
+                    else -> null
+                }
+            }
+
+            listOf(malformed, rebound, foreign).forEachIndexed { index, id ->
+                driver.accept(id)
+                awaitJobs(scope)
+
+                assertEquals("Initial lookup and one authorization recheck only for $id",
+                    2, transport.lookups.count { it == id })
+                assertEquals(index + 1, transport.claims.size)
+                assertEquals(index + 1, transport.results.size)
+                assertTerminalResult(
+                    transport.results[index],
+                    outcome = if (id == malformed) "failed" else "denied",
+                    code = if (id == malformed) "DEVICE_AUTHORIZATION_CHECK_FAILED" else "CAPABILITY_DENIED",
+                    reason = if (id == malformed) null else "GATEWAY_AUTHORIZATION_REVOKED",
+                )
+                assertNull(journal.read(id))
+                assertEquals(0, transport.invocations.get())
+            }
+            assertTrue(transport.authorizationStates.isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
     @Test fun lostClaimReplyIsRetriedWithTheSameIdempotencyKeyAndProducesATerminalResult() = runBlocking {
         fixture("claim_retry") { driver, transport, _, scope, failures, _ ->
             transport.claimFailures = 1
@@ -611,8 +835,29 @@ class DeviceExecutionRecoveryTest {
             calls, listOf(transport.lookups.size, transport.claims.size, transport.results.size, transport.invocations.get()))
     }
 
-    private suspend fun awaitJobs(scope: CoroutineScope) {
-        withTimeout(5_000) {
+    private fun submittedResultData(request: WireRequest, field: String): String? {
+        val envelope = JsonFields.obj(Json.parse(request.body.decodeToString())) ?: return null
+        val result = JsonFields.obj(JsonFields.field(envelope, "result")) ?: return null
+        val data = JsonFields.obj(JsonFields.field(result, "data")) ?: return null
+        return JsonFields.string(data, field)
+    }
+
+    private fun submittedResultOutcome(request: WireRequest): String? {
+        val envelope = JsonFields.obj(Json.parse(request.body.decodeToString())) ?: return null
+        val result = JsonFields.obj(JsonFields.field(envelope, "result")) ?: return null
+        return JsonFields.string(result, "outcome")
+    }
+
+    private fun assertTerminalResult(request: WireRequest, outcome: String, code: String, reason: String? = null) {
+        val envelope = JsonFields.obj(Json.parse(request.body.decodeToString())) ?: error("RESULT_ENVELOPE_INVALID")
+        val result = JsonFields.obj(JsonFields.field(envelope, "result")) ?: error("RESULT_PAYLOAD_INVALID")
+        assertEquals(outcome, JsonFields.string(result, "outcome"))
+        assertEquals(code, submittedResultData(request, "code"))
+        if (reason != null) assertEquals(reason, submittedResultData(request, "reason"))
+    }
+
+    private suspend fun awaitJobs(scope: CoroutineScope, timeoutMillis: Long = 5_000) {
+        withTimeout(timeoutMillis) {
             while (true) {
                 val jobs = scope.coroutineContext[Job]!!.children.toList()
                 if (jobs.isEmpty()) break
@@ -697,6 +942,7 @@ class DeviceExecutionRecoveryTest {
         var offlineId: String? = null
         var expiresAt = Instant.now().plusSeconds(60).toString()
         var afterAuthorization: suspend (String) -> Unit = {}
+        var onAuthorization: suspend (String, String) -> WireResponse? = { _, _ -> null }
         var afterResult: suspend () -> Unit = {}
 
         /** A saved Android journal corresponds to an already-issued, still-current Core receipt. */
@@ -740,6 +986,7 @@ class DeviceExecutionRecoveryTest {
                     assertEquals("claimed", states[id])
                     authorizationStates += id to state
                     afterAuthorization(state)
+                    onAuthorization(id, state)?.let { return it }
                     mapOf("requestId" to id, "localAuthorizationState" to state)
                 }
                 request.target.endsWith("/result") -> {

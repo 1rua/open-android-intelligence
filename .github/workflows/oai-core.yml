@@ -384,6 +384,21 @@ jobs:
             pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 \
             httpx==0.28.1 requests==2.33.0 rich
           cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+      # Historical Android HTTP tests use a fixed oracle in a separate Python
+      # environment; it is never installed into the independent Core runtime.
+      - name: Check out historical Android HTTP fixture
+        uses: actions/checkout@v4
+        with:
+          repository: 1rua/hermes-android-gateway
+          ref: ebe527da2426dd25877dd335786e80cf85d1cdde
+          path: .hermes-gateway-plugin
+      - name: Install isolated historical HTTP fixture
+        run: |
+          python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
+          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install -e .hermes-gateway-plugin \
+            aiohttp PyYAML==6.0.3 httpx==0.28.1 requests==2.33.0 python-dotenv==1.2.4 psutil==7.2.2
+          echo "HERMES_PLUGIN_ROOT=$GITHUB_WORKSPACE/.hermes-gateway-plugin" >> "$GITHUB_ENV"
+          echo "OAI_HERMES_PYTHON=$RUNNER_TEMP/legacy-hermes-fixture/bin/python" >> "$GITHUB_ENV"
       - name: Prepare private test recycle directory
         run: |
           python - <<'PYCODE'
@@ -399,9 +414,19 @@ jobs:
           PYCODE
       - name: Fast admission
         env:
-          HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
+          HERMES_SDK_ROOT: ${{ github.workspace }}/.toolchains/hermes-native-sdk
         run: npm run test:fast
       - name: PR admission
         env:
-          HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
+          HERMES_SDK_ROOT: ${{ github.workspace }}/.toolchains/hermes-native-sdk
         run: npm run test:pr
+      - name: Preserve admission test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admission-test-reports-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
+            apps/android/**/build/test-results/**/*.xml
+            apps/android/**/build/reports/tests/**
+            apps/android/app/build/test-evidence/**

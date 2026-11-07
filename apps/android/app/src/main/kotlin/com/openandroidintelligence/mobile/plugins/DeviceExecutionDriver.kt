@@ -352,21 +352,7 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                             grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
                         // 确认弹窗可能跨越撤销或协议变化；查询服务端的身份与请求绑定，
                         // 本机能力许可仍由插件内核独立裁决。
-                        if (!authorizationCurrent()) throw CapabilityDenied("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED")
-                        val current = http.execute(SignedGatewayRequest("GET","/open-android-intelligence/v2/device-requests/$id",
-                            beforeSend = {
-                                check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
-                                val saved = synchronized(stateLock) { readJournal(id) }
-                                check(saved != null && journalAuthorizationCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
-                            }))
-                        if (current.status in setOf(401,403,404,409)) throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
-                        val live = JsonFields.obj(JsonFields.field(current.requireData("DEVICE_LOOKUP_FAILED"),"request")) ?: error("DEVICE_REQUEST_INVALID")
-                        if (JsonFields.string(live,"state") !in setOf("pending","claimed") ||
-                            JsonFields.int(live,"grantRevision") != grantRevision || JsonFields.int(live,"pairingGeneration") != generation ||
-                            JsonFields.string(live,"deviceId") != deviceId) {
-                            host.cancelRequestAuthorization(id, authenticatedBinding)
-                            throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
-                        }
+                        revalidateBeforeInvocation(id, request, grantRevision)
                         currentCoroutineContext().ensureActive()
                         check(Instant.parse(JsonFields.string(request,"expiresAt")!!).toEpochMilli() > System.currentTimeMillis() &&
                             grantRevision == currentGrantRevision()) { "REQUEST_LEASE_EXPIRED" }
@@ -443,6 +429,63 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
         diagnostic(id,"completed",encodeResult(result)["outcome"].toString())
         withContext(NonCancellable) { deliver(id,receipt,result) }
     }
+    /** Network uncertainty is not an authorization decision. Only this read may retry. */
+    private suspend fun revalidateBeforeInvocation(id: String, request: JsonValue.JObject, grantRevision: Int) {
+        val expiresAt = Instant.parse(JsonFields.string(request, "expiresAt")!!).toEpochMilli()
+        fun checkLocalAuthority() {
+            check(authorizationCurrent()) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+            check(grantRevision == currentGrantRevision() && expiresAt > System.currentTimeMillis()) {
+                "REQUEST_LEASE_EXPIRED"
+            }
+            val saved = synchronized(stateLock) { readJournal(id) }
+            if (JsonFields.bool(saved, "cancelRequested") == true)
+                throw CancellationException("DEVICE_REQUEST_CANCELLED")
+            check(saved != null && journalAuthorizationCurrent(saved)) { "LOCAL_AUTHORIZATION_CHANGED" }
+        }
+        var attempt = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            checkLocalAuthority()
+            val remaining = expiresAt - System.currentTimeMillis()
+            val response = try {
+                withTimeoutOrNull(minOf(LOOKUP_TIMEOUT_MILLIS, remaining).coerceAtLeast(1L)) {
+                    http.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/device-requests/$id",
+                        beforeSend = ::checkLocalAuthority))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: IOException) {
+                if (GatewayConnectionSecurity.isSecurityFailure(failure)) throw failure
+                null
+            }
+            if (response != null && response.status !in setOf(408, 429) && response.status !in 500..599) {
+                if (response.status in setOf(401, 403, 404, 409)) {
+                    host.cancelRequestAuthorization(id, authenticatedBinding)
+                    throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
+                }
+                val live = JsonFields.obj(JsonFields.field(response.requireData("DEVICE_LOOKUP_FAILED"), "request"))
+                    ?: error("DEVICE_REQUEST_INVALID")
+                if (JsonFields.string(live, "requestId") != id ||
+                    JsonFields.string(live, "state") !in setOf("pending", "claimed") ||
+                    JsonFields.int(live, "grantRevision") != grantRevision ||
+                    JsonFields.int(live, "pairingGeneration") != generation ||
+                    JsonFields.string(live, "deviceId") != deviceId) {
+                    host.cancelRequestAuthorization(id, authenticatedBinding)
+                    throw CapabilityDenied("GATEWAY_AUTHORIZATION_REVOKED")
+                }
+                checkLocalAuthority()
+                if (attempt > 0) diagnostic(id, "authorization", "NETWORK_RECOVERED")
+                return
+            }
+            checkLocalAuthority()
+            diagnostic(id, "authorization", "NETWORK_WAIT")
+            val base = 250L * (1L shl attempt.coerceAtMost(3))
+            attempt = (attempt + 1).coerceAtMost(3)
+            val retryDelay = base + kotlin.random.Random.nextLong(0L, 126L)
+            delay(minOf(retryDelay, (expiresAt - System.currentTimeMillis()).coerceAtLeast(1L)))
+        }
+    }
+
     private suspend fun claimWithRetry(id: String,grantRevision: Int): ClaimReceipt {
         repeat(MAX_ATTEMPTS) { attempt ->
             try { return client.claim(id,grantRevision) }
@@ -566,6 +609,12 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
                         check(document != null && journalAuthorizationCurrent(document)) { "LOCAL_AUTHORIZATION_CHANGED" }
                     }))
                 if (response.status in setOf(401, 403, 404, 409)) throw CapabilityDenied("DEVICE_REQUEST_BINDING_CHANGED")
+                if (response.status in setOf(408, 429) || response.status in 500..599) {
+                    // Progress is advisory; a failed report cannot decide local authority.
+                    // The authenticated pre-invocation GET still has to succeed.
+                    diagnostic(id, "authorization", "AUTHORIZATION_PROGRESS_DELIVERY_PENDING")
+                    return@withTimeout
+                }
                 response.requireData("DEVICE_AUTHORIZATION_PROGRESS_FAILED")
             }
         } catch (_: TimeoutCancellationException) {

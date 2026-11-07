@@ -368,3 +368,15 @@ def test_observer_only_edits_run_the_readonly_tool_regression(monkeypatch):
     impact = runner.analyze_impact(["tools/observe-communication.py"])
     assert runner.execute_strategy("fast", impact) == 0
     assert any("tools/test_observe_communication.py" in command for command in commands)
+
+
+def test_admission_keeps_the_historical_android_oracle_isolated():
+    root = Path(__file__).parents[1]
+    job = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())["jobs"]["admission"]
+    fixture = next(step for step in job["steps"] if step.get("name") == "Check out historical Android HTTP fixture")
+    assert fixture["with"]["ref"] == "ebe527da2426dd25877dd335786e80cf85d1cdde"
+    install = next(step["run"] for step in job["steps"] if step.get("name") == "Install isolated historical HTTP fixture")
+    assert 'python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"' in install
+    assert "OAI_HERMES_PYTHON=" in install and "HERMES_PLUGIN_ROOT=" in install
+    assert all("github.workspace" in step["env"]["HERMES_SDK_ROOT"]
+               for step in job["steps"] if step.get("name") in {"Fast admission", "PR admission"})
