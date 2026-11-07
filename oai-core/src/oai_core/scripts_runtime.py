@@ -840,7 +840,8 @@ def _upgrade_installed_host_adapters(root: Path, store: IdentityStore, handle: s
             _step(f"检测到已安装的 DSH 连接插件（配置: {profile.name}），正在同步更新...")
             try:
                 install_dsh_adapter(root, store, handle, profile, include_uninstalled=False)
-                _ok(f"已同步更新 DSH 连接插件（配置: {profile.name}）。")
+                restarted = configuration.restart_dsh_service_if_active(profile.home, profile.name)
+                _ok(f"已同步更新 DSH 连接插件（配置: {profile.name}）" + ("并重启 DSH 服务。" if restarted else "。"))
             except DshAdapterInstallError as err:
                 _warn(f"DSH 配置 {profile.name} 的连接插件未能自动更新：{err}（可稍后在 oai setup 中处理）。")
     return hermes_restarted

@@ -1322,6 +1322,261 @@ def restart_hermes_service_if_active() -> bool:
     return False
 
 
+def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name: str | None = None) -> bool:
+    """若本机检测到运行中的 DSH 服务/进程，自动安全重启使其加载新插件。"""
+    if not sys.platform.startswith("linux"):
+        return False
+    import pwd
+    import signal
+    import shutil
+    import time
+
+    svc_env = os.environ.copy()
+    if "XDG_RUNTIME_DIR" not in svc_env:
+        runtime_dir = Path(f"/run/user/{os.geteuid()}")
+        if runtime_dir.is_dir():
+            svc_env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+    prefixes: list[list[str]] = [["systemctl", "--user"]]
+    detected_dsh = detect_host_agents().get("dsh", [])
+    owner_user = None
+    owner_uid = None
+    owner_gid = None
+    if detected_dsh:
+        try:
+            stat_info = detected_dsh[0].stat()
+            owner_uid = stat_info.st_uid
+            owner_gid = stat_info.st_gid
+            if owner_uid != 0:
+                owner_user = pwd.getpwuid(owner_uid).pw_name
+        except Exception:
+            pass
+
+    if os.geteuid() == 0:
+        prefixes.append(["systemctl"])
+        if owner_user and owner_uid is not None:
+            runuser = shutil.which("runuser")
+            if runuser:
+                prefixes.append([runuser, "-u", owner_user, "--", "env",
+                                 f"XDG_RUNTIME_DIR=/run/user/{owner_uid}",
+                                 f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{owner_uid}/bus",
+                                 "systemctl", "--user"])
+            systemctl = shutil.which("systemctl")
+            if systemctl:
+                prefixes.append(["systemctl", f"--machine={owner_user}@.host", "--user"])
+
+    units = ["dsh.service", "dsh-web.service", "dsh@web.service", "deepseek-harness.service"]
+    for cmd_prefix in prefixes:
+        for unit in units:
+            try:
+                state = subprocess.run([*cmd_prefix, "is-active", unit],
+                                       capture_output=True, text=True, timeout=5, check=False, env=svc_env)
+                if state.stdout.strip() in {"active", "activating", "reloading"}:
+                    subprocess.run([*cmd_prefix, "restart", unit],
+                                   capture_output=True, text=True, timeout=15, check=True, env=svc_env)
+                    return True
+            except Exception:
+                continue
+
+    candidate_pid_files: list[Path] = []
+    if profile_home is not None:
+        candidate_pid_files.extend([
+            profile_home.parent / ".dsh-app-remote" / "web.pid",
+            profile_home / "web.pid",
+            profile_home / "dsh.pid",
+        ])
+    for home in detected_dsh:
+        candidate_pid_files.extend([
+            home.parent / ".dsh-app-remote" / "web.pid",
+            home / "web.pid",
+            home / "dsh.pid",
+        ])
+    candidate_pid_files.append(Path.home() / ".dsh-app-remote" / "web.pid")
+
+    seen_pids = set()
+    for pid_file in candidate_pid_files:
+        if not pid_file.is_file():
+            continue
+        try:
+            p_uid = pid_file.stat().st_uid
+            raw = _read_host_text(pid_file, p_uid)
+            if not raw or not raw.strip().isdigit():
+                continue
+            pid = int(raw.strip())
+            if pid <= 1 or pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                continue
+
+            is_dsh = False
+            proc_cmdline = Path(f"/proc/{pid}/cmdline")
+            if proc_cmdline.is_file():
+                try:
+                    cmd_bytes = proc_cmdline.read_bytes()
+                    cmd_parts = [p.decode("utf-8", "replace").lower() for p in cmd_bytes.split(b"\0") if p]
+                    if any("dsh" in p or "dsh-android-gateway" in p or "oai-dsh" in p for p in cmd_parts):
+                        is_dsh = True
+                except Exception:
+                    pass
+            if not is_dsh and (pid_file.parent / "web.cmd").is_file():
+                is_dsh = True
+
+            if not is_dsh:
+                continue
+
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                continue
+
+            for _ in range(15):
+                time.sleep(0.2)
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+            else:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+            home_parent = pid_file.parent.parent
+            dsh_bin = shutil.which("dsh")
+            if not dsh_bin and (home_parent / ".local/bin/dsh").is_file():
+                dsh_bin = str(home_parent / ".local/bin/dsh")
+            if not dsh_bin:
+                dsh_bin = "dsh"
+
+            launch_cmd = [dsh_bin, "web", "--no-open"]
+            if profile_name and profile_name != "web":
+                launch_cmd = [dsh_bin, "--profile", profile_name, "--no-open"]
+
+            log_file = pid_file.parent / "web.log"
+            log_fd = None
+            try:
+                log_fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            except Exception:
+                pass
+            target_out = log_fd if log_fd is not None else subprocess.DEVNULL
+
+            try:
+                if os.geteuid() == 0 and p_uid != 0:
+                    p_user = pwd.getpwuid(p_uid).pw_name
+                    p_gid = pwd.getpwuid(p_uid).pw_gid
+                    runuser = shutil.which("runuser")
+                    if runuser:
+                        cmd_str = " ".join(shlex.quote(arg) for arg in launch_cmd)
+                        proc = subprocess.Popen(
+                            [runuser, "-u", p_user, "--", "bash", "-c",
+                             f"nohup {cmd_str} > {shlex.quote(str(log_file))} 2>&1 & echo $!"],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                        )
+                        out, _ = proc.communicate(timeout=5)
+                        new_pid_str = out.strip().splitlines()[-1] if out.strip() else ""
+                        if new_pid_str.isdigit():
+                            _write_host_text(pid_file, f"{new_pid_str}\n", p_uid, p_gid, 0o600)
+                            return True
+                    else:
+                        child = subprocess.Popen(
+                            launch_cmd,
+                            stdin=subprocess.DEVNULL, stdout=target_out, stderr=target_out,
+                            user=p_uid, group=p_gid, start_new_session=True,
+                        )
+                        if child and child.pid:
+                            _write_host_text(pid_file, f"{child.pid}\n", p_uid, p_gid, 0o600)
+                            return True
+                else:
+                    child = subprocess.Popen(
+                        launch_cmd,
+                        stdin=subprocess.DEVNULL, stdout=target_out, stderr=target_out,
+                        start_new_session=True,
+                    )
+                    if child and child.pid:
+                        p_gid = os.getegid()
+                        _write_host_text(pid_file, f"{child.pid}\n", p_uid, p_gid, 0o600)
+                        return True
+            finally:
+                if log_fd is not None:
+                    try:
+                        os.close(log_fd)
+                    except Exception:
+                        pass
+        except Exception:
+            continue
+
+    try:
+        proc_root = Path("/proc")
+        for proc in proc_root.iterdir():
+            if not proc.name.isdigit():
+                continue
+            proc_pid = int(proc.name)
+            if proc_pid <= 1 or proc_pid == os.getpid():
+                continue
+            try:
+                cmd_bytes = (proc / "cmdline").read_bytes()
+                cmd_parts = [p.decode("utf-8", "replace").lower() for p in cmd_bytes.split(b"\0") if p]
+                if any("dsh" in p for p in cmd_parts) and any("web" in p for p in cmd_parts):
+                    proc_uid = proc.stat().st_uid
+                    proc_gid = proc.stat().st_gid
+                    os.kill(proc_pid, signal.SIGTERM)
+                    for _ in range(15):
+                        time.sleep(0.2)
+                        try:
+                            os.kill(proc_pid, 0)
+                        except OSError:
+                            break
+                    else:
+                        try:
+                            os.kill(proc_pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+
+                    proc_user = pwd.getpwuid(proc_uid).pw_name if proc_uid != 0 else None
+                    home_dir = Path(f"/home/{proc_user}") if proc_user else Path.home()
+                    dsh_bin = shutil.which("dsh")
+                    if not dsh_bin and (home_dir / ".local/bin/dsh").is_file():
+                        dsh_bin = str(home_dir / ".local/bin/dsh")
+                    if not dsh_bin:
+                        dsh_bin = "dsh"
+                    launch_cmd = [dsh_bin, "web", "--no-open"]
+                    if profile_name and profile_name != "web":
+                        launch_cmd = [dsh_bin, "--profile", profile_name, "--no-open"]
+
+                    if os.geteuid() == 0 and proc_uid != 0 and proc_user:
+                        runuser = shutil.which("runuser")
+                        if runuser:
+                            subprocess.Popen(
+                                [runuser, "-u", proc_user, "--", *launch_cmd],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                            )
+                            return True
+                        else:
+                            subprocess.Popen(
+                                launch_cmd,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                user=proc_uid, group=proc_gid, start_new_session=True,
+                            )
+                            return True
+                    else:
+                        subprocess.Popen(
+                            launch_cmd,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True,
+                        )
+                        return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
+
+
 def _register_with_host_retry(registration, handle: str, entry: dict, storage: Path, *,
                               already_restarted: bool = False) -> None:
     import time
@@ -1329,10 +1584,17 @@ def _register_with_host_retry(registration, handle: str, entry: dict, storage: P
         asyncio.run(registration.register(handle, entry, storage))
         return
     except ValueError:
-        if entry.get("type") != "hermes":
+        agent_type = entry.get("type")
+        if agent_type not in {"hermes", "dsh"}:
             raise
-        if not already_restarted and not restart_hermes_service_if_active():
-            raise
+        if not already_restarted:
+            restarted = False
+            if agent_type == "hermes":
+                restarted = restart_hermes_service_if_active()
+            elif agent_type == "dsh":
+                restarted = restart_dsh_service_if_active()
+            if not restarted:
+                raise
     last_error: Exception | None = None
     for _ in range(24):
         time.sleep(0.5)
@@ -1486,7 +1748,8 @@ def _upgrade_dsh_bridge(root: Path, store, handle: str, entry: dict, *, allow_in
 
 
 def auto_connect_host_agents(root: Path, store, handle: str, operator: dict, *,
-                             hermes_restarted: bool = False) -> list[str]:
+                             hermes_restarted: bool = False,
+                             dsh_restarted: bool = False) -> list[str]:
     from .agent_registration import AgentHandshakeError, AgentRegistration
     from .sessions import AgentRegistry
 
@@ -1508,9 +1771,13 @@ def auto_connect_host_agents(root: Path, store, handle: str, operator: dict, *,
         if entry["id"] in explicit_ids or AgentRegistry.get_factory(entry["type"]) is None:
             continue
         try:
+            already_restarted = (
+                (bool(hermes_restarted) and entry.get("type") == "hermes")
+                or (bool(dsh_restarted) and entry.get("type") == "dsh")
+            )
             _register_with_host_retry(
                 registration, handle, entry, storage,
-                already_restarted=bool(hermes_restarted) and entry.get("type") == "hermes",
+                already_restarted=already_restarted,
             )
             _confirm_operator_hermes_mapping(registration, handle, entry, operator)
             connected.append(entry["id"])
@@ -1606,6 +1873,8 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
         elif entry.get("type") == "dsh":
             installed = _upgrade_dsh_bridge(root, store, handle, entry,
                                             allow_install=error.code == "AGENT_BRIDGE_UNAVAILABLE")
+            if installed:
+                restarted_after_upgrade = restart_dsh_service_if_active()
         else:
             return
         if not installed:

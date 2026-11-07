@@ -244,7 +244,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
         ret = run_command(["node", "--check", "integrations/dsh-session-adapter/index.js"])
         if ret != 0:
             return ret
-        ret = run_command(["npx", "vitest", "run", "--config", "integrations/dsh-session-adapter/vitest.config.js"])
+        ret = run_command(["npx", "--yes", "vitest", "run", "--config", "integrations/dsh-session-adapter/vitest.config.js"])
         if ret != 0:
             return ret
 

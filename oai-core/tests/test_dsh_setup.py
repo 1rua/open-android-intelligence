@@ -254,3 +254,78 @@ def test_upgrade_falls_back_to_uninstalled_profiles_when_enabled_profiles_are_em
     assert len(installed_calls) == 1
     assert installed_calls[0] == ("default", True)
     assert "DSH 连接插件已更新" in capsys.readouterr().out
+
+
+def test_upgrade_automatically_restarts_dsh_and_registers(deployment, monkeypatch, tmp_path, capsys):
+    from oai_core import dsh_installation
+    root, store, handle, operator = deployment
+    profile = dsh_installation.DshProfile(tmp_path, "web", tmp_path / "profiles/web")
+    monkeypatch.setattr(dsh_installation, "discover_dsh_profiles", lambda _: [profile])
+    install_calls = []
+    restart_calls = []
+
+    def install(actual_root, actual_store, actual_handle, prof):
+        install_calls.append(prof)
+
+    with bridge() as (host, url):
+        entry = candidate(root, url)
+        monkeypatch.setattr(configuration, "_is_local_dsh_bridge", lambda _: True)
+        monkeypatch.setattr(dsh_installation, "install_dsh_adapter", install)
+
+        def restart(*_, **__):
+            restart_calls.append(True)
+            host.current = len(install_calls) == 1
+            return host.current
+
+        monkeypatch.setattr(configuration, "restart_dsh_service_if_active", restart)
+        configure_fixture(root, monkeypatch, entry, iter(["1", "dsh", "1"]))
+        configuration._configure_agents(root, store, handle, operator)
+
+    assert len(install_calls) == 1
+    assert len(restart_calls) >= 1
+    entries = AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False).entries()
+    assert [e["id"] for e in entries] == ["dsh"]
+    assert "Agent 已通过真实握手并注册" in capsys.readouterr().out
+
+
+def test_restart_dsh_service_if_active_systemd(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.platform", "linux")
+    recorded = []
+
+    def fake_run(cmd, *args, **kwargs):
+        recorded.append(cmd)
+        res = SimpleNamespace(returncode=0, stdout="active\n")
+        return res
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    assert configuration.restart_dsh_service_if_active() is True
+    assert any("restart" in cmd and "dsh.service" in cmd for cmd in recorded)
+
+
+def test_restart_dsh_service_if_active_pid_file(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.platform", "linux")
+    remote_dir = tmp_path / ".dsh-app-remote"
+    remote_dir.mkdir(parents=True)
+    pid_file = remote_dir / "web.pid"
+    cmd_file = remote_dir / "web.cmd"
+    pid_file.write_text(f"{os.getpid()}\n")
+    cmd_file.write_text("dsh web\n")
+
+    killed = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr("shutil.which", lambda name: f"/bin/{name}")
+    spawned = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        spawned.append(cmd)
+        return SimpleNamespace(pid=99999, communicate=lambda timeout=None: ("99999\n", ""))
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr(configuration, "detect_host_agents", lambda: {"dsh": [tmp_path / ".dsh"]})
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    assert configuration.restart_dsh_service_if_active(profile_home=tmp_path / ".dsh") is True
+    assert len(killed) >= 1
+    assert any("dsh" in str(cmd) for cmd in spawned)
+    assert pid_file.read_text().strip() == "99999"
+
