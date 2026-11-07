@@ -128,8 +128,13 @@ class SettingsBackupViewModel(
         _state.value = _state.value.copy(pendingImport = null)
     }
 
-    /** 执行导入；结束后重新读出摘要，界面展示的是写入后的真实状态。 */
-    fun confirmImport(onApplied: (String) -> Unit = {}) {
+    /**
+     * 执行导入；结束后重新读出摘要，界面展示的是写入后的真实状态。
+     *
+     * 结果留在页面上（可滚动、可逐行阅读），而不是只闪一次 Snackbar：跳过项与
+     * 「需要重新连接才生效」这类信息，用户需要有时间读完并照着做。
+     */
+    fun confirmImport() {
         val owner = coordinator ?: return
         val pending = _state.value.pendingImport ?: return
         if (_state.value.busy) return
@@ -152,10 +157,6 @@ class SettingsBackupViewModel(
                 },
                 onFailure = { "导入失败：${it.message ?: "请检查文件后重试。"}" },
             )
-            if (result.isSuccess) {
-                // 一次性提示交给宿主展示：设置面板会被关闭或重建，留在页面上的文字会消失。
-                onApplied(message)
-            }
             _state.value = _state.value.copy(
                 busy = false,
                 exportSummary = refreshed,

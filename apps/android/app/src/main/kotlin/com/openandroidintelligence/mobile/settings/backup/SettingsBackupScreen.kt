@@ -53,7 +53,6 @@ internal fun SettingsBackupRoute(
     runtime: GatewayRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
-    onImported: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
@@ -92,7 +91,7 @@ internal fun SettingsBackupRoute(
         ImportConfirmationDialog(
             pending = pending,
             onDismiss = model::dismissPending,
-            onConfirm = { model.confirmImport(onImported) },
+            onConfirm = model::confirmImport,
         )
     }
 }

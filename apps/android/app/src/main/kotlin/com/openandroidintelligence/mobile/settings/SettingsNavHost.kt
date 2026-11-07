@@ -293,7 +293,7 @@ internal fun SettingsNavHost(
             composable(SettingsRoutes.APP_UPDATES) { AppUpdateRoute(onBack = ::back, presentation = presentation) }
             composable(SettingsRoutes.BUILD_DETAILS) { BuildDetailsScreen(presentation, ::back) }
             composable(SettingsRoutes.LICENSES) { OpenSourceNoticesScreen(presentation, ::back) }
-            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back) { note -> navigationError = note } }
+            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back) }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }
