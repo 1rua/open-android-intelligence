@@ -135,3 +135,5 @@ python tools/observe-communication.py \
 `164a7c01` 的 Core 3.11/3.12、Hermes、DSH、APK、Android 专项 job 已通过；新增准入 job 的 Fast 命令通过，PR 命令实际运行了更广的 Android 1554 项，其中五项历史 HTTP 用例因缺少固定 `.hermes-gateway-plugin` 测试来源失败。已补充与既有历史兼容工作流相同的固定提交、独立 Python 环境和显式解释器路径，并保留 Core 干净 wheel job 的无旧 Gateway 依赖验证。没有排除这五项用例或缩小 PR 测试范围，后续提交重新执行全部准入门禁。
 
 自动回调曾因主会话已有 active writer 无法 resume。已改成新临时会话、只读沙箱、`deepseek-flash` max 的独立结果审查，启动冒烟已成功；终态结果由工具层写回证据，不并行写主会话或修改源码。
+
+完整门禁复核继续发现并定位一处既有测试时序：并发审批用例在宿主已持久化提示后仅 sleep 10ms，随后 next() 读取客户端尚未收到的事件，负载下 StopIteration。改用该文件已有 ObservedEvents，等待实际 approval_requested 被消费者收到；不改生产审批逻辑或决定结果。以 50ms 延迟消费注入，原用例确定失败、修正后通过；同文件 **18 项通过**。后续门禁仍完整执行，不增加自动重跑掩盖失败。

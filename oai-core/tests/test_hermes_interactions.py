@@ -477,15 +477,14 @@ async def test_simultaneous_native_approval_decisions_resolve_exactly_one_host_w
     adapter = HermesSessionAdapter(interaction_core, runtime)
     principal = Principal("alice", device_id="phone")
     conversation = (await adapter.list_sessions(principal))[0]["id"]
-    received = []
+    received = ObservedEvents()
     async def consume():
         async for event in adapter.send(principal, conversation, "approval"):
             received.append(event)
     pending = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(runtime.prompted.wait(), 3)
-        await asyncio.sleep(.01)
-        card = next(event["approval"] for event in received if event["type"] == "approval_requested")
+        card = (await received.wait_for_type("approval_requested", pending))["approval"]
         results = await asyncio.gather(*(adapter.decide_approval(principal, conversation, card["approvalId"], choice)
                                         for choice in ("once", "deny")), return_exceptions=True)
         assert len(calls) == 1
