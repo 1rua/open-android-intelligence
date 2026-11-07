@@ -461,7 +461,7 @@ class RemoteSessionAdapter:
                     self.base_url + self.prefix + path,
                     json=request_body,
                     timeout=aiohttp.ClientTimeout(
-                        total=None, sock_connect=CONNECT_TIMEOUT_SECONDS,
+                        total=None, connect=CONNECT_TIMEOUT_SECONDS, sock_connect=CONNECT_TIMEOUT_SECONDS,
                         sock_read=STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat else self.stream_timeout_seconds,
                     ),
                     allow_redirects=False,

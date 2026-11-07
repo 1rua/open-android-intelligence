@@ -1,7 +1,13 @@
 """Trace correlation is optional and may never become authorization or transcript logging."""
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 
 from oai_core.native_diagnostics import current_trace_headers, trace_context, trace_native_stage
 
@@ -52,3 +58,97 @@ def test_a_custom_logging_sink_failure_does_not_fail_the_business_operation(monk
         raise RuntimeError("closed diagnostic sink")
     monkeypatch.setattr(diagnostics.logger, "debug", broken)
     diagnostics.trace_native_stage("core.operation.storage", request_id="original-request")
+
+
+def test_connection_diagnostics_are_visible_in_a_default_cli_subprocess():
+    repository = Path(__file__).resolve().parents[2]
+    source = repository / "oai-core" / "src"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(source), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep)))
+    )
+    script = """
+import json
+import logging
+from oai_core.native_diagnostics import configure_connection_diagnostics
+
+configure_connection_diagnostics()
+logging.getLogger("oai_core.agent_health").info("Agent health agent=synthetic state=recovered")
+logging.getLogger("oai_core.adapters.remote").info(
+    "agent_transport agent=synthetic source=agent_bridge stage=recovered"
+)
+logging.getLogger("aiohttp.access").info("GET https://sensitive.invalid/?token=PRIVATE")
+root = logging.getLogger()
+print(json.dumps({
+    "rootHandlers": len(root.handlers),
+    "rootLevel": root.level,
+    "lastResortLevel": logging.lastResort.level,
+}))
+"""
+    process = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=repository, env=environment,
+        capture_output=True, text=True, timeout=20,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert "Agent health agent=synthetic state=recovered" in process.stderr
+    assert "agent_transport agent=synthetic source=agent_bridge stage=recovered" in process.stderr
+    assert "PRIVATE" not in process.stderr
+    assert json.loads(process.stdout) == {
+        "rootHandlers": 0,
+        "rootLevel": logging.WARNING,
+        "lastResortLevel": logging.WARNING,
+    }
+
+
+def test_connection_diagnostics_defer_to_an_existing_host_handler():
+    repository = Path(__file__).resolve().parents[2]
+    source = repository / "oai-core" / "src"
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(source), *filter(None, environment.get("PYTHONPATH", "").split(os.pathsep)))
+    )
+    script = """
+import io
+import json
+import logging
+from oai_core.native_diagnostics import configure_connection_diagnostics
+
+stream = io.StringIO()
+root = logging.getLogger()
+root.addHandler(logging.StreamHandler(stream))
+configure_connection_diagnostics()
+health = logging.getLogger("oai_core.agent_health")
+remote = logging.getLogger("oai_core.adapters.remote")
+health.info("health-visible")
+remote.info("remote-visible")
+print(json.dumps({
+    "healthHandlers": len(health.handlers),
+    "remoteHandlers": len(remote.handlers),
+    "healthPropagates": health.propagate,
+    "remotePropagates": remote.propagate,
+    "hostOutput": stream.getvalue().splitlines(),
+}))
+"""
+    process = subprocess.run(
+        [sys.executable, "-B", "-c", script], cwd=repository, env=environment,
+        capture_output=True, text=True, timeout=20,
+    )
+    assert process.returncode == 0, process.stdout + process.stderr
+    assert json.loads(process.stdout) == {
+        "healthHandlers": 0,
+        "remoteHandlers": 0,
+        "healthPropagates": True,
+        "remotePropagates": True,
+        "hostOutput": ["health-visible", "remote-visible"],
+    }
+
+
+def test_server_run_configures_connection_diagnostics_before_loading_config(monkeypatch):
+    import oai_core.server as server
+
+    calls = []
+    monkeypatch.setattr(server, "configure_connection_diagnostics", lambda: calls.append("configured"))
+    monkeypatch.setattr(server, "load_config", lambda _: (_ for _ in ()).throw(RuntimeError("stop")))
+    with pytest.raises(RuntimeError, match="stop"):
+        server.run("synthetic-config.json")
+    assert calls == ["configured"]

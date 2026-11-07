@@ -260,3 +260,28 @@ async def test_broken_diagnostic_sink_does_not_replace_a_bridge_failure(monkeypa
         adapter = adapter_for(client)
         assert await adapter.status() is False
         assert adapter.health_failure['kind'] == 'authentication'
+
+
+@pytest.mark.asyncio
+async def test_stream_connection_budget_also_bounds_dns_resolution(monkeypatch):
+    from oai_core.adapters import remote
+    import aiohttp.client
+
+    class BlockedResolver:
+        async def resolve(self, host, port=0, family=0):
+            await asyncio.Event().wait()
+
+        async def close(self):
+            pass
+
+    connector = aiohttp.client.TCPConnector
+    monkeypatch.setattr(aiohttp.client, 'TCPConnector',
+                        lambda *args, **kwargs: connector(*args, resolver=BlockedResolver(), **kwargs))
+    monkeypatch.setattr(remote, 'CONNECT_TIMEOUT_SECONDS', 0.03)
+    adapter = RemoteSessionAdapter('http://localhost:12345', TOKEN,
+        agent_id='probe', name='probe', kind='remote', stream_timeout_seconds=10)
+    with pytest.raises(AdapterError) as failure:
+        async with asyncio.timeout(.3):
+            _ = [event async for event in adapter._send('chat', 'synthetic')]
+    assert failure.value.code == 'AGENT_UNAVAILABLE'
+    assert failure.value.details['reason'] == 'timeout'

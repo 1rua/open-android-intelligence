@@ -13,6 +13,7 @@ import time
 from typing import Any, Iterator, Mapping
 
 logger = logging.getLogger("oai_core.native_sessions")
+_CONNECTION_LOGGERS = ("oai_core.agent_health", "oai_core.adapters.remote")
 _BOOT_ID = secrets.token_hex(8)
 _REQUEST_ID = re.compile(r"[A-Za-z0-9._~-]{1,128}\Z")
 _TRACEPARENT = re.compile(r"00-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})\Z")
@@ -27,6 +28,22 @@ class TraceContext:
 
 
 _current: ContextVar[TraceContext | None] = ContextVar("native_trace", default=None)
+
+
+def configure_connection_diagnostics() -> None:
+    """Expose only sanitized connection health logs without configuring other loggers."""
+    for name in _CONNECTION_LOGGERS:
+        try:
+            connection_logger = logging.getLogger(name)
+            connection_logger.setLevel(logging.INFO)
+            if connection_logger.hasHandlers():
+                continue
+            handler = logging.StreamHandler()
+            connection_logger.addHandler(handler)
+            connection_logger.propagate = False
+        except Exception:
+            # Diagnostic setup must never prevent Core from starting.
+            continue
 
 
 @contextmanager
