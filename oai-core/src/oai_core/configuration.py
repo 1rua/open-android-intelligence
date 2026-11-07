@@ -908,7 +908,19 @@ def _sync_hermes_venv_packages(root: Path, hermes_home: Path, owner_uid: int, ow
         return
     venv_dir = hermes_home / "hermes-agent" / "venv"
     if not venv_dir.is_dir():
-        return
+        for cand in [
+            hermes_home / "hermes-agent" / "venv",
+            hermes_home / "hermes-agent" / ".venv",
+            hermes_home / "venv",
+            hermes_home / ".venv",
+            hermes_home / "hermes-agent" / "env",
+            hermes_home / "env",
+        ]:
+            if cand.is_dir():
+                venv_dir = cand
+                break
+        else:
+            return
     site_dirs = list(venv_dir.glob("lib*/python*/site-packages"))
     for site_dir in site_dirs:
         if not site_dir.is_dir() or site_dir.is_symlink():

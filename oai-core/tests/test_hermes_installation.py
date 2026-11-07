@@ -736,3 +736,65 @@ def test_root_user_can_install_adapter_for_foreign_owned_host(installation, monk
     assert any(uid == owner_uid for _, uid, _ in chowned_paths)
     target = installation.home / "plugins" / installer.PLUGIN
     assert target.is_dir()
+
+
+def test_hermes_install_finds_root_venv_python(installation, monkeypatch):
+    from oai_core import hermes_installation as installer
+
+    # 移动虚拟环境到 home / "venv"
+    old_venv = installation.home / "hermes-agent" / "venv"
+    new_venv = installation.home / "venv"
+    old_venv.rename(new_venv)
+    installation.python = new_venv / "bin" / "python"
+
+    fake_host(monkeypatch, installer, installation)
+    installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
+    target = installation.home / "plugins" / installer.PLUGIN
+    assert target.is_dir()
+
+
+def test_hermes_install_finds_dot_venv_python(installation, monkeypatch):
+    from oai_core import hermes_installation as installer
+
+    # 移动虚拟环境到 home / "hermes-agent" / ".venv"
+    old_venv = installation.home / "hermes-agent" / "venv"
+    new_venv = installation.home / "hermes-agent" / ".venv"
+    old_venv.rename(new_venv)
+    installation.python = new_venv / "bin" / "python"
+
+    fake_host(monkeypatch, installer, installation)
+    installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
+    target = installation.home / "plugins" / installer.PLUGIN
+    assert target.is_dir()
+
+
+def test_hermes_install_auto_creates_venv_when_missing(installation, monkeypatch):
+    from oai_core import hermes_installation as installer
+
+    # 移开现有虚拟环境，模拟无 venv 环境
+    old_venv = installation.home / "hermes-agent" / "venv"
+    old_venv.rename(installation.home / "hermes-agent" / "venv.bak")
+
+    created_venvs = []
+    real_run = subprocess.run
+    def fake_run(cmd, *args, **kwargs):
+        if "-m" in cmd and "venv" in cmd:
+            target = Path(cmd[-1])
+            target.mkdir(parents=True, exist_ok=True)
+            py = target / "bin" / "python"
+            py.parent.mkdir(parents=True, exist_ok=True)
+            py.write_text("#!/usr/bin/env python3\n")
+            py.chmod(0o700)
+            (target / "pyvenv.cfg").write_text("include-system-site-packages = false\n")
+            created_venvs.append(target)
+            return SimpleNamespace(returncode=0)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    installation.python = installation.home / "hermes-agent" / "venv" / "bin" / "python"
+    fake_host(monkeypatch, installer, installation)
+    installer.install_hermes_adapter(installation.root, installation.store, installation.handle, installation.home)
+    assert len(created_venvs) == 1
+    target = installation.home / "plugins" / installer.PLUGIN
+    assert target.is_dir()
+
