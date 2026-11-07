@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import shlex
 import shutil
@@ -187,30 +188,18 @@ def _environment(home: Path, python: Path, uv: Path | None) -> dict[str, str]:
 
 def _resolve_or_create_hermes_python(home: Path, *, owner_uid: int | None = None,
                                      owner_gid: int | None = None) -> Path:
-    candidates = [
+    candidates: list[Path] = [
         home / "hermes-agent" / "venv" / "bin" / "python",
         home / "hermes-agent" / ".venv" / "bin" / "python",
         home / "venv" / "bin" / "python",
         home / ".venv" / "bin" / "python",
+        Path("/usr/local/lib/hermes-agent/venv/bin/python"),
+        Path("/opt/hermes-agent/venv/bin/python"),
         home / "hermes-agent" / "env" / "bin" / "python",
         home / "env" / "bin" / "python",
     ]
-    venvs_dir = home / "venvs"
-    if venvs_dir.is_dir() and not venvs_dir.is_symlink():
-        try:
-            for item in sorted(venvs_dir.iterdir()):
-                if item.is_dir() and not item.is_symlink():
-                    candidates.append(item / "bin" / "python")
-        except OSError:
-            pass
-
-    for cand in candidates:
-        try:
-            if (cand.is_file() or cand.is_symlink()) and os.access(cand, os.X_OK):
-                _executable(cand, venv=True, owner_uid=owner_uid)
-                return cand
-        except Exception:
-            continue
+    if "VIRTUAL_ENV" in os.environ:
+        candidates.append(Path(os.environ["VIRTUAL_ENV"]) / "bin" / "python")
 
     pid_file = home / "gateway.pid"
     if pid_file.is_file():
@@ -223,14 +212,14 @@ def _resolve_or_create_hermes_python(home: Path, *, owner_uid: int | None = None
                 if proc_exe.is_file():
                     resolved_exe = proc_exe.resolve()
                     if resolved_exe.is_file() and os.access(resolved_exe, os.X_OK):
-                        _executable(resolved_exe, venv=True, owner_uid=owner_uid)
-                        return resolved_exe
+                        candidates.append(resolved_exe)
         except Exception:
             pass
 
     hermes_bins = [
         home / "bin" / "hermes",
         home / "hermes-agent" / "hermes",
+        Path("/usr/local/bin/hermes"),
     ]
     which_hermes = shutil.which("hermes")
     if which_hermes:
@@ -238,16 +227,61 @@ def _resolve_or_create_hermes_python(home: Path, *, owner_uid: int | None = None
     for h_bin in hermes_bins:
         if h_bin.is_file() and os.access(h_bin, os.X_OK):
             try:
-                first_line = h_bin.read_text(encoding="utf-8", errors="replace").splitlines()[0]
+                content = h_bin.read_text(encoding="utf-8", errors="replace")
+                first_line = content.splitlines()[0] if content else ""
                 if first_line.startswith("#!"):
                     shebang = shlex.split(first_line[2:].strip())
-                    if shebang:
-                        cand = Path(shebang[0])
-                        if cand.is_file() and os.access(cand, os.X_OK):
-                            _executable(cand, venv=True, owner_uid=owner_uid)
-                            return cand
+                    if shebang and "python" in shebang[0]:
+                        candidates.append(Path(shebang[0]))
+                for m in re.finditer(r'["\']?(/[\w\.-]+(?:/venv|/env)?/bin/python[\d\.]*)["\']?', content):
+                    candidates.append(Path(m.group(1)))
             except Exception:
                 pass
+
+    venvs_dir = home / "venvs"
+    if venvs_dir.is_dir() and not venvs_dir.is_symlink():
+        try:
+            for item in sorted(venvs_dir.iterdir()):
+                if item.is_dir() and not item.is_symlink():
+                    candidates.append(item / "bin" / "python")
+        except OSError:
+            pass
+
+    def _has_hermes(cand: Path) -> bool:
+        try:
+            prefix = cand.parent.parent
+            if (prefix.parent / "hermes_cli").is_dir():
+                return True
+            if (prefix / "hermes_cli").is_dir():
+                return True
+            for sp in prefix.glob("lib*/python*/site-packages"):
+                if (sp / "hermes_cli").is_dir() or (sp / "hermes_cli.py").is_file():
+                    return True
+                if any(sp.glob("hermes*.dist-info")):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    valid_candidates: list[Path] = []
+    seen: set[Path] = set()
+    for cand in candidates:
+        if cand in seen:
+            continue
+        seen.add(cand)
+        try:
+            if (cand.is_file() or cand.is_symlink()) and os.access(cand, os.X_OK):
+                _executable(cand, venv=True, owner_uid=owner_uid)
+                valid_candidates.append(cand)
+        except Exception:
+            continue
+
+    for cand in valid_candidates:
+        if _has_hermes(cand):
+            return cand
+
+    if valid_candidates:
+        return valid_candidates[0]
 
     target_venv = (home / "hermes-agent" / "venv") if (home / "hermes-agent").is_dir() else (home / "venv")
     py_exe = sys.executable or shutil.which("python3")
