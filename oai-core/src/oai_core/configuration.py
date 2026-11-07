@@ -1103,6 +1103,16 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         secret_rel, token = _ensure_agent_secret_file(storage, "hermes", preferred)
         gateway_root = Path(env_vars.get("OAI_HERMES_GATEWAY_ROOT")
                             or (hermes_home / "open-android-intelligence-gateway" / "accounts")).expanduser()
+        if owner_uid != os.geteuid() and os.geteuid() == 0:
+            try:
+                resolved_root = gateway_root.resolve()
+                if resolved_root.is_relative_to(hermes_home.resolve()):
+                    gateway_root = resolved_root
+                elif str(gateway_root).startswith("/root/.hermes"):
+                    rel = Path(str(gateway_root).removeprefix("/root/.hermes/").lstrip("/"))
+                    gateway_root = (hermes_home.resolve() / rel)
+            except Exception:
+                pass
         try:
             port = int(env_vars.get("OAI_HERMES_SESSION_PORT", "8792"))
         except ValueError:
@@ -1297,10 +1307,12 @@ def restart_hermes_service_if_active() -> bool:
                     owner_user = pwd.getpwuid(owner_uid).pw_name
                     runuser = shutil.which("runuser")
                     if runuser:
-                        prefixes.append([runuser, "-u", owner_user, "--", "env",
-                                         f"XDG_RUNTIME_DIR=/run/user/{owner_uid}",
-                                         f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{owner_uid}/bus",
-                                         "systemctl", "--user"])
+                        cmd = [runuser, "-u", owner_user, "--", "env",
+                               f"XDG_RUNTIME_DIR=/run/user/{owner_uid}"]
+                        if Path(f"/run/user/{owner_uid}/bus").exists():
+                            cmd.append(f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{owner_uid}/bus")
+                        cmd.extend(["systemctl", "--user"])
+                        prefixes.append(cmd)
                     systemctl = shutil.which("systemctl")
                     if systemctl:
                         prefixes.append(["systemctl", f"--machine={owner_user}@.host", "--user"])
@@ -1310,7 +1322,7 @@ def restart_hermes_service_if_active() -> bool:
         try:
             state = subprocess.run([*cmd_prefix, "is-active", "hermes-gateway.service"],
                                    capture_output=True, text=True, timeout=5, check=False, env=svc_env)
-            if state.stdout.strip() in {"active", "activating", "reloading"}:
+            if state.stdout.strip() in {"active", "activating", "reloading", "failed", "auto-restart"}:
                 subprocess.run([*cmd_prefix, "restart", "hermes-gateway.service"],
                                capture_output=True, text=True, timeout=15, check=True, env=svc_env)
                 return True
@@ -1666,8 +1678,7 @@ def _has_legacy_hermes_plugin(entry: dict) -> bool:
         return False
     home = homes[0]
     legacy_dir = home / "plugins" / "open-android-intelligence-gateway"
-    current_dir = home / "plugins" / "oai-hermes-session-adapter"
-    return legacy_dir.is_dir() and not legacy_dir.is_symlink() and not current_dir.is_dir()
+    return legacy_dir.is_dir() and not legacy_dir.is_symlink()
 
 
 def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
@@ -1682,12 +1693,12 @@ def _upgrade_hermes_bridge(root: Path, store, handle: str, entry: dict) -> bool:
         print("该连接地址不是本机发现的 Hermes 服务，请先在对应机器上安装连接插件后再试；尚未注册。")
         return False
     hermes_choice = _select_option(
-        "是否安装或更新本机 Hermes 连接插件（会话适配器）？(↑/↓ 选择或输入 y/n) [n]: ",
+        "是否安装或更新本机 Hermes 连接插件（会话适配器）？(↑/↓ 选择或输入 y/n) [y]: ",
         (
             ("y", "1. 是，立即安装/更新 (Yes)"),
             ("n", "2. 否，暂不安装 (No)"),
         ),
-        default_index=1,
+        default_index=0,
     )
     if hermes_choice.lower() not in {"y", "yes", "1"}:
         print("已取消安装；尚未注册。")
@@ -1807,6 +1818,11 @@ def _configure_agents(root: Path, store, handle: str, operator: dict) -> None:
     from .sessions import AgentRegistry
 
     require_configuration_access(root, store, handle, "agents.manage")
+    try:
+        from .scripts_runtime import _upgrade_installed_host_adapters
+        _upgrade_installed_host_adapters(root, store, handle)
+    except Exception:
+        pass
     provision_host_candidates(root, store, handle, operator)
     config = json.loads(owned_bytes(root / "core.json"))
     storage = (root / config["storageRoot"]).resolve()

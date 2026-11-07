@@ -65,13 +65,13 @@ class AutoAccountSpaces:
         if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid() and (info.st_mode & 0o077):
             os.chmod(self.storage_root, 0o700)
             info = self.storage_root.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not stat.S_ISDIR(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077:
             raise ValueError("Hermes account root must be private")
         self.trusted_cores: dict[str, bytes] = {}
         self.root = self.storage_root / "oai-core-auto-spaces"
         self.root.mkdir(mode=0o700, exist_ok=True)
         info = self.root.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not stat.S_ISDIR(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077:
             raise ValueError("Automatic account directory must be private")
         self.database = self.root / "bindings.sqlite"
         self._lock = threading.RLock()
@@ -110,7 +110,7 @@ class AutoAccountSpaces:
         fd = os.open(self.database, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            if not stat.S_ISREG(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077:
                 raise ValueError("Automatic account database must be private")
         finally:
             os.close(fd)
@@ -142,7 +142,7 @@ class AutoAccountSpaces:
         fd = os.open(self.root / "provision.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
             info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            if not stat.S_ISREG(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077:
                 raise ValueError("Automatic account lock must be private")
             with self._lock:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -187,7 +187,7 @@ class AutoAccountSpaces:
                 paths = account_paths(self.storage_root, native_id)
             if state == "pending":
                 info = paths.root.lstat()
-                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077
+                if (not stat.S_ISDIR(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077
                         or (info.st_dev, info.st_ino) != (device, inode)):
                     raise ValueError("Unsafe pending account directory")
                 cipher = self.backend.secret_store.get_or_create_aead(f"open-android-intelligence-gateway/{native_id}")
@@ -575,7 +575,7 @@ def _hermes_dotenv_defaults() -> dict[str, str]:
         return {}
     try:
         info = env_file.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        if not stat.S_ISREG(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0):
             return {}
         from oai_core.configuration import _parse_dotenv
         return _parse_dotenv(env_file.read_text(encoding="utf-8", errors="replace"))

@@ -96,7 +96,7 @@ def _private_file(path: Path) -> int:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode) or (info.st_uid != os.getuid() and os.getuid() != 0) or info.st_mode & 0o077:
             raise ValueError("Agent secret or database must be an owner-only regular file")
         return fd
     except BaseException:
@@ -557,6 +557,14 @@ class AgentRegistration:
                     if response.status == 404:
                         raise _handshake_error("AGENT_BRIDGE_UPGRADE_REQUIRED")
                     if response.status in {401, 403}:
+                        try:
+                            err_chunk = await response.read()
+                            if err_chunk:
+                                err_data = json.loads(err_chunk)
+                                if isinstance(err_data, dict) and err_data.get("code") == "AGENT_ACCOUNT_NOT_CONNECTED":
+                                    raise _handshake_error("AGENT_BRIDGE_UPGRADE_REQUIRED")
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            pass
                         raise _handshake_error("AGENT_BRIDGE_AUTHENTICATION_FAILED")
                     if 500 <= response.status <= 599:
                         raise _handshake_error("AGENT_BRIDGE_UNAVAILABLE")

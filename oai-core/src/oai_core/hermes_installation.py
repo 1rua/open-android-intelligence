@@ -480,6 +480,11 @@ def install_hermes_adapter(root: Path, store, handle: str, hermes_home: Path) ->
         _safe(config, directory=False, owner_uid=owner_uid)
         _run(root, store, handle, [*python_args, "-c", _VERIFY], env, code="HERMES_ENABLE_FAILED",
              owner_uid=owner_uid, python=python)
+        _chown(config)
+        if (home / "backups").is_dir():
+            _chown_tree(home / "backups")
+        if (home / "open-android-intelligence-gateway").is_dir():
+            _chown_tree(home / "open-android-intelligence-gateway")
         return None
     except Exception as error:
         if isinstance(error, HermesAdapterInstallError):
