@@ -137,3 +137,5 @@ python tools/observe-communication.py \
 自动回调曾因主会话已有 active writer 无法 resume。已改成新临时会话、只读沙箱、`deepseek-flash` max 的独立结果审查，启动冒烟已成功；终态结果由工具层写回证据，不并行写主会话或修改源码。
 
 完整门禁复核继续发现并定位一处既有测试时序：并发审批用例在宿主已持久化提示后仅 sleep 10ms，随后 next() 读取客户端尚未收到的事件，负载下 StopIteration。改用该文件已有 ObservedEvents，等待实际 approval_requested 被消费者收到；不改生产审批逻辑或决定结果。以 50ms 延迟消费注入，原用例确定失败、修正后通过；同文件 **18 项通过**。后续门禁仍完整执行，不增加自动重跑掩盖失败。
+
+独立安全审查另外锁定两条相邻路径并完成红绿：进度上报中的 TLS 身份失败原先被 IOException 分支吞掉，实际会继续调用插件（回归 expected invoke=0、实际=1）；现明确安全失败终止。执行前 GET 触发续签时，刷新端的临时 408/429/5xx 原先作为 GatewayAuthException 直接终结，现只在非 credentialRefused 且临时服务状态时恢复原只读核验；真实凭据拒绝不重试。恢复后同 Claim、原请求和单次执行保持不变。加上真实 GatewaySessionRenewal 的回归，最终 **33 runs、0 failures、0 ignored、0 assumptions**；没有只靠异常类型模拟成功，也没有扩大离线授权。

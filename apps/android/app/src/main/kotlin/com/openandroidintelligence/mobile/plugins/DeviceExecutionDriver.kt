@@ -10,6 +10,7 @@ import com.openandroidintelligence.kernel.CapabilityAuthorization
 import com.openandroidintelligence.kernel.CapabilityRequestScope
 import com.openandroidintelligence.kernel.DeviceOperation
 import com.openandroidintelligence.kernel.LocalCapabilityApproval
+import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.device.*
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.http.*
@@ -457,6 +458,9 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
             } catch (failure: IOException) {
                 if (GatewayConnectionSecurity.isSecurityFailure(failure)) throw failure
                 null
+            } catch (failure: GatewayAuthException) {
+                if (!temporaryRenewalFailure(failure)) throw failure
+                null
             }
             if (response != null && response.status !in setOf(408, 429) && response.status !in 500..599) {
                 if (response.status in setOf(401, 403, 404, 409)) {
@@ -622,8 +626,18 @@ class DeviceExecutionDriver(private val context: Context,private val scope: Coro
             diagnostic(id, "authorization", "AUTHORIZATION_PROGRESS_DELIVERY_PENDING")
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (denied: CapabilityDenied) { throw denied }
-        catch (_: IOException) { diagnostic(id, "authorization", "AUTHORIZATION_PROGRESS_DELIVERY_PENDING") }
+        catch (failure: IOException) {
+            if (GatewayConnectionSecurity.isSecurityFailure(failure)) throw failure
+            diagnostic(id, "authorization", "AUTHORIZATION_PROGRESS_DELIVERY_PENDING")
+        } catch (failure: GatewayAuthException) {
+            if (!temporaryRenewalFailure(failure)) throw failure
+            diagnostic(id, "authorization", "AUTHORIZATION_PROGRESS_DELIVERY_PENDING")
+        }
     }
+
+    private fun temporaryRenewalFailure(failure: GatewayAuthException): Boolean =
+        !GatewayAuthException.credentialRefused(failure) &&
+            (failure.httpStatus in setOf(408, 429) || failure.httpStatus in 500..599)
 
     private fun showConfirmationNotification(id: String, agentName: String, purpose: String) {
         runCatching {

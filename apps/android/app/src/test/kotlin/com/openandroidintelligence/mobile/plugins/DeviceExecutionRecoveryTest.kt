@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile.plugins
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.gateway.auth.GatewayAuthException
+import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.*
@@ -390,6 +392,8 @@ class DeviceExecutionRecoveryTest {
             transport.onAuthorization = { id, state ->
                 when {
                     id == deniedId && state == "executing" -> WireResponse(401, emptyList(), ByteArray(0))
+                    id == advisoryId && state == "executing" ->
+                        throw GatewayAuthException("REFRESH_FAILED", "CORE_UNAVAILABLE", 503)
                     id == advisoryId || id == deniedId -> WireResponse(503, emptyList(), ByteArray(0))
                     else -> null
                 }
@@ -425,6 +429,58 @@ class DeviceExecutionRecoveryTest {
             assertNull(driver.confirmation.value)
             assertTrue(journal.keys().isEmpty())
             assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun progressTlsIdentityFailureStopsBeforePluginInvocation() = runBlocking {
+        fixture("authorization_progress_tls") { driver, transport, journal, scope, failures, _ ->
+            val id = "req_progress_tls"
+            transport.onAuthorization = { requested, state ->
+                if (requested == id && state == "executing")
+                    throw SSLHandshakeException("synthetic progress identity failure")
+                null
+            }
+            driver.accept(id)
+            awaitJobs(scope)
+            assertEquals(1, transport.claims.size)
+            assertEquals(0, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertTerminalResult(transport.results.single(), "failed", "PLUGIN_EXECUTION_FAILED")
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+        }
+    }
+
+    @Test fun temporaryCredentialRenewalFailureDuringRevalidationCanRecoverWithoutRepeatingClaim() = runBlocking {
+        val name = "authorization_recheck_refresh"
+        fixture(name) { _, transport, journal, scope, failures, host ->
+            val id = "req_recheck_refresh"
+            val profile = GatewayProfile("acct", "dev", "sess", "https://gateway.example")
+            var refreshes = 0
+            val renewal = GatewaySessionRenewal(profile, scope) {
+                if (refreshes++ == 0) throw GatewayAuthException("REFRESH_FAILED", "CORE_UNAVAILABLE", 503)
+                it.copy(sessionId = "renewed", accessToken = "renewed-token")
+            }
+            val http = GatewayHttpClient(profile, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            val driver = DeviceExecutionDriver(ApplicationProvider.getApplicationContext<Application>(), scope,
+                http, host, "acct", "dev", 1, name, { 7 }, { true }, TestDocumentKeys)
+            transport.onLookup = { requested ->
+                if (requested == id && transport.lookups.count { it == id } in 2..3)
+                    WireResponse(401, emptyList(), ByteArray(0)) else null
+            }
+            driver.accept(id)
+            try {
+                withTimeout(4_000) { while (transport.results.isEmpty()) delay(10) }
+            } finally { renewal.close() }
+            awaitJobs(scope)
+            assertEquals(2, refreshes)
+            assertEquals(1, transport.claims.size)
+            assertEquals(1, transport.invocations.get())
+            assertEquals(1, transport.results.size)
+            assertEquals("succeeded", submittedResultOutcome(transport.results.single()))
+            assertTrue(journal.keys().isEmpty())
+            assertTrue(failures.isEmpty())
+            renewal.close()
         }
     }
 
