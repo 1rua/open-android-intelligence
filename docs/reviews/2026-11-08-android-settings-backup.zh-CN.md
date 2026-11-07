@@ -53,11 +53,15 @@ LC_ALL=C.UTF-8 ./gradlew :app:testFullDebugUnitTest --tests 'com.openandroidinte
 LC_ALL=C.UTF-8 ./gradlew :platform-kernel:testDebugUnitTest :encrypted-store:testDebugUnitTest
 ```
 
-新增测试共 3 个类、21 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
+新增测试共 3 个类、22 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
 `SettingsBackupCoordinatorTest`（真实偏好与加密存储上的导出/导入/回滚/幂等）、
 `SettingsBackupScreenTest`（页面、禁用态、错误提示、环境缺失）。
 
-完整 `testFullDebugUnitTest` 在本机受两个环境因素限制，与本次改动无关：
-`AdditionalDeviceConnectionsTest` 等 14 个用例需要一个仓库外部的 `.hermes-gateway-plugin`
-夹具（CI 里由 `Build signed plugin packages` 步骤生成）；另有部分用例在整包并发执行时
-因类加载失败告终，单独执行对应类全部通过。CI 会覆盖完整集合。
+完整 `testFullDebugUnitTest` 在本机受环境限制，与本次改动无关：
+`AdditionalDeviceConnectionsTest` 等用例需要一个仓库外部的 `.hermes-gateway-plugin` 夹具
+（CI 里由 `Build signed plugin packages` 步骤生成），另有部分用例在整包并发执行时因类加载
+失败告终、单独执行对应类全部通过。
+
+CI（PR #96，`dev` 基线）全绿：`android`、`apk`、`core (3.11)`、`core (3.12)`、
+`dsh`、`hermes-native` 与 `sign-plugin-packages` 全部通过；三项备份测试已加入
+`.github/workflows/oai-core.yml` 的显式 `--tests` 过滤，随 Android 任务一起运行。
