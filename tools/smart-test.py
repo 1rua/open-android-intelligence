@@ -105,7 +105,13 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             impact["affects_android_kernel"] = True
         if f.startswith("oai-core/"):
             impact["affects_oai_core"] = True
-        if "hermes" in f:
+        if "hermes" in f or f in {
+            "oai-core/tests/test_interaction_pipeline.py",
+            "oai-core/tests/test_native_event_sync.py",
+            "oai-core/tests/test_native_tool_events.py",
+            "oai-core/tests/test_structured_tool_history.py",
+            "oai-core/tests/test_communication_process_recovery.py",
+        }:
             impact["affects_hermes"] = True
         if "dsh" in f:
             impact["affects_dsh"] = True
@@ -171,6 +177,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
+            "--ignore=oai-core/tests/test_hermes_session_key_recovery.py",
+            "--ignore=oai-core/tests/test_hermes_plugin_zero_config.py",
             "--ignore=oai-core/tests/test_hermes_native_origin.py",
             "--ignore=oai-core/tests/test_hermes_interactions.py",
             "--ignore=oai-core/tests/test_hermes_approval_prompts.py",
@@ -223,6 +231,8 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_agent_registration.py",
             "oai-core/tests/test_hermes_interactions.py",
             "oai-core/tests/test_hermes_approval_prompts.py",
+            "oai-core/tests/test_hermes_session_key_recovery.py",
+            "oai-core/tests/test_hermes_plugin_zero_config.py",
             "oai-core/tests/test_hermes_dispatch_delivery.py",
             "oai-core/tests/test_hermes_communication_reliability.py",
             "oai-core/tests/test_communication_process_recovery.py",

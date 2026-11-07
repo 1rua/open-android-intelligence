@@ -1,4 +1,5 @@
 """An Adapter-only edit must actually reach its optional-host regressions."""
+import ast
 import importlib.util
 import shlex
 from pathlib import Path
@@ -12,6 +13,55 @@ def load_runner():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def adapter_dependent_tests():
+    root = Path(__file__).parents[1]
+    return [
+        path.relative_to(root).as_posix()
+        for path in sorted((root / "oai-core/tests").glob("test_*.py"))
+        if any(
+            (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] == "oai_hermes_adapter"
+            ) or (
+                isinstance(node, ast.Import)
+                and any(alias.name.split(".")[0] == "oai_hermes_adapter" for alias in node.names)
+            )
+            for node in ast.parse(path.read_text(encoding="utf-8")).body
+        )
+    ]
+
+
+@pytest.mark.parametrize("test_file", adapter_dependent_tests())
+def test_ci_routes_adapter_dependent_tests_to_native_job(test_file):
+    workflow_path = Path(__file__).parents[1] / ".github/workflows/oai-core.yml"
+    jobs = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))["jobs"]
+    core_steps = "\n".join(step.get("run", "") for step in jobs["core"]["steps"])
+    native_steps = "\n".join(step.get("run", "") for step in jobs["hermes-native"]["steps"])
+
+    assert f"--ignore={test_file}" in shlex.split(core_steps)
+    assert test_file in shlex.split(native_steps)
+
+
+@pytest.mark.parametrize("level", ["fast", "pr", "full"])
+@pytest.mark.parametrize("test_file", adapter_dependent_tests())
+def test_runner_routes_adapter_dependent_tests_and_propagates_failure(test_file, level, monkeypatch):
+    runner = load_runner()
+    commands = []
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        return 19 if test_file in command else 0
+
+    runner.run_command = execute
+    # Command selection is mocked; use an existing directory without requiring an installed SDK.
+    monkeypatch.setenv("HERMES_SDK_ROOT", str(Path(__file__).parent))
+    impact = runner.analyze_impact([test_file])
+    assert runner.execute_strategy(level, impact) == 19
+    core = next(command for command in commands if "oai-core/tests" in command)
+    assert f"--ignore={test_file}" in core
+    assert test_file in commands[-1]
 
 
 def test_adapter_only_edits_execute_native_suite_and_propagate_failure():
