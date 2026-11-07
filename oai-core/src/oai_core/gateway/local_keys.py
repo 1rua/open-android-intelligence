@@ -19,9 +19,12 @@ logically isolated Gateways without sharing key material (ADR 0030).
 
 from __future__ import annotations
 
+import base64
+from contextlib import closing
 import hashlib
 import logging
 import os
+import sqlite3
 import stat
 from pathlib import Path
 from typing import Any, Mapping
@@ -292,6 +295,63 @@ def _provision(candidates: list[Path]) -> LocalMasterKeyStore | None:
             "请修正该目录权限或通过 %s 指定可写路径。", "；".join(errors), MASTER_KEY_FILE_ENV,
         )
     return None
+
+
+def count_decryptable_account_records(
+    store: _DerivedKeyStore, database_path: str | Path, *, sample_limit: int = 16,
+) -> tuple[int, int]:
+    """Return ``(matched_count, sampled_aead_count)`` for an existing account DB.
+
+    Used only to disambiguate multiple existing local key files (e.g. legacy
+    ``gateway-master-key`` vs ``session-master-key`` or cross-user setup) before
+    taking exclusive ownership of the database. Never mutates the database and
+    gracefully returns ``(0, 0)`` if the file is absent or locked.
+    """
+    db_file = Path(database_path)
+    if not db_file.is_file() or db_file.is_symlink():
+        return 0, 0
+    try:
+        uri = db_file.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.1)) as conn:
+            row = conn.execute(
+                "SELECT value FROM account_metadata WHERE key='gateway_account_id'"
+            ).fetchone()
+            account_id = row[0] if row and isinstance(row[0], str) and row[0] else None
+            if not account_id:
+                return 0, 0
+            aead = store.get_or_create_aead(f"open-android-intelligence-gateway/{account_id}")
+            samples: list[tuple[str, str]] = []
+            for key, value in conn.execute(
+                "SELECT key, value FROM account_metadata WHERE value LIKE 'aead-v1:%' LIMIT ?",
+                (sample_limit,),
+            ).fetchall():
+                if isinstance(key, str) and isinstance(value, str):
+                    samples.append((value, key))
+            if len(samples) < sample_limit:
+                for event_id, payload_json in conn.execute(
+                    "SELECT event_id, payload_json FROM events WHERE payload_json LIKE 'aead-v1:%' LIMIT ?",
+                    (sample_limit - len(samples),),
+                ).fetchall():
+                    if isinstance(event_id, str) and isinstance(payload_json, str):
+                        samples.append((payload_json, f"event:{event_id}:payload"))
+            if len(samples) < sample_limit:
+                for message_id, text in conn.execute(
+                    "SELECT message_id, text FROM messages WHERE text LIKE 'aead-v1:%' LIMIT ?",
+                    (sample_limit - len(samples),),
+                ).fetchall():
+                    if isinstance(message_id, str) and isinstance(text, str):
+                        samples.append((text, f"message:{message_id}:text"))
+    except Exception:
+        return 0, 0
+    matched = 0
+    for sealed, purpose in samples:
+        try:
+            ciphertext = base64.b64decode(sealed[8:], altchars=b"-_", validate=True)
+            aead.decrypt(ciphertext, purpose.encode("utf-8"))
+            matched += 1
+        except Exception:
+            continue
+    return matched, len(samples)
 
 
 def master_key_unavailable_reason(core: Any) -> str | None:

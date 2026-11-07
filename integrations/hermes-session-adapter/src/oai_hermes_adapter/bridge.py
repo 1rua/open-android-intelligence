@@ -24,7 +24,7 @@ from typing import Any
 
 from aiohttp import web
 
-from .sessions import HermesSessionAdapter
+from .sessions import HermesSessionAdapter, gateway_error_status
 from .approvals import NativeApprovalMixin
 from oai_core.gateway.core import APPROVAL_CHOICES, GatewayError
 from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, native_event_query
@@ -528,7 +528,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         except BaseException as exc:
             await asyncio.to_thread(upload.abort)
             if isinstance(exc, GatewayError):
-                raise AdapterError(exc.code, 404 if exc.code in {"SCHEMA_INVALID", "CONVERSATION_NOT_FOUND"} else 409) from exc
+                raise AdapterError(exc.code, gateway_error_status(exc.code)) from exc
             raise
         return web.json_response(result)
 

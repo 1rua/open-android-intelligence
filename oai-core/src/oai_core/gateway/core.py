@@ -1696,7 +1696,12 @@ class EventStore:
         legacy = self.store.database.execute("SELECT event_id,sequence,payload_json,expires_at FROM events WHERE event_type='device.requested' AND sequence>? ORDER BY sequence LIMIT ?",(int(marker[0]) if marker else 0,limit)).fetchall()
         for row in legacy:
             purpose = f"event:{row['event_id']}:payload"
-            payload = self.store.open_json(row['payload_json'],purpose)
+            try:
+                payload = self.store.open_json(row['payload_json'], purpose)
+            except GatewayError as exc:
+                if exc.code == "DECRYPTION_FAILED":
+                    continue
+                raise
             request = self.store.database.execute("SELECT parameters_json FROM device_requests WHERE request_id=?",(str(payload.get('requestId')),)).fetchone()
             if request is None or request[0] == '': payload['parameters'] = {}
             expiry = min(_now(row['expires_at']),_now(payload.get('expiresAt',row['expires_at'])))
@@ -1710,10 +1715,29 @@ class EventStore:
                 "SELECT * FROM events WHERE expires_at <= ? ORDER BY expires_at,sequence LIMIT ?",
                 (iso_millis(now), limit),
             ).fetchall()
+            all_conversations: list[str] | None = None
             for row in expired:
                 if not (row["event_type"].startswith("conversation.") or row["event_type"] == "gateway.notice"):
                     continue
-                payload = self.store.open_json(row["payload_json"], f"event:{row['event_id']}:payload")
+                try:
+                    payload = self.store.open_json(row["payload_json"], f"event:{row['event_id']}:payload")
+                except GatewayError as exc:
+                    if exc.code != "DECRYPTION_FAILED":
+                        raise
+                    if all_conversations is None:
+                        all_conversations = [
+                            str(r[0]) for r in self.store.database.execute(
+                                "SELECT conversation_id FROM conversations"
+                            ).fetchall() if r[0]
+                        ]
+                    for cid in all_conversations:
+                        key = "conversation-event-pruned:v1:" + hashlib.sha256(cid.encode()).hexdigest()
+                        self.store.database.execute(
+                            "INSERT INTO account_metadata(key,value) VALUES (?,?) "
+                            "ON CONFLICT(key) DO UPDATE SET value=CAST(MAX(CAST(value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)",
+                            (key, str(row["sequence"])),
+                        )
+                    continue
                 conversation_id = self.replay_conversation_id({"eventType": row["event_type"],
                     "payload": payload, "correlationId": row["correlation_id"]})
                 if isinstance(conversation_id, str) and conversation_id:

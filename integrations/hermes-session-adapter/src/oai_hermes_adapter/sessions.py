@@ -14,6 +14,30 @@ from oai_core.sessions import AdapterError
 logger = logging.getLogger(__name__)
 
 
+_STORAGE_ERROR_CODES = frozenset({
+    "DECRYPTION_FAILED",
+    "ENCRYPTION_FAILED",
+    "MASTER_KEY_UNAVAILABLE",
+    "MASTER_KEY_REFERENCE_MISMATCH",
+    "ATTACHMENT_STORAGE_UNAVAILABLE",
+    "HOST_INCOMPATIBLE",
+    "MESSAGE_MIGRATION_BUSY",
+    "MESSAGE_STORAGE_VERSION_UNSUPPORTED",
+})
+
+
+def gateway_error_status(code: str) -> int:
+    if code in {"SCHEMA_INVALID", "CONVERSATION_NOT_FOUND"}:
+        return 404
+    if code == "AUTHENTICATION_REQUIRED":
+        return 401
+    if code == "ATTACHMENT_ACCESS_DENIED":
+        return 403
+    if code in _STORAGE_ERROR_CODES:
+        return 503
+    return 409
+
+
 def is_host_command(text: str) -> bool:
     """Leave slash command recognition and handling to the native host."""
     return text.lstrip().startswith("/")
@@ -67,7 +91,7 @@ class HermesSessionAdapter:
         except Exception as exc:
             if hasattr(exc, "code") and not isinstance(exc, AdapterError):
                 code = exc.code
-                raise AdapterError(code, 404 if code in {"SCHEMA_INVALID", "CONVERSATION_NOT_FOUND"} else 409) from exc
+                raise AdapterError(code, gateway_error_status(code)) from exc
             raise
         finally:
             account.close()

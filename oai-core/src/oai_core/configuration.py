@@ -908,19 +908,37 @@ def _sync_hermes_venv_packages(root: Path, hermes_home: Path, owner_uid: int, ow
         return
     venv_dir = hermes_home / "hermes-agent" / "venv"
     if not venv_dir.is_dir():
-        for cand in [
+        candidates = [
             hermes_home / "hermes-agent" / "venv",
             hermes_home / "hermes-agent" / ".venv",
             hermes_home / "venv",
             hermes_home / ".venv",
             hermes_home / "hermes-agent" / "env",
             hermes_home / "env",
-        ]:
-            if cand.is_dir():
+        ]
+        try:
+            from .hermes_installation import resolve_hermes_python
+            py = resolve_hermes_python(hermes_home)
+            if py is not None and py.parent.name in {"bin", "Scripts"}:
+                candidates.append(py.parent.parent)
+        except Exception:
+            pass
+        for cand in candidates:
+            if cand.is_dir() and (cand / "pyvenv.cfg").is_file():
                 venv_dir = cand
                 break
         else:
-            return
+            for cand in candidates:
+                if cand.is_dir():
+                    venv_dir = cand
+                    break
+            else:
+                return
+    try:
+        venv_st = venv_dir.stat()
+        venv_uid, venv_gid = venv_st.st_uid, venv_st.st_gid
+    except OSError:
+        venv_uid, venv_gid = owner_uid, owner_gid
     site_dirs = list(venv_dir.glob("lib*/python*/site-packages"))
     for site_dir in site_dirs:
         if not site_dir.is_dir() or site_dir.is_symlink():
@@ -947,11 +965,11 @@ def _sync_hermes_venv_packages(root: Path, hermes_home: Path, owner_uid: int, ow
                     dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
                 )
-                if os.geteuid() == 0 and owner_uid != 0:
+                if os.geteuid() == 0 and venv_uid != 0:
                     for dirpath, dirnames, filenames in os.walk(dest_dir):
-                        os.chown(dirpath, owner_uid, owner_gid)
+                        os.chown(dirpath, venv_uid, venv_gid)
                         for fname in filenames:
-                            os.chown(os.path.join(dirpath, fname), owner_uid, owner_gid)
+                            os.chown(os.path.join(dirpath, fname), venv_uid, venv_gid)
         except Exception:
             continue
     plugin_manifest = root / "integrations" / "hermes-session-adapter" / "plugin.yaml"
@@ -1050,6 +1068,122 @@ def _ensure_hermes_trusted_core(gateway_root: Path, instance_id: str, signing_ke
     return trusted_path
 
 
+def _raw_key_bytes_for_probe(path: Path) -> bytes | None:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if len(raw) == 32:
+        return raw
+    try:
+        text = raw.decode("utf-8").strip()
+        if len(text) == 64:
+            decoded = bytes.fromhex(text)
+            if len(decoded) == 32:
+                return decoded
+    except ValueError:
+        return None
+    return None
+
+
+def _align_hermes_session_master_key(
+    root: Path, storage: Path, hermes_home: Path, gateway_root: Path, owner_uid: int, owner_gid: int,
+) -> None:
+    """When root provisions a cross-user Hermes host with existing encrypted DBs,
+    ensure the target user holds the matching local key instead of minting a split key."""
+    if os.geteuid() != 0 or owner_uid == 0 or not gateway_root.is_dir():
+        return
+    db_files = [
+        p for p in sorted(gateway_root.glob("*/gateway.sqlite"))
+        if p.is_file() and not p.is_symlink() and not p.parent.is_symlink()
+    ]
+    if not db_files:
+        return
+    try:
+        import pwd
+        owner_home = Path(pwd.getpwuid(owner_uid).pw_dir)
+    except Exception:
+        owner_home = hermes_home.parent
+    from .gateway.local_keys import (
+        DEFAULT_KEY_DIRECTORY_NAME,
+        DEFAULT_KEY_FILE_NAME,
+        DEFAULT_SESSION_KEY_FILE_NAME,
+        _DerivedKeyStore,
+        count_decryptable_account_records,
+    )
+
+    class _ProbeStore(_DerivedKeyStore):
+        def __init__(self, key_bytes: bytes):
+            self._key = key_bytes
+
+        def _master_bytes(self) -> bytes:
+            return self._key
+
+    def score_key(raw_key: bytes | None) -> tuple[int, int]:
+        if raw_key is None:
+            return 0, 0
+        probe = _ProbeStore(raw_key)
+        matched_total = 0
+        sampled_total = 0
+        for db_file in db_files:
+            m, s = count_decryptable_account_records(probe, db_file)
+            matched_total += m
+            sampled_total += s
+        return matched_total, sampled_total
+
+    owner_key_dir = owner_home / DEFAULT_KEY_DIRECTORY_NAME
+    owner_candidates = [
+        owner_key_dir / DEFAULT_SESSION_KEY_FILE_NAME,
+        owner_key_dir / DEFAULT_KEY_FILE_NAME,
+    ]
+    owner_best = 0
+    total_sampled = 0
+    for cand in owner_candidates:
+        m, s = score_key(_raw_key_bytes_for_probe(cand))
+        owner_best = max(owner_best, m)
+        total_sampled = max(total_sampled, s)
+
+    root_key_dir = Path.home() / DEFAULT_KEY_DIRECTORY_NAME
+    donor_paths = [
+        root_key_dir / DEFAULT_KEY_FILE_NAME,
+        root_key_dir / DEFAULT_SESSION_KEY_FILE_NAME,
+        root / "runtime" / "secrets" / "core-master-key",
+        storage / "secrets" / "core-master-key",
+    ]
+    best_donor_bytes: bytes | None = None
+    best_donor_matches = owner_best
+    for donor in donor_paths:
+        raw_key = _raw_key_bytes_for_probe(donor)
+        if raw_key is None:
+            continue
+        m, s = score_key(raw_key)
+        total_sampled = max(total_sampled, s)
+        if m > best_donor_matches:
+            best_donor_matches = m
+            best_donor_bytes = raw_key
+    if total_sampled == 0 or best_donor_bytes is None:
+        return
+    try:
+        _ensure_host_dir(owner_key_dir, owner_uid, owner_gid, 0o700)
+        target_key = owner_key_dir / DEFAULT_SESSION_KEY_FILE_NAME
+        if target_key.is_symlink():
+            return
+        temp_key = target_key.with_name(target_key.name + "." + secrets.token_hex(8) + ".tmp")
+        fd = os.open(temp_key, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(best_donor_bytes)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o600)
+            os.fchown(handle.fileno(), owner_uid, owner_gid)
+            os.fsync(handle.fileno())
+        os.replace(temp_key, target_key)
+        fsync_directory(owner_key_dir)
+    except OSError:
+        return
+
+
 def _write_if_changed(path: Path, text: str) -> None:
     if path.is_file() and not path.is_symlink():
         existing = owned_bytes(path)
@@ -1118,6 +1252,7 @@ def provision_host_agent_files(root: Path, instance_id: str, signing_key: Any = 
         except ValueError:
             port = 8792
         hermes_instance_id = env_vars.get("OAI_HERMES_INSTANCE_ID") or "hermes"
+        _align_hermes_session_master_key(root, storage, hermes_home, gateway_root, owner_uid, owner_gid)
         accounts, _ = _discover_hermes_native_accounts(hermes_home)
         existing_trusted = (Path(env_vars["OAI_HERMES_TRUSTED_CORES_FILE"]).expanduser()
                             if env_vars.get("OAI_HERMES_TRUSTED_CORES_FILE") else None)
