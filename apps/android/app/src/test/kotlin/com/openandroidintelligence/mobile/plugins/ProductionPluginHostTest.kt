@@ -39,7 +39,7 @@ class ProductionPluginHostTest {
             bind(PairingGrantBinding("https://host.example","acct_damaged","install_damaged"))
         }
         val trust = DeveloperTrustMode()
-        val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_damaged")
+        val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_damaged")
         val bytes = TestAlpPackages.compiledNotificationsPackage()
         val otherScoped = "plugin:org.example.other:other-author:kernel.notifications.read"
         val preferences = context.getSharedPreferences("open_android_intelligence_pairing_grants",Application.MODE_PRIVATE)
@@ -88,7 +88,7 @@ class ProductionPluginHostTest {
                 bind(PairingGrantBinding("https://host.example","acct_integrity","install_integrity"))
             }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_integrity")
+            val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_integrity")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
             host.attach(PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
@@ -155,7 +155,7 @@ class ProductionPluginHostTest {
             val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             grants.bind(PairingGrantBinding("https://host.example","acct_upgrade","install_upgrade"))
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_upgrade")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_upgrade")
             val author=java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage(author=author,version="1.0.0"))
@@ -217,7 +217,7 @@ class ProductionPluginHostTest {
             val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
             grants.bind(PairingGrantBinding("https://host.example", "acct_host", "install_host"))
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), "install_host")
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), "install_host")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage())
             val kernel = PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
@@ -388,7 +388,7 @@ class ProductionPluginHostTest {
             val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             grants.bind(PairingGrantBinding("https://host.example","acct_host","install_host"))
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_host")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_host")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0"))
             val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),

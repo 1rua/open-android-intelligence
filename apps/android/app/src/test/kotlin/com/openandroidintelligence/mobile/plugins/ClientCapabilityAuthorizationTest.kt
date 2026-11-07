@@ -48,7 +48,7 @@ class ClientCapabilityAuthorizationTest {
             val store = InMemoryPairingGrantStore()
             val grants = PairingGrantStateHolder(store, audit).apply { bind(binding) }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
             host.installStore.install(TestAlpPackages.compiledSmsPackage(author = author, capabilityDeclaration = oldDeclarations))
             host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities), host.runtimes,
                 audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant, mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
@@ -115,7 +115,7 @@ class ClientCapabilityAuthorizationTest {
             val store = InMemoryPairingGrantStore()
             val grants = PairingGrantStateHolder(store, audit).apply { bind(binding) }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
             host.installStore.install(if (readOnlyPackage) TestAlpPackages.compiledNotificationsPackage()
                 else TestAlpPackages.compiledSmsPackage())
             lateinit var kernel: PluginKernel
@@ -483,7 +483,7 @@ class ClientCapabilityAuthorizationTest {
             val audit = AndroidAuditStore()
             val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit).apply { bind(binding) }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
             val firstId = "org.example.background-first"
             val secondId = "org.example.background-second"
             host.installStore.install(TestAlpPackages.compiledSmsPackage(queryCapabilityId = "$firstId.query", pluginId = firstId))

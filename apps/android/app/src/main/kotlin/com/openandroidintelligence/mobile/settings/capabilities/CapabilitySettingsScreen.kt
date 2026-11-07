@@ -1,16 +1,19 @@
 package com.openandroidintelligence.mobile.settings.capabilities
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -21,18 +24,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -54,16 +58,31 @@ import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
 import com.openandroidintelligence.mobile.plugins.androidPermissionRequirements
 import com.openandroidintelligence.mobile.plugins.capabilityStatusLabel
 import com.openandroidintelligence.mobile.plugins.manualGrantGuidance
+import com.openandroidintelligence.mobile.plugins.needsFallbackConsent
 import com.openandroidintelligence.mobile.plugins.openNotificationAccessSettings
 import com.openandroidintelligence.mobile.screen.accessibilityServiceClassName
+import com.openandroidintelligence.mobile.screen.accessibilityServiceDisconnected
+import com.openandroidintelligence.mobile.screen.accessibilityServiceEnabledInSettings
+import com.openandroidintelligence.mobile.screen.accessibilityServiceReady
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
-import kotlinx.coroutines.flow.drop
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
 
+private const val SMS_QUERY_ID = "org.openandroidintelligence.sms.query"
+private const val NOTIFICATION_QUERY_ID = "org.openandroidintelligence.notifications.query"
+
+/** 短信详情里三项子能力的展示顺序与文案。 */
+private val smsSiblingCapabilities = listOf(
+    "org.openandroidintelligence.sms.schedule" to "短信定时任务设置",
+    "org.openandroidintelligence.sms.job-status" to "短信任务状态查询",
+    "org.openandroidintelligence.sms.cancel" to "短信任务取消",
+)
+
+/** 该能力声明是否需要一张独立的详情页（短信与通知把推送也收进来，所以标题就是能力名）。 */
 @Composable
 internal fun CapabilitySettingsScreen(
     pluginId: String,
@@ -72,22 +91,25 @@ internal fun CapabilitySettingsScreen(
     runtime: GatewayRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
-    onOpenPlugins: () -> Unit,
     onRequestScreenCaptureAuthorization: () -> Unit,
+    onOpenPlugins: () -> Unit = {},
     showAllScreenCapabilities: Boolean = false,
 ) {
-    val title = if (showAllScreenCapabilities) "屏幕读取与控制" else builtInCapabilities.firstOrNull { it.id == capability.substringBefore('@') }?.title
-        ?: capability.substringBefore('@')
+    val capabilityId = capability.substringBefore('@')
+    val title = if (showAllScreenCapabilities) "屏幕读取与控制"
+    else builtInCapabilities.firstOrNull { it.id == capabilityId }?.title ?: capabilityId
     SettingsPageScaffold(title = title, presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             if (showAllScreenCapabilities) {
-                builtInCapabilities.filter { it.group == "屏幕" }.forEach { screen ->
+                builtInCapabilities.filter { it.group == GROUP_SCREEN }.forEach { screen ->
                     CapabilityDetailContent(screen.pluginId, screen.id, environment, runtime, presentation, onOpenPlugins, onRequestScreenCaptureAuthorization)
                 }
-            } else CapabilityDetailContent(pluginId, capability, environment, runtime, presentation,
-                onOpenPlugins, onRequestScreenCaptureAuthorization)
-            if (showAllScreenCapabilities || builtInCapabilities.any { it.group == "屏幕" && it.pluginId == pluginId && it.id == capability.substringBefore('@') }) {
                 ScreenStopSection(environment, runtime)
+            } else {
+                CapabilityDetailContent(pluginId, capability, environment, runtime, presentation, onOpenPlugins, onRequestScreenCaptureAuthorization)
+                if (builtInCapabilities.any { it.group == GROUP_SCREEN && it.pluginId == pluginId && it.id == capabilityId }) {
+                    ScreenStopSection(environment, runtime)
+                }
             }
         }
     }
@@ -120,6 +142,11 @@ private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime:
     }
 }
 
+/**
+ * 一项能力的完整详情：开关与授权模式 → 系统权限 → 运行状态 → Core 同步 → 专属设置。
+ *
+ * 四条事实各自独立呈现，任何一条缺失都指名缺的是什么；不出现能力 ID、提供者标识或参数摘要。
+ */
 @Composable
 private fun CapabilityDetailContent(
     pluginId: String,
@@ -137,6 +164,7 @@ private fun CapabilityDetailContent(
     val localState by environment.pairingGrants.state.collectAsState()
     val syncState = runtime?.deviceCapabilityState?.collectAsState()?.value ?: DeviceCapabilitySyncState()
     val effectiveSync = syncState.forLocalState(localState?.revision ?: -1L, hostRevision ?: -1L)
+    val capabilityId = capability.substringBefore('@')
     val entries = remember(host, hostRevision, pluginId, capability) {
         host?.entries(pluginId).orEmpty().filter {
             if ('@' in capability) it.key == capability else it.id == capability
@@ -188,111 +216,223 @@ private fun CapabilityDetailContent(
             deniedRuntimePermissions = { it in deniedPermissions },
         )
     }
-    val builtIn = builtInCapabilities.firstOrNull { it.pluginId == pluginId && it.id == capability.substringBefore('@') }
-    SectionLabel(builtIn?.title ?: capability.substringBefore('@'))
+    val builtIn = builtInCapabilities.firstOrNull { it.pluginId == pluginId && it.id == capabilityId }
+
     notice?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
     saveError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+
+    if (host == null) {
+        // 本机策略的读取依赖插件宿主本身；这一步与 Core 是否在线无关。
+        SettingsSectionCard { Text("插件运行环境未连接，暂时无法读取或修改本机设置。") }
+        return
+    }
     if (entries.isEmpty()) {
-        val installed by produceState<Result<List<com.openandroidintelligence.mobile.plugins.InstalledPluginView>>?>(null, observedHost, hostRevision) {
-            value = withContext(Dispatchers.IO) { observedHost?.let { runCatching { it.installStore.listInstalled() } } }
-        }
+        // 宿主已就绪但没有该能力的已验证声明：内建能力只能是加载失败，第三方插件则是未装/未启用。
+        val builtInFailure = observedHost?.builtInFailures?.get(pluginId)
         SettingsSectionCard {
-            Text(when {
-                installed == null || installed?.isFailure == true || observedHost?.loadFailures?.containsKey("*") == true -> "无法读取插件安装状态。"
-                installed?.getOrNull().orEmpty().any { it.pluginId == pluginId || it.directory.name == pluginId } && host == null ->
-                    "插件已安装，但插件运行环境未连接。"
-                installed?.getOrNull().orEmpty().any { it.pluginId == pluginId || it.directory.name == pluginId } ->
-                    "插件已安装，但该能力未能验证或未声明。"
-                else -> "尚未安装对应的能力插件。"
-            })
-            if (host == null) Text("插件运行环境未连接，无法读取本机策略。")
-            TextButton(onClick = onOpenPlugins) { Text("打开插件管理") }
+            Text(
+                if (builtIn != null || builtInFailure != null) {
+                    "这项能力未能加载：${builtInFailureLabel(builtInFailure ?: "BUILT_IN_REGISTRATION_FAILED")}。请重新安装应用；仍失败请反馈这一原因。"
+                } else {
+                    "看不到这项能力的提供者。请确认对应插件仍然安装并启用。"
+                },
+                color = MaterialTheme.colorScheme.error,
+            )
+            if (builtIn == null) TextButton(onClick = onOpenPlugins) { Text("打开插件管理") }
         }
-    } else if (host != null) {
-        val snapshot by produceState<com.openandroidintelligence.mobile.plugins.CapabilitySnapshot?>(null, hostRevision, localState?.revision, refreshTick) {
-            value = withContext(Dispatchers.IO) { runCatching { host.capabilitySnapshot() }.getOrNull() }
+        return
+    }
+
+    val snapshot by produceState<com.openandroidintelligence.mobile.plugins.CapabilitySnapshot?>(null, hostRevision, localState?.revision, refreshTick) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { host.capabilitySnapshot() }.getOrNull() }
+    }
+    val accessibilityScreenshotSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
+    SectionLabel("能力")
+    entries.forEach { entry ->
+        val policy = host.capabilityPolicy(entry.identity.pluginId, entry.key)
+        val local = snapshot?.inventory?.firstOrNull {
+            it["pluginId"] == pluginId && it["capabilityId"] == entry.id && it["capabilityVersion"] == entry.version
         }
-        entries.forEach { entry ->
-            val policy = host.capabilityPolicy(entry.identity.pluginId, entry.key)
-            val local = snapshot?.inventory?.firstOrNull {
-                it["pluginId"] == pluginId && it["capabilityId"] == entry.id && it["capabilityVersion"] == entry.version
-            }
-            val localStatus = local?.get("status") as? String
-            val localReason = (local?.get("reason") as? String)?.takeIf { it.isNotBlank() }
-            val diagnostic = effectiveSync.diagnostic(DeviceCapabilityIdentity(pluginId, entry.id, entry.version))
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    Text("提供者：$pluginId · ${entry.key}", style = MaterialTheme.typography.bodySmall)
-                    Text(if (host.isEnabled(pluginId)) "插件已启用" else "插件已安装，但未启用")
-                    if (localState?.localError != null) Text("本机授权状态读取失败，当前按关闭处理。", color = MaterialTheme.colorScheme.error)
-                    key(entry.identity.pluginId, entry.identity.authorKeyFingerprint, entry.key,
-                        Json.sha256(entry.schema), entry.risk, entry.primitives.sorted()) {
-                        CapabilityAuthorizationControls(pluginId, entry.key,
-                            entry.risk == "read" && "kernel.screen.control" !in entry.primitives, policy,
-                            onPolicyChange = { next ->
-                                saveError = runCatching { host.setCapabilityPolicy(pluginId, entry.key, next) }
-                                    .fold(onSuccess = { null }, onFailure = { "本机授权设置未能保存，请检查存储后重试。" })
-                                refreshTick++
-                            },
-                            draftIdentity = host.authorizationScope(entry, Json.of(emptyMap<String, String>())).capability,
-                        )
-                    }
-                    Text("本机可用性：${localAvailabilityLabel(localStatus, localReason)}")
-                    if (localStatus == "PROVIDER_NOT_SELECTED" && policy.enabled) {
-                        TextButton(onClick = {
-                            saveError = runCatching { host.setCapabilityPolicy(pluginId, entry.key, host.capabilityPolicy(pluginId, entry.key)) }
-                                .fold(onSuccess = { null }, onFailure = { "未能选择此提供者，请检查插件状态后重试。" })
-                            refresh()
-                        }) { Text("使用此插件提供这项能力") }
-                    }
-                    Text("Core 同步：${capabilityStatusLabel(diagnostic.status, diagnostic.reason)}", style = MaterialTheme.typography.bodySmall)
+        val localStatus = local?.get("status") as? String
+        val localReason = (local?.get("reason") as? String)?.takeIf { it.isNotBlank() }
+        val diagnostic = effectiveSync.diagnostic(DeviceCapabilityIdentity(pluginId, entry.id, entry.version))
+        SettingsSectionCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                key(entry.identity.pluginId, entry.identity.authorKeyFingerprint, entry.key,
+                    Json.sha256(entry.schema), entry.risk, entry.primitives.sorted()) {
+                    CapabilityAuthorizationControls(pluginId, entry.key,
+                        entry.risk == "read" && "kernel.screen.control" !in entry.primitives, policy,
+                        onPolicyChange = { next ->
+                            saveError = runCatching { host.setCapabilityPolicy(pluginId, entry.key, next) }
+                                .fold(onSuccess = { null }, onFailure = { "本机授权设置未能保存，请检查存储后重试。" })
+                            refreshTick++
+                        },
+                        draftIdentity = host.authorizationScope(entry, Json.of(emptyMap<String, String>())).capability,
+                    )
                 }
-            }
-            val requirements = remember(entry) { androidPermissionRequirements(entry.primitives) }
-            if (requirements.isNotEmpty()) {
-                SectionLabel("Android 系统许可")
-                SettingsSectionCard {
-                    requirements.forEach { requirement ->
-                        GrantRequirementRow(requirement, inspector.state(requirement), onAction = {
-                            when (requirement.grantKind) {
-                                DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> {
-                                    val permission = requirement.manifestPermission
-                                    if (permission != null && inspector.state(requirement) != DeviceCapabilityGrantState.DENIED) {
-                                        requestedPermission = permission
-                                        permissionLauncher.launch(permission)
-                                    } else if (permission != null) {
-                                        if (!openSystemSettings(context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))) notice = manualGrantGuidance(requirement)
-                                    } else notice = manualGrantGuidance(requirement)
-                                }
-                                DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE -> if (!openSystemSettings(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))) notice = manualGrantGuidance(requirement)
-                                DeviceCapabilityGrantKind.NOTIFICATION_ACCESS -> if (!runCatching { openNotificationAccessSettings(context) }.getOrDefault(false)) notice = manualGrantGuidance(requirement)
-                                DeviceCapabilityGrantKind.MEDIA_PROJECTION -> onRequestScreenCaptureAuthorization()
-                            }
-                        }, onOpenAppSettings = {
-                            if (!openSystemSettings(context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))) {
-                                notice = manualGrantGuidance(requirement)
-                            }
-                        })
-                    }
+                if (localStatus == "PROVIDER_NOT_SELECTED" && policy.enabled) {
+                    TextButton(onClick = {
+                        saveError = runCatching { host.setCapabilityPolicy(pluginId, entry.key, host.capabilityPolicy(pluginId, entry.key)) }
+                            .fold(onSuccess = { null }, onFailure = { "未能选择此提供者，请检查插件状态后重试。" })
+                        refresh()
+                    }) { Text("使用此插件提供这项能力") }
                 }
             }
         }
     }
-    if (entryUsesNotificationPolicy(pluginId, capability) || entries.any { "kernel.notifications.read" in it.primitives }) {
-        SectionLabel("通知采集范围与投递")
-        NotificationCollectionScreen(
-            policy = NotificationControlRegistry.policyPort(),
-            binding = NotificationControlRegistry.bindingPort(),
-            onBack = {},
-            presentation = presentation,
-            embedded = true,
-        )
+
+    // 临时授权随能力走：这里只显示这一项能力真正生效的批准，并可就地撤销。
+    CapabilityTemporaryApprovals(environment.pairingGrants, entries.map { it.key }.toSet())
+
+    // 短信详情：三项子能力各自独立开关，只控制各自的能力，不连带扩大读取范围。
+    if (capabilityId == SMS_QUERY_ID) {
+        val siblings = smsSiblingCapabilities.mapNotNull { (id, label) -> host.entries(pluginId).firstOrNull { it.id == id }?.let { label to it } }
+        if (siblings.isNotEmpty()) {
+            SectionLabel("短信任务")
+            SettingsSectionCard {
+                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                    siblings.forEach { (label, entry) ->
+                        val policy = host.capabilityPolicy(pluginId, entry.key)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Text(label, style = MaterialTheme.typography.bodyLarge)
+                            Switch(
+                                checked = policy.enabled,
+                                onCheckedChange = { enabled ->
+                                    saveError = runCatching {
+                                        host.setCapabilityPolicy(pluginId, entry.key, policy.copy(enabled = enabled))
+                                    }.fold(onSuccess = { null }, onFailure = { "本机授权设置未能保存，请检查存储后重试。" })
+                                    refreshTick++
+                                },
+                                modifier = Modifier
+                                    .testTag("capability-enabled:$pluginId:${entry.key}")
+                                    .semantics { contentDescription = "${label}开关" },
+                            )
+                        }
+                    }
+                    Text("三项都只控制对应能力；是否读取短信仍由上方的短信读取开关决定。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+
+    val requirements = remember(entries, accessibilityScreenshotSupported) {
+        entries.flatMap { androidPermissionRequirements(it.primitives, accessibilityScreenshotSupported) }.distinctBy { it.key }
+    }
+    if (requirements.isNotEmpty()) {
+        SectionLabel("Android 系统权限")
+        SettingsSectionCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                val states = requirements.associateWith { inspector.state(it) }
+                val fallbackNeeded = needsFallbackConsent(requirements) { states.getValue(it) }
+                requirements.forEach { requirement ->
+                    val state = states.getValue(requirement)
+                    // 首选路径已就绪时不再提示备用方案：无障碍截图可用就不该要求屏幕共享授权。
+                    if (requirement.isFallback && !fallbackNeeded) return@forEach
+                    GrantRequirementRow(requirement, state, onAction = {
+                        when (requirement.grantKind) {
+                            DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> {
+                                val permission = requirement.manifestPermission
+                                if (permission != null && state != DeviceCapabilityGrantState.DENIED) {
+                                    requestedPermission = permission
+                                    permissionLauncher.launch(permission)
+                                } else if (permission != null) {
+                                    if (!openSystemSettings(context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))) notice = manualGrantGuidance(requirement)
+                                } else notice = manualGrantGuidance(requirement)
+                            }
+                            DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE -> if (!openSystemSettings(context, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))) notice = manualGrantGuidance(requirement)
+                            DeviceCapabilityGrantKind.NOTIFICATION_ACCESS -> if (!runCatching { openNotificationAccessSettings(context) }.getOrDefault(false)) notice = manualGrantGuidance(requirement)
+                            DeviceCapabilityGrantKind.MEDIA_PROJECTION -> onRequestScreenCaptureAuthorization()
+                        }
+                    }, onOpenAppSettings = {
+                        if (!openSystemSettings(context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))) {
+                            notice = manualGrantGuidance(requirement)
+                        }
+                    }, context = context)
+                }
+            }
+        }
+    }
+
+    entries.forEach { entry ->
+        val local = snapshot?.inventory?.firstOrNull {
+            it["pluginId"] == pluginId && it["capabilityId"] == entry.id && it["capabilityVersion"] == entry.version
+        }
+        val localStatus = local?.get("status") as? String
+        val localReason = (local?.get("reason") as? String)?.takeIf { it.isNotBlank() }
+        val diagnostic = effectiveSync.diagnostic(DeviceCapabilityIdentity(pluginId, entry.id, entry.version))
+        SectionLabel("运行状态")
+        SettingsSectionCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                Text(localAvailabilityLabel(localStatus, localReason))
+                Text("Core 同步：${capabilityStatusLabel(diagnostic.status, diagnostic.reason)}",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (runtime == null) {
+                    Text("Core 未连接；本机开关与授权照常生效，连接恢复后自动同步。",
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+
+    if (entryUsesNotificationPolicy(pluginId, capability)) {
+        SectionLabel("通知采集范围")
+        SettingsSectionCard {
+            NotificationCollectionScreen(
+                policy = NotificationControlRegistry.policyPort(),
+                binding = NotificationControlRegistry.bindingPort(),
+                onBack = {},
+                presentation = presentation,
+                embedded = true,
+            )
+        }
+    }
+
+    // 主动推送按类别归位：通知部分进「通知读取」，短信部分进「短信」。
+    val push = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.devicePush
+    val pushRuntime = push?.runtime
+    val endpoints = push?.endpoints?.collectAsState()?.value.orEmpty()
+    if (pushRuntime != null) {
+        val pushSnapshot by produceState<com.openandroidintelligence.mobile.push.PushSnapshot?>(null, pushRuntime, refreshTick) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { pushRuntime.snapshot() }.getOrNull() }
+        }
+        pushSnapshot?.let { snap ->
+            SectionLabel("主动推送")
+            when {
+                capabilityId == NOTIFICATION_QUERY_ID -> com.openandroidintelligence.mobile.push.NotificationPushSection(
+                    config = snap.configuration,
+                    endpoints = endpoints,
+                    saving = false,
+                    error = null,
+                    onConfigurationChange = { next ->
+                        saveError = runCatching { pushRuntime.configure(next) }.fold(onSuccess = { null }, onFailure = { "推送设置未能保存，请稍后重试。" })
+                        refreshTick++
+                    },
+                )
+                capabilityId == SMS_QUERY_ID -> com.openandroidintelligence.mobile.push.SmsPushSection(
+                    config = snap.configuration,
+                    endpoints = endpoints,
+                    saving = false,
+                    error = null,
+                    onConfigurationChange = { next ->
+                        saveError = runCatching { pushRuntime.configure(next) }.fold(onSuccess = { null }, onFailure = { "推送设置未能保存，请稍后重试。" })
+                        refreshTick++
+                    },
+                    onRefreshEndpoints = { push.refreshEndpoints() },
+                )
+            }
+        }
     }
 }
 
 private fun entryUsesNotificationPolicy(pluginId: String, capability: String): Boolean =
     pluginId == "org.openandroidintelligence.notifications" &&
-        capability.substringBefore('@') == "org.openandroidintelligence.notifications.query"
+        capability.substringBefore('@') == NOTIFICATION_QUERY_ID
 
 internal fun localAvailabilityLabel(status: String?, reason: String?): String {
     val label = when (status) {
@@ -313,45 +453,43 @@ private fun GrantRequirementRow(
     state: DeviceCapabilityGrantState,
     onAction: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    context: Context,
 ) {
     Text(requirement.label, style = MaterialTheme.typography.titleSmall)
-    Text(when (state) {
-        DeviceCapabilityGrantState.GRANTED -> "系统权限或服务已就绪"
-        DeviceCapabilityGrantState.NOT_REQUESTED -> "权限尚未授予"
-        DeviceCapabilityGrantState.DENIED -> "权限被拒绝"
-        DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需在系统设置中开启"
-        DeviceCapabilityGrantState.ASKED_ON_USE -> "需要屏幕截取授权"
-    })
-    Text(requirement.purpose, style = MaterialTheme.typography.bodySmall)
+    Text(
+        when {
+            // 无障碍已开启但服务断连时，说明真实处境，而不是笼统的“需开启”。
+            requirement.grantKind == DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE &&
+                state != DeviceCapabilityGrantState.GRANTED && accessibilityServiceDisconnected(context) ->
+                "服务已开启但当前未连接，请回到无障碍设置确认服务显示「已连接」"
+            state == DeviceCapabilityGrantState.GRANTED -> "系统权限或服务已就绪"
+            state == DeviceCapabilityGrantState.NOT_REQUESTED -> "权限尚未授予"
+            state == DeviceCapabilityGrantState.DENIED -> "权限被拒绝"
+            state == DeviceCapabilityGrantState.REQUIRES_SETTINGS -> "需在系统设置中开启"
+            else -> "需要屏幕共享授权"
+        },
+        color = if (state == DeviceCapabilityGrantState.GRANTED) MaterialTheme.colorScheme.onSurface
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Text(requirement.purpose, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     if (state != DeviceCapabilityGrantState.GRANTED ||
         requirement.grantKind == DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE ||
         requirement.grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS) {
-        TextButton(onClick = onAction) { Text(when (requirement.grantKind) {
-            DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> if (state == DeviceCapabilityGrantState.DENIED) "前往系统设置" else "申请系统权限"
-            DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE -> "打开无障碍设置"
-            DeviceCapabilityGrantKind.NOTIFICATION_ACCESS -> "打开通知使用权设置"
-            DeviceCapabilityGrantKind.MEDIA_PROJECTION -> "请求屏幕捕获系统许可"
-        }) }
+        TextButton(onClick = onAction, modifier = Modifier.testTag("grant-action:${requirement.key}")) {
+            Text(when (requirement.grantKind) {
+                DeviceCapabilityGrantKind.RUNTIME_PERMISSION -> if (state == DeviceCapabilityGrantState.DENIED) "前往系统设置" else "申请系统权限"
+                DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE -> "打开无障碍设置"
+                DeviceCapabilityGrantKind.NOTIFICATION_ACCESS -> "打开通知使用权设置"
+                DeviceCapabilityGrantKind.MEDIA_PROJECTION -> "发起屏幕共享授权"
+            })
+        }
     }
     if (requirement.grantKind == DeviceCapabilityGrantKind.RUNTIME_PERMISSION) {
         TextButton(onClick = onOpenAppSettings) { Text("打开应用权限设置") }
-    }
-    if (requirement.grantKind == DeviceCapabilityGrantKind.MEDIA_PROJECTION) {
-        Text("也可以使用无障碍截图；截屏授权与功能授权独立。", style = MaterialTheme.typography.bodySmall)
     }
 }
 
 private fun openSystemSettings(context: Context, intent: Intent): Boolean = runCatching {
     context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     true
-}.getOrDefault(false)
-
-private fun accessibilityServiceReady(context: Context): Boolean = runCatching {
-    val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES).orEmpty()
-    val component = ComponentName(context, accessibilityServiceClassName())
-    val enabledInSettings = enabled.split(':').any {
-        it.equals(component.flattenToString(), true) || it.equals(component.flattenToShortString(), true)
-    }
-    val status = ScreenHostRegistry.current?.status()
-    enabledInSettings && status != null && status.accessibilityError == null
 }.getOrDefault(false)

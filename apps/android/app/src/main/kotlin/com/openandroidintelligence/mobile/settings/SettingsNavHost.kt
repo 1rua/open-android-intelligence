@@ -247,16 +247,17 @@ internal fun SettingsNavHost(
             composable(SettingsRoutes.PAIRING) {
                 DeviceCapabilitiesScreen(environment, runtime, presentation, ::back,
                     onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
-                    onOpenPush = { open(SettingsRoutes.DEVICE_PUSH) }, onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.CAPABILITY, arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType })) { destination ->
                 CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
-                    environment, runtime, presentation, ::back, { open(SettingsRoutes.PLUGINS) }, onRequestScreenCaptureAuthorization)
+                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.SCREEN_CAPABILITY) {
                 CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
-                    environment, runtime, presentation, ::back, { open(SettingsRoutes.PLUGINS) }, onRequestScreenCaptureAuthorization,
-                    showAllScreenCapabilities = true)
+                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
             }
             composable(SettingsRoutes.PLUGINS) {
                 PluginManagementScreen(uiState.allowRuntimePlugins, uiState.pluginRuntimesWired, ::back,
@@ -272,10 +273,15 @@ internal fun SettingsNavHost(
                     }
                 }
             }
+            // 主动推送不再是独立页面：配置就在各能力详情里。旧路由仍可达，但只做重定向，
+            // 避免外部深链或旧返回栈落到一个不存在的页面。
             composable(SettingsRoutes.DEVICE_PUSH) {
-                val push = app?.devicePush
-                val endpoints = push?.endpoints?.collectAsStateWithLifecycle()?.value.orEmpty()
-                DevicePushSettingsPage(push?.runtime, endpoints, { push?.refreshEndpoints() }, ::back, presentation)
+                LaunchedEffect(Unit) {
+                    nav.navigate(notificationReadingRoute) {
+                        popUpTo(SettingsRoutes.DEVICE_PUSH) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
             }
             composable(SettingsRoutes.SECURITY) {
                 SecuritySettingsScreen(uiState, presentation, ::back,
@@ -324,18 +330,3 @@ internal fun SettingsNavHost(
     }
 }
 
-@Composable
-internal fun DevicePushSettingsPage(
-    runtime: com.openandroidintelligence.mobile.push.DevicePushRuntime?,
-    endpoints: List<com.openandroidintelligence.mobile.push.PushEndpointOption>,
-    onRefreshEndpoints: () -> Unit,
-    onBack: () -> Unit,
-    presentation: SettingsPresentation,
-) {
-    SettingsPageScaffold("短信与通知主动推送", presentation, onBack) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            if (runtime != null) com.openandroidintelligence.mobile.push.PushSettingsScreen(runtime, endpoints, onRefreshEndpoints, presentation = presentation)
-            else Text("本机加密队列暂不可用，请检查设备存储和密钥状态。")
-        }
-    }
-}

@@ -28,7 +28,10 @@ data class CapabilitySnapshot(val bindings: List<Map<String,Any?>>, val inventor
 
 /** Installed code is reverified once before registration; invocations use immutable verified bytes. */
 class ProductionPluginHost(private val context: Context, private val grants: PairingGrantStateHolder,
-    private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String) {
+    private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String,
+    /** 官方能力包的来源；生产读 APK 资源，测试可注入字节。缺包时如实报告而不是假装可用。 */
+    private val builtInPackages: BuiltInPackageReader = BuiltInPackageReader { plugin -> readBundledPluginPackage(context, plugin) },
+) {
     val installStore = PluginInstallStore(context)
     val runtimes = ConcurrentHashMap<String,PluginRuntime>()
     val hostCapabilities: MutableSet<String> = ConcurrentHashMap.newKeySet<String>()
@@ -38,6 +41,16 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     val revision = MutableStateFlow(0L)
     /** Local installation diagnostics only; unverified manifests never declare Agent capabilities. */
     @Volatile var loadFailures: Map<String,String> = emptyMap(); private set
+
+    /**
+     * 内建能力本次启动的加载失败原因（稳定原因码）。
+     *
+     * 内建能力由 APK 提供，没有“安装”这一步，因此也不能用 [loadFailures] 的
+     * “已安装但损坏”语义；界面必须能区分“加载失败”和“尚未验证”。
+     */
+    @Volatile var builtInFailures: Map<String,String> = emptyMap(); private set
+    /** 内建能力的安全声明，供私有存储与网络代理沿用与普通插件相同的限额来源。 */
+    private val builtInSurfaces = ConcurrentHashMap<String,VerifiedBuiltInCapability>()
     private val modules = ConcurrentHashMap<PluginIdentity,ByteArray>()
     private val capabilities = ConcurrentHashMap<String,List<VerifiedCapability>>()
     private val backgroundRequests = ConcurrentHashMap<String,Boolean>()
@@ -81,14 +94,69 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
     }
 
+    /**
+     * 把 APK 内置的官方能力直接注册进内核。
+     *
+     * 与普通插件走同一套校验（签名、清单、容器限额、ABI），但**不落盘、不写启用标记**：
+     * 校验通过即注册为已启用，于是用户装完 App 就能用，不需要“安装 + 启用”两步。
+     * 这不扩大任何设备能力授权——能力开关、授权模式与系统权限仍各自独立裁决。
+     */
+    private fun registerBuiltInCapabilities() {
+        val results = loadBuiltInCapabilities(BundledPlugin.entries, builtInPackages, File(context.cacheDir, "built-in-staging"))
+        val failures = linkedMapOf<String,String>()
+        for (result in results) {
+            when (result) {
+                is BuiltInLoadResult.Failed -> failures[result.pluginId] = result.code
+                is BuiltInLoadResult.Loaded -> {
+                    val capability = result.capability
+                    runCatching {
+                        kernel.register(PluginRegistration(capability.identity, capability.runtimeType, capability.declaredPrimitives,
+                            ResourceBudget(capability.surface.maxInvocationMillis, capability.surface.maxMemoryBytes, 65_536,
+                                capability.surface.maxConcurrentInvocations, capability.surface.maxDailyNetworkBytes),
+                            identityScopedGrants = true))
+                        kernel.enable(capability.pluginId)
+                        capabilities[capability.pluginId] = capability.capabilities
+                        builtInSurfaces[capability.pluginId] = capability
+                        backgroundRequests[capability.pluginId] = capability.backgroundRequested
+                        modules[capability.identity] = capability.payload
+                        hostCapabilities.addAll(capability.capabilities.map { it.key })
+                        phoneCapabilities.addAll(capability.capabilities.map { it.key })
+                    }.onFailure {
+                        // 注册失败按加载失败如实呈现；绝不留下半注册状态。
+                        kernel.unregister(capability.pluginId)
+                        capabilities.remove(capability.pluginId); builtInSurfaces.remove(capability.pluginId)
+                        backgroundRequests.remove(capability.pluginId); modules.remove(capability.identity)
+                        failures[capability.pluginId] = "BUILT_IN_REGISTRATION_FAILED"
+                    }
+                }
+            }
+        }
+        builtInFailures = failures.toMap()
+    }
+
+    /**
+     * 内建能力的安全声明随注册一并保存在内存里；第三方插件仍从磁盘上的已校验目录读取。
+     * 内建能力不落盘，因此不能走 [PluginInstallStore.openVerified]。
+     */
+    private fun securitySurfaceFor(pluginId: String): SecuritySurface =
+        builtInSurfaces[pluginId]?.surface ?: installStore.openVerified(pluginId).let { verified ->
+            try { verified.security.surface } finally { verified.stagedDirectory.deleteRecursively() }
+        }
+
+    fun isBuiltIn(pluginId: String): Boolean = builtInSurfaces.containsKey(pluginId)
+
     @Synchronized fun reload() {
         capabilities.keys.toList().forEach { kernel.unregister(it) }
-        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); backgroundRequests.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear()
+        nativeLoader.unloadAll(); modules.clear(); capabilities.clear(); backgroundRequests.clear(); defaults.clear(); stores.clear(); proxies.clear(); uiDeclarations.clear();cardIds.clear(); builtInSurfaces.clear()
         val failures = linkedMapOf<String,String>()
+        registerBuiltInCapabilities()
         val installed = runCatching { installStore.listInstalled() }.getOrElse {
             failures["*"] = "PLUGIN_SCAN_FAILED"
             emptyList()
         }
+            // 官方能力已从 APK 校验并注册：磁盘上同名目录不再参与加载，升级后也不会用到旧版本残留。
+            // 目录本身保持原样，用户此前保存的插件数据仍留在原位置，只是不再被当成插件加载。
+            .filterNot { view -> view.pluginId?.let { builtInSurfaces.containsKey(it) } == true }
         for (view in installed) {
             val id = view.pluginId
             if (id == null || id != view.directory.name) {
@@ -154,9 +222,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val identity = kernel.registrationFor(pluginId)?.identity ?: return emptyList()
         val binding = grants.currentBinding() ?: return uiDeclarations[pluginId].orEmpty()
         val store = stores.getOrPut(identity) {
-            val pkg=installStore.openVerified(pluginId)
-            try { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),pkg.security.surface.maxStorageBytes) }
-            finally { pkg.stagedDirectory.deleteRecursively() }
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(pluginId).maxStorageBytes)
         }
         val handle=store.open(identity,binding.accountId,binding.pairingId)
         fun component(node: UiComponent): UiComponent {
@@ -199,6 +265,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         capabilities.values.asSequence().flatten().firstOrNull { policyKey(it) == scope.capability }
 
     fun minimumBackgroundInterval(pluginId:String):Long {
+        builtInSurfaces[pluginId]?.takeIf { it.backgroundRequested }?.let { return it.backgroundMinimumIntervalSeconds }
         val verified=installStore.openVerified(pluginId)
         try { val manifest=JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))
             val security=JsonFields.obj(JsonFields.field(manifest,"security"));val background=JsonFields.obj(JsonFields.field(security,"background"))
@@ -550,9 +617,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         val args = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
         val store = stores.getOrPut(call.identity) {
-            val verified = installStore.openVerified(call.identity.pluginId)
-            try { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),verified.security.surface.maxStorageBytes) }
-            finally { verified.stagedDirectory.deleteRecursively() }
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(call.identity.pluginId).maxStorageBytes)
         }
         val handle = store.open(call.identity,call.accountId,call.pairingId)
         fun key() = JsonFields.string(args,"key") ?: error("SCHEMA_INVALID")
@@ -572,36 +637,56 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private fun exchange(call: KernelCallContext,args: JsonValue.JObject): Map<String,Any?> {
         val uri = URI(JsonFields.string(args,"url") ?: error("SCHEMA_INVALID"))
         check(uri.userInfo == null && uri.fragment == null && uri.host != null) { "NETWORK_TARGET_INVALID" }
-        val proxy = proxies.getOrPut("${call.identity}:${call.accountId}:${call.pairingId}") {
-            val verified = installStore.openVerified(call.identity.pluginId)
-            try {
-                val manifest = JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))!!
-                val rules = (JsonFields.field(JsonFields.obj(JsonFields.field(manifest,"security")),"network") as? JsonValue.JArray)?.items.orEmpty()
-                val methods = rules.flatMap { rule -> (JsonFields.field(rule as? JsonValue.JObject,"methods") as? JsonValue.JArray)?.items.orEmpty().mapNotNull { (it as? JsonValue.JString)?.value } }.toSet()
-                val byHost=rules.mapNotNull { rule ->
-                    val r=rule as? JsonValue.JObject ?: return@mapNotNull null
-                    val host=JsonFields.string(r,"host") ?: return@mapNotNull null
-                    host.lowercase().trimEnd('.') to JsonFields.strings(r,"methods").toSet()
-                }.toMap()
-                val usage=EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
-                MediatedNetworkProxy(NetworkAllowlist(verified.security.surface.networkHosts,methods,byHost),object : MediatedTransport {
-                    override fun exchange(request: MediatedRequest): MediatedResponse = runBlocking {
-                        val transport = GatewayTransport(GatewayProfile("plugin","plugin","plugin","https://${request.host}"),maximumResponseBytes=minOf(request.maximumResponseBytes.toLong(),call.budget.maxOutputBytes/2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-                        val result = withTimeout(call.budget.maxInvocationMillis) { transport.execute(WireRequest(request.method,request.pathAndQuery,
-                            request.headers.map { RawHeader(it.key,it.value) },request.body ?: ByteArray(0))) }
-                        MediatedResponse(result.status,result.headers.associate { it.name to it.value },result.body)
-                    }
-                },call.budget.maxDailyNetworkBytes,usageStore=object:NetworkUsageStore {
-                    override fun read():NetworkUsage?=usage.read("daily")?.let { bytes -> val o=JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("NETWORK_USAGE_INVALID");NetworkUsage(JsonFields.long(o,"start") ?: error("NETWORK_USAGE_INVALID"),JsonFields.long(o,"spent") ?: error("NETWORK_USAGE_INVALID")) }
-                    override fun write(value:NetworkUsage)=usage.write("daily",Json.canonical(Json.of(mapOf("start" to value.windowStartMillis,"spent" to value.spentBytes))).toByteArray())
-                })
-            } finally { verified.stagedDirectory.deleteRecursively() }
-        }
+        val proxy = proxies.getOrPut("${call.identity}:${call.accountId}:${call.pairingId}") { builtInNetworkProxy(call) ?: installedNetworkProxy(call) }
         val response = synchronized(proxy) { proxy.exchange(MediatedRequest(uri.scheme,uri.host,if (uri.port == -1) 443 else uri.port,
             JsonFields.string(args,"method") ?: "GET", (uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/") + (uri.rawQuery?.let { "?$it" } ?: ""),
             JsonFields.obj(JsonFields.field(args,"headers"))?.fields.orEmpty().associate { it.first to ((it.second as? JsonValue.JString)?.value ?: error("SCHEMA_INVALID")) },
             JsonFields.string(args,"body")?.let { Base64.getDecoder().decode(it) })) }
         return mapOf("status" to response.status,"headers" to response.headers,"body" to Base64.getEncoder().encodeToString(response.body))
+    }
+
+    /**
+     * 内建能力不落盘，网络规则直接来自本次启动校验出的安全声明。
+     *
+     * 官方能力包都不声明网络主机，因此这里实际是 deny-all：既不因为“内建”而放宽，
+     * 也不需要为它保留一份磁盘清单。
+     */
+    private fun builtInNetworkProxy(call: KernelCallContext): MediatedNetworkProxy? {
+        val builtIn = builtInSurfaces[call.identity.pluginId] ?: return null
+        val usage = EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
+        return MediatedNetworkProxy(NetworkAllowlist(builtIn.surface.networkHosts, emptySet(), emptyMap()),
+            gatewayMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+    }
+
+    private fun installedNetworkProxy(call: KernelCallContext): MediatedNetworkProxy {
+        val verified = installStore.openVerified(call.identity.pluginId)
+        try {
+            val manifest = JsonFields.obj(Json.parse(File(verified.stagedDirectory,"manifest.json").readText()))!!
+            val rules = (JsonFields.field(JsonFields.obj(JsonFields.field(manifest,"security")),"network") as? JsonValue.JArray)?.items.orEmpty()
+            val methods = rules.flatMap { rule -> (JsonFields.field(rule as? JsonValue.JObject,"methods") as? JsonValue.JArray)?.items.orEmpty().mapNotNull { (it as? JsonValue.JString)?.value } }.toSet()
+            val byHost=rules.mapNotNull { rule ->
+                val r=rule as? JsonValue.JObject ?: return@mapNotNull null
+                val host=JsonFields.string(r,"host") ?: return@mapNotNull null
+                host.lowercase().trimEnd('.') to JsonFields.strings(r,"methods").toSet()
+            }.toMap()
+            val usage=EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
+            return MediatedNetworkProxy(NetworkAllowlist(verified.security.surface.networkHosts,methods,byHost),
+                gatewayMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+        } finally { verified.stagedDirectory.deleteRecursively() }
+    }
+
+    private fun gatewayMediatedTransport(call: KernelCallContext): MediatedTransport = object : MediatedTransport {
+        override fun exchange(request: MediatedRequest): MediatedResponse = runBlocking {
+            val transport = GatewayTransport(GatewayProfile("plugin","plugin","plugin","https://${request.host}"),maximumResponseBytes=minOf(request.maximumResponseBytes.toLong(),call.budget.maxOutputBytes/2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            val result = withTimeout(call.budget.maxInvocationMillis) { transport.execute(WireRequest(request.method,request.pathAndQuery,
+                request.headers.map { RawHeader(it.key,it.value) },request.body ?: ByteArray(0))) }
+            MediatedResponse(result.status,result.headers.associate { it.name to it.value },result.body)
+        }
+    }
+
+    private fun encryptedNetworkUsageStore(usage: EncryptedDocuments): NetworkUsageStore = object : NetworkUsageStore {
+        override fun read():NetworkUsage?=usage.read("daily")?.let { bytes -> val o=JsonFields.obj(Json.parse(bytes.decodeToString())) ?: error("NETWORK_USAGE_INVALID");NetworkUsage(JsonFields.long(o,"start") ?: error("NETWORK_USAGE_INVALID"),JsonFields.long(o,"spent") ?: error("NETWORK_USAGE_INVALID")) }
+        override fun write(value:NetworkUsage)=usage.write("daily",Json.canonical(Json.of(mapOf("start" to value.windowStartMillis,"spent" to value.spentBytes))).toByteArray())
     }
     fun setting(pluginId: String, accountId: String, componentId: String, value: Any?) {
         check(grants.currentBinding()?.accountId == accountId) { "ACCOUNT_MISMATCH" }
@@ -614,14 +699,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }) { "UI_ACTION_INVALID" }
         val identity = kernel.registrationFor(pluginId)?.identity ?: error("PLUGIN_NOT_REGISTERED")
         val pairingId = grants.state.value?.pairingId ?: error("PAIRING_REQUIRED")
-        val verified = installStore.openVerified(pluginId)
-        try {
-            val store = stores.getOrPut(identity) { PluginPrivateStore(installationId,EncryptedPluginStateBackend(context),verified.security.surface.maxStorageBytes) }
-            store.write(store.open(identity,accountId,pairingId),accountId,"ui:$componentId",Json.canonical(Json.of(value)).toByteArray())
-        } finally { verified.stagedDirectory.deleteRecursively() }
+        val store = stores.getOrPut(identity) {
+            PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(pluginId).maxStorageBytes)
+        }
+        store.write(store.open(identity,accountId,pairingId),accountId,"ui:$componentId",Json.canonical(Json.of(value)).toByteArray())
         revision.value++
     }
     fun uninstall(pluginId: String) {
+        // 内建能力由 APK 提供，不存在“卸载”：调用方只能改能力开关。
+        check(!isBuiltIn(pluginId)) { "BUILT_IN_CAPABILITY_NOT_REMOVABLE" }
         require(Regex("[A-Za-z0-9][A-Za-z0-9.-]*").matches(pluginId)) { "INVALID_PLUGIN_DIRECTORY" }
         val identity = kernel.registrationFor(pluginId)?.identity
         // Damaged packages have no verified registration; revoke their scoped grants by the actual directory ID.

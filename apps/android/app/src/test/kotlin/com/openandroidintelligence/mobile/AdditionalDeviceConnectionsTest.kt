@@ -56,6 +56,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.openandroidintelligence.mobile.plugins.thirdPartyOnlyHost
 
 /** Real publisher + driver + encrypted documents + signed WASM host, with only Core HTTP replaced. */
 @RunWith(RobolectricTestRunner::class)
@@ -389,7 +390,7 @@ class AdditionalDeviceConnectionsTest {
             com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { tag, message -> diagnostics += "$tag:$message" }
             KernelPrimitiveRegistry.register(provider)
             val trust = DeveloperTrustMode()
-            host = ProductionPluginHost(context, holder, trust, NativePluginLoader(trust), "installation")
+            host = thirdPartyOnlyHost(context, holder, trust, NativePluginLoader(trust), "installation")
             host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
             host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities), host.runtimes,
                 audit, trust, host.nativeLoader, host.selector, holder::currentKernelGrant,
