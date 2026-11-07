@@ -35,13 +35,14 @@ class AdvancedSettingsScreenTest {
         var build = 0
         var licenses = 0
         var replay = 0
+        var backup = 0
         var back = 0
         compose.setContent {
             MaterialTheme {
                 AdvancedSettingsScreen(
                     uiState = SettingsUiState(), runtime = null, presentation = SettingsPresentation.SIDEBAR,
                     onBack = { back++ }, onOpenUpdates = { updates++ }, onOpenBuildDetails = { build++ },
-                    onOpenLicenses = { licenses++ }, onReplayOnboarding = { replay++ },
+                    onOpenLicenses = { licenses++ }, onOpenBackup = { backup++ }, onReplayOnboarding = { replay++ },
                 )
             }
         }
@@ -54,12 +55,14 @@ class AdvancedSettingsScreenTest {
         compose.onNodeWithText("新手引导与部署教程").performScrollTo().performClick()
         compose.onNodeWithText("构建详情").performScrollTo().performClick()
         compose.onNodeWithText("开源许可证").performScrollTo().performClick()
+        compose.onNodeWithText("备份与恢复").performScrollTo().performClick()
         compose.onNodeWithContentDescription("返回").performClick()
         compose.runOnIdle {
             assertEquals(1, updates)
             assertEquals(1, replay)
             assertEquals(1, build)
             assertEquals(1, licenses)
+            assertEquals(1, backup)
             assertEquals(1, back)
         }
         compose.onNodeWithText(installedAppBuild(context).versionName).performScrollTo().assertExists()

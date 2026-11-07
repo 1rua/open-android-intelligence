@@ -40,6 +40,7 @@ internal fun AdvancedSettingsScreen(
     onOpenUpdates: () -> Unit,
     onOpenBuildDetails: () -> Unit,
     onOpenLicenses: () -> Unit,
+    onOpenBackup: () -> Unit,
     onReplayOnboarding: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -67,6 +68,11 @@ internal fun AdvancedSettingsScreen(
                     headline = "应用更新",
                     supporting = "检查正式版和预览版更新",
                     onClick = onOpenUpdates,
+                )
+                SettingsNavigationItem(
+                    headline = "备份与恢复",
+                    supporting = "导出或导入本机设置，换机与重装后无需逐项重配",
+                    onClick = onOpenBackup,
                 )
             }
 

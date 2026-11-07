@@ -28,7 +28,8 @@ internal fun settingsOwner(route: String): String? = when {
     route == SettingsRoutes.CONNECTION_DETAILS -> SettingsRoutes.GATEWAY
     route in setOf(SettingsRoutes.AUDIT_LOG) -> SettingsRoutes.SECURITY
     route in setOf(SettingsRoutes.PLUGINS, SettingsRoutes.DEVICE_PUSH, SettingsRoutes.NOTIFICATIONS, SettingsRoutes.SCREEN_CAPABILITY) || route.startsWith("settings/capability/") -> SettingsRoutes.PAIRING
-    route in setOf(SettingsRoutes.APP_UPDATES, SettingsRoutes.BUILD_DETAILS, SettingsRoutes.LICENSES) -> SettingsRoutes.ADVANCED
+    route in setOf(SettingsRoutes.APP_UPDATES, SettingsRoutes.BUILD_DETAILS, SettingsRoutes.LICENSES, SettingsRoutes.BACKUP) ->
+        SettingsRoutes.ADVANCED
     SettingsCategory.entries.any { it.route == route } -> SettingsRoutes.OVERVIEW
     else -> null
 }

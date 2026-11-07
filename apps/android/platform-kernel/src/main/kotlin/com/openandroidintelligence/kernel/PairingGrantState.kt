@@ -170,6 +170,17 @@ class PairingGrantStateHolder(
     fun updateCapabilityPolicies(policies: Map<String, CapabilityPolicy>): PairingGrantState =
         update { it.copy(capabilityPolicies = it.capabilityPolicies + policies.mapValues { (_, p) -> p.freeze() }) }
 
+    /**
+     * 用给定映射**整体替换**能力策略表。
+     *
+     * 只有恢复语义需要它：设置导入失败回滚时，导入期间新建的策略条目必须一并消失，
+     * 否则「恢复原状」会留下一条本机从未存在过的（哪怕当前是关闭的）策略。
+     * 与其它写入一样走 [update]：先落盘拒绝屏障、再审计、最后提交，失败即拒绝。
+     */
+    @Synchronized
+    fun replaceCapabilityPolicies(policies: Map<String, CapabilityPolicy>): PairingGrantState =
+        update { it.copy(capabilityPolicies = policies.mapValues { (_, p) -> p.freeze() }) }
+
     fun recordRequestDecision(requestId: String, accountId: String, pairingId: String, action: String, allowed: Boolean) {
         audit.record("platform", accountId, pairingId, action,
             if (allowed) AuditOutcome.ALLOWED else AuditOutcome.DENIED, requestId)

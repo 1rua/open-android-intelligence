@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -86,7 +87,10 @@ fun GatewayLoginScreen(
     onRecoveryCodesSaved: () -> Unit = {},
     onCancelAccountLogin: () -> Unit = {},
 ) {
-    var url by rememberSaveable { mutableStateOf("") }
+    // 预填上一次成功登录（或被设置导入写入）的 Core 地址：换机后不必重新输入。
+    // 只填地址，不填账号与密码；用户仍可随时改。读取失败时保持空值。
+    val prefillContext = LocalContext.current
+    var url by rememberSaveable { mutableStateOf(LoginGatewayPrefill.read(prefillContext).orEmpty()) }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var invitation by remember { mutableStateOf(false) }

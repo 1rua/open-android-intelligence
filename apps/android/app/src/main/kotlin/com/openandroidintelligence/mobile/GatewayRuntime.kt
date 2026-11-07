@@ -1493,6 +1493,17 @@ class GatewayRuntime(
         _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
     }
 
+    /**
+     * 设置导入/回滚之后重新装载合并策略。
+     *
+     * 只刷新运行时持有的批处理策略，不写任何偏好：写入早已由导入事务完成，
+     * 这里再做一次覆盖就会把「回滚后应恢复的值」重新改掉。
+     */
+    fun reloadDebounceSettings() {
+        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
+        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
+    }
+
     private fun currentDebounceGateway(): String? = when (val phase = _phase.value) {
         is ConnectionPhase.Connected -> phase.gatewayUrl
         is ConnectionPhase.OfflineMirror -> phase.gatewayUrl
@@ -2780,6 +2791,8 @@ class GatewayRuntime(
             .apply { if (explicitLogin) remove("signed_out_$profileId") }
             .commit()
         check(saved) { "PROFILE_PERSISTENCE_FAILED" }
+        // 登录页预填地址：用户真正登录成功才记录，下次输地址不用重打一遍。
+        LoginGatewayPrefill.remember(context, gatewayUrl)
         lastAccountId = session.accountId
         lastDeviceId = session.deviceId
         lastSessionId = session.sessionId
