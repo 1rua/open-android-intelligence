@@ -1,13 +1,16 @@
-# App unit-test regression set for pull requests.
+# App 单元回归集（PR 级）。
 #
-# 每个 PR 都会跑这里的全部类，按两个分片并行执行（shard-a / shard-b）。
-# `tools/test_ci_planning.py` 校验：类名真实存在、分片互不重叠、
-# 且本地 `npm run test:pr` 的过滤器集合与两个分片的并集完全一致。
+# 这些类就是 PR 门禁的全部 App 回归范围，由 CI 的 `android-app` job 一次性运行
+# （编译一次 + 4 fork 并行测试）。本地 `npm run test:pr` 读取同一份清单，
+# 因此两者不会漂移。
+#
+# `tools/test_ci_planning.py` 校验：每个类名都真实存在于
+# apps/android/app/src/test，且清单非空、无重复。
 #
 # 完整回归（全部类、两个变体）仍然由不带 --tests 过滤的
-# `:app:testFullDebugUnitTest` + `:app:testPlayDebugUnitTest` 覆盖；
-# 新增 PR 级回归测试请加入其中一个分片，不要只依赖全量回归。
-[shard-a]
+# `:app:testFullDebugUnitTest` + `:app:testPlayDebugUnitTest` 覆盖。
+# 新增 PR 级回归测试请加入本清单，不要只依赖全量回归。
+
 AndroidApiCompatibilityTest
 ApplicationCompositionTest
 CapabilityPublisherTest
@@ -39,8 +42,6 @@ SettingsResponsiveHostRegressionTest
 SettingsShortcutsTest
 SettingsStateIntegrityTest
 SmsPassiveScopeSettingsTest
-
-[shard-b]
 AccountSwitchPersistenceFailureTest
 AdditionalDeviceConnectionsTest
 AdvancedSettingsScreenTest

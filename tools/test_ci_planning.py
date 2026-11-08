@@ -134,26 +134,26 @@ def test_github_output_uses_underscore_names(impact):
 # --- android_tasks ---------------------------------------------------------
 
 
-def test_app_shard_puts_task_before_its_filters(tasks):
-    # Gradle binds --tests to the preceding Test task; a filter before any task
-    # would be rejected, and a filter after a *different* task tests nothing.
-    arguments = tasks.read_shard_args("shard-a")
+def test_pr_app_invocation_puts_the_task_before_its_filters(tasks):
+    # Gradle binds --tests to the Test task named before it. A filter emitted
+    # before any task is rejected; a second unfiltered Test task would run its
+    # whole suite.
+    arguments = tasks.pr_app_args()
     assert arguments[0] == ":app:testFullDebugUnitTest"
     assert all(argument.startswith("--tests=*") for argument in arguments[1:])
     assert len(arguments) > 1
+    # Exactly one Test task: compiling the app dominates, so the set must not be
+    # split across jobs or tasks.
+    assert len([a for a in arguments if not a.startswith("--tests=")]) == 1
 
 
-def test_shards_are_disjoint_and_cover_the_pr_regression_set(tasks):
-    shard_a = set(tasks.read_shard("shard-a"))
-    shard_b = set(tasks.read_shard("shard-b"))
-    assert shard_a and shard_b
-    assert shard_a.isdisjoint(shard_b)
-    # The manifest is the PR gate's whole app-regression set; losing entries
-    # here silently drops coverage, so pin the expected size.
-    assert len(shard_a) + len(shard_b) >= 60
+def test_regression_manifest_is_flat_and_unique(tasks):
+    entries = tasks.read_regression_manifest()
+    assert len(entries) >= 60
+    assert len(entries) == len(set(entries))
 
 
-def test_every_shard_entry_exists_as_a_test_class(tasks):
+def test_every_regression_entry_exists_as_a_test_class(tasks):
     test_root = REPO_ROOT / "apps/android/app/src/test/kotlin"
     names = set()
     for path in test_root.rglob("*.kt"):
@@ -163,9 +163,8 @@ def test_every_shard_entry_exists_as_a_test_class(tasks):
             for prefix in ("class ", "internal class ", "abstract class ", "open class "):
                 if stripped.startswith(prefix):
                     names.add(stripped[len(prefix):].split("(")[0].split()[0].split("<")[0])
-    for shard in ("shard-a", "shard-b"):
-        missing = sorted(set(tasks.read_shard(shard)) - names)
-        assert not missing, f"{shard} references unknown classes: {missing}"
+    missing = sorted(set(tasks.read_regression_manifest()) - names)
+    assert not missing, f"regression manifest references unknown classes: {missing}"
 
 
 def test_module_lane_emits_only_its_own_tasks(tasks):

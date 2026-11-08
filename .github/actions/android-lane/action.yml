@@ -145,11 +145,8 @@ runs:
           android-device|android-platform|android-notifications|android-conversation|android-gateway)
             mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
             ;;
-          app-shard-a)
-            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-shard --shard shard-a)
-            ;;
-          app-shard-b)
-            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-shard --shard shard-b)
+          app-pr)
+            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr)
             ;;
           play)
             mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group play)

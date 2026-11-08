@@ -347,7 +347,11 @@ def test_android_ci_covers_connection_account_and_settings_regressions():
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     jobs = workflow["jobs"]
 
-    assert "android-app-a" in jobs and "android-app-b" in jobs
+    # One app job compiles the variant once; splitting it would duplicate the
+    # dominant compile cost (measured on CI: ~3 min of tests inside ~9-15 min of
+    # wall time per shard job).
+    assert "android-app" in jobs
+    assert "android-app-a" not in jobs and "android-app-b" not in jobs
 
     shard_manifest = (
         Path(__file__).parents[1] / "apps/android/ci/app-regression-shards.txt"

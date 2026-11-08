@@ -34,7 +34,7 @@ changes           变更影响分析 → 输出各 lane 开关
   ├─ android-notifications 设置、通知策略、加密状态
   ├─ android-conversation  会话顺序、渲染、持久化
   ├─ android-gateway       Gateway 客户端传输
-  ├─ android-app-a/b       App 单元测试分片（每片 4 fork）
+  ├─ android-app          App 单元测试（编译一次，4 fork 并行测试）
   └─ android-play          Play 变体
 gate              汇总；分支保护只要求这一个检查名
 ```
@@ -61,6 +61,11 @@ python3 tools/ci/impact.py --base origin/dev --json        # 机器读
 
 单次 Gradle 调用里串行跑完全部测试是此前 20 分钟关键路径的主因。拆分后每个
 lane 是独立 runner、独立配置阶段、一批相互独立的测试任务。
+
+App 回归集是唯一**不**拆分 job 的 lane：实测两个分片各自的 Gradle 墙钟为
+15.6 与 9.2 分钟，而两者真正的测试阶段都只有约 3 分钟，其余是各自编译同一份
+变体。拆成两个 job 等于把这份编译付两遍，关键路径被最慢的那份编译拖住。
+因此它编译一次，靠 `-Poai.testParallelForks=4` 让测试 JVM 并行。
 
 三条实测约束，改工作流时不要“简化”掉：
 

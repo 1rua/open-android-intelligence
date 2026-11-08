@@ -28,7 +28,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SHARD_MANIFEST = REPO_ROOT / "apps/android/ci/app-regression-shards.txt"
+REGRESSION_MANIFEST = REPO_ROOT / "apps/android/ci/app-regression-shards.txt"
 
 # Module tests grouped by lane. Keep in sync with impact.ANDROID_MODULE_LANES.
 MODULE_TASKS = {
@@ -82,22 +82,27 @@ PLAY_TESTS = [
 ]
 
 
-def read_shard(name: str) -> list[str]:
-    shard = ""
-    entries: dict[str, list[str]] = {}
-    for raw in SHARD_MANIFEST.read_text(encoding="utf-8").splitlines():
+def read_regression_manifest() -> list[str]:
+    """Every class in the PR app regression set, in file order."""
+    entries: list[str] = []
+    for raw in REGRESSION_MANIFEST.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith(("#", "[")):
             continue
-        if line.startswith("[") and line.endswith("]"):
-            shard = line[1:-1]
-            entries.setdefault(shard, [])
-            continue
-        if shard:
-            entries[shard].append(line)
-    if name not in entries or not entries[name]:
-        raise SystemExit(f"unknown or empty shard: {name!r} (have: {sorted(entries)})")
-    return entries[name]
+        entries.append(line)
+    if not entries:
+        raise SystemExit(f"empty regression manifest: {REGRESSION_MANIFEST}")
+    return entries
+
+
+def read_shard(name: str) -> list[str]:
+    """Compatibility shim kept for the local runner; the manifest is flat now."""
+    if name not in {"shard-a", "shard-b"}:
+        raise SystemExit(f"unknown shard: {name!r}")
+    entries = read_regression_manifest()
+    # Deterministic split, used only by local tooling that asks for a half set.
+    half = (len(entries) + 1) // 2
+    return entries[:half] if name == "shard-a" else entries[half:]
 
 
 def modules(impact: dict[str, object]) -> list[str]:
@@ -140,14 +145,24 @@ def full_module_tasks() -> list[str]:
 
 
 def pr_app_args() -> list[str]:
-    """The PR regression set: every shard, as one Test task plus its filters.
+    """The PR regression set: every shard entry on one Test task.
 
-    This is exactly what the two CI shard jobs run between them, so a local
-    `npm run test:pr` and the PR gate test the same classes.
+    Compiling the app is the dominant cost of this lane (measured on CI: ~5-11
+    minutes of the lane's wall time versus ~3 minutes of test execution). Running
+    the set as several parallel jobs would compile the same variant once per job,
+    so the whole set runs in a single job and wins its parallelism from
+    `-Poai.testParallelForks` instead. `mode` selects the invocation shape:
+
+      * ``shard`` (default) — one entry per line, used by the local runner;
+      * ``args`` — the exact argv list, used by CI.
     """
-    names = read_shard("shard-a") + read_shard("shard-b")
-    ordered = list(dict.fromkeys(names))
+    ordered = read_regression_manifest()
     return [":app:testFullDebugUnitTest"] + [f"--tests=*{name}" for name in ordered]
+
+
+def pr_app_shard_names() -> list[str]:
+    """Every class in the PR app regression set."""
+    return read_regression_manifest()
 
 
 def app_variant_tasks() -> list[str]:
@@ -167,7 +182,7 @@ def emit(arguments: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Emit Gradle arguments for one CI lane.")
     parser.add_argument("--group", required=True,
-                        choices=["modules", "app-shard", "play", "lint", "full"])
+                        choices=["modules", "app-shard", "app-pr", "play", "lint", "full"])
     parser.add_argument("--shard", default=None, help="shard name for --group app-shard")
     parser.add_argument("--lane", default=None,
                         help="single lane name for --group modules (CI job granularity)")
@@ -190,6 +205,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.shard:
             raise SystemExit("--group app-shard requires --shard")
         arguments = read_shard_args(args.shard)
+    elif args.group == "app-pr":
+        # The whole PR app regression set, compiled once.
+        arguments = pr_app_args()
     elif args.group == "play":
         arguments = play_args()
     elif args.group == "lint":
