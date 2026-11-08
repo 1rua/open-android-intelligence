@@ -590,6 +590,37 @@ class NativeConversationNotificationsTest {
         assertTrue("Permission/preference recovery must not replay old terminal notifications", manager.activeNotifications.isEmpty())
     }
 
+    /**
+     * 修订围栏必须带 Agent。
+     *
+     * 两个 Agent 的同名会话完全可能用同一个消息 ID；只按会话比较会让后一家
+     * 更高的修订被前一家判成过期，正文与终态都被丢掉，提醒永远不来。
+     */
+    @Test fun anEqualOrHigherRevisionUnderAnotherAgentIsNotStale() = runBlocking {
+        accept(agentMessage("hermes", "reply-1", "Hermes 回答", 5))
+        accept(agentStatus("hermes", "user-1", "completed", 5))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+
+        // Codex 用同一个会话与消息 ID，但修订从 1 开始：不能被 hermes 的 5 判成过期。
+        accept(agentMessage("codex", "reply-1", "Codex 回答", 1))
+        val codex = coordinator.sessions.value.first { it.target.agentId == "codex" }
+        assertEquals("Codex 回答", codex.latestReply)
+        accept(agentStatus("codex", "user-1", "completed", 1))
+        val finished = coordinator.sessions.value.first { it.target.agentId == "codex" }
+        assertEquals(NativeConversationStatus.COMPLETED, finished.status)
+        assertEquals("Codex 回答", finished.latestReply)
+    }
+
+    private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
+        "conversation.message.completed",
+        """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",
+    )
+
+    private fun agentStatus(agent: String, messageId: String, status: String, revision: Long) = event(
+        "conversation.message.status",
+        """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","clientMessageId":"client-$agent","generationId":"generation","status":"$status","revision":$revision,"errorCode":null}""",
+    )
+
     private fun coordinator() = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert }, now = { clock }, throttleMillis = 40)
     private fun presencePage(vararg ids: String, authoritative: Boolean = true, nextCursor: String? = null) =
         ConversationPage(ids.map { ConversationSummary(ConversationId(it), it, clock) }, nextCursor, authoritative = authoritative)

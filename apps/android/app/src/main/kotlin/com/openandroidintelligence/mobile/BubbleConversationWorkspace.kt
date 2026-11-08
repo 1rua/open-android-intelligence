@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.AtomicReference
 internal class BubbleConversationWorkspace(
     private val profileId: String,
     private val accountId: String,
-    private val create: (String) -> WorkbenchController?,
+    private val create: (ReplyNotificationTarget) -> WorkbenchController?,
 ) : AutoCloseable {
     private var closed = false
     private val controllers = mutableSetOf<WorkbenchController>()
@@ -34,9 +34,10 @@ internal class BubbleConversationWorkspace(
 
     @Synchronized fun open(target: ReplyNotificationTarget): WorkbenchController? {
         if (closed || !accepts(target)) return null
-        return create(target.conversationId)?.also { controllers += it }
+        return create(target)?.also { controllers += it }
     }
 
+    /** 会话 ID 只在同一个 Agent 内唯一，带上 Agent 身份才不会打开另一个 Agent 的同名会话。 */
     fun accepts(target: ReplyNotificationTarget): Boolean =
         target.profileId == profileId && target.accountId == accountId && target.conversationId.isNotBlank()
 

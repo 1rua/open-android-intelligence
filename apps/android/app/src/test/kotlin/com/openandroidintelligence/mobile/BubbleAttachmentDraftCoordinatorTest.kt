@@ -108,9 +108,9 @@ class BubbleAttachmentDraftCoordinatorTest {
         val uploads = Uploads()
         val mainDraft = uploads.prepare(selection("main.pdf"))
         val coordinators = mutableListOf<BubbleAttachmentDraftCoordinator>()
-        val workspace = BubbleConversationWorkspace("profile", "account") { id ->
+        val workspace = BubbleConversationWorkspace("profile", "account") { bubbleTarget ->
             val attachments = BubbleAttachmentDraftCoordinator(uploads).also { coordinators += it }
-            controller(scope, Host(), attachments).also { it.openThread(id) }
+            controller(scope, Host(), attachments).also { it.openThread(bubbleTarget.conversationId) }
         }
         try {
             val first = workspace.open(ReplyNotificationTarget("profile", "account", "first"))!!
