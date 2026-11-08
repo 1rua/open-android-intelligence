@@ -102,6 +102,17 @@ Issue：[#94](https://github.com/1rua/open-android-intelligence/issues/94)。
 既有第三方插件测试改为经 `thirdPartyOnlyHost(...)` 构造宿主（内建包一律读不到），
 使它们继续验证“安装/启用/卸载”链路，而不再依赖“本机恰好没有打包内置资产”这一偶然条件。
 
+### CI 运行结果
+
+PR #97 全部 7 项检查通过：`android`、`apk`、`core (3.11)`、`core (3.12)`、`dsh`、`hermes-native`、
+`sign-plugin-packages`。
+
+首轮 CI 曾让 `android` job 失败，原因是 Play 变体下 `ALLOW_RUNTIME_PLUGINS = false`，宿主在
+`attach()` 开头直接返回、不注册内建能力，四个 full-only 用例因此失败。修复同时纠正了一个真实缺陷：
+Play 渠道下能力页原先显示「看不到这项能力的提供者」，是一条用户在该渠道无法执行的指引；现在
+逐项报告 `BUILT_IN_CHANNEL_UNSUPPORTED` 并说明「当前安装渠道不支持设备能力，请使用完整版本」。
+用例按变体隔离（`assumeTrue`），并新增一条反向用例覆盖 Play 渠道。
+
 ### 本地运行结果
 
 ```
