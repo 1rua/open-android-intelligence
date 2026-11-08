@@ -445,17 +445,19 @@ class RemoteSessionAdapter:
         self._remember_attachment(attachment, attachment_id)
         return attachment_id
 
-    async def _stream_lines(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
-        # 空闲预算随实际字节到达重置，不能把完整一帧的组装时间当作空闲。
+    async def _stream_chunks(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
+        # 空闲预算随实际字节到达重置，成功帧与错误正文使用同一语义。
         idle_seconds = STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat else self.stream_timeout_seconds
-        pending = bytearray()
         while True:
             async with asyncio.timeout(idle_seconds):
                 chunk = await response.content.readany()
             if not chunk:
-                if pending:
-                    yield bytes(pending)
                 return
+            yield chunk
+
+    async def _stream_lines(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
+        pending = bytearray()
+        async for chunk in self._stream_chunks(response):
             parts = chunk.split(b"\n")
             for index, part in enumerate(parts):
                 pending.extend(part)
@@ -466,6 +468,23 @@ class RemoteSessionAdapter:
                     pending.append(10)
                     yield bytes(pending)
                     pending.clear()
+        if pending:
+            yield bytes(pending)
+
+    async def _stream_error(self, response: aiohttp.ClientResponse) -> Any:
+        body = bytearray()
+        async for chunk in self._stream_chunks(response):
+            if len(body) + len(chunk) > MAX_STREAM_EVENT_BYTES:
+                raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+            body.extend(chunk)
+        media_type = response.content_type
+        if media_type != "application/json" and not (media_type.startswith("application/")
+                                                     and media_type.endswith("+json")):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        try:
+            return json.loads(body.decode(response.charset or "utf-8"))
+        except (LookupError, ValueError):
+            raise AdapterError("HOST_INCOMPATIBLE", 502) from None
 
     async def _send(
         self,
@@ -495,10 +514,7 @@ class RemoteSessionAdapter:
                     if response.status in {401, 403}:
                         raise self._response_error(response.status, {})
                     if response.status != 200:
-                        idle_seconds = (STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat
-                                        else self.stream_timeout_seconds)
-                        async with asyncio.timeout(idle_seconds):
-                            value = await response.json()
+                        value = await self._stream_error(response)
                         if not isinstance(value, Mapping):
                             raise AdapterError("HOST_INCOMPATIBLE", 502)
                         raise self._response_error(response.status, value)

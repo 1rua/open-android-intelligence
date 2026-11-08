@@ -173,3 +173,61 @@ async def test_non_success_response_body_stall_has_a_finite_budget(monkeypatch):
             assert failure.value.details['reason'] == 'timeout'
         finally:
             release.set()
+
+
+@pytest.mark.asyncio
+async def test_active_error_body_can_outlive_idle_budget_without_losing_business_error(monkeypatch):
+    monkeypatch.setattr(remote, 'STREAM_HEARTBEAT_IDLE_SECONDS', .08)
+    posts = []
+
+    async def stream(request):
+        posts.append(await request.json())
+        response = web.StreamResponse(status=503, headers={'Content-Type': 'application/problem+json'})
+        await response.prepare(request)
+        for part in [b'{"code":', b'"AGENT_', b'FAILED"}']:
+            await response.write(part)
+            await asyncio.sleep(.04)
+        return response
+
+    app = web.Application()
+    app.router.add_post(PREFIX + '/sessions/chat/messages', stream)
+    async with TestClient(TestServer(app)) as client:
+        with pytest.raises(AdapterError) as failure:
+            _ = [event async for event in adapter_for(client)._send('chat', 'hello')]
+        assert failure.value.code == 'AGENT_FAILED'
+        assert len(posts) == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_error_body_is_bounded_and_redacted(monkeypatch):
+    monkeypatch.setattr(remote, 'MAX_STREAM_EVENT_BYTES', 128)
+
+    async def stream(request):
+        return web.Response(status=503, body=b'{"code":"AGENT_FAILED","private":"' + b'x' * 200 + b'"}',
+                            content_type='application/json')
+
+    app = web.Application()
+    app.router.add_post(PREFIX + '/sessions/chat/messages', stream)
+    async with TestClient(TestServer(app)) as client:
+        with pytest.raises(AdapterError) as failure:
+            _ = [event async for event in adapter_for(client)._send('chat', 'hello')]
+        assert failure.value.code == 'AGENT_STREAM_TOO_LARGE'
+        assert 'private' not in str(failure.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('body,media_type', [
+    (b'[]', 'application/json'),
+    (b'{"code":', 'application/json'),
+    (b'{"code":"AGENT_FAILED"}', 'text/html'),
+])
+async def test_invalid_error_response_remains_controlled_protocol_failure(body, media_type):
+    async def stream(request):
+        return web.Response(status=503, body=body, content_type=media_type)
+
+    app = web.Application()
+    app.router.add_post(PREFIX + '/sessions/chat/messages', stream)
+    async with TestClient(TestServer(app)) as client:
+        with pytest.raises(AdapterError) as failure:
+            _ = [event async for event in adapter_for(client)._send('chat', 'hello')]
+        assert failure.value.code == 'HOST_INCOMPATIBLE'
