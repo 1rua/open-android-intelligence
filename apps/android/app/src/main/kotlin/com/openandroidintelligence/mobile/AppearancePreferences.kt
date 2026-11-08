@@ -84,6 +84,17 @@ class AppearancePreferences(context: Context) {
         persist(_settings.value.copy(reduceMotion = enabled))
     }
 
+    /**
+     * 一次性写入整份外观偏好。
+     *
+     * 设置导入与回滚使用它：五个字段必须作为一次提交生效，否则中途失败会留下
+     * 「主题换了、色板没换」的半套状态。图标别名与应用内状态同样在此刷新。
+     */
+    fun applySettings(next: AppearanceSettings) {
+        persist(next)
+        LauncherIconManager.applyDynamicIconPreference(appContext, next.dynamicIconColor)
+    }
+
     private fun read(): AppearanceSettings = AppearanceSettings(
         theme = preferences.getString(KEY_THEME, ThemePreference.SYSTEM.name)
             ?.let { value -> runCatching { ThemePreference.valueOf(value) }.getOrNull() }

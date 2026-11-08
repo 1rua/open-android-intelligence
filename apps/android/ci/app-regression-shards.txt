@@ -1,75 +1,78 @@
 # App unit-test regression set for pull requests.
 #
-# The PR gate runs these on the full-variant debug build, sharded across
-# parallel CI jobs so the two shards finish at roughly the same time.
-# `tools/test_ci_manifest.py` verifies every name still exists in
-# apps/android/app/src/test and that the shards are disjoint.
+# 每个 PR 都会跑这里的全部类，按两个分片并行执行（shard-a / shard-b）。
+# `tools/test_ci_planning.py` 校验：类名真实存在、分片互不重叠、
+# 且本地 `npm run test:pr` 的过滤器集合与两个分片的并集完全一致。
 #
-# The complete app suite (every class, both variants) still runs for full
-# regression: `:app:testFullDebugUnitTest` + `:app:testPlayDebugUnitTest`
-# without any --tests filter.
+# 完整回归（全部类、两个变体）仍然由不带 --tests 过滤的
+# `:app:testFullDebugUnitTest` + `:app:testPlayDebugUnitTest` 覆盖；
+# 新增 PR 级回归测试请加入其中一个分片，不要只依赖全量回归。
 [shard-a]
-GatewaySessionRefreshTest
-NativeConversationNotificationsTest
 AndroidApiCompatibilityTest
-SettingsCapabilityUiTest
+ApplicationCompositionTest
+CapabilityPublisherTest
+CapabilitySettingsTest
+ClientCapabilityAuthorizationTest
+DeviceCapabilitySyncStateTest
+DevicePushCycleTest
+DevicePushRuntimeTest
+GatewayNetworkMonitorTest
+GatewaySessionRefreshTest
+IndependentConnectionDiscoveryTest
+LoginGatewayPrefillTest
+MessageProcessingSettingsTest
 NativeAgentBackgroundWorkTest
+NativeConversationMirrorTest
+NativeConversationNotificationsTest
+NativeEventDeletionPersistenceTest
+NativeEventSynchronizerTest
+NativeGenerationScopeTest
+PermissionCatalogTest
+PlatformSnapshotRecoveryTest
 PluginManagementScreenTest
 PushSettingsScreenTest
-SettingsResponsiveHostRegressionTest
-SmsPassiveScopeSettingsTest
-SettingsNavigationTest
-CapabilitySettingsTest
-MessageProcessingSettingsTest
-NativeEventDeletionPersistenceTest
-NativeConversationMirrorTest
-ClientCapabilityAuthorizationTest
-CapabilityPublisherTest
-GatewayNetworkMonitorTest
-ApplicationCompositionTest
-SettingsStateIntegrityTest
-DevicePushRuntimeTest
-NativeEventSynchronizerTest
-IndependentConnectionDiscoveryTest
-NativeGenerationScopeTest
-DevicePushCycleTest
-PlatformSnapshotRecoveryTest
-GatewayTutorialsTest
-PermissionCatalogTest
 ScreenExecutionErrorsTest
+SettingsBackupCoordinatorTest
+SettingsCapabilityUiTest
+SettingsNavigationTest
+SettingsResponsiveHostRegressionTest
 SettingsShortcutsTest
+SettingsStateIntegrityTest
+SmsPassiveScopeSettingsTest
 
 [shard-b]
-DeviceExecutionRecoveryTest
-ReplyNotificationsTest
-ColdStartConnectionTest
-SettingsHonestyCopyTest
+AccountSwitchPersistenceFailureTest
 AdditionalDeviceConnectionsTest
+AdvancedSettingsScreenTest
+AppUpdateScreenTest
 AppearanceSettingsScreenTest
+ColdStartConnectionTest
+CoreAgentConversationRepositoryTest
+DeviceCapabilityBlockTest
+DeviceExecutionRecoveryTest
+DeviceGrantFenceTest
+GatewayTutorialsTest
+GatewayWorkbenchLogoutTest
+LiveUpdateNotificationsTest
+NativeAgentsControllerTest
+NativeConnectionReliabilityTest
+NativeConversationOrganizationStoreTest
+NativeEventOwnerTest
+NativeRecoveryCommitTest
+NativeRecoveryOwnershipTest
+NotificationAccessSettingsTest
 NotificationCollectionScreenTest
 NotificationPushScopeSettingsTest
-GatewayWorkbenchLogoutTest
-PluginManagementGrantUiTest
-AppUpdateScreenTest
-ScreenControlConfirmationDialogTest
-SettingsViewModelTest
-AdvancedSettingsScreenTest
-AccountSwitchPersistenceFailureTest
-LiveUpdateNotificationsTest
-DeviceGrantFenceTest
 PairingGrantPersistenceTest
-NativeConversationOrganizationStoreTest
-NotificationAccessSettingsTest
-CoreAgentConversationRepositoryTest
-NativeRecoveryCommitTest
-NativeConnectionReliabilityTest
-NativeRecoveryOwnershipTest
-NativeEventOwnerTest
-NativeAgentsControllerTest
 PlatformStreamHandoverTest
-DeviceCapabilityBlockTest
-ScreenCapabilityPresentationTest
-DeviceCapabilitySyncStateTest
-TemporaryApprovalCopyTest
 PluginCapabilityRiskTest
+PluginManagementGrantUiTest
+ReplyNotificationsTest
+ScreenCapabilityPresentationTest
 ScreenCaptureSystemConsentTest
+ScreenControlConfirmationDialogTest
+SettingsBackupCodecTest
+SettingsBackupScreenTest
+SettingsHonestyCopyTest
+SettingsViewModelTest
+TemporaryApprovalCopyTest

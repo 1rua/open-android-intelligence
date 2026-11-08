@@ -148,6 +148,9 @@ def test_shards_are_disjoint_and_cover_the_pr_regression_set(tasks):
     shard_b = set(tasks.read_shard("shard-b"))
     assert shard_a and shard_b
     assert shard_a.isdisjoint(shard_b)
+    # The manifest is the PR gate's whole app-regression set; losing entries
+    # here silently drops coverage, so pin the expected size.
+    assert len(shard_a) + len(shard_b) >= 60
 
 
 def test_every_shard_entry_exists_as_a_test_class(tasks):

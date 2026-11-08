@@ -25,6 +25,7 @@ class SettingsStateIntegrityTest {
         assertEquals(SettingsRoutes.PAIRING, settingsOwner(SettingsRoutes.PLUGINS))
         assertEquals(SettingsRoutes.PAIRING, settingsOwner(SettingsRoutes.DEVICE_PUSH))
         assertEquals(SettingsRoutes.ADVANCED, settingsOwner(SettingsRoutes.APP_UPDATES))
+        assertEquals(SettingsRoutes.ADVANCED, settingsOwner(SettingsRoutes.BACKUP))
         assertEquals(SettingsRoutes.SECURITY, settingsOwner(SettingsRoutes.AUDIT_LOG))
     }
 
