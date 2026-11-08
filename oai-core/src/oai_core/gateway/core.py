@@ -154,11 +154,13 @@ class GatewayError(Exception):
 class AuthenticationStorageError(GatewayError):
     """认证事实不可用时拒绝请求，保留受控的存储故障分类。"""
 
-    def __init__(self, error: sqlite3.Error | OSError, stage: str, started: float, request_id: str | None = None):
+    def __init__(self, error: sqlite3.Error | OSError | GatewayError, stage: str, started: float, request_id: str | None = None):
         base_code = int(getattr(error, "sqlite_errorcode", 0)) & 0xFF
-        transient = base_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-        category = {sqlite3.SQLITE_BUSY: "SQLITE_BUSY", sqlite3.SQLITE_LOCKED: "SQLITE_LOCKED"}.get(
-            base_code, "SQLITE_ERROR" if isinstance(error, sqlite3.Error) else "OS_ERROR")
+        migration_busy = isinstance(error, GatewayError) and error.code == "MESSAGE_MIGRATION_BUSY"
+        transient = migration_busy or base_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+        category = "MESSAGE_MIGRATION_BUSY" if migration_busy else {
+            sqlite3.SQLITE_BUSY: "SQLITE_BUSY", sqlite3.SQLITE_LOCKED: "SQLITE_LOCKED"}.get(
+                base_code, "SQLITE_ERROR" if isinstance(error, sqlite3.Error) else "OS_ERROR")
         elapsed_ms = max(0, round((monotonic() - started) * 1000))
         super().__init__("AUTHENTICATION_STORAGE_UNAVAILABLE" if transient else "AUTHENTICATION_STORAGE_FAILED",
             {"stage": stage, "storageError": category, "elapsedMs": elapsed_ms})
@@ -174,6 +176,11 @@ def authentication_storage(stage: str, request_id: str | None = None) -> Iterato
         yield
     except (sqlite3.Error, OSError) as error:
         raise AuthenticationStorageError(error, stage, started, request_id) from error
+    except GatewayError as error:
+        # 只转换账户迁移明确报告的暂时忙，其他协议与安全拒绝保留原语义。
+        if stage == "account-open" and error.code == "MESSAGE_MIGRATION_BUSY":
+            raise AuthenticationStorageError(error, stage, started, request_id) from error
+        raise
 
 
 class TransactionOutcomeUnknown(GatewayError):

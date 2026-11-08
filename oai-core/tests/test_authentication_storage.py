@@ -78,6 +78,47 @@ async def test_temporary_authentication_storage_busy_is_recoverable_and_keeps_no
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", [PREFIX + "/agents", PREFIX + "/pairings/current"])
+async def test_pending_message_scrub_busy_is_recoverable_without_finishing_migration(gateway, path):
+    client, core, _ = gateway
+    bundle, key = await phone_login(client, core)
+    account = core.open_gateway_account(bundle["accountId"])
+    database_path = account.paths.database
+    # 模拟加密已提交、物理清理尚未完成的恢复状态，保留原账号与会话。
+    account.store.database.execute("INSERT INTO account_metadata(key,value) VALUES ('message_scrub_pending','1')")
+    account.store.database.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    account.close()
+    _, headers = signed(bundle, key, "GET", path)
+    with closing(sqlite3.connect(database_path, isolation_level=None)) as reader:
+        reader.execute("BEGIN")
+        reader.execute("SELECT * FROM account_metadata").fetchall()
+        try:
+            response = await client.get(path, headers=headers)
+            assert response.status == 503, await response.text()
+            error = (await response.json())["error"]
+            assert error["code"] == "AUTHENTICATION_STORAGE_UNAVAILABLE"
+            if path.endswith("/pairings/current"):
+                assert error["retryable"] is True
+                assert error["details"]["stage"] == "account-open"
+                assert error["details"]["storageError"] == "MESSAGE_MIGRATION_BUSY"
+            with closing(sqlite3.connect(database_path.as_uri() + "?mode=ro", uri=True)) as observer:
+                assert observer.execute("SELECT value FROM account_metadata WHERE key='message_scrub_pending'").fetchone()[0] == "1"
+                assert observer.execute("SELECT 1 FROM account_metadata WHERE key='account_schema_version'").fetchone() is None
+        finally:
+            reader.rollback()
+    # 读快照释放后完成清理；原签名仅可成功一次，不绕过 nonce 防重放。
+    response = await client.get(path, headers=headers)
+    assert response.status == 200, await response.text()
+    assert (await client.get(path, headers=headers)).status == 401
+    account = core.open_gateway_account(bundle["accountId"])
+    try:
+        assert account.store.database.execute("SELECT 1 FROM account_metadata WHERE key='message_scrub_pending'").fetchone() is None
+        assert account.store.database.execute("SELECT value FROM account_metadata WHERE key='account_schema_version'").fetchone()[0] == "1"
+    finally:
+        account.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sqlite_code,status,code", [
     (sqlite3.SQLITE_BUSY, 503, "AUTHENTICATION_STORAGE_UNAVAILABLE"),
     (sqlite3.SQLITE_LOCKED, 503, "AUTHENTICATION_STORAGE_UNAVAILABLE"),
