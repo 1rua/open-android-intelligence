@@ -534,6 +534,115 @@ def test_repeat_install_with_upgrade_source_updates_code_skills_and_restarts_run
     assert ["systemctl", "--user", "restart", "oai-core.service"] in executed
 
 
+def test_temp_download_upgrade_defers_archive_and_reindexes_oai_core_path(tmp_path, monkeypatch):
+    """在线临时目录升级时，应更新 oai_core 模块路径支持重载，并在 pip/服务等全部就绪后才归档临时目录。"""
+    from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
+    from oai_core.identity import IdentityStore, issue_bootstrap_proof
+    from oai_core.management import LocalRecovery
+
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("HERMES_HOME", str(home / "absent-hermes"))
+    monkeypatch.setenv("DSH_HOME", str(home / "absent-dsh"))
+    monkeypatch.setattr(runtime.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(runtime.sys.stdout, "isatty", lambda: True)
+
+    root = tmp_path / "deployment"
+    root.mkdir(mode=0o700)
+    config_code_v1 = (REPOSITORY / "oai-core/src/oai_core/configuration.py").read_text(encoding="utf-8")
+    write_checkout(root, {
+        "oai-core/pyproject.toml": "[project]\nname = 'open-android-intelligence-core'\nversion = '0.1.0'\n",
+        "oai-core/src/oai_core/marker.py": "VERSION = '0.1.0'\n",
+        "oai-core/src/oai_core/configuration.py": config_code_v1,
+        "scripts/install.sh": "# v1\n",
+        "integrations/skills/oai-client/SKILL.md": "# Skill v1\n",
+        "start-core.sh": "#!/usr/bin/env bash\nexit 0\n",
+    })
+    (root / "start-core.sh").chmod(0o700)
+    python_bin = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python_bin.parent.mkdir(parents=True, exist_ok=True)
+    python_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python_bin.chmod(0o700)
+
+    storage, key, database = runtime._paths(root)
+    key.parent.mkdir(parents=True, mode=0o700)
+    create_master_key_file(key)
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"bootstrap\n")
+        os.close(write_fd)
+        write_fd = -1
+        proof = issue_bootstrap_proof(database, storage, confirmation_fd=read_fd)
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+    store = IdentityStore(database, key_store=LocalMasterKeyStore(key), create=True, bootstrap_proof=proof)
+    store.bootstrap("admin", "correct-password", confirmed=True)
+    handle = store.begin_management("admin", "correct-password")
+    LocalRecovery(store).register(handle, confirmed=True)
+    store.close()
+
+    config_text = json.dumps({
+        "storageRoot": "runtime/accounts",
+        "masterKeyFile": "runtime/secrets/core-master-key",
+        "listen": {"host": "127.0.0.1", "port": 18451},
+        "allowInsecureHttp": True,
+        "agents": [],
+    }) + "\n"
+    runtime.configuration.private_write(root / "core.json", config_text)
+
+    staged = tmp_path / "deployment.download.xyz98765"
+    config_code_v2 = config_code_v1 + "\nUPGRADE_VERIFY_MARKER = 'v2-reloaded'\n"
+    write_checkout(staged, {
+        "oai-core/pyproject.toml": "[project]\nname = 'open-android-intelligence-core'\nversion = '0.2.0'\n",
+        "oai-core/src/oai_core/marker.py": "VERSION = '0.2.0'\n",
+        "oai-core/src/oai_core/configuration.py": config_code_v2,
+        "scripts/install.sh": "# v2\n",
+        "integrations/skills/oai-client/SKILL.md": "# Skill v2\n",
+    })
+    monkeypatch.setenv("OAI_TEMP_DOWNLOAD_SOURCE", "1")
+
+    # 模拟真实线上升级时，oai_core 模块最初从临时下载目录导入
+    oai_pkg = sys.modules["oai_core"]
+    original_pkg_path = list(oai_pkg.__path__)
+    original_search_locations = list(oai_pkg.__spec__.submodule_search_locations) if getattr(oai_pkg, "__spec__", None) else None
+    staged_pkg_dir = str(staged / "oai-core" / "src" / "oai_core")
+    monkeypatch.setattr(oai_pkg, "__path__", [staged_pkg_dir])
+    if original_search_locations is not None:
+        monkeypatch.setattr(oai_pkg.__spec__, "submodule_search_locations", [staged_pkg_dir])
+
+    staged_existed_during_pip: list[bool] = []
+    def fake_run(args, **kwargs):
+        if "-m" in args and "pip" in args:
+            staged_existed_during_pip.append(staged.is_dir())
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    inputs = iter(["admin", "n"])
+    monkeypatch.setattr(runtime, "_input", lambda prompt: next(inputs))
+    monkeypatch.setattr(runtime, "secret_input", lambda prompt: "correct-password")
+
+    try:
+        assert runtime.install(root, upgrade_source=staged) == 0
+
+        # 1. 验证 pip 安装执行期间，临时目录尚未被提前归档移动
+        assert staged_existed_during_pip == [True, True]
+        # 2. 验证 oai_core 模块已重新定位至已同步的安装目录，且 configuration 已成功热重载
+        expected_root_pkg_dir = str((root / "oai-core" / "src" / "oai_core").resolve())
+        assert oai_pkg.__path__ == [expected_root_pkg_dir]
+        assert getattr(runtime.configuration, "UPGRADE_VERIFY_MARKER", None) == "v2-reloaded"
+        # 3. 验证全部流程结束后，临时下载目录才完成归档
+        assert not staged.exists()
+        assert list((root / "runtime/upgrade-downloads").glob("deployment.download.xyz98765-*"))
+    finally:
+        oai_pkg.__path__ = original_pkg_path
+        if original_search_locations is not None:
+            oai_pkg.__spec__.submodule_search_locations = original_search_locations
+        importlib.reload(runtime.configuration)
+
+
 def test_repeat_install_git_checkout_pulls_fast_forward_and_skips_dirty_worktree(tmp_path, monkeypatch):
     """本地 Git 仓库部署重复运行 install 时，认证后自动快进拉取远端新提交；有未提交修改则保留现场。"""
     from oai_core.gateway.local_keys import LocalMasterKeyStore, create_master_key_file
