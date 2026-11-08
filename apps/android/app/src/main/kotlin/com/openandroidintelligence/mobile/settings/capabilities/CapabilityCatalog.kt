@@ -82,5 +82,10 @@ internal fun capabilityTitle(entry: VerifiedCapability): String =
 internal fun isScreenCapability(entry: VerifiedCapability): Boolean =
     entry.primitives.any { it == "kernel.screen.read" || it == "kernel.screen.capture" || it == "kernel.screen.control" }
 
-/** 该内建能力是否由本 APK 提供（用于隐藏安装/卸载入口）。 */
+/**
+ * 该插件是否属于官方能力（用于隐藏安装/卸载入口）。
+ *
+ * 判据是固定的官方 ID 集合，与「本次是否加载成功」无关：加载失败时也不应把它当成
+ * 可卸载的第三方插件展示——用户在那个位置改什么都无法让它恢复。
+ */
 internal fun isBuiltInPlugin(pluginId: String): Boolean = builtInCapabilities.any { it.pluginId == pluginId }
