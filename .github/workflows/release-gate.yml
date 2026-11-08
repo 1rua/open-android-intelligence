@@ -1,0 +1,159 @@
+name: Release Gate
+
+# 发布前必须确认「同一 Commit SHA 的必要 CI 检查已通过」。
+#
+# 为什么需要独立工作流而不是在发布工作流里 `needs:` 上游 job：
+#   * dev 预览版由 push 触发，正式版由 workflow_dispatch 触发，两者的上游
+#     CI 属于**另一次** workflow run，跨 run 的 job 依赖做不到。
+#   * 因此这里查询同一 SHA 的 workflow run 结论。发布工作流的 publish job
+#     依赖本 job，而构建 job 与它并行——满足「允许构建与测试并行，但不得在
+#     必要测试失败时发布」。
+#
+# 权限只有 contents/actions read：本工作流不接触任何签名密钥。普通 PR
+# 不会触发它（只提供 workflow_call 与 workflow_dispatch）。
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit SHA that must have passed CI.
+        required: true
+        type: string
+      wait-seconds:
+        description: >-
+          How long to wait for an in-progress or not-yet-created CI run. The
+          preview build normally finishes before CI does, so publishing waits
+          here instead of racing ahead.
+        required: false
+        default: 2400
+        type: number
+      required-workflow:
+        description: >-
+          Workflow file whose run must have passed for the SHA. dev preview
+          releases are gated by the incremental oai-core.yml; stable releases
+          are gated by the full-regression ci.yml.
+        required: false
+        default: oai-core.yml
+        type: string
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit SHA to inspect.
+        required: true
+      wait-seconds:
+        description: How long to wait for CI on that commit.
+        required: false
+        default: '2400'
+      required-workflow:
+        description: Workflow file whose run must have passed (oai-core.yml or ci.yml).
+        required: false
+        default: oai-core.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify:
+    name: Verify commit checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    outputs:
+      ready: ${{ steps.verify.outputs.ready }}
+    steps:
+      - name: Verify required checks for the commit
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ inputs.sha }}
+          WAIT_SECONDS: ${{ inputs.wait-seconds || 2400 }}
+          # workflow_dispatch inputs have no type coercion; keep a hard default so
+          # an empty value cannot make the path filter match nothing.
+          REQUIRED_WORKFLOW: ${{ inputs.required-workflow || 'oai-core.yml' }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          sha = os.environ["TARGET_SHA"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          workflow_file = os.environ["REQUIRED_WORKFLOW"]
+          wait_seconds = int(os.environ.get("WAIT_SECONDS", "2400"))
+          poll = 15
+
+          BAD = {"failure", "timed_out", "cancelled", "action_required", "stale"}
+
+          def api(path):
+              return json.loads(subprocess.run(
+                  ["gh", "api", "-H", f"Authorization: Bearer {token}", path],
+                  capture_output=True, text=True, check=True,
+              ).stdout)
+
+          def runs_for_sha():
+              data = api(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100")
+              return [
+                  run for run in data["workflow_runs"]
+                  if run["path"].endswith("/" + workflow_file)
+              ]
+
+          deadline = time.monotonic() + wait_seconds
+          announced = False
+          while True:
+              runs = runs_for_sha()
+
+              # Only the newest attempt per run id matters; older attempts of the
+              # same run are superseded by a re-run.
+              # Attempt numbers belong to a single run id: run A attempt 2 must
+              # never outrank the newer run B attempt 1. Keep the newest run per
+              # run id (by attempt), then judge each run independently and let
+              # the newest *run* decide the commit's state.
+              newest_per_run: dict[int, dict] = {}
+              for run in runs:
+                  key = run["id"]
+                  current = newest_per_run.get(key)
+                  if current is None or run["run_attempt"] >= current["run_attempt"]:
+                      newest_per_run[key] = run
+              ordered = sorted(
+                  newest_per_run.values(),
+                  key=lambda r: (r["created_at"], r["run_attempt"]),
+                  reverse=True,
+              )
+              states = [(r["status"], r["conclusion"]) for r in ordered]
+
+              if not ordered:
+                  newest = None
+              else:
+                  # The newest run is decisive. An older successful run must not
+                  # launder a newer failure into a release.
+                  newest = ordered[0]
+
+              if newest is not None:
+                  status, conclusion = newest["status"], newest["conclusion"]
+                  if conclusion == "success":
+                      print(f"::notice::CI verified for {sha} by the newest run ({states}).")
+                      with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                          out.write("ready=true\n")
+                      sys.exit(0)
+                  if conclusion in BAD:
+                      print(f"::error::The newest CI run for {sha} concluded {conclusion} ({states}); refusing to release.")
+                      sys.exit(1)
+                  pending = status != "completed"
+              else:
+                  pending = True
+
+              if time.monotonic() >= deadline:
+                  if pending:
+                      print(f"::error::CI still running for {sha} after {wait_seconds}s ({states}); refusing to publish an unverified commit.")
+                  else:
+                      print(f"::error::No successful CI run for {sha} ({states}); refusing to release.")
+                  sys.exit(1)
+
+              if not announced:
+                  print(f"Waiting for CI on {sha} (up to {wait_seconds}s); current state: {states or 'no run yet'}")
+                  announced = True
+              time.sleep(poll)
+          PY
