@@ -43,6 +43,10 @@ import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvi
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import com.openandroidintelligence.mobile.assistant.AssistantAttachmentDraftCoordinator
+import com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspace
+import com.openandroidintelligence.mobile.assistant.createAssistantWorkbench
+import com.openandroidintelligence.mobile.assistant.createNativeAssistantWorkbench
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
 import com.openandroidintelligence.mobile.plugins.capabilitySyncErrorCode
 import kotlinx.coroutines.flow.collectLatest
@@ -246,6 +250,16 @@ class GatewayRuntime(
                 ?.value?.firstOrNull { it.id.value == target.conversationId }?.title
         })
     private var bubbleWorkspace: BubbleConversationWorkspace? = null
+    /**
+     * 系统数字助理的临时会话工作区；与主工作台、气泡互不共享选择与草稿。
+     *
+     * 它只属于一个 (profile, account, agent) 身份：账号或 Agent 切换时由
+     * [replaceAssistantWorkspace] 连同旧会话一起退役。
+     */
+    @Volatile private var assistantWorkspace: AssistantConversationWorkspace? = null
+    private var assistantWorkJob: Job? = null
+    /** 只保护工作区引用的安装/退役，不覆盖工作区内部的控制器锁。 */
+    private val assistantWorkspaceLock = Any()
 
     internal fun isBubbleTargetCurrent(target: ReplyNotificationTarget): Boolean {
         val connected = _phase.value as? ConnectionPhase.Connected ?: return false
@@ -324,6 +338,75 @@ class GatewayRuntime(
             activeBubbleWork -= controller
             hasBubbleWork.value = activeBubbleWork.isNotEmpty()
         }
+    }
+
+    /** 助手会话正在发送的线程；主工作台与气泡都把它视为忙碌，避免管理操作踩到在途提交。 */
+    private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
+
+    /**
+     * 系统数字助理通过主进程打开一条会话控制器。
+     *
+     * 同一个 sessionToken 重复调用是幂等的：助理进程重连不会替换仍在发送的控制器。
+     * 工作区尚未建立（未连接、正在切换账号）时返回 null，调用方据此呈现未连接状态。
+     */
+    internal fun createAssistantSessionController(sessionToken: String): WorkbenchController? {
+        val workspace = assistantWorkspace ?: return null
+        return runCatching { workspace.open(sessionToken) }.getOrNull()
+    }
+
+    /** 助理界面关闭：有在途发送时延迟关闭，等真实终态再释放。 */
+    internal fun releaseAssistantSession(sessionToken: String) {
+        assistantWorkspace?.release(sessionToken)
+        refreshBackgroundWork()
+    }
+
+    /** 账号/Agent 切换：先摘下旧工作区，再等它把本地提交收尾。 */
+    private suspend fun closeAssistantWorkspaceAndAwait() {
+        val retired = synchronized(assistantWorkspaceLock) {
+            val current = assistantWorkspace
+            assistantWorkspace = null
+            assistantWorkJob?.cancel()
+            assistantWorkJob = null
+            current
+        }
+        retired?.closeAndAwait()
+        refreshBackgroundWork()
+    }
+
+    /** 同步退役（登出、配对解除等不可等待的收尾路径）。 */
+    private fun retireAssistantWorkspace() {
+        val retired = synchronized(assistantWorkspaceLock) {
+            val current = assistantWorkspace
+            assistantWorkspace = null
+            assistantWorkJob?.cancel()
+            assistantWorkJob = null
+            current
+        }
+        retired?.close()
+        refreshBackgroundWork()
+    }
+
+    /**
+     * 当前 Agent 身份；主工作台与原生发现都从这里取值。
+     *
+     * 助手工作区与主工作台必须锁定同一个 Agent，否则同一账号下切换 Agent 后
+     * 旧助手会话仍会把消息发往已不再选中的 Agent。
+     */
+    private fun assistantAgentId(): String? =
+        _nativeAgents.value?.state?.value?.agent?.id ?: _workbenchAgentId
+
+    private var _workbenchAgentId: String? = null
+
+    private fun publishAssistantWorkspace(workspace: AssistantConversationWorkspace) {
+        synchronized(assistantWorkspaceLock) {
+            assistantWorkJob?.cancel()
+            assistantWorkspace = workspace
+            // 助手任务同样需要后台保活：只读原子 StateFlow，不取工作区锁。
+            assistantWorkJob = scope.launch {
+                workspace.hasActiveWork.collect { refreshBackgroundWork() }
+            }
+        }
+        refreshBackgroundWork()
     }
 
     private fun clearBubbleWorkTracking() {
@@ -729,6 +812,7 @@ class GatewayRuntime(
         // A bubble can stop before its asynchronous observer is scheduled.
         // Read its owned submission facts without acquiring the tracking lock.
         (nativeConversationNotifications.sessions.value.any { it.isRunning } || bubbleWorkJobs.keys.any { it.hasActiveWork.value } ||
+            assistantWorkspace?.hasActiveWork?.value == true ||
             _controller.value?.hasActiveWork?.value == true || _nativeAgents.value?.state?.value?.sending == true ||
             hasRecoveredGatewayWork.value)
 
@@ -2226,8 +2310,9 @@ class GatewayRuntime(
                 organizationStoredLocally = nativeAgentSessions,
                 authoritativeMessageIds = nativeAgentSessions,
                 externalBusyThreadIds = {
-                    bubbleBusyConversationIds() + nativeConversationNotifications.sessions.value
-                        .filter { it.isRunning }.map { it.target.conversationId }
+                    bubbleBusyConversationIds() + assistantBusyThreadIds() +
+                        nativeConversationNotifications.sessions.value
+                            .filter { it.isRunning }.map { it.target.conversationId }
                 },
                 onActiveThreadChanged = { threadId ->
                     if (!nativeAgentSessions || _nativeAgents.value?.state?.value?.selectedAgentId == ownerAgentId) {
