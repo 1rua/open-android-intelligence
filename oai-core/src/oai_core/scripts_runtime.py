@@ -983,14 +983,28 @@ def install(root: Path, *, restore_source: Path | None = None, upgrade_source: P
                 source_updated = True
             else:
                 _ok("当前目录的程序文件已是最新版本。")
-            _archive_temp_download_source(root, upgrade_source)
         elif has_identity:
             source_updated = _upgrade_git_checkout(root, store, handle)
         if source_updated and (root / "oai-core" / "src" / "oai_core" / "configuration.py").is_file():
             local_src = str((root / "oai-core" / "src").resolve())
             if not sys.path or sys.path[0] != local_src:
                 sys.path.insert(0, local_src)
+            oai_core_module = sys.modules.get("oai_core")
+            if oai_core_module is not None:
+                package_dir = str((root / "oai-core" / "src" / "oai_core").resolve())
+                oai_core_module.__path__ = [package_dir]
+                if getattr(oai_core_module, "__spec__", None) is not None:
+                    oai_core_module.__spec__.submodule_search_locations = [package_dir]
+                init_file = root / "oai-core" / "src" / "oai_core" / "__init__.py"
+                if init_file.is_file():
+                    oai_core_module.__file__ = str(init_file.resolve())
             importlib.reload(configuration)
+            globals().update({
+                "configure": configuration.configure,
+                "configuration_lock": configuration.configuration_lock,
+                "owned_bytes": configuration.owned_bytes,
+                "private_write": configuration.private_write,
+            })
         python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         if not python.is_file():
             _step("正在创建 Python 虚拟环境 (.venv)...")
@@ -1075,6 +1089,9 @@ def install(root: Path, *, restore_source: Path | None = None, upgrade_source: P
             f"• 手机连接: 在手机 App 填入 http://<电脑局域网IP>:{final_port} 登录配对",
         ))
         print("Core 配置及 CLI 已安装；服务和 Agent 可在 setup 中管理。")
+        temp_source = upgrade_source or restore_source
+        if temp_source is not None:
+            _archive_temp_download_source(root, temp_source)
         return 0 if configured else 2
     finally:
         try:
