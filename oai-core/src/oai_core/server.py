@@ -20,6 +20,7 @@ from .gateway.admin import HostApiCompatibility
 from .gateway.core import GatewayCore, GatewayError, _now
 from .gateway.http import _status, create_gateway_exposure
 from .gateway.local_keys import LocalMasterKeyStore, ensure_master_key_file
+from .native_diagnostics import configure_connection_diagnostics
 
 from .auth import Authentication, Principal, raw_request
 from .device_service import DeviceService
@@ -457,6 +458,7 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
 
 
 def run(config_path: str | Path) -> None:
+    configure_connection_diagnostics()
     config = load_config(config_path)
     identity_path = Path(config.get("identityDatabase", Path(config["storageRoot"]).parent / "security" / "identity.sqlite"))
     if not identity_path.is_file():

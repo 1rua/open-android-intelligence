@@ -115,13 +115,19 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
         val proposedId = matching?.id ?: (if (isSyntheticSteerId) null else atom.messageId) ?: "local_${atom.clientMessageId.value}"
         val idConflict = matching == null && proposedId in rows
         val id = if (idConflict) localPlaceholderId(rows, atom) else proposedId
+        // Core 历史中的真实 user 行可以证明消息存在，但不等于 Agent 已接收。
+        // 只有显式 Agent 状态可覆盖它；本地占位行没有这项权威。
+        val authoritativeRemoteState = matching
+            ?.takeUnless { it.localPlaceholder }
+            ?.state
+            ?.takeIf(String::isNotBlank)
         rows[id] = TimelineMessage(
             id = id,
             sender = "user",
             parts = if (atom.contentRevision >= 0L) atom.parts
                 else matching?.parts?.takeIf { it.isNotEmpty() } ?: atom.parts,
             timestamp = atom.timestamp.takeIf { it > 0L } ?: matching?.timestamp ?: 0L,
-            state = atom.status?.wireValue ?: when (atom.submissionState) {
+            state = atom.status?.wireValue ?: authoritativeRemoteState ?: when (atom.submissionState) {
                 LocalSubmissionState.ACCEPTED -> "queued"
                 LocalSubmissionState.FAILED -> "FAILED"
                 else -> "PENDING"

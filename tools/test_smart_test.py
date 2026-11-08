@@ -359,3 +359,35 @@ def test_android_ci_steps_select_connection_account_and_settings_regressions(ste
         "*NativeEventDeletionPersistenceTest",
     }
     assert required_tests <= selected_tests
+
+
+def test_observer_only_edits_run_the_readonly_tool_regression(monkeypatch):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["tools/observe-communication.py"])
+    assert runner.execute_strategy("fast", impact) == 0
+    assert any("tools/test_observe_communication.py" in command for command in commands)
+
+
+@pytest.mark.parametrize("changed", ["tools/audit-communication.py", "tools/test_audit_communication.py"])
+def test_observation_audit_edits_run_the_offline_regression(monkeypatch, changed):
+    runner = load_runner()
+    commands = []
+    monkeypatch.setattr(runner, "run_command", lambda command, **_kwargs: commands.append(command) or 0)
+    impact = runner.analyze_impact([changed])
+    assert impact["affects_observer"] is True
+    assert runner.execute_strategy("fast", impact) == 0
+    assert any("tools/test_audit_communication.py" in command for command in commands)
+
+
+def test_admission_keeps_the_historical_android_oracle_isolated():
+    root = Path(__file__).parents[1]
+    job = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())["jobs"]["admission"]
+    fixture = next(step for step in job["steps"] if step.get("name") == "Check out historical Android HTTP fixture")
+    assert fixture["with"]["ref"] == "ebe527da2426dd25877dd335786e80cf85d1cdde"
+    install = next(step["run"] for step in job["steps"] if step.get("name") == "Install isolated historical HTTP fixture")
+    assert 'python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"' in install
+    assert "OAI_HERMES_PYTHON=" in install and "HERMES_PLUGIN_ROOT=" in install
+    assert all("github.workspace" in step["env"]["HERMES_SDK_ROOT"]
+               for step in job["steps"] if step.get("name") in {"Fast admission", "PR admission"})

@@ -31,6 +31,9 @@ from oai_core.sessions import AdapterError, SESSION_REQUEST_MAX_BYTES, native_ev
 from oai_core.native_diagnostics import trace_context
 
 PREFIX = "/oai/session-adapter/v1"
+STREAM_HEARTBEAT_SECONDS = 10.0
+STREAM_QUEUE_MAXSIZE = 16
+_STREAM_END = object()
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 
 
@@ -331,7 +334,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
     app = web.Application(middlewares=[authenticate], client_max_size=SESSION_REQUEST_MAX_BYTES)
 
     async def status(request):
-        return web.json_response({"online": await adapter.status(), "capabilities": adapter.descriptor()["capabilities"]})
+        return web.json_response({"online": await adapter.status(), "capabilities": {**adapter.descriptor()["capabilities"], "streamHeartbeat": True}})
 
     async def handshake(request):
         from oai_core.agent_registration import _json, bridge_proof
@@ -341,7 +344,7 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
                 or not isinstance(body["challenge"], str) or not re.fullmatch(r"[0-9a-f]{64}", body["challenge"])):
             raise AdapterError("HOST_INCOMPATIBLE", 400)
         online = await adapter.status()
-        capabilities = adapter.descriptor()["capabilities"]
+        capabilities = {**adapter.descriptor()["capabilities"], "streamHeartbeat": True}
         result = {"instanceId": instance_id, "sessionScope": "account", "online": online,
                   "capabilities": capabilities,
                   "proof": bridge_proof(current_token[0], body["challenge"], instance_id, "account", online, capabilities)}
@@ -457,22 +460,103 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             raise AdapterError("SCHEMA_INVALID", 400)
         stream = adapter.send(principal, session_id, body.get("text", ""), attachment_ids=attachment_ids,
                               client_message_id=client_message_id)
+        frames = asyncio.Queue(maxsize=STREAM_QUEUE_MAXSIZE)
+        producer_closing = False
+
+        async def produce():
+            """在同一任务中持续迭代生成器，保持适配器超时上下文的归属稳定。"""
+            nonlocal producer_closing
+            try:
+                while True:
+                    event = await anext(stream, None)
+                    if event is None:
+                        await frames.put(_STREAM_END)
+                        producer_closing = True
+                        return
+                    await frames.put(event)
+                    if event.get("type") in {"done", "error"}:
+                        producer_closing = True
+                        return
+            except AdapterError as exc:
+                await frames.put(exc)
+                producer_closing = True
+                raise
+            except Exception as exc:
+                await frames.put(exc)
+                producer_closing = True
+                raise
+            finally:
+                # 生成器的 finally、超时上下文和 contextvar 必须与所有 anext 在同一任务退出。
+                await stream.aclose()
+
+        producer = asyncio.create_task(produce())
         # Authorization and binding checks run before committing response headers.
-        first = await anext(stream, None)
-        response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
+        response = None
+        pending = None
+
+        async def next_frame(*, heartbeat: bool) -> Any:
+            """同时观察队列和 producer，队列优先以保证已有帧不丢失。"""
+            nonlocal pending
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(frames.get())
+                if pending.done():
+                    item = pending.result()
+                    pending = None
+                    if isinstance(item, AdapterError):
+                        raise item
+                    if isinstance(item, BaseException):
+                        raise AdapterError("AGENT_STREAM_INTERRUPTED", 502) from item
+                    return item
+                # producer 可能已结束但仍有最后几帧；先让队列 getter 取得它们。
+                if frames.qsize():
+                    await asyncio.sleep(0)
+                    continue
+                if producer.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    pending = None
+                    if producer.cancelled():
+                        raise AdapterError("AGENT_STREAM_INTERRUPTED", 502)
+                    failure = producer.exception()
+                    if isinstance(failure, AdapterError):
+                        raise failure
+                    raise AdapterError("AGENT_STREAM_INTERRUPTED", 502) from failure
+                done, _ = await asyncio.wait(
+                    {pending, producer},
+                    timeout=STREAM_HEARTBEAT_SECONDS if heartbeat else None,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    await response.write(b"\n")
+
         try:
+            first = await next_frame(heartbeat=False)
+            response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
             await response.prepare(request)
-            if first is not None:
+            if first is not _STREAM_END:
                 await response.write((json.dumps(first) + "\n").encode())
-            async for event in stream:
+            event = first
+            while event is not _STREAM_END and event.get("type") not in {"done", "error"}:
+                event = await next_frame(heartbeat=True)
+                if event is _STREAM_END:
+                    break
                 await response.write((json.dumps(event) + "\n").encode())
             await response.write_eof()
             return response
         except AdapterError as exc:
+            if response is None:
+                raise
             await response.write((json.dumps({"type": "error", "code": exc.code}) + "\n").encode())
             return response
         finally:
-            await stream.aclose()
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            if not producer_closing:
+                producer.cancel()
+            # producer 的异常已经按队列顺序交付；这里只回收任务结果，避免重复写终态。
+            await asyncio.gather(producer, return_exceptions=True)
 
     async def attachment_create(request):
         if not adapter.descriptor()["capabilities"].get("attachments"):

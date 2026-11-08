@@ -72,6 +72,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_oai_core": False,
         "affects_configuration": False,
         "affects_measurements": False,
+        "affects_observer": False,
         "affects_android_kernel": False,
         "affects_hermes": False,
         "affects_dsh": False,
@@ -89,6 +90,9 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         return impact
 
     for f in changed_files:
+        if f in {"tools/observe-communication.py", "tools/test_observe_communication.py",
+                 "tools/audit-communication.py", "tools/test_audit_communication.py"}:
+            impact["affects_observer"] = True
         if f in {"tools/measure-communication.py", "tools/test_measure_communication.py"}:
             impact["affects_measurements"] = True
         for pattern in CORE_SECURITY_CONTRACT_PATTERNS:
@@ -174,9 +178,10 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
         ret = run_command([
             sys.executable, "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
-            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "-q",
+            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "tools/test_observe_communication.py", "tools/test_audit_communication.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
+            "--ignore=oai-core/tests/test_hermes_bridge_heartbeat.py",
             "--ignore=oai-core/tests/test_hermes_session_key_recovery.py",
             "--ignore=oai-core/tests/test_hermes_plugin_zero_config.py",
             "--ignore=oai-core/tests/test_hermes_native_origin.py",
@@ -235,6 +240,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             "oai-core/tests/test_hermes_plugin_zero_config.py",
             "oai-core/tests/test_hermes_dispatch_delivery.py",
             "oai-core/tests/test_hermes_communication_reliability.py",
+            "oai-core/tests/test_hermes_bridge_heartbeat.py",
             "oai-core/tests/test_communication_process_recovery.py",
             "oai-core/tests/test_interaction_pipeline.py",
         ]
@@ -261,6 +267,12 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     if impact["is_full_required"] or impact["affects_measurements"] or level == "full":
         print("\n--- 通信测量器统计、来源与隐私回归 ---")
         ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_measure_communication.py"])
+        if ret != 0:
+            return ret
+
+    if impact["affects_observer"] and not (impact["is_full_required"] or impact["affects_oai_core"] or level == "full"):
+        print("\n--- 通信只读观察器回归 ---")
+        ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_observe_communication.py", "tools/test_audit_communication.py"])
         if ret != 0:
             return ret
 
