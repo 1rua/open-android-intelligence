@@ -100,9 +100,12 @@ fun GatewayLoginScreen(
     LaunchedEffect(prefillContext, urlMatchesPrefill) {
         if (!urlMatchesPrefill) return@LaunchedEffect
         LoginGatewayPrefill.observe(prefillContext).collect { latest ->
-            if (latest != null && latest != url) {
-                url = latest
-                lastAppliedPrefill = latest
+            // 清空（导入失败回滚会把地址撤掉）与写入同样要同步，否则表单会继续
+            // 显示那次失败导入留下的地址，与「本机设置已恢复」的结论自相矛盾。
+            val next = latest.orEmpty()
+            if (next != url) {
+                url = next
+                lastAppliedPrefill = next
             }
         }
     }
