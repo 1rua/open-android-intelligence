@@ -97,7 +97,9 @@ internal class LiveUpdateNotifications(
     }
 }
 
-internal fun liveUpdateTag(target: ReplyNotificationTarget) = "agent-live-" + replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+internal fun liveUpdateTag(target: ReplyNotificationTarget) =
+    "agent-live-" + replyDigest(listOfNotNull(target.profileId, target.accountId, target.conversationId, target.agentId)
+        .joinToString("\u0000"))
 
 internal fun cancelLiveUpdateNotifications(context: Context) {
     val manager = context.getSystemService(NotificationManager::class.java)

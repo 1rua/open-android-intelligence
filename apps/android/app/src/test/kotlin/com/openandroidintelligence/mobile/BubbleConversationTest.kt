@@ -48,8 +48,8 @@ class BubbleConversationTest {
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
         val host = Host()
         val created = mutableListOf<WorkbenchController>()
-        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { id ->
-            controller(scope, host).also { it.openThread(id); created += it }
+        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { bubbleTarget ->
+            controller(scope, host).also { it.openThread(bubbleTarget.conversationId); created += it }
         }
         try {
             assertNull(workspace.open(target.copy(accountId = "foreign")))
@@ -68,7 +68,9 @@ class BubbleConversationTest {
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
         val host = Host()
         val main = controller(scope, host)
-        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { id -> controller(scope, host).also { it.openThread(id) } }
+        val workspace = BubbleConversationWorkspace("profile-a", "account-a") { bubbleTarget ->
+            controller(scope, host).also { it.openThread(bubbleTarget.conversationId) }
+        }
         try {
             main.openThread("main-thread")
             main.editDraft("主窗口草稿")

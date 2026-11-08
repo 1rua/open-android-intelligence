@@ -95,21 +95,43 @@ internal const val REPLY_CHANNEL_ID = "agent-task-replies"
 private const val REPLY_ACTION = "com.openandroidintelligence.mobile.OPEN_AGENT_REPLY"
 private const val TAG = "ReplyNotifications"
 
-internal data class ReplyNotificationTarget(val profileId: String, val accountId: String, val conversationId: String) {
+/**
+ * 一条回复提醒指向的账号、Agent 与会话。
+ *
+ * [agentId] 只有原生 `/agents` 会话才有：同一个账号下不同 Agent 的会话 ID 各自
+ * 独立，不带上 Agent 就会把两个 Agent 的同名会话当成同一个通知身份。平台旧帧
+ * 没有 Agent 概念，保持为 null，路由和摘要算法都与历史版本一致。
+ */
+internal data class ReplyNotificationTarget(
+    val profileId: String,
+    val accountId: String,
+    val conversationId: String,
+    val agentId: String? = null,
+) {
     fun bubbleIntent(context: Context): Intent = BubbleConversationActivity.intent(context, this)
     fun intent(context: Context): Intent = Intent(context, MainActivity::class.java)
         .setAction(REPLY_ACTION)
         .setData(Uri.Builder().scheme("oai-reply").authority("conversation")
-            .appendPath(profileId).appendPath(accountId).appendPath(conversationId).build())
+            .appendPath(profileId).appendPath(accountId).appendPath(conversationId)
+            .also { builder -> agentId?.let(builder::appendPath) }.build())
         .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+    /**
+     * 会话在账号内的唯一身份。
+     *
+     * 平台旧链路没有 Agent 维度，保持纯会话 ID，历史围栏的摘要才不变；原生会话
+     * 加上 Agent，避免同一个会话 ID 在另一个 Agent 下命中别人的去重记录。
+     */
+    internal fun identityKey(): String = if (agentId == null) conversationId else "$conversationId\u0000$agentId"
 
     companion object {
         fun from(intent: Intent): ReplyNotificationTarget? {
             val uri = intent.data ?: return null
             if (intent.action != REPLY_ACTION || uri.scheme != "oai-reply" || uri.host != "conversation") return null
             val parts = uri.pathSegments
-            if (parts.size != 3 || parts.any { it.isBlank() }) return null
-            return ReplyNotificationTarget(parts[0], parts[1], parts[2])
+            // 3 段是平台旧链路，4 段是原生 Agent 会话；其它形状一律不认。
+            if (parts.size !in 3..4 || parts.any { it.isBlank() }) return null
+            return ReplyNotificationTarget(parts[0], parts[1], parts[2], parts.getOrNull(3))
         }
     }
 }
@@ -249,7 +271,7 @@ internal class AndroidReplyNotificationPublisher(
     }
 
     private fun notificationTag(target: ReplyNotificationTarget) =
-        replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+        replyDigest(listOfNotNull(target.profileId, target.accountId, target.conversationId, target.agentId).joinToString("\u0000"))
 
     private fun userSelectedBubble(manager: NotificationManager, shortcutId: String, tag: String): Boolean {
         when (manager.bubblePreference) {
@@ -280,6 +302,15 @@ internal class ReplyCompletionObserver(
         ?: now().also { preferences.edit().putLong("first-enabled-at", it).commitOrLog(TAG) }
     private var nextPruneAt = Long.MIN_VALUE
 
+    /**
+     * 原生 Agent 会话 ID 只在一个 Agent 内唯一，提醒的持久围栏必须带上 Agent，
+     * 否则另一个 Agent 的同名会话会命中别人已消费的完成记录。平台旧帧没有这个
+     * 字段，目标保持三要素，历史摘要与路由都不变。
+     */
+    private fun target(payload: com.openandroidintelligence.gateway.schema.JsonValue.JObject, conversationId: String) =
+        ReplyNotificationTarget(profileId, accountId, conversationId,
+            JsonFields.string(payload, "agentId")?.takeIf { it.isNotBlank() })
+
     @Synchronized fun accept(event: GatewayEvent) {
         if (event.event !in REPLY_EVENTS) return
         val body = runCatching { JsonFields.obj(Json.parse(event.data)) }.getOrNull() ?: return
@@ -290,15 +321,16 @@ internal class ReplyCompletionObserver(
         pruneExpired()
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: return
         val conversationId = JsonFields.string(payload, "conversationId")?.takeIf { it.isNotBlank() } ?: return
+        val identity = target(payload, conversationId).identityKey()
         val generationId = JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() }
         val decoded = runCatching { GatewayEventDecoder.decode(event) }.getOrNull() ?: return
         if (generationId == null) {
-            acceptLegacy(event, decoded, payload, conversationId, occurredAt)
+            acceptLegacy(event, decoded, payload, conversationId, identity, occurredAt)
             return
         }
         // A generation-bearing event must never borrow a legacy round's body.
-        clearLegacy(conversationId, occurredAt)
-        val key = replyDigest("$conversationId\u0000$generationId")
+        clearLegacy(conversationId, identity, occurredAt)
+        val key = replyDigest("$identity\u0000$generationId")
         if (preferences.contains("done.$key")) return
         when (event.event) {
             "conversation.message.completed" -> {
@@ -319,7 +351,7 @@ internal class ReplyCompletionObserver(
             // Persist before posting: a replay must not revive a dismissed alert.
             // A denied permission consumes this completion instead of queuing old alerts.
             finish(key, occurredAt)
-            post(ReplyNotificationTarget(profileId, accountId, conversationId), generationId)
+            post(target(payload, conversationId), generationId)
         }
     }
 
@@ -331,19 +363,20 @@ internal class ReplyCompletionObserver(
         decoded: VerifiedConversationEvent,
         payload: com.openandroidintelligence.gateway.schema.JsonValue.JObject,
         conversationId: String,
+        identity: String,
         occurredAt: Long,
     ) {
-        val conversationKey = replyDigest(conversationId)
+        val conversationKey = replyDigest(identity)
         val activeKey = "legacy.current.$conversationKey"
         when (event.event) {
             "conversation.message.status" -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
-                val round = replyDigest("legacy\u0000$conversationId\u0000${status.messageId}\u0000${status.clientMessageId.value}")
+                val round = replyDigest("legacy\u0000$identity\u0000${status.messageId}\u0000${status.clientMessageId.value}")
                 if (preferences.contains("done.$round")) return
                 when (status.status) {
                     AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
                         if (preferences.getString(activeKey, null) != round) {
-                            clearLegacy(conversationId, occurredAt)
+                            clearLegacy(conversationId, identity, occurredAt)
                             preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commitOrLog(TAG)
                         }
                     }
@@ -353,7 +386,7 @@ internal class ReplyCompletionObserver(
                         finish(round, occurredAt)
                         if (active == round) removeLegacy(conversationKey)
                         if (status.status == AgentMessageStatus.COMPLETED && hasReply) {
-                            post(ReplyNotificationTarget(profileId, accountId, conversationId), "legacy:$round")
+                            post(target(payload, conversationId), "legacy:$round")
                         }
                     }
                 }
@@ -363,7 +396,7 @@ internal class ReplyCompletionObserver(
                 val round = preferences.getString(activeKey, null) ?: return
                 preferences.edit().putLong("reply.$round", occurredAt).commitOrLog(TAG)
             }
-            "conversation.generation.cancelled" -> clearLegacy(conversationId, occurredAt)
+            "conversation.generation.cancelled" -> clearLegacy(conversationId, identity, occurredAt)
         }
     }
 
@@ -374,8 +407,8 @@ internal class ReplyCompletionObserver(
         }
     }
 
-    private fun clearLegacy(conversationId: String, occurredAt: Long) {
-        val conversationKey = replyDigest(conversationId)
+    private fun clearLegacy(conversationId: String, identity: String, occurredAt: Long) {
+        val conversationKey = replyDigest(identity)
         val round = preferences.getString("legacy.current.$conversationKey", null) ?: return
         finish(round, occurredAt)
         removeLegacy(conversationKey)

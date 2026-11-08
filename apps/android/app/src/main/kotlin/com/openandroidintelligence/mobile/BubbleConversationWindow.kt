@@ -22,23 +22,34 @@ internal class BubbleConversationWindow(private val savedState: SavedStateHandle
     var notice by mutableStateOf<String?>(null)
         private set
 
-    private var owner by mutableStateOf<WorkbenchController?>(null)
+    private var owner by mutableStateOf<Any?>(null)
     private var launchTarget by mutableStateOf<ReplyNotificationTarget?>(null)
     private var open: (ReplyNotificationTarget) -> WorkbenchController? = { null }
     private var release: (WorkbenchController) -> Unit = {}
     private var creationJob: Job? = null
     private var bindingRevision = 0L
 
+    /**
+     * [session] 只用来识别“会话身份是否换了”。
+     *
+     * 平台旧链路传主账号工作台实例；原生会话传目标本身——气泡自己持有独立
+     * 控制器，不能因为主界面换了 Agent 就丢掉正在写的气泡草稿。
+     */
     fun bind(
-        owner: WorkbenchController?,
+        session: Any?,
         target: ReplyNotificationTarget?,
         open: (ReplyNotificationTarget) -> WorkbenchController?,
         release: (WorkbenchController) -> Unit,
     ) {
         val routeChanged = savedState.get<String>(PROFILE) != target?.profileId ||
             savedState.get<String>(ACCOUNT) != target?.accountId ||
-            savedState.get<String>(CONVERSATION) != target?.conversationId
-        if (routeChanged || this.owner !== owner) {
+            savedState.get<String>(CONVERSATION) != target?.conversationId ||
+            savedState.get<String>(AGENT) != target?.agentId
+        // 首次绑定要主动进入通知指向的会话；之后再绑定不再抢占用户的导航。
+        val firstBind = savedState.get<String>(CONVERSATION) == null
+        // 用值相等而不是引用相等：旋转后重建的窗口拿到的是同一个目标的新实例，
+        // 草稿与上传必须保留；旧链路的控制器没有自定义 equals，行为不变。
+        if (routeChanged || this.owner != session) {
             bindingRevision++
             creationJob?.cancel()
             creationJob = null
@@ -50,15 +61,19 @@ internal class BubbleConversationWindow(private val savedState: SavedStateHandle
         savedState[PROFILE] = target?.profileId
         savedState[ACCOUNT] = target?.accountId
         savedState[CONVERSATION] = target?.conversationId
-        this.owner = owner
+        savedState[AGENT] = target?.agentId
+        this.owner = session
         launchTarget = target
         this.open = open
         this.release = release
-        selectedConversationId?.let { if (owner != null) openSelected(it) }
+        // 原生气泡需要自己的控制器才能读取会话列表；首次绑定直接进入通知指向的会话。
+        // 之后用户回到列表是明确的导航选择，不会再被绑回聊天页。
+        if (firstBind && session != null && target?.agentId != null) selectId(target.conversationId)
+        selectedConversationId?.let { if (session != null) openSelected(it) }
     }
 
-    fun isBoundTo(owner: WorkbenchController?, target: ReplyNotificationTarget?): Boolean =
-        this.owner === owner && launchTarget == target
+    fun isBoundTo(session: Any?, target: ReplyNotificationTarget?): Boolean =
+        this.owner == session && launchTarget == target
 
     fun showBrowser() = selectId(null)
 
@@ -71,7 +86,7 @@ internal class BubbleConversationWindow(private val savedState: SavedStateHandle
 
     fun createThread(create: suspend (ReplyNotificationTarget) -> ReplyNotificationTarget) {
         val target = launchTarget ?: return
-        val history = owner ?: return
+        val session = owner ?: return
         if (creatingThread) return
         val revision = bindingRevision
         creatingThread = true
@@ -79,9 +94,9 @@ internal class BubbleConversationWindow(private val savedState: SavedStateHandle
         creationJob = viewModelScope.launch {
             try {
                 val created = create(target)
-                if (bindingRevision == revision && owner === history && launchTarget == target) {
+                if (bindingRevision == revision && owner === session && launchTarget == target) {
                     select(created.conversationId)
-                    history.refreshThreads()
+                    controller?.refreshThreads()
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -120,5 +135,6 @@ internal class BubbleConversationWindow(private val savedState: SavedStateHandle
         const val PROFILE = "bubbleLaunchProfile"
         const val ACCOUNT = "bubbleLaunchAccount"
         const val CONVERSATION = "bubbleLaunchConversation"
+        const val AGENT = "bubbleLaunchAgent"
     }
 }

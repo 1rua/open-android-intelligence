@@ -246,17 +246,37 @@ class GatewayRuntime(
                 ?.value?.firstOrNull { it.id.value == target.conversationId }?.title
         })
     private var bubbleWorkspace: BubbleConversationWorkspace? = null
+    /**
+     * 原生模式下气泡的“新建会话”入口。
+     *
+     * 旧 `/conversations` 路由在 Core 上不存在，创建只能交给当前 Agent；未装配时
+     * 为 null，气泡沿用旧链路的实现。
+     */
+    @Volatile private var bubbleThreadCreator: (suspend (ReplyNotificationTarget) -> ReplyNotificationTarget?)? = null
+    /** 切换 Agent 后要补做的一次会话导航；只保留用户最后一次点击。 */
+    @Volatile private var pendingNotificationNavigation: ReplyNotificationTarget? = null
 
     internal fun isBubbleTargetCurrent(target: ReplyNotificationTarget): Boolean {
         val connected = _phase.value as? ConnectionPhase.Connected ?: return false
-        return connectedAccountId == target.accountId &&
-            profileIdFor(connected.gatewayUrl, connected.username) == target.profileId &&
-            bubbleWorkspace?.accepts(target) == true
+        if (connectedAccountId != target.accountId) return false
+        if (profileIdFor(connected.gatewayUrl, connected.username) != target.profileId) return false
+        if (bubbleWorkspace?.accepts(target) != true) return false
+        // 原生会话 ID 只在同一个 Agent 内唯一：目标带 Agent 时，该 Agent 必须在
+        // 本账号当前发现到的列表里，气泡才不会打开一个已经不存在的 Agent 的会话。
+        return target.agentId?.let { id ->
+            _nativeAgents.value?.state?.value?.agents?.any { it.id == id } == true
+        } ?: true
     }
 
     /** A new bubble conversation never consumes the main window's draft or selection. */
     internal suspend fun createBubbleThread(target: ReplyNotificationTarget): ReplyNotificationTarget {
         check(isBubbleTargetCurrent(target)) { "BUBBLE_SESSION_UNAVAILABLE" }
+        // 原生 Agent 会话不能走旧 `/conversations` 路由，创建必须由该 Agent 完成。
+        bubbleThreadCreator?.invoke(target)?.let { created ->
+            check(isBubbleTargetCurrent(created)) { "BUBBLE_SESSION_CHANGED" }
+            _controller.value?.refreshThreads()
+            return created
+        }
         val owner = bubbleWorkspace
         val http = checkNotNull(activeHttpClient) { "BUBBLE_SESSION_UNAVAILABLE" }
         val created = withContext(Dispatchers.IO) {
@@ -342,6 +362,18 @@ class GatewayRuntime(
     internal fun openReplyNotification(target: ReplyNotificationTarget): Boolean {
         val connected = _phase.value as? ConnectionPhase.Connected ?: return false
         if (target.accountId != connectedAccountId || target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return false
+        // 原生会话只属于某个 Agent；点开提醒前先把主界面切到该 Agent，
+        // 否则同一个会话 ID 会在另一个 Agent 下打开错误的会话。
+        if (target.agentId != null) {
+            val native = _nativeAgents.value ?: return false
+            if (native.state.value.selectedAgentId != target.agentId) {
+                if (native.state.value.agents.none { it.id == target.agentId }) return false
+                native.selectAgent(target.agentId)
+                // Agent 切换会重建工作台；本次导航由切换完成后的同一目标重试。
+                pendingNotificationNavigation = target
+                return true
+            }
+        }
         val workbench = _controller.value ?: return false
         workbench.openThread(target.conversationId)
         return true
@@ -2106,12 +2138,145 @@ class GatewayRuntime(
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
+                // 原生会话的正文与状态只存在于宿主账本：提醒层唯一的来源就是这里
+                // 已经校验、已落盘的事件。主界面、气泡和后台读取共用同一个仓储，
+                // 因此同一条回复只会在一个地方拿到，不会因为界面个数重复提醒。
+                onEventPublished = { agentId, event ->
+                    if (agentId == agent.id && _nativeAgents.value === discoveryOwner) {
+                        com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
+                            accountId = session.accountId, agentId = agent.id, event = event,
+                        )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
+                    }
+                },
             )
         }
         fun restoreNativeReads() {
             if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored() }
         }
         restartNativeReads = ::restoreNativeReads
+
+        /**
+         * 原生会话事件的提醒出口。
+         *
+         * 主界面、气泡和后台读取共用同一个 Agent 仓储，所以同一条回复只会经过这里
+         * 一次；提醒层再做一层持久围栏，进程重启后的重放也不会重复提醒。
+         */
+        fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
+            if (activeHttpClient !== http || sessionJob !== ownedJob) return
+            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
+                accountId = session.accountId, agentId = agentId, event = event,
+            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
+        }
+
+        /** 气泡自己的仓储：同一 Agent、同一份镜像，但拥有独立的读取者身份与事件订阅。 */
+        fun bubbleRepository(
+            agent: com.openandroidintelligence.gateway.agents.CoreAgent,
+            active: java.util.concurrent.atomic.AtomicReference<String?>,
+        ): com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository {
+            // 每个气泡控制器各有一个读取者：共用游标所有权会让两边的 ACK 互相推翻。
+            val observer = "${session.deviceId}:${session.pairingGeneration}:bubble:" +
+                java.util.UUID.randomUUID().toString().replace("-", "")
+            return com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
+                client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
+                currentAgent = { _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agent.id } ?: agent },
+                activeConversationId = active::get,
+                parentScope = sessionScope,
+                supportsApprovalCards = "agent-approval-cards-v1" in conversationUi,
+                supportsGenerationCancel = generationCancelCapability.agreed,
+                approvalAudit = decisionAudit,
+                organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
+                    context, conversationScope, localDocumentKeyProvider),
+                storeForAgent = { current ->
+                    com.openandroidintelligence.mobile.conversations.NativeConversationStoreView(nativeStore(current), observer)
+                },
+                onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
+            )
+        }
+
+        /**
+         * 原生模式下气泡的完整工作台：同一份镜像、同一套会话组件，但拥有自己的
+         * 仓储、草稿与导航状态，绝不改动主界面正在看的会话或草稿。
+         */
+        fun buildNativeBubbleWorkbench(target: ReplyNotificationTarget): WorkbenchController? {
+            val agentId = target.agentId ?: return null
+            val agents = _nativeAgents.value?.state?.value?.agents.orEmpty()
+            val agent = agents.firstOrNull { it.id == agentId } ?: return null
+            val ownerScope = com.openandroidintelligence.mobile.conversations.NativeLocalPartitions
+                .partitionScope(conversationScope, agentId)
+            val media = com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache(
+                context, conversationScope, http, localDocumentKeyProvider, nativeAgentId = agentId)
+            val bubbleDownloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(
+                context, media, ownerScope, keyProvider = localDocumentKeyProvider)
+            val staging = attachmentStagingStore(endpoint.baseUrl, ownerScope.accountId, installationId())
+            val recovery = com.openandroidintelligence.mobile.conversations.EncryptedAttachmentRecovery(
+                context, ownerScope, localDocumentKeyProvider)
+            val bubbleAttachments = BubbleAttachmentDraftCoordinator(
+                GatewayAttachmentDraftCoordinator(AttachmentUploader(HttpAttachmentTransport(http)),
+                    com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
+                        onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") }),
+                    sessionScope, staging, recovery = recovery))
+            // 仓储只认“当前被这个气泡打开的会话”，切换会话时由控制器通知它。
+            val active = java.util.concurrent.atomic.AtomicReference(target.conversationId)
+            val repository = bubbleRepository(agent, active)
+            return WorkbenchController(
+                scope = sessionScope,
+                repository = repository,
+                catalogRepository = com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
+                    currentAgent = { _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId } },
+                    negotiated = "agent-command-catalog-v1" in conversationUi,
+                ),
+                restoreLastThread = false,
+                // 气泡与主界面共享同一份会话数据与渲染组件，但草稿和导航各自独立。
+                canReadConversations = { _nativeAgents.value?.state?.value?.agents?.any { it.id == agentId } == true },
+                scopeFactory = { ownerScope },
+                attachmentCoordinator = bubbleAttachments,
+                onActiveThreadChanged = { threadId ->
+                    active.set(threadId)
+                    // 让事件读取跟着气泡当前打开的会话走，而不是一直停在启动时那个。
+                    repository.activeConversationChanged()
+                },
+                supportsApprovalCards = approvalClient != null && agent.capabilities.approvals,
+                supportsConversationManagement = true,
+                supportsConversationDelete = agent.capabilities.delete,
+                supportsConversationArchive = agent.capabilities.archive,
+                supportsConversationUnarchive = false,
+                supportsConversationRename = agent.capabilities.rename,
+                organizationStoredLocally = true,
+                authoritativeMessageIds = true,
+                languageCode = java.util.Locale.getDefault().toLanguageTag(),
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                externalBusyThreadIds = {
+                    _controller.value?.ownedBusyThreadIds.orEmpty()
+                },
+                streamHealthSource = repository,
+                onClosed = {
+                    bubbleAttachments.close(sessionScope)
+                    // 气泡真正关闭后不再为该会话长轮询：读取者身份只属于这个气泡。
+                    repository.close()
+                },
+                media = media,
+                downloads = bubbleDownloads,
+            ).also { it.openThread(target.conversationId) }
+        }
+
+        // 原生模式下气泡的“新建会话”必须交给当前 Agent：Core 没有旧会话路由。
+        bubbleThreadCreator = { target ->
+            val agentId = target.agentId
+            if (!nativeAgentSessions || agentId == null) null
+            else {
+                val agent = _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId }
+                if (agent == null) null
+                else {
+                    val created = withContext(Dispatchers.IO) {
+                        com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
+                            .create(agent, requestId = "bubble_" + java.util.UUID.randomUUID().toString().replace("-", ""))
+                    }
+                    _controller.value?.refreshThreads()
+                    target.copy(conversationId = created.id)
+                }
+            }
+        }
 
         var workbenchAgentId: String? = null
         suspend fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
@@ -2304,6 +2469,13 @@ class GatewayRuntime(
                             }
                             _controller.value = replacement
                             _operationNotice.compareAndSet(WORKBENCH_RECOVERY_NOTICE, null)
+                            // 提醒在切换 Agent 期间到达：新工作台就绪后补做那一次导航。
+                            pendingNotificationNavigation?.let { pending ->
+                                if (pending.agentId == selected) {
+                                    pendingNotificationNavigation = null
+                                    replacement.openThread(pending.conversationId)
+                                }
+                            }
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (cause: Exception) {
                             logConnectionFailure(InitializationStage.WORKBENCH.name, "WORKBENCH_RECOVERY_FAILED", cause)
@@ -2346,8 +2518,11 @@ class GatewayRuntime(
         }
         clearBubbleWorkTracking()
         bubbleWorkspace?.close()
-        bubbleWorkspace = BubbleConversationWorkspace(profileId, session.accountId) { conversationId ->
+        bubbleWorkspace = BubbleConversationWorkspace(profileId, session.accountId) { target ->
             if (activeHttpClient !== http || sessionJob !== ownedJob || !ownedJob.isActive) null
+            // 原生 Agent 会话没有旧 `/conversations` 路由：气泡直接复用该 Agent 的
+            // 原生仓储与镜像，界面组件仍是同一套工作台。
+            else if (nativeAgentSessions && target.agentId != null) buildNativeBubbleWorkbench(target)
             else {
                 val bubbleStatus = com.openandroidintelligence.gateway.events.EventStreamStatusSink()
                 val bubbleHttp = GatewayHttpClient(
@@ -2359,7 +2534,7 @@ class GatewayRuntime(
                     handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
                     sessionRenewal = renewal,
                 )
-                createBubbleWorkbench(sessionScope, conversationScope, conversationId, bubbleHttp, bubbleStatus,
+                createBubbleWorkbench(sessionScope, conversationScope, target.conversationId, bubbleHttp, bubbleStatus,
                     approvalClient, generationCancelCapability, conversationUi.toSet(),
                     com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
                     mediaCache, downloads,
@@ -2445,13 +2620,34 @@ class GatewayRuntime(
                 }
             },
         )
-        val notificationReconciler = if (generationCancelCapability.agreed) {
-            NotificationConversationReconciler(nativeConversationNotifications, ConversationClient(platformHttp))
+        val notificationReconciler = if (nativeAgentSessions) null
+            else if (generationCancelCapability.agreed) {
+                NotificationConversationReconciler(nativeConversationNotifications, ConversationClient(platformHttp))
+            } else null
+        // 原生会话的终态核对走 `/agents` 自己的 generation 与 history：旧
+        // `/conversations` 路由在 Core 上不存在，拿它核对只会一直失败。
+        val nativeNotificationReconciler = if (nativeAgentSessions) {
+            com.openandroidintelligence.mobile.conversations.NativeNotificationReconciler(
+                nativeConversationNotifications,
+                currentTurn = { agentId, conversationId ->
+                    _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId }?.let { agent ->
+                        com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
+                            .currentGeneration(agent, conversationId)
+                            ?.let { com.openandroidintelligence.mobile.conversations.NativeCurrentTurn(it.generationId, it.state) }
+                    }
+                },
+                history = { agentId, conversationId ->
+                    _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId }?.let { agent ->
+                        com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
+                            .history(agent, conversationId)
+                    }.orEmpty()
+                },
+            )
         } else null
         suspend fun reconcileNotifications(force: Boolean = false) {
             if (sessionJob !== ownedJob || activeHttpClient !== http) return
             try {
-                if (force && "conversation-management-v1" in conversationUi) {
+                if (!nativeAgentSessions && force && "conversation-management-v1" in conversationUi) {
                     val presence = nativeConversationNotifications.capturePresenceReconciliation()
                     if (presence != null && presence.revisions.isNotEmpty()) {
                         val conversationPage = workbenchRepository.completeConversations(conversationScope)
@@ -2460,6 +2656,7 @@ class GatewayRuntime(
                     }
                 }
                 notificationReconciler?.reconcileActive(force)
+                nativeNotificationReconciler?.reconcileActive(force)
             } catch (cancelled: CancellationException) { throw cancelled }
               catch (_: Exception) { /* Keep the last projection and retry on the next recovery tick. */ }
         }
@@ -2475,7 +2672,8 @@ class GatewayRuntime(
         // repairs missed terminal frames even when no conversation UI is open.
         sessionScope.launch(Dispatchers.IO) {
             while (isActive && sessionJob === ownedJob) {
-                if (notificationReconciler?.hasPendingReconciliation() == true) reconcileNotifications()
+                if (notificationReconciler?.hasPendingReconciliation() == true ||
+                    nativeNotificationReconciler?.hasPendingReconciliation() == true) reconcileNotifications()
                 delay(5_000)
             }
         }
@@ -2664,6 +2862,8 @@ class GatewayRuntime(
         activeAttachmentStaging = null
         deviceRequestClient = null
         activeThread.set(null)
+        pendingNotificationNavigation = null
+        bubbleThreadCreator = null
         pairingGrants.unbind()
         _phase.value = ConnectionPhase.Disconnected
         _loginStatus.value = GatewayLoginStatus.SIGNED_OUT

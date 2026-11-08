@@ -207,13 +207,16 @@ internal class NativeConversationNotifications(
             activeProfile != expected.profileId || activeAccount != expected.accountId) return
         val allConversationIds = page.conversations.map { it.id.value }.toSet()
         expected.revisions.forEach { (target, revision) ->
+            // 原生 Agent 会话的列表来自另一个 Agent，本轮列表不能为它们作证。
+            if (target.agentId != null) return@forEach
             if (target.conversationId !in allConversationIds && sessionRevisions[target] == revision) retireTarget(target, now())
         }
     }
 
     private fun retireTarget(target: ReplyNotificationTarget, occurredAt: Long) {
         val preferences = preferencesFor(target.profileId, target.accountId)
-        check(preferences.edit().putLong("realtime.deleted." + replyDigest(target.conversationId), occurredAt).commit())
+        preferences.edit().putLong("realtime.deleted." + replyDigest(target.identityKey()), occurredAt)
+            .commitOrLog("NativeConversationNotifications")
         deletedTargets += target
         pending.remove(target)?.cancel()
         pendingRevisions.remove(target)
@@ -313,7 +316,7 @@ internal class NativeConversationNotifications(
             val preferences = preferencesFor(target.profileId, target.accountId)
             before.generationId?.let { generation ->
                 val durable = if (generation.startsWith("legacy:")) generation.removePrefix("legacy:")
-                    else replyDigest("${target.conversationId}\u0000$generation")
+                    else replyDigest("${target.identityKey()}\u0000$generation")
                 flushMetadata("${target.profileId}\u0000${target.accountId}")
                 // A later replay cannot promote this ended round back to active.
                 if (!preferences.contains("realtime.terminal.$durable")) {
@@ -385,8 +388,11 @@ internal class NativeConversationNotifications(
         }
         val firstEnabled = preferences.getLong("first-enabled-at", 0L)
         if (occurredAt < now() - RETENTION || firstEnabled > 0L && occurredAt < firstEnabled - 300_000L) return
-        val target = ReplyNotificationTarget(profileId, accountId, conversationId)
-        val deletedKey = "realtime.deleted." + replyDigest(conversationId)
+        // 原生 /agents 会话的 ID 只在某个 Agent 内唯一；不带 Agent 身份会把两个
+        // Agent 的同名会话合并成同一个通知与气泡。
+        val agentId = JsonFields.string(payload, "agentId")?.takeIf { it.isNotBlank() }
+        val target = ReplyNotificationTarget(profileId, accountId, conversationId, agentId)
+        val deletedKey = "realtime.deleted." + replyDigest(target.identityKey())
         if (event.event == "conversation.deleted" || event.event == "conversation.updated" && JsonFields.bool(payload, "deleted") == true) {
             retireTarget(target, occurredAt)
             return
@@ -406,9 +412,9 @@ internal class NativeConversationNotifications(
         pruneRealtimeMetadata(preferences, observerKey)
         val previous = _sessions.value.firstOrNull { it.target == target }
         val statusEvent = decoded as? VerifiedConversationEvent.MessageStatus
-        val legacyStatusRound = statusEvent?.let { "legacy:" + replyDigest("legacy\u0000$conversationId\u0000${it.messageId}\u0000${it.clientMessageId.value}") }
+        val legacyStatusRound = statusEvent?.let { "legacy:" + replyDigest("legacy\u0000${target.identityKey()}\u0000${it.messageId}\u0000${it.clientMessageId.value}") }
         val round = generation ?: legacyStatusRound ?: previous?.generationId
-        val durableKey = if (generation != null) replyDigest("$conversationId\u0000$generation")
+        val durableKey = if (generation != null) replyDigest("${target.identityKey()}\u0000$generation")
             else round?.removePrefix("legacy:")
         val roundKey = RoundKey(target, round)
         val knownRound = startedAt.containsKey(roundKey)
