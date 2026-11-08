@@ -96,6 +96,13 @@ class CoreAgentConversationRepository(
     private val approvalAudit: ApprovalDecisionAudit? = null,
     private val organizationStore: NativeConversationOrganizationStore = MemoryNativeConversationOrganizationStore(),
     private val storeForAgent: ((CoreAgent) -> NativeConversationStore)? = null,
+    /**
+     * 原生会话事件到达提醒层的唯一出口。
+     *
+     * Core 的平台事件库里没有原生会话的正文与状态，完成提醒只能来自这里已经
+     * 校验过的事件；回调只传递事实，去重、落盘围栏和发布仍由提醒层统一负责。
+     */
+    private val onEventPublished: (String, VerifiedConversationEvent) -> Unit = { _, _ -> },
     private val nativeRetryJitter: (Long) -> Long = { base ->
         kotlin.random.Random.nextLong(base * 4 / 5, (base * 6 / 5).coerceAtMost(60_000) + 1)
     },
@@ -149,6 +156,8 @@ class CoreAgentConversationRepository(
 
     private suspend fun publishEvent(agentId: String, event: VerifiedConversationEvent) {
         _events.emit(AgentEvent(agentId, event))
+        // 通知层只关心事实，不参与本机镜像写入；回调异常不能打断 UI 事件流。
+        runCatching { onEventPublished(agentId, event) }
         GatewayLog.protocolEvidence("T7.event_emitted", mapOf("agentId" to agentId,
             "eventId" to event.eventId, "eventType" to event.javaClass.simpleName))
     }
@@ -346,10 +355,32 @@ class CoreAgentConversationRepository(
     // Repository 的 client、parentScope 和 store 已固定账号；每个 Agent/会话各有一个读取所有者。
     private val eventSyncOwners = ConcurrentHashMap<Pair<String, String>, EventSyncOwner>()
 
-    private fun eventSyncNeeded(key: Pair<String, String>): Boolean =
-        currentAgent()?.id == key.first && activeConversationId() == key.second ||
+    /**
+     * 永久停止这个仓储的后台读取。
+     *
+     * 主工作台的长生命周期仓储不需要它；气泡关闭后如果继续按会话长轮询，
+     * 关闭的气泡会一直占着网络与镜像锁，账号退出时才被连带清理。
+     */
+    @Synchronized fun close() {
+        closed = true
+        eventSyncOwners.values.forEach { it.job.cancel() }
+        eventSyncOwners.clear()
+        synchronized(recoveryJobs) {
+            recoveryJobs.values.forEach { it.cancel() }
+            recoveryJobs.clear()
+            turns.values.forEach { it.state = GenerationState.CANCELLED }
+            turns.clear()
+            recoveringTurns.clear()
+            detachedRecoveringTurns.clear()
+        }
+    }
+
+    @Volatile private var closed = false
+
+    private fun eventSyncNeeded(key: Pair<String, String>): Boolean = !closed &&
+        (currentAgent()?.id == key.first && activeConversationId() == key.second ||
             turns.containsKey(key) || recoveringTurns.containsKey(key) || hasDetachedRecovery(key) ||
-            ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key)
+            ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key))
 
     @Synchronized
     private fun restartEventSync(wakeup: Boolean = false) {
