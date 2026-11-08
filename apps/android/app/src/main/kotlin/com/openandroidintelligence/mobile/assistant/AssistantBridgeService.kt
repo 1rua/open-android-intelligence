@@ -26,7 +26,9 @@ class AssistantBridgeService : Service() {
         val command = b.getString("command") ?: return@Handler true
         if (command == "connect") {
             if (clients.size >= 4 && !clients.containsKey(reply.binder)) return@Handler true
-            val client = Client(reply,UUID.randomUUID().toString(),AssistantClientScope(runtime.connectedAccountId))
+            val scope = AssistantClientScope(runtime.connectedAccountId)
+            scope.bind(runtime.connectedAccountId)
+            val client = Client(reply,UUID.randomUUID().toString(),scope)
             clients[reply.binder] = client
             runCatching { reply.binder.linkToDeath({ handler.post { clients.remove(reply.binder) } },0) }
             publish(client)
@@ -35,10 +37,8 @@ class AssistantBridgeService : Service() {
         val client = clients[reply.binder] ?: return@Handler true
         if (b.getString("token") != client.token) return@Handler true
         if (command == "disconnect") { clients.remove(reply.binder); return@Handler true }
-        if (command == "consent") {
-            if (runtime.controller.value != null) client.scope.consentTo(runtime.connectedAccountId)
-            publish(client); return@Handler true
-        }
+        // 旧版客户端仍可能发送 consent；账号绑定闸门下它只是重新绑定当前账号，不再授予额外权限。
+        if (command == "consent") { bindCurrentAccount(client); publish(client); return@Handler true }
         if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
         val controller = runtime.controller.value ?: return@Handler true
         try {
@@ -91,26 +91,40 @@ class AssistantBridgeService : Service() {
             controller.state.collect { clients.values.toList().forEach { publish(it) } }
         } }
     }
+    /**
+     * 账号可用即绑定：会话恢复后把客户端接到当前账号。
+     * 已绑定到另一个账号时保持失败关闭，等客户端重新 connect，避免旧界面继续读到新账号的内容。
+     */
+    private fun bindCurrentAccount(client: Client) {
+        if (runtime.controller.value == null) return
+        val connectedAccountId = runtime.connectedAccountId
+        if (client.scope.accountId == null || client.scope.accountId == connectedAccountId) {
+            client.scope.bind(connectedAccountId)
+        }
+    }
     private fun publish(client: Client, error: String? = null) {
         val state = runtime.controller.value?.state?.value
-        val consent = client.scope.canShare(runtime.connectedAccountId)
-        val connected = runtime.controller.value != null && client.scope.canConsent(runtime.connectedAccountId)
+        bindCurrentAccount(client)
+        val shared = client.scope.canShare(runtime.connectedAccountId)
+        // 已绑定到另一个账号的客户端不算可用连接：旧界面必须先重连，不能读到新账号的状态。
+        val connected = runtime.controller.value != null && runtime.connectedAccountId != null &&
+            client.scope.accountId == runtime.connectedAccountId
         val threads = (state?.threads as? Loadable.Ready)?.value.orEmpty()
         val rows = (state?.timeline as? Loadable.Ready)?.value.orEmpty().takeLast(40)
         // 外观偏好随状态一起下发：助理进程与主进程各自缓存 SharedPreferences，
         // 跨进程写入不会可靠地让对方失效，只有走同一条状态通道才是进程安全的。
         val appearance = (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.value
-        val payload = Json.canonical(Json.of(mapOf("connected" to connected,"consent" to consent,
+        val payload = Json.canonical(Json.of(mapOf("connected" to connected,"consent" to shared,
             "appearance" to mapOf(
                 "theme" to appearance.theme.name,
                 "dynamicColor" to appearance.dynamicColor,
                 "palette" to appearance.palette.name,
                 "reduceMotion" to appearance.reduceMotion,
             ),
-            "draft" to if (consent) state?.draft else "","title" to if (consent) state?.activeThreadTitle else "",
+            "draft" to if (shared) state?.draft else "","title" to if (shared) state?.activeThreadTitle else "",
             "notice" to (error ?: state?.notice),"generation" to state?.generation?.name,
-            "threads" to if (consent) threads.take(100).map { mapOf("id" to it.id.value,"title" to it.title) } else emptyList<Any>(),
-            "messages" to if (consent) rows.map { mapOf("id" to it.key,"sender" to it.sender,"text" to it.text.take(4000),"streaming" to it.isStreaming,
+            "threads" to if (shared) threads.take(100).map { mapOf("id" to it.id.value,"title" to it.title) } else emptyList<Any>(),
+            "messages" to if (shared) rows.map { mapOf("id" to it.key,"sender" to it.sender,"text" to it.text.take(4000),"streaming" to it.isStreaming,
                 "attachments" to it.attachments.map { a -> a.filename }) } else emptyList<Any>())))
         runCatching { client.reply.send(Message.obtain().apply { data = Bundle().apply { putInt("version",1); putString("token",client.token); putString("state",payload) } }) }
             .onFailure { clients.remove(client.reply.binder) }
