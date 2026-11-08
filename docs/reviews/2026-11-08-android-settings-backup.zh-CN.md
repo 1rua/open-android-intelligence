@@ -22,7 +22,7 @@
 | 统一序列化与恢复机制 | 单一 `SettingsBackupCodec` + 单一 `SettingsBackupCoordinator` | —— |
 | 旧字段迁移、未知字段忽略并记诊断 | `SettingsBackupSchema.MIGRATIONS`、`ignoredFields` | `unknownSectionsAndFieldsAreReportedNotApplied` |
 | 导入前格式/版本/合法性校验 | 外层 `decode` + 各节 `decode`（闭集/范围/地址/唯一性） | `invalidValuesRejectTheWholeFile`、`brokenJsonAndMissingMetadata…` |
-| 失败不破坏原配置（快照回滚） | `SettingsBackupCoordinator.Snapshot.restore()` | `corruptFileLeavesEveryStoreUntouched` |
+| 失败不破坏原配置（快照回滚） | `SettingsBackupCoordinator.Snapshot.restore()` 返回未恢复清单 | `corruptFileLeavesEveryStoreUntouched`、`aRollbackThatCannotBeCompletedIsReportedAsPartialInsteadOfSuccess` |
 | 重复导入无副作用 | 每步先比现值再写 | `importingTheSameFileTwiceWritesNothingTheSecondTime` |
 | 导入后刷新 UI 与运行时 | `refreshThreads()`、`reloadDebounceSettings()`、Compose 状态流 | 代码路径 + 单测 |
 | 离线可用 | 只读写本地权威，没有网络调用 | `connectionAddressIsRestorableOfflineAndNeverContainsCredentials` |
@@ -34,6 +34,16 @@
 - **开发者信任模式**：原生插件共享宿主进程与 UID，属于安全红线，永不导出。
 - **主动推送 endpoint**：由 Core 认证后动态发现，需要登录态，不是本地偏好；只迁移范围与容量。
 - **引导完成状态**：新设备首次启动应看到引导，迁移它会跳过部署教程。
+
+## 代码评审（Codex）处理记录
+
+| 评审意见 | 核实结论 | 处理 |
+|---|---|---|
+| P1 导入侧 64/32/256 条数上限会让「导出成功但导入失败」 | 属实：`currentOrganizations()` 等导出侧无上限 | 删除三处上限，只保留逐条合法性校验；新增 `exportsBeyondAnyArbitraryCountAreStillImportable`（80/40/400 条） |
+| P1 推送 `configure()` 的删事件/排撤销不可回滚，却承诺可回滚 | 属实：`DevicePushRuntime.configure()` 提交即删事件并 `mergeRevocations` | 该节移到导入序列最后并从回滚范围移除，注释写明「提交或原样不动」；不再调用虚假的 `configure(previous)` |
+| P2 回滚失败被 `runCatching` 吞掉，界面仍说已恢复 | 属实：`update()` 在 `localError` 非空时拒绝后续写入 | `restore()` 改为返回未恢复清单，界面据此列出具体项；新增 `aRollbackThatCannotBeCompletedIsReportedAsPartialInsteadOfSuccess` |
+| P2 老版本升级用户没有 prefill，导出会缺连接地址 | 属实 | `currentConnection()` 回落顺序：prefill → 运行时最近地址（新增 `GatewayRuntime.lastGatewayUrl()`）→ 已保存账号；新增 `connectionAddressFallsBackToSavedProfilesForUpgradedInstalls` |
+| P2 确认框内容不可滚动 | 属实（十类摘要 + 安全说明） | 正文加 `verticalScroll`；新增 `confirmationListsEverySectionAndKeepsTheSafetyWarningReachable` |
 
 ## 已知局限
 
@@ -53,7 +63,7 @@ LC_ALL=C.UTF-8 ./gradlew :app:testFullDebugUnitTest --tests 'com.openandroidinte
 LC_ALL=C.UTF-8 ./gradlew :platform-kernel:testDebugUnitTest :encrypted-store:testDebugUnitTest
 ```
 
-新增测试共 3 个类、22 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
+新增测试共 3 个类、26 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
 `SettingsBackupCoordinatorTest`（真实偏好与加密存储上的导出/导入/回滚/幂等）、
 `SettingsBackupScreenTest`（页面、禁用态、错误提示、环境缺失）。
 

@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.openandroidintelligence.mobile.SettingsPresentation
+import com.openandroidintelligence.mobile.settings.backup.ImportConfirmationDialogForTest
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -89,6 +90,34 @@ class SettingsBackupScreenTest {
         compose.onNodeWithText("当前环境无法读取设置。").assertIsDisplayed()
         compose.onNodeWithText("导出设置").assertDoesNotExist()
         compose.onNodeWithText("导入设置").assertDoesNotExist()
+    }
+
+    @Test
+    fun confirmationListsEverySectionAndKeepsTheSafetyWarningReachable() {
+        // 十类摘要 + 安全说明在短视口下必须可滚动：最后的提示也要能滚到并读到。
+        val summaries = (1..10).map { "第 $it 类设置：示例内容" }
+        compose.setContent {
+            MaterialTheme {
+                ImportConfirmationDialogForTest(
+                    pending = PendingImport(
+                        text = "{}",
+                        summaries = summaries,
+                        ignoredFields = listOf("settings.appearance.futureField"),
+                        exportedAt = "2026-11-08T10:00:00Z",
+                        appVersionName = "0.1.0-dev.1",
+                        localVersionName = "0.1.0-dev.2",
+                    ),
+                    onDismiss = {},
+                    onConfirm = {},
+                )
+            }
+        }
+        summaries.forEach { compose.onNodeWithText("• $it").performScrollTo().assertExists() }
+        compose.onNodeWithText(
+            "以下内容与当前一致的项目不会被重复写入；" +
+                "账号凭据、系统权限与设备能力总开关不会被导入修改。导入失败会自动恢复本机原设置。",
+        ).performScrollTo().assertExists()
+        compose.onNodeWithText("文件中有 1 个本版本不认识的字段，将被忽略。").performScrollTo().assertExists()
     }
 
     @Test

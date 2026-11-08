@@ -176,6 +176,54 @@ class SettingsBackupCodecTest {
     }
 
     @Test
+    fun exportsBeyondAnyArbitraryCountAreStillImportable() {
+        // 导出侧不设条数上限，导入侧就不能设：否则用户导出的文件自己读不回来。
+        val organizations = ConversationSection(
+            (1..80).map { index ->
+                ConversationOrganizationValue(
+                    profileId = index.toString().padStart(64, '0'),
+                    agentId = "agent-$index",
+                    sortMode = ConversationSection.SORT_UPDATED,
+                    customOrder = emptyList(),
+                    folders = emptyList(),
+                    assignments = emptyMap(),
+                )
+            },
+        )
+        val cores = MessageProcessingSection(
+            global = null,
+            cores = (1..40).associate { index ->
+                index.toString().padStart(64, '0') to DebounceValue(index * 100, extendWindow = true)
+            },
+        )
+        val policies = CapabilitiesSection(
+            (1..400).associate { index ->
+                "plugin:example:$index" to CapabilityPolicyValue(
+                    mode = com.openandroidintelligence.kernel.CapabilityAuthorizationMode.MANUAL,
+                    allowedSources = emptyList(),
+                    includeContent = true,
+                    smsScopeMode = com.openandroidintelligence.kernel.SmsScopeMode.ALL,
+                    smsKeywords = emptyList(),
+                )
+            },
+        )
+        val text = SettingsBackupCodec.encode(
+            sections = SettingsBackupSections(
+                conversation = organizations,
+                messageProcessing = cores,
+                capabilities = policies,
+            ).encode(),
+            appVersionName = "1.0.0",
+            appVersionCode = 1,
+            exportedAt = "2026-11-08T10:00:00Z",
+        )
+        val restored = SettingsBackupSections.decode(decode(text))
+        assertEquals(80, restored.conversation!!.organizations.size)
+        assertEquals(40, restored.messageProcessing!!.cores.size)
+        assertEquals(400, restored.capabilities!!.policies.size)
+    }
+
+    @Test
     fun invalidValuesRejectTheWholeFile() {
         fun reject(settings: Map<String, Any?>): Throwable {
             val text = Json.canonical(

@@ -10,6 +10,7 @@ import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.core.model.NotificationDeliveryMode
 import com.openandroidintelligence.core.model.NotificationFieldAccess
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.mobile.AndroidAccountProfileStore
 import com.openandroidintelligence.mobile.AppearancePreferences
@@ -166,8 +167,24 @@ class SettingsBackupCoordinator(
         return entries.takeIf { it.isNotEmpty() }?.let(::ConversationSection)
     }
 
-    private fun currentConnection(): ConnectionSection? =
-        LoginGatewayPrefill.read(context)?.let(::ConnectionSection)
+    /**
+     * 导出的 Core 地址：优先用预填偏好，没有就回落到本机已有连接信息。
+     *
+     * 老版本升级上来的用户还没走过「登录后记录预填」这一步，若只读预填偏好，
+     * 首次导出会静默缺掉整节——而这正是本功能承诺要迁移的东西。回落顺序：
+     * 预填偏好 → 运行时的最近地址（含已登出/离线镜像）→ 已保存账号的地址。
+     */
+    private fun currentConnection(): ConnectionSection? {
+        val candidates = sequenceOf(
+            LoginGatewayPrefill.read(context),
+            runtime?.lastGatewayUrl(),
+            profiles.list().firstOrNull()?.gatewayBaseUrl,
+        )
+        val url = candidates.filterNotNull()
+            .firstOrNull { it.isNotBlank() && GatewayEndpoint.parse(it) != null }
+            ?: return null
+        return ConnectionSection(url)
+    }
 
     private fun currentAgents(): AgentsSection? {
         val selected = profiles.list().mapNotNull { profile ->
@@ -270,14 +287,22 @@ class SettingsBackupCoordinator(
             applyAgents(sections.agents, applied, skipped)
             applyUpdates(sections.updates, applied)
             applyNotificationCollection(sections.notificationCollection, applied, skipped)
-            applyDevicePush(sections.devicePush, applied, skipped)
+            // 有破坏性副作用的两节放最后：能力的审计失败会留下拒绝屏障，推送收窄会
+            // 真正删掉排队事件。把两者放在「其余全部写完」之后，能回滚的失败先发生，
+            // 不必把不可撤销的结果当作可撤销来承诺。
             applyCapabilities(sections.capabilities, applied, skipped)
+            applyDevicePush(sections.devicePush, applied, skipped)
         } catch (failure: Exception) {
-            val restored = runCatching { snapshot.restore() }.isSuccess
+            // restore() 会返回**确认恢复失败**的清单；只有清单为空才敢说「已恢复原状」。
+            val unrestored = runCatching { snapshot.restore() }.getOrElse { listOf("设置") }
             return Result.failure(
                 SettingsBackupFormatException(
-                    if (restored) "导入失败，本机设置已恢复为导入前的状态。${readableFailure(failure)}"
-                    else "导入失败，且部分设置可能未恢复，请到各设置页核对。",
+                    if (unrestored.isEmpty()) {
+                        "导入失败，本机设置已恢复为导入前的状态。${readableFailure(failure)}"
+                    } else {
+                        "导入失败，且以下设置未能恢复原状，请到对应设置页核对：${unrestored.joinToString("、")}。" +
+                            readableFailure(failure)
+                    },
                 ),
             )
         }
@@ -577,33 +602,53 @@ class SettingsBackupCoordinator(
         val agents: Map<String, String?>,
         val updates: AppUpdateChannel,
         val notificationCollection: NotificationPolicySnapshot?,
-        val devicePush: PushConfiguration?,
         val capabilityPolicies: Map<String, com.openandroidintelligence.kernel.CapabilityPolicy>,
         val organizations: List<OrganizationSnapshot>,
     ) {
-        fun restore() {
-            appearance.let { previous ->
+        /**
+         * 把各类权威写回快照值，返回**确认未恢复**的项目名称。
+         *
+         * 返回空列表才等于「已恢复原状」。这里刻意不用 `runCatching {}.isSuccess` 以外的
+         * 简化写法：能力持有者在审计失败后会留下 `LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE`
+         * 拒绝屏障，后续替换会被它拒绝——那种情况必须如实报告，而不是吞掉异常后宣称已恢复。
+         * 同时也不绕开拒绝屏障（不直接改内存态）：屏障本身就是防止权限悄悄放开的保险。
+         */
+        fun restore(): List<String> {
+            val failed = mutableListOf<String>()
+            fun attempt(label: String, action: () -> Unit) {
+                if (runCatching(action).isFailure) failed += label
+            }
+            attempt("外观") {
+                val previous = appearance
                 if (this@SettingsBackupCoordinator.appearance.settings.value != previous) {
                     this@SettingsBackupCoordinator.appearance.applySettings(previous)
                 }
             }
             notificationsEnabled?.let { enabled ->
-                val settings = replyNotifications
-                if (settings != null && settings.enabled.value != enabled) settings.setEnabled(enabled)
+                attempt("通知提醒") {
+                    replyNotifications?.let { if (it.enabled.value != enabled) it.setEnabled(enabled) }
+                }
             }
-            DebouncePreferences(context).restore(debounce)
-            // 运行时手里还留着导入期间装载的批处理策略：回滚后必须按恢复值重新装载，
-            // 否则「已恢复」只对下次启动成立，当前会话仍在用被导入的值。
-            runtime?.reloadDebounceSettings()
-            if (preferredGateway == null) LoginGatewayPrefill.clear(context)
-            else LoginGatewayPrefill.write(context, preferredGateway)
-            agents.forEach { (profileId, agentId) ->
-                runCatching { profiles.saveSelectedAgent(profileId, agentId) }
+            attempt("消息处理") {
+                DebouncePreferences(context).restore(debounce)
+                runtime?.reloadDebounceSettings()
             }
-            if (appUpdates.readChannel() != updates) appUpdates.writeChannel(updates)
+            attempt("连接地址") {
+                val written = if (preferredGateway == null) LoginGatewayPrefill.clear(context)
+                else LoginGatewayPrefill.write(context, preferredGateway)
+                check(written) { "PREFERRED_GATEWAY_PERSISTENCE_FAILED" }
+            }
+            attempt("Agent 选择") {
+                agents.forEach { (profileId, agentId) -> profiles.saveSelectedAgent(profileId, agentId) }
+            }
+            attempt("应用更新") {
+                check(appUpdates.readChannel() == updates || appUpdates.writeChannel(updates)) {
+                    "UPDATE_CHANNEL_PERSISTENCE_FAILED"
+                }
+            }
             notificationCollection?.let { previous ->
-                runCatching {
-                    notificationPolicy.update(
+                attempt("通知采集范围") {
+                    val outcome = notificationPolicy.update(
                         NotificationPolicyUpdate(
                             expectedRevision = notificationPolicy.snapshot().revision,
                             packageIds = previous.packageIds,
@@ -611,18 +656,16 @@ class SettingsBackupCoordinator(
                             mode = previous.mode,
                         ),
                     )
+                    check(outcome is NotificationPolicyUpdateOutcome.Accepted) { "NOTIFICATION_POLICY_RESTORE_FAILED" }
                 }
             }
-            val previousPush = devicePush
-            val pushRuntime = this@SettingsBackupCoordinator.devicePush
-            if (previousPush != null && pushRuntime != null) {
-                runCatching { pushRuntime.configure(previousPush) }
-            }
-            if (runCatching { grants.state.value?.capabilityPolicies }.getOrNull() != capabilityPolicies) {
-                runCatching { grants.replaceCapabilityPolicies(capabilityPolicies) }
+            if (capabilityPolicies.isNotEmpty() || grants.state.value?.capabilityPolicies != capabilityPolicies) {
+                attempt("设备能力策略") {
+                    grants.replaceCapabilityPolicies(capabilityPolicies)
+                }
             }
             organizations.forEach { previous ->
-                runCatching {
+                attempt("会话排序") {
                     val store = organizationStore(previous.scope)
                     val current = store.read(previous.agentId)
                     if (current != previous.organization) {
@@ -630,7 +673,10 @@ class SettingsBackupCoordinator(
                     }
                 }
             }
-            if (runtime?.controller?.value != null) runtime.controller.value?.refreshThreads()
+            attempt("会话列表刷新") {
+                if (runtime?.controller?.value != null) runtime.controller.value?.refreshThreads()
+            }
+            return failed.distinct()
         }
     }
 
@@ -648,7 +694,6 @@ class SettingsBackupCoordinator(
         agents = profiles.list().associate { it.localProfileId to it.selectedAgentId },
         updates = appUpdates.readChannel(),
         notificationCollection = runCatching { notificationPolicy.snapshot() }.getOrNull(),
-        devicePush = runCatching { devicePush?.snapshot()?.configuration }.getOrNull(),
         capabilityPolicies = grants.state.value?.capabilityPolicies.orEmpty(),
         organizations = captureOrganizations(),
     )

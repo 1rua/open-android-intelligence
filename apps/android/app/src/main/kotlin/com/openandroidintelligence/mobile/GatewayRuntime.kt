@@ -1499,6 +1499,22 @@ class GatewayRuntime(
      * 只刷新运行时持有的批处理策略，不写任何偏好：写入早已由导入事务完成，
      * 这里再做一次覆盖就会把「回滚后应恢复的值」重新改掉。
      */
+    /**
+     * 本机已知的最近一个 Core 地址（设置备份的回落来源）。
+     *
+     * 依次看：当前连接/离线镜像 → 本地会话里的账号 → 运行时持久化的最近地址。
+     * 只读、不触发连接；全部缺失时返回 null，让调用方如实省略该节。
+     */
+    fun lastGatewayUrl(): String? {
+        val phase = _phase.value
+        (phase as? ConnectionPhase.Connected)?.gatewayUrl?.takeIf { it.isNotBlank() }?.let { return it }
+        (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl?.takeIf { it.isNotBlank() }?.let { return it }
+        (_localSessionState.value as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
+            ?.takeIf { it.isNotBlank() }?.let { return it }
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_LAST_GATEWAY, null)?.takeIf { it.isNotBlank() }
+    }
+
     fun reloadDebounceSettings() {
         val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
         _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))

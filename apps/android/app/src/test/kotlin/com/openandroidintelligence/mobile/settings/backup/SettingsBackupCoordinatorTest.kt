@@ -263,6 +263,51 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
+    fun connectionAddressFallsBackToSavedProfilesForUpgradedInstalls() {
+        // 老版本升级上来的用户没有偏好里的 prefill，但账号已经存了地址：不能因此导出缺节。
+        LoginGatewayPrefill.clear(context)
+        profiles.save(
+            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", "http://legacy.example", "alice", ""),
+            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
+        )
+        val exported = coordinator().export()
+        assertTrue(exported.json.contains("legacy.example"))
+        assertTrue(exported.json.contains("\"connection\""))
+        assertEquals(emptyList<String>(), coordinator().exportSummary().filter { it.startsWith("连接地址：null") })
+    }
+
+    @Test
+    fun aRollbackThatCannotBeCompletedIsReportedAsPartialInsteadOfSuccess() {
+        // 通知策略在导入与回滚时都拒绝：导入失败后，界面必须说「部分未恢复」，
+        // 而不是照抄一句「已恢复原状」。
+        val rejecting = object : com.openandroidintelligence.notification.control.NotificationPolicyPort {
+            override fun snapshot() = com.openandroidintelligence.notification.control.NotificationPolicySnapshot(
+                installed = true,
+                granted = true,
+                packageIds = listOf("com.example.mail"),
+                fieldAccess = com.openandroidintelligence.core.model.NotificationFieldAccess.METADATA,
+                mode = com.openandroidintelligence.core.model.NotificationDeliveryMode.ON_DEMAND,
+                revision = 7uL,
+            )
+            override fun observe() = kotlinx.coroutines.flow.flowOf(snapshot())
+            override fun update(request: com.openandroidintelligence.notification.control.NotificationPolicyUpdate) =
+                com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Rejected("TEST_REJECT")
+        }
+        val text = backupWith(
+            "notificationCollection" to mapOf(
+                "packageIds" to listOf("com.example.chat"),
+                "fieldAccess" to "CONTENT",
+                "mode" to "AUTO_SEND",
+            ),
+        )
+        val failure = coordinator(policy = rejecting).import(text).exceptionOrNull()
+        assertTrue(failure != null)
+        val message = failure!!.message.orEmpty()
+        assertTrue("应指出未恢复的项目：$message", message.contains("未能恢复"))
+        assertTrue("应列出具体项目：$message", message.contains("通知采集范围"))
+    }
+
+    @Test
     fun corruptFileLeavesEveryStoreUntouched() {
         appearance.applySettings(com.openandroidintelligence.mobile.AppearanceSettings(theme = ThemePreference.LIGHT))
         notifications.setEnabled(true)

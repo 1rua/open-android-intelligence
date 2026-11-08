@@ -6,6 +6,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -162,17 +164,31 @@ internal fun SettingsBackupContent(
     }
 }
 
+/** 供 UI 测试直接渲染确认框；生产代码只经由 [SettingsBackupRoute] 使用。 */
+@Composable
+internal fun ImportConfirmationDialogForTest(
+    pending: PendingImport,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) = ImportConfirmationDialog(pending, onDismiss, onConfirm)
+
 @Composable
 private fun ImportConfirmationDialog(
     pending: PendingImport,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val scroll = rememberScrollState()
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("导入这份设置？") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            // 十类摘要 + 安全说明在多语言/大字号/横屏下会超出对话框可用高度：
+            // 必须可滚动，否则用户看不到后面的「不会恢复什么」就点了确认。
+            Column(
+                modifier = Modifier.verticalScroll(scroll),
+                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            ) {
                 Text(
                     "来源：App ${pending.appVersionName}，导出于 ${readableTime(pending.exportedAt)}；" +
                         "本机 App ${pending.localVersionName}。",

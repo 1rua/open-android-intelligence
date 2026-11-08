@@ -173,7 +173,6 @@ data class MessageProcessingSection(
 
     companion object {
         private val KEY_PATTERN = Regex("[0-9a-f]{64}")
-        private const val MAX_CORES = 32
 
         fun decode(section: JsonValue.JObject): MessageProcessingSection {
             val global = BackupFields.objectOrNull(section, "global")
@@ -183,7 +182,6 @@ data class MessageProcessingSection(
                 if (!KEY_PATTERN.matches(key)) throw formatError("messageProcessing.cores", "key 必须是 Gateway 地址的 SHA-256。")
                 key to DebounceValue.decode(entry, "messageProcessing.cores[$key]")
             }
-            if (cores.size > MAX_CORES) throw formatError("messageProcessing.cores", "条目过多。")
             return MessageProcessingSection(global, cores)
         }
     }
@@ -235,7 +233,6 @@ data class ConversationSection(val organizations: List<ConversationOrganizationV
         const val SORT_UPDATED = "updated-desc"
         const val SORT_CUSTOM = "custom"
         private val SORT_MODES = setOf(SORT_UPDATED, SORT_CUSTOM)
-        private const val MAX_ENTRIES = 64
 
         fun decode(section: JsonValue.JObject): ConversationSection {
             val entries = BackupFields.objects(section, "organizations").orEmpty().map { entry ->
@@ -277,7 +274,6 @@ data class ConversationSection(val organizations: List<ConversationOrganizationV
                     assignments = assignments.filterValues { it in ids.toSet() },
                 )
             }
-            if (entries.size > MAX_ENTRIES) throw formatError("conversation.organizations", "条目过多。")
             val keys = entries.map { it.profileId to it.agentId }
             if (keys.size != keys.toSet().size) throw formatError("conversation.organizations", "含重复的账号/Agent 组合。")
             return ConversationSection(entries)
@@ -396,8 +392,6 @@ data class CapabilitiesSection(val policies: Map<String, CapabilityPolicyValue>)
     fun summary(): String = "设备能力：${policies.size} 项的授权模式与读取范围（总开关与系统权限不变）"
 
     companion object {
-        private const val MAX_POLICIES = 256
-
         fun decode(section: JsonValue.JObject): CapabilitiesSection {
             val policies = BackupFields.objects(section, "policies").orEmpty().associate { entry ->
                 val key = BackupFields.string(entry, "key")?.takeIf { it.isNotBlank() }
@@ -406,7 +400,6 @@ data class CapabilitiesSection(val policies: Map<String, CapabilityPolicyValue>)
                     ?: throw formatError("capabilities.policies[$key]", "缺少 policy。")
                 key to CapabilityPolicyValue.decode(policy, "capabilities.policies[$key]")
             }
-            if (policies.size > MAX_POLICIES) throw formatError("capabilities.policies", "条目过多。")
             return CapabilitiesSection(policies)
         }
     }
