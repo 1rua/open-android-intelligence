@@ -87,7 +87,9 @@
 - **文件里没有敏感凭据字段**：密码、访问令牌、刷新凭据、主密钥、Keystore 别名、
   安装标识、TLS 证书固定值、配对原语授权、临时批准，在数据模型层就没有对应属性。
   `SettingsBackupCodecTest.exportedFileNeverContainsCredentialsOrIdentifiers` 逐词断言。
-- **不恢复授权**：能力总开关（`CapabilityPolicy.enabled`）、通知读取授权
+- **不恢复授权**：能力总开关（`CapabilityPolicy.enabled`，本机基线一律取自
+  `PairingGrantStateHolder.capabilityPolicy()`，对没有显式条目的能力即 `enabled = true`，
+  能否执行仍由既有原语授权检查决定）、通知读取授权
   （`NotificationPolicyUpdate.granted = null`）、主动推送开关与登录态、开发者信任模式
   一律沿用本机现值。导入看到的是一份「偏好」，不是一张通行证。
 - **不声明系统权限**：Android 运行时权限与「通知使用权」只能由用户重新授予；

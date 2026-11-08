@@ -592,22 +592,20 @@ class SettingsBackupCoordinator(
             return
         }
         val configured = state.capabilityPolicies
-        val next = mutableMapOf<String, com.openandroidintelligence.kernel.CapabilityPolicy>()
-        var unmatched = 0
-        section.policies.forEach { (key, value) ->
-            // 只写回本机真实存在的能力；文件里多出来的键不创建任何条目，也不会打开总开关。
-            if (key !in installed) { unmatched++; return@forEach }
-            val local = configured[key] ?: com.openandroidintelligence.kernel.CapabilityPolicy(enabled = false)
-            next[key] = value.appliedTo(local)
-        }
+        val merged = mergeCapabilityPolicies(
+            incoming = section.policies,
+            installed = installed,
+            current = configured,
+            baselineOf = grants::capabilityPolicy,
+        )
         // 键里有作者指纹、Schema 摘要与风险等级；插件升级后会变化。这不是「已是最新」，
         // 而是「这条策略在本机没有对应声明」——必须让用户知道要手动重配，而不是静默算作已恢复。
-        if (unmatched > 0) {
-            skipped += "$unmatched 项设备能力策略未导入：本机插件声明已变化（升级或重装），请在对应能力页重新设置。"
+        if (merged.unmatched > 0) {
+            skipped += "${merged.unmatched} 项设备能力策略未导入：本机插件声明已变化（升级或重装），请在对应能力页重新设置。"
         }
-        val changed = next.filter { (key, value) -> configured[key] != value }
+        val changed = merged.policies.filter { (key, value) -> configured[key] != value }
         if (changed.isEmpty()) {
-            if (next.isNotEmpty()) applied += "设备能力：${next.size} 项（本机已是该值）"
+            if (merged.policies.isNotEmpty()) applied += "设备能力：${merged.policies.size} 项（本机已是该值）"
             return
         }
         grants.updateCapabilityPolicies(changed)
@@ -773,6 +771,37 @@ class SettingsBackupCoordinator(
         const val RUNTIME_PREFERENCES = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
     }
+}
+
+/** 能力策略合并的结果：可写回的策略，以及在本机没有对应声明的条数。 */
+internal data class MergedCapabilityPolicies(
+    val policies: Map<String, com.openandroidintelligence.kernel.CapabilityPolicy>,
+    val unmatched: Int,
+)
+
+/**
+ * 把备份里的能力策略合并到本机现值上。
+ *
+ * 两条不可动摇的规则：
+ * 1. 只写回本机**真实存在**的声明（`installed`），文件里多出来的键不创建条目；
+ * 2. 本机基线**必须来自授权权威**（`baselineOf`）。没有显式条目的能力在
+ *    `PairingGrantStateHolder.capabilityPolicy()` 里是 `CapabilityPolicy()`（`enabled = true`），
+ *    能否真正执行由既有的原语授权检查决定。若在这里自己造一个 `enabled = false`，
+ *    导入会把「默认开启」的能力悄悄关掉，与「总开关沿用本机值」的承诺正好相反。
+ */
+internal fun mergeCapabilityPolicies(
+    incoming: Map<String, CapabilityPolicyValue>,
+    installed: Set<String>,
+    current: Map<String, com.openandroidintelligence.kernel.CapabilityPolicy>,
+    baselineOf: (String) -> com.openandroidintelligence.kernel.CapabilityPolicy,
+): MergedCapabilityPolicies {
+    val policies = mutableMapOf<String, com.openandroidintelligence.kernel.CapabilityPolicy>()
+    var unmatched = 0
+    incoming.forEach { (key, value) ->
+        if (key !in installed) { unmatched++; return@forEach }
+        policies[key] = value.appliedTo(current[key] ?: baselineOf(key))
+    }
+    return MergedCapabilityPolicies(policies, unmatched)
 }
 
 /**

@@ -383,6 +383,74 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
+    fun capabilitiesWithoutLocalPolicyEntryKeepTheirDefaultEnabledSwitch() {
+        // 没有显式条目的能力在授权权威里是 CapabilityPolicy()（enabled = true），
+        // 能否执行由既有原语授权检查决定。导入只能改模式与范围，不能把它关掉。
+        val key = "plugin:org.example:${"a".repeat(64)}:capability:read"
+        val merged = mergeCapabilityPolicies(
+            incoming = mapOf(
+                key to CapabilityPolicyValue(
+                    mode = CapabilityAuthorizationMode.READ_ONLY,
+                    allowedSources = emptyList(),
+                    includeContent = true,
+                    smsScopeMode = SmsScopeMode.ALL,
+                    smsKeywords = emptyList(),
+                ),
+            ),
+            installed = setOf(key),
+            current = emptyMap(),
+            baselineOf = { CapabilityPolicy() },
+        )
+        assertEquals(0, merged.unmatched)
+        val policy = merged.policies.getValue(key)
+        assertTrue("导入不得关闭本机默认开启的能力", policy.enabled)
+        assertEquals(CapabilityAuthorizationMode.READ_ONLY, policy.mode)
+    }
+
+    @Test
+    fun capabilitiesWithAnExistingEntryKeepThatEntrysEnabledSwitch() {
+        val key = "plugin:org.example:${"b".repeat(64)}:capability:write"
+        val merged = mergeCapabilityPolicies(
+            incoming = mapOf(
+                key to CapabilityPolicyValue(
+                    mode = CapabilityAuthorizationMode.AUTOMATIC,
+                    allowedSources = listOf("+8613800000000"),
+                    includeContent = false,
+                    smsScopeMode = SmsScopeMode.PHONE_NUMBERS,
+                    smsKeywords = emptyList(),
+                ),
+            ),
+            installed = setOf(key),
+            current = mapOf(key to CapabilityPolicy(enabled = false)),
+            baselineOf = { error("已有条目时不应回落到权威默认值") },
+        )
+        val policy = merged.policies.getValue(key)
+        assertFalse(policy.enabled)
+        assertEquals(CapabilityAuthorizationMode.AUTOMATIC, policy.mode)
+        assertEquals(setOf("+8613800000000"), policy.allowedSources)
+    }
+
+    @Test
+    fun unmatchedCapabilityKeysAreCountedRatherThanWritten() {
+        val merged = mergeCapabilityPolicies(
+            incoming = mapOf(
+                "plugin:org.example:${"c".repeat(64)}:capability:read" to CapabilityPolicyValue(
+                    mode = CapabilityAuthorizationMode.MANUAL,
+                    allowedSources = emptyList(),
+                    includeContent = true,
+                    smsScopeMode = SmsScopeMode.ALL,
+                    smsKeywords = emptyList(),
+                ),
+            ),
+            installed = emptySet(),
+            current = emptyMap(),
+            baselineOf = { CapabilityPolicy() },
+        )
+        assertEquals(1, merged.unmatched)
+        assertTrue(merged.policies.isEmpty())
+    }
+
+    @Test
     fun corruptFileLeavesEveryStoreUntouched() {
         appearance.applySettings(com.openandroidintelligence.mobile.AppearanceSettings(theme = ThemePreference.LIGHT))
         notifications.setEnabled(true)

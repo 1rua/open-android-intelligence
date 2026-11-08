@@ -48,6 +48,7 @@
 | P2 能力策略键不匹配时静默算作「已是最新」 | 属实：`policyKey()` 含作者指纹/Schema 摘要/风险 | 统计未匹配条数并写入 `skipped`，提示手动重配；新增 `capabilityPoliciesWhoseKeysNoLongerMatchAreReportedAsSkipped` |
 | P2 地址可能带 user-info，明文写进备份文件 | 属实：`GatewayEndpoint.parse()` 只校验 scheme/host | 导出前用 `URI` 去掉 user-info，重建后仍需通过同一解析器；新增 `credentialsEmbeddedInTheCoreAddressNeverReachTheBackupFile` |
 | P2 导入后登录页地址栏不刷新 | 属实：`rememberSaveable` 只初始化一次 | `LoginGatewayPrefill.observe()` + 仅在「用户未改动地址栏」时同步导入值 |
+| P1 无显式条目的能力被导入合成 `enabled = false` | 属实：`PairingGrantStateHolder.capabilityPolicy()` 对缺失条目返回 `CapabilityPolicy()`（enabled = true） | 本机基线改从授权权威取（`grants.capabilityPolicy(key)`）；抽出纯函数 `mergeCapabilityPolicies` 便于验证，新增 3 个用例覆盖默认开启、已有条目、未匹配键 |
 
 ## 已知局限
 
@@ -67,7 +68,7 @@ LC_ALL=C.UTF-8 ./gradlew :app:testFullDebugUnitTest --tests 'com.openandroidinte
 LC_ALL=C.UTF-8 ./gradlew :platform-kernel:testDebugUnitTest :encrypted-store:testDebugUnitTest
 ```
 
-新增测试共 3 个类、29 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
+新增测试共 3 个类、32 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
 `SettingsBackupCoordinatorTest`（真实偏好与加密存储上的导出/导入/回滚/幂等）、
 `SettingsBackupScreenTest`（页面、禁用态、错误提示、环境缺失）。
 
