@@ -36,6 +36,8 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.material3.Surface
@@ -117,12 +119,13 @@ class SettingsHonestyCopyTest {
     }
 
     /**
-     * 授权管理提供安装实例策略与独立设备主动推送。
-     * 通知类条目（推送、气泡、实时活动、读取范围）已归入主览的「通知管理」区，
-     * 因此不应在这个子页里重复出现——两处入口意味着改文案时必然漏掉一处。
+     * 授权管理主页面的信息结构由产品需求固定为三组六项加一个插件入口。
+     *
+     * 这里同时验证三件已被移走的东西确实不再出现：独立主动推送入口、临时授权区，
+     * 以及插件 ID / 技术说明这类用户无法据此行动的内容。
      */
     @Test
-    fun authorisationSeparatesDevicePushFromReplyNotificationPresentation() {
+    fun authorisationShowsOnlyTheThreeGroupsAndOnePluginEntry() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -133,17 +136,17 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        compose.onNodeWithText("插件管理").performScrollTo().assertExists()
-        compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕内容读取").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕截图").performScrollTo().assertExists()
-        compose.onNodeWithText("屏幕控制").performScrollTo().assertExists()
-        compose.onNodeWithText("通知读取").performScrollTo().assertExists()
+        listOf("屏幕内容读取", "屏幕截图", "屏幕控制", "短信", "通知读取", "通话记录", "插件管理").forEach { label ->
+            compose.onNodeWithText(label).performScrollTo().assertExists()
+        }
+        // 主动推送已归入各自详情；临时授权只保留在真实的撤销动作里，不再单列一个区域。
+        compose.onNodeWithText("短信与通知主动推送").assertDoesNotExist()
+        compose.onNodeWithTag("capabilities-manual-default-notice").assertDoesNotExist()
     }
 
-    /** 主览不再展示本机自增序号、本机合成标识这类对用户没有意义的技术元数据。 */
+    /** 主页面不展示插件 ID、提供者标识或技术说明：用户在这一层只需要判断能不能用。 */
     @Test
-    fun theAuthorisationSubScreenOmitsLocalBookkeepingMetadata() {
+    fun theAuthorisationPageOmitsInternalIdentifiers() {
         compose.setContent {
             MaterialTheme {
                 Surface {
@@ -154,28 +157,8 @@ class SettingsHonestyCopyTest {
 
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
 
-        // 验证只展示用户关心的能力项与设置入口
-        compose.onNodeWithText("插件管理").performScrollTo().assertExists()
-        compose.onNodeWithText("短信与通知主动推送").performScrollTo().assertExists()
-    }
-
-    /**
-     * 授权管理说明手机本机能力设置与系统权限、通知范围和屏幕会话分别管理，
-     * 不把切换账号写成清除本机决定，也不把它与解除配对的效果混为一谈。
-     */
-    @Test
-    fun theAuthorisationNotesSeparateLocalCapabilitySettingsFromOtherSettings() {
-        compose.setContent {
-            MaterialTheme {
-                Surface {
-                    SettingsScreen(environment = settingsEnvironment(), runtime = null, onBack = {})
-                }
-            }
-        }
-
-        compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
-
-        compose.onNodeWithTag("capabilities-manual-default-notice").performScrollTo().assertExists()
+        compose.onNodeWithText("org.openandroidintelligence", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("kernel.screen", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -380,8 +363,8 @@ class SettingsHonestyCopyTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("push-notification-enabled").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("短信与通知主动推送").assertIsDisplayed()
-        compose.onNodeWithText("主动推送").assertIsDisplayed()
+        // 主动推送不再是独立页面：两段内容分别挂在「通知读取」与「短信」详情里。
+        compose.onAllNodesWithText("主动推送").assertCountEquals(3)
         compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
         // Robolectric 不驱动 WindowCapture 等待的窗口重绘回调；直接绘制已布局的真实 View。
         val pixels = compose.runOnIdle { contentView.drawToBitmap() }
@@ -391,7 +374,6 @@ class SettingsHonestyCopyTest {
         compose.onNodeWithTag("push-notification-enabled").performClick()
         compose.waitUntil(5_000) { runtime.snapshot().configuration.notifications.enabled }
         compose.onNodeWithTag("push-notification-enabled").assertIsOn()
-        compose.onNodeWithText("刷新队列状态").performScrollTo().performClick()
         compose.onNodeWithTag("push-refresh-endpoints").performScrollTo().performClick()
         assertEquals(1, refreshCalls)
         compose.onNodeWithContentDescription("返回").assertIsDisplayed().performClick()
@@ -414,36 +396,29 @@ class SettingsHonestyCopyTest {
                 }
             }
         }
+        // 主动推送不再是独立页面：主页面没有这个入口，配置在各自的能力详情里。
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
-        compose.onNodeWithText("短信与通知主动推送").performScrollTo()
+        compose.onNodeWithText("短信与通知主动推送").assertDoesNotExist()
+        val notificationEntry = compose.onNodeWithTag("capability-entry:org.openandroidintelligence.notifications:org.openandroidintelligence.notifications.query")
+        notificationEntry.performScrollTo()
         compose.mainClock.autoAdvance = false
-        compose.onNodeWithText("短信与通知主动推送").performClick()
+        notificationEntry.performClick()
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(MotionSpecs.ReducedMotionCrossfadeDuration.toLong() / 4)
-        val unavailable = compose.onNodeWithText("本机加密队列暂不可用，请检查设备存储和密钥状态。")
-        val enteringLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
+        // 测试应用未装配插件宿主，因此详情页如实显示这一事实；它是详情页里唯一的稳定标记。
+        val detail = compose.onNodeWithText("插件运行环境未连接，暂时无法读取或修改本机设置。")
+        val entering = detail.fetchSemanticsNode().boundsInRoot.left
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
-        val settledLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
+        val settled = detail.fetchSemanticsNode().boundsInRoot.left
         if (reducedMotion) {
-            assertEquals("减少动态时进入不应产生水平位移", settledLeft, enteringLeft, 1f)
+            assertEquals("减少动态时进入不应产生水平位移", settled, entering, 1f)
         } else {
-            assertTrue("普通进入沿用设置导航的水平转场", enteringLeft > settledLeft)
+            assertTrue("普通进入沿用设置导航的水平转场", entering > settled)
         }
         compose.onAllNodesWithContentDescription("返回").assertCountEquals(1)
-        compose.mainClock.autoAdvance = false
         compose.onNodeWithContentDescription("返回").performClick()
-        compose.mainClock.advanceTimeByFrame()
-        compose.mainClock.advanceTimeBy(MotionSpecs.ReducedMotionCrossfadeDuration.toLong() / 4)
-        val exitingLeft = unavailable.fetchSemanticsNode().boundsInRoot.left
-        if (reducedMotion) {
-            assertEquals("减少动态时返回不应产生水平位移", settledLeft, exitingLeft, 1f)
-        } else {
-            assertTrue("普通返回沿用设置导航的反向转场", exitingLeft > settledLeft)
-        }
-        compose.mainClock.autoAdvance = true
         compose.waitForIdle()
-        unavailable.assertDoesNotExist()
         compose.onNodeWithText("插件管理").performScrollTo().assertIsDisplayed()
         assertEquals(0, closeCalls)
         compose.onNodeWithContentDescription("返回").performClick()

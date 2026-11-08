@@ -130,28 +130,53 @@ work as reboot-resilient until that reviewed policy decision is made.
 - 侧边栏显示真实登录账号与账号名首字符头像。点击头像使用单选系统相册，将缩放至最长边 256px 的图片副本保存到该账号的 AccountManager 公开资料，独立于相册临时 URI 权限，退出或重新登录后保留，移除账号时删除。
 - Agent 状态由工作台的实时通道状态驱动，区分在线、连接中、重连和离线。名称优先使用协商响应的可选 `X-Open-Android-Intelligence-Agent-Name` 头（例如 `DSH`、`Hermes`，1–128 个字符、单行、单个值）；未提供时显示实际 `gatewayIdentity.deploymentId`。名称仅用于展示，不参与身份校验或授权，不更改 v2 JSON Schema 或契约摘要。
 
-## Bundled device plugins
+## Built-in device capabilities
 
-> **2026-10-28 授权规则**：Android 统一决定设备能力；已安装且启用插件的前台能力默认开启，后台同步、系统权限、数据范围和敏感操作另行控制。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`。当前测试结果与待真机验收项见[实施记录](../../docs/reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)；旧阶段静态证据见[只读修复计划](../../docs/reviews/2026-10-28-device-capability-authorization-repair-plan.zh-CN.md)。上方 Historical MVP modules 的旧授权描述仅记录旧模块，不定义当前规则。
+> **2026-11-08 装配方式变更**：六项官方能力不再以「可安装插件」的身份存在。它们在构建时随 APK
+> 打包，启动时直接从 APK 资源完成校验、注册与运行时加载，不需要用户安装、启用或初始化，
+> 也不出现在插件管理里。是否允许 Agent 使用某项能力，只由「设备能力与授权」中的能力开关、
+> 授权策略与 Android 系统权限决定。规格见
+> [内建设备能力与「设备能力与授权」页面重构](../../docs/superpowers/specs/2026-11-08-builtin-capability-consolidation.md)。
 
-Full APKs can carry three official plugins under `assets/bundled-plugins/`:
-`notifications.alp`, `sms.alp` and `call-log.alp`. These are the existing
-protected WASM plugins, each installed explicitly from plugin settings through
-the normal Ed25519 verifier. Installation leaves them disabled. In the target
-design, enabling the installed plugin enables its capabilities by default without
-a separate Gateway account or pairing capability grant. Android-local data scope,
-system permissions, and required confirmations remain in force. Play builds
-exclude the assets.
+Full APKs carry six official capability packages under `assets/bundled-plugins/`:
+`notifications.alp`, `sms.alp`, `call-log.alp`, `screen-reader.alp`,
+`screen-capture.alp` and `screen-control.alp`. Each one is verified at every
+startup by the same `AlpVerifier` used for third-party packages — manifest shape,
+Ed25519 signature, container limits, ABI and entrypoint — then registered in the
+kernel and enabled.
+
+What that does **not** change:
+
+- Verification strength. A package that fails any check is reported as
+  `不可用` with a diagnosable reason and is never registered.
+- Authorization. Built-in availability is not a device capability grant. Each
+  capability keeps its own switch, authorization mode (default: manual) and
+  Android system permission; requests are still decided locally per request.
+- Isolation. Built-in capabilities run in the same protected WASM runtime with
+  the same budgets, private storage and mediated network rules.
+- Third-party plugins. They keep the existing install, enable, disable, update and
+  uninstall flows.
+
+Nothing is written to `filesDir/plugins/` for built-ins, so an app upgrade can
+never keep loading a stale copy. Leftover directories from older versions that
+used the official IDs are ignored on scan; their contents are left in place.
+
+Play builds exclude the assets. Local source builds may omit
+`OAI_BUNDLED_PLUGINS_DIR`; the affected capabilities then honestly report that
+their package is missing instead of pretending to be usable.
 
 Build the real payloads and sign the packages with a private 32-byte Ed25519
-seed file (one publisher key signs all three):
+seed file (one publisher key signs all six):
 
 ```sh
 cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release \
   --manifest-path plugins/Cargo.toml \
   -p open-android-intelligence-notifications \
   -p open-android-intelligence-sms \
-  -p open-android-intelligence-call-log
+  -p open-android-intelligence-call-log \
+  -p open-android-intelligence-screen-reader \
+  -p open-android-intelligence-screen-capture \
+  -p open-android-intelligence-screen-control
 npm ci --prefix plugin-tooling
 OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
   npm run build:android-plugins --prefix plugin-tooling -- /tmp/signed-plugins
@@ -165,15 +190,9 @@ Both official publishing workflows require repository secret
 same publisher key across releases. This is separate from APK signing; the public
 debug key and fixture seed cannot serve as a plugin publisher identity. Missing or
 unsafe plugin keys stop publishing. The workflow checks that the final APK contains
-the exact packages produced by the signed build, byte for byte for each of the
-three plugins. PR CI uses an isolated random test author and does not need
+the exact packages produced by the signed build, byte for byte for each of the six
+capabilities. PR CI uses an isolated random test author and does not need
 production secrets.
-
-Local source builds may omit `OAI_BUNDLED_PLUGINS_DIR`; plugin settings then
-explain that a signed `.alp` must be imported. Removing the input also clears any
-previous generated assets. Existing installed providers are never replaced by the
-bundled install buttons; updates keep using the ordinary signed package import
-path.
 
 ## Debug signing
 

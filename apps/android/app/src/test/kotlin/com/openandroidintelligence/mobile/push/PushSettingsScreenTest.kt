@@ -90,16 +90,19 @@ class PushSettingsScreenTest {
         assertFalse(saved.sms.enabled)
     }
 
-    @Test fun retentionInputSavesOneHour() {
-        var saved = PushConfiguration()
+    @Test fun queueCapacityOptionsAreNoLongerUserSettings() {
+        // 加密离线队列的容量与保留时长不再作为设置项；底层按既有默认值继续运行。
+        var saved: PushConfiguration? = null
         compose.setContent {
-            var config by remember { mutableStateOf(saved) }
-            MaterialTheme { PushSettingsContent(snapshot(config), emptyList(), false, null, { saved = it; config = it }, {}, {}) }
+            MaterialTheme { PushSettingsContent(snapshot(PushConfiguration()), emptyList(), false, null, { saved = it }, {}, {}) }
         }
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("1")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsEnabled().performClick()
-        assertEquals(1, saved.retentionHours)
+        compose.onNodeWithTag("push-retention").assertDoesNotExist()
+        compose.onNodeWithTag("push-max-events").assertDoesNotExist()
+        compose.onNodeWithTag("push-max-mib").assertDoesNotExist()
+        compose.onNodeWithTag("push-save-retention").assertDoesNotExist()
+        assertEquals(null, saved)
     }
+
     @Test fun newerGenerationShowsManualReselectionAndPreservesTheOldCheckedRoute() {
         val selected = PushConfiguration(sms = SmsPushSettings(true, SmsPushScope(allSenders = true), setOf(endpoint)))
         var changes = 0
@@ -194,40 +197,26 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-save-senders").performScrollTo().assertIsNotEnabled()
     }
 
-    @Test fun queueFieldsAndRefreshActionsKeepTheirOriginalBehavior() {
+    @Test fun endpointRefreshAndDraftEditingKeepTheirOriginalBehavior() {
         val original = PushConfiguration()
         var saved = original
         var saves = 0
         var endpointRefreshes = 0
-        var stateRefreshes = 0
         compose.setContent {
             var config by remember { mutableStateOf(original) }
             MaterialTheme { PushSettingsContent(snapshot(config), emptyList(), false, null,
-                { saved = it; config = it; saves++ }, { endpointRefreshes++ }, { stateRefreshes++ }) }
+                { saved = it; config = it; saves++ }, { endpointRefreshes++ }, {}) }
         }
-        for (invalid in listOf("0", "169", "invalid")) {
-            compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement(invalid)
-            compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsNotEnabled()
-        }
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("168")
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("4097")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("64")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("9")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsNotEnabled()
-        assertEquals(0, saves)
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("2")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().performClick()
-        assertEquals(original.copy(retentionHours = 168, maxEvents = 64, maxQueueBytes = 2 * 1_048_576), saved)
-        compose.onNodeWithText("队列满时拒绝新事件并保留已有未确认事件；接收端消费确认后清除正文。").performScrollTo().assertExists()
-        compose.onNodeWithText("刷新队列状态").performScrollTo().performClick()
+        compose.onNodeWithTag("push-notification-content").performScrollTo().performClick()
+        assertFalse(saved.notifications.scope.includeContent)
         compose.onNodeWithTag("push-refresh-endpoints").performScrollTo().performClick()
         assertEquals(1, endpointRefreshes)
-        assertEquals(1, stateRefreshes)
         assertEquals(1, saves)
+        // 队列设置项退场后，保存动作只来自范围与推送目标。
+        assertTrue(saved.sms.scope.mode == SmsScopeMode.ALL)
     }
 
-    @Test fun smsAndQueueDraftsSurviveStateRestorationWithoutBeingSaved() {
+    @Test fun smsDraftsSurviveStateRestorationWithoutBeingSaved() {
         var config by mutableStateOf(PushConfiguration())
         val saved = mutableListOf<PushConfiguration>()
         val restoration = StateRestorationTester(compose)
@@ -242,19 +231,11 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().performTextReplacement("验证码，快递\n 代收 ")
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().performTextReplacement(" +15550000001\n+15550000002 ")
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("0")
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("4097")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("9")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsNotEnabled()
 
         restoration.emulateSavedInstanceStateRestore()
 
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().assertIsSelected()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().assertTextContains(" +15550000001\n+15550000002 ")
-        compose.onNodeWithTag("push-retention").performScrollTo().assertTextContains("0")
-        compose.onNodeWithTag("push-max-events").performScrollTo().assertTextContains("4097")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().assertTextContains("9")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsNotEnabled()
         compose.onNodeWithTag("push-sms-mode-keywords").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().assertTextContains("验证码，快递\n 代收 ")
         assertTrue("恢复草稿不能自动保存设置", saved.isEmpty())
@@ -263,12 +244,6 @@ class PushSettingsScreenTest {
         assertEquals(SmsScopeMode.KEYWORDS, saved.single().sms.scope.mode)
         assertEquals(setOf("验证码", "快递", "代收"), saved.single().sms.scope.keywords)
         assertEquals(setOf("+15550000001", "+15550000002"), saved.single().sms.scope.senderAddresses)
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("48")
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("128")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("2")
-        compose.onNodeWithTag("push-save-retention").performScrollTo().assertIsEnabled().performClick()
-        assertEquals(2, saved.size)
-        assertEquals(saved.first().copy(retentionHours = 48, maxEvents = 128, maxQueueBytes = 2 * 1_048_576), saved.last())
     }
 
     @Test fun changesToIndividualConfigurationFieldsResetOnlyTheirOwnDrafts() {
@@ -280,14 +255,11 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().performTextReplacement("未保存关键词")
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().performTextReplacement("+15550000001")
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("33")
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("75")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("1.5")
 
         compose.runOnIdle {
             config = config.copy(
                 sms = config.sms.copy(scope = config.sms.scope.copy(keywords = setOf("外部关键词"))),
-                retentionHours = 12,
+                notifications = config.notifications.copy(enabled = true),
             )
         }
 
@@ -295,9 +267,7 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-sms-senders").performScrollTo().assertTextContains("+15550000001")
         compose.onNodeWithTag("push-sms-mode-keywords").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().assertTextContains("外部关键词")
-        compose.onNodeWithTag("push-retention").performScrollTo().assertTextContains("12")
-        compose.onNodeWithTag("push-max-events").performScrollTo().assertTextContains("75")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().assertTextContains("1.5")
+        compose.onNodeWithTag("push-notification-enabled").performScrollTo().assertIsOn()
 
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().performTextReplacement("第二次草稿")
         compose.runOnIdle {
@@ -307,17 +277,14 @@ class PushSettingsScreenTest {
                     allSenders = false,
                     senderAddresses = setOf("+15550000002"),
                 )),
-                maxEvents = 256,
-                maxQueueBytes = 3 * 1_048_576,
+                notifications = config.notifications.copy(enabled = false),
             )
         }
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().assertIsSelected()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().assertTextContains("+15550000002")
         compose.onNodeWithTag("push-sms-mode-keywords").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().assertTextContains("第二次草稿")
-        compose.onNodeWithTag("push-retention").performScrollTo().assertTextContains("12")
-        compose.onNodeWithTag("push-max-events").performScrollTo().assertTextContains("256")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().assertTextContains("3.0")
+        compose.onNodeWithTag("push-notification-enabled").performScrollTo().assertIsOff()
     }
 
     @Test fun restorationRejectsDraftsWhoseConfigurationChangedWhileAway() {
@@ -330,9 +297,6 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().performTextReplacement("旧草稿")
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().performTextReplacement("+15550000001")
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("33")
-        compose.onNodeWithTag("push-max-events").performScrollTo().performTextReplacement("75")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().performTextReplacement("1.5")
 
         // 普通变量不会触发重组：模拟界面保存后、重建前权威配置发生了变化。
         compose.runOnIdle {
@@ -342,8 +306,6 @@ class PushSettingsScreenTest {
                     allSenders = false,
                     keywords = setOf("新配置"),
                 )),
-                retentionHours = 12,
-                maxEvents = 256,
             )
         }
         restoration.emulateSavedInstanceStateRestore()
@@ -352,12 +314,9 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-sms-keywords").performScrollTo().assertTextContains("新配置")
         compose.onNodeWithTag("push-sms-mode-phone_numbers").performScrollTo().performClick()
         compose.onNodeWithTag("push-sms-senders").performScrollTo().assertTextContains("+15550000001")
-        compose.onNodeWithTag("push-retention").performScrollTo().assertTextContains("12")
-        compose.onNodeWithTag("push-max-events").performScrollTo().assertTextContains("256")
-        compose.onNodeWithTag("push-max-mib").performScrollTo().assertTextContains("1.5")
     }
 
-    @Test fun savingDisablesScopeBodyEndpointsAndQueueWrites() {
+    @Test fun savingDisablesScopeBodyAndEndpointWrites() {
         var saves = 0
         compose.setContent {
             MaterialTheme { PushSettingsContent(snapshot(PushConfiguration()), listOf(PushEndpointOption(endpoint, "Agent", true)), true,
@@ -366,7 +325,7 @@ class PushSettingsScreenTest {
         compose.onNodeWithTag("push-error").assertTextContains("推送配置保存失败，尚未应用本次修改。")
         for (tag in listOf("push-notification-enabled", "push-save-packages", "push-notification-content",
             "push-sms-enabled", "push-sms-mode-all", "push-sms-mode-keywords", "push-sms-mode-phone_numbers",
-            "push-save-senders", "push-sms-content", "push-sms-endpoint:core:account:endpoint:1", "push-save-retention")) {
+            "push-save-senders", "push-sms-content", "push-sms-endpoint:core:account:endpoint:1")) {
             compose.onNodeWithTag(tag).performScrollTo().assertIsNotEnabled()
         }
         assertEquals(0, saves)

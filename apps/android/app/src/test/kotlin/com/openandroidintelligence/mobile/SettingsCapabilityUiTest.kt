@@ -10,6 +10,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.performScrollTo
@@ -206,10 +208,15 @@ class SettingsCapabilityUiTest {
         setContent { SettingsScreen(environment = environment, onBack = {}) }
 
         compose.onNodeWithText("设备能力与授权").performScrollTo().performClick()
-        compose.onNodeWithText("新能力默认每次手动", substring = true).performScrollTo().assertExists()
-        compose.onNodeWithText("以下两种情况会清空本机授权", substring = true).assertDoesNotExist()
+        // 主页面只保留三组六项与一个插件入口：新能力默认每次手动、系统权限独立检查这类
+        // 技术说明已经移出这一层，改由各能力详情按真实状态呈现。
+        listOf("屏幕内容读取", "屏幕截图", "屏幕控制", "短信", "通知读取", "通话记录", "插件管理").forEach { label ->
+            compose.onNodeWithText(label).performScrollTo().assertExists()
+        }
+        compose.onNodeWithText("新能力默认每次手动", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("系统权限独立检查", substring = true).assertDoesNotExist()
         assertTrue(
-            compose.onAllNodesWithText("系统权限独立检查", substring = true).fetchSemanticsNodes().isNotEmpty(),
+            "以下两种情况会清空本机授权" !in compose.onRoot().printToString(maxDepth = Int.MAX_VALUE),
         )
     }
 

@@ -35,6 +35,7 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
+import com.openandroidintelligence.kernel.SmsScopeMode
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.push.DevicePushRuntime
 import com.openandroidintelligence.mobile.push.EncryptedPushStateStore
@@ -229,21 +230,22 @@ class SettingsResponsiveHostRegressionTest {
         }
         compose.onNodeWithText("打开设置").performClick()
         compose.onNodeWithText("进入主动推送").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithTag("push-retention").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("push-retention").performScrollTo().performTextReplacement("19")
-        // 先结束编辑焦点，避免输入框的自动滚入可视区域干扰窗口缩放本身的滚动断言。
-        compose.runOnIdle { focusManager.clearFocus() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("push-sms-mode-keywords").fetchSemanticsNodes().isNotEmpty() }
+        // 用短信关键词草稿验证：它同样只在保存时提交，且不会因输入焦点自动滚动。
+        compose.onNodeWithTag("push-sms-mode-keywords").performScrollTo().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("push-sms-keywords").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("push-sms-keywords").performScrollTo().performTextReplacement("跨断点保留的草稿")
         val currentOffset = scrollOffset()
         compose.onNode(hasScrollAction()).performSemanticsAction(SemanticsActions.ScrollBy) { it(0f, 120f - currentOffset) }
         val originalNavigation = compose.runOnIdle { navigation }
         val offset = scrollOffset()
         assertTrue("编辑前必须滚到下方生产表单", offset > 0f)
-        assertEquals("编辑草稿不能保存队列设置", 72, push.snapshot().configuration.retentionHours)
+        assertEquals("未提交前不能保存范围草稿", SmsScopeMode.ALL, push.snapshot().configuration.sms.scope.mode)
         for (nextWidth in widths) {
             compose.runOnIdle { width = nextWidth }
-            compose.onNodeWithText("短信与通知主动推送").assertIsDisplayed()
+            compose.onNodeWithTag("push-sms-enabled").assertExists()
             // 不调用 performScrollTo，防止测试自己恢复丢失的滚动位置。
-            compose.onNodeWithTag("push-retention").assertTextContains("19")
+            compose.onNodeWithTag("push-sms-keywords").assertTextContains("跨断点保留的草稿")
             assertEquals("跨断点必须保持同一滚动位置", offset, scrollOffset(), 1f)
             compose.runOnIdle {
                 assertSame("必须保留同一个导航控制器", originalNavigation, navigation)
@@ -251,7 +253,7 @@ class SettingsResponsiveHostRegressionTest {
                 assertEquals("设置内容不能被销毁重建", 0, disposals)
                 assertTrue("打开状态必须保留", open)
             }
-            assertEquals("缩放不能偷偷提交草稿", 72, push.snapshot().configuration.retentionHours)
+            assertEquals("缩放不能偷偷提交草稿", SmsScopeMode.ALL, push.snapshot().configuration.sms.scope.mode)
         }
         compose.onNodeWithContentDescription("返回").performClick()
         compose.onNodeWithText("进入主动推送").assertIsDisplayed()

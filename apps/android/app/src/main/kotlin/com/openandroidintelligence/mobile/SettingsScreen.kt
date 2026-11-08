@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -26,6 +27,7 @@ object SettingsRoutes {
     const val CONNECTION_DETAILS = "settings/connection-details"
     const val BUILD_DETAILS = "settings/build-details"
     const val LICENSES = "settings/licenses"
+    const val BACKUP = "settings/backup"
     internal const val CAPABILITY = "settings/capability/{pluginId}/{capability}"
 }
 
@@ -61,7 +63,10 @@ fun SettingsScreen(
     onRequestScreenCaptureAuthorization: () -> Unit = {},
 ) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, viewModel.gatewayRuntime, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
 
-/** Compatibility entry used by responsive-host regressions. */
+/**
+ * 兼容入口：主动推送已不再是用户可达的独立页面，配置挂在「通知读取」与「短信」详情里。
+ * 保留这个名字只是为了既有响应式/返回栈回归仍能在同一承载位置验证这两段内容。
+ */
 @Composable
 internal fun DevicePushSubScreen(
     runtime: com.openandroidintelligence.mobile.push.DevicePushRuntime?,
@@ -69,4 +74,20 @@ internal fun DevicePushSubScreen(
     onRefreshEndpoints: () -> Unit,
     onBack: () -> Unit,
     presentation: SettingsPresentation,
-) = com.openandroidintelligence.mobile.settings.DevicePushSettingsPage(runtime, endpoints, onRefreshEndpoints, onBack, presentation)
+) {
+    if (runtime == null) {
+        androidx.compose.foundation.layout.Box(Modifier) {
+            androidx.compose.material3.Text("本机加密队列暂不可用，请检查设备存储和密钥状态。")
+        }
+        return
+    }
+    com.openandroidintelligence.mobile.settings.SettingsPageScaffold("主动推送", presentation, onBack) { padding ->
+        com.openandroidintelligence.mobile.push.PushSettingsScreen(
+            runtime = runtime,
+            endpoints = endpoints,
+            onRefreshEndpoints = onRefreshEndpoints,
+            modifier = Modifier.padding(padding),
+            presentation = presentation,
+        )
+    }
+}
