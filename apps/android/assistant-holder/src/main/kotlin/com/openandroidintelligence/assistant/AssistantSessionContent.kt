@@ -86,14 +86,20 @@ internal fun AssistantSessionContent(
                     onStop = client::cancel,
                     onExit = onExit,
                     controller = controller,
-                    timeline = state.messages.toTimelineEntries(),
+                    // 时间线由 v2 协议整条投影（执行步骤、审批卡、附件元数据）直接还原，
+                    // 不再经过本进程的摘要拼装。
+                    timeline = state.timeline,
+                    // 会话身份用于隔离解析缓存与执行耗时：v2 支持切换对话，
+                    // 不传就会让新对话沿用上一个对话的耗时记录。
+                    threadId = state.activeThread,
                     notice = state.advisory ?: state.notice.takeIf { it.isNotBlank() },
                     onDismissNotice = if (state.advisory != null) client::clearAdvisory else null,
                     previews = previews,
                     initialText = initialText,
                     onStartRecording = {
-                        // 语音发送要主进程的 `voice` 管道；当前桥接协议还没有这条命令，
-                        // 点麦克风时如实说明，而不是放一个按了没反应的按钮。
+                        // 桥接层已支持 `voice`（见 AssistantBridgeClient.sendVoice），
+                        // 但本入口还没有把录音器接到界面上；在接线完成前如实说明，
+                        // 而不是放一个按了没反应的按钮。
                         client.showAdvisory("语音发送尚未接入当前版本，请改用文字输入")
                     },
                     onStartScreenSelection = onStartSelection,

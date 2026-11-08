@@ -49,9 +49,11 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
 
 约束：
 
-1. **跨进程协议不变**：`version=1` 的 `connect` / `consent` / `thread` / `send` /
-   `cancel` / `draft` / `screen` / `disconnect` 与 JSON 字段一字未改；本进程不初始化
-   Gateway、不持有凭据，只做呈现。
+1. **跨进程协议 v2**：`version=2` 的 `connect` / `session.new` / `presence` / `send` /
+   `cancel` / `draft` / `screen` / `voice` / `attachment.remove` / `approval` / `retry` /
+   `disconnect`，字段白名单与主进程 `AssistantBridgeService` 一致；状态帧由
+   `conversation-ui` 的 `AssistantBridgeProtocol.decodeState()` 解析（`revision` 单调递增，
+   旧帧丢弃）。本进程不初始化 Gateway、不持有凭据，只做呈现。
 2. **不伪造状态**：未绑定主进程、未连接 Gateway 时分别显示对应引导，消息全部来自
    主进程发布的状态，没有演示数据。
 3. **窗口由内容测量驱动**：窗口常驻 `MATCH_PARENT` 宽、`Gravity.BOTTOM`、背景透明；

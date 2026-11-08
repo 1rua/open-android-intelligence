@@ -12,6 +12,8 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
+import com.openandroidintelligence.conversation.model.ApprovalChoice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -20,13 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * 助理进程的桥接客户端（不再依赖任何 View）。
  *
  * 职责边界：
- * - 只做"绑定主进程服务 + 收发现有 Messenger 协议 + 把状态折成 [AssistantState]"；
- * - 命令字面量与 JSON 字段严格保持既有契约（`connect` / `consent` / `thread` / `send` /
- *   `cancel` / `draft` / `screen` / `disconnect`，`version=1`）；
+ * - 只做"绑定主进程服务 + 收发 v2 Messenger 协议 + 把状态折成 [AssistantState]"；
+ * - 命令字面量与 Bundle 字段严格对齐主进程 `AssistantBridgeService`（`version=2`）：
+ *   `connect` / `session.new` / `presence` / `send` / `cancel` / `draft` /
+ *   `screen` / `voice` / `attachment.remove` / `approval` / `retry` / `disconnect`；
  * - 屏幕附件编码继续交给 [encodeAssistantScreen]，管道写入与超时看门狗原样保留；
  * - 不初始化 Gateway、不持有凭据：助理进程只是呈现客户端。
  *
- * [state] 是唯一对外状态；Compose 直接收集它，旧视图或测试也只需要这一个出口。
+ * [state] 是唯一对外状态；Compose 直接收集它，测试也只需要这一个出口。
  */
 internal class AssistantBridgeClient(
     private val context: Context,
@@ -41,14 +44,22 @@ internal class AssistantBridgeClient(
     private var bound = false
     private var disposed = false
 
+    /** 最近一次已应用的帧序号；乱序或重复帧整帧丢弃。 */
+    private var lastRevision = 0L
+
     private val receiver = Messenger(
         Handler(Looper.getMainLooper()) { message ->
             if (disposed) return@Handler true
             // 协议版本不符的消息整条丢弃：宁可停在上一帧，也不误解一次未知格式。
-            if (message.data.getInt("version") != 1) return@Handler true
-            token = message.data.getString("token")
+            if (message.data.getInt("version") != ASSISTANT_BRIDGE_VERSION) return@Handler true
             val published = message.data.getString("state") ?: return@Handler true
             val parsed = parseAssistantState(published) ?: return@Handler true
+            // 状态帧按 revision 单调递增；旧帧晚到不能把界面倒退回去。
+            // 首帧无条件接受：服务端首个 revision 是 1，本地从 0 起算。
+            if (lastRevision != 0L && parsed.revision <= lastRevision) return@Handler true
+            // token 只随**合法帧**更新：坏帧不能把后续命令的凭据换成一个未知值。
+            message.data.getString("token")?.let { token = it }
+            lastRevision = parsed.revision
             current.value = parsed.copy(
                 bridgeAvailable = true,
                 advisory = current.value.advisory,
@@ -65,6 +76,9 @@ internal class AssistantBridgeClient(
                 markDisconnected("助理服务无法连接，请打开 App")
                 return
             }
+            // 重新绑定会得到新的 token 与从 1 重新开始的服务端帧序号，
+            // 旧的序号门槛必须清掉，否则新会话的首帧会被当成"乱序"丢掉。
+            lastRevision = 0L
             command(COMMAND_CONNECT)
         }
 
@@ -99,6 +113,7 @@ internal class AssistantBridgeClient(
         disposed = true
         bridge = null
         token = null
+        lastRevision = 0L
         if (bound) {
             runCatching { context.unbindService(connection) }
             bound = false
@@ -107,14 +122,20 @@ internal class AssistantBridgeClient(
         current.value = AssistantState(bridgeAvailable = false)
     }
 
-    fun setConsent() {
-        command(COMMAND_CONSENT)
-    }
+    /**
+     * 结束当前会话并创建一条全新会话（主进程释放旧控制器后重建）。
+     *
+     * 返回命令是否已送达；真正的会话身份由随后下发的状态帧携带。
+     */
+    fun sessionNew(): Boolean = command(COMMAND_SESSION_NEW)
 
-    fun selectThread(threadId: String) {
-        if (threadId.isBlank()) return
-        command(COMMAND_THREAD) { putString("threadId", threadId) }
-    }
+    /**
+     * 声明界面是否正在展示当前会话（主进程据此抑制原生通知气泡）。
+     *
+     * 可见性属于客户端，跨 `sessionNew()` 保留；未连接时返回 false。
+     */
+    fun setPresence(visible: Boolean): Boolean =
+        command(COMMAND_PRESENCE) { putBoolean("visible", visible) }
 
     /**
      * 请求发送当前草稿。
@@ -137,6 +158,30 @@ internal class AssistantBridgeClient(
         command(COMMAND_DRAFT) { putString("text", text.take(MAX_ASSISTANT_DRAFT_CHARS)) }
     }
 
+    /** 从当前草稿移除一个附件（按附件草稿 ID）。 */
+    fun removeAttachment(draftId: String): Boolean {
+        if (draftId.isBlank()) return false
+        return command(COMMAND_ATTACHMENT_REMOVE) { putString("draftId", draftId) }
+    }
+
+    /**
+     * 提交一次审批决策。
+     *
+     * [choice] 是 Gateway 的审批意图（once / session / always / deny）；未知意图不发，
+     * 避免把一个对端不认识的档位当成合法裁决。返回命令是否已送达。
+     */
+    fun decideApproval(approvalId: String, choice: ApprovalChoice): Boolean {
+        if (approvalId.isBlank() || choice == ApprovalChoice.UNKNOWN) return false
+        return command(COMMAND_APPROVAL) {
+            putString("approvalId", approvalId)
+            putString("choice", choice.wireValue)
+        }
+    }
+
+    /** 请求重试一次失败：时间线读取或未确认的发送，两者语义不同，必须由调用方明示。 */
+    fun retry(target: AssistantRetryTarget): Boolean =
+        command(COMMAND_RETRY) { putString("target", target.wireValue) }
+
     /** 一次性提示（截图缺失、附件编码失败等）；由界面显式关闭。 */
     fun showAdvisory(message: String) {
         if (disposed) return
@@ -152,18 +197,18 @@ internal class AssistantBridgeClient(
     /**
      * 接管所选位图；编码线程完成后会回收它。
      *
-     * 没有当前绑定、已关闭或未同意时立即回收并丢弃：绝不把附件塞进别人的会话。
+     * 没有当前绑定、已关闭或未连接时立即回收并丢弃：绝不把附件塞进别人的会话。
      */
     fun attachScreen(bitmap: Bitmap) {
         val expectedBridge = bridge
         val expectedToken = token
-        if (!canAttachScreen(expectedBridge, expectedToken)) {
+        if (!canSendAttachment(expectedBridge, expectedToken)) {
             bitmap.recycle()
             return
         }
         encodeAssistantScreen(bitmap) { bytes ->
             if (!mainHandler.post {
-                    if (!canAttachScreen(expectedBridge, expectedToken)) {
+                    if (!canSendAttachment(expectedBridge, expectedToken)) {
                         bytes?.fill(0)
                         return@post
                     }
@@ -211,31 +256,72 @@ internal class AssistantBridgeClient(
         }
     }
 
+    /**
+     * 提交一段原始语音附件（字节流 + 真实时长 + 媒体类型）。
+     *
+     * [content] 必须是**可读端**（与 `screen` 相同：管道读端或文件描述符），主进程用
+     * `AutoCloseInputStream` 读取恰好 [size] 字节。所有权随调用移交：无论命令是否送达，
+     * 本方法都会关闭这个本地描述符；Binder 在 `send` 时已把描述符复制给主进程，
+     * 关闭本地副本不会截断对方。
+     *
+     * 返回命令是否已送达。字节、时长与媒体类型的合法性由主进程校验：被拒绝时它会
+     * 通过状态帧给出明确提示，本层不伪造"已发送"。
+     */
+    fun sendVoice(
+        content: ParcelFileDescriptor,
+        size: Int,
+        durationMs: Long,
+        mediaType: String,
+    ): Boolean {
+        val expectedBridge = bridge
+        val expectedToken = token
+        if (!canSendAttachment(expectedBridge, expectedToken)) {
+            runCatching { content.close() }
+            return false
+        }
+        return try {
+            command(COMMAND_VOICE) {
+                putParcelable("content", content)
+                putInt("size", size)
+                putLong("durationMs", durationMs)
+                putString("mediaType", mediaType)
+            }
+        } finally {
+            runCatching { content.close() }
+        }
+    }
+
     private fun markDisconnected(message: String) {
         bridge = null
         token = null
-        // 保留上一帧的草稿与线程标题，只把连接轴置为不可用：界面据此显示明确引导。
+        lastRevision = 0L
+        // 保留上一帧的草稿与外观，只把连接轴置为不可用：界面据此显示明确引导。
         current.value = current.value.copy(
             bridgeAvailable = false,
             connected = false,
-            consent = false,
-            messages = emptyList(),
-            threads = emptyList(),
+            account = null,
+            sessionId = null,
+            activeThread = null,
+            timeline = emptyList(),
+            timelineTruncated = false,
             notice = message,
         )
     }
 
-    private fun canAttachScreen(expectedBridge: Messenger?, expectedToken: String?): Boolean =
+    private fun canSendAttachment(expectedBridge: Messenger?, expectedToken: String?): Boolean =
         !disposed && current.value.canInteract && expectedBridge != null && bridge === expectedBridge &&
             expectedToken != null && token == expectedToken
 
     private fun command(name: String, fill: Bundle.() -> Unit = {}): Boolean {
         val body = Bundle().apply {
-            putInt("version", 1)
+            putInt("version", ASSISTANT_BRIDGE_VERSION)
             putString("command", name)
             token?.let { putString("token", it) }
             fill()
         }
+        // 协议字段封闭：白名单之外的键一律不发，避免把本地新字段误当成对端语义。
+        // 主进程同样会整条丢弃带未知键的消息，两端保持同一份字段集合。
+        if (!ALLOWED_KEYS.containsAll(body.keySet())) return false
         return runCatching {
             val target = bridge ?: error("BRIDGE_UNAVAILABLE")
             target.send(Message.obtain().apply { data = body; replyTo = receiver })
@@ -250,19 +336,38 @@ internal class AssistantBridgeClient(
         const val BRIDGE_SERVICE =
             "com.openandroidintelligence.mobile.assistant.AssistantBridgeService"
 
-        // 以下命令字面量是既有跨进程契约，改名就会与主进程失配。
+        // 以下命令字面量是跨进程契约（v2），改名就会与主进程失配。
         const val COMMAND_CONNECT = "connect"
-        const val COMMAND_CONSENT = "consent"
-        const val COMMAND_THREAD = "thread"
+        const val COMMAND_SESSION_NEW = "session.new"
+        const val COMMAND_PRESENCE = "presence"
         const val COMMAND_SEND = "send"
         const val COMMAND_CANCEL = "cancel"
         const val COMMAND_DRAFT = "draft"
         const val COMMAND_SCREEN = "screen"
+        const val COMMAND_VOICE = "voice"
+        const val COMMAND_ATTACHMENT_REMOVE = "attachment.remove"
+        const val COMMAND_APPROVAL = "approval"
+        const val COMMAND_RETRY = "retry"
         const val COMMAND_DISCONNECT = "disconnect"
+
+        /** 与主进程 `AssistantBridgeService.ALLOWED_KEYS` 一字不差。 */
+        val ALLOWED_KEYS = setOf(
+            "version", "token", "command", "text", "content", "size",
+            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
+        )
 
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val SCREEN_DELIVERY_TIMEOUT_MILLIS = 10_000L
     }
+}
+
+/** `retry` 命令的两种目标；与主进程的 `target` 字面量一致。 */
+internal enum class AssistantRetryTarget(val wireValue: String) {
+    /** 时间线读取失败：重新拉取当前对话。 */
+    TIMELINE("timeline"),
+
+    /** 未确认的发送：重试待确认的提交。 */
+    SUBMISSION("submission"),
 }
 
 /** 草稿长度上限与主进程 `AssistantBridgeService` 的校验保持一致。 */

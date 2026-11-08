@@ -307,8 +307,8 @@ private fun ExpandedConversation(
             itemContent = { item ->
                 TimelineDisplayRow(
                     item = item,
-                    // 审批决策需要主进程的审批通道；当前协议没有这条命令，界面如实说明，
-                    // 而不是画一个点了没反应的按钮。
+                    // 审批决策通道已由桥接层提供（AssistantBridgeClient.decideApproval），
+                    // 但本入口尚未把按键接到宿主；在接线完成前不伪造一次已提交的裁决。
                     onDecide = { _, _ -> },
                     timing = timing,
                     onOpenAttachmentPreview = openPreview,
@@ -359,30 +359,4 @@ private fun AssistantEmptyState(
             }
         }
     }
-}
-
-/**
- * 桥接消息 → 时间线条目。
- *
- * v1 状态只携带文件名级附件摘要（没有 `localKey`、字节与时长），所以这里只构造身份
- * 与文件名：渲染层据此显示附件条目，没有缩略图就显示占位，不伪造内容。
- * `timestamp` 不在线上协议里，统一记为 0，界面不据此排序（顺序以发布顺序为准）。
- */
-internal fun List<AssistantMessage>.toTimelineEntries(): List<TimelineEntry> = map { message ->
-    TimelineEntry(
-        key = message.id,
-        sender = if (message.fromUser) "user" else "assistant",
-        text = message.text,
-        isUser = message.fromUser,
-        timestamp = 0L,
-        pendingAcceptance = false,
-        batchGroupId = null,
-        attachments = message.attachments.map { filename ->
-            com.openandroidintelligence.conversation.model.TimelineAttachment(
-                draftId = filename,
-                filename = filename,
-            )
-        },
-        isStreaming = message.streaming,
-    )
 }

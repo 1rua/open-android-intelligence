@@ -11,8 +11,8 @@ import com.openandroidintelligence.conversation.theme.ThemePalette
  * 的 `appearance` 对象）：跨进程读 SharedPreferences 不可靠 —— 对方进程写完后，
  * 本进程内存里的缓存不会失效，助理会一直沿用旧主题直到进程被杀。
  *
- * [readFallbackAppearance] 只在拿不到桥接状态时（尚未 connect、旧版主进程不带该字段）
- * 兜底读一次本地偏好；一旦桥接状态到达就以桥接字段为准。
+ * [readFallbackAppearance] 只在拿不到桥接状态时（尚未 connect、首帧还没到达）兜底读一次
+ * 本地偏好；一旦桥接状态到达就以桥接字段为准。
  */
 internal data class AssistantAppearance(
     /** 主进程保存的模式名：SYSTEM / LIGHT / DARK。 */
