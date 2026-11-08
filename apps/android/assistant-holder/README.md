@@ -29,6 +29,7 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
 | 文件 | 职责 |
 | --- | --- |
 | `AssistantSessionService.kt` | `VoiceInteractionSession`：测量驱动窗口高度、状态机驱动形态、圈选全屏、返回键与生命周期 |
+| `AssistantSessionLifecycle.kt` | 一次展示的桥接动作：进入绑定并声明可见，退出先撤销可见再断开（不取消生成） |
 | `AssistantSessionRoot.kt` | 宿主无关的根组合：紧凑输入 / 展开会话两态、高度回传、状态机持有者 |
 | `AssistantCompactBar.kt` | 底部悬浮输入栏（附件条 + 多行输入 + 麦克风/圈选/发送）与录音态 |
 | `AssistantExpandedPanel.kt` | 可展开会话框容器：高度上限、内部滚动、智能跟随与「回到最新」 |
@@ -61,12 +62,18 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
    精确对齐。没有停靠球，也不再在"球 / 卡片"之间整窗切换。
 4. **状态机驱动形态**：唤起重置为紧凑输入；只有主进程真正接收的发送才展开会话；
    返回键先退出覆盖层（圈选），否则结束会话 —— 不中断生成、不折叠对话。
-5. **圈选来自系统截图**：只有 `onHandleScreenshot` 提供的截图可被圈选；圈选态窗口临时
+5. **每次唤起都是新会话**：`onShow` 一律丢弃旧客户端并重建，主进程的 `connect`
+   会 `openSession(client, UUID.randomUUID())`（`restoreLastThread=false`），因此不需要
+   额外的 `session.new`，也不会恢复上一次浮层的会话与草稿。
+6. **原生气泡互斥**：进入展示时发 `presence(visible=true)`，退出时**先**发
+   `presence(false)` **再** `disconnect`；未绑定前的声明由客户端记住并在首帧后补发。
+   退出路径中没有任何 `cancel`，生成继续留在主进程。
+7. **圈选来自系统截图**：只有 `onHandleScreenshot` 提供的截图可被圈选；圈选态窗口临时
    铺满屏幕（`TOP|START`），没有截图时给出明确提示，不降级到任何后台采集。确认后才裁剪
    并通过 `screen` 命令以管道提交，10 秒看门狗与 8MB 上限保持不变。
-6. **键盘与系统栏**：`SOFT_INPUT_ADJUST_NOTHING` + `setDecorFitsSystemWindows(false)`，
+8. **键盘与系统栏**：`SOFT_INPUT_ADJUST_NOTHING` + `setDecorFitsSystemWindows(false)`，
    键盘留白由 Compose 的 `imePadding()` 承担，避免系统缩放与内容让位叠加。
-7. **无障碍与减少动态**：图标按钮均有 `contentDescription`，动画令牌来自
+9. **无障碍与减少动态**：图标按钮均有 `contentDescription`，动画令牌来自
    `conversation-ui` 的 `MotionSpecs` 并随系统动画缩放退化。
 
 旧的停靠球（`AssistantDockedBall` / `BrandRing`）、面板内标题/线程列表/绑定确认/动作行

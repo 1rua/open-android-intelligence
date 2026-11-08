@@ -44,6 +44,18 @@ internal class AssistantBridgeClient(
     private var bound = false
     private var disposed = false
 
+    /**
+     * 界面最近一次声明的可见性。
+     *
+     * 可见性属于客户端、跨 `sessionNew()` 保留；绑定建立前调用 [setPresence] 没有
+     * 通道可用（返回 false），这里记住意图，由 [onServiceConnected] 在 `connect`
+     * 之后补发一次，而不是让宿主反复重试。
+     */
+    private var desiredPresence: Boolean? = null
+
+    /** 主进程已确认收到的可见性；`null` 表示本次绑定还没声明过。 */
+    private var sentPresence: Boolean? = null
+
     /** 最近一次已应用的帧序号；乱序或重复帧整帧丢弃。 */
     private var lastRevision = 0L
 
@@ -64,6 +76,9 @@ internal class AssistantBridgeClient(
                 bridgeAvailable = true,
                 advisory = current.value.advisory,
             )
+            // 首帧带回 token 后，把绑定前声明的可见性补发一次：主进程要等确认
+            // 客户端仍在展示该会话后才抑制原生气泡。已经发过就不用重复。
+            replayPresenceIfNeeded()
             true
         },
     )
@@ -78,7 +93,9 @@ internal class AssistantBridgeClient(
             }
             // 重新绑定会得到新的 token 与从 1 重新开始的服务端帧序号，
             // 旧的序号门槛必须清掉，否则新会话的首帧会被当成"乱序"丢掉。
+            // 新连接在主进程侧是从 `visible=false` 开始的，可见性也要重发。
             lastRevision = 0L
+            sentPresence = null
             command(COMMAND_CONNECT)
         }
 
@@ -132,10 +149,38 @@ internal class AssistantBridgeClient(
     /**
      * 声明界面是否正在展示当前会话（主进程据此抑制原生通知气泡）。
      *
-     * 可见性属于客户端，跨 `sessionNew()` 保留；未连接时返回 false。
+     * 可见性属于客户端，跨 `sessionNew()` 保留；未连接时返回 false，并把这次意图
+     * 记下来，绑定成功后由首帧状态补发（见 [replayPresenceIfNeeded]）。
      */
-    fun setPresence(visible: Boolean): Boolean =
-        command(COMMAND_PRESENCE) { putBoolean("visible", visible) }
+    fun setPresence(visible: Boolean): Boolean {
+        desiredPresence = visible
+        // 尚未绑定/还没拿到 token 时通道不存在，这不是"连接中断"：只记住意图，
+        // 由首帧状态补发。直接走 command() 会被当成发送失败并错误地显示断连提示。
+        if (bridge == null || token == null) return false
+        // 主进程已经确认同一状态就不再重复发：宿主可能先后在 onStart 与
+        // onResume 各声明一次，重复帧只会让主进程多做一次无意义的发布。
+        if (sentPresence == visible) return true
+        return deliverPresence(visible)
+    }
+
+    /** 把最近一次声明的可见性真正发出去；返回命令是否已送达。 */
+    private fun deliverPresence(visible: Boolean): Boolean {
+        val delivered = command(COMMAND_PRESENCE) { putBoolean("visible", visible) }
+        if (delivered) sentPresence = visible
+        return delivered
+    }
+
+    /**
+     * 绑定建立后补发可见性。
+     *
+     * 只有"界面想要的状态"与"主进程已知的状态"不一致时才发：正常路径下
+     * [setPresence] 已经送达，这里不会产生重复命令。
+     */
+    private fun replayPresenceIfNeeded() {
+        val desired = desiredPresence ?: return
+        if (desired == sentPresence) return
+        deliverPresence(desired)
+    }
 
     /**
      * 请求发送当前草稿。
@@ -295,6 +340,8 @@ internal class AssistantBridgeClient(
         bridge = null
         token = null
         lastRevision = 0L
+        // 连接已断：主进程侧的客户端随之消失，重新绑定后必须重发可见性。
+        sentPresence = null
         // 保留上一帧的草稿与外观，只把连接轴置为不可用：界面据此显示明确引导。
         current.value = current.value.copy(
             bridgeAvailable = false,

@@ -112,6 +112,42 @@ class AssistantStateJsonTest {
         assertTrue(state.timeline[1].isStreaming)
     }
 
+    /**
+     * 草稿附件元数据必须从 v2 帧解析出来：输入栏的缩略条直接消费它，
+     * 缺字段会让用户看不见已加入草稿的图片/语音。
+     */
+    @Test fun draftAttachmentsAreParsedFromThePublishedPayload() {
+        val state = parsed(
+            """
+            {
+              "version": 2,
+              "connected": true,
+              "attachments": [
+                {"draftId": "draft-1", "filename": "screen.png", "mediaType": "image/png", "isImage": true, "localKey": "draft-1", "localState": "PENDING"},
+                {"draftId": "draft-2", "filename": "voice_1.m4a", "mediaType": "audio/mp4", "isImage": false, "localKey": "draft-2", "localState": "SAVED"}
+              ]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(2, state.attachments.size)
+        val image = state.attachments[0]
+        assertEquals("draft-1", image.draftId)
+        assertEquals("screen.png", image.filename)
+        assertEquals("image/png", image.mediaType)
+        assertTrue(image.isImage)
+        assertEquals("draft-1", image.localKey)
+        assertEquals("PENDING", image.localState)
+        assertFalse(state.attachments[1].isImage)
+        assertEquals("SAVED", state.attachments[1].localState)
+    }
+
+    @Test fun missingAttachmentsMeansAnEmptyDraftAttachmentList() {
+        val state = parsed("""{"version": 2, "connected": true}""")
+
+        assertTrue(state.attachments.isEmpty())
+    }
+
     @Test fun disconnectedPayloadNeverLooksInteractive() {
         val state = parsed("""{"version": 2, "connected": false}""")
 

@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -129,6 +130,15 @@ internal fun AssistantSessionRoot(
     /** 初值文本（ASSIST 的 `EXTRA_TEXT`）：草稿为空时填入一次，不覆盖用户已输入内容。 */
     initialText: String? = null,
     onStartRecording: () -> Unit = {},
+    /** 正在录音时的真实时长与音量；没有录音时为 null，输入栏回到输入态。 */
+    recording: AssistantCompactRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
+    /** 当前草稿里的附件（元数据 + 本进程缩略图）；移除动作交回宿主。 */
+    attachments: List<AssistantCompactAttachment> = emptyList(),
+    onRemoveAttachment: (String) -> Unit = {},
+    /** 审批决策：卡片把自身的 approvalId 绑定进回调，宿主负责提交。 */
+    onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
     onStartScreenSelection: () -> Unit = {},
     onOpenApp: () -> Unit = {},
     onContentHeightChanged: (Int) -> Unit = {},
@@ -234,6 +244,11 @@ internal fun AssistantSessionRoot(
                     onStop = onStop,
                     onStartRecording = onStartRecording,
                     onStartScreenSelection = onStartScreenSelection,
+                    attachments = attachments,
+                    onRemoveAttachment = onRemoveAttachment,
+                    recording = recording,
+                    onCancelRecording = onCancelRecording,
+                    onFinishRecording = onFinishRecording,
                     // 未连接时不禁用输入：发送失败会保留草稿并给出提示，
                     // 而不是让用户对着一个灰掉的输入框无从下手。
                     enabled = enabled,
@@ -249,6 +264,7 @@ internal fun AssistantSessionRoot(
                     maxPanelHeight = maxPanelHeight,
                     enabled = enabled,
                     onOpenApp = onOpenApp,
+                    onDecide = onDecide,
                     composer = composer,
                 )
             } else {
@@ -273,6 +289,7 @@ private fun ExpandedConversation(
     maxPanelHeight: Dp,
     enabled: Boolean,
     onOpenApp: () -> Unit,
+    onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit,
     composer: @Composable () -> Unit,
 ) {
     val generation: GenerationState? = null
@@ -307,9 +324,9 @@ private fun ExpandedConversation(
             itemContent = { item ->
                 TimelineDisplayRow(
                     item = item,
-                    // 审批决策通道已由桥接层提供（AssistantBridgeClient.decideApproval），
-                    // 但本入口尚未把按键接到宿主；在接线完成前不伪造一次已提交的裁决。
-                    onDecide = { _, _ -> },
+                    // 审批决策走桥接层的 `approval` 命令；卡片已把自身的 approvalId
+                    // 绑定进回调，这里只做转发，不伪造一次已提交的裁决。
+                    onDecide = onDecide,
                     timing = timing,
                     onOpenAttachmentPreview = openPreview,
                     evidenceOwner = threadId,

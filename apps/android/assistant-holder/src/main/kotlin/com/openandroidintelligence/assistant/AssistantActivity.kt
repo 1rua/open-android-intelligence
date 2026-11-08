@@ -24,6 +24,14 @@ class AssistantActivity : Activity() {
     /** 初值文本：只用于首帧种子，用户改过之后不再回写。 */
     private var initialText: String? = null
 
+    /**
+     * 界面当前是否真正在前台（RESUMED 到 PAUSED 之间）。
+     *
+     * `onNewIntent` 会换掉桥接客户端，而这时 onStart/onResume 不会再来一次；
+     * 新客户端必须自己补上可见性声明。这个标记让 [showFor] 知道是否该声明。
+     */
+    private var present = false
+
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         // 与主 App 一致地铺满系统栏：助理表面自己按 inset 内缩，不会压到状态栏/手势条。
@@ -45,10 +53,32 @@ class AssistantActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        present = true
         host?.resume()
+        // 界面进入前台：声明可见，主进程据此对同一会话不再弹原生气泡。
+        // 兜底的 ASSIST 入口和系统会话共用同一语义；未连上时客户端会在首帧后补发。
+        client?.setPresence(true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        present = true
+        // onStart 已声明过一次；这里重复调用由客户端去重，不会产生多余命令。
+        // 覆盖"先 pause 后被系统直接 resume"的场景，可见性始终跟随真实前台状态。
+        client?.setPresence(true)
+    }
+
+    override fun onPause() {
+        present = false
+        // 先撤销可见性：界面不再展示当前会话，原生气泡可以恢复提醒。
+        // 只影响展示，不取消任何已提交的生成。
+        client?.setPresence(false)
+        super.onPause()
     }
 
     override fun onStop() {
+        present = false
+        client?.setPresence(false)
         host?.stop()
         super.onStop()
     }
@@ -107,6 +137,9 @@ class AssistantActivity : Activity() {
         applySystemBarAppearance(readFallbackAppearance(this).darkTheme(this))
         composeHost.resume()
         bridge.connect()
+        // onNewIntent 换客户端时不会重走 onResume：已在前台就为新客户端补一次声明。
+        // 绑定尚未建立时客户端会记住这个意图，首帧后自动补发。
+        if (present) bridge.setPresence(true)
     }
 
     private fun releaseUi() {
