@@ -316,8 +316,8 @@ open class GatewayWebSocketTransport(
             ?: throw IOException("WEBSOCKET_HANDSHAKE_FAILED:invalid-status")
         when (status) {
             101 -> Unit
-            401 -> throw EventSessionRejectedException(snapshot)
-            403 -> throw EventStreamForbiddenException()
+            401 -> throw EventSessionRejectedException(snapshot, httpStatus = 401)
+            403 -> throw EventStreamForbiddenException(httpStatus = 403)
             410 -> throw EventCursorExpiredException()
             else -> throw GatewayWebSocketHandshakeException(status)
         }
@@ -391,8 +391,8 @@ open class GatewayWebSocketTransport(
     }
 
     private fun rejectClose(code: Int, snapshot: GatewayProfile) {
-        if (code in setOf(1008, 4003, 4403)) throw EventStreamForbiddenException()
-        if (code in setOf(4001, 4401)) throw EventSessionRejectedException(snapshot)
+        if (code in setOf(1008, 4003, 4403)) throw EventStreamForbiddenException(closeCode = code)
+        if (code in setOf(4001, 4401)) throw EventSessionRejectedException(snapshot, closeCode = code)
     }
 
     private fun sendFrame(output: OutputStream, opcode: Int, payload: ByteArray) {

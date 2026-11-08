@@ -11,6 +11,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -46,10 +47,14 @@ class GatewayWebSocketTransportTest {
         val first = runCatching { transport.events().toList() }.exceptionOrNull()
         assertTrue(first is com.openandroidintelligence.gateway.http.EventSessionRejectedException)
         assertEquals(initial, (first as com.openandroidintelligence.gateway.http.EventSessionRejectedException).rejectedProfile)
+        assertEquals(401, (first as com.openandroidintelligence.gateway.http.EventSessionRejectedException).httpStatus)
+        assertEquals(null, (first as com.openandroidintelligence.gateway.http.EventSessionRejectedException).closeCode)
         renewal.refresh(initial)
         val second = runCatching { transport.events().toList() }.exceptionOrNull()
         assertTrue(second is com.openandroidintelligence.gateway.http.EventSessionRejectedException)
         assertEquals(renewal.current, (second as com.openandroidintelligence.gateway.http.EventSessionRejectedException).rejectedProfile)
+        assertEquals(401, (second as com.openandroidintelligence.gateway.http.EventSessionRejectedException).httpStatus)
+        assertEquals(null, (second as com.openandroidintelligence.gateway.http.EventSessionRejectedException).closeCode)
         val old = outputs[0].toString(Charsets.US_ASCII.name())
         val rotated = outputs[1].toString(Charsets.US_ASCII.name())
         assertTrue(old.contains("Authorization: Bearer test_token\r\n"))
@@ -1335,4 +1340,189 @@ class GatewayWebSocketTransportTest {
         assertEquals(1, sseAttempts)
         assertEquals(listOf(1000L), recordedDelays)
     }
+    private fun closePayload(code: Int) = byteArrayOf((code shr 8).toByte(), code.toByte())
+
+    private fun authFailureTransport(): com.openandroidintelligence.gateway.http.GatewayByteTransport =
+        object : com.openandroidintelligence.gateway.http.GatewayByteTransport {
+            override suspend fun execute(request: com.openandroidintelligence.gateway.http.WireRequest):
+                com.openandroidintelligence.gateway.http.WireResponse = error("unused")
+            override fun eventStream(request: com.openandroidintelligence.gateway.http.WireRequest):
+                kotlinx.coroutines.flow.Flow<ByteArray> = error("authentication failure must not downgrade to SSE")
+        }
+
+    @Test
+    fun handshakeAuthStatusesPreserveMetadataAndLoggingAcrossRealSockets() = runBlocking {
+        val oldSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val logs = mutableListOf<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, line -> logs += line }
+        try {
+            listOf(401, 403).forEach { status ->
+                logs.clear()
+                ServerSocket(0).use { server ->
+                    server.soTimeout = 5_000
+                    val served = java.util.concurrent.CompletableFuture<Unit>()
+                    thread(isDaemon = true) {
+                        try {
+                            server.accept().use { socket ->
+                                socket.soTimeout = 5_000
+                                readHttpHeaders(socket.getInputStream())
+                                socket.getOutputStream().write(
+                                    "HTTP/1.1 $status Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                        .toByteArray(Charsets.US_ASCII),
+                                )
+                                socket.getOutputStream().flush()
+                            }
+                            served.complete(Unit)
+                        } catch (failure: Throwable) {
+                            served.completeExceptionally(failure)
+                        }
+                    }
+                    val initial = testProfile(server.localPort)
+                    val websocket = GatewayWebSocketTransport(initial, { ByteArray(64) })
+                    val client = com.openandroidintelligence.gateway.http.GatewayHttpClient(
+                        initial,
+                        authFailureTransport(),
+                        { ByteArray(64) },
+                        com.openandroidintelligence.gateway.events.InMemoryEventCursorStore(),
+                        webSocketTransport = websocket,
+                    )
+                    val failure = runCatching { client.events().toList() }.exceptionOrNull()
+                    served.get(5, TimeUnit.SECONDS)
+                    if (status == 401) {
+                        assertTrue(failure is com.openandroidintelligence.gateway.http.EventSessionRejectedException)
+                        assertEquals(401, (failure as com.openandroidintelligence.gateway.http.EventSessionRejectedException).httpStatus)
+                        assertNull((failure as com.openandroidintelligence.gateway.http.EventSessionRejectedException).closeCode)
+                    } else {
+                        assertTrue(failure is com.openandroidintelligence.gateway.http.EventStreamForbiddenException)
+                        assertEquals(403, (failure as com.openandroidintelligence.gateway.http.EventStreamForbiddenException).httpStatus)
+                        assertNull((failure as com.openandroidintelligence.gateway.http.EventStreamForbiddenException).closeCode)
+                    }
+                    val line = logs.single { it.contains("stage=AUTH") }
+                    assertTrue(line, line.contains("status=$status"))
+                    assertTrue(line, line.contains("closeCode=null"))
+                    assertFalse(line, line.contains("Bearer test_token"))
+                }
+            }
+        } finally {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = oldSink
+        }
+    }
+
+    @Test
+    fun websocketClose4001RenewsAndLogsCloseCode() = kotlinx.coroutines.test.runTest {
+        val oldSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val logs = mutableListOf<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, line -> logs += line }
+        try {
+            ServerSocket(0).use { server ->
+                server.soTimeout = 5_000
+                val authorizations = java.util.concurrent.CopyOnWriteArrayList<String>()
+                val served = java.util.concurrent.CompletableFuture<Unit>()
+                val serverThread = thread(isDaemon = true) {
+                    try {
+                        server.accept().use { socket ->
+                            socket.soTimeout = 5_000
+                            val (_, headers) = readHttpHeaders(socket.getInputStream())
+                            authorizations += headers["authorization"].orEmpty()
+                            socket.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+                            socket.getOutputStream().flush()
+                            writeServerFrame(socket.getOutputStream(), 0x08, closePayload(4001))
+                        }
+                        server.accept().use { socket ->
+                            socket.soTimeout = 5_000
+                            val (_, headers) = readHttpHeaders(socket.getInputStream())
+                            authorizations += headers["authorization"].orEmpty()
+                            socket.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+                            socket.getOutputStream().flush()
+                            val event = "{\"id\":\"after_4001\",\"event\":\"notice\",\"data\":{}}".toByteArray(Charsets.UTF_8)
+                            writeServerFrame(socket.getOutputStream(), 0x01, event)
+                        }
+                        served.complete(Unit)
+                    } catch (failure: Throwable) {
+                        served.completeExceptionally(failure)
+                    }
+                }
+                val initial = testProfile(server.localPort)
+                var refreshes = 0
+                val renewal = com.openandroidintelligence.gateway.auth.GatewaySessionRenewal(initial, backgroundScope) {
+                    refreshes++
+                    it.copy(sessionId = "renewed", accessToken = "new")
+                }
+                val websocket = GatewayWebSocketTransport(initial, { ByteArray(64) })
+                val client = com.openandroidintelligence.gateway.http.GatewayHttpClient(
+                    initial,
+                    authFailureTransport(),
+                    { ByteArray(64) },
+                    com.openandroidintelligence.gateway.events.InMemoryEventCursorStore(),
+                    webSocketTransport = websocket,
+                    sessionRenewal = renewal,
+                    delayFn = {},
+                    jitterFn = { it },
+                )
+                assertEquals("after_4001", client.events().take(1).toList().single().id)
+                served.get(5, TimeUnit.SECONDS)
+                serverThread.join(5_000)
+                assertEquals(1, refreshes)
+                assertEquals(listOf("Bearer test_token", "Bearer new"), authorizations)
+                val line = logs.single { it.contains("stage=AUTH") }
+                assertTrue(line, line.contains("transport=WS"))
+                assertTrue(line, line.contains("status=null"))
+                assertTrue(line, line.contains("closeCode=4001"))
+                assertTrue(line, line.contains("action=authentication"))
+            }
+        } finally {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = oldSink
+        }
+    }
+
+    @Test
+    fun websocketClose1008TerminatesAndLogsCloseCode() = runBlocking {
+        val oldSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val logs = mutableListOf<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, line -> logs += line }
+        try {
+            ServerSocket(0).use { server ->
+                server.soTimeout = 5_000
+                val connections = java.util.concurrent.atomic.AtomicInteger()
+                val served = java.util.concurrent.CompletableFuture<Unit>()
+                val serverThread = thread(isDaemon = true) {
+                    try {
+                        server.accept().use { socket ->
+                            connections.incrementAndGet()
+                            socket.soTimeout = 5_000
+                            val (_, headers) = readHttpHeaders(socket.getInputStream())
+                            socket.getOutputStream().write(mock101Response(headers).toByteArray(Charsets.US_ASCII))
+                            socket.getOutputStream().flush()
+                            writeServerFrame(socket.getOutputStream(), 0x08, closePayload(1008))
+                        }
+                        served.complete(Unit)
+                    } catch (failure: Throwable) {
+                        served.completeExceptionally(failure)
+                    }
+                }
+                val initial = testProfile(server.localPort)
+                val client = com.openandroidintelligence.gateway.http.GatewayHttpClient(
+                    initial,
+                    authFailureTransport(),
+                    { ByteArray(64) },
+                    com.openandroidintelligence.gateway.events.InMemoryEventCursorStore(),
+                    webSocketTransport = GatewayWebSocketTransport(initial, { ByteArray(64) }),
+                )
+                val failure = runCatching { client.events().toList() }.exceptionOrNull()
+                served.get(5, TimeUnit.SECONDS)
+                serverThread.join(5_000)
+                assertTrue(failure is com.openandroidintelligence.gateway.http.EventStreamForbiddenException)
+                assertEquals(1008, (failure as com.openandroidintelligence.gateway.http.EventStreamForbiddenException).closeCode)
+                assertNull(failure.httpStatus)
+                assertEquals(1, connections.get())
+                val line = logs.single { it.contains("stage=AUTH") }
+                assertTrue(line, line.contains("status=null"))
+                assertTrue(line, line.contains("closeCode=1008"))
+                assertTrue(line, line.contains("action=terminal"))
+            }
+        } finally {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = oldSink
+        }
+    }
+
 }

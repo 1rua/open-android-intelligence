@@ -15,13 +15,13 @@
 | 验收项 | 当前证据 | 尚缺证据 |
 | --- | --- | --- |
 | 3 小时 Core/Agent 稳定（最低 6 轮） | 原起点未变；全 2860 轮 HTTP 200、Hermes 在线、能力表未清空；首 3 小时 1072 样本、6 轮周期消息；全量最大采样间隔 11.425 秒、76 项运行摘要一致；独立审计 passed | 手机连续在线和真机另行验收，不由本行替代 |
-| 自动恢复 | Core 真重启时原 generation 继续完成；Hermes 真重启后原历史恢复；AVD 短断/后台/短息屏恢复 | 真机和长时 Doze；原专用模拟器当前不可用 |
+| 自动恢复 | Core 真重启时原 generation 继续完成；Hermes 真重启后原历史恢复；AVD 短断/后台/短息屏恢复 | 真机和长时 Doze；原专用模拟器已恢复，独立新段进行中 |
 | 状态准确 | 单次探测失败保能力、三次暂时失败阈值、永久拒绝和各 Agent 隔离回归；导入历史状态已现场修正 | 动态 steer 四次短暂门禁变化原因未确定；真机补验 |
 | 消息可靠 | 20 条顺序＋3 会话并发真实消息均完成、单 POST、历史各一行；游标重放自动化与真实 TCP 切换去重 | 周期首 3 小时 6 轮、全 16 轮完整记录与停止边界另 1 轮均按原身份完成；真机长流仍待验 |
 | 任务连续 | 接受后断开观察并重启 Core，原生成编号完成、用户与回复各一行 | 不将宿主真正崩溃的 unknown 伪造为完成，真机在途任务补验 |
 | 设备可靠 | 手动只读请求成功并 ACK；断网批准后原请求等待核验、恢复并仅一次 invoke | 最终 APK 同场景已 success/ACK，其他真实设备/副作用能力验收 |
 | 故障诊断 | 已脱敏 requestId 阶段日志和独立 Core 结果；认证来源隔离、INFO 恢复日志、日志 sink 失败保护 | Android 旧采集遗漏 AUTH 异常类别/处理决定，不能补证每次续签结果 |
-| 回归准入 | Python 聚焦回归、33 项设备 Robolectric、62 项真实 Core HTTP/WS 回归通过；最新 Core/Adapter/APK/Android CI 通过 | 8f6f7703 的完整 CI 已成功；验收时长改动与最新 dev 整合后的 CI 另查，真机仍待验 |
+| 回归准入 | Python 聚焦回归、33 项设备 Robolectric、62 项真实 Core HTTP/WS 回归通过；最新 Core/Adapter/APK/Android CI 通过 | aac0d482 整合后8项CI全部成功，原Fast/PR准入步骤成功；本轮模拟器3小时及故障注入尚在验证 |
 | 交付 | 中文提交、dev PR #95（保持打开）、根因/兼容/回退文档及可复现测试已提供 | 未完成验收保持显式标记，不合并 PR、不宣称整体完成 |
 
 ## 已复现的源码问题
@@ -258,3 +258,61 @@ python3 tools/audit-communication.py \
 本轮验收工具回归共 **149 passed**（观察器13、离线审计40、门禁选择96）。新增历史索引倒序/跨轮乱序和缺失hop错误字段的四项回归先失败后修复，另验证有效采样计数从摘要和数据推导而非固定某次快照。
 
 本次工具增量还执行了 `npm run test:fast -- --since 18544407` 和 `npm run test:pr -- --since 18544407`。初次系统Python缺少aiohttp，没有记为通过；复用既有Python3.11环境后，两次均为配置/安装/门禁263项及观察器/审计器53项通过，随后轻量Gradle `noVpnSurfaceCheck` 被默认用户缓存只读阻断，完整命令退出1。所有失败日志保留，不跳过用例或写成全绿；该静态门禁另复用既有项目缓存，在沙箱外仍复现 `fileHashes.bin (Invalid argument)`，没有删除或重建共享缓存、没有编译APK；最终整合提交由CI重跑原准入命令。
+
+## 用户指定模拟器继续验收（2026-11-08，进行中）
+
+用户要求“用模拟器继续测试”后，先恢复原 `oai-stability-20261108 / emulator-5554` 并保留数据升级至 `aac0d482`、versionCode8261。APK来自成功的run42457138898，SHA-256 `e632b5a1e37d9b07ffc5a905a0a9722fc8160eb1ed4bc218e72ab63935033118`，签名与旧包一致。原test1、设备ID、配对代际1与历史保留，未清数据或重新注册。升级后Core声明修订6→7记录为新基线；该变化不等于重绑或本地授权撤销，具体发布触发条件未由现有证据坐实。
+
+新包第一次普通观察从15:32:22开始，但执行环境中断，原采集只保留至15:37，原进程与模拟器在16:30核对时均已不存在，且Core/Hermes于16:27重新启动。该段明确incomplete，不拼入后续3小时，也不能根据中断推定通信故障。重启后实际加载的修复模块及76项运行清单逐项一致。
+
+随后原模拟器及观察协调器均改为用户级systemd临时服务，限定最长运行、禁自动重启；原Core/Hermes服务配置未改。启动时出现一次System UI无响应，等待后恢复；失败就绪证据原样保留，实际原账号/原会话/已连接与Hermes在线通过后才启动观察。当前独立业务窗口为 **2026-11-08 16:44:52.078 → 19:44:52.078 CST（UTC+8）**，结果待实际结束核验。
+
+| 独立证据 | 记录及约束 |
+| --- | --- |
+| 模拟器进程 | `oai-stability-avd-20261108-1633.service`，MainPID47780，InvocationID `9cb3c59e1a6e472b99ae8e2963a31dd1`，原运行实例须保持 |
+| 单次协调器 | `oai-stability-observe-20261108-1643.service`，MainPID99043，InvocationID `9afee890c9d548a9b49d6e41499a1d4a`；观察不依赖交互exec会话 |
+| Android采集 | 每30秒真实ADB和应用进程alive；仅保存指定连接tag及异常类别/处理决定，静默日志不当在线证明 |
+| Core独立采样 | 每10秒既有HTTP读取原设备身份、在线、Agent在线与能力表；一轮异常也要关联，不静默忽略 |
+| 周期消息 | 原测试会话按30分钟6轮，每轮唯一真实身份、一次POST，结束再GET原history/generation核对 |
+| UI回归 | 不手动刷新/换会话，按真实assistant messageId及completed标识核对自动接收 |
+
+第一轮 `msg_e3e386b17f544922bce9499c92f6da34` 已自动在UI显示completed一次，对应Corehistory用户/回复各一行。首个续签周期16:50:49出现 `EventSessionRejectedException / action=authentication`，同owner1按attempt1→RENEWAL attempt2→WS attempt3，后一次尝试距拒绝约0.129秒。同期设备与Agent采样在线，16:54只读UI仍已连接且原回复一次。该证据说明这一周期已观察到恢复，不将它外推为整段3小时通过。
+
+普通段结束前不主动断网、切后台或强制休眠；后台、息屏、短断与Doze注入在独立分段进行。系统休眠本来可能暂停网络，应核对退出休眠后原通道、原消息/任务状态恢复，不能把休眠中保持TCP当作通过标准。新采集器的collectorComplete仅表示采集过程完整，业务通过还必须核对完整共同窗口、错误来源、轮换恢复、消息身份与最终UI证据。
+
+`aac0d482` 的Core3.11/3.12、Hermes、DSH、Android专项、Fast/PR admission、插件签名与APK八项任务均成功；独立读取job/step确认原Fast admission、PR admission步骤成功，未用旧8f/185的绿色结果代替。没有维护者正式批准；CI绿色也不能代替上述模拟器实测。
+
+整合提交的CI产物已再次独立下载解析：准入报告为 **283个suite / 2836项，0 failures、0 errors、1 skipped**；Android专项报告为 **293个suite / 2826项，0 failures、0 errors、27 skipped**。两份产物存在相同测试，不相加冒充去重后的用例总数。准入的1项skip为Full渠道中只适用Play的“无插件运行时渠道能力说明”条件用例；Android专项还包含Play渠道中按渠道条件跳过的Full运行时用例。通讯相关DeviceExecutionRecoveryTest33、GatewaySessionRecoveryTest24、NativeConversationMirrorTest14、附件HTTP4和历史媒体1均在准入产物实际执行、无跳过。PR合并测试SHA为 `6e1ddadbc88733f4f90057cb2265940d1aec43ec`，所属run42457142196的head为 `aac0d482`，不混淆两种SHA。
+
+### 普通段观察到的待复核边界
+
+本轮截至18:56，Agent在线采样始终为true，HTTP请求没有错误；设备在线字段则在18:20:52、18:35:53及18:50附近出现单采样false，下一约10秒采样恢复true。设备身份、配对代际和运行清单未变，应用存活检查正常；相关时间有同owner的AUTH会话拒绝→RENEWAL→WS尝试。设备在线字段会受有效事件会话和近期设备HTTP活动共同影响，因此不能把false等同于Agent掉线，也不能把下一次true独自当作WS已恢复证据。准确拒绝来源（握手401或WS关闭4001/4401）未从既有安全日志直接取到，不以15分钟形态推断已证实过期。
+
+18:31一次只读layout未出现会话、连接或消息字段，记录为未取得UI证明；没有据此认定实际掉线。18:32只读设备状态为Awake、原Activity前台；18:34相同参数的结构诊断可读原会话、已连接和第四条真实completed消息一次。18:46第五轮新消息也自动显示completed一次，无导航、滚动、刷新或重连。这支持观察到后续交付，但不能覆盖原负证据或外推整段零断流。原审计器对任何deviceOffline继续输出needs_review，没有删除样本、改变条件或自动豁免；完整窗口结束后将按原目标逐项审查。
+
+## 原版本普通三小时终态与独立恢复结果
+
+`aac0d482 / 8261` 的普通业务窗口已实际运行到 **2026-11-08 19:44:52.078 CST**：周期记录10800.001秒、6次提交全部done；设备采集覆盖10920.014秒、365次ADB/应用存活检查无失败；Core/设备采样10860秒、1085条，HTTP错误与Agent离线均为0，运行清单和设备身份无变更。19:44:59.864只读原界面显示已连接、第六轮真实 `msg_e1a2ed8d8d4647d9b6fa405595030e82:completed` 一次，无刷新导航；19:45:00.265按六条原始clientMessageId/generation GET核对完成、历史各一对且输入顺序一致，没有新POST。
+
+设备在线字段共5个单采样false，均保留原值；它与Agent在线是不同事实。原HTTP观察器因device_offline_requires_correlation返回2，原 `window-audit.json` 保持failed（协调器子进程非零、device_offline_needs_review），没有修改门槛、删除样本或伪造成全部通过。独立审核只限本普通窗，不包含前文已复现的源码红绿对照或后续故障注入；其“证据不足”应按该限定范围解读。用户原要求是Agent无故掉线、短断可恢复且各环节状态独立，不要求所有底层socket从无断流；保守零设备offline门禁未通过仍应如实交代，不能将5个devicefalse转写为Agent掉线。
+
+随后在独立目录 `android-aac0d482-recovery-1948` 完成以下注入，不回写普通窗：
+
+| 场景 | 实际注入与结果 | 恢复读回上界 |
+| --- | --- | --- |
+| 后台 | Home后实际Launcher前台60秒，原Activity返回，原会话/第六条真实回复保留，无刷新/新登录 | 2.120秒 |
+| 息屏 | 真实Dozing60秒后唤醒，原会话已连接，无重连操作 | 1.756秒 |
+| 短断网络 | 记录原Wi-Fi/数据均开，双关5秒确认不可达，finally恢复原两项状态，原会话自动恢复 | 7.264秒 |
+| 强制Doze | 电池模拟unplug、屏幕睡眠后真实mState=IDLE保持60秒；unforce、battery reset后ACTIVE、充电/网络/屏幕全部恢复 | 3.636秒 |
+
+后台/息屏/短网段的独立Core侧采样Agentoffline均0、HTTP错误0；Doze期间设备通道可被系统暂停，应按实际注入状态解释，不能当Agent离线。所有场景均没有改授权模式或重新注册。
+
+正常通知只读基线原请求 `devreq_e58c6fcd-5acc-4b0d-a4ab-8759f42bcbfd` 仅本次手动批准后成功；HTTP提交、本地invoke、设备结果ACK各一次，父客户端按摘要确认。另一个新请求 `devreq_9f05c1ce-d2d1-4ead-9926-3cbc42c2c917` 在断网中一次批准，真实记录NETWORK_WAIT五次、NETWORK_RECOVERED一次，再invoke一次成功、结果ACK与消费者ACK。提交未知时没有换身份重发，没有保存通知正文。
+
+三条并发只读请求 `devreq_06c70e84-faf9-4b48-92f6-7097d7027c70`、`devreq_737fb946-fe06-456e-908b-690facc7c1ba`、`devreq_2e17bd87-a065-4d0f-8861-2e0c015711bd` 在20:08:53同时提交、按真实出现顺序各单次手动批准；均succeeded，各HTTP提交1、本地invoke1、设备结果ACK1、消费者ACKtrue。没有把同一结果摘要相同误当成同一请求，身份计数按各requestId核对。
+
+## 认证诊断信息补充（待新版本验证）
+
+旧运行证明AUTH可恢复及消息继续到达，但日志没有保留已知的401/403或WebSocket关闭码：`EventSessionRejectedException`和`EventStreamForbiddenException`丢弃触发点的数字，最终只剩AUTH/status=null/closeCode=null。为满足故障来源可诊断，本轮追加限定的元数据修复：异常增加默认null的可选字段，在实际已知HTTP/SSE/WS状态或关闭帧时传入，日志只输出受控数字；不记录响应正文、头、令牌或游标，不改变任何续签/重试/授权/在线状态条件，也不改UI。新提交仍需独立定向回归、CI及安装后一次真实轮换日志核对；上述8261完整运行与恢复结果不冒充新包实测。
+
+诊断补丁的定向回归已完成红绿：当前gateway完整源码与两类测试真实Kotlin编译成功；补充3项用例在旧实现全部失败，日志仍为AUTH/status=null/closeCode=null；新实现聚焦9项运行0失败、0忽略、0假设跳过，覆盖Fake401/403/未知、真实SSE401/403、真实TCP握手401/403、4001续签及1008终止日志，并保留原消息POST不重投和撤权核验。两类异常以`@JvmOverloads`保留旧公开JVMprofile/无参构造。该定向结果不替代随后固定提交CI或新APK真实轮换。

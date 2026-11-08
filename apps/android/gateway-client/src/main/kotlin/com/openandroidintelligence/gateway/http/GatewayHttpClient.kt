@@ -293,7 +293,7 @@ class GatewayHttpClient(
             if (recovery == null) {
                 snapshot = sessionRenewal.refresh(snapshot)
             } else {
-                if (!recoverEventAuthentication(snapshot, recovery.owner)) throw EventSessionRejectedException(snapshot)
+                if (!recoverEventAuthentication(snapshot, recovery.owner)) throw EventSessionRejectedException(snapshot, httpStatus = 401)
                 snapshot = sessionProfile()
             }
             response = executeOnce(replayable, snapshot)
@@ -301,8 +301,8 @@ class GatewayHttpClient(
         if (recovery != null) {
             requireEventOwner(recovery.owner)
             when {
-                response.status == 401 -> throw EventSessionRejectedException(snapshot)
-                response.status == 403 -> throw EventStreamForbiddenException()
+                response.status == 401 -> throw EventSessionRejectedException(snapshot, httpStatus = 401)
+                response.status == 403 -> throw EventStreamForbiddenException(httpStatus = 403)
                 response.status in 500..599 || response.status in setOf(408, 429) -> throw EventSnapshotRequestException(response.status)
                 response.status !in 200..299 -> throw IllegalStateException("EVENT_SNAPSHOT_HTTP_FAILED:${response.status}")
             }
@@ -586,9 +586,16 @@ class GatewayHttpClient(
             is GatewayWebSocketHandshakeException -> failure.status
             is EventSnapshotRequestException -> failure.status
             is GatewayAuthException -> failure.httpStatus
+            is EventSessionRejectedException -> failure.httpStatus
+            is EventStreamForbiddenException -> failure.httpStatus
             else -> null
         }
-        val close = (failure as? GatewayWebSocketClosedException)?.closeCode
+        val close = when (failure) {
+            is GatewayWebSocketClosedException -> failure.closeCode
+            is EventSessionRejectedException -> failure.closeCode
+            is EventStreamForbiddenException -> failure.closeCode
+            else -> null
+        }
         val lastHeartbeat = health.lastHeartbeatAt.get().takeIf { it >= 0 }
         GatewayLog.w(TAG, "event failure action=$action transport=$transport ownerID=${owner.id} attempt=$attempt " +
             "stage=$stage failure=${failure.javaClass.simpleName} status=$status closeCode=$close nextDelayMillis=$nextDelay " +

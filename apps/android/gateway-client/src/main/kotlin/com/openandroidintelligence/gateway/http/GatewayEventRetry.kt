@@ -4,7 +4,12 @@ import java.io.IOException
 
 internal class EventSnapshotRequestException(val status: Int) : IOException("EVENT_SNAPSHOT_HTTP_FAILED:$status")
 
-class EventStreamForbiddenException : IOException("EVENT_SESSION_FORBIDDEN")
+class EventStreamForbiddenException @JvmOverloads constructor(
+    /** Known HTTP/SSE/WS handshake status; null means the source did not expose one. */
+    val httpStatus: Int? = null,
+    /** Known WebSocket close code; null means the rejection did not come from a close frame. */
+    val closeCode: Int? = null,
+) : IOException("EVENT_SESSION_FORBIDDEN")
 enum class EventStreamTimeoutStage { HANDSHAKE, IDLE }
 class EventStreamTimeoutException(val stage: EventStreamTimeoutStage) : IOException("EVENT_STREAM_${stage.name}_TIMEOUT")
 
