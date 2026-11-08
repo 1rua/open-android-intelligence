@@ -76,6 +76,8 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 
 private const val SMS_QUERY_ID = "org.openandroidintelligence.sms.query"
+private const val OFFICIAL_SMS_PLUGIN = "org.openandroidintelligence.sms"
+private const val OFFICIAL_NOTIFICATIONS_PLUGIN = "org.openandroidintelligence.notifications"
 private const val NOTIFICATION_QUERY_ID = "org.openandroidintelligence.notifications.query"
 
 /** 短信详情里三项子能力的展示顺序与文案。 */
@@ -204,7 +206,9 @@ private fun CapabilityDetailContent(
             }
         }
     }
-    if (entryUsesNotificationPolicy(pluginId, capability)) {
+    // 与下方「通知采集范围」同一判据：该策略对任何声明了 notifications 原语的提供者都生效，
+    // 因此它的变化都要触发本页刷新，而不只对官方插件。
+    if (entries.any { "kernel.notifications.read" in it.primitives }) {
         val notificationPolicy = NotificationControlRegistry.policyPort()
         LaunchedEffect(notificationPolicy, runtime) {
             notificationPolicy.observe().drop(1).collect { refresh() }
@@ -434,7 +438,12 @@ private fun CapabilityDetailContent(
         }
     }
 
-    if (entryUsesNotificationPolicy(pluginId, capability)) {
+    // 采集范围按**原语**判定，而不是按插件 ID。
+    //
+    // `NotificationsReadPrimitive` 实际执行的是这一份全安装共享的采集策略，任何声明了
+    // `kernel.notifications.read` 的提供者都受它约束。只按官方插件 ID 判定会让第三方通知
+    // 提供者的详情页失去这个编辑入口，用户将无法配置真正生效的范围。
+    if (entries.any { "kernel.notifications.read" in it.primitives }) {
         SectionLabel("通知采集范围")
         SettingsSectionCard {
             NotificationCollectionScreen(
@@ -497,29 +506,29 @@ private fun CapabilityDetailContent(
         pushSnapshot?.let { snap ->
             SectionLabel("主动推送")
             when {
-                capabilityId == NOTIFICATION_QUERY_ID -> com.openandroidintelligence.mobile.push.NotificationPushSection(
-                    config = snap.configuration,
-                    endpoints = endpoints,
-                    saving = pushSaving,
-                    error = saveError,
-                    onConfigurationChange = { next -> savePush { next } },
-                )
-                capabilityId == SMS_QUERY_ID -> com.openandroidintelligence.mobile.push.SmsPushSection(
-                    config = snap.configuration,
-                    endpoints = endpoints,
-                    saving = pushSaving,
-                    error = saveError,
-                    onConfigurationChange = { next -> savePush { next } },
-                    onRefreshEndpoints = { push.refreshEndpoints() },
-                )
+                // 推送配置属于官方能力，按插件与能力同时判定：第三方提供者即使声明了同名能力，
+                // 也不会拿到官方插件的推送设置。
+                pluginId == OFFICIAL_NOTIFICATIONS_PLUGIN && capabilityId == NOTIFICATION_QUERY_ID ->
+                    com.openandroidintelligence.mobile.push.NotificationPushSection(
+                        config = snap.configuration,
+                        endpoints = endpoints,
+                        saving = pushSaving,
+                        error = saveError,
+                        onConfigurationChange = { next -> savePush { next } },
+                    )
+                pluginId == OFFICIAL_SMS_PLUGIN && capabilityId == SMS_QUERY_ID ->
+                    com.openandroidintelligence.mobile.push.SmsPushSection(
+                        config = snap.configuration,
+                        endpoints = endpoints,
+                        saving = pushSaving,
+                        error = saveError,
+                        onConfigurationChange = { next -> savePush { next } },
+                        onRefreshEndpoints = { push.refreshEndpoints() },
+                    )
             }
         }
     }
 }
-
-private fun entryUsesNotificationPolicy(pluginId: String, capability: String): Boolean =
-    pluginId == "org.openandroidintelligence.notifications" &&
-        capability.substringBefore('@') == NOTIFICATION_QUERY_ID
 
 internal fun localAvailabilityLabel(status: String?, reason: String?): String {
     val label = when (status) {

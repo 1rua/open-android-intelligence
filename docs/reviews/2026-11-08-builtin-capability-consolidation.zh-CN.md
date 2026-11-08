@@ -141,6 +141,17 @@ PR #97 的自动评审（Codex）提出三条 P1，逐条核实后**全部属实
 | 内建短信从插件管理移走后，唯一的「允许后台任务」入口消失，定时任务会一直 `BACKGROUND_GRANT_REQUIRED`，已有许可也无法撤销 | 属实。`setCapabilityPolicy` 显式排除 `kernel.background.run`，而 `PluginJobScheduler.schedule` 同时要求全局与身份作用域两项许可 | 在能力详情新增「后台任务」节，开关直连 `setBackgroundEnabled` |
 | 连续两次推送编辑都基于同一份旧快照，第二次会覆盖第一次（例如正文开关被恢复成开启） | 属实。两个回调都用 `snap.configuration` 构造，丢弃 `configure()` 的返回值，且 `saving` 恒为 `false` | 改为串行保存：回写权威快照、以下一次 `expectedConfiguration` 防冲突、保存期间禁用控件、区分 `PUSH_CONFIGURATION_CHANGED` |
 
+第二轮评审又提出两条，同样核实属实：
+
+| 评审意见 | 核实 | 修复 |
+| --- | --- | --- |
+| 通知采集范围的条件收窄成只看官方插件 ID，第三方通知提供者失去范围编辑入口 | 属实。`NotificationsReadPrimitive` 执行的是全安装共享的采集策略，按 ID 判定会让第三方提供者无法配置真正生效的范围 | 条件改回按原语判定（`entries.any { "kernel.notifications.read" in it.primitives }`），刷新副作用同步改；推送设置仍按“官方插件 + 官方能力”双条件，不挂到第三方 |
+| 磁盘旧副本的过滤只看“本次加载成功的内建能力”，资产加载失败时旧实现会顶上来执行 | 属实。这正是规格承诺的反面：内核跑旧实现，界面报加载失败、插件管理又不显示它 | 改为按固定的 `BundledPlugin.entries` ID 集合过滤；`isBuiltIn` 也基于固定的 `reservedBuiltInIds`，因此卸载同样被拒绝 |
+
+对应测试：`NotificationScopeOwnershipTest`（第三方通知提供者保留范围入口、不出现官方推送设置）、
+`LegacyOfficialCopyIsNeverLoadedTest`（资产缺失时旧副本仍不注册、不启用）。两条都做过**回退验证**：
+把修复改回旧行为，对应用例确实失败。
+
 对应测试：`CapabilityTemporaryApprovalsTest`（含“旧键永不匹配”的反向用例）、
 `SmsBackgroundConsentTest`（用声明了后台任务的第三方短信包验证同一条装配）、
 `PushConfigurationSerializationTest`（在 `DevicePushRuntime` 上复现覆盖链路）。

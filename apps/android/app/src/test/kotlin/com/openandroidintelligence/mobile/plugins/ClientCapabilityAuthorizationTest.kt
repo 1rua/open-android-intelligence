@@ -539,9 +539,10 @@ class ClientCapabilityAuthorizationTest {
         }
         KernelPrimitiveRegistry.register(provider)
         try {
-            host.installStore.install(TestAlpPackages.compiledSmsPackage())
+            // 用第三方 ID：官方 ID 现在只从 APK 加载，不允许磁盘副本参与，否则测的就不是这条规则。
+            val id = "org.example.background-deny"
+            host.installStore.install(TestAlpPackages.compiledSmsPackage(pluginId = id))
             host.reload()
-            val id = "org.openandroidintelligence.sms"
             val entry = host.entries(id).first { it.id.endsWith(".query") }
             val background = "kernel.background.run"
             val scoped = identityGrantKey(entry.identity, background)

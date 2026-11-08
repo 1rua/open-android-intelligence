@@ -31,6 +31,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private val trustMode: DeveloperTrustMode, val nativeLoader: NativePluginLoader, private val installationId: String,
     /** 官方能力包的来源；生产读 APK 资源，测试可注入字节。缺包时如实报告而不是假装可用。 */
     private val builtInPackages: BuiltInPackageReader = BuiltInPackageReader { plugin -> readBundledPluginPackage(context, plugin) },
+    /**
+     * 官方能力的固定 ID 集合，默认覆盖 [BundledPlugin.entries]。
+     *
+     * 只应在测试里换成空集合：那时官方 ID 被当作普通第三方插件对待，用来验证“安装/启用/卸载”
+     * 链路本身。生产永远用完整的默认值。
+     */
+    private val reservedBuiltInIds: Set<String> = BundledPlugin.entries.map { it.pluginId }.toSet(),
 ) {
     val installStore = PluginInstallStore(context)
     val runtimes = ConcurrentHashMap<String,PluginRuntime>()
@@ -62,8 +69,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private lateinit var kernel: PluginKernel
     private val nativeInFlight = ConcurrentHashMap.newKeySet<String>()
     private val crashPreferences = context.getSharedPreferences("native-plugin-recovery-v1",Context.MODE_PRIVATE)
-    private val serviceIds = setOf("kernel.store.read","kernel.store.write","kernel.store.delete","kernel.store.keys",
-        "kernel.network.request","kernel.scheduler.set","kernel.scheduler.cancel","kernel.scheduler.read","kernel.background.run")
+    private val serviceIds = setOf("kernel.store.read","kernel.store.write","kernel.store.delete","kernel.store.keys","kernel.network.request","kernel.scheduler.set","kernel.scheduler.cancel","kernel.scheduler.read","kernel.background.run")
 
     fun attach(kernel: PluginKernel) {
         this.kernel = kernel
@@ -148,7 +154,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             try { verified.security.surface } finally { verified.stagedDirectory.deleteRecursively() }
         }
 
-    fun isBuiltIn(pluginId: String): Boolean = builtInSurfaces.containsKey(pluginId)
+    fun isBuiltIn(pluginId: String): Boolean = pluginId in reservedBuiltInIds
 
     @Synchronized fun reload() {
         capabilities.keys.toList().forEach { kernel.unregister(it) }
@@ -159,9 +165,12 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             failures["*"] = "PLUGIN_SCAN_FAILED"
             emptyList()
         }
-            // 官方能力已从 APK 校验并注册：磁盘上同名目录不再参与加载，升级后也不会用到旧版本残留。
-            // 目录本身保持原样，用户此前保存的插件数据仍留在原位置，只是不再被当成插件加载。
-            .filterNot { view -> view.pluginId?.let { builtInSurfaces.containsKey(it) } == true }
+            // 官方能力只从 APK 加载：磁盘上同 ID 的旧副本一律不参与加载，升级后不会用到旧版本残留。
+            // 这里按**固定的官方 ID 集合**过滤，而不是按“本次加载成功的内建能力”：资产缺失或校验
+            // 失败时也不能放任旧副本顶上来执行——那样内核会运行一份过时实现，而能力页却报告加载失败、
+            // 插件管理又不显示它，用户既看不到也无法处理。
+            // 目录本身保持原样，用户此前保存的插件数据仍留在原位置。
+            .filterNot { view -> (view.pluginId ?: view.directory.name) in reservedBuiltInIds }
         for (view in installed) {
             val id = view.pluginId
             if (id == null || id != view.directory.name) {
