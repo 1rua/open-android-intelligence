@@ -205,7 +205,7 @@
     "Rollback plan and original source/service-path copies retained and statically checked; live rollback rehearsal not executed"
   ],
   "originalFullAcceptanceComplete": false,
-  "remaining": "physical-device acceptance and final documentation-head CI/PR closure; code and explicitly requested simulator evidence delivered separately",
+  "remaining": "No physical-device blocker in the explicitly accepted simulator delivery scope. The acceptance-record-only follow-up receives its own validation and PR-head CI status; raw failed gates and all known limits remain unchanged.",
   "evidenceSha256": {
     "android-aac0d482-systemd-1643/aligned-run.json": "2f2f5694eaed55c3fe3c1d166bd749fdfe1528b65722ab967f617c9580cd4942",
     "android-aac0d482-systemd-1643/collector/summary.json": "d7dec91d506b6bc4194ef098c0cbefd99de76e6f68b65c85f4f9ffe9cc182d05",
@@ -222,5 +222,32 @@
     "ci-95cd01ba-independently-verified.json": "d36cf33da67108fbf1788e50c7345130d53220b5701eacaa038f2a5342d0cf81",
     "ci-95cd01ba-xml-verification.json": "5bae015fcb6bfdb60d40eed68c252b4c588287767c50631ba306d6e47dbc5f54",
     "android-95cd01ba-diagnostics/diagnostic-segment-terminal-review.json": "ff2e43289c8a1ad28a9e325ab829fde02779dc8c4df84262d2472a4e8ddf6473"
+  },
+  "acceptanceScopeDecision": {
+    "recordedAt": "2026-11-08T14:57:36.095812+00:00",
+    "source": "explicit user reply to the pending acceptance-scope question",
+    "question": "本次交付的验收范围按哪项收口？模拟器3小时、消息去重及各恢复场景已有证据；当前没有连接真机，严格“设备在线字段从不为false”的自动门禁也保留为未通过。",
+    "userAnswer": "以模拟器验证交付，保留真机局限及原门禁结果",
+    "requiredStabilitySeconds": 10800,
+    "deliveryScope": "source fixes, automated regressions, existing local Core/Agent and Android emulator evidence, report and open dev PR",
+    "physicalDeviceAcceptanceRequiredForThisDelivery": false,
+    "knownLimitsRetained": true,
+    "originalStrictDeviceOfflineGateReclassified": false,
+    "originalEvidenceOrThresholdChanged": false,
+    "ordinary3hApkVersionCode": 8261,
+    "diagnostic30MinuteApkVersionCode": 8271,
+    "acceptedScopeEvidenceComplete": true,
+    "originalFullAcceptanceComplete": false,
+    "meaning": "The user accepted delivery within disclosed simulator evidence; this is not proof of physical LAN, all write-capability field scenarios, or zero device-offline samples."
+  },
+  "priorFinalDocumentHeadCi": {
+    "head": "605fab80bc2b59c827a7f9f0086e92f9f6219dfb",
+    "coreRun": 42483962777,
+    "apkRun": 42483957074,
+    "all8JobsPassed": true,
+    "originalFastAndPrStepsPassed": true,
+    "readonlyTerminalReviewExit": 0,
+    "reviewCompletedAt": "2026-11-08T13:49:34.707198+00:00",
+    "humanApprovalClaimed": false
   }
 }
