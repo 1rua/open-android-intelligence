@@ -39,6 +39,7 @@ import com.openandroidintelligence.gateway.http.GatewayProfile
 import com.openandroidintelligence.gateway.http.GatewayTransport
 import com.openandroidintelligence.gateway.http.TransportSecurity
 import com.openandroidintelligence.gateway.negotiation.GenerationCancelCapability
+import com.openandroidintelligence.gateway.negotiation.NegotiationHttpException
 import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvider
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
 import com.openandroidintelligence.kernel.PairingGrantBinding
@@ -2000,7 +2001,7 @@ class GatewayRuntime(
         GatewayConnectionSecurity.isSecurityFailure(cause) -> false
         cause is java.io.IOException -> true
         cause is GatewayAuthException -> cause.retryable == true || cause.httpStatus in setOf(408, 429, 500, 502, 503, 504)
-        cause.message?.matches(Regex("NEGOTIATION_FAILED:(408|429|5[0-9][0-9])")) == true -> true
+        cause is NegotiationHttpException -> cause.retryable
         else -> false
     }
 
@@ -2834,10 +2835,8 @@ class GatewayRuntime(
                     }
                 }
                 val available = nState.agent
-                val coreReadable = coreHttpHealth.value.reachability !in setOf(
-                    CoreHttpReachability.UNREACHABLE, CoreHttpReachability.SECURITY_BLOCKED)
                 _controller.value?.updateRemoteCapabilities(
-                    online = available?.online == true && coreReadable,
+                    online = available?.online == true,
                     send = available?.capabilities?.send == true,
                     delete = available?.capabilities?.delete == true,
                     archive = available?.capabilities?.archive == true,
@@ -2855,8 +2854,7 @@ class GatewayRuntime(
                 }
             }
             sessionScope.launch {
-                combine(nativeController.state, coreHttpHealth) { state, _ -> state }
-                    .collect { updateNativeWorkbench(it) }
+                nativeController.state.collect { updateNativeWorkbench(it) }
             }
         }
         clearBubbleWorkTracking()

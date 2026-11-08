@@ -178,6 +178,35 @@ class NativeConnectionReliabilityTest {
         }
     }
 
+    @Test fun authenticationStorageUnavailableRetriesWithoutRotatingTheValidCredential() = runTest {
+        val profile = GatewayProfile("account", "phone", "login", "https://core.example", accessToken = "synthetic")
+        var refreshes = 0
+        val renewal = com.openandroidintelligence.gateway.auth.GatewaySessionRenewal(profile, backgroundScope) {
+            refreshes++
+            error("存储暂时忙不得触发凭据续签")
+        }
+        val h = Harness(this, renewal = renewal).apply {
+            responseStatus = 503
+            responseBody = """{"error":{"code":"AUTHENTICATION_STORAGE_UNAVAILABLE","retryable":true,"details":{"stage":"SESSION_LOOKUP","storageFailure":"SQLITE_BUSY"}}}"""
+        }
+        try {
+            h.repository.activeConversationChanged(); runCurrent()
+            for (delay in listOf(250L, 500L, 1000L, 2000L, 4000L)) { advanceTimeBy(delay); runCurrent() }
+            assertEquals(6, h.reads)
+            assertEquals(StreamHealth.RECONNECTING, h.repository.streamHealth.first())
+            assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AUTHENTICATION_STORAGE_UNAVAILABLE:503", h.repository.streamFailure.first())
+            assertEquals(0, refreshes)
+            assertEquals(profile, renewal.current)
+            assertEquals("base", h.storage.cursor)
+            h.responseStatus = 200
+            advanceTimeBy(8000); runCurrent()
+            assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
+            assertNull(h.repository.streamFailure.first())
+            assertEquals(0, refreshes)
+            assertEquals(profile, renewal.current)
+        } finally { h.repository.close(); renewal.close() }
+    }
+
     @Test fun anUnavailableTokenRefreshIsNotConfusedWithRefusedCredentials() = runTest {
         val h = Harness(this).apply {
             readFailure = com.openandroidintelligence.gateway.auth.GatewayAuthException("REFRESH_FAILED", "UPSTREAM_UNAVAILABLE", 503)
@@ -349,7 +378,8 @@ class NativeConnectionReliabilityTest {
         assertEquals(failure, h.repository.streamFailure.first())
     }
 
-    private class Harness(scope: TestScope, jitter: (Long) -> Long = { it }) {
+    private class Harness(scope: TestScope, jitter: (Long) -> Long = { it },
+        renewal: com.openandroidintelligence.gateway.auth.GatewaySessionRenewal? = null) {
         var conversationId = "chat"
         var failedReads = 0
         var readFailure: Exception = IOException("synthetic outage")
@@ -407,6 +437,7 @@ class NativeConnectionReliabilityTest {
         val client = AgentSessionClient(GatewayHttpClient(
             GatewayProfile("account", "phone", "login", "https://core.example", accessToken = "synthetic"),
             transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher,
+            sessionRenewal = renewal,
         ))
         private val agent = CoreAgent("hermes", "synthetic", "hermes", true, "account",
             AgentCapabilities(history = true, eventSync = true, send = true, stream = true))

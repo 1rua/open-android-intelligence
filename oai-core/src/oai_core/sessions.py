@@ -386,7 +386,11 @@ class AgentRegistry:
 
     async def discover(self) -> list[dict[str, Any]]:
         self.sync_registered()
-        await self._autodiscover_host_agents()
+        try:
+            await self._autodiscover_host_agents()
+        except Exception as failure:
+            # 可选候选发现失败不能阻断基础协商；已有实例仍须经过真实健康探测。
+            logger.warning("可选宿主自动发现失败，保留已注册实例（%s）", type(failure).__name__)
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
             descriptor = adapter.descriptor()
             online = await self._health.online(descriptor["id"], adapter)
@@ -736,6 +740,8 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                         **({"details": exc.details} if exc.details else {})}}, status=exc.status)
                 except GatewayError as exc:
                     body = {"error": {"code": exc.code}}
+                    if exc.code == "AUTHENTICATION_STORAGE_UNAVAILABLE":
+                        body["error"].update(retryable=True, details=exc.details)
                     return web.json_response(body, status=_status(body))
                 except web.HTTPRequestEntityTooLarge:
                     # Reading may happen during signed authentication, before body_for.
