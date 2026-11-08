@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
+import time
 import uuid
 from typing import Any, AsyncIterator, Mapping
 from urllib.parse import quote, urlencode, urlsplit
@@ -28,6 +30,17 @@ REMOTE_PREFIX = "/oai/session-adapter/v1"
 # Match the existing native Codex frame budget and stay below Android's SSE
 # frame budget. aiohttp's default line budget is too small for final snapshots.
 MAX_STREAM_EVENT_BYTES = 8 * 1024 * 1024
+STREAM_HEARTBEAT_IDLE_SECONDS = 60.0
+CONNECT_TIMEOUT_SECONDS = 5.0
+BRIDGE_AUTH_CODES = frozenset({"AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED", "UNAUTHORIZED", "FORBIDDEN"})
+
+
+def _transport_log(level: int, message: str, *args: Any) -> None:
+    try:
+        logger.log(level, message, *args)
+    except Exception:
+        # A failed diagnostic sink must not replace the actual request result.
+        pass
 
 
 class RemoteSessionAdapter:
@@ -85,6 +98,11 @@ class RemoteSessionAdapter:
         self._configured_client_message_ids = forward_client_message_ids
         self.forward_client_message_ids = forward_client_message_ids
         self.origin_registration = origin_registration
+        self._capabilities_verified = capabilities is not None
+        self.health_failure: dict[str, Any] | None = None
+        self._stream_heartbeat = False
+        self._last_transport_failure: tuple[str, int, int | None] | None = None
+        self._last_transport_failure_at = 0.0
         self.capabilities = (
             dict(capabilities) if capabilities is not None else dict.fromkeys(CAPABILITIES, False)
         )
@@ -99,11 +117,31 @@ class RemoteSessionAdapter:
             "capabilities": dict(self.capabilities),
         }
 
+    def _bridge_failure(self, reason: str, *, status: int = 503, upstream_status: int | None = None) -> AdapterError:
+        details: dict[str, Any] = {"source": "agent_bridge", "reason": reason}
+        if upstream_status is not None:
+            details["upstreamStatus"] = upstream_status
+        headers = current_trace_headers()
+        request_id = headers.get("X-OAI-Request-Id")
+        key = (reason, status, upstream_status)
+        now = time.monotonic()
+        if request_id is not None or key != self._last_transport_failure or now - self._last_transport_failure_at >= 60:
+            _transport_log(logging.WARNING, "agent_transport agent=%s source=agent_bridge reason=%s status=%s upstreamStatus=%s requestId=%s traceId=%s",
+                           self.agent_id, reason, status, upstream_status, request_id,
+                           headers.get("traceparent", "")[3:35] or None)
+            self._last_transport_failure, self._last_transport_failure_at = key, now
+        return AdapterError("AGENT_UNAVAILABLE", status, details=details)
+
     def _headers(self, principal: Principal | None = None) -> dict[str, str]:
-        extra: dict[str, str] = {}
-        if self.headers_builder is not None and principal is not None:
-            extra = self.headers_builder(principal)
-        return extra
+        if self.headers_builder is None or principal is None:
+            return {}
+        try:
+            return self.headers_builder(principal)
+        except AdapterError as exc:
+            # An Agent account binding is separate from the phone's Core login.
+            if exc.code == "AGENT_ACCOUNT_NOT_CONNECTED":
+                raise self._bridge_failure("account_not_connected", status=502) from None
+            raise
 
     async def _prepare_headers(self, headers: dict[str, str] | None, method: str, path: str,
                                body: Any = None) -> dict[str, str] | None:
@@ -113,9 +151,21 @@ class RemoteSessionAdapter:
         combined_headers = {"Authorization": f"Bearer {self.token}", **current_trace_headers(), **(headers or {})}
         return aiohttp.ClientSession(
             headers=combined_headers,
-            timeout=aiohttp.ClientTimeout(total=self.timeout_seconds),
+            timeout=aiohttp.ClientTimeout(total=self.timeout_seconds,
+                                          sock_connect=min(CONNECT_TIMEOUT_SECONDS, self.timeout_seconds)),
             json_serialize=session_request_json,
         )
+
+    def _response_error(self, status: int, value: Mapping[str, Any], *, details: Mapping[str, Any] | None = None) -> AdapterError:
+        if status in {401, 403}:
+            reason = "authentication_failed" if status == 401 else "permission_denied"
+            return self._bridge_failure(reason, status=502, upstream_status=status)
+        code = value.get("code", "AGENT_UNAVAILABLE")
+        if not isinstance(code, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", code):
+            code = "AGENT_UNAVAILABLE"
+        if code in BRIDGE_AUTH_CODES:
+            return self._bridge_failure("authentication_failed", status=502, upstream_status=status)
+        return AdapterError(code, status, details=details)
 
     async def _request(
         self,
@@ -124,41 +174,78 @@ class RemoteSessionAdapter:
         body: Any = None,
         *,
         headers: dict[str, str] | None = None,
+        success_json_errors_are_protocol: bool = False,
     ) -> Any:
         try:
             async with self._session(await self._prepare_headers(headers, method, path, body)) as session:
                 async with session.request(
-                    method,
-                    self.base_url + self.prefix + path,
-                    json=body,
-                    allow_redirects=False,
+                    method, self.base_url + self.prefix + path, json=body, allow_redirects=False,
                 ) as response:
-                    value = await response.json()
+                    # Authentication errors may have an HTML/empty body. Their
+                    # source is known before parsing any untrusted error text.
+                    if response.status in {401, 403}:
+                        raise self._response_error(response.status, {})
+                    try:
+                        value = await response.json()
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                        if success_json_errors_are_protocol and response.status == 200:
+                            raise AdapterError("HOST_INCOMPATIBLE", 502) from exc
+                        raise
                     if not isinstance(value, dict):
                         raise AdapterError("HOST_INCOMPATIBLE", 502)
                     if response.status != 200:
                         details = value.get("details")
                         public = (_public_approval(details) if isinstance(details, Mapping)
                                   and "/approvals/" in path and path.endswith("/decisions") else {})
-                        raise AdapterError(str(value.get("code", "AGENT_UNAVAILABLE")), response.status, details=public)
+                        raise self._response_error(response.status, value, details=public)
                     return value
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            raise AdapterError("AGENT_UNAVAILABLE", 503) from exc
+        except AdapterError as exc:
+            if exc.code == "AGENT_ACCOUNT_NOT_CONNECTED":
+                raise self._bridge_failure("account_not_connected", status=502) from None
+            raise
+        except (aiohttp.ClientConnectorCertificateError, aiohttp.ClientSSLError) as exc:
+            raise self._bridge_failure("tls_rejected", status=502) from exc
+        except TimeoutError as exc:
+            raise self._bridge_failure("timeout") from exc
+        except (aiohttp.ClientError, ValueError) as exc:
+            raise self._bridge_failure("transport_failed") from exc
 
     async def status(self) -> bool:
         try:
-            result = await self._request("GET", "/status")
-            # Bridge-only input correlation extension. Old bridges continue to
-            # receive their existing strict body; this does not imply recovery.
-            self.forward_client_message_ids = (self._configured_client_message_ids
-                or result.get("capabilities", {}).get("clientMessageIdentity") is True)
-            self.capabilities = {
-                key: result.get("capabilities", {}).get(key) is True for key in CAPABILITIES
-            }
-            return result.get("online") is True
-        except AdapterError:
-            self.forward_client_message_ids = self._configured_client_message_ids
-            self.capabilities = dict.fromkeys(CAPABILITIES, False)
+            result = await self._request("GET", "/status", success_json_errors_are_protocol=True)
+            online = result.get("online")
+            capabilities = result.get("capabilities", {})
+            if (type(online) is not bool or not isinstance(capabilities, Mapping)
+                    or any(type(value) is not bool for value in capabilities.values())):
+                raise AdapterError("HOST_INCOMPATIBLE", 502)
+            if online is not True:
+                if not self._capabilities_verified:
+                    # An authenticated read-only bridge may advertise useful
+                    # capabilities before its executor is ready. Absence still
+                    # means unknown until a full online negotiation succeeds.
+                    self.capabilities = {key: self.capabilities.get(key) is True or capabilities.get(key) is True
+                                         for key in CAPABILITIES}
+                self.health_failure = {"kind": "unavailable", "code": "AGENT_UNAVAILABLE", "source": "agent_bridge"}
+                return False
+            # Commit only a complete successful observation. A failed probe
+            # cannot withdraw capabilities or change the next message's identity.
+            snapshot = {key: capabilities.get(key) is True for key in CAPABILITIES}
+            identity = self._configured_client_message_ids or capabilities.get("clientMessageIdentity") is True
+            self.capabilities = snapshot
+            self.forward_client_message_ids = identity
+            self._stream_heartbeat = capabilities.get("streamHeartbeat") is True
+            self._capabilities_verified = True
+            if self._last_transport_failure is not None:
+                _transport_log(logging.INFO, "agent_transport agent=%s source=agent_bridge stage=recovered", self.agent_id)
+            self._last_transport_failure = None
+            self.health_failure = None
+            return True
+        except AdapterError as exc:
+            reason = exc.details.get("reason")
+            kind = ("authentication" if reason in {"authentication_failed", "permission_denied", "account_not_connected"}
+                    else "security" if reason == "tls_rejected"
+                    else "protocol" if exc.code == "HOST_INCOMPATIBLE" else "transient")
+            self.health_failure = {"kind": kind, "code": exc.code, "source": "agent_bridge"}
             return False
 
     async def commands(self, language_code: str = "en", *, principal: Principal | None = None) -> list[dict[str, Any]]:
@@ -344,15 +431,60 @@ class RemoteSessionAdapter:
             async with self._session(await self._prepare_headers(headers, "PUT", path)) as session:
                 async with session.put(self.base_url + self.prefix + path,
                         data=chunks(), timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds), allow_redirects=False) as response:
+                    if response.status in {401, 403}:
+                        raise self._response_error(response.status, {})
                     value = await response.json()
+                    if not isinstance(value, Mapping):
+                        raise AdapterError("HOST_INCOMPATIBLE", 502)
                     if response.status != 200:
-                        raise AdapterError(str(value.get("code", "ATTACHMENT_READ_FAILED")), response.status)
+                        raise self._response_error(response.status, value)
                     if value.get("status") != "uploaded":
                         raise AdapterError("ATTACHMENT_READ_FAILED", 502)
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             raise AdapterError("ATTACHMENT_UPLOAD_FAILED", 502) from exc
         self._remember_attachment(attachment, attachment_id)
         return attachment_id
+
+    async def _stream_chunks(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
+        # 空闲预算随实际字节到达重置，成功帧与错误正文使用同一语义。
+        idle_seconds = STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat else self.stream_timeout_seconds
+        while True:
+            async with asyncio.timeout(idle_seconds):
+                chunk = await response.content.readany()
+            if not chunk:
+                return
+            yield chunk
+
+    async def _stream_lines(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
+        pending = bytearray()
+        async for chunk in self._stream_chunks(response):
+            parts = chunk.split(b"\n")
+            for index, part in enumerate(parts):
+                pending.extend(part)
+                complete = index < len(parts) - 1
+                if len(pending) + int(complete) > MAX_STREAM_EVENT_BYTES:
+                    raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+                if complete:
+                    pending.append(10)
+                    yield bytes(pending)
+                    pending.clear()
+        if pending:
+            yield bytes(pending)
+
+    async def _stream_error(self, response: aiohttp.ClientResponse) -> Any:
+        body = bytearray()
+        async for chunk in self._stream_chunks(response):
+            if len(body) + len(chunk) > MAX_STREAM_EVENT_BYTES:
+                raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+            body.extend(chunk)
+        media_type = response.content_type
+        if media_type != "application/json" and not (media_type.startswith("application/")
+                                                     and media_type.endswith("+json")):
+            raise AdapterError("HOST_INCOMPATIBLE", 502)
+        try:
+            return json.loads(body.decode(response.charset or "utf-8"))
+        except (LookupError, ValueError):
+            raise AdapterError("HOST_INCOMPATIBLE", 502) from None
 
     async def _send(
         self,
@@ -366,41 +498,55 @@ class RemoteSessionAdapter:
             path = f"/sessions/{quote(session_id, safe='')}/messages"
             request_body = body if body is not None else {"text": text}
             async with self._session(await self._prepare_headers(headers, "POST", path, request_body)) as session:
-                async with session.post(
-                    self.base_url + self.prefix + path,
-                    json=request_body,
-                    timeout=aiohttp.ClientTimeout(total=self.stream_timeout_seconds),
-                    allow_redirects=False,
-                    read_bufsize=MAX_STREAM_EVENT_BYTES // 2,
-                ) as response:
+                # 桥在首帧前仍需完成认证和宿主命令；此时尚不能发送保活字节。
+                async with asyncio.timeout(self.stream_timeout_seconds):
+                    response = await session.post(
+                        self.base_url + self.prefix + path,
+                        json=request_body,
+                        timeout=aiohttp.ClientTimeout(
+                            total=None, connect=CONNECT_TIMEOUT_SECONDS, sock_connect=CONNECT_TIMEOUT_SECONDS,
+                            sock_read=None,
+                        ),
+                        allow_redirects=False,
+                        read_bufsize=MAX_STREAM_EVENT_BYTES // 2,
+                    )
+                async with response:
+                    if response.status in {401, 403}:
+                        raise self._response_error(response.status, {})
                     if response.status != 200:
-                        value = await response.json()
-                        raise AdapterError(str(value.get("code", "AGENT_UNAVAILABLE")), response.status)
+                        value = await self._stream_error(response)
+                        if not isinstance(value, Mapping):
+                            raise AdapterError("HOST_INCOMPATIBLE", 502)
+                        raise self._response_error(response.status, value)
                     terminal = False
-                    while True:
-                        try:
-                            line = await response.content.readline()
-                        except (ValueError, aiohttp.http_exceptions.LineTooLong):
-                            # Parser exceptions may include a transcript prefix.
-                            # Expose only the framing error, never that content.
-                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502) from None
-                        if not line:
-                            break
-                        if len(line) > MAX_STREAM_EVENT_BYTES:
-                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+                    async for line in self._stream_lines(response):
                         if not line.strip():
                             continue
                         value = json.loads(line)
                         if not isinstance(value, dict) or value.get("type") not in STREAM_EVENT_TYPES:
                             raise AdapterError("HOST_INCOMPATIBLE", 502)
+                        code = value.get("code") if value["type"] == "error" else None
+                        reason = ("account_not_connected" if code == "AGENT_ACCOUNT_NOT_CONNECTED"
+                                  else "authentication_failed" if code in BRIDGE_AUTH_CODES else None)
+                        if reason is not None:
+                            failure = self._bridge_failure(reason, status=502)
+                            value = {"type": "error", "code": failure.code, "details": failure.details}
                         yield value
                         if value["type"] in {"done", "error"}:
                             terminal = True
                             break
                     if not terminal:
                         raise AdapterError("STREAM_INTERRUPTED", 502)
-        except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
-            raise AdapterError("AGENT_UNAVAILABLE", 503) from exc
+        except AdapterError as exc:
+            if exc.code == "AGENT_ACCOUNT_NOT_CONNECTED":
+                raise self._bridge_failure("account_not_connected", status=502) from None
+            raise
+        except (aiohttp.ClientConnectorCertificateError, aiohttp.ClientSSLError) as exc:
+            raise self._bridge_failure("tls_rejected", status=502) from exc
+        except TimeoutError as exc:
+            raise self._bridge_failure("timeout") from exc
+        except (aiohttp.ClientError, ValueError) as exc:
+            raise self._bridge_failure("transport_failed") from exc
 
     async def manage(
         self,

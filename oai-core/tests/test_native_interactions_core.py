@@ -78,7 +78,7 @@ def write_headers(key=None):
 
 
 @pytest.mark.asyncio
-async def test_native_negotiation_advertises_only_available_requested_interactions(gateway):
+async def test_native_negotiation_advertises_only_available_requested_interactions(gateway, monkeypatch):
     client, core, app = gateway
     host = InteractiveHost()
     app[REGISTRY_KEY].register(host)
@@ -95,9 +95,13 @@ async def test_native_negotiation_advertises_only_available_requested_interactio
     response = await client.post(PREFIX + "/negotiate", json=negotiation)
     assert (await response.json())["data"]["features"]["conversationUi"] == ["agent-command-catalog-v1"]
     host.online = False
-    negotiation["negotiationId"] = "neg_offline"
-    response = await client.post(PREFIX + "/negotiate", json=negotiation)
-    assert (await response.json())["data"]["features"].get("conversationUi", []) == []
+    monkeypatch.setattr("oai_core.agent_health.PROBE_INTERVAL", 0)
+    # One transient probe cannot withdraw an already negotiated interaction.
+    for sample in range(3):
+        negotiation["negotiationId"] = f"neg_offline_{sample}"
+        response = await client.post(PREFIX + "/negotiate", json=negotiation)
+        expected = ["agent-command-catalog-v1"] if sample < 2 else []
+        assert (await response.json())["data"]["features"].get("conversationUi", []) == expected
 
 
 @pytest.mark.asyncio

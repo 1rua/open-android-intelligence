@@ -77,7 +77,7 @@ async function bodyOf(req) {
 }
 
 /** The injected query's corpus is the explicitly installed DSH instance only. */
-export function createSessionHandler(ctx, config, token) {
+export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs = 10_000 } = {}) {
   if (typeof token !== "string" || token.length < 32) throw fail("ADAPTER_TOKEN_REQUIRED", 500);
   let currentToken = token;
   let expected = Buffer.from(`Bearer ${currentToken}`);
@@ -120,6 +120,7 @@ export function createSessionHandler(ctx, config, token) {
     const value = Object.fromEntries(methods.map((method) => [method, false]));
     // A stable native rpcId correlates input; it does not prove that the host
     // deduplicates prompts or persists queryable execution receipts.
+    value.streamHeartbeat = true;
     value.generationRecovery = false;
     value.idempotentSend = false;
     value.list = typeof query?.listSessions === "function";
@@ -289,7 +290,14 @@ export function createSessionHandler(ctx, config, token) {
       while (!stopped) {
         if (!queue.length) {
           if (ending) break;
-          await new Promise((resolve) => { wake = resolve; });
+          let timer;
+          await new Promise((resolve) => {
+            wake = resolve;
+            timer = setTimeout(resolve, heartbeatIntervalMs);
+          });
+          clearTimeout(timer);
+          wake = undefined;
+          if (!stopped && !ending && !queue.length && !res.write("\n")) await waitForDrain();
           continue;
         }
         const { frame, size } = queue.shift();

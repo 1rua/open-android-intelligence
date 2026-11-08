@@ -59,6 +59,7 @@ internal class NativeEventSynchronizer(
         snapshot = snapshot || page.approvals != null
         val approvals = page.approvals.orEmpty().toMutableList()
         val lifecycle = mutableListOf<VerifiedConversationEvent>()
+        val bodies = mutableListOf<VerifiedConversationEvent>()
         for (event in page.events) {
             val type = JsonFields.string(event, "eventType") ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
             val payload = JsonFields.obj(JsonFields.field(event, "payload")) ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
@@ -75,15 +76,31 @@ internal class NativeEventSynchronizer(
                         lifecycle += GatewayEventDecoder.decode(GatewayEvent(JsonFields.string(event, "eventId"), type,
                             Json.canonical(event))) ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
                     }
-                    type in setOf("conversation.message.accepted", "conversation.message.delta", "conversation.message.completed") -> Unit
+                    type == "conversation.message.delta" || type == "conversation.message.completed" ->
+                        bodies += liveBody(type, event)
+                    type == "conversation.message.accepted" -> Unit
                     else -> throw AgentSessionException("AGENT_RESPONSE_INVALID")
                 }
             }
         }
         // 所有审批先验证，畸形关键事件绝不能被 history 刷新掩盖后 ACK。
         approvals.forEach { approvalEvent(it, conversationId) }
-        val facts = (if (needsRefresh || snapshot || page.events.isNotEmpty()) refresh(page) else emptyList()) + lifecycle
-        requireHistoryCoverage(page, facts)
+        val snapshotFacts = if (needsRefresh || snapshot || page.events.isNotEmpty()) refresh(page) else emptyList()
+        // 覆盖检查只看权威历史：事件页上的正文帧不能给自己作证。
+        requireHistoryCoverage(page, snapshotFacts)
+        // 宿主真实发出的正文帧必须转发。历史快照的 eventId 是手机合成的
+        // （`native-history:`），提醒层按事件来源过滤合成事件；只转发快照会让
+        // “另一个客户端发起的轮次”和“本地发送流断开后才完成的轮次”永远凑不齐
+        // 完成提醒需要的正文与终态。历史已判为删除的消息除外：那份正文不再有效。
+        val deleted = snapshotFacts.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            .filter { it.message.isDeleted }.mapTo(HashSet()) { it.message.id }
+        val liveBodies = bodies.filterNot { body ->
+            body is VerifiedConversationEvent.TimelineUpsert && body.message.id in deleted
+        }
+        // 权威历史已经覆盖了同一修订，落盘只写一次；正文帧只额外多发布一次，
+        // 让提醒层看到宿主自己发出的事件。
+        val facts = snapshotFacts + lifecycle
+        val published = facts + liveBodies
         localStore { store.commitPage(conversationId, facts, approvals, page.cursor) }
         pendingPage = null
         if (snapshot || page.events.isNotEmpty()) {
@@ -101,7 +118,7 @@ internal class NativeEventSynchronizer(
         checkOwner()
         committed()
         needsRefresh = false
-        facts.forEach { checkOwner(); publish(it) }
+        published.forEach { checkOwner(); publish(it) }
         localStore { store.loadApprovals(conversationId) }.forEach { checkOwner(); publishApproval(it) }
         currentCoroutineContext().ensureActive()
         acknowledge(page.cursor)
@@ -116,6 +133,16 @@ internal class NativeEventSynchronizer(
         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (failure: Exception) { throw NativeEventSyncFailure("LOCAL_SAVE_FAILED", failure) }
     }
+
+    /**
+     * 事件页上宿主真实发出的正文帧，保留宿主给的 eventId。
+     *
+     * 提醒层靠 eventId 前缀区分“宿主发的”与“手机合成的”历史快照，所以这一帧
+     * 不能像快照那样被改写身份。
+     */
+    private fun liveBody(type: String, event: JsonValue.JObject): VerifiedConversationEvent =
+        GatewayEventDecoder.decode(GatewayEvent(JsonFields.string(event, "eventId"), type, Json.canonical(event)))
+            ?: throw AgentSessionException("AGENT_RESPONSE_INVALID")
 
     private fun requireHistoryCoverage(page: NativeEventPage, facts: List<VerifiedConversationEvent>) {
         for (event in page.events) {

@@ -154,6 +154,18 @@ class NativeEventSynchronizerTest {
         }
     }
 
+    @Test fun hostBodyFramesArePublishedOnceForTheNotificationLayerWhileHistoryStaysSynthetic() = runTest {
+        val h = Harness()
+        h.sync().synchronize()
+        val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().map { it.eventId }
+        assertEquals("权威历史只落盘一次", listOf("history-reply"), saved)
+        val published = h.published.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+        assertEquals("历史快照之后必须再发布宿主自己发出的正文帧", listOf("history-reply", "e1"), published.map { it.eventId })
+        // 提醒层按 eventId 前缀过滤手机合成的事件；宿主帧必须保持原身份。
+        assertTrue(published.last().eventId.isNotBlank())
+        assertTrue(published.last().message.id == "reply")
+    }
+
     @Test fun deletedHistoryWithoutAContentRevisionCoversOldBodyEventsAndSyncsTheFollowingPage() = runTest {
         for (type in listOf("conversation.message.delta", "conversation.message.completed")) {
             val h = Harness().apply {

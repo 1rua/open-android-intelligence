@@ -25,6 +25,10 @@ def deployment(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("DSH_HOME", str(home / "no-dsh"))
     monkeypatch.setenv("HERMES_HOME", str(home / "no-hermes"))
+    # These setup fixtures own only their synthetic bridge. Never restart a
+    # developer's real host or inherit whether that machine has a DSH service.
+    monkeypatch.setattr(configuration, "restart_dsh_service_if_active", lambda: False)
+    monkeypatch.setattr(configuration, "restart_hermes_service_if_active", lambda: False)
     database = root / "runtime/security/identity.sqlite"
     storage = root / "runtime/accounts"
     read_fd, write_fd = os.pipe()

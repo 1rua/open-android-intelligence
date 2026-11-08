@@ -129,7 +129,8 @@ class AndroidAttachmentContentTypeTest {
         check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
         val log = temporaryFolder.newFile("hermes-platform-attachment.txt")
         val process = ProcessBuilder(
-            "python3", fixture.path, "--echo-agent", "--contract-root",
+            System.getenv("OAI_HERMES_PYTHON")?.takeIf { it.isNotBlank() } ?: "python3",
+            fixture.path, "--echo-agent", "--contract-root",
             System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path,
         ).directory(pluginRoot).redirectError(log).start()
         try {

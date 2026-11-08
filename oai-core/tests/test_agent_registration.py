@@ -204,8 +204,10 @@ async def test_real_handshake_registration_mapping_and_registry(tmp_path, hermes
         try:
             remote = registry.get("hermes")
             assert (await registry.discover())[0]["online"] is True
-            with pytest.raises(AdapterError, match="AGENT_ACCOUNT_NOT_CONNECTED"):
+            with pytest.raises(AdapterError, match="AGENT_UNAVAILABLE") as rejected:
                 await remote.list_sessions(Principal("alice"))
+            assert rejected.value.status == 502
+            assert rejected.value.details == {"source": "agent_bridge", "reason": "account_not_connected"}
         finally:
             await registry.close()
         reg.import_mappings("admin", "hermes", {"alice": "native-alice", "bob": "native-bob"})
