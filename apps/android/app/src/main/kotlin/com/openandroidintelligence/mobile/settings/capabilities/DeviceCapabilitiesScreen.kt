@@ -192,6 +192,7 @@ internal fun builtInFailureLabel(code: String): String = when (code) {
     "BUILT_IN_PLUGIN_ID_MISMATCH" -> "能力文件身份不匹配"
     "BUILT_IN_RUNTIME_UNSUPPORTED", "BUILT_IN_ABI_UNSUPPORTED" -> "当前版本不支持该能力的运行环境"
     "BUILT_IN_REGISTRATION_FAILED" -> "能力未能注册"
+    "BUILT_IN_CHANNEL_UNSUPPORTED" -> "当前安装渠道不支持设备能力，请使用完整版本"
     else -> "加载失败"
 }
 

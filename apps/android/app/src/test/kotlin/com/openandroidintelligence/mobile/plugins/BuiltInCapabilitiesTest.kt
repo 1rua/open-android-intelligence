@@ -7,6 +7,7 @@ import java.io.File
 import java.util.UUID
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -157,6 +158,8 @@ class BuiltInCapabilitiesTest {
 
     @Test
     fun aFreshInstallExposesEveryBuiltInCapabilityWithoutAnyInstallStep() {
+        // 只有装配了插件运行时的渠道才带内置能力包；Play 变体明确不支持，见下一条用例。
+        assumeTrue(com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS)
         // 这条是核心验收：全新安装、不点任何安装或启用按钮，六项官方能力就能被读到并执行。
         val host = freshHost()
             val declared = host.verifiedCapabilities()
@@ -171,6 +174,7 @@ class BuiltInCapabilitiesTest {
 
     @Test
     fun localCapabilityDefaultsSurviveAndAreNotOpenedByBuiltInLoading() {
+        assumeTrue(com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS)
         // 内建能力“随应用就绪”不等于“能力被默认授权”：默认仍是每次手动，开关仍可单独关闭。
         val host = freshHost()
             val entry = host.entries(BundledPlugin.SCREEN_CAPTURE.pluginId).single()
@@ -188,6 +192,7 @@ class BuiltInCapabilitiesTest {
 
     @Test
     fun anUnreadableBuiltInPackageIsReportedAsFailedAndNeverRegistered() {
+        assumeTrue(com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val packages = BundledPlugin.entries.associateWith { TestAlpPackages.compiledBundledPackage(it) }
             .filterKeys { it != BundledPlugin.SCREEN_CONTROL }
         val host = freshHost(packages)
@@ -201,10 +206,26 @@ class BuiltInCapabilitiesTest {
 
     @Test
     fun builtInCapabilitiesAreNotRemovableLikeThirdPartyPlugins() {
+        assumeTrue(com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val host = freshHost()
             val failure = runCatching { host.uninstall(BundledPlugin.NOTIFICATIONS.pluginId) }.exceptionOrNull()
             assertEquals("BUILT_IN_CAPABILITY_NOT_REMOVABLE", failure?.message)
             assertTrue("拒绝卸载后能力仍然在", host.entries(BundledPlugin.NOTIFICATIONS.pluginId).isNotEmpty())
+    }
+
+    @Test
+    fun aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason() {
+        // Play 变体不装配插件运行时、也不带内置包。能力页当时只显示“找不到提供者”，
+        // 用户看不出这是渠道限制。现在每项都带一个可执行的原因码。
+        assumeTrue(!com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val host = freshHost()
+
+        assertEquals(
+            BundledPlugin.entries.map { it.pluginId }.toSet(),
+            host.builtInFailures.keys,
+        )
+        host.builtInFailures.values.forEach { assertEquals("BUILT_IN_CHANNEL_UNSUPPORTED", it) }
+        BundledPlugin.entries.forEach { assertTrue(host.entries(it.pluginId).isEmpty()) }
     }
 
     private fun freshHost(packages: Map<BundledPlugin, ByteArray> = BundledPlugin.entries.associateWith { TestAlpPackages.compiledBundledPackage(it) }): ProductionPluginHost {

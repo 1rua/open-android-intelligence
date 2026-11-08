@@ -68,7 +68,12 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun attach(kernel: PluginKernel) {
         this.kernel = kernel
         hostCapabilities.addAll(KernelPrimitiveRegistry.ids() + serviceIds); phoneCapabilities.addAll(hostCapabilities)
-        if (!com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS) return
+        if (!com.openandroidintelligence.mobile.BuildConfig.ALLOW_RUNTIME_PLUGINS) {
+            // 这个渠道不装配插件运行时，也不带内置能力包。逐项记下原因，
+            // 让能力页显示「不可用 + 可执行说明」，而不是把六项能力当成“找不到提供者”。
+            builtInFailures = BundledPlugin.entries.associate { it.pluginId to "BUILT_IN_CHANNEL_UNSUPPORTED" }
+            return
+        }
         // An interrupted native frame/loading operation survives process death.
         crashPreferences.all.filter { it.key.startsWith("loading:") && it.value == true }.keys.forEach {
             quarantineNative(it.removePrefix("loading:"))
