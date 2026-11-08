@@ -131,7 +131,21 @@ Play 渠道下能力页原先显示「看不到这项能力的提供者」，是
 测试环境：JDK 21（`~/.gradle/jdks/jetbrains_s_r_o_-21-amd64-linux.2`；Robolectric SDK 36 要求 ≥21，
 本机默认 JAVA_HOME 是 17），`gradle --no-watch-fs`（内核 7.1.6 下 watchfs 初始化会 NPE）。
 
-## 四、未完成与风险
+## 四、评审意见的处理
+
+PR #97 的自动评审（Codex）提出三条 P1，逐条核实后**全部属实**，均已修复并补测试：
+
+| 评审意见 | 核实 | 修复 |
+| --- | --- | --- |
+| 临时授权按 `id@version` 过滤，与 `policyKey` 永不相等，真实批准被全部隐藏、撤销入口消失 | 属实。`approveRequest()` 存的是 `policyKey(entry)`（`plugin:<id>:<author>:capability:<cap>:<schema>:<risk>:<prims>`），传入的是 `entry.key`（`id@version`） | 改为用 `host.authorizationScope(entry, …).capability` 构造过滤集合；短信详情把三项兄弟能力的作用域一并纳入 |
+| 内建短信从插件管理移走后，唯一的「允许后台任务」入口消失，定时任务会一直 `BACKGROUND_GRANT_REQUIRED`，已有许可也无法撤销 | 属实。`setCapabilityPolicy` 显式排除 `kernel.background.run`，而 `PluginJobScheduler.schedule` 同时要求全局与身份作用域两项许可 | 在能力详情新增「后台任务」节，开关直连 `setBackgroundEnabled` |
+| 连续两次推送编辑都基于同一份旧快照，第二次会覆盖第一次（例如正文开关被恢复成开启） | 属实。两个回调都用 `snap.configuration` 构造，丢弃 `configure()` 的返回值，且 `saving` 恒为 `false` | 改为串行保存：回写权威快照、以下一次 `expectedConfiguration` 防冲突、保存期间禁用控件、区分 `PUSH_CONFIGURATION_CHANGED` |
+
+对应测试：`CapabilityTemporaryApprovalsTest`（含“旧键永不匹配”的反向用例）、
+`SmsBackgroundConsentTest`（用声明了后台任务的第三方短信包验证同一条装配）、
+`PushConfigurationSerializationTest`（在 `DevicePushRuntime` 上复现覆盖链路）。
+
+## 五、未完成与风险
 
 - **真机验收未做**：无障碍截图可用时的真实取帧、服务断连后的恢复入口、升级覆盖安装后的装配，
   都还需要 Android 设备验证；本次只完成自动化与编译门禁。
