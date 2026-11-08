@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-08T13:02:22.176427+00:00",
+  "productionSourceCommit": "95cd01baae9cb3c7356e138a2dbabc4f80ba6c5a",
+  "functionalRunCommit": "aac0d4829293354b2caa0adfa7ec2303e857579a",
+  "coreAndBridgeRuntimeCandidateCommit": "164a7c0159ecd917c47e69b92b463fe07672ed69",
+  "pr": {
+    "number": 95,
+    "base": "dev",
+    "requestedDelivery": "open PR; no automatic merge"
+  },
+  "userRequiredStabilitySeconds": 10800,
+  "localCoreAgentEarlierSoak": {
+    "actualSeconds": 28815.054,
+    "samples": 2860,
+    "coreAgentRequestFailures": 0,
+    "agentOfflineSamples": 0,
+    "threeHourThresholdAuditPassed": true
+  },
+  "ordinarySimulatorWindow": {
+    "sourceVersionCode": 8261,
+    "businessStartCST": "2026-11-08T16:44:52.078+08:00",
+    "businessDeadlineCST": "2026-11-08T19:44:52.078+08:00",
+    "periodicActualSeconds": 10800.001,
+    "httpActualSeconds": 10860,
+    "httpSamples": 1085,
+    "httpErrors": 0,
+    "agentOfflineSamples": 0,
+    "deviceOfflineSamples": 5,
+    "aliveChecks": 365,
+    "failedAliveChecks": 0,
+    "messagePosts": 6,
+    "completedRounds": 6,
+    "finalHistoryOriginalIdentitiesAndOrderMatched": true,
+    "finalUnrefreshedUiRealCompletedCount": 1,
+    "originalStrictAutomaticAudit": {
+      "passed": false,
+      "status": "failed",
+      "failureCategories": [
+        "coordinator_child_terminal_invalid"
+      ],
+      "reviewCategories": [
+        "device_offline_needs_review"
+      ],
+      "preservedWithoutWaiver": true
+    },
+    "reviewOfDeviceOffline": "all five within target-device retained access expiry/successor creation windows; same-owner auth renewal/reconnect attempts; exact old owner-session mapping was not logged; not equivalent to Agent offline"
+  },
+  "injectedSimulatorRecovery": {
+    "background": {
+      "passed": true,
+      "recoveryUpperBoundSeconds": 2.12,
+      "sourceVersionCode": 8261
+    },
+    "screenoff": {
+      "passed": true,
+      "recoveryUpperBoundSeconds": 1.756,
+      "sourceVersionCode": 8261
+    },
+    "network": {
+      "passed": true,
+      "recoveryUpperBoundSeconds": 7.264,
+      "sourceVersionCode": 8261
+    },
+    "doze": {
+      "passed": true,
+      "recoveryUpperBoundSeconds": 3.636,
+      "sourceVersionCode": 8261
+    }
+  },
+  "deviceReadRequests": {
+    "normalAndApprovedOffline": [
+      {
+        "case": "read-baseline",
+        "requestId": "devreq_e58c6fcd-5acc-4b0d-a4ab-8759f42bcbfd",
+        "httpSubmitAttempts": 1,
+        "invokeCount": 1,
+        "resultAckCount": 1,
+        "networkWaitCount": 0,
+        "networkRecoveredCount": 0,
+        "consumerAck": true,
+        "state": "succeeded"
+      },
+      {
+        "case": "approved-offline",
+        "requestId": "devreq_9f05c1ce-d2d1-4ead-9926-3cbc42c2c917",
+        "httpSubmitAttempts": 1,
+        "invokeCount": 1,
+        "resultAckCount": 1,
+        "networkWaitCount": 5,
+        "networkRecoveredCount": 1,
+        "consumerAck": true,
+        "state": "succeeded"
+      }
+    ],
+    "concurrent": [
+      {
+        "index": 1,
+        "requestId": "devreq_06c70e84-faf9-4b48-92f6-7097d7027c70",
+        "submitHTTPAttempts": 1,
+        "invokeCount": 1,
+        "resultAckCount": 1,
+        "consumerAck": true,
+        "state": "succeeded"
+      },
+      {
+        "index": 2,
+        "requestId": "devreq_737fb946-fe06-456e-908b-690facc7c1ba",
+        "submitHTTPAttempts": 1,
+        "invokeCount": 1,
+        "resultAckCount": 1,
+        "consumerAck": true,
+        "state": "succeeded"
+      },
+      {
+        "index": 3,
+        "requestId": "devreq_2e17bd87-a065-4d0f-8861-2e0c015711bd",
+        "submitHTTPAttempts": 1,
+        "invokeCount": 1,
+        "resultAckCount": 1,
+        "consumerAck": true,
+        "state": "succeeded"
+      }
+    ],
+    "notificationContentsSaved": false,
+    "permissionModeChanged": false
+  },
+  "diagnosticNewApk": {
+    "versionCode": 8271,
+    "sourceCommit": "95cd01baae9cb3c7356e138a2dbabc4f80ba6c5a",
+    "apkSha256": "57bf8093c6d5fa2006ff42596740ef6e4325311f55560abdcd42e37c6a416064",
+    "signatureSha256": "9420b1917a285377dd267f04e78347dd73bea00a86fc904267704173599bc4d7",
+    "dataPreservingUpdate": true,
+    "naturalCloseCodeObserved": 4001,
+    "forcedCredentialExpiry": false,
+    "afterRenewalOneMessageDoneAndHistoryOnePair": true,
+    "afterRenewalUnrefreshedUiCompletedCount": 1,
+    "threeHourRunOnThisApkClaimed": false,
+    "directWSReadyFrameNotLogged": true,
+    "uiPhaseTraceNotMisclassifiedAsTransportReady": true,
+    "bounded30MinuteObservation": {
+      "at": "2026-11-08T13:12:32.411693+00:00",
+      "sourceCommit": "95cd01baae9cb3c7356e138a2dbabc4f80ba6c5a",
+      "versionCode": 8271,
+      "purpose": "bounded30min diagnostic validation after unchanged control-flow metadata fix",
+      "collectorComplete": true,
+      "collectorActualSeconds": 1800.013977,
+      "aliveChecks": 181,
+      "failedAliveChecks": 0,
+      "httpActualSeconds": 1800.0,
+      "httpSamples": 896,
+      "httpErrors": 0,
+      "agentOffline": 0,
+      "deviceOffline": 0,
+      "naturalCloseCodes": [
+        "4001",
+        "4001"
+      ],
+      "originalHttpMinimum3hVerdictRetained": {
+        "passed": false,
+        "failureCategories": [
+          "duration_not_met"
+        ]
+      },
+      "diagnosticPurposeDoesNotRequire3hOrOverrideOriginalMinimum": true,
+      "full3hNewApkClaimed": false
+    }
+  },
+  "fixedSourceCi": {
+    "all8JobsPassed": true,
+    "originalFastAndPrStepsPassed": true,
+    "coreRun": 42480100420,
+    "apkRun": 42480096733,
+    "xmlReports": {
+      "admission-test-reports-e6f2602c148c90e5a297c6f47789523d3ae273e0": {
+        "suites": 283,
+        "tests": 2841,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 1
+      },
+      "android-test-reports-e6f2602c148c90e5a297c6f47789523d3ae273e0": {
+        "suites": 293,
+        "tests": 2831,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 27
+      }
+    },
+    "selectedGatewayRecovery": {
+      "sessionTests": 26,
+      "webSocketTests": 31,
+      "deviceExecutionTests": 33,
+      "failures": 0,
+      "skipped": 0
+    },
+    "artifactCountsNotDistinctAcrossReports": true
+  },
+  "knownLimits": [
+    "Strict zero-device-offline automatic gate remains failed/needs_review; this report does not rewrite it",
+    "No physical Android, real wireless LAN or vendor-specific background-limit acceptance",
+    "Real device-capability fault injections were read-only notifications, not all write operations",
+    "1900.033s active long stream was real TCP synthetic loopback, not a physical-phone real-model run",
+    "A diagnostic UI phase trace originally had broad source metadata; classified correction is preserved separately",
+    "Rollback plan and original source/service-path copies retained and statically checked; live rollback rehearsal not executed"
+  ],
+  "originalFullAcceptanceComplete": false,
+  "remaining": "physical-device acceptance and final documentation-head CI/PR closure; code and explicitly requested simulator evidence delivered separately",
+  "evidenceSha256": {
+    "android-aac0d482-systemd-1643/aligned-run.json": "2f2f5694eaed55c3fe3c1d166bd749fdfe1528b65722ab967f617c9580cd4942",
+    "android-aac0d482-systemd-1643/collector/summary.json": "d7dec91d506b6bc4194ef098c0cbefd99de76e6f68b65c85f4f9ffe9cc182d05",
+    "android-aac0d482-systemd-1643/core-device/summary.json": "0b79ab1c5220f7e14faff0b1bc1a4ed5086b6e1900495b7b5e213700d143b803",
+    "android-aac0d482-systemd-1643/periodic-messages/summary.json": "636dc213ed6d1cb450c0438e6b917d9d428190b35a5fcecf9fc430c7a98b2b06",
+    "android-aac0d482-systemd-1643/ui-end-checkpoint.json": "150da0d0b5c7072f1acca942e05c99a4e9ddf69e6143b3df6461070fa7d3781c",
+    "android-aac0d482-systemd-1643/final-history-verification.json": "9f3bc110334142ed35717572f590cdd69d2c7b3c7c3441942ac118037cd06eba",
+    "android-aac0d482-systemd-1643/window-audit.json": "8e36fb9eb9b4306d810abf85ba21f39ddcd08e1770148c6eb543b1086e166532",
+    "android-aac0d482-systemd-1643/retained-session-expiry-correlation.json": "0ccd7e345fa3e94c068d10756324b0a85c79b3cd608e1f85007505d2821584eb",
+    "android-aac0d482-recovery-1948/parallel-final-verification.json": "de648a595993e4f7f18b4589ca3147cf074b3baf5f79f7c240c2cb3916778177",
+    "android-aac0d482-recovery-1948/device-read-normal-and-offline-verified.json": "10dd96e8360352af5cd431b6bd66d73003629e2bb2a1cfb4161e8b2cd6a3d792",
+    "android-95cd01ba-diagnostics/natural-auth-metadata-and-message-verified.json": "e542e1c402c79f509fd5a82908ab7272114365e22e319f4815dc680dad1aa144",
+    "android-95cd01ba-diagnostics/post-natural-renewal-message-ui.json": "52758d8a34aa94b9d6d0949c8963089fcff7bf08a7c25bf802a02271a3a9e5fb",
+    "ci-95cd01ba-independently-verified.json": "d36cf33da67108fbf1788e50c7345130d53220b5701eacaa038f2a5342d0cf81",
+    "ci-95cd01ba-xml-verification.json": "5bae015fcb6bfdb60d40eed68c252b4c588287767c50631ba306d6e47dbc5f54",
+    "android-95cd01ba-diagnostics/diagnostic-segment-terminal-review.json": "ff2e43289c8a1ad28a9e325ab829fde02779dc8c4df84262d2472a4e8ddf6473"
+  }
+}
