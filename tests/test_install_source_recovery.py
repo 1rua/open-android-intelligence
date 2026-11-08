@@ -551,10 +551,12 @@ def test_temp_download_upgrade_defers_archive_and_reindexes_oai_core_path(tmp_pa
     root = tmp_path / "deployment"
     root.mkdir(mode=0o700)
     config_code_v1 = (REPOSITORY / "oai-core/src/oai_core/configuration.py").read_text(encoding="utf-8")
+    identity_migration_code = (REPOSITORY / "oai-core/src/oai_core/identity_migration.py").read_text(encoding="utf-8")
     write_checkout(root, {
         "oai-core/pyproject.toml": "[project]\nname = 'open-android-intelligence-core'\nversion = '0.1.0'\n",
         "oai-core/src/oai_core/marker.py": "VERSION = '0.1.0'\n",
         "oai-core/src/oai_core/configuration.py": config_code_v1,
+        "oai-core/src/oai_core/identity_migration.py": identity_migration_code,
         "scripts/install.sh": "# v1\n",
         "integrations/skills/oai-client/SKILL.md": "# Skill v1\n",
         "start-core.sh": "#!/usr/bin/env bash\nexit 0\n",
@@ -599,6 +601,7 @@ def test_temp_download_upgrade_defers_archive_and_reindexes_oai_core_path(tmp_pa
         "oai-core/pyproject.toml": "[project]\nname = 'open-android-intelligence-core'\nversion = '0.2.0'\n",
         "oai-core/src/oai_core/marker.py": "VERSION = '0.2.0'\n",
         "oai-core/src/oai_core/configuration.py": config_code_v2,
+        "oai-core/src/oai_core/identity_migration.py": identity_migration_code,
         "scripts/install.sh": "# v2\n",
         "integrations/skills/oai-client/SKILL.md": "# Skill v2\n",
     })
