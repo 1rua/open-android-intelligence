@@ -500,7 +500,12 @@ jobs:
         with:
           lane: play
           wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
-          test-parallel-forks: '4'
+          # 2 forks instead of 4: this lane's tests take ~50 s in total and the
+          # lane is dominated by compilation, so extra forks buy almost nothing
+          # while making the CPU scheduling visibly tighter. ColdStartConnectionTest
+          # asserts a 100 ms connection-grace window, and it flaked under 4-way
+          # contention. The lane still runs in parallel with the app lane.
+          test-parallel-forks: '2'
 
   gate:
     name: CI Gate
