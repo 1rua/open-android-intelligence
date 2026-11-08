@@ -33,6 +33,21 @@ concurrency:
   queue: max
 
 jobs:
+  # 与预览构建并行：构建可以立刻开始，但发布前必须确认同一 SHA 的 CI 通过。
+  # CG 失败时本 job 失败，publish-preview 因此不会执行——不会出现
+  # 「CI 红但预览版已发布」的情况。
+  verify-ci:
+    name: Verify CI for this commit
+    uses: ./.github/workflows/release-gate.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      sha: ${{ github.sha }}
+      wait-seconds: 2400
+      # dev 的增量 CI 由 oai-core.yml 承担。
+      required-workflow: oai-core.yml
+
   sign-plugin-packages:
     runs-on: ubuntu-latest
     permissions:
@@ -269,7 +284,7 @@ jobs:
           retention-days: 1
 
   publish-preview:
-    needs: [build-preview]
+    needs: [build-preview, verify-ci]
     runs-on: ubuntu-latest
     permissions:
       contents: write
