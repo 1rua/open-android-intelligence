@@ -289,6 +289,11 @@ android {
             val testHomePath = rootProject.layout.projectDirectory
                 .dir(".gradle/robolectric-home").asFile.absolutePath
             it.systemProperty("user.home", testHomePath)
+            // Robolectric downloads its android-all runtime into `user.home`.
+            // The directory must exist, or every test fails in
+            // MavenDependencyResolver with FileNotFoundException. Only the plain
+            // String is captured here, so this stays configuration-cache safe.
+            it.doFirst { File(testHomePath).mkdirs() }
         }
     }
 }
