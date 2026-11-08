@@ -32,6 +32,8 @@ from oai_core.native_diagnostics import trace_context
 
 PREFIX = "/oai/session-adapter/v1"
 STREAM_HEARTBEAT_SECONDS = 10.0
+STREAM_QUEUE_MAXSIZE = 16
+_STREAM_END = object()
 IDENTITY = re.compile(r"^[A-Za-z0-9._~-]{1,128}$")
 
 
@@ -458,36 +460,76 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
             raise AdapterError("SCHEMA_INVALID", 400)
         stream = adapter.send(principal, session_id, body.get("text", ""), attachment_ids=attachment_ids,
                               client_message_id=client_message_id)
+        frames = asyncio.Queue(maxsize=STREAM_QUEUE_MAXSIZE)
+        producer_closing = False
+
+        async def produce():
+            """在同一任务中持续迭代生成器，保持适配器超时上下文的归属稳定。"""
+            nonlocal producer_closing
+            try:
+                while True:
+                    event = await anext(stream, None)
+                    if event is None:
+                        await frames.put(_STREAM_END)
+                        producer_closing = True
+                        return
+                    await frames.put(event)
+                    if event.get("type") in {"done", "error"}:
+                        producer_closing = True
+                        return
+            except AdapterError as exc:
+                await frames.put(exc)
+                producer_closing = True
+                raise
+            except Exception as exc:
+                await frames.put(exc)
+                producer_closing = True
+                raise
+            finally:
+                # 生成器的 finally、超时上下文和 contextvar 必须与所有 anext 在同一任务退出。
+                await stream.aclose()
+
+        producer = asyncio.create_task(produce())
         # Authorization and binding checks run before committing response headers.
-        first = await anext(stream, None)
-        response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
+        response = None
         pending = None
         try:
+            first = await frames.get()
+            if isinstance(first, BaseException):
+                raise first
+            response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
             await response.prepare(request)
-            if first is not None:
+            if first is not _STREAM_END:
                 await response.write((json.dumps(first) + "\n").encode())
             event = first
-            while event is not None and event.get("type") not in {"done", "error"}:
-                pending = asyncio.create_task(anext(stream, None))
+            while event is not _STREAM_END and event.get("type") not in {"done", "error"}:
+                pending = asyncio.create_task(frames.get())
                 while not pending.done():
                     done, _ = await asyncio.wait({pending}, timeout=STREAM_HEARTBEAT_SECONDS)
                     if not done:
                         await response.write(b"\n")
                 event = pending.result()
                 pending = None
-                if event is None:
+                if isinstance(event, BaseException):
+                    raise event
+                if event is _STREAM_END:
                     break
                 await response.write((json.dumps(event) + "\n").encode())
             await response.write_eof()
             return response
         except AdapterError as exc:
+            if response is None:
+                raise
             await response.write((json.dumps({"type": "error", "code": exc.code}) + "\n").encode())
             return response
         finally:
             if pending is not None:
                 pending.cancel()
                 await asyncio.gather(pending, return_exceptions=True)
-            await stream.aclose()
+            if not producer_closing:
+                producer.cancel()
+            # producer 的异常已经按队列顺序交付；这里只回收任务结果，避免重复写终态。
+            await asyncio.gather(producer, return_exceptions=True)
 
     async def attachment_create(request):
         if not adapter.descriptor()["capabilities"].get("attachments"):
