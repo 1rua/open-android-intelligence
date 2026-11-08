@@ -493,25 +493,52 @@ def create_hermes_bridge_app(adapter: HermesSessionAdapter, token: str, accounts
         # Authorization and binding checks run before committing response headers.
         response = None
         pending = None
+
+        async def next_frame(*, heartbeat: bool) -> Any:
+            """同时观察队列和 producer，队列优先以保证已有帧不丢失。"""
+            nonlocal pending
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(frames.get())
+                if pending.done():
+                    item = pending.result()
+                    pending = None
+                    if isinstance(item, AdapterError):
+                        raise item
+                    if isinstance(item, BaseException):
+                        raise AdapterError("AGENT_STREAM_INTERRUPTED", 502) from item
+                    return item
+                # producer 可能已结束但仍有最后几帧；先让队列 getter 取得它们。
+                if frames.qsize():
+                    await asyncio.sleep(0)
+                    continue
+                if producer.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    pending = None
+                    if producer.cancelled():
+                        raise AdapterError("AGENT_STREAM_INTERRUPTED", 502)
+                    failure = producer.exception()
+                    if isinstance(failure, AdapterError):
+                        raise failure
+                    raise AdapterError("AGENT_STREAM_INTERRUPTED", 502) from failure
+                done, _ = await asyncio.wait(
+                    {pending, producer},
+                    timeout=STREAM_HEARTBEAT_SECONDS if heartbeat else None,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if not done:
+                    await response.write(b"\n")
+
         try:
-            first = await frames.get()
-            if isinstance(first, BaseException):
-                raise first
+            first = await next_frame(heartbeat=False)
             response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson", "Cache-Control": "no-store"})
             await response.prepare(request)
             if first is not _STREAM_END:
                 await response.write((json.dumps(first) + "\n").encode())
             event = first
             while event is not _STREAM_END and event.get("type") not in {"done", "error"}:
-                pending = asyncio.create_task(frames.get())
-                while not pending.done():
-                    done, _ = await asyncio.wait({pending}, timeout=STREAM_HEARTBEAT_SECONDS)
-                    if not done:
-                        await response.write(b"\n")
-                event = pending.result()
-                pending = None
-                if isinstance(event, BaseException):
-                    raise event
+                event = await next_frame(heartbeat=True)
                 if event is _STREAM_END:
                     break
                 await response.write((json.dumps(event) + "\n").encode())
