@@ -203,7 +203,17 @@ def test_settings_renames_keep_ui_and_pr_indirect_dependencies(changed_file):
     impact = runner.analyze_impact([changed_file])
     assert impact["affects_android_settings"]
     assert runner.execute_strategy("full", impact) == 0
-    android = next(command for command in commands if "./gradlew" in command)
+    # Full regression is split into a module invocation and an app-variant
+    # invocation (Gradle binds --tests to a single Test task per invocation),
+    # so the tasks are checked across all Gradle calls.
+    gradle_commands = [command for command in commands if "./gradlew" in command]
+    assert gradle_commands
+    android = [
+        argument
+        for command in gradle_commands
+        for argument in command
+        if argument != "./gradlew"
+    ]
     for task in (":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest",
                  ":platform-kernel:testDebugUnitTest", ":notification-host:testDebugUnitTest", ":sms-collector:testDebugUnitTest"):
         assert task in android
@@ -325,40 +335,51 @@ def test_full_level_always_runs_plugin_tests_without_plugin_changes():
     assert ["npm", "test", "--prefix", "plugin-tooling"] in commands
 
 
-@pytest.mark.parametrize(("step_name", "expected_task"), [
-    (
-        "Core connection, Agent sessions, platform recovery and transport regressions",
-        ":app:testFullDebugUnitTest",
-    ),
-    (
-        "Play screen integration and Android API compatibility",
-        ":app:testPlayDebugUnitTest",
-    ),
-])
-def test_android_ci_steps_select_connection_account_and_settings_regressions(step_name, expected_task):
+def test_android_ci_covers_connection_account_and_settings_regressions():
+    """The PR Android gate must still select these behaviour regressions.
+
+    The workflow no longer has one monolithic `android` job, so this asserts the
+    property that mattered rather than a specific step name: every regression
+    that guards connection recovery, account switching and settings semantics is
+    still selected by some shard, and the shards carry full-variant filters only.
+    """
     workflow_path = Path(__file__).parents[1] / ".github/workflows/oai-core.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-    android_steps = workflow["jobs"]["android"]["steps"]
-    matching_steps = [step for step in android_steps if step.get("name") == step_name]
+    jobs = workflow["jobs"]
 
-    assert len(matching_steps) == 1
-    arguments = shlex.split(matching_steps[0]["run"])
-    assert expected_task in arguments
+    # One app job compiles the variant once; splitting it would duplicate the
+    # dominant compile cost (measured on CI: ~3 min of tests inside ~9-15 min of
+    # wall time per shard job).
+    assert "android-app" in jobs
+    assert "android-app-a" not in jobs and "android-app-b" not in jobs
 
-    selected_tests = {
-        arguments[index + 1]
-        for index, argument in enumerate(arguments[:-1])
-        if argument == "--tests"
+    manifest = (
+        Path(__file__).parents[1] / "apps/android/ci/app-regression.txt"
+    ).read_text(encoding="utf-8")
+    selected = {
+        line.strip()
+        for line in manifest.splitlines()
+        if line.strip() and not line.strip().startswith(("#", "["))
     }
-    required_tests = {
-        "*ColdStartConnectionTest",
-        "*AccountSwitchPersistenceFailureTest",
-        "*IndependentConnectionDiscoveryTest",
-        "*AdditionalDeviceConnectionsTest",
-        "*SettingsViewModelTest",
-        "*NativeEventDeletionPersistenceTest",
+    required = {
+        "ColdStartConnectionTest",
+        "AccountSwitchPersistenceFailureTest",
+        "IndependentConnectionDiscoveryTest",
+        "AdditionalDeviceConnectionsTest",
+        "SettingsViewModelTest",
+        "NativeEventDeletionPersistenceTest",
     }
-    assert required_tests <= selected_tests
+    assert required <= selected
+
+    # The Play variant keeps its own lane with its own variant-specific filters.
+    planner = importlib.util.spec_from_file_location(
+        "android_tasks", Path(__file__).parents[1] / "tools/ci/android_tasks.py"
+    )
+    android_tasks = importlib.util.module_from_spec(planner)
+    planner.loader.exec_module(android_tasks)
+    play_arguments = android_tasks.play_args()
+    assert play_arguments[0] == ":app:testPlayDebugUnitTest"
+    assert any("ColdStartConnectionTest" in argument for argument in play_arguments)
 
 
 def test_observer_only_edits_run_the_readonly_tool_regression(monkeypatch):
@@ -380,14 +401,3 @@ def test_observation_audit_edits_run_the_offline_regression(monkeypatch, changed
     assert runner.execute_strategy("fast", impact) == 0
     assert any("tools/test_audit_communication.py" in command for command in commands)
 
-
-def test_admission_keeps_the_historical_android_oracle_isolated():
-    root = Path(__file__).parents[1]
-    job = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())["jobs"]["admission"]
-    fixture = next(step for step in job["steps"] if step.get("name") == "Check out historical Android HTTP fixture")
-    assert fixture["with"]["ref"] == "ebe527da2426dd25877dd335786e80cf85d1cdde"
-    install = next(step["run"] for step in job["steps"] if step.get("name") == "Install isolated historical HTTP fixture")
-    assert 'python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"' in install
-    assert "OAI_HERMES_PYTHON=" in install and "HERMES_PLUGIN_ROOT=" in install
-    assert all("github.workspace" in step["env"]["HERMES_SDK_ROOT"]
-               for step in job["steps"] if step.get("name") in {"Fast admission", "PR admission"})

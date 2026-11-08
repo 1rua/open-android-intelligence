@@ -1,0 +1,204 @@
+name: Android test lane
+description: >-
+  Runs one Android test lane: checkout, JDK, SDK, Gradle, fixture restore,
+  a single Gradle invocation, and failure-evidence upload.
+
+# 为什么是一个 composite action 而不是复制 8 份 YAML：
+# 每个 lane 的差异只有「跑哪些任务」和「是否需要签名插件」，其余全部相同。
+# 复制粘贴会让「某个 lane 忘了下载 fixture」这类错误只在 CI 上暴露。
+
+inputs:
+  lane:
+    description: Lane passed to tools/ci/android_tasks.py --group/--shard.
+    required: true
+  wasm-artifact:
+    description: >-
+      Artifact name holding the compiled reference WASM plugins. Only the app and
+      play lanes read those payloads; module lanes pass an empty value and skip
+      the download, which keeps them off the fixture build's critical path.
+    required: false
+    default: ''
+  app-sections:
+    description: >-
+      Comma-separated app-test sections to run for the `app-pr` lane, taken from
+      the impact analysis. Empty means every section; "core" is always included.
+    required: false
+    default: ''
+  test-parallel-forks:
+    description: Test JVM forks. Only meaningful for the app test lanes.
+    required: false
+    default: '1'
+  hermes-fixtures:
+    description: >-
+      Provision the historical Hermes HTTP fixture, the pinned native SDK and an
+      isolated virtualenv. Required by tests that drive the real Python gateway
+      fixture (conversation-data's HermesHttpInteropTest); those tests fail
+      closed rather than skipping, so the lane must provide the fixtures.
+    required: false
+    default: 'false'
+  gradle-cache-read-only:
+    description: >-
+      Whether the Gradle build cache is read-only. PR runs from this repository
+      write the cache so a re-push or re-run of the same tree reuses compile
+      outputs; fork PRs stay read-only because their cache entries are not
+      trusted.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    # No checkout here: a composite action can only be used *after* the caller
+    # has checked out the repository, because the action's own files come from
+    # that checkout.
+
+    - name: Set up JDK 21
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+        log-accepted-android-sdk-licenses: false
+
+    - name: Install Android platforms
+      shell: bash
+      run: sdkmanager 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0'
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@v6
+      with:
+        # The configuration cache is now usable: the forbidden-surface gate no
+        # longer captures the script instance, so repeated invocations skip
+        # configuration entirely.
+        cache-read-only: ${{ inputs.gradle-cache-read-only == 'true' }}
+
+    - name: Restore the WASM fixtures
+      if: inputs.wasm-artifact != ''
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.wasm-artifact }}
+        path: plugins/target/wasm32-unknown-unknown/release
+
+    # Only the lanes that actually start the Python gateway fixture pay this
+    # cost. The fixture is a separate historical repository at a pinned commit,
+    # never a current Core runtime dependency.
+    - name: Check out the historical Hermes HTTP fixture
+      if: inputs.hermes-fixtures == 'true'
+      uses: actions/checkout@v7
+      with:
+        repository: 1rua/hermes-android-gateway
+        ref: ebe527da2426dd25877dd335786e80cf85d1cdde
+        path: .hermes-gateway-plugin
+        persist-credentials: false
+
+    - name: Check out the pinned Hermes native SDK
+      if: inputs.hermes-fixtures == 'true'
+      uses: actions/checkout@v7
+      with:
+        repository: NousResearch/hermes-agent
+        ref: 75b083e9399115b12513385252811f09c3503c90
+        path: .toolchains/hermes-native-sdk
+        persist-credentials: false
+
+    - name: Install the fixture virtualenv
+      if: inputs.hermes-fixtures == 'true'
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.11"
+
+    # Cache on an explicit requirements file: setup-python's `cache: pip` needs
+    # the dependency file to exist before the fixture checkout has happened, and
+    # the fixture is installed from a local path rather than from a lockfile.
+    - name: Cache the fixture's wheels
+      if: inputs.hermes-fixtures == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: fixture-pip-${{ runner.os }}-${{ hashFiles('apps/android/ci/hermes-fixture-requirements.txt') }}
+        restore-keys: |
+          fixture-pip-${{ runner.os }}-
+
+    - name: Build the isolated fixture environment
+      if: inputs.hermes-fixtures == 'true'
+      shell: bash
+      run: |
+        python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
+        "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install --quiet \
+          .hermes-gateway-plugin -r apps/android/ci/hermes-fixture-requirements.txt
+
+    - name: Install the Gradle wrapper
+      shell: bash
+      working-directory: apps/android
+      run: chmod +x gradlew
+
+    - name: Run the lane
+      shell: bash
+      working-directory: apps/android
+      env:
+        LC_ALL: C.UTF-8
+        OAI_TEST_PARALLEL_FORKS: ${{ inputs.test-parallel-forks }}
+        OAI_APP_SECTIONS: ${{ inputs.app-sections }}
+        HERMES_FIXTURES: ${{ inputs.hermes-fixtures }}
+      run: |
+        set -euo pipefail
+        if [ "$HERMES_FIXTURES" = "true" ]; then
+          # The fixture tests resolve these through the environment; a missing
+          # value fails the test instead of skipping it.
+          export HERMES_PLUGIN_ROOT="$GITHUB_WORKSPACE/.hermes-gateway-plugin"
+          export HERMES_SDK_ROOT="$GITHUB_WORKSPACE/.toolchains/hermes-native-sdk"
+          export OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$GITHUB_WORKSPACE/gateway-contract"
+          export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
+        fi
+        case "${{ inputs.lane }}" in
+          android-device|android-platform|android-notifications|android-conversation|android-gateway|android-plugins)
+            planner=(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
+            ;;
+          app-pr)
+            if [ -n "${OAI_APP_SECTIONS:-}" ]; then
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr --sections "$OAI_APP_SECTIONS")
+            else
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr)
+            fi
+            ;;
+          play)
+            planner=(python3 ../../tools/ci/android_tasks.py --group play)
+            ;;
+          *)
+            echo "::error::Unknown lane: ${{ inputs.lane }}"
+            exit 2
+            ;;
+        esac
+
+        # `mapfile` returns success even when its producer fails, so a planner
+        # rejection would yield an empty array and Gradle would run its default
+        # `help` task — reporting a green lane that tested nothing. Capture the
+        # output first and check both the exit status and the result.
+        if ! planned="$("${planner[@]}")"; then
+          echo "::error::Task planner failed for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+        mapfile -t args <<< "$planned"
+        # `mapfile` on a single empty line yields one empty element.
+        if [ "${#args[@]}" -eq 0 ] || [ -z "${args[0]:-}" ]; then
+          echo "::error::Task planner produced no tasks for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+
+        printf 'gradle %s\n' "${args[*]}"
+        ./gradlew "${args[@]}" \
+          -Poai.testParallelForks="$OAI_TEST_PARALLEL_FORKS" \
+          --stacktrace
+
+    - name: Preserve test evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-reports-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+        if-no-files-found: ignore
+        retention-days: 7
+        path: |
+          apps/android/**/build/test-results/**/*.xml
+          apps/android/**/build/reports/tests/**

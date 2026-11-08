@@ -1,3 +1,4 @@
+import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Properties
@@ -70,6 +71,11 @@ tasks.withType<Test>().configureEach {
     // are process globals. A prior class must not leak callbacks or Android state into the next.
     // Keep compiled outputs/caches; isolate only the test JVM, without disabling idle checks.
     forkEvery = 1
+    // 每个测试类一个 JVM 意味着 Robolectric 启动开销占主导。并发 fork 在不共享进程
+    // 状态的前提下把这些启动开销重叠起来；上界由 CI 实际核数与内存决定。
+    maxParallelForks = (providers.gradleProperty("oai.testParallelForks").orNull?.toIntOrNull() ?: 1)
+        .coerceAtLeast(1)
+    maxHeapSize = providers.gradleProperty("oai.testMaxHeap").orNull ?: "1g"
     // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
     // 因此这些输入变动必须让测试失效，不能复用旧结果。
     for (spec in listOf(
@@ -199,6 +205,30 @@ check(appVersionCode in 1..2_100_000_000) { "App versionCode 超出 Android 发�
 check(appVersionName.matches(Regex("[0-9A-Za-z.+-]+"))) { "App versionName 格式无效" }
 check(appCommit.isEmpty() || appCommit.matches(Regex("[0-9a-f]{40}"))) { "App 提交信息必须是完整的 Git SHA" }
 
+// Release signing inputs. The `doFirst` guard below must not reference any
+// script-level value: closing over one captures the Kotlin script instance,
+// which the configuration cache refuses to serialize. `Provid`ers are read
+// fresh inside the action instead, so nothing script-owned is captured.
+val releaseStoreFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
+val releaseStorePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+
+// Read at configuration time into a plain data holder that the task action
+// copies; the action itself only touches this local snapshot.
+data class ReleaseSigningSnapshot(
+    val keystorePath: String?,
+    val storePassword: String?,
+    val keyAlias: String?,
+    val keyPassword: String?,
+)
+val releaseSigningSnapshot = ReleaseSigningSnapshot(
+    keystorePath = releaseStoreFile?.absolutePath,
+    storePassword = releaseStorePassword,
+    keyAlias = releaseKeyAlias,
+    keyPassword = releaseKeyPassword,
+)
+
 android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
@@ -228,11 +258,6 @@ android {
         buildConfig = true
         compose = true
     }
-    val releaseStoreFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
-    val releaseStorePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
-    val releaseKeyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
-    val releaseKeyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
-
     signingConfigs {
         create("release") {
             storeFile = releaseStoreFile
@@ -258,9 +283,17 @@ android {
     testOptions.unitTests.apply {
         isIncludeAndroidResources = true
         all {
-            val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
-            it.systemProperty("user.home", testHome.absolutePath)
-            it.doFirst { testHome.mkdirs() }
+            // Resolve to a plain String: closing over a Project-derived File
+            // captured the script/Project object and made the configuration
+            // cache unstorable.
+            val testHomePath = rootProject.layout.projectDirectory
+                .dir(".gradle/robolectric-home").asFile.absolutePath
+            it.systemProperty("user.home", testHomePath)
+            // Robolectric downloads its android-all runtime into `user.home`.
+            // The directory must exist, or every test fails in
+            // MavenDependencyResolver with FileNotFoundException. Only the plain
+            // String is captured here, so this stays configuration-cache safe.
+            it.doFirst { File(testHomePath).mkdirs() }
         }
     }
 }
@@ -274,23 +307,61 @@ androidComponents {
 }
 
 // Fail before producing any release APK/AAB, including direct Gradle builds.
-tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseBundle")) }.configureEach {
-    doFirst {
-        val signing = android.signingConfigs.getByName("release")
-        val keystoreFile = signing.storeFile
-        check(keystoreFile?.isFile == true && !signing.storePassword.isNullOrBlank() &&
-            !signing.keyAlias.isNullOrBlank() && !signing.keyPassword.isNullOrBlank()) {
+//
+// Why a standalone task instead of a `doFirst` guard on the packaging tasks:
+// any lambda declared in this Kotlin script closes over the script instance, and
+// the configuration cache refuses to serialize that. That made
+// `:app:assembleFullRelease` fail to store its cache entry, which broke stable
+// release builds once the cache was enabled globally. A plain task with declared
+// inputs has no script reference and can be cached normally.
+abstract class VerifyReleaseSigning : DefaultTask() {
+    @get:Input
+    @get:Optional
+    abstract val keystorePath: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val storePassword: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val keyAlias: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val keyPassword: Property<String>
+
+    @TaskAction
+    fun verify() {
+        val keystoreFile = keystorePath.orNull?.let { File(it) }
+        check(keystoreFile?.isFile == true && storePassword.orNull?.isNotBlank() == true &&
+            keyAlias.orNull?.isNotBlank() == true && keyPassword.orNull?.isNotBlank() == true) {
             "Release signing requires the four OAI_RELEASE_* environment variables; see apps/android/README.md"
         }
         val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
-        keystoreFile!!.inputStream().use { keystore.load(it, signing.storePassword!!.toCharArray()) }
-        val certificate = checkNotNull(keystore.getCertificate(signing.keyAlias)) { "Release signing certificate missing" }
+        keystoreFile!!.inputStream().use { keystore.load(it, storePassword.get().toCharArray()) }
+        val certificate = checkNotNull(keystore.getCertificate(keyAlias.get())) {
+            "Release signing certificate missing"
+        }
         val digest = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
             .joinToString("") { "%02X".format(it) }
         check(digest != "37D9445FAB11D827B032B84B0739ACB2C33AA8ACE1F319ED20A4CC612624CE33") {
             "The public debug identity must never sign a release build"
         }
     }
+}
+
+val verifyReleaseSigning = tasks.register<VerifyReleaseSigning>("verifyReleaseSigning") {
+    group = "verification"
+    description = "Reject release packaging without a usable, non-debug signing identity."
+    keystorePath.set(releaseSigningSnapshot.keystorePath)
+    storePassword.set(releaseSigningSnapshot.storePassword)
+    keyAlias.set(releaseSigningSnapshot.keyAlias)
+    keyPassword.set(releaseSigningSnapshot.keyPassword)
+}
+
+tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseBundle")) }.configureEach {
+    dependsOn(verifyReleaseSigning)
 }
 
 dependencies {

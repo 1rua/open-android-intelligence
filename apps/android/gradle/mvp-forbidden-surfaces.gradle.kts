@@ -4,6 +4,7 @@
  * 不拥有系统隧道、路由、DNS、代理或通用网络监听能力。
  */
 import java.io.File
+import org.gradle.api.tasks.PathSensitivity
 
 /**
  * Banned in every module, owners included: the product owns no system tunnel,
@@ -81,177 +82,247 @@ val testOnlyOutboundAssertions = setOf(
 )
 
 /**
- * 剥除代码中的单行/多行注释，将注释内容替换为空格并保留换行符，
- * 确保既过滤掉注释中的无关关键字，又精确保留原文件的行号与代码结构。
+ * Unchecked-owner surfaces must be rejected before packaging.
+ *
+ * File lists and pattern text are resolved at configuration time and declared as
+ * task inputs. The scan body is deliberately self-contained: a `doLast` closure
+ * that calls script-level functions captures the Kotlin script instance, which
+ * Gradle cannot serialize, and that made the whole build configuration-cache
+ * incompatible. Keeping the closure free of script references lets CI reuse both
+ * the configuration cache and the task output cache.
+ *
+ * The previous implementation additionally read `rootProject.subprojects` inside
+ * `doLast`, which captured live project state for the same reason.
  */
-fun stripComments(file: File): List<String> {
-    val text = file.readText()
-    val isXml = file.extension.equals("xml", ignoreCase = true)
-    val out = java.lang.StringBuilder(text.length)
-    var i = 0
-    val n = text.length
-
-    if (isXml) {
-        var inXmlComment = false
-        while (i < n) {
-            if (!inXmlComment && i + 3 < n && text[i] == '<' && text[i + 1] == '!' && text[i + 2] == '-' && text[i + 3] == '-') {
-                inXmlComment = true
-                out.append("    ")
-                i += 4
-            } else if (inXmlComment && i + 2 < n && text[i] == '-' && text[i + 1] == '-' && text[i + 2] == '>') {
-                inXmlComment = false
-                out.append("   ")
-                i += 3
-            } else if (inXmlComment) {
-                out.append(if (text[i] == '\n' || text[i] == '\r') text[i] else ' ')
-                i++
-            } else {
-                out.append(text[i])
-                i++
-            }
-        }
-        return out.toString().lines()
-    }
-
-    var inBlockComment = 0
-    var inLineComment = false
-    var inString = false
-    var inRawString = false
-    var inChar = false
-
-    while (i < n) {
-        val c = text[i]
-        val next = if (i + 1 < n) text[i + 1] else '\u0000'
-        val next2 = if (i + 2 < n) text[i + 2] else '\u0000'
-
-        if (inLineComment) {
-            if (c == '\n') {
-                inLineComment = false
-                out.append('\n')
-            } else if (c == '\r') {
-                out.append('\r')
-            } else {
-                out.append(' ')
-            }
-            i++
-        } else if (inBlockComment > 0) {
-            if (c == '/' && next == '*') {
-                inBlockComment++
-                out.append("  ")
-                i += 2
-            } else if (c == '*' && next == '/') {
-                inBlockComment--
-                out.append("  ")
-                i += 2
-            } else {
-                out.append(if (c == '\n' || c == '\r') c else ' ')
-                i++
-            }
-        } else if (inRawString) {
-            if (c == '"' && next == '"' && next2 == '"') {
-                inRawString = false
-                out.append("\"\"\"")
-                i += 3
-            } else {
-                out.append(c)
-                i++
-            }
-        } else if (inString) {
-            if (c == '\\' && i + 1 < n) {
-                out.append(c).append(next)
-                i += 2
-            } else if (c == '"') {
-                inString = false
-                out.append(c)
-                i++
-            } else {
-                out.append(c)
-                i++
-            }
-        } else if (inChar) {
-            if (c == '\\' && i + 1 < n) {
-                out.append(c).append(next)
-                i += 2
-            } else if (c == '\'') {
-                inChar = false
-                out.append(c)
-                i++
-            } else {
-                out.append(c)
-                i++
-            }
-        } else {
-            if (c == '/' && next == '/') {
-                inLineComment = true
-                out.append("  ")
-                i += 2
-            } else if (c == '/' && next == '*') {
-                inBlockComment = 1
-                out.append("  ")
-                i += 2
-            } else if (c == '"' && next == '"' && next2 == '"') {
-                inRawString = true
-                out.append("\"\"\"")
-                i += 3
-            } else if (c == '"') {
-                inString = true
-                out.append(c)
-                i++
-            } else if (c == '\'') {
-                inChar = true
-                out.append(c)
-                i++
-            } else {
-                out.append(c)
-                i++
-            }
-        }
-    }
-
-    return out.toString().lines()
-}
-
-fun scanNoVpnSurfaces(files: Iterable<File>, banned: List<Regex>): List<String> = buildList {
-    files.filter { it.isFile && it.extension in setOf("kt", "java", "xml") }.forEach { file ->
-        val lines = stripComments(file)
-        lines.forEachIndexed { index, line ->
-            if (banned.any { it.containsMatchIn(line) }) {
-                add("${file.path}:${index + 1}: forbidden surface")
-            }
-        }
-    }
-}
-
-fun sourceFilesUnder(root: File): List<File> =
-    root.walkTopDown()
-        .onEnter { it.name !in generatedDirectoryNames }
-        .filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
-        .filter { it.relativeTo(rootDir).path !in absenceAuditFiles }
-        .filter { it.relativeTo(rootDir).path !in testOnlyLoopbackFixtures }
-        .toList()
-
 tasks.register("noVpnSurfaceCheck") {
     group = "verification"
     description = "Reject system VPN, route/DNS, proxy/listener and generic dial surfaces."
+
+    // Ownership decisions are configuration-time facts about *modules* (which
+    // project owns outbound transport) and about explicit path lists.
+    val ownerModuleNames = networkOwnerModules.toSet()
+    val ownerPathList = networkOwnerFiles.toSet()
+    val testOnlyPathList = testOnlyOutboundAssertions.toSet()
+    val absencePathList = absenceAuditFiles.toSet()
+    val loopbackPathList = testOnlyLoopbackFixtures.toSet()
+    val skippedDirs = generatedDirectoryNames.toSet()
+    val alwaysPatterns = alwaysForbidden.map { it.pattern }
+    val ownerOnlyPatterns = forbiddenOutsideOwners.map { it.pattern }
+    val reportedRoot = rootDir.absolutePath
+    val moduleRoots = rootProject.subprojects.map {
+        it.name to it.projectDir.absolutePath
+    }
+
+    // Declare the source *trees*, not a resolved file list. A file list is
+    // captured when the configuration cache entry is stored, so a source file
+    // added afterwards was not an input and the task stayed UP-TO-DATE —
+    // letting a newly added forbidden surface through. A file-tree spec is
+    // re-resolved on every invocation, so membership changes invalidate the
+    // task while the configuration cache stays reusable.
+    val sourceTrees = moduleRoots.map { (_, dir) ->
+        layout.files(
+            fileTree(dir) {
+                include("**/*.kt", "**/*.java", "**/*.xml")
+                skippedDirs.forEach { exclude("**/$it/**") }
+            }
+        )
+    }
+    inputs.files(sourceTrees).withPropertyName("scannedSourceTrees")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("ownerModules", ownerModuleNames.sorted())
+    inputs.property("ownerPaths", ownerPathList.sorted())
+    inputs.property("testOnlyPaths", testOnlyPathList.sorted())
+    inputs.property("absencePaths", absencePathList.sorted())
+    inputs.property("loopbackPaths", loopbackPathList.sorted())
+    inputs.property("alwaysBannedPatterns", alwaysPatterns)
+    inputs.property("ownerOnlyBannedPatterns", ownerOnlyPatterns)
+    // A marker output lets the task be up-to-date and cacheable.
+    val evidenceFile = layout.buildDirectory.file("reports/mvp-forbidden-surfaces/clean.txt")
+    outputs.file(evidenceFile)
+
     doLast {
-        // Derived from the registered modules so a newly included module is
-        // covered by this gate the moment it is added, not by a manual list edit.
-        val violations = rootProject.subprojects.flatMap { project ->
-            sourceFilesUnder(project.projectDir).flatMap { file ->
-                val allowsOutboundReferences = project.name in networkOwnerModules ||
-                    file.relativeTo(rootDir).path in networkOwnerFiles ||
-                    file.relativeTo(rootDir).path in testOnlyOutboundAssertions
-                val banned = if (allowsOutboundReferences) alwaysForbidden else alwaysForbidden + forbiddenOutsideOwners
-                scanNoVpnSurfaces(listOf(file), banned)
+        val root = File(reportedRoot)
+        val alwaysBanned = alwaysPatterns.map { Regex(it, RegexOption.IGNORE_CASE) }
+        val ownerOnlyBanned = ownerOnlyPatterns.map { Regex(it, RegexOption.IGNORE_CASE) }
+
+        fun stripComments(text: String, isXml: Boolean): List<String> {
+            val out = StringBuilder(text.length)
+            var i = 0
+            val n = text.length
+            if (isXml) {
+                var inXmlComment = false
+                while (i < n) {
+                    if (!inXmlComment && i + 3 < n && text[i] == '<' && text[i + 1] == '!' && text[i + 2] == '-' && text[i + 3] == '-') {
+                        inXmlComment = true
+                        out.append("    ")
+                        i += 4
+                    } else if (inXmlComment && i + 2 < n && text[i] == '-' && text[i + 1] == '-' && text[i + 2] == '>') {
+                        inXmlComment = false
+                        out.append("   ")
+                        i += 3
+                    } else {
+                        out.append(if (inXmlComment && text[i] != '\n' && text[i] != '\r') ' ' else text[i])
+                        i++
+                    }
+                }
+                return out.toString().lines()
+            }
+
+            var inBlockComment = 0
+            var inLineComment = false
+            var inString = false
+            var inRawString = false
+            var inChar = false
+            while (i < n) {
+                val c = text[i]
+                val next = if (i + 1 < n) text[i + 1] else '\u0000'
+                val next2 = if (i + 2 < n) text[i + 2] else '\u0000'
+                when {
+                    inLineComment -> {
+                        if (c == '\n') {
+                            inLineComment = false
+                            out.append('\n')
+                        } else if (c == '\r') {
+                            out.append('\r')
+                        } else {
+                            out.append(' ')
+                        }
+                        i++
+                    }
+                    inBlockComment > 0 -> {
+                        if (c == '/' && next == '*') {
+                            inBlockComment++
+                            out.append("  ")
+                            i += 2
+                        } else if (c == '*' && next == '/') {
+                            inBlockComment--
+                            out.append("  ")
+                            i += 2
+                        } else {
+                            out.append(if (c == '\n' || c == '\r') c else ' ')
+                            i++
+                        }
+                    }
+                    inRawString -> {
+                        if (c == '"' && next == '"' && next2 == '"') {
+                            inRawString = false
+                            out.append("\"\"\"")
+                            i += 3
+                        } else {
+                            out.append(c)
+                            i++
+                        }
+                    }
+                    inString -> {
+                        if (c == '\\' && i + 1 < n) {
+                            out.append(c).append(next)
+                            i += 2
+                        } else if (c == '"') {
+                            inString = false
+                            out.append(c)
+                            i++
+                        } else {
+                            out.append(c)
+                            i++
+                        }
+                    }
+                    inChar -> {
+                        if (c == '\\' && i + 1 < n) {
+                            out.append(c).append(next)
+                            i += 2
+                        } else if (c == '\'') {
+                            inChar = false
+                            out.append(c)
+                            i++
+                        } else {
+                            out.append(c)
+                            i++
+                        }
+                    }
+                    else -> when {
+                        c == '/' && next == '/' -> {
+                            inLineComment = true
+                            out.append("  ")
+                            i += 2
+                        }
+                        c == '/' && next == '*' -> {
+                            inBlockComment = 1
+                            out.append("  ")
+                            i += 2
+                        }
+                        c == '"' && next == '"' && next2 == '"' -> {
+                            inRawString = true
+                            out.append("\"\"\"")
+                            i += 3
+                        }
+                        c == '"' -> {
+                            inString = true
+                            out.append(c)
+                            i++
+                        }
+                        c == '\'' -> {
+                            inChar = true
+                            out.append(c)
+                            i++
+                        }
+                        else -> {
+                            out.append(c)
+                            i++
+                        }
+                    }
+                }
+            }
+            return out.toString().lines()
+        }
+
+        fun scan(files: Iterable<File>, banned: List<Regex>): List<String> = buildList {
+            files.filter { it.isFile }.forEach { file ->
+                val lines = stripComments(file.readText(), file.extension.equals("xml", ignoreCase = true))
+                lines.forEachIndexed { index, line ->
+                    if (banned.any { it.containsMatchIn(line) }) {
+                        add("${file.relativeTo(root).path}:${index + 1}: forbidden surface")
+                    }
+                }
             }
         }
-        check(violations.isEmpty()) { violations.joinToString("\n") }
+
+        val violations = mutableListOf<String>()
+        var checked = 0
+        moduleRoots.forEach { (moduleName, dirPath) ->
+            val moduleOwnsTransport = moduleName in ownerModuleNames
+            val sourceRoot = File(dirPath)
+            val files = sourceRoot.walkTopDown()
+                .onEnter { it.name !in skippedDirs }
+                .filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
+                .filter {
+                    val relative = it.relativeTo(root).path
+                    relative !in absencePathList && relative !in loopbackPathList
+                }
+                .toList()
+            files.forEach { file ->
+                val relative = file.relativeTo(root).path
+                val allowsOutbound = moduleOwnsTransport ||
+                    relative in ownerPathList || relative in testOnlyPathList
+                val banned = if (allowsOutbound) alwaysBanned else alwaysBanned + ownerOnlyBanned
+                violations += scan(listOf(file), banned)
+                checked++
+            }
+        }
+        check(violations.isEmpty()) { violations.sorted().joinToString("\n") }
+        val evidence = evidenceFile.get().asFile
+        evidence.parentFile.mkdirs()
+        evidence.writeText("checked=$checked\n")
     }
 }
 
 tasks.named("check") { dependsOn("noVpnSurfaceCheck") }
 
 // Module-scoped checks must not bypass the same root-wide source scan.
+//
+// The dependency target must be the root project's task path. Inside a
+// `subprojects {}` block a bare "noVpnSurfaceCheck" resolves against the
+// subproject, where the task does not exist, and `:app:check` fails with
+// "Task with path 'noVpnSurfaceCheck' not found".
 subprojects {
     tasks.matching { it.name == "check" }.configureEach {
         dependsOn(rootProject.tasks.named("noVpnSurfaceCheck"))

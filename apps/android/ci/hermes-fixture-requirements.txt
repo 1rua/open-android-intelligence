@@ -1,0 +1,10 @@
+# Dependencies for the historical Hermes HTTP fixture used by Android tests.
+#
+# Keep these in sync with the versions ci.yml installs; the fixture repository
+# itself declares its runtime dependencies, and this pin list exists so the
+# lane's pip cache has a stable key that does not depend on that checkout.
+aiohttp
+PyYAML==6.0.3
+httpx==0.28.1
+python-dotenv==1.2.4
+psutil==7.2.2

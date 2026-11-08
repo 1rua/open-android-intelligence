@@ -1,5 +1,16 @@
 name: CI
 
+# 本工作流承担「完整回归」职责（Level 3）：
+#   * PR → main：发布前的完整验证
+#   * push → main：合并后的完整验证
+#   * workflow_dispatch：手动重跑
+#
+# 增量、按变更范围选测的工作量由 oai-core.yml 负责；这里刻意不做路径过滤，
+# 因为它的存在意义就是「不依赖影响分析也能给出完整结论」。
+#
+# 注意：下面两个 job 名称是 main 分支的必需状态检查名，**不能改名**，
+# 否则合并后必需检查永远 pending，PR 无法合并。
+
 on:
   push:
     branches: [ main ]
@@ -15,7 +26,8 @@ concurrency:
 
 jobs:
   gateway-and-protocol:
-    name: Protocol Conformance & Historical Gateway Compatibility
+    # 与 main 分支规则集的必需检查名保持一致；改名前必须同步更新规则集。
+    name: Node.js & Gateway Conformance
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -244,10 +256,23 @@ jobs:
           "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install .hermes-gateway-plugin \
             aiohttp PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
 
+      # 编译产物是多个 app 测试的输入；缓存 workspace 避免每次全量重编。
+      - name: Cache the Rust plugin workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            plugins/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.toml', 'plugins/Cargo.lock', 'plugins/**/src/**') }}
+          restore-keys: |
+            plugins-${{ runner.os }}-
+
       - name: Build real Rust WASM plugins for Android runtime regression
         run: |
           rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
-          cargo +1.90.0 build --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml
+          cargo +1.90.0 build --locked --target wasm32-unknown-unknown \
+            --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
 
       - name: Setup Node.js for notification delivery tests
         uses: actions/setup-node@v4
@@ -282,7 +307,14 @@ jobs:
         run: |
           chmod +x gradlew
           export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
-          ./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true --stacktrace --max-workers=2
+          # `check` 已展开到 :app:testFullDebugUnitTest 与
+          # :app:testPlayDebugUnitTest（实测 dry-run 两者都在图里），
+          # 再显式列一遍只会重复声明同一个任务。
+          # 所有任务放在同一次调用里，复用同一份已编译产物与配置阶段。
+          ./gradlew check :app:assembleFullDebug \
+            -Poai.requireBundledPlugins=true \
+            -Poai.testParallelForks=2 \
+            --stacktrace
 
       # 六个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
       - name: Verify the plugin packages reached the APK
