@@ -530,6 +530,11 @@ jobs:
           wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
           app-sections: ${{ needs.changes.outputs.app_sections }}
           test-parallel-forks: '4'
+          # These app tests drive the real Python gateway fixture:
+          # AndroidAttachmentContentTypeTest, HermesHistoryMediaHttpTest and
+          # plugins/NotificationCapabilityHttpTest. They fail closed when the
+          # fixture is absent, so the lane must provision it.
+          hermes-fixtures: 'true'
 
   android-play:
     name: Android Play Variant
