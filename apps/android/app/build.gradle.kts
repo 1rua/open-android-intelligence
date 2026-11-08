@@ -364,12 +364,6 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
     dependsOn(verifyReleaseSigning)
 }
 
-androidComponents {
-    onVariants(selector().withFlavor("distribution" to "full")) { variant ->
-        variant.sources.assets?.addGeneratedSourceDirectory(stageBundledPlugins, StageBundledPlugins::outputDirectory)
-    }
-}
-
 dependencies {
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))
