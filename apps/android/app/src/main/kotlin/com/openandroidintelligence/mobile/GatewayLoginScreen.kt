@@ -90,7 +90,22 @@ fun GatewayLoginScreen(
     // 预填上一次成功登录（或被设置导入写入）的 Core 地址：换机后不必重新输入。
     // 只填地址，不填账号与密码；用户仍可随时改。读取失败时保持空值。
     val prefillContext = LocalContext.current
-    var url by rememberSaveable { mutableStateOf(LoginGatewayPrefill.read(prefillContext).orEmpty()) }
+    val initialPrefill = remember(prefillContext) { LoginGatewayPrefill.read(prefillContext).orEmpty() }
+    var url by rememberSaveable { mutableStateOf(initialPrefill) }
+    // 用户还没动过地址栏时跟随预填变化（设置里导入备份后地址栏立即更新）；
+    // 一旦用户自己输入过，就不再覆盖他写的内容。
+    var lastAppliedPrefill by rememberSaveable { mutableStateOf(initialPrefill) }
+    val prefilled = lastAppliedPrefill
+    val urlMatchesPrefill = url == prefilled
+    LaunchedEffect(prefillContext, urlMatchesPrefill) {
+        if (!urlMatchesPrefill) return@LaunchedEffect
+        LoginGatewayPrefill.observe(prefillContext).collect { latest ->
+            if (latest != null && latest != url) {
+                url = latest
+                lastAppliedPrefill = latest
+            }
+        }
+    }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var invitation by remember { mutableStateOf(false) }

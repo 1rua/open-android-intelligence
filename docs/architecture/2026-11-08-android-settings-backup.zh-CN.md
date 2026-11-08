@@ -73,7 +73,7 @@
 | notifications | `ReplyNotificationSettings` | Agent 任务通知开关（系统通知权限不在其中） |
 | messageProcessing | `DebouncePreferences` | 全局默认 + 按 Core 覆盖 |
 | conversation | `EncryptedNativeConversationOrganizationStore` | 每个账号/Agent 的排序、文件夹、归类 |
-| connection | `LoginGatewayPrefill` | 仅 Core 地址，用于登录页预填；缺失时回落到运行时最近地址与已保存账号的地址（老版本升级用户） |
+| connection | `LoginGatewayPrefill` | 仅 Core 地址，用于登录页预填；缺失时回落到运行时最近地址与已保存账号的地址（老版本升级用户）。导出前会去掉 URL 里的 user-info（`https://user:pass@host`），去不干净就整节不写 |
 | agents | `AndroidAccountProfileStore` | 每个账号上次选择的原生 Agent |
 | capabilities | `PairingGrantStateHolder` | 每项能力的授权模式与读取范围（不含总开关） |
 | updates | `AppUpdatePreferences` | 正式版/预览版渠道 |
@@ -109,10 +109,17 @@
    能力策略若在审计阶段失败，内核会留下 `LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE`
    拒绝屏障，此时回滚也会被拒——这种情况如实报告为「部分未恢复」，且**不绕过**该屏障
    （屏障本身就是防止权限被悄悄放开的保险）。
-5. **主动推送配置不在回滚范围内，这是设计而非遗漏**：`DevicePushRuntime.configure()`
-   一旦提交就会删掉不再需要的排队事件、缩短保留期并排定远端撤销，这些都无法撤销。
-   因此它排在导入序列最后，语义是「提交或原样不动」；只要走到回滚，它就没有执行过，
-   自然没有需要恢复的东西。
+5. **有三节不可撤销，它们的顺序是设计的一部分**：
+   - `DevicePushRuntime.configure()` 一旦提交就会删掉不再需要的排队事件、缩短保留期
+     并排定远端撤销；
+   - 通知采集范围一旦换 `policyRevision`，已排队记录的 `captureRevision` 就不再匹配，
+     `allows()` 会拒绝它们，恢复旧策略也换不回投递资格；
+   - 能力策略的审计失败会留下 `LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE` 拒绝屏障。
+
+   三者按「最难恢复的排最后」排列（能力 → 推送 → 通知采集），任何失败都发生在后面的
+   节之前；其中推送语义是「提交或原样不动」——只要走到回滚，它就没有执行过。
+   通知采集与推送的成功结果会在结果里明确写出「已排队记录不会补发 / 已移除且不可撤销」，
+   而不是让用户以为一次导入是完全无痕的。
 6. 导入成功后刷新运行时持有的合并策略与会话列表；确实无法热更新的项目（例如
    已登录账号的 Agent 选择、登录页预填）会在结果里明确写成「下次…后生效」。
 

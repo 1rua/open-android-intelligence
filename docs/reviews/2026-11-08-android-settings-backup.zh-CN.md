@@ -44,6 +44,10 @@
 | P2 回滚失败被 `runCatching` 吞掉，界面仍说已恢复 | 属实：`update()` 在 `localError` 非空时拒绝后续写入 | `restore()` 改为返回未恢复清单，界面据此列出具体项；新增 `aRollbackThatCannotBeCompletedIsReportedAsPartialInsteadOfSuccess` |
 | P2 老版本升级用户没有 prefill，导出会缺连接地址 | 属实 | `currentConnection()` 回落顺序：prefill → 运行时最近地址（新增 `GatewayRuntime.lastGatewayUrl()`）→ 已保存账号；新增 `connectionAddressFallsBackToSavedProfilesForUpgradedInstalls` |
 | P2 确认框内容不可滚动 | 属实（十类摘要 + 安全说明） | 正文加 `verticalScroll`；新增 `confirmationListsEverySectionAndKeepsTheSafetyWarningReachable` |
+| P2 通知采集换 revision 后已排队记录不再可投递，却仍宣称完全回滚 | 属实：`allows()` 比对 `captureRevision` | 该节移到序列最后，并在成功结果里明确写出「已采集未发送的通知不会补发」；新增 `notificationPolicyChangeIsDisclosedAsIrreversibleInsteadOfSilentlyRestored` |
+| P2 能力策略键不匹配时静默算作「已是最新」 | 属实：`policyKey()` 含作者指纹/Schema 摘要/风险 | 统计未匹配条数并写入 `skipped`，提示手动重配；新增 `capabilityPoliciesWhoseKeysNoLongerMatchAreReportedAsSkipped` |
+| P2 地址可能带 user-info，明文写进备份文件 | 属实：`GatewayEndpoint.parse()` 只校验 scheme/host | 导出前用 `URI` 去掉 user-info，重建后仍需通过同一解析器；新增 `credentialsEmbeddedInTheCoreAddressNeverReachTheBackupFile` |
+| P2 导入后登录页地址栏不刷新 | 属实：`rememberSaveable` 只初始化一次 | `LoginGatewayPrefill.observe()` + 仅在「用户未改动地址栏」时同步导入值 |
 
 ## 已知局限
 
@@ -63,7 +67,7 @@ LC_ALL=C.UTF-8 ./gradlew :app:testFullDebugUnitTest --tests 'com.openandroidinte
 LC_ALL=C.UTF-8 ./gradlew :platform-kernel:testDebugUnitTest :encrypted-store:testDebugUnitTest
 ```
 
-新增测试共 3 个类、26 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
+新增测试共 3 个类、29 个用例：`SettingsBackupCodecTest`（编解码与拒绝规则）、
 `SettingsBackupCoordinatorTest`（真实偏好与加密存储上的导出/导入/回滚/幂等）、
 `SettingsBackupScreenTest`（页面、禁用态、错误提示、环境缺失）。
 

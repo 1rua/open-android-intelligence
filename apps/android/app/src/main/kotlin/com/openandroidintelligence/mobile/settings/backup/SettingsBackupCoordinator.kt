@@ -183,7 +183,10 @@ class SettingsBackupCoordinator(
         val url = candidates.filterNotNull()
             .firstOrNull { it.isNotBlank() && GatewayEndpoint.parse(it) != null }
             ?: return null
-        return ConnectionSection(url)
+        // 地址里可能带着 user-info（`https://alice:secret@core.example`）：`GatewayEndpoint.parse`
+        // 只校验 scheme 与 host，会原样接受。备份是明文的便携文件，绝不能把它写出去；
+        // 去不掉就整节不导出——宁可少迁移一项，也不能泄漏凭据。
+        return credentialFreeGateway(url)?.let(::ConnectionSection)
     }
 
     private fun currentAgents(): AgentsSection? {
@@ -286,12 +289,15 @@ class SettingsBackupCoordinator(
             applyConnection(sections.connection, applied, deferred)
             applyAgents(sections.agents, applied, skipped)
             applyUpdates(sections.updates, applied)
-            applyNotificationCollection(sections.notificationCollection, applied, skipped)
-            // 有破坏性副作用的两节放最后：能力的审计失败会留下拒绝屏障，推送收窄会
-            // 真正删掉排队事件。把两者放在「其余全部写完」之后，能回滚的失败先发生，
-            // 不必把不可撤销的结果当作可撤销来承诺。
+            // 以下三节有不可撤销的副作用，按「最难恢复的排最后」排列：
+            // - 能力策略的审计失败会留下拒绝屏障（本身可被如实报告为部分未恢复）；
+            // - 推送收窄会真正删掉排队事件并排定远端撤销；
+            // - 通知采集范围一旦换 revision，已排队记录的 captureRevision 就不再匹配，
+            //   恢复旧策略也换不回这些记录的投递资格。
+            // 这样任何失败都发生在后面的节之前，不会把不可撤销的结果当成可撤销来承诺。
             applyCapabilities(sections.capabilities, applied, skipped)
-            applyDevicePush(sections.devicePush, applied, skipped)
+            applyDevicePush(sections.devicePush, applied, skipped, deferred)
+            applyNotificationCollection(sections.notificationCollection, applied, skipped, deferred)
         } catch (failure: Exception) {
             // restore() 会返回**确认恢复失败**的清单；只有清单为空才敢说「已恢复原状」。
             val unrestored = runCatching { snapshot.restore() }.getOrElse { listOf("设置") }
@@ -492,6 +498,7 @@ class SettingsBackupCoordinator(
         section: NotificationCollectionSection?,
         applied: MutableList<String>,
         skipped: MutableList<String>,
+        deferred: MutableList<String>,
     ) {
         section ?: return
         val current = runCatching { notificationPolicy.snapshot() }.getOrNull()
@@ -518,7 +525,12 @@ class SettingsBackupCoordinator(
             ),
         )
         when (outcome) {
-            is NotificationPolicyUpdateOutcome.Accepted -> applied += section.summary()
+            is NotificationPolicyUpdateOutcome.Accepted -> {
+                applied += section.summary()
+                // 换 revision 后，此前按旧策略采集、仍在队列里的通知不再满足投递条件。
+                // 这是不可撤销的，必须说清楚，而不是等用户发现通知没发出去。
+                deferred += "通知采集范围已更新；此前已采集、尚未发送的通知按旧策略记录，不会补发。"
+            }
             is NotificationPolicyUpdateOutcome.Rejected -> throw IllegalStateException(
                 if (outcome.reason == "REVISION_STALE") "通知采集范围保存时被其他操作修改，请重试。"
                 else "通知采集范围保存失败（${outcome.reason}）。",
@@ -530,6 +542,7 @@ class SettingsBackupCoordinator(
         section: DevicePushSection?,
         applied: MutableList<String>,
         skipped: MutableList<String>,
+        deferred: MutableList<String>,
     ) {
         section ?: return
         val push = devicePush ?: run {
@@ -553,6 +566,9 @@ class SettingsBackupCoordinator(
             throw IllegalStateException("推送容量不能小于当前排队的事件数，请先清理队列或调大上限。")
         }
         applied += section.summary()
+        // 收窄来源范围或缩短保留期会立即删除不再符合条件的排队事件，且会向 Core 排定撤销；
+        // 这两件事都无法撤销，必须提前/事后都说清楚。
+        deferred += "主动推送范围已更新；不再符合新范围或已超保留期的排队事件已移除，该操作不可撤销。"
     }
 
     private fun applyCapabilities(
@@ -577,15 +593,21 @@ class SettingsBackupCoordinator(
         }
         val configured = state.capabilityPolicies
         val next = mutableMapOf<String, com.openandroidintelligence.kernel.CapabilityPolicy>()
+        var unmatched = 0
         section.policies.forEach { (key, value) ->
             // 只写回本机真实存在的能力；文件里多出来的键不创建任何条目，也不会打开总开关。
-            if (key !in installed) return@forEach
+            if (key !in installed) { unmatched++; return@forEach }
             val local = configured[key] ?: com.openandroidintelligence.kernel.CapabilityPolicy(enabled = false)
             next[key] = value.appliedTo(local)
         }
+        // 键里有作者指纹、Schema 摘要与风险等级；插件升级后会变化。这不是「已是最新」，
+        // 而是「这条策略在本机没有对应声明」——必须让用户知道要手动重配，而不是静默算作已恢复。
+        if (unmatched > 0) {
+            skipped += "$unmatched 项设备能力策略未导入：本机插件声明已变化（升级或重装），请在对应能力页重新设置。"
+        }
         val changed = next.filter { (key, value) -> configured[key] != value }
         if (changed.isEmpty()) {
-            applied += section.summary() + "（本机已是该值）"
+            if (next.isNotEmpty()) applied += "设备能力：${next.size} 项（本机已是该值）"
             return
         }
         grants.updateCapabilityPolicies(changed)
@@ -646,6 +668,9 @@ class SettingsBackupCoordinator(
                     "UPDATE_CHANNEL_PERSISTENCE_FAILED"
                 }
             }
+            // 通知采集范围只恢复「设置值」，不承诺恢复投递能力：换 revision 之后，
+            // 排队记录的 captureRevision 已不匹配，回滚策略也无法让它们重新可投递。
+            // 这一步仍要执行（否则白名单/字段访问会停在导入值），但不计入「完全恢复」。
             notificationCollection?.let { previous ->
                 attempt("通知采集范围") {
                     val outcome = notificationPolicy.update(
@@ -749,6 +774,22 @@ class SettingsBackupCoordinator(
         const val KEY_INSTALL = "installation_id"
     }
 }
+
+/**
+ * 去掉 URL 里的 user-info，返回可安全写进备份文件的地址；无法安全处理时返回 null。
+ *
+ * 用 `URI` 而不是字符串切割：只有它知道 `@` 出现在 authority 的哪个位置，
+ * 手写 `substringAfter("@")` 会把 query 里的 `@` 也当成凭据分隔符。
+ */
+internal fun credentialFreeGateway(url: String): String? = runCatching {
+    val uri = java.net.URI(url)
+    if (uri.rawUserInfo == null) return@runCatching url
+    val rebuilt = java.net.URI(
+        uri.scheme, null, uri.host, uri.port, uri.path, uri.query, uri.fragment,
+    ).toString()
+    // 重建后必须仍是被同一个解析器接受的地址，否则说明这条 URL 的形状我们理解错了。
+    if (GatewayEndpoint.parse(rebuilt) == null) null else rebuilt
+}.getOrNull()
 
 /** 「网关地址 → 合并偏好存储键」的摘要算法，与 [DebouncePreferences] 内部按键一致。 */
 internal fun debounceKey(gatewayUrl: String): String =

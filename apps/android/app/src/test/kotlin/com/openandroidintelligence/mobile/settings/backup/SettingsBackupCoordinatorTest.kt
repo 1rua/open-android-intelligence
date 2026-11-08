@@ -308,6 +308,81 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
+    fun capabilityPoliciesWhoseKeysNoLongerMatchAreReportedAsSkipped() {
+        // 键里带作者指纹与 Schema 摘要：插件升级后旧键对不上，必须告诉用户要重配，
+        // 而不是把这一节算作「本机已是该值」。
+        val text = backupWith(
+            "capabilities" to mapOf(
+                "policies" to listOf(
+                    mapOf(
+                        "key" to "plugin:org.example:${"f".repeat(64)}:capability:read",
+                        "policy" to mapOf(
+                            "mode" to "AUTOMATIC",
+                            "allowedSources" to emptyList<String>(),
+                            "includeContent" to true,
+                            "smsScopeMode" to "ALL",
+                            "smsKeywords" to emptyList<String>(),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val outcome = coordinator().import(text).getOrThrow()
+        assertTrue(
+            "应说明能力策略未导入：${outcome.skipped}",
+            outcome.skipped.any { it.contains("设备能力策略未导入") },
+        )
+        assertTrue(outcome.appliedSummaries.none { it.contains("（本机已是该值）") && it.startsWith("设备能力") })
+    }
+
+    @Test
+    fun credentialsEmbeddedInTheCoreAddressNeverReachTheBackupFile() {
+        // 地址里带 user-info 时，parse() 仍会接受；备份是明文文件，必须去掉或整节不写。
+        LoginGatewayPrefill.clear(context)
+        context.getSharedPreferences("open_android_intelligence_login", 0).edit()
+            .putString("preferred_gateway_url", "https://alice:secret@core.example.test").commit()
+        val exported = coordinator().export()
+        assertFalse("不得出现口令：${exported.json}", exported.json.contains("secret"))
+        assertFalse(exported.json.contains("alice"))
+        assertTrue(exported.json.contains("core.example.test"))
+    }
+
+    @Test
+    fun notificationPolicyChangeIsDisclosedAsIrreversibleInsteadOfSilentlyRestored() {
+        var revision = 3uL
+        var packages = listOf("com.example.mail")
+        val port = object : com.openandroidintelligence.notification.control.NotificationPolicyPort {
+            override fun snapshot() = com.openandroidintelligence.notification.control.NotificationPolicySnapshot(
+                installed = true, granted = true, packageIds = packages,
+                fieldAccess = com.openandroidintelligence.core.model.NotificationFieldAccess.METADATA,
+                mode = com.openandroidintelligence.core.model.NotificationDeliveryMode.ON_DEMAND,
+                revision = revision,
+            )
+            override fun observe() = kotlinx.coroutines.flow.flowOf(snapshot())
+            override fun update(request: com.openandroidintelligence.notification.control.NotificationPolicyUpdate) =
+                com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Accepted(
+                    run {
+                        revision += 1uL
+                        request.packageIds?.let { packages = it }
+                        snapshot()
+                    },
+                )
+        }
+        val text = backupWith(
+            "notificationCollection" to mapOf(
+                "packageIds" to listOf("com.example.chat"),
+                "fieldAccess" to "METADATA",
+                "mode" to "ON_DEMAND",
+            ),
+        )
+        val outcome = coordinator(policy = port).import(text).getOrThrow()
+        assertTrue(
+            "必须说明已采集通知不会补发：${outcome.deferredNotices}",
+            outcome.deferredNotices.any { it.contains("不会补发") },
+        )
+    }
+
+    @Test
     fun corruptFileLeavesEveryStoreUntouched() {
         appearance.applySettings(com.openandroidintelligence.mobile.AppearanceSettings(theme = ThemePreference.LIGHT))
         notifications.setEnabled(true)

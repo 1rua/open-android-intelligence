@@ -2,6 +2,8 @@ package com.openandroidintelligence.mobile
 
 import android.content.Context
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.callbackFlow
 
 /**
  * 登录页的 Core 地址预填。
@@ -30,6 +32,23 @@ object LoginGatewayPrefill {
     }
 
     fun clear(context: Context): Boolean = preferences(context).edit().remove(KEY_PREFERRED_GATEWAY).commit()
+
+    /**
+     * 监听预填地址变化。
+     *
+     * 登录页在设置抽屉下方常驻，`rememberSaveable` 只初始化一次：设置里导入备份
+     * 写入新地址后，登录表单不会自己重读。用这条流在「用户还没动过地址栏」时同步。
+     */
+    fun observe(context: Context): kotlinx.coroutines.flow.Flow<String?> =
+        kotlinx.coroutines.flow.callbackFlow {
+            val prefs = preferences(context)
+            trySend(read(context))
+            val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == KEY_PREFERRED_GATEWAY) trySend(read(context))
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }
 
     /** 用户真正登录成功时记录地址：下次登录页直接带出来，无需额外操作。 */
     fun remember(context: Context, gatewayUrl: String) {
