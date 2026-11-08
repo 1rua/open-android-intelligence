@@ -253,13 +253,14 @@ class AssistantBridgeService : Service() {
                 }
                 bytes = content
                 val selection = build(content)
-                val notice = withContext(Dispatchers.Main) {
+                withContext(Dispatchers.Main) {
                     check(clients[client.reply.binder] === client &&
                         client.scope.canShare(runtime.connectedAccountId) &&
                         client.controller === controller) { "ASSISTANT_SCOPE_CHANGED" }
-                    consume(controller, selection, content).also { handedOff = true }
+                    // 字节已归 selection 所有（内容源/草稿负责消费或回收），这里不再清零。
+                    handedOff = true
+                    consume(controller, selection, content)?.let { notice -> publish(client, notice) }
                 }
-                if (notice != null) publish(client, notice)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -335,7 +336,12 @@ class AssistantBridgeService : Service() {
         val connected = controller != null && runtime.connectedAccountId != null &&
             client.scope.accountId == runtime.connectedAccountId
         val entries = if (shared) (state?.timeline as? Loadable.Ready)?.value.orEmpty() else emptyList()
-        val (budgeted, truncated) = AssistantWireBudget.applyBudget(entries)
+        // 先按条数裁到预算上限再交给预算器：长会话不会为早已丢弃的旧条目反复序列化。
+        val trimmed = if (entries.size > AssistantWireBudget.MAX_ENTRIES) {
+            entries.takeLast(AssistantWireBudget.MAX_ENTRIES)
+        } else entries
+        val (budgeted, truncated) = AssistantWireBudget.applyBudget(trimmed)
+        val dropped = truncated || trimmed.size < entries.size
         val appearance = (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.value
         val profileId = runtime.connectedProfileId
         val accountId = runtime.connectedAccountId
@@ -358,7 +364,7 @@ class AssistantBridgeService : Service() {
             draft = if (shared) state?.draft.orEmpty() else "",
             activeThread = if (shared) state?.activeThreadId else null,
             timeline = if (shared) budgeted.map { it.toDto() } else emptyList(),
-            timelineTruncated = truncated && shared,
+            timelineTruncated = dropped && shared,
             attachments = if (shared) state?.attachments.orEmpty().map { it.toAssistantDto() } else emptyList(),
             notice = notice,
             appearance = AssistantAppearanceDto(
@@ -399,18 +405,21 @@ class AssistantBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         runtime.restoreSessionIfAvailable()
-        // 工作区可能晚于 connect 建立（连接刚恢复、Agent 刚发现）：接回已登记的会话。
+        // 工作区可能晚于 connect 建立（连接刚恢复、Agent 刚发现），也可能因账号切换
+        // 退役后重建：按 token 重新取一次当前工作区持有的控制器。
+        // `open` 对同一 token 是幂等的，因此重复触发不会替换仍在发送的控制器。
         jobs.launch {
             runtime.assistantWorkspaceVersion.collect {
                 clients.values.toList().forEach { client ->
                     val token = client.sessionToken ?: return@forEach
-                    if (client.controller == null) {
-                        val controller = runtime.createAssistantSessionController(token) ?: return@forEach
-                        client.controller = controller
+                    val current = runtime.reattachAssistantSession(token)
+                    if (current != null && current !== client.controller) {
                         client.observer?.cancel()
+                        client.controller = current
                         client.observer = jobs.launch {
-                            controller.state.collect { if (client.controller === controller) publish(client) }
+                            current.state.collect { if (client.controller === current) publish(client) }
                         }
+                        if (client.visible) runtime.setAssistantPresence(client.token, token, true)
                     }
                     publish(client)
                 }

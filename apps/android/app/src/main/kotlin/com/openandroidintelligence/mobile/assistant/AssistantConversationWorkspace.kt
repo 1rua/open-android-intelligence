@@ -108,24 +108,9 @@ internal class AssistantConversationWorkspace(
     fun busyThreadIds(): Set<String> =
         controllers.values.flatMap { it.ownedBusyThreadIds }.toSet()
 
-    /** 助理界面当前正在展示的会话；通知层据此避免在用户眼前重复弹气泡。 */
-    fun containsConversation(conversationId: String): Boolean =
-        controllers.values.any { it.state.value.activeThreadId == conversationId }
-
     /** 指定会话 token 当前展示的线程；没有该会话时为 null。 */
     fun conversationFor(sessionToken: String): String? =
         controllers[sessionToken]?.state?.value?.activeThreadId
-
-    /**
-     * 助理界面关闭：释放全部会话，但仍在等待真实终态的发送不会被取消。
-     *
-     * 语义等同于逐个 [release]：空闲会话立即关闭，有在途发送的会话登记为
-     * detached，由 [closeIfDetachedIdle] 在终态到达后收尾。界面离开不能
-     * 撤销一条已被 Gateway 接受的提交。
-     */
-    @Synchronized fun releaseAll() {
-        controllers.keys.toList().forEach(::release)
-    }
 
     @Synchronized override fun close() {
         closed = true
@@ -201,8 +186,6 @@ internal class AssistantSessionFactory(
     internal val profileId: String,
     internal val accountId: String,
     internal val scope: CoroutineScope,
-    /** 连接所有者；旧连接的迟到退役不能清掉新连接安装的工厂。 */
-    internal val owner: Any? = null,
     private val open: (agentId: String?, sessionToken: String) -> WorkbenchController?,
     private val onSessionReleased: (String) -> Unit = {},
     private val onClose: () -> Unit = {},

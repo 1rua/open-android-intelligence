@@ -366,8 +366,13 @@ class GatewayRuntime(
     private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
 
     /** 系统助理界面是否正展示这条会话；同会话的原生通知气泡因此不再打扰用户。 */
-    internal fun isAssistantConversationVisible(conversationId: String): Boolean =
-        assistantPresence.isNotEmpty() && assistantWorkspace?.containsConversation(conversationId) == true
+    internal fun isAssistantConversationVisible(conversationId: String): Boolean {
+        if (assistantPresence.isEmpty()) return false
+        val workspace = assistantWorkspace ?: return false
+        return assistantPresence.values.any { sessionToken ->
+            workspace.conversationFor(sessionToken) == conversationId
+        }
+    }
 
     /**
      * 系统数字助理通过主进程打开一条会话控制器。
@@ -460,15 +465,16 @@ class GatewayRuntime(
     /**
      * 助理客户端离开。
      *
-     * 已登记的会话按在途状态交还：空闲会话立即关闭，有发送在途的等终态。所有客户端
-     * 都离开后才请求退役工作区；退役同样等最后一条在途工作结束，不取消已提交的发送。
+     * 该客户端名下的会话已由 `releaseAssistantSession` 按在途状态交还；这里只撤销
+     * 可见性，并在最后一个客户端离开后请求退役工作区。退役同样等最后一条在途
+     * 工作结束，不取消已提交的发送，也不影响其他仍在使用的客户端。
      */
     internal fun releaseAssistantClient(clientToken: String) {
         assistantPresence.remove(clientToken)
         synchronized(assistantWorkspaceLock) {
-            val workspace = assistantWorkspace ?: return
-            workspace.releaseAll()
-            if (assistantPresence.isEmpty()) assistantWorkspaceRetirePending = true
+            if (assistantWorkspace == null) return
+            if (assistantPresence.isNotEmpty()) return
+            assistantWorkspaceRetirePending = true
         }
         maybeRetireAssistantWorkspace()
         refreshBackgroundWork()
@@ -2372,12 +2378,10 @@ class GatewayRuntime(
         // 助手会话的专属资源：原生面为每个会话准备独立观察者与本地存储，
         // 旧版对话面则使用独立事件客户端（HTTP 事件流只有一个消费者）。
         val assistantResources = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
-        val assistantFactories = java.util.concurrent.ConcurrentHashMap<String, AssistantSessionFactory>()
         val assistantFactory = AssistantSessionFactory(
             profileId = profileId,
             accountId = session.accountId,
             scope = sessionScope,
-            owner = ownedJob,
             open = { agentId, sessionToken ->
                 if (activeHttpClient !== http || sessionJob !== ownedJob || !ownedJob.isActive) null
                 else if (nativeAgentSessions) {
@@ -2460,13 +2464,11 @@ class GatewayRuntime(
                 assistantResources.clear()
             },
         )
-        assistantFactories[profileId] = assistantFactory
         assistantSessionFactory = assistantFactory
         ownedJob.invokeOnCompletion {
             // 旧连接的收尾只能清掉它自己安装的工厂；新连接可能已经接管。
-            if (assistantFactories.remove(profileId, assistantFactory)) {
-                assistantSessionFactory?.takeIf { it === assistantFactory }?.let { assistantSessionFactory = null }
-            }
+            val current = assistantSessionFactory
+            if (current === assistantFactory) assistantSessionFactory = null
             assistantFactory.close()
         }
 
