@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,7 +69,9 @@ import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.drop
 
@@ -283,7 +286,21 @@ private fun CapabilityDetailContent(
     }
 
     // 临时授权随能力走：这里只显示这一项能力真正生效的批准，并可就地撤销。
-    CapabilityTemporaryApprovals(environment.pairingGrants, entries.map { it.key }.toSet())
+    //
+    // 过滤键必须是授权作用域自身的键（`policyKey`，含身份/Schema/风险/原语摘要），
+    // 不能是 `entry.key`（`id@version`）：`approveRequest()` 存的是前者，两者永不相等，
+    // 用后者会让真实批准全部被过滤掉、撤销入口随之消失。
+    val approvalScopeKeys = remember(pluginId, hostRevision) {
+        val owned = entries.map { host.authorizationScope(it, Json.of(emptyMap<String, String>())).capability }
+        val siblingScopes = if (capabilityId == SMS_QUERY_ID) {
+            // 短信详情统一管理四项能力，它们的批准也必须能在这里看到并撤销。
+            smsSiblingCapabilities.mapNotNull { (id, _) ->
+                host.entries(pluginId).firstOrNull { it.id == id }
+            }.map { host.authorizationScope(it, Json.of(emptyMap<String, String>())).capability }
+        } else emptyList()
+        (owned + siblingScopes).toSet()
+    }
+    CapabilityTemporaryApprovals(environment.pairingGrants, approvalScopeKeys)
 
     // 短信详情：三项子能力各自独立开关，只控制各自的能力，不连带扩大读取范围。
     if (capabilityId == SMS_QUERY_ID) {
@@ -317,6 +334,43 @@ private fun CapabilityDetailContent(
                     Text("三项都只控制对应能力；是否读取短信仍由上方的短信读取开关决定。",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+            }
+        }
+    }
+
+    // 后台任务许可必须留在原地。
+    //
+    // 内建能力不再出现在插件管理里，而那里原本是唯一能修改这个许可的地方；
+    // 能力开关虽然也会写 `kernel.background.run`，但 `capabilityPolicy` 明确把它排除在外，
+    // 且调度器同时要求全局与身份作用域两项许可。不在这里补上，用户打开「短信定时任务设置」
+    // 后每次调度仍会以 BACKGROUND_GRANT_REQUIRED 失败，且无法撤销已有的许可。
+    if (host.supportsBackground(pluginId)) {
+        SectionLabel("后台任务")
+        SettingsSectionCard {
+            Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("允许后台任务", style = MaterialTheme.typography.bodyLarge)
+                    Switch(
+                        checked = host.isBackgroundEnabled(pluginId),
+                        onCheckedChange = { enabled ->
+                            saveError = runCatching { host.setBackgroundEnabled(pluginId, enabled) }
+                                .fold(onSuccess = { null }, onFailure = { "后台任务许可未能保存，请稍后重试。" })
+                            refreshTick++
+                        },
+                        modifier = Modifier
+                            .testTag("capability-background-toggle:$pluginId")
+                            .semantics { contentDescription = "允许后台任务开关" },
+                    )
+                }
+                Text(
+                    "定时与后台操作需要这项单独许可；普通查询不需要。它与上方能力开关、系统权限分别生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -394,12 +448,51 @@ private fun CapabilityDetailContent(
     }
 
     // 主动推送按类别归位：通知部分进「通知读取」，短信部分进「短信」。
+    //
+    // 保存必须串行且基于权威快照：每次成功保存都把返回值写回本地快照，并以它作为下一次的
+    // expectedConfiguration。否则用户在刷新完成前连点两下，第二次会用旧配置覆盖第一次的修改
+    // （例如先关掉正文推送、再改推送目标，正文开关会被悄悄恢复成开启）。
     val push = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.devicePush
     val pushRuntime = push?.runtime
     val endpoints = push?.endpoints?.collectAsState()?.value.orEmpty()
     if (pushRuntime != null) {
-        val pushSnapshot by produceState<com.openandroidintelligence.mobile.push.PushSnapshot?>(null, pushRuntime, refreshTick) {
-            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { pushRuntime.snapshot() }.getOrNull() }
+        val pushScope = rememberCoroutineScope()
+        var pushSnapshot by remember(pushRuntime) { mutableStateOf<com.openandroidintelligence.mobile.push.PushSnapshot?>(null) }
+        var pushSaving by remember(pushRuntime) { mutableStateOf(false) }
+        LaunchedEffect(pushRuntime, refreshTick) {
+            val loaded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { pushRuntime.snapshot() }.getOrNull()
+            }
+            if (loaded != null) pushSnapshot = loaded
+        }
+        fun savePush(transform: (com.openandroidintelligence.mobile.push.PushConfiguration) -> com.openandroidintelligence.mobile.push.PushConfiguration) {
+            val base = pushSnapshot ?: return
+            if (pushSaving) return
+            pushSaving = true
+            pushScope.launch {
+                try {
+                    val next = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        pushRuntime.configure(transform(base.configuration), expectedConfiguration = base.configuration)
+                    }
+                    pushSnapshot = next
+                    saveError = null
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (failure: IllegalStateException) {
+                    saveError = if (failure.message == "PUSH_CONFIGURATION_CHANGED") {
+                        pushSnapshot = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            runCatching { pushRuntime.snapshot() }.getOrNull()
+                        }
+                        "推送配置已在其他位置修改，请重新检查后再保存。"
+                    } else "推送设置未能保存，请稍后重试。"
+                } catch (_: IllegalArgumentException) {
+                    saveError = "无法保存：范围或容量无效。"
+                } catch (_: Exception) {
+                    saveError = "推送设置未能保存，请稍后重试。"
+                } finally {
+                    pushSaving = false
+                }
+            }
         }
         pushSnapshot?.let { snap ->
             SectionLabel("主动推送")
@@ -407,22 +500,16 @@ private fun CapabilityDetailContent(
                 capabilityId == NOTIFICATION_QUERY_ID -> com.openandroidintelligence.mobile.push.NotificationPushSection(
                     config = snap.configuration,
                     endpoints = endpoints,
-                    saving = false,
-                    error = null,
-                    onConfigurationChange = { next ->
-                        saveError = runCatching { pushRuntime.configure(next) }.fold(onSuccess = { null }, onFailure = { "推送设置未能保存，请稍后重试。" })
-                        refreshTick++
-                    },
+                    saving = pushSaving,
+                    error = saveError,
+                    onConfigurationChange = { next -> savePush { next } },
                 )
                 capabilityId == SMS_QUERY_ID -> com.openandroidintelligence.mobile.push.SmsPushSection(
                     config = snap.configuration,
                     endpoints = endpoints,
-                    saving = false,
-                    error = null,
-                    onConfigurationChange = { next ->
-                        saveError = runCatching { pushRuntime.configure(next) }.fold(onSuccess = { null }, onFailure = { "推送设置未能保存，请稍后重试。" })
-                        refreshTick++
-                    },
+                    saving = pushSaving,
+                    error = saveError,
+                    onConfigurationChange = { next -> savePush { next } },
                     onRefreshEndpoints = { push.refreshEndpoints() },
                 )
             }
