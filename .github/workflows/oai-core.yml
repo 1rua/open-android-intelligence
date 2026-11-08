@@ -1,88 +1,188 @@
 name: OAI Core and Session Adapters
 
+# 目标：以「提交到拿到最终结果」的墙钟时间为第一优先级。
+#
+# 调度结构（互不阻塞，全部并行启动）：
+#   changes           变更影响分析，输出各 lane 开关；本身永不被跳过
+#   fast              静态/契约门禁，约 30-60 秒
+#   core (3.11/3.12)  独立
+#   hermes-native     独立
+#   dsh               独立
+#   android-setup     只构建一次 Rust WASM + 签名插件，artifact 分发给各 lane
+#   android-preflight 越权面门禁（廉价），所有 Android lane 的共同前置
+#   android-<lane>    每个 lane 独立 runner、一次 Gradle 调用、一批独立测试任务
+#   gate              汇总；只有它作为分支保护所需的唯一检查名称
+#
+# 实测得到的三条硬约束，不要“简化”：
+#   1. Gradle 的 `--tests` 只绑定它前面最近的那个 Test 任务。因此每个 job
+#      只声明一个 Test 任务；分片清单由 tools/ci/android_tasks.py 生成。
+#   2. job 级 `if` 依赖 changes 的布尔输出，避免“先起 runner 再跳过命令”。
+#   3. changes 失败等价于“无法判断影响范围”，下游全部按 full 处理，绝不放行。
+#
+# 刻意不做的事：
+#   * 不把 android lane 串在 core 之后。两者互不依赖，串行只会拉长关键路径；
+#     独立的失败信息也比“一个失败掩盖其余”更有价值。
+#   * 不为每个 lane 重新编译 Rust 插件，构建一次后走 artifact。
+
+# 职责边界：
+#   * 本工作流 = dev 分支的增量 CI（按变更范围选测 lane）。
+#   * ci.yml     = main 分支的完整回归（不依赖影响分析）。
+# 因此这里不监听 main：同一 SHA 再跑一遍增量测试只会重复消耗 runner，
+# 而 main 的必需检查名也固定在 ci.yml 里。
 on:
   pull_request:
-    branches: [dev, main]
-    paths:
-      - 'oai-core/**'
-      - 'scripts/install.sh'
-      - 'scripts/uninstall.sh'
-      - 'scripts/setup.sh'
-      - 'scripts/core_setup.py'
-      - 'scripts/installer.py'
-      - 'tests/test_scripts_*.py'
-      - 'tests/test_setup_service_entrypoint.py'
-      - 'tests/test_install_script.py'
-      - 'tests/test_uninstall_script.py'
-      - 'tests/test_core_setup_transaction.py'
-      - 'tools/smart-test.py'
-      - 'tools/test_smart_test.py'
-      - 'integrations/dsh-session-adapter/**'
-      - 'integrations/hermes-session-adapter/**'
-      - 'gateway-contract/**'
-      - 'plugins/**'
-      - 'apps/android/**'
-      - '.github/workflows/oai-core.yml'
+    branches: [dev]
   push:
-    branches: [dev, main]
-    paths:
-      - 'oai-core/**'
-      - 'scripts/install.sh'
-      - 'scripts/uninstall.sh'
-      - 'scripts/setup.sh'
-      - 'scripts/core_setup.py'
-      - 'scripts/installer.py'
-      - 'tests/test_scripts_*.py'
-      - 'tests/test_setup_service_entrypoint.py'
-      - 'tests/test_install_script.py'
-      - 'tests/test_uninstall_script.py'
-      - 'tests/test_core_setup_transaction.py'
-      - 'tools/smart-test.py'
-      - 'tools/test_smart_test.py'
-      - 'integrations/dsh-session-adapter/**'
-      - 'integrations/hermes-session-adapter/**'
-      - 'gateway-contract/**'
-      - 'plugins/**'
-      - 'apps/android/**'
-      - '.github/workflows/oai-core.yml'
+    branches: [dev]
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: oai-core-${{ github.workflow }}-${{ github.ref }}
+  # 新提交取代旧提交时取消旧 CI；dev/main 上的发布前验证必须完整跑完。
   cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
 
 jobs:
-  core:
+  changes:
+    name: Change Impact Analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runs_fast: ${{ steps.impact.outputs.runs_fast }}
+      runs_core: ${{ steps.impact.outputs.runs_core }}
+      runs_hermes: ${{ steps.impact.outputs.runs_hermes }}
+      runs_dsh: ${{ steps.impact.outputs.runs_dsh }}
+      runs_android_device: ${{ steps.impact.outputs.runs_android_device }}
+      runs_android_platform: ${{ steps.impact.outputs.runs_android_platform }}
+      runs_android_notifications: ${{ steps.impact.outputs.runs_android_notifications }}
+      runs_android_conversation: ${{ steps.impact.outputs.runs_android_conversation }}
+      runs_android_gateway: ${{ steps.impact.outputs.runs_android_gateway }}
+      runs_android_app: ${{ steps.impact.outputs.runs_android_app }}
+      runs_android_play: ${{ steps.impact.outputs.runs_android_play }}
+      full_required: ${{ steps.impact.outputs.full_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 影响分析需要 PR 的完整变更集；浅克隆会让 diff 为空。
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify the change
+        id: impact
+        env:
+          # PR 用三点 diff（合并基 → head）；push 用两点 diff（上一个提交 → HEAD）。
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -o pipefail
+          base="$BASE_REF"
+          case "$base" in
+            ""|0000000000000000000000000000000000000000)
+              echo "::warning::No usable base commit; running every lane."
+              python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          lanes = ["fast","core","hermes","dsh","android_device","android_platform",
+                   "android_notifications","android_conversation","android_gateway",
+                   "android_app","android_play"]
+          print("\n".join(f"runs_{lane}=true" for lane in lanes))
+          print("full_required=true")
+          PY
+              exit 0
+              ;;
+          esac
+          python3 tools/ci/impact.py --base "$base" --head "$GITHUB_SHA" \
+            --json-out "$RUNNER_TEMP/impact.json" --github-output | tee -a "$GITHUB_OUTPUT"
+          python3 - "$RUNNER_TEMP/impact.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          lines = ["## CI plan", "", f"changed paths: {len(data.get('paths', []))}", ""]
+          for lane, enabled in sorted(data.get("lanes", {}).items()):
+              lines.append(f"- {'run ' if enabled else 'skip'} `{lane}`")
+          if data.get("full_required"):
+              lines.append("\nFull matrix forced (security/contract/config change).")
+          if data.get("unknown"):
+              lines.append("\nDiff could not be classified; ran everything.")
+          print("\n".join(lines))
+          PY
+
+  fast:
+    name: Fast Gate
+    needs: changes
+    if: needs.changes.outputs.runs_fast == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.18.0"
+          cache: npm
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Dependency lock table
+        run: npm run lock:check
+
+      - name: Shell and Node syntax
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/uninstall.sh
+          bash -n scripts/setup.sh
+          node --check integrations/dsh-session-adapter/index.js
+
+      - name: CI planning helpers
+        run: python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
+
+  core:
+    name: Core (Python ${{ matrix.python }})
+    needs: changes
+    if: needs.changes.outputs.runs_core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python: ['3.11', '3.12']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: oai-core/pyproject.toml
+
       - name: Build standalone wheel and source distribution
         run: |
-          python -m pip install build
+          python -m pip install --quiet build
           python -m build oai-core --outdir "$RUNNER_TEMP/core-dist"
+
       - name: Install only Core and its declared runtime dependencies
         run: |
           python -m venv "$RUNNER_TEMP/core-clean"
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install "$RUNNER_TEMP"/core-dist/*.whl
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install --quiet "$RUNNER_TEMP"/core-dist/*.whl
           "$RUNNER_TEMP/core-clean/bin/python" -m pip check
+
       - name: Verify installed CLI and signed device flow without Hermes
         run: |
           env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" oai-core/tools/verify_distribution.py
           state=$(mktemp -d "$RUNNER_TEMP/core-independent.XXXXXX")
           env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" \
             oai-core/tests/independent_core_contract.py "$state"
+
       - name: Core protocol, security, CLI, MCP and installer regressions
         run: |
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio PyYAML==6.0.3
+          "$RUNNER_TEMP/core-clean/bin/python" -m pip install --quiet pytest pytest-asyncio PyYAML==6.0.3
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py -q \
+            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py tools/test_ci_planning.py -q -p no:cacheprovider \
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_session_key_recovery.py \
@@ -101,28 +201,43 @@ jobs:
           bash -n scripts/setup.sh
 
   hermes-native:
+    name: Hermes Native Adapter
+    needs: changes
+    if: needs.changes.outputs.runs_hermes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
+          cache: pip
+          cache-dependency-path: oai-core/pyproject.toml
+
       - name: Install optional Session Adapter and native test dependencies
         run: >-
-          python -m pip install -e ./oai-core -e ./integrations/hermes-session-adapter
+          python -m pip install --quiet -e ./oai-core -e ./integrations/hermes-session-adapter
           pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1 requests==2.33.0
+
       - name: Check out the pinned native Hermes SDK
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: NousResearch/hermes-agent
           ref: 75b083e9399115b12513385252811f09c3503c90
           path: .toolchains/hermes-native-sdk
+          persist-credentials: false
+
       - name: Native SessionStore, account isolation and lifecycle contracts
         env:
           HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
         run: >-
-          python -m pytest oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
-          oai-core/tests/test_hermes_native_origin.py oai-core/tests/test_hermes_zero_config_native.py oai-core/tests/test_agent_registration.py oai-core/tests/test_native_event_sync.py
+          python -m pytest -q -p no:cacheprovider
+          oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
+          oai-core/tests/test_hermes_native_origin.py oai-core/tests/test_hermes_zero_config_native.py
+          oai-core/tests/test_agent_registration.py oai-core/tests/test_native_event_sync.py
           oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
           oai-core/tests/test_hermes_approval_prompts.py
           oai-core/tests/test_hermes_session_key_recovery.py
@@ -130,62 +245,77 @@ jobs:
           oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
           oai-core/tests/test_hermes_dispatch_delivery.py
           oai-core/tests/test_hermes_communication_reliability.py
-          oai-core/tests/test_communication_process_recovery.py -q
+          oai-core/tests/test_communication_process_recovery.py
 
       - name: Communication measurement provenance and failure accounting
-        run: python -m pytest -q tools/test_measure_communication.py
+        run: python -m pytest -q -p no:cacheprovider tools/test_measure_communication.py
 
   dsh:
+    name: DSH Adapter
+    needs: changes
+    if: needs.changes.outputs.runs_dsh == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
         with:
           node-version: '24.18.0'
+          cache: npm
+
       - name: DSH native session bridge syntax
         run: node --check integrations/dsh-session-adapter/index.js
+
       - name: DSH native session bridge regressions
         run: |
-          npm ci
+          npm ci --prefer-offline --no-audit --fund=false
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
-  android:
+  # --- Android -------------------------------------------------------------
+  android-setup:
+    name: Android Fixtures
+    needs: changes
+    # 只有 app / play lane 会读取编译好的插件 WASM 载荷；模块 lane 不需要。
+    if: |
+      needs.changes.outputs.runs_android_app == 'true' ||
+      needs.changes.outputs.runs_android_play == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      wasm: ${{ steps.names.outputs.wasm }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v7
         with:
-          distribution: temurin
-          java-version: '21'
-      - uses: android-actions/setup-android@v3
+          persist-credentials: false
+
+      # 参考插件的真实编译产物是若干 app 测试的输入。编译一次、artifact 分发，
+      # 而不是让 8 个 lane 各自跑一遍 cargo。
+      #
+      # 签名包不在这里构建：PR 级测试用仓库内夹具（TestAlpPackages）构造同构的
+      # 签名包，只有发布与 APK 完整性校验才需要真实签名——那是 ci.yml / 发布
+      # 工作流的职责，放在 PR 关键路径上只会白等一次 npm ci + 签名。
+      - name: Cache the Rust plugin workspace
+        uses: actions/cache@v4
         with:
-          packages: platform-tools
-          log-accepted-android-sdk-licenses: false
-      - name: Install Android platforms
-        run: sdkmanager 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0'
-      - uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: '8.12'
-          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
-      # These tests install signed packages made from the real Rust payloads.
-      # A fresh Actions checkout has no ignored plugins/target artifacts.
-      - name: Setup Rust for Android reference plugins
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.90.0
-          targets: wasm32-unknown-unknown
-      - name: Cache Android reference plugin builds
-        uses: Swatinem/rust-cache@v2
-        env:
-          # Cache metadata runs inside plugins, whose local pin is 1.88.0.
-          # Keep cache inspection aligned with the explicit CI build toolchain.
-          RUSTUP_TOOLCHAIN: 1.90.0
-        with:
-          workspaces: plugins -> target
-          cache-workspace-crates: true
-      - name: Build real WASM fixtures before Android tests
+          path: |
+            plugins/target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/**/Cargo.toml', 'plugins/Cargo.lock', 'plugins/**/src/**') }}
+          restore-keys: |
+            plugins-${{ runner.os }}-
+
+      - name: Build the bundled plugin WASM
         run: |
-          cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+          rustup toolchain install 1.90.0 --profile minimal --target wasm32-unknown-unknown
+          if ! cargo +1.90.0 build --locked --offline --target wasm32-unknown-unknown \
+              --release --manifest-path plugins/Cargo.toml --target-dir plugins/target; then
+            cargo +1.90.0 build --locked --target wasm32-unknown-unknown \
+              --release --manifest-path plugins/Cargo.toml --target-dir plugins/target
+          fi
           for plugin in notifications sms call_log screen_reader screen_capture screen_control; do
             artifact="plugins/target/wasm32-unknown-unknown/release/${plugin}.wasm"
             if [ ! -s "$artifact" ]; then
@@ -193,138 +323,234 @@ jobs:
               exit 1
             fi
           done
-      - name: Screen primitives, local authorization and projection lifecycle
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :control-ports:testDebugUnitTest
-          :capability-ports:testDebugUnitTest
-          :screen-control:testDebugUnitTest
-          :device-primitives:testDebugUnitTest
-          :platform-kernel:testDebugUnitTest
-          noVpnSurfaceCheck
-      - name: Settings notification policy and encrypted state regressions
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :notification-control:testDebugUnitTest
-          :notification-host:testDebugUnitTest
-          :notification-collector:testDebugUnitTest
-          :policy-engine:testDebugUnitTest
-          :encrypted-store:testDebugUnitTest
-          :sms-collector:testDebugUnitTest
-      - name: Conversation ordering, rendering, identity and persistence regressions
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :conversation-domain:testDebugUnitTest
-          :conversation-ui:testDebugUnitTest
-      - name: Attachment upload phases and confirmed-upload recovery
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :conversation-data:testDebugUnitTest
-          --tests '*AttachmentPhaseTest'
-          --tests '*AttachmentRecoveryTest'
-      - name: Core connection, Agent sessions, platform recovery and transport regressions
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :gateway-client:testDebugUnitTest
-          :app:compileFullDebugKotlin
-          :app:testFullDebugUnitTest
-          --tests '*NativeAgentsControllerTest'
-          --tests '*NativeAgentBackgroundWorkTest'
-          --tests '*ColdStartConnectionTest'
-          --tests '*DevicePushRuntimeTest'
-          --tests '*DevicePushCycleTest'
-          --tests '*DeviceCapabilityBlockTest'
-          --tests '*PluginManagementGrantUiTest'
-          --tests '*SettingsResponsiveHostRegressionTest'
-          --tests '*GatewayTutorialsTest'
-          --tests '*GatewaySessionRefreshTest'
-          --tests '*GatewayWorkbenchLogoutTest'
-          --tests '*DeviceExecutionRecoveryTest'
-          --tests '*PlatformSnapshotRecoveryTest'
-          --tests '*ScreenExecutionErrorsTest'
-          --tests '*ScreenCapabilityPresentationTest'
-          --tests '*ScreenCaptureSystemConsentTest'
-          --tests '*ScreenControlConfirmationDialogTest'
-          --tests '*NotificationAccessSettingsTest'
-          --tests '*PluginCapabilityRiskTest'
-          --tests '*CapabilityPublisherTest'
-          --tests '*ApplicationCompositionTest'
-          --tests '*AndroidApiCompatibilityTest'
-          --tests '*CoreAgentConversationRepositoryTest'
-          --tests '*NativeRecoveryOwnershipTest'
-          --tests '*NativeConversationOrganizationStoreTest'
-          --tests '*NativeConversationMirrorTest'
-          --tests '*NativeEventOwnerTest'
-          --tests '*NativeEventSynchronizerTest'
-          --tests '*NativeRecoveryCommitTest'
-          --tests '*DeviceCapabilitySyncStateTest'
-          --tests '*ClientCapabilityAuthorizationTest'
-          --tests '*PluginManagementScreenTest'
-          --tests '*PairingGrantPersistenceTest'
-          --tests '*PermissionCatalogTest'
-          --tests '*SettingsCapabilityUiTest'
-          --tests '*SettingsHonestyCopyTest'
-          --tests '*NotificationCollectionScreenTest'
-          --tests '*SmsPassiveScopeSettingsTest'
-          --tests '*NotificationPushScopeSettingsTest'
-          --tests '*PushSettingsScreenTest'
-          --tests '*AppUpdateScreenTest'
-          --tests '*NativeConnectionReliabilityTest'
-          --tests '*NativeGenerationScopeTest'
-          --tests '*PlatformStreamHandoverTest'
-          --tests '*GatewayNetworkMonitorTest'
-          --tests '*DeviceGrantFenceTest'
-          --tests '*AccountSwitchPersistenceFailureTest'
-          --tests '*IndependentConnectionDiscoveryTest'
-          --tests '*AdditionalDeviceConnectionsTest'
-          --tests '*SettingsViewModelTest'
-          --tests '*SettingsStateIntegrityTest'
-          --tests '*SettingsNavigationTest'
-          --tests '*SettingsShortcutsTest'
-          --tests '*TemporaryApprovalCopyTest'
-          --tests '*CapabilitySettingsTest'
-          --tests '*AppearanceSettingsScreenTest'
-          --tests '*AdvancedSettingsScreenTest'
-          --tests '*MessageProcessingSettingsTest'
-          --tests '*ReplyNotificationsTest'
-          --tests '*LiveUpdateNotificationsTest'
-          --tests '*NativeConversationNotificationsTest'
-          --tests '*NativeEventDeletionPersistenceTest'
-      - name: Play screen integration and Android API compatibility
-        working-directory: apps/android
-        run: >-
-          gradle --max-workers=2
-          :app:compilePlayDebugKotlin
-          :app:testPlayDebugUnitTest
-          --tests '*SettingsResponsiveHostRegressionTest'
-          --tests '*ScreenExecutionErrorsTest'
-          --tests '*ScreenCapabilityPresentationTest'
-          --tests '*ScreenCaptureSystemConsentTest'
-          --tests '*ScreenControlConfirmationDialogTest'
-          --tests '*NotificationAccessSettingsTest'
-          --tests '*PluginCapabilityRiskTest'
-          --tests '*CapabilityPublisherTest'
-          --tests '*ApplicationCompositionTest'
-          --tests '*AndroidApiCompatibilityTest'
-          --tests '*CoreAgentConversationRepositoryTest'
-          --tests '*ColdStartConnectionTest'
-          --tests '*AccountSwitchPersistenceFailureTest'
-          --tests '*IndependentConnectionDiscoveryTest'
-          --tests '*AdditionalDeviceConnectionsTest'
-          --tests '*SettingsViewModelTest'
-          --tests '*NativeEventDeletionPersistenceTest'
 
-      - name: Preserve Android test failure evidence
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Name the fixture artifact
+        id: names
+        run: echo "wasm=wasm-fixtures-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the WASM fixtures
+        uses: actions/upload-artifact@v7
         with:
-          name: android-test-reports-${{ github.sha }}
-          if-no-files-found: ignore
-          path: |
-            apps/android/**/build/test-results/**/*.xml
-            apps/android/**/build/reports/tests/**
+          name: ${{ steps.names.outputs.wasm }}
+          path: plugins/target/wasm32-unknown-unknown/release/*.wasm
+          if-no-files-found: error
+          retention-days: 1
+
+  android-preflight:
+    name: Android Safety Gate
+    # 独立于 android-setup，也独立于各 lane：扫描约 20 秒，串到每个 lane 前面
+    # 只会把这 20 秒重复计 8 次到关键路径上。它作为独立门禁并行执行，
+    # 由 gate 汇总时卡住——违规时仍然必红，但不拖慢正常路径。
+    needs: changes
+    if: |
+      needs.changes.outputs.runs_android_device == 'true' ||
+      needs.changes.outputs.runs_android_platform == 'true' ||
+      needs.changes.outputs.runs_android_notifications == 'true' ||
+      needs.changes.outputs.runs_android_conversation == 'true' ||
+      needs.changes.outputs.runs_android_gateway == 'true' ||
+      needs.changes.outputs.runs_android_app == 'true' ||
+      needs.changes.outputs.runs_android_play == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v7
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
+      # 越权面扫描是每个 Android lane 的共同前提，且足够廉价：
+      # 让它先失败，比让 8 个 lane 各花几分钟才发现同一问题更省时间。
+      - name: Forbidden-surface gate
+        working-directory: apps/android
+        run: |
+          chmod +x gradlew
+          ./gradlew noVpnSurfaceCheck --stacktrace
+
+  android-device:
+    name: Android Device & Authorization
+    needs: changes
+    if: needs.changes.outputs.runs_android_device == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-device
+          test-parallel-forks: '1'
+
+  android-platform:
+    name: Android Platform Kernel
+    needs: changes
+    if: needs.changes.outputs.runs_android_platform == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-platform
+          test-parallel-forks: '1'
+
+  android-notifications:
+    name: Android Settings & Notifications
+    needs: changes
+    if: needs.changes.outputs.runs_android_notifications == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-notifications
+          test-parallel-forks: '1'
+
+  android-conversation:
+    name: Android Conversation
+    needs: changes
+    if: needs.changes.outputs.runs_android_conversation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-conversation
+          test-parallel-forks: '1'
+          # conversation-data's HermesHttpInteropTest drives the real Python
+          # HTTP fixture; it fails closed when the fixture is absent, so this
+          # lane must provision it rather than filter the test out.
+          hermes-fixtures: 'true'
+
+  android-gateway:
+    name: Android Gateway Client
+    needs: changes
+    if: needs.changes.outputs.runs_android_gateway == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-gateway
+          test-parallel-forks: '1'
+
+  android-app-a:
+    name: Android App Regressions (A)
+    needs: [changes, android-setup]
+    if: needs.changes.outputs.runs_android_app == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: app-shard-a
+          wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
+          test-parallel-forks: '4'
+
+  android-app-b:
+    name: Android App Regressions (B)
+    needs: [changes, android-setup]
+    if: needs.changes.outputs.runs_android_app == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: app-shard-b
+          wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
+          test-parallel-forks: '4'
+
+  android-play:
+    name: Android Play Variant
+    needs: [changes, android-setup]
+    if: needs.changes.outputs.runs_android_play == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: play
+          wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
+          test-parallel-forks: '4'
+
+  gate:
+    name: CI Gate
+    if: always()
+    needs:
+      - changes
+      - fast
+      - core
+      - hermes-native
+      - dsh
+      # android-setup 必须在 gate 的依赖里：它失败时所有 android lane 都会
+      # 被 skip，若不显式依赖，gate 会把「夹具没构建出来」误判为通过。
+      - android-setup
+      - android-preflight
+      - android-device
+      - android-platform
+      - android-notifications
+      - android-conversation
+      - android-gateway
+      - android-app-a
+      - android-app-b
+      - android-play
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any selected job failed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          needs = json.loads(os.environ["NEEDS"])
+          failed = []
+          for name, job in needs.items():
+              result = job.get("result")
+              # "skipped" is legitimate: the impact analysis said that lane is
+              # unaffected. Anything else non-success blocks the gate.
+              if result not in {"success", "skipped"}:
+                  failed.append(f"{name}={result}")
+          if failed:
+              print("::error::CI gate blocked: " + ", ".join(failed))
+              sys.exit(1)
+          print("CI gate satisfied: every selected lane passed.")
+          PY

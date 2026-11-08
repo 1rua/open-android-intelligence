@@ -148,6 +148,66 @@ def run_command(cmd: list[str], cwd: Path | None = None, env: dict[str, str] | N
     res = subprocess.run(cmd, cwd=cwd or REPO_ROOT, env=merged_env)
     return res.returncode
 
+
+def load_android_planner():
+    """Load the shared Android task planner used by CI."""
+    import importlib.util
+
+    path = REPO_ROOT / "tools/ci/android_tasks.py"
+    spec = importlib.util.spec_from_file_location("ci_android_tasks", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# 旧的布尔影响标记到 CI lane 的映射。保留这层映射是为了不改变
+# analyze_impact 的既有语义（以及据此写成的回归测试），同时让真正的
+# 任务清单只存在一份。
+IMPACT_TO_ANDROID_LANES = (
+    ("affects_android_control", "android-device"),
+    ("affects_android_kernel", "android-platform"),
+    ("affects_android_notifications", "android-notifications"),
+    ("affects_android_conversation", "android-conversation"),
+    ("affects_android_gateway", "android-gateway"),
+)
+
+
+def android_test_invocations(level: str, impact: dict[str, bool]) -> list[list[str]]:
+    """Gradle invocations to run, in order.
+
+    Gradle binds `--tests` to the last Test task named before it, so a filtered
+    task must be alone in its invocation. Module tasks (unfiltered) can share
+    one invocation; the filtered app task cannot share with anything.
+    """
+    planner = load_android_planner()
+    invocations: list[list[str]] = []
+
+    if level == "full":
+        module_tasks = planner.full_module_tasks()
+        invocations.append(["noVpnSurfaceCheck"] + module_tasks)
+        invocations.append([":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest"])
+        return invocations
+
+    if level == "fast":
+        # 本地快速反馈只跑与编译无关的越权面门禁。
+        return [["noVpnSurfaceCheck"]]
+
+    module_tasks: list[str] = []
+    for flag, lane in IMPACT_TO_ANDROID_LANES:
+        if impact.get(flag):
+            module_tasks.extend(planner.module_lane_args(lane))
+    module_tasks = list(dict.fromkeys(module_tasks))
+    if module_tasks:
+        invocations.append(["noVpnSurfaceCheck"] + module_tasks)
+
+    if impact.get("affects_android_app") or impact.get("affects_android_settings"):
+        # Same class set the two CI shard jobs cover between them.
+        invocations.append(planner.pr_app_args())
+
+    if not invocations:
+        invocations.append(["noVpnSurfaceCheck"])
+    return invocations
+
 def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     print(f"=== 智能测试验证计划 [Level: {level.upper()}] ===")
     print(f"影响范围评估: {impact}")
@@ -265,71 +325,20 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             return ret
 
     # 4. Android 模块化精准测试
+    #
+    # 任务选择由 tools/ci/android_tasks.py 统一提供，CI 与本地取同一份分组，
+    # 避免“本地跑一套、流水线跑另一套”造成的漏测。
     android_dir = REPO_ROOT / "apps/android"
-    android_tasks = []
-    
-    if impact["is_full_required"] or level == "full":
-        android_tasks = [
-            ":control-ports:testDebugUnitTest",
-            ":capability-ports:testDebugUnitTest",
-            ":screen-control:testDebugUnitTest",
-            ":device-primitives:testDebugUnitTest",
-            ":platform-kernel:testDebugUnitTest",
-            "noVpnSurfaceCheck",
-            ":conversation-domain:testDebugUnitTest",
-            ":conversation-ui:testDebugUnitTest",
-            ":gateway-client:testDebugUnitTest",
-            ":app:testFullDebugUnitTest",
-        ]
-    else:
-        # 增量精简选择
-        android_tasks.append("noVpnSurfaceCheck")
-        if level != "fast":
-            if impact["affects_android_control"]:
-                android_tasks.extend([
-                    ":control-ports:testDebugUnitTest",
-                    ":capability-ports:testDebugUnitTest",
-                    ":screen-control:testDebugUnitTest",
-                    ":device-primitives:testDebugUnitTest",
-                ])
-            if impact["affects_android_kernel"]:
-                android_tasks.append(":platform-kernel:testDebugUnitTest")
-            if impact["affects_android_conversation"]:
-                android_tasks.extend([
-                    ":conversation-domain:testDebugUnitTest",
-                    ":conversation-ui:testDebugUnitTest",
-                ])
-            if impact["affects_android_gateway"]:
-                android_tasks.append(":gateway-client:testDebugUnitTest")
-            if impact["affects_android_app"]:
-                android_tasks.append(":app:testFullDebugUnitTest")
+    invocations = android_test_invocations(level, impact)
 
-    # Settings routes compose notification and security settings.
-    # In PR admission, cover notification module integration only when notifications are touched.
-    if impact["affects_android_notifications"] or (level == "full" and impact["affects_android_settings"]):
-        android_tasks.extend([
-            ":notification-control:testDebugUnitTest",
-            ":notification-host:testDebugUnitTest",
-            ":notification-collector:testDebugUnitTest",
-            ":policy-engine:testDebugUnitTest",
-            ":encrypted-store:testDebugUnitTest",
-        ])
-    if level == "full" and impact["affects_android_settings"]:
-        android_tasks.extend([
-            ":platform-kernel:testDebugUnitTest",
-            ":device-primitives:testDebugUnitTest",
-            ":gateway-client:testDebugUnitTest",
-            ":sms-collector:testDebugUnitTest",
-            ":app:testPlayDebugUnitTest",
-        ])
-    android_tasks = list(dict.fromkeys(android_tasks))
-
-    if android_tasks and (android_dir / "gradlew").exists():
-        print(f"\n--- 阶段 4: Android 增量测试任务 [{len(android_tasks)} 项] ---")
-        gradle_cmd = ["./gradlew", "--max-workers=2"] + android_tasks
-        ret = run_command(gradle_cmd, cwd=android_dir)
-        if ret != 0:
-            return ret
+    if (android_dir / "gradlew").exists():
+        for android_tasks in invocations:
+            print(f"\n--- 阶段 4: Android 增量测试 [{len(android_tasks)} 个参数] ---")
+            # 让 Gradle 用满本机核数；--max-workers=2 是 CI 串行时代的遗留，
+            # 在本地只会让独立模块的测试任务排队等待。
+            ret = run_command(["./gradlew"] + android_tasks, cwd=android_dir)
+            if ret != 0:
+                return ret
 
     print("\n✅ 所有阶段验证通过！")
     return 0

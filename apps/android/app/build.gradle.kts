@@ -70,6 +70,11 @@ tasks.withType<Test>().configureEach {
     // are process globals. A prior class must not leak callbacks or Android state into the next.
     // Keep compiled outputs/caches; isolate only the test JVM, without disabling idle checks.
     forkEvery = 1
+    // 每个测试类一个 JVM 意味着 Robolectric 启动开销占主导。并发 fork 在不共享进程
+    // 状态的前提下把这些启动开销重叠起来；上界由 CI 实际核数与内存决定。
+    maxParallelForks = (providers.gradleProperty("oai.testParallelForks").orNull?.toIntOrNull() ?: 1)
+        .coerceAtLeast(1)
+    maxHeapSize = providers.gradleProperty("oai.testMaxHeap").orNull ?: "1g"
     // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
     // 因此这些输入变动必须让测试失效，不能复用旧结果。
     for (spec in listOf(

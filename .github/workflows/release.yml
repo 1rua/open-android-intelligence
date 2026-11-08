@@ -14,6 +14,22 @@ concurrency:
   queue: max
 
 jobs:
+  # 与构建并行执行：构建可以立刻开始（签名、打包、验签），但发布必须等这个
+  # job 确认同一 SHA 的 CI 已通过。这样既不拉长关键路径，也不会在测试失败时
+  # 把产物发布出去。
+  verify-ci:
+    name: Verify CI for this commit
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/release-gate.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      sha: ${{ github.sha }}
+      wait-seconds: 3600
+      # main 的完整回归由 ci.yml 承担（也是 branch protection 里的必需检查）。
+      required-workflow: ci.yml
+
   sign-plugin-packages:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -264,7 +280,7 @@ jobs:
           retention-days: 1
 
   publish-stable:
-    needs: [build-stable-apk, verify-stable-apk]
+    needs: [build-stable-apk, verify-stable-apk, verify-ci]
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:

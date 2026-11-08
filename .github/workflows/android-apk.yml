@@ -1,7 +1,18 @@
 name: Android APK Artifact
 
 on:
+  # 只在「没有别的发布工作流会产出同一份 APK」的地方构建：
+  #
+  #   * dev 推送：dev-release.yml 已经构建并发布 app-full-debug，这里再跑一次
+  #     会重复签名、重复打包、重复上传，两次运行的 versionCode 还可能不同。
+  #     因此 dev 被排除。
+  #   * main 推送：release.yml 只在手动触发时构建正式包，日常 main 推送没有
+  #     调试 APK 可下载，而 tools/download-latest-apk 默认就读这里的产物，
+  #     所以 main 必须保留。
+  #   * feature/** 等分支：保留，便于随时下载调试包。
   push:
+    branches-ignore:
+      - dev
   workflow_dispatch:
 
 permissions:
