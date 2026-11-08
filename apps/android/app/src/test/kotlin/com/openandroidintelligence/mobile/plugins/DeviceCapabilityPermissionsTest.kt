@@ -67,14 +67,19 @@ class DeviceCapabilityPermissionsTest {
     }
 
     @Test
-    fun screenCaptureRequiresTheForegroundProjectionDialogNotAnUnrelatedSettingsPage() {
-        val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single()
-        assertEquals(DeviceCapabilityGrantKind.MEDIA_PROJECTION, requirement.grantKind)
-        assertTrue("必须由前台 Activity 发起系统对话框", requirement.opensMediaProjectionDialog())
-        // 关键回归：之前没有任何入口，或跳去无关的设置页；这三种都不是投屏。
-        assertFalse(requirement.opensAccessibilitySettings())
-        assertFalse(requirement.opensNotificationAccessSettings())
-        assertNull(requirement.manifestPermission)
+    fun screenCaptureLeadsWithAccessibilityAndKeepsProjectionOnlyAsAFallback() {
+        // Android 11+ 无障碍截图按需取帧，用户只需开启一次；投屏只是显式同意的备用方案。
+        // 这个顺序由 ScreenCaptureGrantRoutingTest 逐条构造，这里只确认推导入口本身正确。
+        val requirements = androidPermissionRequirements(setOf("kernel.screen.capture"))
+        val primary = requirements.first { !it.isFallback }
+        assertEquals(DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE, primary.grantKind)
+        assertTrue("首要入口必须跳无障碍设置", primary.opensAccessibilitySettings())
+        val fallback = requirements.single { it.isFallback }
+        assertEquals(DeviceCapabilityGrantKind.MEDIA_PROJECTION, fallback.grantKind)
+        assertTrue("必须由前台 Activity 发起系统对话框", fallback.opensMediaProjectionDialog())
+        assertFalse(fallback.opensAccessibilitySettings())
+        assertFalse(fallback.opensNotificationAccessSettings())
+        assertNull(fallback.manifestPermission)
     }
 
     @Test
@@ -94,8 +99,7 @@ class DeviceCapabilityPermissionsTest {
         assertEquals(
             listOf("sms", "call-log", "notifications", "accessibility", "screen-capture"),
             requirements.map { it.key },
-        )
-        // 屏幕读取与控制同时声明时只能出现一条无障碍入口。
+        )        // 屏幕读取与控制同时声明时只能出现一条无障碍入口。
         val both = androidPermissionRequirements(
             setOf("kernel.screen.read", "kernel.screen.control"),
         )
@@ -204,7 +208,7 @@ class DeviceCapabilityPermissionsTest {
 
     @Test
     fun mediaProjectionIsReportedAsAskedOnUseRatherThanBlocked() {
-        val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single()
+        val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single { it.isFallback }
         val inspector = inspector(capture = false)
 
         // 投屏没有可持久查询的状态：如实标为「使用时询问」，而不是假装未授权或阻塞。
@@ -215,7 +219,7 @@ class DeviceCapabilityPermissionsTest {
 
     @Test
     fun authorizedCaptureIsReportedGranted() {
-        val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single()
+        val requirement = androidPermissionRequirements(setOf("kernel.screen.capture")).single { it.isFallback }
         assertEquals(
             DeviceCapabilityGrantState.GRANTED,
             inspector(capture = true).state(requirement),
@@ -241,7 +245,7 @@ class DeviceCapabilityPermissionsTest {
         assertTrue(notification.contains("通知使用权"))
 
         val capture = manualGrantGuidance(
-            androidPermissionRequirements(setOf("kernel.screen.capture")).single(),
+            androidPermissionRequirements(setOf("kernel.screen.capture")).single { it.isFallback },
         )
         assertTrue("投屏应引导重新发起授权而不是跳设置", capture.contains("授权"))
 

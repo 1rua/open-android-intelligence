@@ -660,7 +660,7 @@ class DeviceExecutionRecoveryTest {
             bind(PairingGrantBinding("https://gateway.example", "acct", "install"))
         }
         val trust = DeveloperTrustMode()
-        val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), "install")
+        val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), "install")
         if (install) host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
         host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities), host.runtimes,
             audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant, mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))

@@ -41,6 +41,7 @@ import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import com.openandroidintelligence.mobile.settings.capabilities.isBuiltInPlugin
 import com.openandroidintelligence.plugin.ui.UiActionId
 import com.openandroidintelligence.plugin.ui.PluginUiActionValue
 import com.openandroidintelligence.gateway.schema.Json
@@ -111,8 +112,6 @@ fun PluginManagementScreen(
     modifier: Modifier = Modifier,
     store: PluginInstallStore? = null,
     onOpenNotificationSettings: (() -> Unit)? = null,
-    /** 测试注入的内置包来源；缺省时按插件各自读取 APK 资产。 */
-    bundledPluginPackages: Map<BundledPlugin, () -> ByteArray> = emptyMap(),
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onOpenCapability: ((String, String) -> Unit)? = null,
     onOpenScreen: (() -> Unit)? = null,
@@ -147,14 +146,12 @@ fun PluginManagementScreen(
     var installing by remember { mutableStateOf(false) }
 
     fun refresh() { host?.reload(); installed = resolvedStore.listInstalled() }
-    fun installBytes(bytes: ByteArray, approved: Boolean = false, bundledPlugin: BundledPlugin? = null) {
+    fun installBytes(bytes: ByteArray, approved: Boolean = false) {
         if (installing) return
         installing = true
         installScope.launch {
             try {
-                val view = runInterruptible(Dispatchers.IO) {
-                    if (bundledPlugin != null) resolvedStore.installBundledPlugin(bundledPlugin, bytes) else resolvedStore.install(bytes,approved)
-                }
+                val view = runInterruptible(Dispatchers.IO) { resolvedStore.install(bytes, approved) }
                 refresh(); pendingApproval = null
                 notice = "已安装 ${view.pluginId} v${view.version}；启用插件后，设备请求仍按各项能力的本机授权模式处理。"
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -407,52 +404,12 @@ fun PluginManagementScreen(
                 }
             }
 
-            // 内置插件安装入口：每个插件一条，独立判断安装状态；
-            // 已安装或渠道禁止时如实说明，不渲染可点但无效的条目。
-            SectionLabel("内置插件")
-            SettingsSectionCard {
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    BundledPlugin.entries.forEach { plugin ->
-                        val alreadyInstalled = installed.any { it.pluginId == plugin.pluginId || it.directory.name == plugin.pluginId }
-                        SettingsListItem(
-                            headline = if (alreadyInstalled) "${plugin.displayName}插件已安装" else "安装${plugin.displayName}插件",
-                            supporting = when {
-                                !allowRuntimePlugins -> "当前版本不支持内置插件，请使用支持插件的完整版本"
-                            alreadyInstalled && host?.loadFailures?.containsKey(plugin.pluginId) == true -> "现有的包已损坏，请先卸载它，再重新安装"
-                            alreadyInstalled -> when (plugin) {
-                                BundledPlugin.NOTIFICATIONS -> "请在下方启用插件，并检查通知读取范围与系统通知使用权"
-                                BundledPlugin.SMS, BundledPlugin.CALL_LOG -> "请在下方启用插件；短信或通话记录还需要对应的系统权限"
-                                BundledPlugin.SCREEN_READER, BundledPlugin.SCREEN_CONTROL ->
-                                    "请在下方启用插件，并检查 Android 无障碍服务；请求仍按本机授权模式处理"
-                                BundledPlugin.SCREEN_CAPTURE ->
-                                    "请在下方启用插件；截图还需 Android 屏幕捕获同意，请求仍按本机授权模式处理"
-                            }
-                            else -> "安装应用自带的插件，安装后可在下方启用并设置本机能力开关"
-                            },
-                            icon = Icons.Default.InstallMobile,
-                            enabled = allowRuntimePlugins && !alreadyInstalled && !installing,
-                            onClick = if (allowRuntimePlugins && !alreadyInstalled && !installing) ({
-                                installScope.launch {
-                                    try {
-                                        val bytes = runInterruptible(Dispatchers.IO) {
-                                            bundledPluginPackages[plugin]?.invoke() ?: readBundledPluginPackage(context, plugin)
-                                        }
-                                        installBytes(bytes, bundledPlugin = plugin)
-                                    } catch (cancelled: CancellationException) { throw cancelled }
-                                    catch (cause: Exception) { notice = installFailureNotice(cause) }
-                                }
-                            }) else null,
-                            modifier = Modifier.testTag(plugin.installTag),
-                        )
-                    }
-                }
-            }
-
             // 已安装列表：真实存储扫描。
             SectionLabel("已安装插件")
             SettingsSectionCard {
                 Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    if (installed.isEmpty()) {
+                    installed.filterNot { view -> isBuiltInPlugin(view.pluginId ?: view.directory.name) }.let { thirdParty ->
+                    if (thirdParty.isEmpty()) {
                         Text(
                             text = "未安装任何插件",
                             style = MaterialTheme.typography.bodyMedium,
@@ -460,7 +417,7 @@ fun PluginManagementScreen(
                             modifier = Modifier.padding(vertical = Dimensions.SpaceSmall),
                         )
                     }
-                    installed.forEachIndexed { index, view ->
+                    thirdParty.forEachIndexed { index, view ->
                         if (index > 0) {
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
@@ -534,6 +491,7 @@ fun PluginManagementScreen(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }

@@ -66,7 +66,7 @@ class CapabilityPublisherTest {
         val binding = PairingGrantBinding("https://gateway.example","account","installation")
         val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()).apply { bind(binding) }
         val trust = DeveloperTrustMode()
-        val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"installation")
+        val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"installation")
         val remote = Remote()
         var foreignChanges = 0
         var authorizationAvailable = true

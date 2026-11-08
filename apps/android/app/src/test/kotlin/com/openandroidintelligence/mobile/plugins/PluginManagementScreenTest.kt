@@ -158,13 +158,13 @@ class PluginManagementScreenTest {
 
     @Test
     @Config(application = OpenAndroidIntelligenceApplication::class)
-    fun multiplePluginsOmitRollbackAndKeepEnablePermissionsAndInstallActions() {
+    fun multipleThirdPartyPluginsKeepEnableAndInstallActionsButNoRollback() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        store.install(TestAlpPackages.compiledNotificationsPackage())
-        store.install(TestAlpPackages.compiledSmsPackage())
+        store.install(TestAlpPackages.signedPackage(id = "org.example.alpha", name = "示例插件甲"))
+        store.install(TestAlpPackages.signedPackage(id = "org.example.beta", name = "示例插件乙"))
         app.pluginHost.reload()
         val installed = store.listInstalled().map { it.pluginId }
-        assertEquals(listOf(NOTIFICATION_PLUGIN_ID, SMS_PLUGIN_ID), installed)
+        assertEquals(listOf("org.example.alpha", "org.example.beta"), installed)
 
         compose.setContent {
             MaterialTheme { PluginManagementScreen(true, true, {}, store = store, onOpenCapability = { _, _ -> }) }
@@ -172,23 +172,15 @@ class PluginManagementScreenTest {
 
         compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
         compose.onAllNodesWithText("启用").assertCountEquals(2)
-        compose.onAllNodesWithText("系统权限与后台任务").assertCountEquals(2)
         compose.onAllNodesWithText("卸载").assertCountEquals(2)
         compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
         compose.onNodeWithText("打开通知访问设置").assertDoesNotExist()
 
         compose.onAllNodesWithText("启用").onFirst().performScrollTo().performClick()
-        assertTrue(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
-        assertFalse(app.pluginHost.isEnabled(SMS_PLUGIN_ID))
+        assertTrue(app.pluginHost.isEnabled("org.example.alpha"))
+        assertFalse(app.pluginHost.isEnabled("org.example.beta"))
         compose.onNodeWithText("停用").assertExists()
         compose.onNodeWithText("启用").assertExists()
-
-        compose.onAllNodesWithText("系统权限与后台任务").onLast().performScrollTo().performClick()
-        compose.onNodeWithText("权限与能力设置").assertIsDisplayed()
-        compose.onNodeWithTag("plugin-grant:sms").assertDoesNotExist()
-        compose.onNodeWithTag("plugin-grant:notifications").assertDoesNotExist()
-        compose.onNodeWithText("关闭").performClick()
-        compose.onNodeWithText("恢复上一版本").assertDoesNotExist()
         assertEquals(installed, store.listInstalled().map { it.pluginId })
     }
 
@@ -196,19 +188,19 @@ class PluginManagementScreenTest {
     @Config(application = OpenAndroidIntelligenceApplication::class)
     fun normalUninstallRequiresConfirmationAndCancellationKeepsThePlugin() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        store.install(TestAlpPackages.compiledNotificationsPackage())
+        store.install(TestAlpPackages.signedPackage(id = "org.example.removable"))
         app.pluginHost.reload()
         compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
 
-        compose.onNodeWithTag("plugin-uninstall:$NOTIFICATION_PLUGIN_ID").performScrollTo().performClick()
+        compose.onNodeWithTag("plugin-uninstall:org.example.removable").performScrollTo().performClick()
         compose.onNodeWithText("确认卸载插件").assertIsDisplayed()
-        assertTrue(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
+        assertTrue(store.listInstalled().any { it.pluginId == "org.example.removable" })
         compose.onNodeWithText("取消").performClick()
-        assertTrue(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
-        compose.onNodeWithTag("plugin-uninstall:$NOTIFICATION_PLUGIN_ID").performScrollTo().performClick()
+        assertTrue(store.listInstalled().any { it.pluginId == "org.example.removable" })
+        compose.onNodeWithTag("plugin-uninstall:org.example.removable").performScrollTo().performClick()
         compose.onNodeWithTag("plugin-uninstall-confirm").performClick()
         compose.waitForIdle()
-        assertFalse(store.listInstalled().any { it.pluginId == NOTIFICATION_PLUGIN_ID })
+        assertFalse(store.listInstalled().any { it.pluginId == "org.example.removable" })
     }
 
     @Test
@@ -280,135 +272,42 @@ class PluginManagementScreenTest {
         assertFalse("渠道禁止时安装入口不得可点", node.config.getOrNull(SemanticsActions.OnClick) != null)
     }
 
-    @Test fun theBundledPluginButtonsInstallThroughTheVerifiedStore() {
-        val packageBytes = TestAlpPackages.signedPackage(id = NOTIFICATION_PLUGIN_ID, name = "通知读取插件")
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(true, false, {}, store = store,
-                    bundledPluginPackages = mapOf(BundledPlugin.NOTIFICATIONS to { packageBytes }))
-            }
-        }
-        compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).performScrollTo().performClick()
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("通知读取插件已安装").fetchSemanticsNodes().isNotEmpty()
-        }
-        assertEquals(NOTIFICATION_PLUGIN_ID, store.listInstalled().single().pluginId)
-        val node = compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).fetchSemanticsNode()
-        assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
-        compose.onNodeWithText("已安装，未启用", substring = true).assertExists()
-    }
+    /**
+     * 官方能力不再出现在插件管理里。
+     *
+     * 它们由 APK 提供、启动即就绪，因此既没有安装入口，也没有卸载入口；
+     * 用户对它们唯一的控制就是「设备能力与授权」里的能力开关。
+     */
+    @Test fun theSixBuiltInCapabilitiesNeverAppearInPluginManagement() {
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
 
-    /** 短信与通话记录入口各自独立：装上 SMS 不影响通话记录入口按自己的来源如实降级。 */
-    @Test fun theBundledSmsButtonInstallsIndependentlyFromTheCallLogEntry() {
-        val smsBytes = TestAlpPackages.signedPackage(id = SMS_PLUGIN_ID, name = "短信读取插件")
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(true, false, {}, store = store,
-                    bundledPluginPackages = mapOf(
-                        BundledPlugin.SMS to { smsBytes },
-                        BundledPlugin.CALL_LOG to { throw BundledPluginUnavailable(BundledPlugin.CALL_LOG) },
-                    ))
-            }
+        for (plugin in BundledPlugin.entries) {
+            compose.onNodeWithTag(plugin.installTag).assertDoesNotExist()
+            compose.onNodeWithTag("plugin-uninstall:${plugin.pluginId}").assertDoesNotExist()
         }
-        compose.onNodeWithTag(BundledPlugin.SMS.installTag).performScrollTo().performClick()
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("短信读取插件已安装").fetchSemanticsNodes().isNotEmpty()
-        }
-        assertEquals(SMS_PLUGIN_ID, store.listInstalled().single().pluginId)
-        // 通话记录入口没有被 SMS 的注入影响：它按自己的来源如实报告缺包。
-        compose.onNodeWithTag(BundledPlugin.CALL_LOG.installTag).performScrollTo().performClick()
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithText("当前安装包未附带通话记录读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
-        }
-        assertEquals(1, store.listInstalled().size)
+        compose.onAllNodesWithText("内置插件").assertCountEquals(0)
     }
 
     @Test
     @Config(application = OpenAndroidIntelligenceApplication::class)
-    fun allBundledInstallButtonsUseRealPackagesAndLeaveScreenCapabilitiesManual() {
+    fun thirdPartyPluginsKeepTheirOwnInstallEnableAndUninstallFlow() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        val packages = BundledPlugin.entries.associateWith { TestAlpPackages.compiledBundledPackage(it) }
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(true, true, {}, store = store,
-                    bundledPluginPackages = packages.mapValues { (_, bytes) -> { bytes } })
-            }
-        }
-        for (plugin in BundledPlugin.entries) {
-            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
-            compose.waitUntil(10_000) {
-                compose.onAllNodesWithText("${plugin.displayName}插件已安装").fetchSemanticsNodes().isNotEmpty()
-            }
-            assertTrue(store.listInstalled().any { it.pluginId == plugin.pluginId })
-            assertFalse(app.pluginHost.isEnabled(plugin.pluginId))
-            val node = compose.onNodeWithTag(plugin.installTag).fetchSemanticsNode()
-            assertFalse(node.config.getOrNull(SemanticsActions.OnClick) != null)
-            if (plugin in listOf(BundledPlugin.SCREEN_READER, BundledPlugin.SCREEN_CAPTURE, BundledPlugin.SCREEN_CONTROL)) {
-                val entry = app.pluginHost.entries(plugin.pluginId).single()
-                assertEquals(CapabilityAuthorizationMode.MANUAL, app.pluginHost.capabilityPolicy(plugin.pluginId, entry.key).mode)
-            }
-        }
-        assertEquals(6, store.listInstalled().size)
-        compose.onAllNodesWithText("请在下方启用插件，并检查 Android 无障碍服务", substring = true).assertCountEquals(2)
-        compose.onNodeWithText("请在下方启用插件；截图还需 Android 屏幕捕获同意", substring = true).assertExists()
-    }
+        val view = store.install(TestAlpPackages.signedPackage())
+        // 一个不带官方 ID 的第三方插件：它照常有安装、启用与卸载。
+        app.pluginHost.reload()
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, true, {}, store = store) } }
 
-    @Test fun aMissingBundledPackageDoesNotBlockTheOtherFiveInstallButtons() {
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(true, false, {}, store = store,
-                    bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
-                        { throw BundledPluginUnavailable(plugin) }
-                    })
-            }
-        }
-        for (plugin in BundledPlugin.entries) {
-            compose.onNodeWithTag(plugin.installTag).performScrollTo().assertIsEnabled().performClick()
-            compose.waitUntil(5_000) {
-                compose.onAllNodesWithText("当前安装包未附带${plugin.displayName}插件，请从文件导入已签名的 .alp 插件包。")
-                    .fetchSemanticsNodes().isNotEmpty()
-            }
-            for (other in BundledPlugin.entries.filter { it != plugin }) {
-                assertTrue(compose.onNodeWithTag(other.installTag).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
-            }
-        }
-        assertTrue(store.listInstalled().isEmpty())
+        compose.onNodeWithTag("plugin-uninstall:${view.pluginId}").performScrollTo().assertExists()
         compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).assertIsEnabled()
     }
 
-    @Test fun theBundledPluginButtonsExplainMissingAssetsAndKeepFileImportAvailable() {
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(true, false, {}, store = store,
-                    bundledPluginPackages = mapOf(BundledPlugin.NOTIFICATIONS to { throw BundledPluginUnavailable(BundledPlugin.NOTIFICATIONS) }))
-            }
-        }
-        compose.onNodeWithTag(BundledPlugin.NOTIFICATIONS.installTag).performScrollTo().performClick()
-        // 包来源在 Dispatchers.IO 上异步读取，CI 满载时 UI 提示可能晚于 5 秒出现。
-        // 仍等待真实的失败提示，不跳过任何行为断言。
-        compose.waitUntil(20_000) {
-            compose.onAllNodesWithText("当前安装包未附带通知读取插件，请从文件导入已签名的 .alp 插件包。").fetchSemanticsNodes().isNotEmpty()
-        }
-        assertTrue(store.listInstalled().isEmpty())
-        assertTrue(compose.onNodeWithTag(PLUGIN_INSTALL_ENTRY_TAG).fetchSemanticsNode().config.getOrNull(SemanticsActions.OnClick) != null)
-    }
+    /** 即使磁盘上残留官方 ID 的旧副本，插件管理也不把它当成可管理插件。 */
+    @Test fun aLeftoverOfficialCopyIsNotOfferedForUninstall() {
+        val leftover = File(store.installRoot, SMS_PLUGIN_ID).apply { mkdirs() }
+        File(leftover, "manifest.json").writeText("{}")
+        compose.setContent { MaterialTheme { PluginManagementScreen(true, false, {}, store = store) } }
 
-    @Test fun theBundledPluginButtonsAreBlockedByTheDistributionPolicy() {
-        var reads = 0
-        compose.setContent {
-            MaterialTheme {
-                PluginManagementScreen(false, false, {}, store = store,
-                    bundledPluginPackages = BundledPlugin.entries.associateWith { plugin ->
-                        { reads++; TestAlpPackages.compiledBundledPackage(plugin) }
-                    })
-            }
-        }
-        for (plugin in BundledPlugin.entries) {
-            val node = compose.onNodeWithTag(plugin.installTag).fetchSemanticsNode()
-            assertFalse("渠道禁止时 ${plugin.displayName} 入口不得可点", node.config.getOrNull(SemanticsActions.OnClick) != null)
-        }
-        assertEquals(0, reads)
-        assertTrue(store.listInstalled().isEmpty())
+        compose.onNodeWithTag("plugin-uninstall:$SMS_PLUGIN_ID").assertDoesNotExist()
     }
 
     @Test fun anUnreadableManifestCanBeRemovedAfterExplicitConfirmation() {
@@ -431,10 +330,12 @@ class PluginManagementScreenTest {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
         val host = app.pluginHost
         app.pairingGrants.bind(PairingGrantBinding("https://gateway.example", "test_ui", "test_install"))
-        store.install(TestAlpPackages.compiledNotificationsPackage())
-        host.reload();host.enable(NOTIFICATION_PLUGIN_ID,true);host.grant(NOTIFICATION_PLUGIN_ID,true)
+        // 官方 ID 的副本不再加载，因此这里用第三方 ID 复现同一场景。
+        val thirdParty = "org.example.notify"
+        store.install(TestAlpPackages.compiledNotificationsPackage(pluginId = thirdParty))
+        host.reload();host.enable(thirdParty,true);host.grant(thirdParty,true)
         val authorized = app.pairingGrants.state.value!!.granted
-        val legitimate = File(store.installRoot, NOTIFICATION_PLUGIN_ID)
+        val legitimate = File(store.installRoot, thirdParty)
         val disguised = File(store.installRoot, "org.example.disguised")
         legitimate.copyRecursively(disguised)
         host.reload()
@@ -450,7 +351,7 @@ class PluginManagementScreenTest {
         compose.waitForIdle()
         assertFalse(disguised.exists())
         assertTrue(legitimate.isDirectory)
-        assertTrue(host.isEnabled(NOTIFICATION_PLUGIN_ID))
+        assertTrue(host.isEnabled(thirdParty))
         assertEquals(authorized,app.pairingGrants.state.value!!.granted)
         assertTrue(host.loadFailures.isEmpty())
     }
@@ -459,10 +360,11 @@ class PluginManagementScreenTest {
     @Config(application = OpenAndroidIntelligenceApplication::class)
     fun anInstalledCapabilityOpensTheSingleEditorWithoutChangingPolicyOrTemporaryApprovals() {
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
-        store.install(TestAlpPackages.compiledNotificationsPackage())
+        val thirdParty = "org.example.notify"
+        store.install(TestAlpPackages.compiledNotificationsPackage(pluginId = thirdParty))
         app.pluginHost.reload()
-        val entry = app.pluginHost.entries(NOTIFICATION_PLUGIN_ID).first()
-        app.pluginHost.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy())
+        val entry = app.pluginHost.entries(thirdParty).first()
+        app.pluginHost.setCapabilityPolicy(thirdParty, entry.key, CapabilityPolicy())
         val approvalScope = CapabilityRequestScope(entry.key, DeviceOperation.READ, "a".repeat(64))
         val policyRevision = requireNotNull(app.pairingGrants.state.value).revision
         app.pairingGrants.authorization.approve("ui-test-approval", approvalScope, 5, policyRevision, 300_000L)
@@ -479,12 +381,12 @@ class PluginManagementScreenTest {
         assertEquals(1, openedAuthorizations)
         assertTrue(app.pairingGrants.authorization.evaluate("ui-test-approval", approvalScope, CapabilityPolicy(), policyRevision)
             is CapabilityAuthorization.Allowed)
-        compose.onNodeWithTag("capability-enabled:$NOTIFICATION_PLUGIN_ID:${entry.key}").assertDoesNotExist()
-        compose.onNodeWithTag("plugin-open-capability:$NOTIFICATION_PLUGIN_ID:${entry.key}")
+        compose.onNodeWithTag("capability-enabled:$thirdParty:${entry.key}").assertDoesNotExist()
+        compose.onNodeWithTag("plugin-open-capability:$thirdParty:${entry.key}")
             .performScrollTo().performClick()
-        assertEquals(NOTIFICATION_PLUGIN_ID to entry.key, opened)
-        assertEquals(CapabilityPolicy(), app.pluginHost.capabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key))
-        assertFalse(app.pluginHost.isEnabled(NOTIFICATION_PLUGIN_ID))
+        assertEquals(thirdParty to entry.key, opened)
+        assertEquals(CapabilityPolicy(), app.pluginHost.capabilityPolicy(thirdParty, entry.key))
+        assertFalse(app.pluginHost.isEnabled(thirdParty))
     }
 
     @Test
@@ -500,11 +402,12 @@ class PluginManagementScreenTest {
                 "test_install",
             ),
         )
-        store.install(TestAlpPackages.compiledSmsPackage())
+        val thirdPartySms = "org.example.sms"
+        store.install(TestAlpPackages.compiledSmsPackage(pluginId = thirdPartySms))
         app.pluginHost.reload()
-        app.pluginHost.enable(SMS_PLUGIN_ID, true)
-        app.pluginHost.setCapabilityEnabled(SMS_PLUGIN_ID, false)
-        assertTrue(app.pluginHost.supportsBackground(SMS_PLUGIN_ID))
+        app.pluginHost.enable(thirdPartySms, true)
+        app.pluginHost.setCapabilityEnabled(thirdPartySms, false)
+        assertTrue(app.pluginHost.supportsBackground(thirdPartySms))
         assertEquals(
             android.content.pm.PackageManager.PERMISSION_DENIED,
             context.checkSelfPermission(android.Manifest.permission.READ_SMS),
@@ -515,13 +418,13 @@ class PluginManagementScreenTest {
         }
         compose.onNodeWithText("允许后台任务").performScrollTo().assertExists()
 
-        compose.onNodeWithTag("plugin-background-toggle:$SMS_PLUGIN_ID").performScrollTo().performClick()
+        compose.onNodeWithTag("plugin-background-toggle:$thirdPartySms").performScrollTo().performClick()
         compose.waitForIdle()
 
         val localState = requireNotNull(app.pairingGrants.state.value)
-        assertTrue(app.pluginHost.isBackgroundEnabled(SMS_PLUGIN_ID))
-        assertFalse(app.pluginHost.isCapabilityEnabled(SMS_PLUGIN_ID))
-        val smsReadIdentity = app.pluginHost.entries(SMS_PLUGIN_ID).first().identity
+        assertTrue(app.pluginHost.isBackgroundEnabled(thirdPartySms))
+        assertFalse(app.pluginHost.isCapabilityEnabled(thirdPartySms))
+        val smsReadIdentity = app.pluginHost.entries(thirdPartySms).first().identity
         assertFalse(localState.permits(identityGrantKey(smsReadIdentity, "kernel.sms.read")))
         assertEquals(
             android.content.pm.PackageManager.PERMISSION_DENIED,

@@ -40,7 +40,7 @@ class DeviceGrantFenceTest {
             override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
         }
         val trust=DeveloperTrustMode()
-        val host=ProductionPluginHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
+        val host=thirdPartyOnlyHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
             trust,NativePluginLoader(trust),"install")
         journal.write("req_old_result",Json.canonical(Json.of(mapOf("stage" to "completed","expiresAt" to expires,
             "localAuthorizationRevision" to 1,"hostAuthorizationDigest" to executionHostAuthorizationDigest(host),
@@ -79,7 +79,7 @@ class DeviceGrantFenceTest {
             override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
         }
         val trust=DeveloperTrustMode()
-        val host=ProductionPluginHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
+        val host=thirdPartyOnlyHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
             trust,NativePluginLoader(trust),"install")
         val http=GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
             transport,{ByteArray(64)},InMemoryEventCursorStore())
@@ -113,7 +113,7 @@ class DeviceGrantFenceTest {
             }
             val audit=AndroidAuditStore();val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install")
             val http=GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
                 transport,{ByteArray(64)},InMemoryEventCursorStore())
             val executionScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
