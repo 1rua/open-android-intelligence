@@ -255,6 +255,14 @@ class GatewayRuntime(
     @Volatile private var bubbleThreadCreator: (suspend (ReplyNotificationTarget) -> ReplyNotificationTarget?)? = null
     /** 切换 Agent 后要补做的一次会话导航；只保留用户最后一次点击。 */
     @Volatile private var pendingNotificationNavigation: ReplyNotificationTarget? = null
+    /**
+     * 当前已发布到 [controller] 的工作台属于哪个 Agent。
+     *
+     * 切 Agent 时 `selectedAgentId` 会先同步更新，而新工作台要等旧分区 IO 收尾后
+     * 才发布。用前者判断“已经切好了”，会在旧工作台上打开会话并误报成功，点击
+     * 的那条通知随后被清掉。只有这个字段才代表交接真的完成。
+     */
+    @Volatile private var activeWorkbenchAgentId: String? = null
 
     internal fun isBubbleTargetCurrent(target: ReplyNotificationTarget): Boolean {
         val connected = _phase.value as? ConnectionPhase.Connected ?: return false
@@ -366,11 +374,21 @@ class GatewayRuntime(
         // 否则同一个会话 ID 会在另一个 Agent 下打开错误的会话。
         if (target.agentId != null) {
             val native = _nativeAgents.value ?: return false
-            if (native.state.value.selectedAgentId != target.agentId) {
-                if (native.state.value.agents.none { it.id == target.agentId }) return false
-                native.selectAgent(target.agentId)
-                // Agent 切换会重建工作台；本次导航由切换完成后的同一目标重试。
+            if (native.state.value.agents.none { it.id == target.agentId }) return false
+            val selected = native.state.value.selectedAgentId
+            // 选中该 Agent 不代表交接完成：旧工作台可能还在收尾。此时打开会话会
+            // 作用在别人的工作台上，还会让调用方把这条通知当成已消费。
+            if (nativeNavigationWaitsForWorkbench(target.agentId, selected, activeWorkbenchAgentId)) {
+                if (selected != target.agentId) native.selectAgent(target.agentId)
+                // 交接完成后由工作台发布处按同一目标补做这次导航。
                 pendingNotificationNavigation = target
+                // 交接可能刚好在这一行之前完成，发布处已经读过待办；再确认一次，
+                // 避免排队后没人处理这条通知。
+                if (!nativeNavigationWaitsForWorkbench(
+                        target.agentId, native.state.value.selectedAgentId, activeWorkbenchAgentId)) {
+                    pendingNotificationNavigation = null
+                    _controller.value?.openThread(target.conversationId)
+                }
                 return true
             }
         }
@@ -2468,14 +2486,8 @@ class GatewayRuntime(
                                 return@withLock
                             }
                             _controller.value = replacement
+                            activeWorkbenchAgentId = selected
                             _operationNotice.compareAndSet(WORKBENCH_RECOVERY_NOTICE, null)
-                            // 提醒在切换 Agent 期间到达：新工作台就绪后补做那一次导航。
-                            pendingNotificationNavigation?.let { pending ->
-                                if (pending.agentId == selected) {
-                                    pendingNotificationNavigation = null
-                                    replacement.openThread(pending.conversationId)
-                                }
-                            }
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (cause: Exception) {
                             logConnectionFailure(InitializationStage.WORKBENCH.name, "WORKBENCH_RECOVERY_FAILED", cause)
@@ -2483,11 +2495,26 @@ class GatewayRuntime(
                             _operationNotice.value = WORKBENCH_RECOVERY_NOTICE
                         }
                     } else {
+                        // 工作台本来就是这台 Agent 的，交接早已完成。
+                        activeWorkbenchAgentId = selected
                         // Initial requests may have run before Agent discovery completed.
                         // Agent discovery now supplies the subscription identity.
                         // Rebind the event consumer without discarding its draft.
                         _controller.value?.onForegrounded()
                         _controller.value?.loadCatalog()
+                    }
+                }
+                // 提醒在等这台工作台：只有真正发布出来的工作台属于该 Agent 时才补做
+                // 那次导航，否则继续等下一次发布。
+                pendingNotificationNavigation?.let { pending ->
+                    val published = _controller.value
+                    if (pending.agentId != nState.selectedAgentId) {
+                        // 用户已经自己切到别的 Agent：这条等待中的导航不再成立。
+                        pendingNotificationNavigation = null
+                    } else if (published != null && pending.agentId != null &&
+                        activeWorkbenchAgentId == pending.agentId) {
+                        pendingNotificationNavigation = null
+                        published.openThread(pending.conversationId)
                     }
                 }
                 val available = nState.agent
@@ -2626,21 +2653,26 @@ class GatewayRuntime(
             } else null
         // 原生会话的终态核对走 `/agents` 自己的 generation 与 history：旧
         // `/conversations` 路由在 Core 上不存在，拿它核对只会一直失败。
+        //
+        // 发现列表里没有这台 Agent 时必须当作“这次读失败”，不能返回 null/空：
+        // `currentGeneration` 的 null 是宿主权威回答“现在空闲”，而重连后还没
+        // 发现 Agent 时根本没有读到任何事实。把后者当成空闲会把仍在运行的任务
+        // 判成 ENDED 并写死终态围栏，等 Agent 回来也恢复不了。
         val nativeNotificationReconciler = if (nativeAgentSessions) {
             com.openandroidintelligence.mobile.conversations.NativeNotificationReconciler(
                 nativeConversationNotifications,
                 currentTurn = { agentId, conversationId ->
-                    _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId }?.let { agent ->
-                        com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
-                            .currentGeneration(agent, conversationId)
-                            ?.let { com.openandroidintelligence.mobile.conversations.NativeCurrentTurn(it.generationId, it.state) }
-                    }
+                    val agent = com.openandroidintelligence.mobile.conversations.requireDiscoveredAgent(
+                        _nativeAgents.value?.state?.value?.agents.orEmpty(), agentId)
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
+                        .currentGeneration(agent, conversationId)
+                        ?.let { com.openandroidintelligence.mobile.conversations.NativeCurrentTurn(it.generationId, it.state) }
                 },
                 history = { agentId, conversationId ->
-                    _nativeAgents.value?.state?.value?.agents?.firstOrNull { it.id == agentId }?.let { agent ->
-                        com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
-                            .history(agent, conversationId)
-                    }.orEmpty()
+                    val agent = com.openandroidintelligence.mobile.conversations.requireDiscoveredAgent(
+                        _nativeAgents.value?.state?.value?.agents.orEmpty(), agentId)
+                    com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG)
+                        .history(agent, conversationId)
                 },
             )
         } else null
@@ -2863,6 +2895,7 @@ class GatewayRuntime(
         deviceRequestClient = null
         activeThread.set(null)
         pendingNotificationNavigation = null
+        activeWorkbenchAgentId = null
         bubbleThreadCreator = null
         pairingGrants.unbind()
         _phase.value = ConnectionPhase.Disconnected

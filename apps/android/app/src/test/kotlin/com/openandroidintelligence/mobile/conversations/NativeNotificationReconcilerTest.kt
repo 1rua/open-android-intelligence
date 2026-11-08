@@ -2,6 +2,9 @@ package com.openandroidintelligence.mobile.conversations
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.gateway.agents.AgentCapabilities
+import com.openandroidintelligence.gateway.agents.AgentSessionException
+import com.openandroidintelligence.gateway.agents.CoreAgent
 import com.openandroidintelligence.gateway.agents.NativeAgentMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +98,44 @@ class NativeNotificationReconcilerTest {
         assertEquals("中途换轮说明这份快照不能作为终态证据", NativeConversationStatus.RUNNING,
             notifications.sessions.value.single().status)
         assertTrue(alerts.isEmpty())
+    }
+
+    /**
+     * 重连后还没发现到这台 Agent，不等于宿主说“现在空闲”。
+     *
+     * 拿 null 当权威空闲会把仍在运行的任务判成 ENDED 并写死终态围栏；之后
+     * 即使 Agent 带着仍在运行的轮次回来，也恢复不了。
+     */
+    @Test fun anUndiscoveredAgentFailsTheReadInsteadOfProvingIdleness() {
+        val discovered = CoreAgent("hermes", "Hermes", "hermes", true, "account",
+            AgentCapabilities(history = true, send = true))
+        assertEquals(discovered, requireDiscoveredAgent(listOf(discovered), "hermes"))
+        val failure = runCatching { requireDiscoveredAgent(emptyList(), "hermes") }.exceptionOrNull()
+        assertTrue(failure is AgentSessionException)
+        assertEquals("AGENT_UNAVAILABLE", (failure as AgentSessionException).code)
+    }
+
+    /**
+     * 读取失败（例如 Agent 还没被发现）不能把任务判成结束。
+     *
+     * 这里注入的失败与 [requireDiscoveredAgent] 抛的是同一个错误码：核对器必须
+     * 保留原状态与重试资格，而不是写一个 ENDED 终态。
+     */
+    @Test fun aFailedReadKeepsTheTaskRunningAndRetryable() = runBlocking {
+        notifications.accept("profile", "account", status("delivered"))
+        notifications.accept("profile", "account", delta("Working"))
+        val reconciler = reconciler(
+            current = { throw AgentSessionException("AGENT_UNAVAILABLE") },
+            history = { emptyList() },
+        )
+        reconciler.reconcileActive(force = true)
+
+        val session = notifications.sessions.value.single()
+        assertEquals(NativeConversationStatus.RUNNING, session.status)
+        assertTrue(alerts.isEmpty())
+        // 这次读失败不能把任务从“仍在运行”里摘掉：下一轮必须还能再核对。
+        clock += 60_000L
+        assertTrue("失败之后仍要保留重试资格", notifications.hasPendingReconciliation())
     }
 
     private fun reconciler(

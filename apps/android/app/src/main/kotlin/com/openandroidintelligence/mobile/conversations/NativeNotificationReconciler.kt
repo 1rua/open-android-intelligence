@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile.conversations
 
+import com.openandroidintelligence.gateway.agents.AgentSessionException
+import com.openandroidintelligence.gateway.agents.CoreAgent
 import com.openandroidintelligence.gateway.agents.NativeAgentMessage
 import com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage
 import com.openandroidintelligence.gateway.conversations.MessagePart
@@ -9,6 +11,17 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /** 原生会话的当前轮次：生成 ID 与宿主报告的原始状态。 */
 internal data class NativeCurrentTurn(val generationId: String, val state: String)
+
+/**
+ * 终态核对只能读本账号已发现的 Agent。
+ *
+ * 重连后还没发现完、或 Agent 临时从列表消失时，核对必须算作“这次读失败”并
+ * 留待重试。若把它当成 `currentGeneration` 的 `null`（宿主权威回答“现在空闲”），
+ * 仍在运行的任务会被判成 ENDED 并写死终态围栏，等 Agent 回来也恢复不了。
+ */
+internal fun requireDiscoveredAgent(agents: List<CoreAgent>, agentId: String): CoreAgent =
+    agents.firstOrNull { it.id == agentId }
+        ?: throw AgentSessionException("AGENT_UNAVAILABLE")
 
 /**
  * 原生会话的终态核对。

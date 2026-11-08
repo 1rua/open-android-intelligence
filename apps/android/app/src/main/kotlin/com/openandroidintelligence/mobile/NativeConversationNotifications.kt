@@ -425,9 +425,12 @@ internal class NativeConversationNotifications(
         val seenKey = event.id?.takeIf { it.isNotBlank() }?.let { "realtime.event." + replyDigest(it) }
         val seen = seenKey != null && (metadata[observerKey]?.changes?.containsKey(seenKey) == true || preferences.contains(seenKey))
         val message = (decoded as? VerifiedConversationEvent.TimelineUpsert)?.message
+        // 修订围栏同样要带 Agent：两个 Agent 的同名会话可能有相同的消息 ID，
+        // 只按会话比较会让后一家更高的修订被判成过期，正文与终态都被丢掉。
+        // 平台旧帧没有 Agent，identityKey() 退化成纯会话 ID，摘要不变。
         val revisionIdentity = when (decoded) {
-            is VerifiedConversationEvent.TimelineUpsert -> "body\u0000$conversationId\u0000${decoded.message.id}"
-            is VerifiedConversationEvent.MessageStatus -> "status\u0000$conversationId\u0000${decoded.messageId}"
+            is VerifiedConversationEvent.TimelineUpsert -> "body\u0000${target.identityKey()}\u0000${decoded.message.id}"
+            is VerifiedConversationEvent.MessageStatus -> "status\u0000${target.identityKey()}\u0000${decoded.messageId}"
             else -> null
         }
         val revisionKey = revisionIdentity?.let { "realtime.revision." + replyDigest(it) }

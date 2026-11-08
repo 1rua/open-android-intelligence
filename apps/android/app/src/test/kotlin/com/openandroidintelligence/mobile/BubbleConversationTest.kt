@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
@@ -93,6 +95,45 @@ class BubbleConversationTest {
             assertFalse(bubble.state.value.isOnline)
             assertTrue(main.state.value.isOnline)
         } finally { workspace.close(); main.close(); job.cancel() }
+    }
+
+    @Test fun nativeBubbleOpensTheNotificationConversationWhenItsSessionArrivesLate() {
+        val job = SupervisorJob()
+        val scope = CoroutineScope(job + Dispatchers.Unconfined)
+        val host = Host()
+        val native = target.copy(agentId = "hermes")
+        val store = ViewModelStore()
+        val window = BubbleConversationWindow(SavedStateHandle())
+        store.put("bubble", window)
+        val opened = mutableListOf<String>()
+        val controllers = mutableListOf<WorkbenchController>()
+        val open: (ReplyNotificationTarget) -> WorkbenchController = { selected ->
+            controller(scope, host).also {
+                it.openThread(selected.conversationId); opened += selected.conversationId; controllers += it
+            }
+        }
+        try {
+            // 账号恢复或 Agent 发现还没完成：这一帧拿不到 session，控制器建不出来。
+            window.bind(null, native, open) {}
+            assertNull(window.controller)
+            assertNull(window.selectedConversationId)
+
+            // session 到达后必须仍然进入通知指向的会话，而不是停在会话列表。
+            window.bind(native, native, open) {}
+            assertTrue(window.isBoundTo(native, native))
+            assertEquals("conv-a", window.selectedConversationId)
+            assertEquals("conv-a", window.controller?.state?.value?.activeThreadId)
+            assertEquals(listOf("conv-a"), opened)
+
+            // 用户回到列表是明确的导航选择，之后的绑定不能把他绑回聊天页。
+            window.showBrowser()
+            window.bind(native, native, open) {}
+            assertNull(window.selectedConversationId)
+        } finally {
+            store.clear()
+            controllers.forEach(WorkbenchController::close)
+            job.cancel()
+        }
     }
 
     @Test fun authenticatedRuntimeBubbleUsesItsOwnControllerAndSendsThroughTheEstablishedGatewaySession() {

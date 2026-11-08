@@ -2,6 +2,18 @@
 
 读者：PR 审查者与 Android 验收执行者。状态：实现完成，自动化测试通过；模拟器端到端验收尚未执行。
 
+## 评审意见处理（2026-11-08 第二轮）
+
+PR #99 的自动评审提出 5 条问题，逐条核实后全部成立并已修复，每条都补了对应测试。
+
+| 评审意见 | 核实结论 | 修复 | 新增测试 |
+| --- | --- | --- | --- |
+| 原生气泡在 session 未就绪时先绑定一次，之后就永远停在列表转圈 | 成立。`firstBind` 用 `savedState[CONVERSATION] == null` 判断，第一次绑定（session 为 null）就把它写掉了 | 改为独立的 `bubbleLaunchSelectionPending` 标记（存在 saved state 里），只在真正拿到 session 的那次绑定消费 | `BubbleConversationTest.nativeBubbleOpensTheNotificationConversationWhenItsSessionArrivesLate` |
+| 事件同步路径把宿主正文帧全丢掉，只发布 `native-history:` 快照，导致别的客户端发起的轮次永远不提醒 | 成立。`NativeEventSynchronizer` 对 delta/completed 直接 `Unit`，正文只来自 `recoverySnapshot` 的合成事件 | 事件页上的 delta/completed 解码后随页一起发布（`liveBody`），落盘仍只写权威历史一次以避免重复行；历史已判删除的消息不转发 | `NativeEventSynchronizerTest.hostBodyFramesArePublishedOnceForTheNotificationLayerWhileHistoryStaysSynthetic` |
+| 修订围栏没带 Agent，另一个 Agent 同名消息会被判成过期 | 成立。`revisionIdentity` 只拼 `conversationId + messageId` | 改用 `target.identityKey()`；平台旧帧没有 Agent，摘要不变 | `NativeConversationNotificationsTest.anEqualOrHigherRevisionUnderAnotherAgentIsNotStale` |
+| 切 Agent 期间点通知，会在旧工作台上打开并误报成功 | 成立。`selectedAgentId` 同步更新，`_controller` 仍是上一台 | 新增 `activeWorkbenchAgentId`（只有真正发布的工作台才更新），并用 `nativeNavigationWaitsForWorkbench` 判定；未完成则排队，由工作台发布处补做 | `NativeNotificationNavigationTest`（2 项） |
+| 重连后 Agent 尚未发现时核对返回 null/空，被当成“权威空闲” | 成立。`currentGeneration` 的 null 语义是宿主回答空闲，未发现 Agent 时并没有读到任何事实 | 新增 `requireDiscoveredAgent`，未发现即抛 `AGENT_UNAVAILABLE`，核对器按失败处理并保留重试 | `NativeNotificationReconcilerTest.anUndiscoveredAgentFailsTheReadInsteadOfProvingIdleness`、`aFailedReadKeepsTheTaskRunningAndRetryable` |
+
 ## 结论
 
 原生 `/agents` 会话（OAI Core 的当前唯一会话入口）从来没有把会话事件接进提醒层，导致：
@@ -38,11 +50,13 @@
 | `:app:compileFullDebugKotlin` | 通过（JDK 17 编译） |
 | `NativeNotificationBridgeTest`（6 项） | 通过：帧形状、Agent 身份、错误码、删除、附件、合成事件不提醒 |
 | `NativeNotificationRoutingTest`（3 项） | 通过：同会话 ID 跨 Agent 各自提醒；重放不顶替；旧 3 段路由不变 |
+| `NativeNotificationNavigationTest`（2 项，本轮新增） | 通过：选中但未发布的工作台仍需等待；目标 Agent 的工作台发布后才算交接完成 |
 | `NativeConversationStoreViewTest`（2 项） | 通过：两读取者游标互不覆盖，内容仍共享 |
-| `NativeNotificationReconcilerTest`（3 项） | 通过：空闲只判定结束且不提醒；仍在运行时不误判结束；读期间换轮不采信 |
-| `BubbleConversationTest` / `BubbleAttachmentDraftCoordinatorTest` / `ConversationAttachmentPickersTest` | 通过（工作区构造签名变更已同步） |
-| `NativeConversationNotificationsTest` / `ReplyNotificationsTest` / `LiveUpdateNotificationsTest` | 通过（Robolectric SDK 36 用例需 JDK 21） |
-| `:app:testFullDebugUnitTest` 全量 | 1566 项中 5 项失败，全部为缺少 Hermes 夹具/依赖；补齐 `HERMES_PLUGIN_ROOT`、`HERMES_SDK_ROOT`、`OAI_HERMES_PYTHON=.toolchains/pr64-python/bin/python`、`PYTHONPATH=.toolchains/py-test-deps` 后逐个复跑通过 |
+| `NativeNotificationReconcilerTest`（5 项，本轮新增 2 项） | 通过：空闲只判定结束且不提醒；仍在运行时不误判结束；读期间换轮不采信；未发现 Agent 按读失败处理；读失败保留运行状态与重试 |
+| `NativeEventSynchronizerTest`（21 项，本轮新增 1 项） | 通过：宿主正文帧随页发布、落盘仍只写权威历史一次；删除、回执、游标与所有权用例不变 |
+| `BubbleConversationTest` / `BubbleAttachmentDraftCoordinatorTest` / `ConversationAttachmentPickersTest` | 通过（新增“session 迟到仍进入通知会话”用例） |
+| `NativeConversationNotificationsTest` / `ReplyNotificationsTest` / `LiveUpdateNotificationsTest` | 通过（新增“跨 Agent 同修订不判过期”用例；Robolectric SDK 36 用例需 JDK 21） |
+| `:app:testFullDebugUnitTest` 全量 | 第二轮改动后重跑，结果见 PR 评论；缺 Hermes 夹具时会出现环境性失败，补齐 `HERMES_PLUGIN_ROOT`、`HERMES_SDK_ROOT`、`OAI_HERMES_PYTHON=.toolchains/pr64-python/bin/python`、`PYTHONPATH=.toolchains/py-test-deps` 后复跑 |
 
 注意两点环境前提，都不是本次改动引入：
 
