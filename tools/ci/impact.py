@@ -194,6 +194,7 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         result["full_required"] = True
         for lane in LANES:
             lanes[lane] = True
+        result["app_sections"] = ALL_APP_SECTIONS
         return result
 
     for _, path in pairs:
@@ -365,6 +366,15 @@ def app_section(rest: str) -> str | None:
     return None
 
 
+def to_serializable(result: dict[str, object]) -> dict[str, object]:
+    """JSON-safe copy: `app_sections` is an internal set, exported as a list."""
+    copy = dict(result)
+    sections = copy.get("app_sections")
+    if isinstance(sections, set):
+        copy["app_sections"] = sorted(sections)
+    return copy
+
+
 def to_github_output(result: dict[str, object]) -> str:
     lanes = result["lanes"]
     assert isinstance(lanes, dict)
@@ -397,9 +407,11 @@ def main(argv: list[str] | None = None) -> int:
     result = classify(pairs)
 
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        Path(args.json_out).write_text(
+            json.dumps(to_serializable(result), indent=2, sort_keys=True), encoding="utf-8"
+        )
     if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        print(json.dumps(to_serializable(result), indent=2, sort_keys=True))
     if args.github_output:
         print(to_github_output(result))
 
