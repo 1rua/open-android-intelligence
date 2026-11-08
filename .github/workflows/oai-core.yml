@@ -136,6 +136,11 @@ jobs:
           bash -n scripts/setup.sh
           node --check integrations/dsh-session-adapter/index.js
 
+      # GitHub-hosted runners do not ship pytest; install just what this gate
+      # needs instead of the full Core dependency set.
+      - name: Install the gate's test dependency
+        run: python3 -m pip install --quiet --disable-pip-version-check pytest PyYAML==6.0.3
+
       - name: CI planning helpers
         run: python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
 
@@ -358,7 +363,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v7
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
