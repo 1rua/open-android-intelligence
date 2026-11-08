@@ -294,6 +294,7 @@ jobs:
           --tests '*SettingsBackupCodecTest'
           --tests '*SettingsBackupCoordinatorTest'
           --tests '*SettingsBackupScreenTest'
+          --tests '*LoginGatewayPrefillTest'
           --tests '*ReplyNotificationsTest'
           --tests '*LiveUpdateNotificationsTest'
           --tests '*NativeConversationNotificationsTest'
