@@ -224,7 +224,7 @@ internal fun AssistantSessionRoot(
                     modifier = Modifier.testTag(AssistantSessionRootTags.NOTICE),
                 )
             }
-            val composer: @Composable () -> Unit = {
+            val composer: @Composable (Boolean) -> Unit = { animateEntrance ->
                 AssistantCompactBar(
                     editor = editor,
                     onDraftChange = reportDraft,
@@ -238,6 +238,8 @@ internal fun AssistantSessionRoot(
                     // 而不是让用户对着一个灰掉的输入框无从下手。
                     enabled = enabled,
                     hasUnknownOutcome = hasUnknownOutcome,
+                    // 展开会话里的输入栏由面板的展开动画带出，不再单独弹一次。
+                    animateEntrance = animateEntrance,
                 )
             }
             if (expanded) {
@@ -249,10 +251,10 @@ internal fun AssistantSessionRoot(
                     maxPanelHeight = maxPanelHeight,
                     enabled = enabled,
                     onOpenApp = onOpenApp,
-                    composer = composer,
+                    composer = { composer(false) },
                 )
             } else {
-                composer()
+                composer(true)
             }
         }
     }
