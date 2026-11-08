@@ -353,12 +353,12 @@ def test_android_ci_covers_connection_account_and_settings_regressions():
     assert "android-app" in jobs
     assert "android-app-a" not in jobs and "android-app-b" not in jobs
 
-    shard_manifest = (
-        Path(__file__).parents[1] / "apps/android/ci/app-regression-shards.txt"
+    manifest = (
+        Path(__file__).parents[1] / "apps/android/ci/app-regression.txt"
     ).read_text(encoding="utf-8")
     selected = {
         line.strip()
-        for line in shard_manifest.splitlines()
+        for line in manifest.splitlines()
         if line.strip() and not line.strip().startswith(("#", "["))
     }
     required = {

@@ -18,6 +18,12 @@ inputs:
       the download, which keeps them off the fixture build's critical path.
     required: false
     default: ''
+  app-sections:
+    description: >-
+      Comma-separated app-test sections to run for the `app-pr` lane, taken from
+      the impact analysis. Empty means every section; "core" is always included.
+    required: false
+    default: ''
   test-parallel-forks:
     description: Test JVM forks. Only meaningful for the app test lanes.
     required: false
@@ -134,6 +140,7 @@ runs:
       env:
         LC_ALL: C.UTF-8
         OAI_TEST_PARALLEL_FORKS: ${{ inputs.test-parallel-forks }}
+        OAI_APP_SECTIONS: ${{ inputs.app-sections }}
         HERMES_FIXTURES: ${{ inputs.hermes-fixtures }}
       run: |
         set -euo pipefail
@@ -150,7 +157,11 @@ runs:
             mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
             ;;
           app-pr)
-            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr)
+            if [ -n "${OAI_APP_SECTIONS:-}" ]; then
+              mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr --sections "$OAI_APP_SECTIONS")
+            else
+              mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr)
+            fi
             ;;
           play)
             mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group play)

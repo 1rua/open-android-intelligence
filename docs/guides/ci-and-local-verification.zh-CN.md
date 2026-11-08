@@ -76,14 +76,26 @@ App 回归集是唯一**不**拆分 job 的 lane：实测两个分片各自的 G
 
 ### 测试分组清单
 
-`apps/android/ci/app-regression-shards.txt` 定义 PR 级 App 回归集，两个分片按时长
-均衡切分（各约 140 秒）。`tools/test_ci_planning.py` 校验：
+`apps/android/ci/app-regression.txt` 定义 PR 级 App 回归集，按功能域分节：
 
-- 分片互不重叠；
-- 每个类名都真实存在于 `apps/android/app/src/test`；
-- 本地 `test:pr` 的过滤器集合与 CI 两个分片的并集完全一致。
+```
+[core]               任何 Android 改动都会跑（横切行为）
+[settings]           设置、外观、备份
+[conversations]      会话渲染与持久化
+[plugins]            插件安装、授权、能力
+[push-notifications] 推送与通知
+```
 
-新增 App 回归测试时，把它加入其中一个分片；**不要**只留 CI 全量跑。
+影响分析（`tools/ci/impact.py`）同时输出 `app_sections`：单域改动只跑
+`[core]` 加该域，跨域或无法判定时跑全部。实测：设置文案改动 36 个类，
+全量 66 个类。`tools/test_ci_planning.py` 校验：
+
+- 每个类名都真实存在于 `apps/android/app/src/test`，且无重复；
+- `[core]` 非空、五个域齐全；
+- 按域过滤时 `[core]` 始终被包含，未知域名直接报错；
+- 本地 `test:pr` 的过滤器集合与 CI 分片并集一致。
+
+新增 App 回归测试时，放进 `[core]` 或对应功能域；**不要**只留 CI 全量跑。
 
 ## 缓存策略
 

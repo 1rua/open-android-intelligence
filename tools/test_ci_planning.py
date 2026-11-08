@@ -121,6 +121,19 @@ def test_hermes_adapter_path_runs_core_and_hermes(impact):
     assert active_lanes(result) == {"core", "hermes"}
 
 
+def test_app_sections_narrow_to_the_touched_domain(impact):
+    result = impact.classify([
+        ("M", "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/appearance/AppearanceSettingsScreen.kt"),
+    ])
+    assert result["app_sections"] == {"core", "settings"}
+    assert result["full_required"] is False
+
+
+def test_unknown_scope_widens_app_sections(impact):
+    result = impact.classify([("M", "some-new-top-level-dir/thing.bin")])
+    assert result["app_sections"] == set(impact.APP_SECTIONS)
+
+
 def test_github_output_uses_underscore_names(impact):
     result = impact.classify([("M", "oai-core/src/oai_core/cli.py")])
     output = impact.to_github_output(result)
@@ -147,10 +160,32 @@ def test_pr_app_invocation_puts_the_task_before_its_filters(tasks):
     assert len([a for a in arguments if not a.startswith("--tests=")]) == 1
 
 
-def test_regression_manifest_is_flat_and_unique(tasks):
+def test_regression_manifest_sections_are_complete_and_unique(tasks):
+    sections = tasks.read_regression_sections()
+    assert set(sections) == {"core", "settings", "conversations", "plugins", "push-notifications"}
+    assert sections["core"], "the always-run core section must not be empty"
     entries = tasks.read_regression_manifest()
     assert len(entries) >= 60
     assert len(entries) == len(set(entries))
+
+
+def test_section_filter_always_includes_core(tasks):
+    all_args = tasks.pr_args_for_sections(None)
+    narrow = tasks.pr_args_for_sections(["settings"])
+    assert narrow[0] == ":app:testFullDebugUnitTest"
+    assert len(narrow) < len(all_args)
+    core_names = tasks.read_regression_sections()["core"]
+    for name in core_names:
+        assert f"--tests=*{name}" in narrow
+    for name in tasks.read_regression_sections()["settings"]:
+        assert f"--tests=*{name}" in narrow
+    for name in tasks.read_regression_sections()["plugins"]:
+        assert f"--tests=*{name}" not in narrow
+
+
+def test_unknown_section_is_rejected(tasks):
+    with pytest.raises(SystemExit):
+        tasks.pr_args_for_sections(["nope"])
 
 
 def test_every_regression_entry_exists_as_a_test_class(tasks):

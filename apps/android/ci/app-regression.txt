@@ -1,0 +1,85 @@
+# App 单元回归集（PR 级）。
+#
+# 排序：先列核心/横切测试（任何 Android 改动都可能影响），再按功能域分组。
+# CI 的 `android-app` job 在「影响分析判定为跨域」时运行全部条目；
+# 判定为单域改动时只运行 [core] 与对应域的条目，从而让 UI 文案类改动
+# 只编译一次、只跑相关测试。
+#
+# `tools/test_ci_planning.py` 校验：每个类名真实存在、无重复、域覆盖完整。
+# 新增 PR 级回归测试请放进 [core] 或对应功能域，不要只依赖全量回归。
+
+[core]
+AndroidApiCompatibilityTest
+ApplicationCompositionTest
+GatewayNetworkMonitorTest
+GatewaySessionRefreshTest
+IndependentConnectionDiscoveryTest
+LoginGatewayPrefillTest
+NativeAgentBackgroundWorkTest
+NativeConversationNotificationsTest
+PlatformSnapshotRecoveryTest
+SettingsCapabilityUiTest
+SettingsNavigationTest
+SettingsResponsiveHostRegressionTest
+SettingsStateIntegrityTest
+AccountSwitchPersistenceFailureTest
+AdditionalDeviceConnectionsTest
+ColdStartConnectionTest
+GatewayWorkbenchLogoutTest
+LiveUpdateNotificationsTest
+NativeAgentsControllerTest
+PairingGrantPersistenceTest
+PlatformStreamHandoverTest
+ReplyNotificationsTest
+SettingsHonestyCopyTest
+SettingsViewModelTest
+TemporaryApprovalCopyTest
+
+[settings]
+CapabilitySettingsTest
+MessageProcessingSettingsTest
+PermissionCatalogTest
+SettingsBackupCoordinatorTest
+SettingsShortcutsTest
+AdvancedSettingsScreenTest
+AppUpdateScreenTest
+AppearanceSettingsScreenTest
+GatewayTutorialsTest
+SettingsBackupCodecTest
+SettingsBackupScreenTest
+
+[conversations]
+NativeConversationMirrorTest
+NativeEventDeletionPersistenceTest
+NativeEventSynchronizerTest
+NativeGenerationScopeTest
+CoreAgentConversationRepositoryTest
+NativeConnectionReliabilityTest
+NativeConversationOrganizationStoreTest
+NativeEventOwnerTest
+NativeRecoveryCommitTest
+NativeRecoveryOwnershipTest
+
+[plugins]
+CapabilityPublisherTest
+ClientCapabilityAuthorizationTest
+DeviceCapabilitySyncStateTest
+PluginManagementScreenTest
+ScreenExecutionErrorsTest
+SmsPassiveScopeSettingsTest
+DeviceCapabilityBlockTest
+DeviceExecutionRecoveryTest
+DeviceGrantFenceTest
+NotificationAccessSettingsTest
+PluginCapabilityRiskTest
+PluginManagementGrantUiTest
+
+[push-notifications]
+DevicePushCycleTest
+DevicePushRuntimeTest
+PushSettingsScreenTest
+NotificationCollectionScreenTest
+NotificationPushScopeSettingsTest
+ScreenCapabilityPresentationTest
+ScreenCaptureSystemConsentTest
+ScreenControlConfirmationDialogTest

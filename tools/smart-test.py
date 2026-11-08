@@ -172,7 +172,9 @@ IMPACT_TO_ANDROID_LANES = (
 )
 
 
-def android_test_invocations(level: str, impact: dict[str, bool]) -> list[list[str]]:
+def android_test_invocations(
+    level: str, impact: dict[str, bool], app_sections: list[str] | None = None
+) -> list[list[str]]:
     """Gradle invocations to run, in order.
 
     Gradle binds `--tests` to the last Test task named before it, so a filtered
@@ -201,8 +203,9 @@ def android_test_invocations(level: str, impact: dict[str, bool]) -> list[list[s
         invocations.append(["noVpnSurfaceCheck"] + module_tasks)
 
     if impact.get("affects_android_app") or impact.get("affects_android_settings"):
-        # Same class set the two CI shard jobs cover between them.
-        invocations.append(planner.pr_app_args())
+        # Same section selection CI uses, so local PR admission and the PR gate
+        # test the same classes.
+        invocations.append(planner.pr_args_for_sections(app_sections))
 
     if not invocations:
         invocations.append(["noVpnSurfaceCheck"])

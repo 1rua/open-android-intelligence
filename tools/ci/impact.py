@@ -67,6 +67,14 @@ CORE_SECURITY_PREFIXES = (
     "oai-core/src/oai_core/sessions",
 )
 
+# Module lane -> app-test section. Modules without an entry are cross-cutting and
+# widen the app suite to every section (they are compiled into every screen).
+MODULE_LANE_TO_APP_SECTION = {
+    "notifications": "settings",
+    "conversation": "conversations",
+    "plugins": "plugins",
+}
+
 ANDROID_MODULE_LANES = {
     "control-ports": "device",
     "capability-ports": "device",
@@ -169,10 +177,15 @@ def empty_lanes() -> dict[str, bool]:
 
 def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
     lanes = empty_lanes()
+    # App-test sections this diff touches. "core" is always included; the CI app
+    # job runs [core] plus these sections so a UI copy change does not drag the
+    # whole app regression set into the critical path.
+    sections: set[str] = {"core"}
     result: dict[str, object] = {
         "lanes": lanes,
         "unknown": False,
         "full_required": False,
+        "app_sections": sections,
         "paths": sorted({path for _, path in pairs}),
     }
     if not pairs:
@@ -190,11 +203,12 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
     if result["full_required"]:
         for lane in LANES:
             lanes[lane] = True
+        result["app_sections"] = ALL_APP_SECTIONS
         return result
 
     matched_any = False
     for status, path in pairs:
-        hit = classify_path(status, path, lanes)
+        hit = classify_path(status, path, lanes, sections)
         matched_any = matched_any or hit
         if not hit and path.startswith("oai-core/"):
             result["full_required"] = True
@@ -202,6 +216,7 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
     if result["full_required"]:
         for lane in LANES:
             lanes[lane] = True
+        result["app_sections"] = ALL_APP_SECTIONS
         return result
 
     if not matched_any:
@@ -210,10 +225,18 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         result["full_required"] = True
         for lane in LANES:
             lanes[lane] = True
+        result["app_sections"] = ALL_APP_SECTIONS
     return result
 
 
-def classify_path(status: str, path: str, lanes: dict[str, bool]) -> bool:
+# Sections of apps/android/ci/app-regression.txt. "core" is always run.
+APP_SECTIONS = ("core", "settings", "conversations", "plugins", "push-notifications")
+ALL_APP_SECTIONS = set(APP_SECTIONS)
+
+
+def classify_path(
+    status: str, path: str, lanes: dict[str, bool], sections: set[str]
+) -> bool:
     """Mark the lanes a single path affects. Returns True when it was classified."""
     # Documentation and review artefacts never gate code lanes.
     if path.startswith(("docs/", "tmp/")) or path.endswith((".md", ".txt")):
@@ -224,6 +247,7 @@ def classify_path(status: str, path: str, lanes: dict[str, bool]) -> bool:
         # Plugin payloads are installed and executed by the app tests.
         lanes["android-app"] = True
         lanes["android-play"] = True
+        sections.add("plugins")
         return True
 
     if path.startswith("integrations/dsh-session-adapter/"):
@@ -256,12 +280,14 @@ def classify_path(status: str, path: str, lanes: dict[str, bool]) -> bool:
         return True
 
     if path.startswith("apps/android/"):
-        return classify_android(status, path, lanes)
+        return classify_android(status, path, lanes, sections)
 
     return False
 
 
-def classify_android(status: str, path: str, lanes: dict[str, bool]) -> bool:
+def classify_android(
+    status: str, path: str, lanes: dict[str, bool], sections: set[str]
+) -> bool:
     rest = path[len("apps/android/"):]
     module = rest.split("/", 1)[0]
 
@@ -269,9 +295,17 @@ def classify_android(status: str, path: str, lanes: dict[str, bool]) -> bool:
     lane = ANDROID_MODULE_LANES.get(module)
     if lane:
         lanes[f"android-{lane}"] = True
-        # Modules are compiled into the app; the app lane must follow them.
+        # Modules are compiled into the app; the app lane must follow them, and
+        # the module lane name doubles as the app-test section for the domains we
+        # model (settings/conversations/plugins/push-notifications).
         lanes["android-app"] = True
         lanes["android-play"] = True
+        section = MODULE_LANE_TO_APP_SECTION.get(lane)
+        if section:
+            sections.add(section)
+        else:
+            # device/platform/gateway modules are cross-cutting for the app suite.
+            sections.update(ALL_APP_SECTIONS)
         return True
 
     if rest.startswith("app/"):
@@ -280,9 +314,11 @@ def classify_android(status: str, path: str, lanes: dict[str, bool]) -> bool:
         # gateway/notification suites.
         lanes["android-app"] = True
         lanes["android-play"] = True
-        feature = app_feature(rest)
-        if feature:
-            lanes[feature] = True
+        for section, lane, hints in APP_FEATURE_HINTS:
+            if any(hint in rest for hint in hints):
+                lanes[lane] = True
+                sections.add(section)
+                break
         return True
 
     if rest.startswith(("tools/", "keystore/")):
@@ -294,21 +330,38 @@ def classify_android(status: str, path: str, lanes: dict[str, bool]) -> bool:
 
 # Package/directory hints inside apps/android/app. Order matters: the first
 # match wins, so put the narrow capabilities before the broad ones.
+#
+# Each hint maps to both a module lane and an app-test section
+# (apps/android/ci/app-regression.txt). The section is what lets a UI copy
+# change run only its own app tests instead of the whole app regression set.
 APP_FEATURE_HINTS = (
-    ("android-notifications", (
+    ("settings", "android-notifications", (
         "/settings/", "/notifications/", "/push/",
         "SettingsScreen", "SettingsNavHost", "SettingsViewModel",
     )),
-    ("android-conversation", ("/conversations/", "/conversation/", "Conversation")),
-    ("android-gateway", ("/gateway/", "/connection/", "/auth/", "Gateway")),
-    ("android-device", ("/screen/", "/plugins/", "/onboarding/", "Plugin")),
+    ("conversations", "android-conversation", (
+        "/conversations/", "/conversation/", "Conversation",
+    )),
+    ("plugins", "android-device", (
+        "/plugins/", "Plugin",
+    )),
+    ("push-notifications", "android-notifications", (
+        "/push/", "/notifications/",
+    )),
+    ("core", "android-gateway", (
+        "/gateway/", "/connection/", "/auth/", "Gateway",
+    )),
+    ("core", "android-device", (
+        "/screen/", "/onboarding/", "Screen",
+    )),
 )
 
 
-def app_feature(rest: str) -> str | None:
-    for lane, hints in APP_FEATURE_HINTS:
+def app_section(rest: str) -> str | None:
+    """Which app-test section a file under apps/android/app belongs to."""
+    for section, _lane, hints in APP_FEATURE_HINTS:
         if any(hint in rest for hint in hints):
-            return lane
+            return section
     return None
 
 
@@ -321,6 +374,9 @@ def to_github_output(result: dict[str, object]) -> str:
         f"runs_{lane.replace('-', '_')}={'true' if value else 'false'}"
         for lane, value in lanes.items()
     ]
+    sections = result.get("app_sections") or set()
+    assert isinstance(sections, set)
+    lines.append("app_sections=" + ",".join(sorted(sections)))
     lines.append(f"full_required={'true' if result['full_required'] else 'false'}")
     lines.append(f"unknown_diff={'true' if result['unknown'] else 'false'}")
     # Any lane running means the aggregate gate has real work to wait for.

@@ -61,6 +61,7 @@ jobs:
       runs_android_gateway: ${{ steps.impact.outputs.runs_android_gateway }}
       runs_android_app: ${{ steps.impact.outputs.runs_android_app }}
       runs_android_play: ${{ steps.impact.outputs.runs_android_play }}
+      app_sections: ${{ steps.impact.outputs.app_sections }}
       full_required: ${{ steps.impact.outputs.full_required }}
     steps:
       - uses: actions/checkout@v7
@@ -87,6 +88,7 @@ jobs:
                    "android_app","android_play"]
           print("\n".join(f"runs_{lane}=true" for lane in lanes))
           print("full_required=true")
+          print("app_sections=core,settings,conversations,plugins,push-notifications")
           PY
               exit 0
               ;;
@@ -484,6 +486,7 @@ jobs:
         with:
           lane: app-pr
           wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
+          app-sections: ${{ needs.changes.outputs.app_sections }}
           test-parallel-forks: '4'
 
   android-play:
