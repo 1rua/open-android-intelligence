@@ -116,6 +116,7 @@ internal fun AppearanceEditorContent(
             if (showAdvanced || supportsDynamicColor()) {
                 AppearanceSwitch(
                     headline = "系统动态取色",
+                    // 引导页用短句，设置页给出完整规则，避免两处措辞不一致。
                     supporting = if (showAdvanced) "主题色由壁纸提取；关闭后使用预设色板" else "从当前壁纸提取配色",
                     checked = settings.dynamicColor,
                     onCheckedChange = { value -> save("color") { onSetDynamicColor(value) } },
