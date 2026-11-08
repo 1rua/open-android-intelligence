@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
@@ -284,6 +285,12 @@ private fun PermissionCard(
     val stateColors = LocalAppStateColors.current
     val granted = status == PermissionStatus.GRANTED
     val blocked = status == PermissionStatus.BLOCKED
+    // 设备/系统根本不支持这项能力：只做说明，不给按钮——
+    // 点了不会有任何结果，属于需求禁止的「点了没反应」。
+    val unsupported = status == PermissionStatus.UNSUPPORTED
+    // 系统角色项（默认数字助理）与运行时权限的文案不同：
+    // 它没有「授权」这个概念，只有「是否已设为默认」。
+    val isRoleCard = entry.systemRole != null
 
     val statusText: String
     val actionText: String
@@ -299,6 +306,25 @@ private fun PermissionCard(
             statusText = "使用时由系统询问 · 无需现在授权"
             actionText = "无需操作"
             action = {}
+        }
+        unsupported -> {
+            statusText = if (isRoleCard) {
+                "当前系统未提供默认数字助理角色 · 仍可在应用内对话"
+            } else {
+                "当前设备不支持"
+            }
+            actionText = "不支持"
+            action = {}
+        }
+        isRoleCard && granted -> {
+            statusText = "已设为默认数字助理 · 可用 Assist 手势唤起"
+            actionText = "已设置"
+            action = {}
+        }
+        isRoleCard -> {
+            statusText = "未设为默认数字助理 · 可在系统设置中选择"
+            actionText = "去设置"
+            action = onRequest
         }
         granted -> {
             statusText = "已授权"
@@ -417,7 +443,8 @@ private fun PermissionCard(
             )
             when {
                 // 系统对话框型权限：没有可点的授权入口，只给状态文字，避免「点了没反应」。
-                dialogOnly -> Text(
+                // 系统不支持的项同理：系统里没有可授予的东西，按钮只会是死路。
+                dialogOnly || unsupported -> Text(
                     text = actionText,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -480,5 +507,6 @@ private fun PermissionEntry.icon(): ImageVector = when (id) {
     "screen_capture" -> Icons.Default.ScreenShare
     "sms" -> Icons.Default.Sms
     "call_log" -> Icons.Default.Phone
+    "assistant_role" -> Icons.Default.Assistant
     else -> Icons.Default.Notifications
 }

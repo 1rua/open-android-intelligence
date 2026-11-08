@@ -60,38 +60,6 @@ data class CapabilityPresentation(
 )
 
 /**
- * 「屏幕上下文分析与圈选」条目的如实降级。
- *
- * 圈选要成立需要两件事同时在场：宿主真的能拿到屏幕截图（当前没有接入任何
- * Assist 截图来源），以及网关同意回传圈选结果（`attachment-status-v1`）。
- * 缺任何一件都必须明说缺什么，而不是把开关画成可用的样子。
- *
- * @param screenshotSourceWired 宿主是否接入了真实截图来源（当前恒为 false）。
- * @param attachmentStatusAgreed `attachment-status-v1` 的协商三态。
- */
-fun screenSelectionPresentation(
-    screenshotSourceWired: Boolean,
-    attachmentStatusAgreed: Boolean?,
-): CapabilityPresentation = when {
-    !screenshotSourceWired -> CapabilityPresentation(
-        enabled = false,
-        supporting = "无法获取屏幕截图，圈选不可用",
-    )
-    attachmentStatusAgreed == null -> CapabilityPresentation(
-        enabled = false,
-        supporting = "Gateway 未声明支持屏幕圈选，圈选不可用",
-    )
-    !attachmentStatusAgreed -> CapabilityPresentation(
-        enabled = false,
-        supporting = "网关不支持屏幕圈选，圈选不可用",
-    )
-    else -> CapabilityPresentation(
-        enabled = true,
-        supporting = "圈选可用",
-    )
-}
-
-/**
  * 「系统通知推送」条目的如实降级。
  *
  * 推送要成立同样需要两件事：宿主装配了真实推送采集通道（当前没有），以及

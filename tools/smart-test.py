@@ -128,6 +128,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             if any(f.startswith(f"apps/android/{module}/") for module in ("notification-control", "notification-host", "notification-collector")):
                 impact["affects_android_notifications"] = True
                 impact["affects_android_app"] = True
+            if f.startswith("apps/android/assistant-holder/"):
+                impact["affects_android_app"] = True
             if "screen" in f or "control" in f or "capability" in f or "device-primitives" in f:
                 impact["affects_android_control"] = True
             if "conversation" in f:
@@ -279,6 +281,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             ":conversation-domain:testDebugUnitTest",
             ":conversation-ui:testDebugUnitTest",
             ":gateway-client:testDebugUnitTest",
+            ":assistant-holder:testDebugUnitTest",
             ":app:testFullDebugUnitTest",
         ]
     else:
@@ -302,7 +305,10 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             if impact["affects_android_gateway"]:
                 android_tasks.append(":gateway-client:testDebugUnitTest")
             if impact["affects_android_app"]:
-                android_tasks.append(":app:testFullDebugUnitTest")
+                android_tasks.extend([
+                    ":assistant-holder:testDebugUnitTest",
+                    ":app:testFullDebugUnitTest",
+                ])
 
     # Settings routes compose notification and security settings.
     # In PR admission, cover notification module integration only when notifications are touched.

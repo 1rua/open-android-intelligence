@@ -49,6 +49,8 @@ internal class AssistantConversationWorkspace(
     internal val agentId: String?,
     private val scope: CoroutineScope,
     private val create: (String) -> WorkbenchController?,
+    /** 会话真正关闭时回调；宿主借此释放该会话专用的仓储与事件订阅。 */
+    private val onSessionReleased: (String) -> Unit = {},
 ) : AutoCloseable {
     @Volatile private var closed = false
     private val controllers = ConcurrentHashMap<String, WorkbenchController>()
@@ -106,15 +108,35 @@ internal class AssistantConversationWorkspace(
     fun busyThreadIds(): Set<String> =
         controllers.values.flatMap { it.ownedBusyThreadIds }.toSet()
 
+    /** 助理界面当前正在展示的会话；通知层据此避免在用户眼前重复弹气泡。 */
+    fun containsConversation(conversationId: String): Boolean =
+        controllers.values.any { it.state.value.activeThreadId == conversationId }
+
+    /** 指定会话 token 当前展示的线程；没有该会话时为 null。 */
+    fun conversationFor(sessionToken: String): String? =
+        controllers[sessionToken]?.state?.value?.activeThreadId
+
+    /**
+     * 助理界面关闭：释放全部会话，但仍在等待真实终态的发送不会被取消。
+     *
+     * 语义等同于逐个 [release]：空闲会话立即关闭，有在途发送的会话登记为
+     * detached，由 [closeIfDetachedIdle] 在终态到达后收尾。界面离开不能
+     * 撤销一条已被 Gateway 接受的提交。
+     */
+    @Synchronized fun releaseAll() {
+        controllers.keys.toList().forEach(::release)
+    }
+
     @Synchronized override fun close() {
         closed = true
-        val owned = controllers.values.toList()
+        val owned = controllers.toMap()
         val jobs = observers.values.toList()
         controllers.clear()
         detached.clear()
         observers.clear()
         jobs.forEach(Job::cancel)
-        owned.forEach(WorkbenchController::close)
+        owned.values.forEach(WorkbenchController::close)
+        owned.keys.forEach { token -> runCatching { onSessionReleased(token) } }
         publishActiveWork()
     }
 
@@ -128,7 +150,7 @@ internal class AssistantConversationWorkspace(
         val (owned, jobs) = synchronized(this) {
             if (closed && controllers.isEmpty()) return
             closed = true
-            val snapshot = controllers.values.toList() to observers.values.toList()
+            val snapshot = controllers.toMap() to observers.values.toList()
             controllers.clear()
             detached.clear()
             observers.clear()
@@ -136,13 +158,14 @@ internal class AssistantConversationWorkspace(
         }
         jobs.forEach(Job::cancel)
         withContext(NonCancellable) {
-            owned.forEach { controller ->
+            owned.forEach { (token, controller) ->
                 try {
                     controller.closeAndAwait()
                 } catch (_: Throwable) {
                     // 收尾失败仍要释放；同步 close 至少停止事件订阅与后台任务。
                     runCatching { controller.close() }
                 }
+                runCatching { onSessionReleased(token) }
             }
         }
         publishActiveWork()
@@ -158,12 +181,38 @@ internal class AssistantConversationWorkspace(
         detached -= sessionToken
         observers.remove(sessionToken)?.cancel()
         controller.close()
+        runCatching { onSessionReleased(sessionToken) }
         publishActiveWork()
     }
 
     private fun publishActiveWork() {
         _hasActiveWork.value = controllers.values.any { it.hasActiveWork.value }
     }
+}
+
+/**
+ * 助手会话工厂：把「构建一个控制器」与「工作区身份」固定在一起。
+ *
+ * 工作区只证明自己属于某个 (profile, account, agent)；真正创建控制器需要连接
+ * 所有者提供的 HTTP 客户端、事件游标、附件协调器等，全部封装在 [open] 里，
+ * 由宿主在连接建立时安装、在连接退役时 [close]。
+ */
+internal class AssistantSessionFactory(
+    internal val profileId: String,
+    internal val accountId: String,
+    internal val scope: CoroutineScope,
+    /** 连接所有者；旧连接的迟到退役不能清掉新连接安装的工厂。 */
+    internal val owner: Any? = null,
+    private val open: (agentId: String?, sessionToken: String) -> WorkbenchController?,
+    private val onSessionReleased: (String) -> Unit = {},
+    private val onClose: () -> Unit = {},
+) : AutoCloseable {
+    fun create(agentId: String?, sessionToken: String): WorkbenchController? = open(agentId, sessionToken)
+
+    /** 会话控制器真正关闭；宿主借此释放该会话专用的存储与事件订阅。 */
+    fun release(sessionToken: String) = onSessionReleased(sessionToken)
+
+    override fun close() = onClose()
 }
 
 /**

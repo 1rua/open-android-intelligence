@@ -139,21 +139,65 @@ fun OnboardingFlow(
         pendingPermissionId = null
         refreshPermissions()
     }
+    // 系统角色申请：角色授予对话框是独立页面，结果回调只表示「用户离开了那个页面」，
+    // 真正的授权状态必须重新向 RoleManager 查询——不能把 resultCode 当作已设置的证据。
+    val assistantRoleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        pendingPermissionId = null
+        refreshPermissions()
+    }
 
     val entries = remember(pluginPrimitives) { buildVisiblePermissions(pluginPrimitives) }
+
+    /** 尝试启动 Intent；成功返回 true，系统无对应页面返回 false。 */
+    fun launchOrFallback(intent: Intent): Boolean = try {
+        assistantRoleLauncher.launch(intent)
+        true
+    } catch (_: android.content.ActivityNotFoundException) {
+        false
+    }
+
+    /**
+     * 发起系统角色申请。
+     *
+     * 顺序：先尝试角色对话框（[AssistantRole.createRequestRoleIntent]）；
+     * 拿不到 Intent（设备不支持该角色，或 ROM 明确不允许普通应用请求）时，
+     * 退回系统「默认数字助理」设置页，让用户手动选择。
+     * 两条路都走不通时，状态会如实标成「不支持」，不留在假的「未设置」。
+     */
+    fun requestSystemRole(role: SystemRole) {
+        val request = when (role) {
+            SystemRole.ASSISTANT -> AssistantRole.createRequestRoleIntent(context)
+        }
+        if (request != null && launchOrFallback(request)) return
+
+        val fallback = when (role) {
+            SystemRole.ASSISTANT -> AssistantRole.createFallbackSettingsIntent()
+        }
+        if (!launchOrFallback(fallback)) {
+            // 连系统设置页都不存在：如实呈现「不支持」，不伪造状态。
+            pendingPermissionId = null
+            val entry = entries.firstOrNull { it.systemRole == role }
+            if (entry != null) statuses[entry.id] = PermissionStatus.UNSUPPORTED
+        }
+    }
 
     fun requestPermission(id: String) {
         val entry = entries.firstOrNull { it.id == id } ?: return
         pendingPermissionId = id
-        when (id) {
+        when {
+            // 系统角色（默认数字助理）不是运行时权限：走 RoleManager 的角色对话框；
+            // AOSP 不允许普通应用直接请求该角色，弹不出来时回退到系统「默认数字助理」设置页。
+            entry.systemRole != null -> requestSystemRole(entry.systemRole)
             // 屏幕采集不是运行时权限：走 MediaProjection 授权对话框，由业务侧在使用时发起。
             // 引导页只解释机制，**不主动拉起投屏授权**（那会让用户以为必须现在授权）。
             // 因此这里把它标为「无需现在处理」，让卡片显示「使用时询问」而不是留下
             // 一个点了没反应的按钮。
-            "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
+            id == "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
             // 通知使用权是特殊权限：只能引导用户去系统设置页开启。
-            "notification_access" -> openNotificationAccessSettings(context)
-            "sms", "call_log" -> {
+            id == "notification_access" -> openNotificationAccessSettings(context)
+            id == "sms" || id == "call_log" -> {
                 val needed = entry.manifestPermissions
                     .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
                 if (needed.isEmpty()) {

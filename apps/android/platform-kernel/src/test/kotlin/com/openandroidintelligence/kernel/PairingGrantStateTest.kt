@@ -31,7 +31,6 @@ class PairingGrantStateTest {
         assertTrue(state?.granted.isNullOrEmpty())
         assertFalse(state?.migrationRequired ?: true)
         assertTrue(state?.permits(PairingGrantCapabilities.SMS) == true)
-        assertFalse(state?.screenSelectionEnabled ?: true)
     }
 
     @Test

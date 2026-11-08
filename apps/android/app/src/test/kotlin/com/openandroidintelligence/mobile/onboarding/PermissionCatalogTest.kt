@@ -21,10 +21,46 @@ class PermissionCatalogTest {
         val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
 
         assertEquals(
-            listOf("notifications", "microphone", "screen_capture", "sms", "call_log", "notification_access"),
+            listOf(
+                "notifications",
+                "microphone",
+                "screen_capture",
+                "assistant_role",
+                "sms",
+                "call_log",
+                "notification_access",
+            ),
             entries.map { it.id },
         )
         assertTrue(entries.any { it.group == PermissionGroup.DEVICE_CAPABILITY })
+    }
+
+    /**
+     * 默认数字助理卡片必须声明为**系统角色**而不是运行时权限。
+     *
+     * 这条区分直接决定界面行为：角色项走 RoleManager 对话框/系统设置，
+     * 运行时权限走系统权限弹窗；混在一起就会出现「点了弹不出任何东西」。
+     */
+    @Test
+    fun `assistant role card declares system role and no manifest permission`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        val role = entries.first { it.id == "assistant_role" }
+
+        assertEquals(SystemRole.ASSISTANT, role.systemRole)
+        assertEquals(PermissionGroup.OPTIONAL, role.group)
+        assertTrue("只能是系统设置/角色授予", role.isSpecialSystemAccess)
+        assertTrue("系统角色不是运行时权限", role.manifestPermissions.isEmpty())
+        assertTrue("系统角色同样不能阻断登录", !role.requiredForLogin)
+    }
+
+    /** 只有默认数字助理是系统角色项：其余权限不得被误标。 */
+    @Test
+    fun `only assistant role entry uses a system role`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        assertEquals(
+            listOf("assistant_role"),
+            entries.filter { it.systemRole != null }.map { it.id },
+        )
     }
 
     /** 短信权限与通知使用权均被声明并展示。 */

@@ -137,7 +137,6 @@ class CoreWithoutPluginsInstrumentedTest {
             )
             first.bind(binding)
             first.updatePrimitive(PairingGrantCapabilities.SMS, enabled = true)
-            first.updateScreenSelection(enabled = true)
 
             val restored = PairingGrantStateHolder(
                 SharedPreferencesPairingGrantStore(preferences),

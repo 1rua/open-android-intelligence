@@ -45,6 +45,7 @@ import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.mobile.assistant.AssistantAttachmentDraftCoordinator
 import com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspace
+import com.openandroidintelligence.mobile.assistant.AssistantSessionFactory
 import com.openandroidintelligence.mobile.assistant.createAssistantWorkbench
 import com.openandroidintelligence.mobile.assistant.createNativeAssistantWorkbench
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
@@ -209,7 +210,8 @@ class GatewayRuntime(
         activeHttpClient != null && _localSessionState.value !is LocalSessionState.SignedOut
     }
     val replyNotifications = ReplyNotificationSettings(context)
-    private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications)
+    private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications,
+        suppress = { target -> isAssistantConversationVisible(target.conversationId) })
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
     private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
@@ -254,12 +256,32 @@ class GatewayRuntime(
      * 系统数字助理的临时会话工作区；与主工作台、气泡互不共享选择与草稿。
      *
      * 它只属于一个 (profile, account, agent) 身份：账号或 Agent 切换时由
-     * [replaceAssistantWorkspace] 连同旧会话一起退役。
+     * [closeAssistantWorkspaceAndAwait] 连同旧会话一起退役。
      */
     @Volatile private var assistantWorkspace: AssistantConversationWorkspace? = null
     private var assistantWorkJob: Job? = null
     /** 只保护工作区引用的安装/退役，不覆盖工作区内部的控制器锁。 */
     private val assistantWorkspaceLock = Any()
+    /** 当前会话可构建的助手控制器工厂；teardown 后为 null。 */
+    @Volatile private var assistantSessionFactory: AssistantSessionFactory? = null
+    /** 助理界面全部离开；工作区在途工作结束时再退役。 */
+    @Volatile private var assistantWorkspaceRetirePending = false
+    /** 已声明「正在展示」的客户端 → 会话；只用于抑制同会话的原生通知。 */
+    private val assistantPresence = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val _assistantWorkspaceVersion = MutableStateFlow(0)
+    /** 助手工作区的安装/退役代次；助理进程据此接回已登记的会话。 */
+    internal val assistantWorkspaceVersion: StateFlow<Int> = _assistantWorkspaceVersion.asStateFlow()
+
+    /** 当前连接所属本地档案；未连接时为 null。不暴露任何凭据。 */
+    internal val connectedProfileId: String?
+        get() {
+            val connected = _phase.value as? ConnectionPhase.Connected ?: return null
+            return profileIdFor(connected.gatewayUrl, connected.username)
+        }
+
+    /** 当前 Agent 展示名；未连接时为 null。 */
+    internal val connectedAgentName: String?
+        get() = (_phase.value as? ConnectionPhase.Connected)?.agentName
 
     internal fun isBubbleTargetCurrent(target: ReplyNotificationTarget): Boolean {
         val connected = _phase.value as? ConnectionPhase.Connected ?: return false
@@ -340,8 +362,12 @@ class GatewayRuntime(
         }
     }
 
-    /** 助手会话正在发送的线程；主工作台与气泡都把它视为忙碌，避免管理操作踩到在途提交。 */
+    /** 助理会话正在发送的线程；主工作台与气泡都把它视为忙碌，避免管理操作踩到在途提交。 */
     private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
+
+    /** 系统助理界面是否正展示这条会话；同会话的原生通知气泡因此不再打扰用户。 */
+    internal fun isAssistantConversationVisible(conversationId: String): Boolean =
+        assistantPresence.isNotEmpty() && assistantWorkspace?.containsConversation(conversationId) == true
 
     /**
      * 系统数字助理通过主进程打开一条会话控制器。
@@ -354,9 +380,121 @@ class GatewayRuntime(
         return runCatching { workspace.open(sessionToken) }.getOrNull()
     }
 
+    /**
+     * 连接就绪后接回助理进程已登记的会话。
+     *
+     * 与 [createAssistantSessionController] 的区别：工作区还没建立（连接刚完成、Agent
+     * 刚发现）时先按当前身份创建，再打开同一 token；仍不可用时返回 null。
+     */
+    internal fun reattachAssistantSession(sessionToken: String): WorkbenchController? {
+        if (!ensureAssistantWorkspace()) return null
+        return createAssistantSessionController(sessionToken)
+    }
+
+    /**
+     * 确保助手工作区存在；不存在且当前连接允许时按当前身份创建。
+     *
+     * 工作区只属于一个 (profile, account, agent)：身份不匹配时返回 false，由调用方
+     * 呈现未连接，而不是把旧会话借给新账号。
+     */
+    internal fun ensureAssistantWorkspace(): Boolean {
+        val factory = assistantSessionFactory ?: return false
+        val agentId = assistantAgentId()
+        var replaced: AssistantConversationWorkspace? = null
+        synchronized(assistantWorkspaceLock) {
+            val current = assistantWorkspace
+            if (current != null) {
+                if (current.matches(factory.profileId, factory.accountId, agentId)) return true
+                // 身份已变化：旧工作区必须连同在途会话一起退役，绝不借给新身份。
+                assistantWorkspace = null
+                assistantWorkJob?.cancel()
+                assistantWorkJob = null
+                assistantPresence.clear()
+                assistantWorkspaceRetirePending = false
+                _assistantWorkspaceVersion.value++
+                replaced = current
+            }
+            val workspace = AssistantConversationWorkspace(
+                profileId = factory.profileId,
+                accountId = factory.accountId,
+                agentId = agentId,
+                scope = factory.scope,
+                create = { token -> factory.create(agentId, token) },
+                onSessionReleased = factory::release,
+            )
+            assistantWorkspace = workspace
+            assistantWorkspaceRetirePending = false
+            // 助手任务同样需要后台保活：只读原子 StateFlow，不取工作区锁。
+            // 最后一个在途会话结束后，若界面已全部离开，再真正退役工作区；
+            // 退役会取消本订阅，因此放到独立任务里执行，不在 collect 内自取消。
+            assistantWorkJob = scope.launch {
+                workspace.hasActiveWork.collect {
+                    refreshBackgroundWork()
+                    if (!it) scope.launch { maybeRetireAssistantWorkspace() }
+                }
+            }
+            _assistantWorkspaceVersion.value++
+        }
+        replaced?.close()
+        refreshBackgroundWork()
+        return true
+    }
+
+    /** 助理客户端当前展示的会话；租约变化时回调，供通知层立即撤回重复提醒。 */
+    private fun publishAssistantPresence(clientToken: String, sessionToken: String?) {
+        if (sessionToken == null) assistantPresence.remove(clientToken)
+        else assistantPresence[clientToken] = sessionToken
+        val conversationId = sessionToken?.let { token -> assistantWorkspace?.conversationFor(token) }
+        if (conversationId != null) replyPublisher.cancel(ReplyNotificationTarget(
+            profileId = connectedProfileId.orEmpty(),
+            accountId = connectedAccountId.orEmpty(),
+            conversationId = conversationId,
+        ))
+    }
+
+    /** 助理进程声明/撤销「正在展示本会话」，用于抑制原生气泡。 */
+    internal fun setAssistantPresence(clientToken: String, sessionToken: String?, visible: Boolean) {
+        publishAssistantPresence(clientToken, sessionToken.takeIf { visible })
+    }
+
+    /**
+     * 助理客户端离开。
+     *
+     * 已登记的会话按在途状态交还：空闲会话立即关闭，有发送在途的等终态。所有客户端
+     * 都离开后才请求退役工作区；退役同样等最后一条在途工作结束，不取消已提交的发送。
+     */
+    internal fun releaseAssistantClient(clientToken: String) {
+        assistantPresence.remove(clientToken)
+        synchronized(assistantWorkspaceLock) {
+            val workspace = assistantWorkspace ?: return
+            workspace.releaseAll()
+            if (assistantPresence.isEmpty()) assistantWorkspaceRetirePending = true
+        }
+        maybeRetireAssistantWorkspace()
+        refreshBackgroundWork()
+    }
+
     /** 助理界面关闭：有在途发送时延迟关闭，等真实终态再释放。 */
     internal fun releaseAssistantSession(sessionToken: String) {
         assistantWorkspace?.release(sessionToken)
+        maybeRetireAssistantWorkspace()
+        refreshBackgroundWork()
+    }
+
+    /** 没有界面在用时退役工作区；仍有在途发送则等它结束。 */
+    private fun maybeRetireAssistantWorkspace() {
+        val retired = synchronized(assistantWorkspaceLock) {
+            val workspace = assistantWorkspace ?: return
+            if (!assistantWorkspaceRetirePending || assistantPresence.isNotEmpty()) return
+            if (workspace.hasActiveWork.value) return
+            assistantWorkspace = null
+            assistantWorkJob?.cancel()
+            assistantWorkJob = null
+            assistantWorkspaceRetirePending = false
+            _assistantWorkspaceVersion.value++
+            workspace
+        }
+        retired.close()
         refreshBackgroundWork()
     }
 
@@ -367,6 +505,9 @@ class GatewayRuntime(
             assistantWorkspace = null
             assistantWorkJob?.cancel()
             assistantWorkJob = null
+            assistantPresence.clear()
+            assistantWorkspaceRetirePending = false
+            if (current != null) _assistantWorkspaceVersion.value++
             current
         }
         retired?.closeAndAwait()
@@ -380,12 +521,26 @@ class GatewayRuntime(
             assistantWorkspace = null
             assistantWorkJob?.cancel()
             assistantWorkJob = null
+            assistantPresence.clear()
+            assistantWorkspaceRetirePending = false
+            if (current != null) _assistantWorkspaceVersion.value++
             current
         }
         retired?.close()
         refreshBackgroundWork()
     }
 
+    /**
+     * 账号切换：旧账号的助手会话不能被带进新连接。
+     *
+     * 只比较 profile/account；Agent 选择在连接建立后才可发现，由
+     * [ensureAssistantWorkspace] 的身份比对兜底。
+     */
+    private suspend fun closeAssistantWorkspaceForAccountChange(profileId: String, accountId: String) {
+        val current = assistantWorkspace ?: return
+        if (current.profileId == profileId && current.accountId == accountId) return
+        closeAssistantWorkspaceAndAwait()
+    }
     /**
      * 当前 Agent 身份；主工作台与原生发现都从这里取值。
      *
@@ -396,18 +551,6 @@ class GatewayRuntime(
         _nativeAgents.value?.state?.value?.agent?.id ?: _workbenchAgentId
 
     private var _workbenchAgentId: String? = null
-
-    private fun publishAssistantWorkspace(workspace: AssistantConversationWorkspace) {
-        synchronized(assistantWorkspaceLock) {
-            assistantWorkJob?.cancel()
-            assistantWorkspace = workspace
-            // 助手任务同样需要后台保活：只读原子 StateFlow，不取工作区锁。
-            assistantWorkJob = scope.launch {
-                workspace.hasActiveWork.collect { refreshBackgroundWork() }
-            }
-        }
-        refreshBackgroundWork()
-    }
 
     private fun clearBubbleWorkTracking() {
         val retired = synchronized(bubbleWorkJobs) {
@@ -1898,6 +2041,8 @@ class GatewayRuntime(
             }
         }
         sessionRenewal = renewal
+        // 账号/Agent 变化时立即退役旧助手工作区，不让旧会话借到新身份的 HTTP 客户端。
+        closeAssistantWorkspaceForAccountChange(profileId, session.accountId)
         val binding = PairingGrantBinding(
                 gatewayId = endpoint.baseUrl,
                 accountId = session.accountId,
@@ -2224,6 +2369,107 @@ class GatewayRuntime(
         }
         restartNativeReads = ::restoreNativeReads
 
+        // 助手会话的专属资源：原生面为每个会话准备独立观察者与本地存储，
+        // 旧版对话面则使用独立事件客户端（HTTP 事件流只有一个消费者）。
+        val assistantResources = java.util.concurrent.ConcurrentHashMap<String, () -> Unit>()
+        val assistantFactories = java.util.concurrent.ConcurrentHashMap<String, AssistantSessionFactory>()
+        val assistantFactory = AssistantSessionFactory(
+            profileId = profileId,
+            accountId = session.accountId,
+            scope = sessionScope,
+            owner = ownedJob,
+            open = { agentId, sessionToken ->
+                if (activeHttpClient !== http || sessionJob !== ownedJob || !ownedJob.isActive) null
+                else if (nativeAgentSessions) {
+                    val discoveryOwner = _nativeAgents.value ?: return@AssistantSessionFactory null
+                    val assistantAgent = discoveryOwner.state.value.agents.firstOrNull { it.id == agentId }
+                        ?: discoveryOwner.state.value.agent ?: return@AssistantSessionFactory null
+                    // 每个助手会话独立观察者：与主工作台共用游标会让任何一方 ACK 掉另一方未处理的事件。
+                    val store = com.openandroidintelligence.mobile.conversations.NativeConversationMirror(
+                        context, conversationScope, currentAgentId = { assistantAgent.id },
+                        keyProvider = localDocumentKeyProvider,
+                        observerId = "${session.deviceId}:${session.pairingGeneration}:assistant:$sessionToken",
+                    )
+                    val active = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                    val repository = com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
+                        client = com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
+                        currentAgent = { discoveryOwner.state.value.agents.firstOrNull { it.id == assistantAgent.id } ?: assistantAgent },
+                        activeConversationId = active::get,
+                        parentScope = sessionScope,
+                        supportsApprovalCards = "agent-approval-cards-v1" in conversationUi,
+                        supportsGenerationCancel = generationCancelCapability.agreed,
+                        approvalAudit = decisionAudit,
+                        organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
+                            context, conversationScope, localDocumentKeyProvider),
+                        storeForAgent = { store },
+                    )
+                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                    val controller = createNativeAssistantWorkbench(
+                        scope = sessionScope,
+                        conversationScope = conversationScope,
+                        repository = repository,
+                        catalogRepository = com.openandroidintelligence.mobile.conversations.CoreAgentCommandCatalogRepository(
+                            com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG),
+                            currentAgent = { discoveryOwner.state.value.agents.firstOrNull { it.id == assistantAgent.id } },
+                            negotiated = "agent-command-catalog-v1" in conversationUi,
+                        ),
+                        capabilities = conversationUi.toSet(),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        supportsApprovalCards = approvalClient != null && assistantAgent.capabilities.approvals,
+                        onActiveThreadChanged = { active.set(it) },
+                        media = mediaCache,
+                        downloads = downloads,
+                        attachmentCoordinator = attachments,
+                        externalBusyThreadIds = { assistantWorkspace?.busyThreadIds().orEmpty() },
+                    )
+                    assistantResources[sessionToken] = { runCatching { store.close() } }
+                    controller
+                } else {
+                    val assistantStatus = EventStreamStatusSink()
+                    val assistantHttp = GatewayHttpClient(
+                        profile = profile,
+                        transport = transport,
+                        signer = { preimage -> deviceKeys.sign(profileId, preimage) },
+                        cursorStore = com.openandroidintelligence.gateway.events.InMemoryEventCursorStore(),
+                        statusSink = assistantStatus,
+                        handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
+                        sessionRenewal = renewal,
+                    )
+                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                    createAssistantWorkbench(
+                        scope = sessionScope,
+                        conversationScope = conversationScope,
+                        http = assistantHttp,
+                        status = assistantStatus,
+                        approvals = approvalClient,
+                        generationCancel = generationCancelCapability,
+                        capabilities = conversationUi.toSet(),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        media = mediaCache,
+                        downloads = downloads,
+                        attachmentCoordinator = attachments,
+                        externalBusyThreadIds = { assistantWorkspace?.busyThreadIds().orEmpty() },
+                    )
+                }
+            },
+            onSessionReleased = { sessionToken ->
+                assistantResources.remove(sessionToken)?.invoke()
+            },
+            onClose = {
+                assistantResources.values.toList().forEach { resource -> runCatching(resource) }
+                assistantResources.clear()
+            },
+        )
+        assistantFactories[profileId] = assistantFactory
+        assistantSessionFactory = assistantFactory
+        ownedJob.invokeOnCompletion {
+            // 旧连接的收尾只能清掉它自己安装的工厂；新连接可能已经接管。
+            if (assistantFactories.remove(profileId, assistantFactory)) {
+                assistantSessionFactory?.takeIf { it === assistantFactory }?.let { assistantSessionFactory = null }
+            }
+            assistantFactory.close()
+        }
+
         var workbenchAgentId: String? = null
         suspend fun buildWorkbenchController(currentAgentName: String? = null, restoreSelection: Boolean = restoreLastThread): WorkbenchController {
             val discoveryOwner = _nativeAgents.value.takeIf { nativeAgentSessions }
@@ -2325,7 +2571,11 @@ class GatewayRuntime(
                 persistence = if (nativeAgentSessions) nativePersistence else mirror,
                 media = ownerMedia,
                 downloads = ownerDownloads,
-            ).also { workbenchAgentId = ownerAgentId }
+            ).also {
+                workbenchAgentId = ownerAgentId
+                // 助手工作区与主工作台锁定同一个 Agent；这里把本地构建结果同步给运行时。
+                _workbenchAgentId = ownerAgentId
+            }
         }
 
         // 原生 Agent 发现完成后再创建其在线工作台；等待期间保留本地页面。
@@ -2755,6 +3005,8 @@ class GatewayRuntime(
         nativeConversationNotifications.leave()
         bubbleWorkspace?.close()
         bubbleWorkspace = null
+        // 登出不能把旧账号的助手会话留在工作区里。
+        retireAssistantWorkspace()
         _controller.value?.close()
         executionDriver?.cancelAll()
         com.openandroidintelligence.control.ScreenHostRegistry.current?.disconnect()

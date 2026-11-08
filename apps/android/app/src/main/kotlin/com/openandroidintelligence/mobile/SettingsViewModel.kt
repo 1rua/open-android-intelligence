@@ -80,9 +80,6 @@ data class SettingsUiState(
     val grantRevision: Long
         get() = pairingGrants?.revision ?: 0L
 
-    val isScreenSelectionGranted: Boolean
-        get() = pairingGrants?.screenSelectionEnabled == true
-
     val isNotificationsGranted: Boolean
         get() = replyNotificationsEnabled && replyNotificationsAllowed
 
@@ -334,10 +331,6 @@ class SettingsViewModel(
 
     fun setReduceMotion(enabled: Boolean) {
         environment.appearance.setReduceMotion(enabled)
-    }
-
-    fun setScreenSelectionGrant(enabled: Boolean) {
-        environment.pairingGrants.updateScreenSelection(enabled)
     }
 
     fun setNotificationsGrant(enabled: Boolean): Boolean {

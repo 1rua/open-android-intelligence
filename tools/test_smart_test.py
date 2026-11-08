@@ -226,6 +226,35 @@ def test_kernel_edits_include_kernel_regressions():
     assert any(":platform-kernel:testDebugUnitTest" in command for command in commands)
 
 
+@pytest.mark.parametrize("level", ["fast", "pr"])
+def test_assistant_holder_edits_select_app_and_holder_regressions(level):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact([
+        "apps/android/assistant-holder/src/main/kotlin/com/openandroidintelligence/assistant/AssistantCompactBar.kt",
+    ])
+    assert impact["affects_android_app"]
+    assert runner.execute_strategy(level, impact) == 0
+    android = next(command for command in commands if "./gradlew" in command)
+    if level == "fast":
+        assert android == ["./gradlew", "--max-workers=2", "noVpnSurfaceCheck"]
+    else:
+        assert ":assistant-holder:testDebugUnitTest" in android
+        assert ":app:testFullDebugUnitTest" in android
+
+
+def test_assistant_holder_regressions_run_in_full_level():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["README.md"])
+    assert runner.execute_strategy("full", impact) == 0
+    android = next(command for command in commands if "./gradlew" in command)
+    assert ":assistant-holder:testDebugUnitTest" in android
+    assert len(android) == len(set(android))
+
+
 def test_communication_repairs_reach_admission_and_optional_host_regressions():
     runner = load_runner()
     commands = []
