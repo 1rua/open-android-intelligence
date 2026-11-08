@@ -26,6 +26,7 @@ ApplicationCompositionTest
 ApprovalAuditBridgeTest
 ApprovalDecisionAuditWiringTest
 ArchitectureBoundaryTest
+AssistantBridgeServiceTest
 AssistantClientScopeTest
 AttachmentKeystoreRegressionTest
 AttachmentStreamEndToEndTest
@@ -92,6 +93,7 @@ AdvancedSettingsScreenTest
 AppUpdateScreenTest
 AppUpdateViewModelTest
 AppearanceSettingsScreenTest
+AssistantRoleTest
 ButtonRevealGeometryTest
 CapabilityCatalogTest
 CapabilitySettingsTest
