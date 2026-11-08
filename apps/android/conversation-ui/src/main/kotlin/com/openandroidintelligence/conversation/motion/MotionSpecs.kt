@@ -16,7 +16,9 @@ import kotlin.math.min
  * 三条原则：
  * 1. **结构性形变（尺寸、位置）用无过冲弹簧**：容器不能在布局变化时抖动；手势释放时
  *    保留瞬时初速度（[MomentumSpring] / [SnappySpring]）。
- * 2. **进入/离开与展开/折叠统一使用 M3 Emphasized 曲线**：不是每个组件自己选一条缓动。
+ * 2. **进入/离开与展开/折叠默认使用 M3 Emphasized 曲线**：不是每个组件自己选一条缓动；
+ *    只有需要「弹出」手感的浮层进场（如助理输入栏）才用 [EntranceSpring]，且只作用于
+ *    `graphicsLayer`，不参与布局测量。
  * 3. **界面禁止手写时长与曲线**：一律引用这里的常量，减少动态通过 `reduced` 分支降级。
  *
  * 时长刻度（对齐 M3 motion tokens）：
@@ -68,6 +70,17 @@ object MotionSpecs {
     val MorphSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 520f)
     /** 轻快吸附（按钮宽度、图标位移）：响应更快但同样不过冲。 */
     val SnappySpring = spring<Float>(dampingRatio = 0.85f, stiffness = 900f)
+    /**
+     * 助理输入栏进场：带轻微过冲的弹出弹簧。
+     *
+     * 只用于 `graphicsLayer` 的位移/缩放/透明度，不参与布局测量，因此过冲不会让
+     * 容器抖动；0.72 的阻尼足以形成「弹到位」的手感，又不会来回晃。
+     */
+    val EntranceSpring = spring<Float>(dampingRatio = 0.72f, stiffness = 380f)
+    /** 输入栏展开成输入态：柔和、无过冲，让卡片「长高」而不跳动。 */
+    val ExpandSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 360f)
+    /** 输入栏收起：与展开同路径但更快，用户不会觉得「卡住」。 */
+    val CollapseSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 800f)
     val ReducedMotionSpec = tween<Float>(Fast, easing = LinearEasing)
 
     /** 结构性形变（尺寸、位置）：无过冲弹簧。 */
@@ -92,6 +105,38 @@ object MotionSpecs {
     /** 轻快吸附：减少动态直接落到目标值。 */
     fun <T> snappy(reduced: Boolean): FiniteAnimationSpec<T> =
         if (reduced) snap() else spring(dampingRatio = 0.85f, stiffness = 900f)
+
+    /**
+     * 进场：带轻微过冲的非线性弹簧；减少动态时直接落位，不做位移与缩放。
+     *
+     * 只应作用在 `graphicsLayer` 的位移/缩放/透明度上 —— 过冲若参与布局测量会让
+     * 容器抖动。
+     */
+    fun <T> entrance(reduced: Boolean): FiniteAnimationSpec<T> =
+        if (reduced) {
+            snap()
+        } else {
+            spring(
+                dampingRatio = EntranceSpring.dampingRatio,
+                stiffness = EntranceSpring.stiffness,
+            )
+        }
+
+    /** 展开成输入态：柔和、无过冲的尺寸过渡；减少动态直接落位。 */
+    fun <T> expand(reduced: Boolean): FiniteAnimationSpec<T> =
+        if (reduced) {
+            snap()
+        } else {
+            spring(dampingRatio = ExpandSpring.dampingRatio, stiffness = ExpandSpring.stiffness)
+        }
+
+    /** 收起：与展开同路径但更快；减少动态直接落位。 */
+    fun <T> collapse(reduced: Boolean): FiniteAnimationSpec<T> =
+        if (reduced) {
+            snap()
+        } else {
+            spring(dampingRatio = CollapseSpring.dampingRatio, stiffness = CollapseSpring.stiffness)
+        }
 
     /** 按压反馈：90ms 收放；减少动态时不做缩放。 */
     fun <T> press(reduced: Boolean): FiniteAnimationSpec<T> =

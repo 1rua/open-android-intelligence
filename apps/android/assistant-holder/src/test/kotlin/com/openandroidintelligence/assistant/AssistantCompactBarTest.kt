@@ -14,6 +14,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
@@ -57,10 +58,13 @@ class AssistantCompactBarTest {
         attachments: List<AssistantCompactAttachment> = emptyList(),
         recording: AssistantCompactRecording? = null,
         onRemoveAttachment: (String) -> Unit = {},
+        reduceMotion: Boolean = false,
     ): TextFieldState {
         val editor = TextFieldState(editorText)
         compose.setContent {
-            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+            CompositionLocalProvider(
+                LocalMotionPolicy provides MotionPolicy(reduceMotion = reduceMotion),
+            ) {
                 MaterialTheme {
                     AssistantCompactBar(
                         editor = editor,
@@ -274,5 +278,48 @@ class AssistantCompactBarTest {
         render()
 
         compose.onNodeWithContentDescription("助理消息输入").assertIsDisplayed()
+    }
+
+    // ---- 进场与展开动效 ----
+
+    @Test
+    fun reducedMotionEntranceLandsImmediatelyWithVisibleContent() {
+        // 减少动态时进场直接落位：不播放位移/缩放，首帧就是可用状态。
+        render(reduceMotion = true)
+
+        compose.onNodeWithTag(AssistantCompactBarTags.INPUT).assertIsDisplayed()
+        compose.onNodeWithContentDescription("语音输入").assertIsDisplayed()
+        compose.onNodeWithContentDescription("发送消息").assertExists()
+    }
+
+    @Test
+    fun tappingTheInputExpandsTheBarAndShowsTheHandle() {
+        render()
+
+        // 紧凑态没有拖动指示条：只有一条横条。
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertDoesNotExist()
+
+        compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performClick()
+        compose.waitForIdle()
+
+        // 点击进入输入态：顶部出现 handle，输入框仍然可用。
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
+        compose.onNodeWithTag(AssistantCompactBarTags.INPUT).assertIsDisplayed()
+    }
+
+    @Test
+    fun expandedBarStillAcceptsText() {
+        val editor = render()
+
+        compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
+
+        compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performTextInput("你好")
+        compose.waitForIdle()
+
+        assertEquals("你好", editor.text.toString())
+        // 展开态下发送键随内容可用，展开不影响原有发送语义。
+        compose.onNodeWithContentDescription("发送消息").assertIsEnabled()
     }
 }
