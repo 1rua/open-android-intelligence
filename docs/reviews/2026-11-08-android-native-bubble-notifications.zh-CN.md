@@ -56,7 +56,7 @@ PR #99 的自动评审提出 5 条问题，逐条核实后全部成立并已修�
 | `NativeEventSynchronizerTest`（21 项，本轮新增 1 项） | 通过：宿主正文帧随页发布、落盘仍只写权威历史一次；删除、回执、游标与所有权用例不变 |
 | `BubbleConversationTest` / `BubbleAttachmentDraftCoordinatorTest` / `ConversationAttachmentPickersTest` | 通过（新增“session 迟到仍进入通知会话”用例） |
 | `NativeConversationNotificationsTest` / `ReplyNotificationsTest` / `LiveUpdateNotificationsTest` | 通过（新增“跨 Agent 同修订不判过期”用例；Robolectric SDK 36 用例需 JDK 21） |
-| `:app:testFullDebugUnitTest` 全量 | 第二轮改动后重跑，结果见 PR 评论；缺 Hermes 夹具时会出现环境性失败，补齐 `HERMES_PLUGIN_ROOT`、`HERMES_SDK_ROOT`、`OAI_HERMES_PYTHON=.toolchains/pr64-python/bin/python`、`PYTHONPATH=.toolchains/py-test-deps` 后复跑 |
+| `:app:testFullDebugUnitTest` 全量 | 补齐夹具环境后串行执行：143 个测试类、1583 项，0 失败 0 错误。未设 `HERMES_PLUGIN_ROOT` / `HERMES_SDK_ROOT` / `OAI_HERMES_PYTHON` / `PYTHONPATH` 时会有环境性失败（与本改动无关），设好后全部通过 |
 
 注意两点环境前提，都不是本次改动引入：
 
