@@ -608,8 +608,8 @@ class SettingsBackupCoordinator(
         /**
          * 把各类权威写回快照值，返回**确认未恢复**的项目名称。
          *
-         * 返回空列表才等于「已恢复原状」。这里刻意不用 `runCatching {}.isSuccess` 以外的
-         * 简化写法：能力持有者在审计失败后会留下 `LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE`
+         * 返回空列表才等于「已恢复原状」：每一项都收集失败而不是笼统地 `isSuccess`。
+         * 典型场景是能力持有者在审计失败后留下 `LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE`
          * 拒绝屏障，后续替换会被它拒绝——那种情况必须如实报告，而不是吞掉异常后宣称已恢复。
          * 同时也不绕开拒绝屏障（不直接改内存态）：屏障本身就是防止权限悄悄放开的保险。
          */
