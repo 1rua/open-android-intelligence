@@ -15,6 +15,7 @@
 AccountAvatarTest
 AccountSwitchPersistenceFailureTest
 AdditionalDeviceConnectionsTest
+AgentDiscoveryConnectionRecoveryTest
 AgentSessionForegroundServiceTest
 AgentSessionKeepAliveTest
 AndroidAccountProfileStoreTest
@@ -120,6 +121,7 @@ NativeConnectionReliabilityTest
 NativeConversationMirrorTest
 NativeConversationOrganizationStoreTest
 NativeConversationStoreViewTest
+NativeCreationLocalRejectionTest
 NativeCreationRecoveryTest
 NativeEventDeletionPersistenceTest
 NativeEventOwnerTest
@@ -133,6 +135,7 @@ NativeNotificationReconcilerTest
 NativeRecoveryCommitTest
 NativeRecoveryDeliverySemanticsTest
 NativeRecoveryOwnershipTest
+NegotiationConnectionRecoveryTest
 
 [plugins]
 BuiltInCapabilitiesTest
