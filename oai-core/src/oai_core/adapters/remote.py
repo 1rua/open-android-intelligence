@@ -445,6 +445,28 @@ class RemoteSessionAdapter:
         self._remember_attachment(attachment, attachment_id)
         return attachment_id
 
+    async def _stream_lines(self, response: aiohttp.ClientResponse) -> AsyncIterator[bytes]:
+        # 空闲预算随实际字节到达重置，不能把完整一帧的组装时间当作空闲。
+        idle_seconds = STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat else self.stream_timeout_seconds
+        pending = bytearray()
+        while True:
+            async with asyncio.timeout(idle_seconds):
+                chunk = await response.content.readany()
+            if not chunk:
+                if pending:
+                    yield bytes(pending)
+                return
+            parts = chunk.split(b"\n")
+            for index, part in enumerate(parts):
+                pending.extend(part)
+                complete = index < len(parts) - 1
+                if len(pending) + int(complete) > MAX_STREAM_EVENT_BYTES:
+                    raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+                if complete:
+                    pending.append(10)
+                    yield bytes(pending)
+                    pending.clear()
+
     async def _send(
         self,
         session_id: str,
@@ -457,35 +479,31 @@ class RemoteSessionAdapter:
             path = f"/sessions/{quote(session_id, safe='')}/messages"
             request_body = body if body is not None else {"text": text}
             async with self._session(await self._prepare_headers(headers, "POST", path, request_body)) as session:
-                async with session.post(
-                    self.base_url + self.prefix + path,
-                    json=request_body,
-                    timeout=aiohttp.ClientTimeout(
-                        total=None, connect=CONNECT_TIMEOUT_SECONDS, sock_connect=CONNECT_TIMEOUT_SECONDS,
-                        sock_read=STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat else self.stream_timeout_seconds,
-                    ),
-                    allow_redirects=False,
-                    read_bufsize=MAX_STREAM_EVENT_BYTES // 2,
-                ) as response:
+                # 桥在首帧前仍需完成认证和宿主命令；此时尚不能发送保活字节。
+                async with asyncio.timeout(self.stream_timeout_seconds):
+                    response = await session.post(
+                        self.base_url + self.prefix + path,
+                        json=request_body,
+                        timeout=aiohttp.ClientTimeout(
+                            total=None, connect=CONNECT_TIMEOUT_SECONDS, sock_connect=CONNECT_TIMEOUT_SECONDS,
+                            sock_read=None,
+                        ),
+                        allow_redirects=False,
+                        read_bufsize=MAX_STREAM_EVENT_BYTES // 2,
+                    )
+                async with response:
                     if response.status in {401, 403}:
                         raise self._response_error(response.status, {})
                     if response.status != 200:
-                        value = await response.json()
+                        idle_seconds = (STREAM_HEARTBEAT_IDLE_SECONDS if self._stream_heartbeat
+                                        else self.stream_timeout_seconds)
+                        async with asyncio.timeout(idle_seconds):
+                            value = await response.json()
                         if not isinstance(value, Mapping):
                             raise AdapterError("HOST_INCOMPATIBLE", 502)
                         raise self._response_error(response.status, value)
                     terminal = False
-                    while True:
-                        try:
-                            line = await response.content.readline()
-                        except (ValueError, aiohttp.http_exceptions.LineTooLong):
-                            # Parser exceptions may include a transcript prefix.
-                            # Expose only the framing error, never that content.
-                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502) from None
-                        if not line:
-                            break
-                        if len(line) > MAX_STREAM_EVENT_BYTES:
-                            raise AdapterError("AGENT_STREAM_TOO_LARGE", 502)
+                    async for line in self._stream_lines(response):
                         if not line.strip():
                             continue
                         value = json.loads(line)

@@ -497,3 +497,40 @@ async def test_simultaneous_native_approval_decisions_resolve_exactly_one_host_w
         for task in tuple(runtime.tasks):
             task.cancel()
         await asyncio.gather(pending, *tuple(runtime.tasks), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_slow_native_command_keeps_pre_stream_budget_and_dispatches_once(interaction_core, monkeypatch):
+    from oai_core.adapters import remote
+    import oai_hermes_adapter.bridge as bridge_module
+
+    monkeypatch.setattr(remote, 'STREAM_HEARTBEAT_IDLE_SECONDS', .04)
+    monkeypatch.setattr(bridge_module, 'STREAM_HEARTBEAT_SECONDS', .01)
+    runtime = PromptRuntime(interaction_core)
+    original_dispatch = runtime.dispatch_native_input
+
+    async def delayed_dispatch(*args, **kwargs):
+        await asyncio.sleep(.15)
+        return await original_dispatch(*args, **kwargs)
+
+    runtime.dispatch_native_input = delayed_dispatch
+    native = HermesSessionAdapter(interaction_core, runtime)
+    principal = Principal('alice')
+    conversation = (await native.list_sessions(principal))[0]['id']
+    token = 'slow-native-command-test-token-01234567890123456789'
+    app = create_hermes_bridge_app(native, token, ['alice'])
+    async with TestClient(TestServer(app)) as client:
+        adapter = remote.RemoteSessionAdapter(
+            str(client.make_url('/')).rstrip('/'), token,
+            agent_id='hermes', name='Hermes', kind='hermes', session_scope='account',
+            headers_builder=lambda owner: {'X-OAI-Account': owner.account_id},
+            forward_client_message_ids=True, stream_timeout_seconds=.6,
+        )
+        assert await adapter.status()
+        assert adapter._stream_heartbeat
+        frames = [frame async for frame in adapter.send(
+            principal, conversation, '/slow-review-command', client_message_id='review_slow_command',
+        )]
+        assert frames == [{'type': 'done', 'outcome': 'completed',
+                           'text': '宿主原始命令回复', 'clientMessageId': 'review_slow_command'}]
+        assert runtime.approval_controls == [('alice', conversation, '/slow-review-command', 'review_slow_command')]
