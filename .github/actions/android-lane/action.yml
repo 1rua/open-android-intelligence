@@ -31,9 +31,13 @@ inputs:
     required: false
     default: 'false'
   gradle-cache-read-only:
-    description: Whether the Gradle build cache is read-only for this run.
+    description: >-
+      Whether the Gradle build cache is read-only. PR runs from this repository
+      write the cache so a re-push or re-run of the same tree reuses compile
+      outputs; fork PRs stay read-only because their cache entries are not
+      trusted.
     required: false
-    default: 'true'
+    default: 'false'
 
 runs:
   using: composite
