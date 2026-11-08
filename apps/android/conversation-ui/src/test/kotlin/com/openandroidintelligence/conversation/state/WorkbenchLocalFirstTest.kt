@@ -13,6 +13,23 @@ class WorkbenchLocalFirstTest {
     private val account = ConversationScope("profile", "core", "account", "install")
     private val savedThread = ConversationSummary(ConversationId("cached"), "已保存的会话", 1)
 
+    @Test fun anOnlineAgentWithoutSendCapabilityKeepsItsOnlineStatusAndTheUnsentDraft() = runTest {
+        val controller = WorkbenchController(backgroundScope, Host(), catalog, { account }, restoreLastThread = false)
+        try {
+            runCurrent()
+            controller.editDraft("保留尚未发送的草稿")
+            controller.updateRemoteCapabilities(online = true, send = false, delete = false, archive = false, rename = false, approvals = false)
+            assertTrue("缺少发送能力不等于 Agent 离线", controller.state.value.isOnline)
+            assertFalse(controller.state.value.sendSupported)
+            assertFalse(controller.state.value.canSend)
+            assertEquals("保留尚未发送的草稿", controller.state.value.draft)
+            controller.updateRemoteCapabilities(online = false, send = true, delete = false, archive = false, rename = false, approvals = false)
+            assertFalse(controller.state.value.isOnline)
+            assertFalse(controller.state.value.canSend)
+            assertEquals("保留尚未发送的草稿", controller.state.value.draft)
+        } finally { controller.close() }
+    }
+
     @Test fun aNonAuthoritativeEmptyListCannotEraseTheReadableLocalList() = runTest {
         val store = MemoryStore(WorkbenchCheckpoint(listOf(savedThread), null, "", emptyList(), emptyMap(),
             "", 0, emptyList(), null, emptySet(), emptySet()))

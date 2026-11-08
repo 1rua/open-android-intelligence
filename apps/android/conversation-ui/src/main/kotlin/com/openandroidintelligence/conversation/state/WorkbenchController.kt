@@ -167,6 +167,8 @@ data class WorkbenchUiState(
      */
     val approvalCardsSupported: Boolean = false,
     val isOnline: Boolean = true,
+    /** Agent 在线与支持发送分别呈现，缺少发送能力不能冒充离线。 */
+    val sendSupported: Boolean = true,
     val hasRecoverableSubmissions: Boolean = false,
     /** 未确认的发送结果单独保留，不阻止用户继续发送新消息。 */
     val hasUnknownSubmissionOutcome: Boolean = false,
@@ -191,7 +193,7 @@ data class WorkbenchUiState(
     /** Keep a confirmed new conversation reachable while its durable folder work is pending. */
     val browserOrganization: ConversationOrganization get() = organization.copy(assignments=organization.assignments +
         pendingFolderAssignments.filter { (id, folderId) -> id !in organization.assignments && organization.folders.any { it.folderId == folderId } })
-    val canSend: Boolean get() = isOnline && historyHydrated &&
+    val canSend: Boolean get() = isOnline && sendSupported && historyHydrated &&
         (draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }) &&
         !managingThreads && !activeThreadArchived &&
         composer != ComposerState.SUBMITTING && composer != ComposerState.WAITING_ATTACHMENTS
@@ -1002,26 +1004,49 @@ class WorkbenchController(
 
     /** Shares a Gateway-created conversation between simultaneous first-message sends. */
     private var bootstrapJob: Deferred<Result<String>>? = null
-    private data class ConversationCreationAttempt(val scope: ConversationScope, val clientId: String, val folderId: String?)
+    private data class ConversationCreationAttempt(val scope: ConversationScope, val clientId: String, val folderId: String?,
+        var mayHaveBeenSent: Boolean = false)
     private var unconfirmedConversationCreation: ConversationCreationAttempt? = null
     private val pendingFolderAssignments = LinkedHashMap<String, String>()
     private var folderAssignmentJob: Job? = null
     private var folderAssignmentScope: ConversationScope? = null
     private suspend fun createGatewayConversation(folderId: String? = _state.value.selectedFolderId): com.openandroidintelligence.conversation.ports.Conversation {
         val requestedScope = scopeFactory()
-        val recoveringCreation = unconfirmedConversationCreation?.scope == requestedScope
         val attempt = unconfirmedConversationCreation?.takeIf { it.scope == requestedScope }
             ?: ConversationCreationAttempt(requestedScope, "cconv_" + UUID.randomUUID().toString().replace("-", ""),
                 folderId.takeIf { supportsConversationManagement })
                 .also { unconfirmedConversationCreation = it }
+        val recoveringCreation = attempt.mayHaveBeenSent
         // Retrying an uncertain creation, including after restart, uses its original identity.
         GatewayLog.protocolEvidence("create.persistence_started", mapOf("requestId" to attempt.clientId,
             "recoveryOnly" to recoveringCreation))
         flushPendingPersistence()
         GatewayLog.protocolEvidence("create.persistence_completed", mapOf("requestId" to attempt.clientId))
-        val conversation = if (recoveringCreation && repository is com.openandroidintelligence.conversation.ports.ConversationCreationRecovery)
-            repository.recoverConversationCreation(attempt.scope, attempt.clientId)
-        else repository.createConversation(attempt.scope, attempt.clientId)
+        val creationContext = currentCoroutineContext().minusKey(Job)
+        val markDispatched: suspend () -> Unit = {
+            // 传输回调来自 IO；回到控制器调度器再读取和保存工作台状态。
+            withContext(creationContext) {
+                val previouslyDispatched = attempt.mayHaveBeenSent
+                attempt.mayHaveBeenSent = true
+                try { flushPendingPersistence() }
+                catch (failure: Throwable) {
+                    // 回调尚未放行连接，本进程仍能证明未发送；崩溃后已落盘 true 则保守恢复。
+                    attempt.mayHaveBeenSent = previouslyDispatched
+                    throw failure
+                }
+            }
+        }
+        val conversation = when {
+            recoveringCreation && repository is com.openandroidintelligence.conversation.ports.ConversationCreationRecovery ->
+                repository.recoverConversationCreation(attempt.scope, attempt.clientId)
+            repository is com.openandroidintelligence.conversation.ports.ConversationCreationDispatch ->
+                repository.createConversation(attempt.scope, attempt.clientId, markDispatched)
+            else -> {
+                // 旧仓储没有更细发送边界，只能在调用前保守持久化。
+                markDispatched()
+                repository.createConversation(attempt.scope, attempt.clientId)
+            }
+        }
         if (unconfirmedConversationCreation === attempt) unconfirmedConversationCreation = null
         if (attempt.folderId != null) {
             pendingFolderAssignments[conversation.id.value] = attempt.folderId
@@ -1509,7 +1534,9 @@ class WorkbenchController(
             saved.messageGenerations.forEach { messageGenerations[it.conversationId to it.messageId] = MessageGeneration(it.generationId, it.revision) }
             saved.pendingFolderAssignments.forEach { pendingFolderAssignments[it.conversationId] = it.folderId }
             folderAssignmentScope = scopeFactory()
-            unconfirmedConversationCreation = saved.pendingConversationCreation?.let { ConversationCreationAttempt(scopeFactory(), it.clientId, it.folderId) }
+            unconfirmedConversationCreation = saved.pendingConversationCreation?.let {
+                ConversationCreationAttempt(scopeFactory(), it.clientId, it.folderId, it.mayHaveBeenSent)
+            }
             deletedThreads.addAll(saved.deletedThreadIds)
             threadsSnapshotRevision=saved.threadsSnapshotRevision
             hydrateInitialSendAtoms(buildSet {
@@ -1776,7 +1803,7 @@ class WorkbenchController(
                     threads.none { it.id.value == active }) {
                     leaveManagedThread(active)
                 }
-                if (restoreLastThread && activeThreadId == null && bootstrapJob?.isActive != true && _state.value.draft.isBlank() &&
+                if (restoreLastThread && activeThreadId == null && bootstrapJob?.isActive != true && !_state.value.creatingThread && _state.value.draft.isBlank() &&
                     _state.value.attachments.isEmpty() && pendingSubmission == null && failedSubmission == null) {
                     threads.firstOrNull { !it.archived }?.let { openThread(it.id.value) }
                 }
@@ -5748,7 +5775,7 @@ class WorkbenchController(
             cancellations=cancelledGenerations.map { SavedCancellation(it.first,it.second) },
             messageGenerations=messageGenerations.map { (key,value) -> SavedMessageGeneration(key.first,key.second,value.id,value.revision) },
             pendingFolderAssignments=pendingFolderAssignments.map { SavedFolderAssignment(it.key,it.value) },
-            pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId) },
+            pendingConversationCreation=unconfirmedConversationCreation?.let { SavedConversationCreation(it.clientId,it.folderId,it.mayHaveBeenSent) },
             draftExplicit=deferred?.draftExplicit ?: true,draftVersion=ui.draftVersion,
             composerDrafts=composerDrafts.values.toList(),
             pendingSubmissions=(waitingAttachmentSubmissions.values.map { it.submission } + recoveredAttachmentSubmissions.values)
@@ -5834,7 +5861,7 @@ class WorkbenchController(
             val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,
                 timelineDataSource=transformed.timelineDataSource ?: if (transformed.timelineOpenedAtNs > 0 &&
                     (transformed.timeline is Loadable.Ready || transformed.timeline is Loadable.Empty)) "remote" else null,
-                isOnline=allowSending && remoteConversationOnline && remoteSendSupported,
+                isOnline=allowSending && remoteConversationOnline, sendSupported=remoteSendSupported,
                 pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
                 hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,

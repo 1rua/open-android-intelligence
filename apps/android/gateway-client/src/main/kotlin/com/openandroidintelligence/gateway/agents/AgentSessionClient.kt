@@ -104,9 +104,12 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
         }
     }
 
-    suspend fun create(agent: CoreAgent, title: String? = null, requestId: String? = null): NativeAgentSession {
-        requireCapability(agent.capabilities.create && agent.online)
-        val value = request("POST", sessionsTarget(agent), title?.let { mapOf("title" to it) } ?: emptyMap(), requestId, requestId?.let { "create:${agent.id}:$it" })
+    suspend fun create(agent: CoreAgent, title: String? = null, requestId: String? = null,
+        beforeDispatch: suspend () -> Unit = {}): NativeAgentSession {
+        requireCapability(agent.capabilities.create)
+        if (!agent.online) throw AgentSessionException("AGENT_OFFLINE")
+        val value = request("POST", sessionsTarget(agent), title?.let { mapOf("title" to it) } ?: emptyMap(), requestId,
+            requestId?.let { "create:${agent.id}:$it" }, beforeDispatch)
         return session(JsonFields.obj(JsonFields.field(value, "session")) ?: error("AGENT_SESSION_INVALID"))
     }
 
@@ -485,9 +488,10 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
         if (traceEnabled && key != null) listOf(RawHeader("traceparent", http.operationTraceParent(key))) else emptyList()
 
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null,
-        traceKey: String? = null): JsonValue.JObject {
+        traceKey: String? = null, beforeDispatch: suspend () -> Unit = {}): JsonValue.JObject {
         val request = jsonRequest(method, target, body)
-        val response = http.execute(request.copy(requestId = requestId, headers = request.headers + traceHeaders(traceKey)))
+        val response = http.execute(request.copy(requestId = requestId, headers = request.headers + traceHeaders(traceKey),
+            beforeDispatch = beforeDispatch))
         val root = responseRoot(response.body)
         if (response.status !in 200..299) {
             throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status)

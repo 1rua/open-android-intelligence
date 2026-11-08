@@ -124,8 +124,10 @@ class GatewayTransport(
         }
     }
 
+    override suspend fun execute(request: WireRequest): WireResponse = execute(request) {}
+
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
-    override suspend fun execute(request: WireRequest): WireResponse = withTransportIo(request, "execute") {
+    override suspend fun execute(request: WireRequest, beforeDispatch: suspend () -> Unit): WireResponse = withTransportIo(request, "execute") {
         val connection = open(request)
         val job = currentCoroutineContext()[Job]
         val cancelHandle = job?.invokeOnCompletion(onCancelling = true) {
@@ -147,6 +149,10 @@ class GatewayTransport(
             }
             // Establish the connection and its identity before any sensitive
             // request body is written to the socket.
+            currentCoroutineContext().ensureActive()
+            // 本机排队、生命周期和参数检查已完成；持久化失败时绝不能开始连接。
+            beforeDispatch()
+            currentCoroutineContext().ensureActive()
             phase(request, "execute", "connect_started")
             connection.connect()
             GatewayConnectionSecurity.classify(connection, profile.pinnedSpkiSha256)

@@ -108,6 +108,7 @@ class CoreAgentConversationRepository(
     },
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery,
     com.openandroidintelligence.conversation.ports.ConversationCreationRecovery,
+    com.openandroidintelligence.conversation.ports.ConversationCreationDispatch,
     com.openandroidintelligence.conversation.ports.EventSynchronizedHistory {
 
     override fun observesHistory(conversationId: String): Boolean = currentAgent()?.let { agent ->
@@ -847,7 +848,7 @@ class CoreAgentConversationRepository(
 
     private class CreationAttempt {
         val mutex = Mutex()
-        var attempted = false
+        var mayHaveBeenSent = false
         var session: NativeAgentSession? = null
     }
     private val creations = ConcurrentHashMap<Triple<ConversationScope, String, String>, CreationAttempt>()
@@ -869,24 +870,32 @@ class CoreAgentConversationRepository(
     override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
         createOrRecover(scope, clientConversationId, recoveryOnly = false)
 
+    override suspend fun createConversation(scope: ConversationScope, clientConversationId: String,
+        beforeDispatch: suspend () -> Unit): Conversation =
+        createOrRecover(scope, clientConversationId, recoveryOnly = false, beforeDispatch = beforeDispatch)
+
     override suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation =
         createOrRecover(scope, clientConversationId, recoveryOnly = true)
 
-    private suspend fun createOrRecover(scope: ConversationScope, clientId: String, recoveryOnly: Boolean): Conversation {
+    private suspend fun createOrRecover(scope: ConversationScope, clientId: String, recoveryOnly: Boolean,
+        beforeDispatch: suspend () -> Unit = {}): Conversation {
         val agent = requireAgent()
         val attempt = creations.getOrPut(Triple(scope, agent.id, clientId)) { CreationAttempt() }
         return attempt.mutex.withLock {
             val store = storeForAgent?.invoke(agent)
             val saved = withContext(ioDispatcher) { store?.creation(clientId) }
             val created = withContext(ioDispatcher) {
-                attempt.session ?: saved?.session ?: if (attempt.attempted || recoveryOnly) {
+                attempt.session ?: saved?.session ?: if (attempt.mayHaveBeenSent || recoveryOnly) {
                     recoverCreation(agent, clientId)
                 } else {
-                    // 先标记：连接被取消或响应解析失败，也不能丢掉可能已受理的身份。
-                    attempt.attempted = true
-                    try { client.create(agent, requestId = clientId) }
+                    try { client.create(agent, requestId = clientId) {
+                        beforeDispatch()
+                        // 回调完成持久化后才跨过可能发送边界；本机拒绝不污染恢复身份。
+                        attempt.mayHaveBeenSent = true
+                    } }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) {
+                        if (!attempt.mayHaveBeenSent) throw failure
                         if (failure is AgentSessionException && failure.status in 400..499 && failure.status !in setOf(408, 409)) throw failure
                         recoverCreation(agent, clientId)
                     }

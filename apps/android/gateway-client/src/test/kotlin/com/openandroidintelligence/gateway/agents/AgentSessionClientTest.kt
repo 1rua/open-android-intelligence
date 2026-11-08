@@ -68,6 +68,17 @@ class AgentSessionClientTest {
         assertTrue(transport.requests.single().headers.any { it.name == "Authorization" && it.value == "Bearer access" })
     }
 
+    @Test fun offlineCreationExplainsItsLocalRejectionWithoutCrossingTheDispatchFence() = runBlocking {
+        val transport = RecordingTransport("{}")
+        var dispatched = false
+        val failure = runCatching {
+            client(transport).create(agent.copy(online = false), beforeDispatch = { dispatched = true })
+        }.exceptionOrNull()
+        assertEquals("AGENT_OFFLINE", failure?.message)
+        assertFalse(dispatched)
+        assertTrue(transport.requests.isEmpty())
+    }
+
     @Test fun readOnlyAdaptersRejectMutationsBeforeSendingAnyRequest() = runBlocking {
         val transport = RecordingTransport("{}")
         val client = client(transport)

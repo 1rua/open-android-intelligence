@@ -335,7 +335,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             "cancellations" to checkpoint.cancellations.map { mapOf("conversationId" to it.conversationId,"generationId" to it.generationId) },
             "messageGenerations" to checkpoint.messageGenerations.map { mapOf("conversationId" to it.conversationId,"messageId" to it.messageId,"generationId" to it.generationId,"revision" to it.revision) },
             "pendingFolderAssignments" to checkpoint.pendingFolderAssignments.map { mapOf("conversationId" to it.conversationId,"folderId" to it.folderId) },
-            "pendingConversationCreation" to checkpoint.pendingConversationCreation?.let { mapOf("clientId" to it.clientId,"folderId" to it.folderId) },
+            "pendingConversationCreation" to checkpoint.pendingConversationCreation?.let {
+                mapOf("clientId" to it.clientId,"folderId" to it.folderId,"mayHaveBeenSent" to it.mayHaveBeenSent) },
             "title" to checkpoint.title,"messages" to checkpoint.messages.filterNot { row ->
                 (row.conversationId?.value ?: checkpoint.threadId)?.let { isTombstoned(it,row.id) } == true
             }.map(::message),"revisions" to checkpoint.revisions,"draft" to checkpoint.draft,
@@ -378,7 +379,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             messageGenerations=(facts?.let(::messageGenerations).orEmpty()+messageGenerations(o))
                 .groupBy { it.conversationId to it.messageId }.values.map { links -> links.maxBy { it.revision } },
             pendingFolderAssignments=JsonFields.objects(o,"pendingFolderAssignments").map { SavedFolderAssignment(str(it,"conversationId"),str(it,"folderId")) },
-            pendingConversationCreation=JsonFields.obj(JsonFields.field(o,"pendingConversationCreation"))?.let { SavedConversationCreation(str(it,"clientId"),JsonFields.string(it,"folderId")) },
+            pendingConversationCreation=JsonFields.obj(JsonFields.field(o,"pendingConversationCreation"))?.let {
+                SavedConversationCreation(str(it,"clientId"),JsonFields.string(it,"folderId"),JsonFields.bool(it,"mayHaveBeenSent") != false) },
             draftExplicit=JsonFields.bool(o,"draftExplicit") == true,
             draftVersion=JsonFields.long(o,"draftVersion") ?: JsonFields.long(o,"draftRevision") ?: 0L,
             composerDrafts=JsonFields.objects(o,"composerDrafts").map { draft -> SavedComposerDraft(
