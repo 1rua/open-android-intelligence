@@ -282,8 +282,8 @@ class GatewayTransport(
             phase(request, "eventStream", "response_headers")
             if (status !in 200..299) {
                 if (status == 410) throw EventCursorExpiredException()
-                if (status == 401) throw EventSessionRejectedException()
-                if (status == 403) throw EventStreamForbiddenException()
+                if (status == 401) throw EventSessionRejectedException(httpStatus = 401)
+                if (status == 403) throw EventStreamForbiddenException(httpStatus = 403)
                 throw IOException("EVENT_STREAM_FAILED:$status")
             }
             val contentType = connection.getHeaderField("Content-Type").orEmpty()

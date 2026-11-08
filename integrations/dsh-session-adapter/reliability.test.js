@@ -52,7 +52,7 @@ function fixture(prompt, config = {}) {
   };
   const delta = (id, text = "text") => emit("agent/assistant-stream", { agent: { session: { id } }, frame: { type: "chunk", attemptId: id, chunk: { type: "text-delta", text } } });
   const end = (id) => event(id, "turn/end", { turn: 7, reason: { kind: "completed" } });
-  const handler = createSessionHandler(ctx, { promptTimeoutMs: 40, observationTimeoutMs: 100, drainTimeoutMs: 40, ...config }, token);
+  const handler = createSessionHandler(ctx, { promptTimeoutMs: 40, observationTimeoutMs: 100, drainTimeoutMs: 40, ...config }, token, { heartbeatIntervalMs: config.heartbeatIntervalMs ?? 10_000 });
   const count = () => [...listeners.values()].reduce((n, set) => n + set.size, 0);
   return { handler, controller, listeners, count, start, delta, end };
 }
@@ -262,4 +262,106 @@ it("correlates real HTTP native callbacks without transcript or credential diagn
     if (old === undefined) Reflect.deleteProperty(process.env, "OAI_DSH_ADAPTER_DIAGNOSTICS");
     else process.env.OAI_DSH_ADAPTER_DIAGNOSTICS = old;
   }
+});
+
+describe("NDJSON heartbeat", () => {
+  it("writes empty lines on real HTTP while idle and stops after the terminal event", async () => {
+    const h = fixture(async (input) => { h.start(input); return { accepted: true }; }, { heartbeatIntervalMs: 10, observationTimeoutMs: 500 });
+    const post = await serve(h);
+    const response = await post("one");
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("\n");
+    h.end("one");
+    let text = "";
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      text += new TextDecoder().decode(part.value);
+    }
+    expect(text.trim().split("\n").map(JSON.parse)).toEqual([{ type: "done", text: "", userMessageId: "native-user" }]);
+    expect(h.count()).toBe(0);
+    expect(h.controller.cancel).not.toHaveBeenCalled();
+  });
+});
+
+describe("heartbeat admission and observer cleanup", () => {
+  it("keeps errors as JSON before admission and lets accepted work continue after a real disconnect", async () => {
+    const completed = deferred();
+    let acceptedInput;
+    const h = fixture(async (input) => { acceptedInput = input; h.start(input); await completed.promise; return { accepted: true }; },
+      { heartbeatIntervalMs: 10, promptTimeoutMs: 500, observationTimeoutMs: 1000 });
+    const post = await serve(h);
+    const unauthorized = await post("one", { text: "hello" }, { headers: { Authorization: "Bearer wrong", "Content-Type": "application/json" } });
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.headers.get("content-type")).toContain("application/json");
+    expect(await unauthorized.text()).not.toContain("\n");
+    const invalid = await post("one", { text: "" });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.text()).not.toContain("\n");
+    const abort = new AbortController();
+    const response = await post("one", { text: "hello" }, { signal: abort.signal });
+    const reader = response.body.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("\n");
+    const busy = await post("one");
+    expect(busy.status).toBe(409);
+    expect(await busy.text()).not.toContain("\n");
+    abort.abort();
+    await until(() => h.count() === 0);
+    expect(acceptedInput.sessionId).toBe("one");
+    expect(h.controller.cancel).not.toHaveBeenCalled();
+    completed.resolve();
+    await tick();
+    expect(h.count()).toBe(0);
+  });
+});
+
+it("clears idle heartbeat timers after terminal and disconnect", async () => {
+  const nativeSet = globalThis.setTimeout;
+  const nativeClear = globalThis.clearTimeout;
+  const active = new Set();
+  const setSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, delay, ...args) => {
+    if (delay !== 17) return nativeSet(fn, delay, ...args);
+    const timer = nativeSet((...values) => { active.delete(timer); fn(...values); }, delay, ...args);
+    active.add(timer);
+    return timer;
+  });
+  const clearSpy = vi.spyOn(globalThis, "clearTimeout").mockImplementation((timer) => {
+    active.delete(timer);
+    return nativeClear(timer);
+  });
+  try {
+    const h = fixture(async (input) => { h.start(input); return { accepted: true }; },
+      { heartbeatIntervalMs: 17, observationTimeoutMs: 500 });
+    const post = await serve(h);
+    const response = await post("one");
+    const reader = response.body.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("\n");
+    h.end("one");
+    while (!(await reader.read()).done) { /* consume terminal */ }
+    expect(active.size).toBe(0);
+    const abort = new AbortController();
+    const second = await post("two", { text: "hello" }, { signal: abort.signal });
+    expect(new TextDecoder().decode((await second.body.getReader().read()).value)).toBe("\n");
+    abort.abort();
+    await until(() => h.count() === 0);
+    expect(active.size).toBe(0);
+  } finally {
+    setSpy.mockRestore();
+    clearSpy.mockRestore();
+  }
+});
+
+it("applies drain timeout to a heartbeat without buffering extra frames", async () => {
+  const h = fixture(async (input) => { h.start(input); return { accepted: true }; },
+    { heartbeatIntervalMs: 10, drainTimeoutMs: 30, observationTimeoutMs: 500 });
+  const response = new SlowResponse();
+  response.write = (frame) => { response.frames.push(frame); return false; };
+  const task = h.handler(request("one"), response);
+  await task;
+  expect(response.frames).toEqual(["\n"]);
+  expect(response.destroyed).toBe(true);
+  expect(response.listenerCount("drain")).toBe(0);
+  expect(h.count()).toBe(0);
+  expect(h.controller.cancel).not.toHaveBeenCalled();
 });

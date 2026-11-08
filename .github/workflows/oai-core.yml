@@ -219,6 +219,7 @@ jobs:
             --ignore=oai-core/tests/test_hermes_native_origin.py \
             --ignore=oai-core/tests/test_native_event_sync.py \
             --ignore=oai-core/tests/test_hermes_communication_reliability.py \
+            --ignore=oai-core/tests/test_hermes_bridge_heartbeat.py \
             --ignore=oai-core/tests/test_communication_process_recovery.py \
             --ignore=oai-core/tests/test_hermes_interactions.py \
             --ignore=oai-core/tests/test_hermes_approval_prompts.py \
@@ -274,6 +275,7 @@ jobs:
           oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
           oai-core/tests/test_hermes_dispatch_delivery.py
           oai-core/tests/test_hermes_communication_reliability.py
+          oai-core/tests/test_hermes_bridge_heartbeat.py
           oai-core/tests/test_communication_process_recovery.py
 
       - name: Communication measurement provenance and failure accounting

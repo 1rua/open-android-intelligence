@@ -21,6 +21,7 @@ from .gateway.core import APPROVAL_CHOICES, ContractRegistry, GatewayError, iso_
 from .gateway.http import _status
 
 from .auth import Principal
+from .agent_health import AgentHealth
 from .operations import AsyncNativeOperations, OperationConflict
 from .native_diagnostics import bind_request_id, trace_context, trace_native_stage
 
@@ -153,6 +154,7 @@ class AgentRegistry:
     def __init__(self, adapters: list[SessionAdapter] | None = None, *, operations_path: Path | None = None,
                  core: Any = None, storage_root: Path | None = None, config_path: Path | None = None):
         self._adapters: dict[str, SessionAdapter] = {}
+        self._health = AgentHealth()
         self._core = core
         self._storage_root = Path(storage_root) if storage_root is not None else Path(".")
         self._config_path = Path(config_path) if config_path is not None else None
@@ -266,6 +268,8 @@ class AgentRegistry:
         if adapter is None:
             raise AdapterError("AGENT_NOT_FOUND", 404)
         if capability is not None and adapter.descriptor().get("capabilities", {}).get(capability) is not True:
+            if getattr(adapter, "_capabilities_verified", True) is False:
+                raise AdapterError("AGENT_UNAVAILABLE", 503)
             raise AdapterError("UNSUPPORTED_CAPABILITY", 405)
         return adapter
 
@@ -384,10 +388,8 @@ class AgentRegistry:
         self.sync_registered()
         await self._autodiscover_host_agents()
         async def describe(adapter: SessionAdapter) -> dict[str, Any]:
-            try:
-                online = bool(await asyncio.wait_for(adapter.status(), timeout=5))
-            except Exception:
-                online = False
+            descriptor = adapter.descriptor()
+            online = await self._health.online(descriptor["id"], adapter)
             descriptor = adapter.descriptor()
             return {
                 "id": descriptor["id"], "name": descriptor.get("name", descriptor["id"]),
@@ -419,6 +421,7 @@ class AgentRegistry:
 
     async def close(self) -> None:
         # Core shutdown is a separate boundary from one phone going offline.
+        await self._health.close()
         tasks = tuple(self._operation_tasks)
         for task in tasks:
             task.cancel()
@@ -1059,7 +1062,17 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
             except AdapterError as exc:
                 if not admitted.done():
                     admitted.set_exception(exc)
-                publish({"type": "error", "code": exc.code})
+                # Only locally classified hop diagnostics may cross this SSE
+                # boundary; arbitrary adapter details can contain private data.
+                details = exc.details
+                public = {}
+                if (exc.code == "AGENT_UNAVAILABLE" and details.get("source") == "agent_bridge"
+                        and details.get("reason") in {"authentication_failed", "permission_denied",
+                            "account_not_connected", "timeout", "tls_rejected", "transport_failed"}):
+                    public = {"source": "agent_bridge", "reason": details["reason"]}
+                    if type(details.get("upstreamStatus")) is int and details["upstreamStatus"] in {401, 403}:
+                        public["upstreamStatus"] = details["upstreamStatus"]
+                publish({"type": "error", "code": exc.code, **({"details": public} if public else {})})
             except GatewayError as exc:
                 if not admitted.done():
                     admitted.set_exception(exc)

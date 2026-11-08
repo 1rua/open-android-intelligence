@@ -82,7 +82,9 @@ async def test_remote_mapping_is_one_to_one_and_header_identity_cannot_be_inject
         assert (await remote.list_sessions(Principal("core-bob")))[0]["title"] == "bob"
         with pytest.raises(AdapterError) as error:
             await remote.list_sessions(Principal("unconnected"))
-        assert error.value.status == 403
+        assert error.value.status == 502
+        assert error.value.code == "AGENT_UNAVAILABLE"
+        assert error.value.details == {"source": "agent_bridge", "reason": "account_not_connected"}
         response = await client.get("/oai/session-adapter/v1/sessions", headers={"X-OAI-Account": "alice"})
         assert response.status == 401
         response = await client.get("/oai/session-adapter/v1/sessions?accountId=bob", headers={"Authorization": "Bearer " + token, "X-OAI-Account": "alice"})

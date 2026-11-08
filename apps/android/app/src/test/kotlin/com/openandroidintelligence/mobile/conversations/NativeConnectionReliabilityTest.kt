@@ -162,7 +162,7 @@ class NativeConnectionReliabilityTest {
     }
 
     @Test fun emptyHttpServiceErrorsRemainRetryableAndPreserveTheirStatus() = runTest {
-        for (status in listOf(408, 429, 500, 503)) {
+        for (status in listOf(408, 429, 500, 502, 503)) {
             val h = Harness(this).apply { responseStatus = status }
             h.repository.activeConversationChanged(); runCurrent()
             for (delay in listOf(250L, 500L, 1000L, 2000L, 4000L)) {
@@ -220,6 +220,45 @@ class NativeConnectionReliabilityTest {
         repeat(4) { h.repository.connectionRestored() }
         advanceTimeBy(120000); runCurrent()
         assertEquals(1, h.reads)
+    }
+
+    @Test fun upstreamBridgeAuthenticationFailuresRemainRetryableAndResumeTheCommittedCursor() = runTest {
+        val failure = classifyNativeReadFailure(AgentSessionException("AGENT_UNAVAILABLE", 502))
+        assertEquals(NativeReadFailureKind.TRANSIENT, failure.kind)
+        assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_UNAVAILABLE:502", failure.notice)
+
+        val h = Harness(this).apply {
+            responseStatus = 502
+            responseBody = """{"error":{"code":"AGENT_UNAVAILABLE","details":{"source":"agent_bridge","reason":"authentication_failed","upstreamStatus":401}}}"""
+        }
+        h.repository.activeConversationChanged(); runCurrent()
+        assertEquals(StreamHealth.RECONNECTING, h.repository.streamHealth.first())
+        assertEquals(1, h.reads)
+        assertEquals("base", h.storage.cursor)
+        assertEquals("login", h.client.credentialVersion())
+
+        listOf(250L, 500L, 1000L).forEachIndexed { index, delay ->
+            advanceTimeBy(delay - 1); runCurrent()
+            assertEquals(index + 1, h.reads)
+            if (index == 2) h.responseStatus = 200
+            advanceTimeBy(1); runCurrent()
+        }
+
+        assertEquals(listOf(250L, 500L, 1000L), h.retryBases)
+        h.repository.connectionRestored(); runCurrent()
+        assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
+        assertNull(h.repository.streamFailure.first())
+        assertEquals(4, h.reads)
+        assertEquals("next", h.storage.cursor)
+        assertNull(h.storage.pending)
+        val eventReads = h.requests.filter { it.target.contains("/events?") }
+        assertEquals(4, eventReads.size)
+        assertTrue(eventReads.all { it.target.contains("cursor=base") })
+        assertEquals(1, h.requests.count { it.target.endsWith("/events/ack") })
+        assertEquals("login", h.client.credentialVersion())
+        assertTrue(h.requests.all { request ->
+            request.headers.single { it.name == "X-Open-Android-Intelligence-Session" }.value == "login"
+        })
     }
 
     @Test fun peerErrorTextCannotEnterTheDiagnosticNotice() {
@@ -315,6 +354,7 @@ class NativeConnectionReliabilityTest {
         var failedReads = 0
         var readFailure: Exception = IOException("synthetic outage")
         var responseStatus = 200
+        var responseBody: String? = null
         var reads = 0
         var histories = 0
         var cancelledReads = 0
@@ -343,7 +383,8 @@ class NativeConnectionReliabilityTest {
                     request.target.contains("/events?") -> {
                         reads++
                         if (failedReads > 0) { failedReads--; throw readFailure }
-                        if (responseStatus != 200) return WireResponse(responseStatus, emptyList(), ByteArray(0))
+                        if (responseStatus != 200) return WireResponse(responseStatus, emptyList(),
+                            responseBody?.toByteArray() ?: ByteArray(0))
                         val session = request.target.substringBefore("/events?")
                         if (!served.add(session) && request.target.contains("waitMs=")) {
                             try { idle.await() } catch (cancelled: CancellationException) { cancelledReads++; throw cancelled }
@@ -363,7 +404,7 @@ class NativeConnectionReliabilityTest {
             }
             override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
         }
-        private val client = AgentSessionClient(GatewayHttpClient(
+        val client = AgentSessionClient(GatewayHttpClient(
             GatewayProfile("account", "phone", "login", "https://core.example", accessToken = "synthetic"),
             transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher,
         ))

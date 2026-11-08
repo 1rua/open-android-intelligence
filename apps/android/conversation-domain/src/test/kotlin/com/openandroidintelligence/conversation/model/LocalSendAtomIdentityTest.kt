@@ -79,6 +79,84 @@ class LocalSendAtomIdentityTest {
     }
 
     @Test
+    fun acceptedAtomWithoutAgentStatusCannotOverrideAuthoritativeConfirmedHistory() {
+        val remote = TimelineMessage(
+            id = "msg_external",
+            sender = "user",
+            parts = listOf(MessagePart.Text("由 Core 客户端提交")),
+            timestamp = 1_000L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = ClientMessageId("client_1"),
+            generationId = null,
+            localPlaceholder = false,
+            contentRevision = 1L,
+        )
+        val observed = atom("msg_external").copy(
+            submissionState = LocalSubmissionState.ACCEPTED,
+            status = null,
+            statusRevision = -1L,
+        )
+
+        val row = mergeLocalSendAtoms(listOf(remote), listOf(observed)).single()
+
+        assertEquals("没有 Agent 状态时不能把权威 CONFIRMED 推断成 queued", "CONFIRMED", row.state)
+    }
+
+    @Test
+    fun localPlaceholderConfirmedCannotBecomeAuthoritativeAgentState() {
+        val placeholder = TimelineMessage(
+            id = "msg_external",
+            sender = "user",
+            parts = listOf(MessagePart.Text("本地占位")),
+            timestamp = 1_000L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = ClientMessageId("client_1"),
+            localPlaceholder = true,
+        )
+        val accepted = atom("msg_external").copy(
+            submissionState = LocalSubmissionState.ACCEPTED,
+            status = null,
+        )
+
+        val row = mergeLocalSendAtoms(listOf(placeholder), listOf(accepted)).single()
+
+        assertEquals("queued", row.state)
+    }
+
+    @Test
+    fun acceptedLocalOnlyAtomWithoutAgentStatusStillFallsBackToQueued() {
+        val accepted = atom(null).copy(submissionState = LocalSubmissionState.ACCEPTED)
+
+        val row = mergeLocalSendAtoms(emptyList(), listOf(accepted)).single()
+
+        assertEquals("queued", row.state)
+    }
+
+    @Test
+    fun explicitAgentStatusStillWinsOverAuthoritativeRemoteState() {
+        val remote = TimelineMessage(
+            id = "msg_external",
+            sender = "user",
+            parts = listOf(MessagePart.Text("由 Core 客户端提交")),
+            timestamp = 1_000L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("conv_a"),
+            clientMessageId = ClientMessageId("client_1"),
+        )
+
+        AgentMessageStatus.entries.forEach { status ->
+            val row = mergeLocalSendAtoms(
+                listOf(remote),
+                listOf(atom("msg_external").copy(status = status)),
+            ).single()
+
+            assertEquals(status.wireValue, row.state)
+        }
+    }
+
+    @Test
     fun strictAcceptedStillRejectsSilentIdentityRewrites() {
         try {
             atom("server_1").accepted("server_2")

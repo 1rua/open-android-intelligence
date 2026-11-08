@@ -111,6 +111,42 @@ class NativeConversationMirrorTest {
         } finally { reopened.closeStore() }
     }
 
+    @Test fun remoteOnlyConfirmedHistorySurvivesMirrorReopenWithoutBecomingQueued() = runBlocking {
+        val testScope = scope("remote-only-confirmed-${UUID.randomUUID()}")
+        val clientId = com.openandroidintelligence.conversation.model.ClientMessageId("external-client")
+        val message = TimelineMessage(
+            id = "msg_external",
+            sender = "user",
+            parts = listOf(MessagePart.Text("由 Core 客户端提交")),
+            timestamp = 1_000L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("chat"),
+            clientMessageId = clientId,
+            generationId = null,
+            contentRevision = 1L,
+        )
+        val mirror = NativeConversationMirror(context, testScope, { "hermes" }, key)
+        mirror.commitEvents(listOf(VerifiedConversationEvent.TimelineUpsert(
+            eventId = "external-history",
+            occurredAt = 1_000L,
+            revision = 1L,
+            message = message,
+        )))
+        mirror.closeStore()
+        val reopened = NativeConversationMirror(context, testScope, { "hermes" }, key)
+        try {
+            val stored = reopened.offlineMirror().timeline("chat")!!.messages.single()
+            val merged = com.openandroidintelligence.conversation.model.mergeLocalSendAtoms(
+                listOf(stored),
+                reopened.loadSendAtoms("chat"),
+            ).single()
+
+            assertEquals("CONFIRMED", merged.state)
+        } finally {
+            reopened.closeStore()
+        }
+    }
+
     @Test fun toolSourcePositionSurvivesEncryptedMirrorReopen() = runBlocking {
         val testScope = scope("tool-source-position")
         val mirror = NativeConversationMirror(context, testScope, { "hermes" }, key, observerId = "phone:1")

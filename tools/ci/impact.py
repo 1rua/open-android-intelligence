@@ -76,6 +76,7 @@ HERMES_ONLY_TESTS = {
     "oai-core/tests/test_hermes_approval_prompts.py",
     "oai-core/tests/test_hermes_dispatch_delivery.py",
     "oai-core/tests/test_hermes_communication_reliability.py",
+    "oai-core/tests/test_hermes_bridge_heartbeat.py",
     "oai-core/tests/test_agent_registration.py",
     "oai-core/tests/test_native_event_sync.py",
     "oai-core/tests/test_native_tool_events.py",
