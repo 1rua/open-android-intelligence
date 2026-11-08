@@ -132,9 +132,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Dependency lock table
-        run: npm run lock:check
-
       - name: Shell and Node syntax
         run: |
           bash -n scripts/install.sh
@@ -149,6 +146,27 @@ jobs:
 
       - name: CI planning helpers
         run: python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
+
+  dependency-lock:
+    name: Dependency Lock Evidence
+    needs: changes
+    if: needs.changes.outputs.runs_fast == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24.18.0"
+          cache: npm
+      # Separate job on purpose: evidence rows expire on a wall-clock schedule,
+      # so this can go red for a commit whose code is fine. Keeping it apart from
+      # the Fast Gate means the static/syntax signal stays readable, and the
+      # failure names the exact expired row.
+      - name: Dependency lock table
+        run: npm run lock:check
 
   core:
     name: Core (Python ${{ matrix.python }})
@@ -292,7 +310,8 @@ jobs:
     # 只有 app / play lane 会读取编译好的插件 WASM 载荷；模块 lane 不需要。
     if: |
       needs.changes.outputs.runs_android_app == 'true' ||
-      needs.changes.outputs.runs_android_play == 'true'
+      needs.changes.outputs.runs_android_play == 'true' ||
+      needs.changes.outputs.runs_android_plugins == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -473,7 +492,10 @@ jobs:
 
   android-plugins:
     name: Android Plugin Modules
-    needs: changes
+    # These tests execute the real compiled reference plugins
+    # (plugin-runtime-wasm/CompiledReferencePluginTest), so the lane needs the
+    # WASM fixture artifact and must follow android-setup.
+    needs: [changes, android-setup]
     if: needs.changes.outputs.runs_android_plugins == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -484,6 +506,7 @@ jobs:
       - uses: ./.github/actions/android-lane
         with:
           lane: android-plugins
+          wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
           test-parallel-forks: '1'
 
   android-app:
@@ -535,6 +558,7 @@ jobs:
     needs:
       - changes
       - fast
+      - dependency-lock
       - core
       - hermes-native
       - dsh

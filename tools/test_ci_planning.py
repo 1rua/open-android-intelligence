@@ -407,14 +407,16 @@ def test_artifact_consumers_cannot_outlive_their_producer():
         )
         if uses_wasm:
             assert "android-setup" in (job.get("needs") or []), name
-            # The lane is gated on one of app/play, and so is the producer.
-            condition = job.get("if") or ""
-            covered = any(
-                token in setup_condition
-                for token in ("runs_android_app", "runs_android_play")
-                if token in condition
+            # Every output the lane is gated on must also gate the producer,
+            # otherwise the lane can run while its artifact was never built.
+            import re as _re
+
+            lane_outputs = set(_re.findall(r"needs\.changes\.outputs\.([a-z_]+)", job.get("if") or ""))
+            producer_outputs = set(_re.findall(r"needs\.changes\.outputs\.([a-z_]+)", setup_condition))
+            assert lane_outputs, f"{name} has no lane condition"
+            assert lane_outputs <= producer_outputs, (
+                f"{name} can run while android-setup is skipped: {lane_outputs - producer_outputs}"
             )
-            assert covered, f"{name} can run while android-setup is skipped"
 
 
 def test_release_workflows_wait_for_verified_ci():
