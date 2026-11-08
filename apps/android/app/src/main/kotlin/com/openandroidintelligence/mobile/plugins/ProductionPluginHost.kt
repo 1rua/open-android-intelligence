@@ -270,6 +270,15 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
 
     fun entries(pluginId: String): List<VerifiedCapability> = capabilities[pluginId].orEmpty()
 
+    /**
+     * 当前已安装且通过校验的能力策略键。
+     *
+     * 设置备份用它判断「这条策略在本机有没有对应的真实能力」：文件里多出来的键
+     * 不写入，本机未安装的能力也不会凭空出现一条策略。
+     */
+    @Synchronized fun verifiedCapabilityPolicyKeys(): Set<String> =
+        capabilities.values.flatten().map(::policyKey).toSet()
+
     /** Read-only view of verified declarations; listing never selects a provider. */
     @Synchronized fun verifiedCapabilities(): List<VerifiedCapability> =
         capabilities.values.flatten().sortedWith(compareBy({ it.id }, { it.version }, { it.identity.pluginId }))

@@ -27,6 +27,7 @@ object SettingsRoutes {
     const val CONNECTION_DETAILS = "settings/connection-details"
     const val BUILD_DETAILS = "settings/build-details"
     const val LICENSES = "settings/licenses"
+    const val BACKUP = "settings/backup"
     internal const val CAPABILITY = "settings/capability/{pluginId}/{capability}"
 }
 

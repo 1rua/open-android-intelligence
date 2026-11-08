@@ -64,6 +64,7 @@ import com.openandroidintelligence.mobile.settings.appearance.AppearanceSettings
 import com.openandroidintelligence.mobile.settings.advanced.AdvancedSettingsScreen
 import com.openandroidintelligence.mobile.settings.advanced.BuildDetailsScreen
 import com.openandroidintelligence.mobile.settings.advanced.OpenSourceNoticesScreen
+import com.openandroidintelligence.mobile.settings.backup.SettingsBackupRoute
 import com.openandroidintelligence.mobile.settings.capabilities.DeviceCapabilitiesScreen
 import com.openandroidintelligence.mobile.settings.capabilities.CapabilitySettingsScreen
 import com.openandroidintelligence.mobile.settings.connection.ConnectionSettingsScreen
@@ -292,11 +293,13 @@ internal fun SettingsNavHost(
             composable(SettingsRoutes.ADVANCED) {
                 AdvancedSettingsScreen(uiState, runtime, presentation, ::back,
                     onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
-                    onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() })
+                    onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
+                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() })
             }
             composable(SettingsRoutes.APP_UPDATES) { AppUpdateRoute(onBack = ::back, presentation = presentation) }
             composable(SettingsRoutes.BUILD_DETAILS) { BuildDetailsScreen(presentation, ::back) }
             composable(SettingsRoutes.LICENSES) { OpenSourceNoticesScreen(presentation, ::back) }
+            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back) }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }

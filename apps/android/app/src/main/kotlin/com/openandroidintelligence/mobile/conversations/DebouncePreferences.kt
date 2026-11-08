@@ -21,4 +21,29 @@ class DebouncePreferences(context:Context) {
         check(preferences.edit().putInt("$k:delay",delayMillis).putBoolean("$k:extend",extend).commit())
     }
     fun useGlobal(gateway:String) { val k=key(gateway);check(preferences.edit().remove("$k:delay").remove("$k:extend").commit()) }
+
+    /** 设置导入的事务快照：全部键值的只读副本，回滚时逐键写回。 */
+    fun snapshot():Map<String,Any?> = preferences.all.toMap()
+
+    /**
+     * 用快照覆盖当前内容。
+     *
+     * 先清空再写入：快照里缺席的键（例如导入期间新建的 Core 覆盖）必须一并消失，
+     * 否则「失败即恢复原状」只是部分恢复。
+     */
+    fun restore(snapshot:Map<String,Any?>) {
+        val edit=preferences.edit().clear()
+        snapshot.forEach { (key,value) ->
+            when(value) {
+                is Int -> edit.putInt(key,value)
+                is Long -> edit.putLong(key,value)
+                is Boolean -> edit.putBoolean(key,value)
+                is Float -> edit.putFloat(key,value)
+                is String -> edit.putString(key,value)
+                is Set<*> -> edit.putStringSet(key,value.filterIsInstance<String>().toSet())
+                else -> Unit
+            }
+        }
+        check(edit.commit())
+    }
 }

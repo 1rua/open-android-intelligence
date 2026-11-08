@@ -27,7 +27,7 @@
 3. 通知与提醒：OAI 发给用户的任务通知、会话气泡、实时任务状态与 Android 通知权限。
 4. 设备能力与授权：能力、被动范围、独立主动推送、临时批准、插件安装与运行配置。
 5. 安全与隐私：开发者信任模式、运行策略、审计、紧急停止。
-6. 高级设置与关于：全局/Core 消息合并、更新、引导与帮助、构建与许可证。
+6. 高级设置与关于：全局/Core 消息合并、更新、设置备份与恢复、引导与帮助、构建与许可证。
 
 通知读取不是通知提醒；主动推送不是被动查询。两者的范围、开关与队列按原权威分别保存。
 
@@ -59,6 +59,7 @@ App 内 `mobile/settings/` 按功能拆包，不是新增 Gradle 模块：
 | 审计/信任/熔断 | 原 AuditSink、DeveloperTrustMode、PluginKernel |
 | 消息合并 | 原 `DebouncePreferences` 全局键及 Core URL 摘要键 |
 | 更新/引导 | 原 AppUpdateViewModel/Preferences、OnboardingPreferences |
+| 设置备份 | `settings/backup/` 组合各原权威；只经原权威读写，见 [设置备份](2026-11-08-android-settings-backup.zh-CN.md) |
 
 没有新的授权表或数据库；授权模型仍为 4，存储前缀名称 `installation_capability_policy_v3` 保留。
 
