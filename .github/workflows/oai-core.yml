@@ -19,6 +19,8 @@ on:
       - 'tools/test_smart_test.py'
       - 'tools/observe-communication.py'
       - 'tools/test_observe_communication.py'
+      - 'tools/audit-communication.py'
+      - 'tools/test_audit_communication.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
@@ -43,6 +45,8 @@ on:
       - 'tools/test_smart_test.py'
       - 'tools/observe-communication.py'
       - 'tools/test_observe_communication.py'
+      - 'tools/audit-communication.py'
+      - 'tools/test_audit_communication.py'
       - 'integrations/dsh-session-adapter/**'
       - 'integrations/hermes-session-adapter/**'
       - 'gateway-contract/**'
@@ -86,7 +90,7 @@ jobs:
         run: |
           "$RUNNER_TEMP/core-clean/bin/python" -m pip install pytest pytest-asyncio PyYAML==6.0.3
           env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py tools/test_observe_communication.py -q \
+            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py tools/test_observe_communication.py tools/test_audit_communication.py -q \
             --ignore=oai-core/tests/test_hermes.py \
             --ignore=oai-core/tests/test_hermes_native.py \
             --ignore=oai-core/tests/test_hermes_bridge_heartbeat.py \

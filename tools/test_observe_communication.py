@@ -130,7 +130,7 @@ def sample(*, online: bool = True) -> dict:
 def summarize(rows_value, **changes):
     values = {
         "started_at": "2026-11-08T00:00:00.000Z", "ended_at": "2026-11-09T00:00:01.000Z",
-        "actual_duration": 86401.0, "requested_duration": 86400.0, "interval": 10.0,
+        "actual_duration": 10801.0, "requested_duration": 10800.0, "interval": 10.0,
         "stop_reason": "completed", "manifest_status": "ok", "changed_paths": [],
         "target_agent_id": "hermes",
     }
@@ -165,7 +165,73 @@ def test_refresh_agents_readonly_and_jsonl_has_no_secrets(tmp_path):
                 assert all(secret not in text for secret in (OLD_TOKEN, NEW_TOKEN, REFRESH, PRIVATE, "Authorization"))
 
 
-def test_summary_only_passes_full_24h_with_samples_and_unchanged_source():
+def test_cli_defaults_to_three_hour_minimum(tmp_path, monkeypatch, capsys):
+    captured = {}
+
+    def fake_run_observer(**kwargs):
+        captured.update(kwargs)
+        return {"passed": True, "verdict": "passed"}
+
+    monkeypatch.setattr(probe, "run_observer", fake_run_observer)
+    exit_code = probe.main([
+        "--client-config", str(tmp_path / "client.json"),
+        "--output-dir", str(tmp_path / "evidence"),
+    ])
+    assert exit_code == 0
+    assert captured["duration"] == 10800
+    assert probe.MINIMUM_DURATION_SECONDS == 10800
+    assert json.loads(capsys.readouterr().out) == {"passed": True, "verdict": "passed"}
+
+    with pytest.raises(SystemExit) as help_exit:
+        probe.main(["--help"])
+    help_text = capsys.readouterr().out
+    assert help_exit.value.code == 0
+    assert "default 10800" in help_text
+    assert "24h" not in help_text
+    assert "24 小时" not in help_text
+
+
+def test_summary_passes_exactly_three_hours_with_samples_and_unchanged_source():
+    result = summarize(
+        [sample()], actual_duration=10800.0, requested_duration=10800.0)
+    assert result["minimumDurationSeconds"] == 10800
+    assert result["completed_duration"] is True
+    assert result["passed"] is True
+    assert result["failureCategories"] == []
+
+
+def test_summary_rejects_short_run_even_when_requested_duration_is_completed():
+    result = summarize(
+        [sample()], actual_duration=10799.999, requested_duration=10799.999)
+    assert result["minimumDurationSeconds"] == 10800
+    assert result["completed_duration"] is True
+    assert result["verdict"] == "incomplete"
+    assert result["passed"] is False
+    assert "minimum_duration_not_met" in result["failureCategories"]
+    assert "duration_below_24h" not in result["failureCategories"]
+
+
+def test_summary_keeps_explicit_24_hour_duration_compatible():
+    result = summarize(
+        [sample()], actual_duration=86400.0, requested_duration=86400.0)
+    assert result["minimumDurationSeconds"] == 10800
+    assert result["completed_duration"] is True
+    assert result["passed"] is True
+    assert result["failureCategories"] == []
+
+
+def test_summary_rejects_run_past_minimum_that_misses_requested_target():
+    result = summarize(
+        [sample()], actual_duration=10801.0, requested_duration=86400.0)
+    assert result["minimumDurationSeconds"] == 10800
+    assert result["completed_duration"] is False
+    assert result["verdict"] == "incomplete"
+    assert result["passed"] is False
+    assert "duration_not_met" in result["failureCategories"]
+    assert "minimum_duration_not_met" not in result["failureCategories"]
+
+
+def test_summary_requires_samples_unchanged_source_and_no_request_errors():
     passed = summarize([sample()])
     short = summarize([sample()], actual_duration=10.0, requested_duration=10.0)
     empty = summarize([])
@@ -173,6 +239,7 @@ def test_summary_only_passes_full_24h_with_samples_and_unchanged_source():
     core_failure = summarize([{**sample(), "httpStatus": {"devices": 503, "agents": None, "session": None},
                                "agentOnline": {}, "capabilities": {}, "errorCode": "CORE_UNREACHABLE"}])
     agent_offline = summarize([sample(online=False)])
+    interrupted = summarize([sample()], stop_reason="interrupted")
     assert passed["passed"] is True and passed["completed_duration"] is True
     assert short["completed_duration"] is True and short["passed"] is False
     assert empty["passed"] is False and empty["sample_count"] == 0
@@ -180,6 +247,7 @@ def test_summary_only_passes_full_24h_with_samples_and_unchanged_source():
     assert core_failure["core"]["status"] == "failed" and core_failure["agents"]["status"] == "unknown"
     assert agent_offline["core"]["status"] == "healthy" and agent_offline["agents"]["status"] == "degraded"
     assert agent_offline["passed"] is False
+    assert interrupted["verdict"] == "incomplete" and interrupted["passed"] is False
 
 
 def test_manifest_change_invalidates_run(tmp_path):

@@ -90,7 +90,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         return impact
 
     for f in changed_files:
-        if f in {"tools/observe-communication.py", "tools/test_observe_communication.py"}:
+        if f in {"tools/observe-communication.py", "tools/test_observe_communication.py",
+                 "tools/audit-communication.py", "tools/test_audit_communication.py"}:
             impact["affects_observer"] = True
         if f in {"tools/measure-communication.py", "tools/test_measure_communication.py"}:
             impact["affects_measurements"] = True
@@ -177,7 +178,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
             extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
         ret = run_command([
             sys.executable, "-m", "pytest", "oai-core/tests", "tests/test_install_script.py",
-            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "tools/test_observe_communication.py", "-q",
+            "tests/test_uninstall_script.py", "tests/test_core_setup_transaction.py", "tests/test_scripts_entrypoints.py", "tests/test_scripts_runtime.py", "tests/test_scripts_runtime_security.py", "tests/test_setup_service_entrypoint.py", "tools/test_smart_test.py", "tools/test_observe_communication.py", "tools/test_audit_communication.py", "-q",
             "--ignore=oai-core/tests/test_hermes.py",
             "--ignore=oai-core/tests/test_hermes_native.py",
             "--ignore=oai-core/tests/test_hermes_bridge_heartbeat.py",
@@ -271,7 +272,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
 
     if impact["affects_observer"] and not (impact["is_full_required"] or impact["affects_oai_core"] or level == "full"):
         print("\n--- 通信只读观察器回归 ---")
-        ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_observe_communication.py"])
+        ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_observe_communication.py", "tools/test_audit_communication.py"])
         if ret != 0:
             return ret
 

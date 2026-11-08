@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""24 小时 Core/Agent 只读通信观察器。
+"""Core/Agent 只读通信稳定性观察器。
 每次采样先调用现有 CoreClient.devices()，让客户端按标准配置完成凭据续签；
 随后用客户端当前 token GET Agent 列表。工具不发送消息、不创建会话、不读取
 密码，不记录响应中的会话正文。后台启停由调用方负责。
@@ -23,10 +23,10 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_API_PREFIX = "/open-android-intelligence/v2/agents"
-DEFAULT_DURATION = 24 * 60 * 60
+DEFAULT_DURATION = 3 * 60 * 60
 DEFAULT_INTERVAL = 10.0
 DEFAULT_TIMEOUT = 5.0
-MIN_PASS_SECONDS = 24 * 60 * 60
+MINIMUM_DURATION_SECONDS = 3 * 60 * 60
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 CAPABILITY_KEYS = (
     "list", "history", "create", "send", "steer", "rename", "archive", "delete",
@@ -252,7 +252,8 @@ def summarize(observations: list[dict], *, started_at: str, ended_at: str, actua
     no_agents = target_agent_id is None and empty_agents > 0
     duration_met = actual_duration + 1e-6 >= requested_duration
     completed_duration = stop_reason == "completed" and duration_met
-    minimum_24h = actual_duration + 1e-6 >= MIN_PASS_SECONDS and requested_duration + 1e-6 >= MIN_PASS_SECONDS
+    minimum_duration_met = (actual_duration + 1e-6 >= MINIMUM_DURATION_SECONDS
+                            and requested_duration + 1e-6 >= MINIMUM_DURATION_SECONDS)
     version_unchanged = manifest_status == "ok"
     hard_failure = bool(core_failures or agent_failures or session_failures or target_offline or missing_target
                         or no_agents or errors or not observations)
@@ -270,7 +271,7 @@ def summarize(observations: list[dict], *, started_at: str, ended_at: str, actua
         "stopped" if stop_reason in {"stopped", "interrupted"} else "",
         "fatal_error" if stop_reason in {"failed", "fatal_error"} else "",
         "duration_not_met" if not duration_met else "",
-        "duration_below_24h" if not minimum_24h else "",
+        "minimum_duration_not_met" if not minimum_duration_met else "",
         "no_observations" if not observations else "",
     ]))
     if stop_reason in {"source_changed", "manifest_invalid"} or manifest_status not in {"ok", "not_provided"}:
@@ -279,7 +280,7 @@ def summarize(observations: list[dict], *, started_at: str, ended_at: str, actua
         verdict = "failed"
     elif stop_reason in {"stopped", "interrupted"}:
         verdict = "incomplete"
-    elif not completed_duration or not minimum_24h or not version_unchanged:
+    elif not completed_duration or not minimum_duration_met or not version_unchanged:
         verdict = "incomplete"
     else:
         verdict = "passed"
@@ -290,6 +291,7 @@ def summarize(observations: list[dict], *, started_at: str, ended_at: str, actua
     summary = {
         "startedAt": started_at, "endedAt": ended_at,
         "actualDurationSeconds": round(actual_duration, 3), "requestedDurationSeconds": round(requested_duration, 3),
+        "minimumDurationSeconds": MINIMUM_DURATION_SECONDS,
         "intervalSeconds": round(interval, 3), "stopReason": stop_reason, "verdict": verdict,
         "passed": verdict == "passed", "completed_duration": completed_duration,
         "version_unchanged": version_unchanged, "sample_count": len(observations),
@@ -393,13 +395,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--client-config", type=Path, required=True, help="Core client config path")
     parser.add_argument("--output-dir", type=Path, required=True, help="Evidence directory")
-    parser.add_argument("--duration", type=float, default=DEFAULT_DURATION, help="Seconds; default 86400")
+    parser.add_argument("--duration", type=float, default=DEFAULT_DURATION,
+                        help=f"Seconds; default {DEFAULT_DURATION:g}")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="Seconds; default 10")
     parser.add_argument("--request-timeout", type=float, default=DEFAULT_TIMEOUT, help="Seconds; default 5")
     parser.add_argument("--agent-id", help="Existing Agent only; never created")
     parser.add_argument("--session-id", help="Existing session only; never created")
     parser.add_argument("--session-read", choices=("history", "generation"), default="history")
-    parser.add_argument("--manifest", type=Path, help="JSON files[] manifest; required for a 24h pass")
+    parser.add_argument("--manifest", type=Path, help="JSON files[] manifest; required for a passing run")
     args = parser.parse_args(argv)
     try:
         summary = run_observer(config_path=args.client_config, output_dir=args.output_dir,

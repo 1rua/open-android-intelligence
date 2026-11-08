@@ -370,6 +370,17 @@ def test_observer_only_edits_run_the_readonly_tool_regression(monkeypatch):
     assert any("tools/test_observe_communication.py" in command for command in commands)
 
 
+@pytest.mark.parametrize("changed", ["tools/audit-communication.py", "tools/test_audit_communication.py"])
+def test_observation_audit_edits_run_the_offline_regression(monkeypatch, changed):
+    runner = load_runner()
+    commands = []
+    monkeypatch.setattr(runner, "run_command", lambda command, **_kwargs: commands.append(command) or 0)
+    impact = runner.analyze_impact([changed])
+    assert impact["affects_observer"] is True
+    assert runner.execute_strategy("fast", impact) == 0
+    assert any("tools/test_audit_communication.py" in command for command in commands)
+
+
 def test_admission_keeps_the_historical_android_oracle_isolated():
     root = Path(__file__).parents[1]
     job = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())["jobs"]["admission"]
