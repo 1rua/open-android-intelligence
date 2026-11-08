@@ -134,7 +134,7 @@ class NotificationCapabilityHttpTest {
             val audit = AndroidAuditStore()
             val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(),audit).apply { bind(binding) }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"notification_install")
+            val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"notification_install")
             host.installStore.installRoot.deleteRecursively()
             val kernel = PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
                 audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
@@ -275,7 +275,7 @@ class NotificationCapabilityHttpTest {
             val audit = AndroidAuditStore()
             val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit).apply { bind(binding) }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), binding.installationId)
             host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
             host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities), host.runtimes,
                 audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,

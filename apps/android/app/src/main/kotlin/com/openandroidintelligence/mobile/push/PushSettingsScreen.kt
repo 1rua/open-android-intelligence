@@ -12,7 +12,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -29,20 +28,21 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.openandroidintelligence.kernel.SmsScopeMode
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.kernel.SmsScopeMode
 import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.notifications.InstalledNotificationApp
+import com.openandroidintelligence.mobile.notifications.InstalledNotificationAppCache
 import com.openandroidintelligence.mobile.notifications.NotificationAppPicker
-import com.openandroidintelligence.mobile.notifications.loadInstalledNotificationApps
+import com.openandroidintelligence.mobile.notifications.cachedInstalledNotificationApps
 import com.openandroidintelligence.mobile.sms.SmsScopeSelector
 import com.openandroidintelligence.mobile.sms.parseSmsScopeEntries
 import com.openandroidintelligence.mobile.sms.validSmsScope
@@ -161,41 +161,56 @@ fun PushSettingsContent(
     saveCompletion: Long? = null,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
-    val config = snapshot.configuration
-    val savedMode = config.sms.scope.mode
-    val modeSaver = remember(savedMode) {
-        listSaver<SmsScopeMode, String>(
-            save = { draft -> listOf(savedMode.name, draft.name) },
-            restore = { saved ->
-                if (saved.size == 2 && saved[0] == savedMode.name) {
-                    SmsScopeMode.entries.firstOrNull { it.name == saved[1] } ?: savedMode
-                } else savedMode
-            },
-        )
-    }
-    var smsMode by rememberSaveable(savedMode, stateSaver = modeSaver) { mutableStateOf(savedMode) }
-    var keywords by rememberPushTextDraft(config.sms.scope.keywords.sorted(), config.sms.scope.keywords.joinToString("\n"))
-    var senders by rememberPushTextDraft(config.sms.scope.senderAddresses.sorted(), config.sms.scope.senderAddresses.joinToString("\n"))
-    var retention by rememberPushTextDraft(listOf(config.retentionHours.toString()), config.retentionHours.toString())
-    var maxEvents by rememberPushTextDraft(listOf(config.maxEvents.toString()), config.maxEvents.toString())
-    var maxMiB by rememberPushTextDraft(listOf(config.maxQueueBytes.toString()), (config.maxQueueBytes / 1_048_576.0).toString())
-    val keywordSet = parseSmsScopeEntries(keywords)
-    val senderSet = parseSmsScopeEntries(senders)
-    val hours = retention.toIntOrNull()
-    val capacity = maxEvents.toIntOrNull()
-    val bytes = maxMiB.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0 && it <= 8 }?.let { (it * 1_048_576).toInt() }
     Column(
-        modifier.widthIn(max = Dimensions.ReadingWidth).verticalScroll(rememberScrollState())
+        modifier.fillMaxWidth().widthIn(max = Dimensions.ReadingWidth)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = Dimensions.ScreenHorizontal, vertical = Dimensions.SpaceSmall),
-        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
     ) {
         onBack?.let { TextButton(onClick = it) { Text("返回") } }
-        Text("主动推送", style = MaterialTheme.typography.headlineSmall)
-        Text("设置保存在本机。短信和通知分别授权，不依赖被动查询的手动批准。", style = MaterialTheme.typography.bodyMedium)
-        Text(if (snapshot.hasLoggedInAccount) "采集和投递仍须具备系统权限及有效推送目标。" else "当前已退出全部账号：暂停采集和推送，保留配置与未过期队列。")
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("push-error")) }
+        NotificationPushSection(
+            config = snapshot.configuration,
+            endpoints = endpoints,
+            saving = saving,
+            saveCompletion = saveCompletion,
+            presentation = presentation,
+            error = error,
+            onConfigurationChange = onConfigurationChange,
+        )
+        SmsPushSection(
+            config = snapshot.configuration,
+            endpoints = endpoints,
+            saving = saving,
+            saveCompletion = saveCompletion,
+            error = error,
+            presentation = presentation,
+            onConfigurationChange = onConfigurationChange,
+            onRefreshEndpoints = onRefreshEndpoints,
+        )
+    }
+}
 
-        Text("通知", style = MaterialTheme.typography.titleMedium)
+/**
+ * 通知主动推送：只负责通知这一条链路。
+ *
+ * 挂在「通知读取」详情里，因此不再重复“主动推送”这类页面标题，也不引用被动采集策略。
+ */
+@Composable
+internal fun NotificationPushSection(
+    config: PushConfiguration,
+    endpoints: List<PushEndpointOption>,
+    saving: Boolean,
+    error: String?,
+    onConfigurationChange: (PushConfiguration) -> Unit,
+    saveCompletion: Long? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+        Text("主动推送", style = MaterialTheme.typography.titleMedium)
+        Text("推送默认关闭。开启后只推送你选中的应用，并只投递到你选定的接收设备。",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         SettingsSectionCard {
             ToggleRow("通知主动推送", config.notifications.enabled, !saving, "push-notification-enabled") {
                 onConfigurationChange(config.copy(notifications = config.notifications.copy(enabled = it)))
@@ -218,9 +233,47 @@ fun PushSettingsContent(
             EndpointChoices("notification", config.notifications.endpoints, endpoints, !saving) {
                 onConfigurationChange(config.copy(notifications = config.notifications.copy(endpoints = it)))
             }
-
         }
-        Text("短信", style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+/**
+ * 短信主动推送：范围、正文与接收设备。
+ *
+ * 加密离线队列的容量与保留时长不再作为设置项展示；底层队列按既有默认值与已保存值继续运行。
+ */
+@Composable
+internal fun SmsPushSection(
+    config: PushConfiguration,
+    endpoints: List<PushEndpointOption>,
+    saving: Boolean,
+    error: String?,
+    onConfigurationChange: (PushConfiguration) -> Unit,
+    onRefreshEndpoints: () -> Unit,
+    saveCompletion: Long? = null,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
+    modifier: Modifier = Modifier,
+) {
+    val savedMode = config.sms.scope.mode
+    val modeSaver = remember(savedMode) {
+        listSaver<SmsScopeMode, String>(
+            save = { draft -> listOf(savedMode.name, draft.name) },
+            restore = { saved ->
+                if (saved.size == 2 && saved[0] == savedMode.name) {
+                    SmsScopeMode.entries.firstOrNull { it.name == saved[1] } ?: savedMode
+                } else savedMode
+            },
+        )
+    }
+    var smsMode by rememberSaveable(savedMode, stateSaver = modeSaver) { mutableStateOf(savedMode) }
+    var keywords by rememberPushTextDraft(config.sms.scope.keywords.sorted(), config.sms.scope.keywords.joinToString("\n"))
+    var senders by rememberPushTextDraft(config.sms.scope.senderAddresses.sorted(), config.sms.scope.senderAddresses.joinToString("\n"))
+    val keywordSet = parseSmsScopeEntries(keywords)
+    val senderSet = parseSmsScopeEntries(senders)
+    Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+        Text("主动推送", style = MaterialTheme.typography.titleMedium)
+        Text("推送默认关闭，与被动读取范围互不影响。", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
         SettingsSectionCard {
             ToggleRow("短信主动推送", config.sms.enabled, !saving, "push-sms-enabled") {
                 onConfigurationChange(config.copy(sms = config.sms.copy(enabled = it)))
@@ -256,22 +309,6 @@ fun PushSettingsContent(
             Text("正文默认包含；关闭正文开关后仅推送元数据。", style = MaterialTheme.typography.bodySmall)
             Text("关闭推送、缩小范围或移除接收设备，会立即清除不再允许的待发内容。", style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = onRefreshEndpoints, enabled = !saving, modifier = Modifier.testTag("push-refresh-endpoints")) { Text("刷新推送目标") }
-
-        }
-        Text("加密离线队列", style = MaterialTheme.typography.titleMedium)
-        SettingsSectionCard {
-            OutlinedTextField(retention, { retention = it }, label = { Text("保留小时数：1–168，默认 72") },
-                modifier = Modifier.fillMaxWidth().testTag("push-retention"), enabled = !saving, singleLine = true,
-                isError = hours == null || hours !in 1..168)
-            OutlinedTextField(maxEvents, { maxEvents = it }, label = { Text("事件上限：1–4096") }, modifier = Modifier.fillMaxWidth().testTag("push-max-events"), enabled = !saving, singleLine = true)
-            OutlinedTextField(maxMiB, { maxMiB = it }, label = { Text("容量上限 MiB：最多 8") }, modifier = Modifier.fillMaxWidth().testTag("push-max-mib"), enabled = !saving, singleLine = true)
-            Button(onClick = { if (hours != null && capacity != null && bytes != null) onConfigurationChange(config.copy(retentionHours = hours, maxEvents = capacity, maxQueueBytes = bytes)) },
-                enabled = !saving && hours != null && hours in 1..168 && capacity != null && capacity in 1..4096 && bytes != null && bytes >= 4096,
-                modifier = Modifier.testTag("push-save-retention")) { Text("保存队列设置") }
-            Text("待发 ${snapshot.queuedEvents} 条，共 ${snapshot.pendingDeliveries} 次接收端投递。已过期 ${snapshot.expiredEvents} 条，容量拒绝 ${snapshot.capacityRejections} 次。", modifier = Modifier.testTag("push-queue-state"))
-            Text("队列满时拒绝新事件并保留已有未确认事件；接收端消费确认后清除正文。", style = MaterialTheme.typography.bodySmall)
-            Text("待远端清理 ${snapshot.pendingRevocations} 次；离线时保留清理记录，恢复连接后重试。", modifier = Modifier.testTag("push-revocation-state"))
-            TextButton(onClick = onRefreshState, enabled = !saving) { Text("刷新队列状态") }
         }
     }
 }
@@ -294,7 +331,7 @@ private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: 
     Text("推送目标（可多选）", style = MaterialTheme.typography.titleSmall)
     val byKey = options.associateBy { it.endpoint }
     val keys = (options.map { it.endpoint } + selected).distinct()
-    if (keys.isEmpty()) Text("尚无已验证接收设备。连接 Core 并刷新后选择。", modifier = Modifier.testTag("push-$kind-no-endpoints"))
+    if (keys.isEmpty()) Text("尚无已验证的接收设备。连接 Core 并刷新后选择。", modifier = Modifier.testTag("push-$kind-no-endpoints"))
     keys.forEach { key ->
         val option = byKey[key]
         val checked = key in selected
@@ -332,9 +369,9 @@ internal fun NotificationPushScopeSettings(
 ) {
     val packageManager = LocalContext.current.applicationContext.packageManager
     val appLoader = remember(packageManager, loadInstalledApps) {
-        loadInstalledApps ?: { loadInstalledNotificationApps(packageManager) }
+        loadInstalledApps ?: { cachedInstalledNotificationApps(packageManager) }
     }
-    var installedApps by remember(appLoader) { mutableStateOf<List<InstalledNotificationApp>?>(null) }
+    var installedApps by remember(appLoader) { mutableStateOf(InstalledNotificationAppCache.current()) }
     var loadFailed by remember(appLoader) { mutableStateOf(false) }
     var refresh by remember { mutableStateOf(0) }
     var selectedPackages by rememberSaveable { mutableStateOf<List<String>?>(null) }
@@ -344,14 +381,14 @@ internal fun NotificationPushScopeSettings(
     var submittedAtCompletion by remember { mutableStateOf<Long?>(null) }
 
     LaunchedEffect(appLoader, refresh) {
-        installedApps = null
         loadFailed = false
         try {
             installedApps = withContext(Dispatchers.IO) { appLoader() }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            loadFailed = true
+            // 刷新失败时保留上次已知的应用目录：名称比“读不到”更接近事实。
+            if (installedApps == null) loadFailed = true
         }
     }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -410,13 +447,13 @@ internal fun NotificationPushScopeSettings(
                         rejection = "应用范围已在其他位置修改，请重新载入已保存选择后再保存。"
                     }
                     else -> {
-                        submittedAtCompletion = saveCompletion
                         submittedPackages = draft
+                        submittedAtCompletion = saveCompletion
                         onPackagesChange(draft.toSet())
                     }
                 }
             },
-            saving = saving || submittedPackages != null,
+            saving = saving,
             presentation = presentation,
         )
     }

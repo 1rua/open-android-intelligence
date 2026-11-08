@@ -18,14 +18,20 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 internal object TestAlpPackages {
 
     /** The shipped notifications manifest/schema and compiled Rust payload, signed with an isolated test author. */
-    fun compiledNotificationsPackage(): ByteArray {
+    fun compiledNotificationsPackage(pluginId: String = "org.openandroidintelligence.notifications"): ByteArray {
         val root = generateSequence(File(System.getProperty("user.dir")).absoluteFile) { it.parentFile }
             .first { File(it,"plugins/notifications/manifest.json").isFile }
         val author = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val publicKey = Base64.getUrlEncoder().withoutPadding().encodeToString(author.public.encoded.copyOfRange(12,44))
         val template = Json.parse(File(root,"plugins/notifications/manifest.json").readText()) as JsonValue.JObject
         val manifest = Json.canonical(template.copy(fields=template.fields.map { (name,value) ->
-            name to if(name == "author") Json.of(mapOf("algorithm" to "Ed25519","publicKey" to publicKey)) else value
+            name to when (name) {
+                "author" -> Json.of(mapOf("algorithm" to "Ed25519","publicKey" to publicKey))
+                "plugin" -> (value as JsonValue.JObject).copy(fields = value.fields.map { (key, item) ->
+                    key to if (key == "id") Json.of(pluginId) else item
+                })
+                else -> value
+            }
         })).encodeToByteArray()
         val content = listOf("payload/notifications.wasm" to File(root,"plugins/target/wasm32-unknown-unknown/release/notifications.wasm").readBytes(),
             "schemas/notifications.json" to File(root,"plugins/schemas/notifications.json").readBytes())

@@ -76,9 +76,11 @@ internal fun NotificationCollectionScreen(
     var rejection by remember { mutableStateOf<String?>(null) }
     val packageManager = LocalContext.current.applicationContext.packageManager
     val appLoader = remember(packageManager, loadInstalledApps) {
-        loadInstalledApps ?: { loadInstalledNotificationApps(packageManager) }
+        loadInstalledApps ?: { cachedInstalledNotificationApps(packageManager) }
     }
-    var installedApps by remember { mutableStateOf<List<InstalledNotificationApp>?>(null) }
+    // 先给出已有的应用目录，避免“已保存选择”先显示成不可用再跳成真名；
+    // 真实查询在后台进行，成功后覆盖缓存。
+    var installedApps by remember { mutableStateOf(InstalledNotificationAppCache.current()) }
     var appLoadFailed by remember { mutableStateOf(false) }
     var appRefresh by remember { mutableStateOf(0) }
     var selectedPackages by rememberSaveable { mutableStateOf<List<String>?>(null) }
@@ -88,14 +90,14 @@ internal fun NotificationCollectionScreen(
     // 包管理器查询放在后台；回到前台后重新读取，反映应用的安装与卸载。
     LaunchedEffect(snapshot.installed, appLoader, appRefresh) {
         if (!snapshot.installed) return@LaunchedEffect
-        installedApps = null
         appLoadFailed = false
         try {
             installedApps = withContext(Dispatchers.IO) { appLoader() }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            appLoadFailed = true
+            // 刷新失败时保留上次已知的应用目录：名称比“不可用”更接近事实。
+            if (installedApps == null) appLoadFailed = true
         }
     }
 
@@ -433,7 +435,8 @@ private fun AllowlistGroup(
                 supporting = when {
                     app != null -> packageId
                     installedApps != null -> "未安装或当前不可见，已保留原有选择"
-                    else -> "应用信息暂不可用，已保留原有选择"
+                    // 正在读：只说明正在读，不再声称“应用信息不可用”。
+                    else -> "正在读取应用信息，已保留原有选择"
                 },
                 trailing = {
                     IconButton(onClick = { onRemove(packageId) }) {

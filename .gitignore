@@ -120,3 +120,5 @@ oai-release.keystore
 /start-core.sh
 /oai-core/dist/
 
+# 一次性本地运维脚本（CI 轮询等），不随仓库分发
+/.worktree-ci/

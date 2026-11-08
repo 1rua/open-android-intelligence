@@ -38,6 +38,8 @@ enum class DeviceCapabilityGrantKind {
  * @param grantKind 授权形态，决定点击后走哪条系统入口。
  * @param manifestPermission 运行时权限的权限名；非运行时权限为 null。
  * @param purpose 用途说明，讲清「授权后能做什么、不授权会怎样」。
+ * @param isFallback 是否为备用方案。备用方案只在首选入口不可用时才需要用户动作，
+ *   界面据此决定是否提示、以及是否默认展示对应的按钮。
  */
 data class AndroidPermissionRequirement(
     val key: String,
@@ -45,20 +47,27 @@ data class AndroidPermissionRequirement(
     val grantKind: DeviceCapabilityGrantKind,
     val manifestPermission: String? = null,
     val purpose: String,
+    val isFallback: Boolean = false,
 )
 
 /**
  * 由 kernel primitive 集合推导所需的 Android 授权需求。
  *
- * 这是问题二的修复点：原来只处理 READ_SMS 与 READ_CALL_LOG，其他设备能力
- * （无障碍、通知读取、屏幕截图）在「检查 Android 系统权限」里完全没有入口。
- *
- * 推导规则只依赖能力声明本身，因此：
+ * 推导规则只依赖能力声明本身与系统版本，因此：
  * - 插件没声明某原语 → 不出现该项，不请求用不上的权限；
  * - 插件新增声明 → 入口自动出现，无需改动界面代码；
  * - 不涉及任何特定 Agent / Gateway 的名字。
+ *
+ * **屏幕截图优先无障碍**：Android 11（API 30）起无障碍服务可以按需取帧，
+ * 用户只需在系统设置里开启一次，之后不再重复确认。因此截图能力的首要系统入口
+ * 是无障碍设置，MediaProjection 只是需要用户明确同意的备用方案。系统不支持
+ * 无障碍截图时，投屏才是唯一可用路径。
  */
-fun androidPermissionRequirements(primitives: Set<String>): List<AndroidPermissionRequirement> = buildList {
+fun androidPermissionRequirements(
+    primitives: Set<String>,
+    /** 当前系统是否支持无障碍截图（API 30+）。缺省视为支持，由调用方按真实版本传入。 */
+    accessibilityScreenshotSupported: Boolean = true,
+): List<AndroidPermissionRequirement> = buildList {
     if ("kernel.sms.read" in primitives) {
         add(
             AndroidPermissionRequirement(
@@ -91,28 +100,43 @@ fun androidPermissionRequirements(primitives: Set<String>): List<AndroidPermissi
             ),
         )
     }
-    // 屏幕读取与控制都依赖无障碍服务：没有它连语义树都拿不到。
-    if (primitives.any { it == "kernel.screen.read" || it == "kernel.screen.control" }) {
+
+    // 屏幕读取、控制与无障碍截图共用同一个无障碍服务：任何一项需要它时都只出现一条入口。
+    val wantsAccessibility = primitives.any {
+        it == "kernel.screen.read" || it == "kernel.screen.control" ||
+            (it == "kernel.screen.capture" && accessibilityScreenshotSupported)
+    }
+    val wantsProjection = "kernel.screen.capture" in primitives
+    if (wantsAccessibility) {
         add(
             AndroidPermissionRequirement(
                 key = "accessibility",
                 label = "无障碍服务",
                 grantKind = DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE,
-                purpose = "读取屏幕内容并执行点按等操作。必须在系统无障碍设置里开启本应用的服务。",
+                purpose = if ("kernel.screen.capture" in primitives) {
+                    "读取屏幕内容、执行点按等操作，并在开启后按需截取屏幕画面。必须在系统无障碍设置里开启本应用的服务。"
+                } else {
+                    "读取屏幕内容并执行点按等操作。必须在系统无障碍设置里开启本应用的服务。"
+                },
             ),
         )
     }
-    if ("kernel.screen.capture" in primitives) {
+    if (wantsProjection) {
         add(
             AndroidPermissionRequirement(
                 key = "screen-capture",
-                label = "屏幕截图",
+                label = if (accessibilityScreenshotSupported) "屏幕共享（备用）" else "屏幕共享",
                 grantKind = DeviceCapabilityGrantKind.MEDIA_PROJECTION,
-                purpose = "截取屏幕画面供 Agent 查看。优先使用已开启的无障碍服务；未开启时才需要一次系统投屏授权。",
+                purpose = if (accessibilityScreenshotSupported) {
+                    "仅当无障碍截图不可用、且你明确同意时才需要。每次屏幕共享会话都要单独确认。"
+                } else {
+                    "当前系统不支持无障碍截图，只能通过系统屏幕共享授权截图。每次会话都要单独确认。"
+                },
+                isFallback = accessibilityScreenshotSupported,
             ),
         )
     }
-}
+}.distinctBy { it.key }
 
 /** 一条需求当前的**真实**授权状态。 */
 enum class DeviceCapabilityGrantState {
@@ -199,6 +223,22 @@ class DeviceCapabilityGrantInspector(
 }
 
 /**
+ * 现在是否还需要用户去做一次备用方案的授权。
+ *
+ * 首选入口（无障碍截图）已就绪时，备用方案一律不再提示——这正是“无障碍可用时不要求
+ * 屏幕共享授权”这条需求的可执行形式。仅当存在备用方案且首选入口尚未就绪时才为 true。
+ */
+fun needsFallbackConsent(
+    requirements: List<AndroidPermissionRequirement>,
+    stateOf: (AndroidPermissionRequirement) -> DeviceCapabilityGrantState,
+): Boolean {
+    val fallback = requirements.filter { it.isFallback }
+    if (fallback.isEmpty()) return false
+    val primary = requirements.filterNot { it.isFallback }
+    return primary.any { stateOf(it) != DeviceCapabilityGrantState.GRANTED }
+}
+
+/**
  * 是否需要在点击时直接跳系统无障碍设置，而不是弹权限框。
  *
  * 单独抽出来是因为这个判断在界面与测试里都要用，且必须与
@@ -226,7 +266,7 @@ fun manualGrantGuidance(requirement: AndroidPermissionRequirement): String = whe
     DeviceCapabilityGrantKind.NOTIFICATION_ACCESS ->
         "无法自动打开通知使用权设置。请手动进入：系统设置 → 通知 → 通知使用权（或「设备和应用通知」→ 特殊访问权限）→ 找到本应用 → 允许。"
     DeviceCapabilityGrantKind.MEDIA_PROJECTION ->
-        "截图需要一次系统屏幕录制授权。请在应用内重新点击「系统投屏授权」发起；若系统未提供录屏服务，则本机无法截图。"
+        "屏幕共享需要一次系统授权。请在应用内重新点击「屏幕共享」发起；若系统未提供录屏服务，无障碍截图仍是可用路径。"
     DeviceCapabilityGrantKind.RUNTIME_PERMISSION ->
         "无法自动申请该权限。请手动进入：系统设置 → 应用 → 本应用 → 权限 → 允许${requirement.label}。"
 }
