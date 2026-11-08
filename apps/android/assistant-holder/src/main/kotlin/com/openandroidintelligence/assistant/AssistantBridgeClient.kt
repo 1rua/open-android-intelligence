@@ -116,9 +116,14 @@ internal class AssistantBridgeClient(
         command(COMMAND_THREAD) { putString("threadId", threadId) }
     }
 
-    fun send() {
-        command(COMMAND_SEND)
-    }
+    /**
+     * 请求发送当前草稿。
+     *
+     * 返回**命令是否已送达主进程**：false 表示桥接不可用（未绑定/已断开），
+     * 界面据此保持紧凑形态并保留草稿，而不是假装消息已经发出。
+     * 真正的 Gateway 接收结果仍由主进程随状态通道下发的 notice/generation 表达。
+     */
+    fun send(): Boolean = command(COMMAND_SEND)
 
     fun cancel() {
         command(COMMAND_CANCEL)

@@ -23,6 +23,9 @@ dependencies {
     implementation(project(":core-model"))
     // 复用同一套设计令牌与助理表面：助理进程只组合 UI，不初始化 Gateway。
     implementation(project(":conversation-ui"))
+    // 时间线渲染直接读取领域类型（TimelineEntry / TimelineAttachment / ApprovalChoice）：
+    // conversation-ui 对 conversation-domain 是 implementation，不会传递到本模块。
+    implementation(project(":conversation-domain"))
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -34,5 +37,10 @@ dependencies {
     implementation("androidx.savedstate:savedstate:1.2.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    // 录音状态机用虚拟时间验证计时、防重复提交与会话切换，不依赖真实等待。
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     testImplementation("org.robolectric:robolectric:4.14.1")
+    // 助理界面的 Compose 行为回归（输入栏、录音态、无障碍标签）。
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
 }

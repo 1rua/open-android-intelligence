@@ -2,7 +2,6 @@ package com.openandroidintelligence.assistant
 
 import android.app.Activity
 import android.content.Intent
-import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
@@ -12,13 +11,18 @@ import android.view.WindowManager
 /**
  * 未设为默认数字助理时的 ASSIST 兜底入口。
  *
- * 这里不是"另一套界面"：它用同一个 Compose 宿主、同一份桥接状态与同一批组件，
- * 只是外壳换成 App 内的 `AssistantSurface` 全屏页。系统截图只由默认助理会话提供，
- * 因此本入口的圈选入口只给出明确说明，不伪造截图能力。
+ * 这里不是"另一套界面"：它和系统助理会话渲染同一棵 [AssistantSessionRoot]，只是外壳
+ * 换成全屏透明 Activity。系统截图只由默认助理会话提供，因此本入口的圈选入口只给出
+ * 明确说明，不伪造截图能力。
  */
 class AssistantActivity : Activity() {
     private var host: AssistantComposeHost? = null
     private var client: AssistantBridgeClient? = null
+    private var previews: AssistantLocalPreviews? = null
+    private var controller: AssistantSessionUiController? = null
+
+    /** 初值文本：只用于首帧种子，用户改过之后不再回写。 */
+    private var initialText: String? = null
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -31,7 +35,7 @@ class AssistantActivity : Activity() {
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         window.setDimAmount(0.55f)
-        showFor(intent)
+        showFor(intent, state)
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -54,33 +58,46 @@ class AssistantActivity : Activity() {
         super.onDestroy()
     }
 
-    private fun showFor(intent: Intent?) {
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // 旋转/进程回收后保留初值文本：它是用户可见内容，不能悄悄丢。
+        initialText?.let { outState.putString(STATE_INITIAL_TEXT, it) }
+    }
+
+    private fun showFor(intent: Intent?, savedInstanceState: Bundle? = null) {
         releaseUi()
         val bridge = AssistantBridgeClient(this).also { client = it }
         val composeHost = AssistantComposeHost(this).also { host = it }
-        val initialText = intent
+        val localPreviews = AssistantLocalPreviews().also { previews = it }
+        val seed = intent
             ?.getCharSequenceExtra(Intent.EXTRA_TEXT)
             ?.toString()
             ?.take(MAX_ASSISTANT_DRAFT_CHARS)
+            ?: savedInstanceState?.getString(STATE_INITIAL_TEXT)
+        initialText = seed
+        // 兜底页没有系统唤起，直接给"展开会话"：进来就能看到对话并输入。
+        val sessionUi = AssistantSessionUiController(
+            AssistantUiState.Visible(surface = AssistantSurfaceState.EXPANDED_CONVERSATION),
+        ).also { controller = it }
         composeHost.setContent {
-            val activity = this@AssistantActivity
             AssistantSessionContent(
                 client = bridge,
-                mode = AssistantHostMode.ASSIST_ACTIVITY,
-                // 兜底页没有"收起成球"的上下文（背后没有其他 App），始终展开。
-                expanded = true,
-                onExpandedChange = {},
-                onClose = { finish() },
-                onOpenApp = {
-                    if (openAssistantMainApp(this)) finish()
-                },
+                controller = sessionUi,
+                previews = localPreviews,
+                initialText = seed,
                 onStartSelection = {
                     bridge.showAdvisory(
                         "当前入口没有系统截图。把本 App 设为默认数字助理后，才能在其他 App 之上圈选屏幕。",
                     )
                 },
-                initialText = initialText,
-                onResolvedAppearance = { dark -> activity.applySystemBarAppearance(dark) },
+                onOpenApp = {
+                    if (openAssistantMainApp(this)) finish()
+                },
+                // 返回键语义与系统会话一致：结束这个入口。
+                onExit = { finish() },
+                // 兜底页不是系统唤起：保持传入的"展开会话"初值。
+                resetOnEntry = false,
+                onResolvedAppearance = { dark -> applySystemBarAppearance(dark) },
             )
         }
         setContentView(composeHost)
@@ -93,10 +110,13 @@ class AssistantActivity : Activity() {
     }
 
     private fun releaseUi() {
+        previews?.close()
+        previews = null
         client?.dispose()
         client = null
         host?.destroy()
         host = null
+        controller = null
     }
 
     /**
@@ -109,5 +129,9 @@ class AssistantActivity : Activity() {
         val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
             WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
         window.insetsController?.setSystemBarsAppearance(if (darkTheme) 0 else mask, mask)
+    }
+
+    private companion object {
+        const val STATE_INITIAL_TEXT = "assistant_initial_text"
     }
 }
