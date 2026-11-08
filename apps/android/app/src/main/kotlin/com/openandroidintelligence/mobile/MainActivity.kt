@@ -62,6 +62,8 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.voice.RecordedVoice
+import com.openandroidintelligence.conversation.voice.VoiceRecording
 import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.conversation.workbench.PastedImageContent

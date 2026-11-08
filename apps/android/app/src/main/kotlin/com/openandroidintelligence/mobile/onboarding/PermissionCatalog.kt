@@ -34,6 +34,9 @@ enum class PermissionAvailability {
  * @param availability 是否应该展示（不满足条件的权限直接不渲染，不做灰色禁用态）。
  * @param manifestPermissions 该权限对应的 Android manifest 权限名；
  *   用于运行时申请逐项归属结果，以及查询当前授权状态。
+ * @param systemRole 若该项由**系统角色**（`RoleManager`）决定而非运行时权限，
+ *   在此声明是哪一个角色；状态查询与按钮行为都走 [AssistantRole]。
+ *   `null` 表示这是普通的权限项。
  * @param requiredForLogin **恒为 false**。任何系统权限都不阻断登录——
  *   这是需求「拒绝权限不应阻断无关功能」的硬约束。
  */
@@ -45,6 +48,7 @@ data class PermissionEntry(
     val isSpecialSystemAccess: Boolean,
     val availability: PermissionAvailability,
     val manifestPermissions: List<String> = emptyList(),
+    val systemRole: SystemRole? = null,
     val requiredForLogin: Boolean = false,
 )
 
@@ -111,6 +115,21 @@ fun buildVisiblePermissions(
                 manifestPermissions = emptyList(),
             ),
         )
+        add(
+            PermissionEntry(
+                id = "assistant_role",
+                displayName = "默认数字助理",
+                purpose = "把这台设备上的数字助理设为 OAI。设置后可用系统 Assist 手势在任何应用中唤起助手；" +
+                    "不设置时仍可在应用内正常对话，只是没有跨应用入口。",
+                group = PermissionGroup.OPTIONAL,
+                // 默认助理是 RoleManager 管理的系统角色，不是运行时权限，
+                // 只能在系统角色对话框或系统设置里授予；状态查询走 AssistantRole。
+                isSpecialSystemAccess = true,
+                availability = PermissionAvailability.AVAILABLE,
+                manifestPermissions = emptyList(),
+                systemRole = SystemRole.ASSISTANT,
+            ),
+        )
 
         // ---- 设备能力扩展（短信、通话、通知使用权等） ----
         add(
@@ -175,6 +194,12 @@ fun buildVisiblePermissions(enabledPluginPrimitives: Set<String>): List<Permissi
  * 把 3 与 4 混为一谈是「重复弹窗」的根因：BLOCKED 状态下再申请系统什么都不会做。
  */
 fun resolvePermissionStatus(context: Context, entry: PermissionEntry): PermissionStatus {
+    // 系统角色项（默认数字助理）不适用上面的权限判定顺序：
+    // 它既不是运行时权限，也没有 manifest 项，只能向系统的 RoleManager 查询真实状态。
+    // 三种结果必须分开：不支持（系统里没有这个角色）/ 已持有 / 未持有但可去申请。
+    if (entry.systemRole != null) {
+        return resolveSystemRoleStatus(context, entry.systemRole)
+    }
     // 通知使用权是特殊系统权限，但**状态是可查询的**：
     // 通过 NotificationManagerCompat.getEnabledListenerPackages 读取系统当前授权的监听器集合。
     // 若这里偷懒返回「未开启」，用户去系统设置开启后回到本页仍会看到「未开启」，
@@ -256,6 +281,22 @@ fun notePermissionRequested(manifestPermissions: Collection<String>) {
 private fun shouldShowRationale(context: Context, permission: String): Boolean {
     val activity = context as? android.app.Activity ?: return false
     return activity.shouldShowRequestPermissionRationale(permission)
+}
+
+/**
+ * 系统角色项的当前状态。
+ *
+ * 判定顺序刻意是「先支持性、后持有性」：
+ * 不支持的角色无论持不持有都不该出现操作按钮；支持但未持有时返回
+ * [PermissionStatus.DENIED]（而不是 BLOCKED），因为角色对话框/设置页仍可再次打开，
+ * 用户点「设置」就有真实的下一步。
+ */
+private fun resolveSystemRoleStatus(context: Context, role: SystemRole): PermissionStatus = when (role) {
+    SystemRole.ASSISTANT -> when {
+        !AssistantRole.isAssistantRoleSupported(context) -> PermissionStatus.UNSUPPORTED
+        AssistantRole.isAssistantRoleHeld(context) -> PermissionStatus.GRANTED
+        else -> PermissionStatus.DENIED
+    }
 }
 
 /** 已启用插件的 kernel primitive 标识（与各 plugins 插件的 manifest.json 保持一致）。 */

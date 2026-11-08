@@ -139,6 +139,13 @@ internal data class ReplyNotificationTarget(
 internal class AndroidReplyNotificationPublisher(
     private val context: Context,
     private val settings: ReplyNotificationSettings,
+    /**
+     * 会话是否正被系统助理界面展示。
+     *
+     * 助理界面已经把这轮回复放在用户眼前时，再弹通知或气泡只是重复打扰；
+     * 这里只抑制通知，不改变任何订阅或投递状态——界面离开后下一帧会重新发布。
+     */
+    private val suppress: (ReplyNotificationTarget) -> Boolean = { false },
 ) {
     private val publishedShortcuts = mutableMapOf<String, String>()
     private val liveUpdates = LiveUpdateNotifications(context, settings)
@@ -168,6 +175,11 @@ internal class AndroidReplyNotificationPublisher(
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
             .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
+        // 助理界面已展示这条会话：撤回已发布的通知，也不再以气泡重复打扰用户。
+        if (suppress(session.target)) {
+            cancel(session.target)
+            return
+        }
         val hasLiveUpdate = liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target

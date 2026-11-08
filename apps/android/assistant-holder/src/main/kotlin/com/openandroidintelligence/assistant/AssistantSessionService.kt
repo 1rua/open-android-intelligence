@@ -10,58 +10,76 @@ import android.service.voice.VoiceInteractionSessionService
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import androidx.compose.runtime.mutableStateOf
-import kotlin.math.roundToInt
 
 class AssistantSessionService : VoiceInteractionSessionService() {
     override fun onNewSession(args: Bundle?): VoiceInteractionSession = AssistantSession(this)
 }
 
 /**
- * 系统助理会话：把 App 内的 M3 助理界面搬到"其他 App 之上"。
+ * 系统助理会话：把 App 内的助理界面搬到"其他 App 之上"。
  *
- * 生命周期与窗口策略：
- * - `onShow` 新建 Compose 宿主并绑定主进程桥接，`onHide` 立即 dispose 桥接、销毁组合
- *   （组合策略是 `DisposeOnDetachedFromWindow`，窗口移除后不残留协程与界面）；
- * - 停靠态窗口缩成 72dp 圆球并贴右下（长按可换到左侧），展开态窗口精确等于卡片尺寸，
- *   窗口背景透明、圆角与卡片由 Compose 绘制；
- * - 圈选态临时占满屏幕，让系统截图按真实比例铺满后再确认裁剪。
+ * 窗口策略（与界面契约一一对应）：
+ * - **常驻形态**：宽 `MATCH_PARENT`、`Gravity.BOTTOM`、背景透明。窗口不是卡片，
+ *   卡片由 Compose 自己画；窗口只负责给出"底部一条"的可用区域。
+ * - **高度由测量驱动**：Compose 根节点把自身高度回传 [onContentHeightChanged]，
+ *   这里用 `window.setLayout(widthPx, heightPx)` 精确对齐。界面变高（展开会话）→ 窗口
+ *   跟着变高；界面变矮（回到紧凑输入）→ 窗口跟着变矮。界面永远是唯一的尺寸真相。
+ * - **圈选态**：临时铺满屏幕（`MATCH_PARENT × MATCH_PARENT`、`TOP|START`），这样系统
+ *   截图能按真实比例铺满；退出圈选立刻回到测量驱动的高度。
+ * - **键盘**：`SOFT_INPUT_ADJUST_NOTHING` + `setDecorFitsSystemWindows(false)`，
+ *   系统不替我们缩放窗口，键盘留白由 Compose 的 `imePadding()` 承担，避免两套 inset
+ *   互相打架（窗口被系统缩一次、内容又让一次）。
  *
- * 这里不做任何"只在 App 内可用"的假设：所有数据仍来自主进程桥接，
- * 没有连接就显示未连接引导。
+ * 生命周期与数据：
+ * - `onShow` 建 Compose 宿主并绑定主进程桥接，`onHide` 立即释放桥接、销毁组合；
+ * - 所有数据来自主进程桥接，没有连接就显示未连接引导；
+ * - 返回键：有覆盖层（圈选）先退出覆盖层，否则结束会话（`hide()`）。返回键**不会**
+ *   中断生成，也不会折叠对话。
  */
 internal class AssistantSession(service: AssistantSessionService) : VoiceInteractionSession(service) {
     private var host: AssistantComposeHost? = null
     private var client: AssistantBridgeClient? = null
     private var screenshot: Bitmap? = null
 
-    private var docked = true
-    private var dockOnLeft = false
-    private var selecting = false
+    /** 界面形态与覆盖层：唯一的状态真相，界面与窗口都读它。 */
+    private val uiState = AssistantSessionUiController()
 
-    /** Compose 读取的会话状态；写入只在主线程回调里发生。 */
-    private val expandedState = mutableStateOf(false)
+    /** 圈选用的系统截图；非 null 表示当前处于全屏圈选态。 */
     private val selectionState = mutableStateOf<AssistantScreenSelection?>(null)
+
+    /** 最近一次由 Compose 测量出的内容高度（像素）；0 表示还没有测量结果。 */
+    private var measuredContentHeightPx = 0
+
+    /** 结束会话只执行一次：返回键与界面结束回调可能同时到达。 */
+    private var closing = false
 
     override fun onCreateContentView(): View {
         val bridge = AssistantBridgeClient(context).also { client = it }
         val composeHost = AssistantComposeHost(context)
         host = composeHost
-        // 窗口本身不画背景：圆角卡片与卡片外的透明区域都由 Compose 决定。
+        // 测量高度回传链路：Compose 根节点 → 宿主 → 会话窗口。
+        composeHost.onContentHeightChanged = { height -> applyMeasuredHeight(height) }
+        // 窗口本身不画背景：卡片与卡片外的透明区域都由 Compose 决定。
         window?.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        // 键盘：窗口不缩放，留白交给 Compose 的 imePadding；系统栏由 Compose 的 inset 处理。
+        window?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+        window?.window?.setDecorFitsSystemWindows(false)
         composeHost.setContent {
+            val previews = rememberAssistantLocalPreviews(sessionKey = SESSION_PREVIEWS_KEY)
             AssistantSessionContent(
                 client = bridge,
-                mode = AssistantHostMode.VOICE_SESSION,
-                expanded = expandedState.value,
-                onExpandedChange = { setDocked(!it) },
-                onClose = { hide() },
-                onOpenApp = { openMainApp() },
-                onDock = { setDocked(true) },
-                onMoveDockEdge = { toggleDockEdge() },
-                onStartSelection = { beginScreenSelection() },
+                controller = uiState,
+                previews = previews,
                 selection = selectionState.value,
+                onStartSelection = { beginScreenSelection() },
                 onFinishSelection = { finishScreenSelection() },
+                onSelectionReady = { result -> submitSelection(result) },
+                onOpenApp = { openMainApp() },
+                onExit = { requestExit() },
+                // 高度回传走宿主：界面不直接依赖窗口，宿主只做转发。
+                onContentHeightChanged = composeHost::reportContentHeight,
             )
         }
         return composeHost
@@ -75,16 +93,19 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             host = null
             setContentView(onCreateContentView())
         }
-        // 每次唤起都以「展开的会话卡片」出现：框架在首次 onShow 之前就会调用
-        // onCreateContentView，client 此时已非空，条件分支不会执行；
-        // 停靠球是会话内的用户动作，不能成为首次唤起的默认形态。
-        setDocked(false)
+        // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
+        uiState.dispatch(AssistantUiEvent.SessionShown)
+        closing = false
+        applyWindowLayout()
         host?.resume()
         client?.connect()
     }
 
     override fun onHide() {
         // 隐藏即会话结束：桥接立刻释放，宿主退回 CREATED，组合随视图解绑被回收。
+        // 先置位再推进状态：SessionHidden 会走到"结束"分支，不能让它再触发一次 hide。
+        closing = true
+        uiState.dispatch(AssistantUiEvent.SessionHidden)
         client?.dispose()
         client = null
         host?.stop()
@@ -103,38 +124,56 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // 旋转/分屏会改变可用尺寸：重算窗口，避免卡片按旧宽度停在屏幕外。
+        // 旋转/分屏会改变可用尺寸：重算窗口宽度，避免内容按旧宽度停在屏幕外。
         applyWindowLayout()
     }
 
     override fun onBackPressed() {
-        when {
-            selecting -> finishScreenSelection()
-            !docked -> setDocked(true)
-            else -> super.onBackPressed()
+        // 返回键先退出覆盖层（圈选），没有覆盖层就把整个会话收掉；
+        // 无论哪条路径都不碰生成：正在输出的回复由主进程继续，界面没有"就地中断"。
+        uiState.dispatch(AssistantUiEvent.BackPressed)
+        val visible = uiState.visible()
+        if (visible != null) {
+            // 还有可见界面：说明刚退出的是覆盖层，窗口回到测量驱动的底部形态。
+            selectionState.value = null
+            applyWindowLayout()
+            return
         }
+        // 状态机判定会话结束：清理临时态后收窗口。
+        // 结束回调可能与这里的路径重合，requestExit 自己保证只执行一次。
+        requestExit()
+    }
+
+    /**
+     * 结束会话：界面里的退出动作与返回键走同一条路径。
+     *
+     * 只负责收窗口，不动生成：正在输出的回复由主进程继续，用户回到 App 仍能看到结果。
+     */
+    private fun requestExit() {
+        if (closing) return
+        closing = true
+        closeOverlayIfAny()
+        hide()
     }
 
     override fun onHandleScreenshot(bitmap: Bitmap?) {
         // 系统每次唤起最多给一张截图；新的一张取代旧的，旧图立即释放。
         recycleScreenshot()
-        if (selecting && selectionState.value != null) {
-            selecting = false
+        if (selectionState.value != null) {
+            // 新截图到达说明上一次圈选已经失效：覆盖层同步退出，避免展示旧帧。
             selectionState.value = null
+            uiState.dispatch(AssistantUiEvent.SelectionCancelled)
         }
         val usable = bitmap?.takeIf { it.width > 0 && it.height > 0 }
             ?.takeIf { it.width.toLong() * it.height <= MAX_SCREENSHOT_PIXELS }
         screenshot = usable?.let { runCatching { it.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull() }
-        applyWindowLayout()
     }
 
-    /** 一次会话结束时的临时状态：圈选、截图与窗口形态都不跨会话保留。 */
+    /** 一次会话结束时的临时状态：圈选与截图都不跨会话保留。 */
     private fun resetTransientState() {
-        selecting = false
         selectionState.value = null
         recycleScreenshot()
-        docked = true
-        expandedState.value = false
+        measuredContentHeightPx = 0
     }
 
     private fun recycleScreenshot() {
@@ -143,63 +182,41 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     /**
-     * 展开/收起：切换 Compose 状态与窗口尺寸。
+     * Compose 测量出的内容高度：窗口高度以此为唯一来源。
      *
-     * 窗口边界由系统窗口管理器决定，无法逐帧插值，所以"连续"体现在内容层的入场动画上；
-     * 卡片本身的形变由 `AssistantSurface` 在兜底页承担。
+     * 去重后再 `setLayout`，避免同一高度的重复回调触发无意义的窗口重排
+     * （每次 setLayout 都会让系统重新测量，重复调用会造成可见抖动）。
      */
-    private fun setDocked(value: Boolean) {
-        if (value && selecting) {
-            finishScreenSelection()
+    private fun applyMeasuredHeight(heightPx: Int) {
+        if (heightPx <= 0 || heightPx == measuredContentHeightPx) return
+        if (selectionState.value != null) {
+            // 圈选期间窗口固定全屏：此时的高度回调只记录，等退出圈选再应用。
+            measuredContentHeightPx = heightPx
+            return
         }
-        docked = value
-        expandedState.value = !value
-        applyWindowLayout()
-    }
-
-    /** 停靠球长按换边：只改窗口 gravity，不重建界面。 */
-    private fun toggleDockEdge() {
-        dockOnLeft = !dockOnLeft
+        measuredContentHeightPx = heightPx
         applyWindowLayout()
     }
 
     private fun applyWindowLayout() {
         val dialogWindow = window?.window ?: return
-        val metrics = context.resources.displayMetrics
-        val density = metrics.density
-        fun dp(value: Int): Int = (value * density).roundToInt()
-
-        when {
-            selecting -> {
-                dialogWindow.setGravity(Gravity.TOP or Gravity.START)
-                dialogWindow.setLayout(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-            }
-
-            docked -> {
-                dialogWindow.setGravity(
-                    (if (dockOnLeft) Gravity.START else Gravity.END) or Gravity.BOTTOM,
-                )
-                dialogWindow.setLayout(dp(DOCKED_WINDOW_DP), dp(DOCKED_WINDOW_DP))
-            }
-
-            else -> {
-                dialogWindow.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-                dialogWindow.setLayout(expandedWidth(metrics.widthPixels, density), expandedHeight(metrics.heightPixels))
-            }
+        if (selectionState.value != null) {
+            // 圈选态：临时铺满屏幕，让系统截图按真实比例显示。
+            dialogWindow.setGravity(Gravity.TOP or Gravity.START)
+            dialogWindow.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            return
         }
+        // 常规态：整宽贴底，高度取界面测量值；还没有测量结果时先给一个最小高度，
+        // 等第一帧 onSizeChanged 到达就立即校正（不会把窗口停在 0 高）。
+        dialogWindow.setGravity(Gravity.BOTTOM)
+        dialogWindow.setLayout(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            measuredContentHeightPx.coerceAtLeast(MIN_WINDOW_HEIGHT_PX),
+        )
     }
-
-    private fun expandedWidth(screenWidthPx: Int, density: Float): Int {
-        val horizontalMargin = (EXPANDED_SIDE_MARGIN_DP * density).roundToInt() * 2
-        val maxWidth = (MAX_EXPANDED_WIDTH_DP * density).roundToInt()
-        return (screenWidthPx - horizontalMargin).coerceIn(1, maxWidth)
-    }
-
-    private fun expandedHeight(screenHeightPx: Int): Int =
-        (screenHeightPx * EXPANDED_SCREEN_FRACTION).roundToInt().coerceAtLeast(1)
 
     /** 屏幕圈选：把 window 临时铺满全屏，让系统截图按真实比例显示。 */
     private fun beginScreenSelection() {
@@ -208,22 +225,42 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             client?.showAdvisory("系统没有提供截图，请重新唤起助理后再圈选")
             return
         }
-        if (docked) {
-            // 圈选只在展开态有意义：先把窗口恢复成卡片，再进入全屏圈选。
-            docked = false
-            expandedState.value = true
-        }
-        selecting = true
         selectionState.value = AssistantScreenSelection(source)
+        uiState.dispatch(AssistantUiEvent.SelectionRequested)
         applyWindowLayout()
     }
 
     private fun finishScreenSelection() {
-        if (!selecting) return
-        selecting = false
+        if (selectionState.value == null) return
         selectionState.value = null
+        // 覆盖层关掉；对话形态不受影响（确认与取消对状态机是同一件事）。
+        uiState.dispatch(AssistantUiEvent.SelectionCancelled)
         // 截图保留到下一次唤起或会话结束，方便用户取消后重新圈选。
         applyWindowLayout()
+    }
+
+    /**
+     * 圈选产物 → 附件。
+     *
+     * 舞台已经把 PNG 写进本进程的 [AssistantLocalPreviews]（时间线据此显示缩略图）；
+     * 主进程需要的是位图本身，因此在这里解码后交给桥接层。解码失败要如实提示，
+     * 不能把"没解出来"当成已提交。
+     */
+    private fun submitSelection(result: AssistantSelectionResult) {
+        val bitmap = runCatching {
+            android.graphics.BitmapFactory.decodeByteArray(result.pngBytes(), 0, result.byteSize)
+        }.getOrNull()
+        if (bitmap == null) {
+            client?.showAdvisory("圈选图片无法读取，请重新圈选")
+            return
+        }
+        client?.attachScreen(bitmap)
+    }
+
+    private fun closeOverlayIfAny() {
+        if (selectionState.value != null) {
+            selectionState.value = null
+        }
     }
 
     private fun openMainApp() {
@@ -235,12 +272,13 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     private companion object {
-        const val DOCKED_WINDOW_DP = 72
-        const val EXPANDED_SIDE_MARGIN_DP = 16
-        const val MAX_EXPANDED_WIDTH_DP = 760
-        /** 展开态高度上限：不超过可用窗口高度的 60%（规格 §9.1）。 */
-        const val EXPANDED_SCREEN_FRACTION = 0.6f
+        /** 首帧测量到达前的最小窗口高度：保证输入栏可见，测量后立即校正。 */
+        const val MIN_WINDOW_HEIGHT_PX = 1
+
         /** 超过约 400 万像素的截图不接收：内存与裁剪成本都不值得。 */
         const val MAX_SCREENSHOT_PIXELS = 4_000_000L
+
+        /** 本地缩略图存储只属于一次会话；同一会话内重建组合沿用同一个实例。 */
+        const val SESSION_PREVIEWS_KEY = "assistant-session"
     }
 }

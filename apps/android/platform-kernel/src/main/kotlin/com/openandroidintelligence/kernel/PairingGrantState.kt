@@ -48,7 +48,6 @@ data class PairingGrantState(
     val pairingId: String,
     val granted: Set<String> = emptySet(),
     val revision: Long = 0L,
-    val screenSelectionEnabled: Boolean = false,
     val authorizationModelVersion: Int = CURRENT_AUTHORIZATION_MODEL,
     val explicitDisabled: Set<String> = emptySet(),
     val capabilityPolicies: Map<String, CapabilityPolicy> = emptyMap(),
@@ -233,10 +232,6 @@ class PairingGrantStateHolder(
             explicitDisabled = disabled,
         )
     }
-
-    @Synchronized
-    fun updateScreenSelection(enabled: Boolean): PairingGrantState =
-        update { current -> current.copy(screenSelectionEnabled = enabled) }
 
     fun currentBinding(): PairingGrantBinding? = boundGrant?.binding
 

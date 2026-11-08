@@ -56,46 +56,6 @@ class ConversationUiCapabilitiesTest {
     }
 
     @Test
-    fun screenSelectionIsUnavailableWhileNoScreenshotSourceIsWired() {
-        val presentation = screenSelectionPresentation(
-            screenshotSourceWired = false,
-            attachmentStatusAgreed = true,
-        )
-
-        assertFalse("没有截图来源就不可能有圈选", presentation.enabled)
-        assertTrue("必须明说不可用：${presentation.supporting}", presentation.supporting.contains("不可用"))
-        assertTrue("必须点明缺的是截图来源：${presentation.supporting}", presentation.supporting.contains("截图"))
-    }
-
-    @Test
-    fun screenSelectionIsUnavailableWhenTheGatewayDidNotAgreeToReportAttachmentStatus() {
-        val undeclared = screenSelectionPresentation(
-            screenshotSourceWired = true,
-            attachmentStatusAgreed = null,
-        )
-        assertFalse(undeclared.enabled)
-        assertTrue(undeclared.supporting.contains("未声明"))
-
-        val refused = screenSelectionPresentation(
-            screenshotSourceWired = true,
-            attachmentStatusAgreed = false,
-        )
-        assertFalse(refused.enabled)
-        assertTrue(refused.supporting.contains("网关不支持"))
-    }
-
-    @Test
-    fun screenSelectionIsOnlyOfferedWhenBothHostAndGatewayCanCarryIt() {
-        val presentation = screenSelectionPresentation(
-            screenshotSourceWired = true,
-            attachmentStatusAgreed = true,
-        )
-
-        assertTrue(presentation.enabled)
-        assertFalse("可用时不得再写不可用：${presentation.supporting}", presentation.supporting.contains("不可用"))
-    }
-
-    @Test
     fun notificationPushIsUnavailableWhileNoPushChannelIsWired() {
         val presentation = notificationPushPresentation(
             pushChannelWired = false,

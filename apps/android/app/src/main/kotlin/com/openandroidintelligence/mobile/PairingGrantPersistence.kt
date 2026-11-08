@@ -41,7 +41,6 @@ class SharedPreferencesPairingGrantStore(
         PairingGrantState(
             pairingId = binding.pairingId,
             revision = preferences.getLong("$GLOBAL.revision", 0),
-            screenSelectionEnabled = preferences.getBoolean("$GLOBAL.screen_selection", false),
             explicitDisabled = preferences.getStringSet("$GLOBAL.disabled", emptySet()).orEmpty().toSet(),
             capabilityPolicies = policies,
             granted = preferences.getStringSet("$GLOBAL.local_primitives", emptySet()).orEmpty().toSet(),
@@ -57,7 +56,8 @@ class SharedPreferencesPairingGrantStore(
             .putLong("$GLOBAL.revision", saved.revision)
             .putStringSet("$GLOBAL.disabled", saved.explicitDisabled.toSet())
             .putStringSet("$GLOBAL.local_primitives", saved.granted.toSet())
-            .putBoolean("$GLOBAL.screen_selection", saved.screenSelectionEnabled)
+            // 圈选能力已移除；键位保留为恒定 false，避免旧状态被判为不完整（LOCAL_AUTHORIZATION_STATE_INCOMPLETE）。
+            .putBoolean("$GLOBAL.screen_selection", false)
             .apply {
                 if (saved.localError == null) remove("$GLOBAL.error") else putString("$GLOBAL.error", saved.localError)
             }
@@ -101,14 +101,14 @@ class SharedPreferencesPairingGrantStore(
             ((old[key] as? Set<*>)?.filterIsInstance<String>()).orEmpty()
         }.toSet()
         val revision = scoped.filter { it.endsWith(".revision") }.mapNotNull { old[it] as? Long }.maxOrNull() ?: 0L
-        val selection = scoped.filter { it.endsWith(".screen_selection") }.mapNotNull { old[it] as? Boolean }
         // One atomic SharedPreferences transaction writes the complete global state and removes only
         // obsolete capability keys. A failed commit is retried on next process start, never reviewed in UI.
         val edit = preferences.edit()
             .putLong("$GLOBAL.revision", Math.addExact(revision, 1L))
             .putStringSet("$GLOBAL.disabled", denied)
             .putStringSet("$GLOBAL.local_primitives", emptySet())
-            .putBoolean("$GLOBAL.screen_selection", selection.isNotEmpty() && selection.all { it })
+            // 圈选能力已移除；键位保留为恒定 false，兼容 v3 状态完整性校验。
+            .putBoolean("$GLOBAL.screen_selection", false)
             .putInt(MODEL, PairingGrantState.CURRENT_AUTHORIZATION_MODEL)
             .remove("android_capability_legacy_scopes")
             .remove("android_capability_unknown_legacy_scopes")

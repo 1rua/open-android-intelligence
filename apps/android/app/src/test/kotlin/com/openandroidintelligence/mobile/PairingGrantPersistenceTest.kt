@@ -120,7 +120,7 @@ class PairingGrantPersistenceTest {
             .putLong("installation_capability_policy_v3.revision", 19)
             .putStringSet("installation_capability_policy_v3.disabled", setOf("off"))
             .putStringSet("installation_capability_policy_v3.local_primitives", setOf("kernel.store.read"))
-            .putBoolean("installation_capability_policy_v3.screen_selection", true)
+            .putBoolean("installation_capability_policy_v3.screen_selection", false)
             .putString("installation_capability_policy_v3.capability.$encoded",
                 """{"enabled":true,"mode":"READ_ONLY","allowedSources":["BANK-ID","+86 13800000000"],"includeContent":false}""")
             .commit()

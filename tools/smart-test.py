@@ -132,6 +132,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             if any(f.startswith(f"apps/android/{module}/") for module in ("notification-control", "notification-host", "notification-collector")):
                 impact["affects_android_notifications"] = True
                 impact["affects_android_app"] = True
+            if f.startswith("apps/android/assistant-holder/"):
+                impact["affects_android_app"] = True
             if "screen" in f or "control" in f or "capability" in f or "device-primitives" in f:
                 impact["affects_android_control"] = True
             if "conversation" in f:

@@ -11,7 +11,6 @@ import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.NativePluginLoader
 import com.openandroidintelligence.kernel.PairingGrantBinding
-import com.openandroidintelligence.kernel.PairingGrantCapabilities
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
@@ -206,23 +205,6 @@ class SettingsViewModelTest {
 
         val updatedAppearance = AppearancePreferences(context)
         assertTrue(updatedAppearance.settings.value.dynamicIconColor)
-    }
-
-    @Test
-    fun screenSelectionRemainsIndependentOfPluginAndNotificationCollectionSettings() = runBlocking {
-        val viewModel = SettingsViewModel(
-            environment = environment,
-            runtime = null,
-            externalScope = testScope,
-        )
-
-        viewModel.setScreenSelectionGrant(true)
-        assertTrue(viewModel.uiState.value.isScreenSelectionGranted)
-
-        viewModel.setNotificationsGrant(true)
-        assertFalse("没有回复通知装配时不得伪造系统通知授权", viewModel.uiState.value.isNotificationsGranted)
-        assertFalse(pairingGrants.state.value!!.granted.contains(PairingGrantCapabilities.NOTIFICATIONS))
-
     }
 
     @Test

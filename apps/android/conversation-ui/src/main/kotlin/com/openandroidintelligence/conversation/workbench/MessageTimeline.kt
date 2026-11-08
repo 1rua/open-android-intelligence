@@ -19,6 +19,7 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -353,6 +354,7 @@ private fun MessageAttachments(
 /**
  * 附件卡分流：
  * - 图片：气泡内只保留图片本身（文件名与下载按钮都已移除），点击进入全屏预览；
+ * - 语音：文件名 + 时长芯片，不提供大图预览；
  * - 其它文件：保留文件名、本地/下载状态与下载按钮，PDF 等仍可保存。
  */
 @Composable
@@ -365,11 +367,99 @@ fun HistoricalAttachmentCard(
     showCaption: Boolean = false,
     fileMetadata: (@Composable () -> Unit)? = null,
 ) {
-    if (attachment.isImage) {
-        ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
-    } else {
-        FileAttachmentCard(attachment, modifier, onDownload, fileMetadata)
+    when {
+        attachment.isImage ->
+            ImageAttachmentCard(attachment, modifier, onDownload, onRequestOriginal, onOpenPreview, showCaption)
+        attachment.isAudio ->
+            AudioAttachmentCard(attachment, modifier, onDownload, fileMetadata)
+        else ->
+            FileAttachmentCard(attachment, modifier, onDownload, fileMetadata)
     }
+}
+
+/**
+ * 语音附件：文件名 + 真实时长芯片。
+ *
+ * 时长只来自本进程观察到的录音结果（见 `TimelineAttachment.audioDurationMs`）；
+ * 没有记录时只显示文件名，不编造一个「0 秒」。
+ */
+@Composable
+private fun AudioAttachmentCard(
+    attachment: TimelineAttachment,
+    modifier: Modifier,
+    onDownload: ((String) -> Unit)?,
+    metadata: (@Composable () -> Unit)?,
+) {
+    val name = attachment.filename.ifBlank { "语音消息" }
+    Column(modifier.widthIn(max = Dimensions.MessageWidth), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
+        Surface(
+            shape = RoundedCornerShape(AppRadius.Small),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "语音附件：$name" },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.GraphicEq,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                attachment.audioDurationMs?.takeIf { it > 0L }?.let { duration ->
+                    Surface(
+                        shape = RoundedCornerShape(AppRadius.ExtraSmall),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.testTag("attachment-audio-duration:${attachment.draftId}"),
+                    ) {
+                        Text(
+                            text = formatVoiceDuration(duration),
+                            style = AppTextStyles.MonoSmall,
+                            modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+        }
+        when (attachment.localState) {
+            AttachmentLocalState.PENDING -> Text("正在读取语音…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.UNAVAILABLE -> Text("原件不可用，附件信息仍保留", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentLocalState.FAILED -> Text("本地保存失败，请检查手机存储空间或连接", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            AttachmentLocalState.SAVED -> Unit
+        }
+        when (attachment.downloadState) {
+            AttachmentDownloadState.SAVED -> Text("已保存到下载目录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            AttachmentDownloadState.FAILED -> Text("下载失败，请重试", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Unit
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+            TextButton(onClick = { onDownload?.invoke(attachment.draftId) }, enabled =
+                onDownload != null && attachment.localState != AttachmentLocalState.UNAVAILABLE && attachment.downloadState != AttachmentDownloadState.DOWNLOADING) {
+                Text(if (attachment.downloadState == AttachmentDownloadState.DOWNLOADING) "下载中…" else "下载")
+            }
+            Spacer(Modifier.weight(1f))
+            metadata?.invoke()
+        }
+    }
+}
+
+/** 语音时长：`分:秒`（例如 `0:07`、`1:05`）；只用于展示真实观察到的时长。 */
+fun formatVoiceDuration(durationMillis: Long): String {
+    val totalSeconds = durationMillis.coerceAtLeast(0L) / 1_000L
+    return "${totalSeconds / 60L}:${(totalSeconds % 60L).toString().padStart(2, '0')}"
 }
 
 /**

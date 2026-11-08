@@ -10,7 +10,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * 桥接状态解析的纯逻辑回归。
+ * 桥接状态解析的纯逻辑回归（协议 v2）。
  *
  * 这里刻意断言"JSON 字段到界面状态"的映射，而不是渲染结果：跨进程协议已经存在，
  * 界面换皮不得改变字段语义；同时确保空/坏数据不会被解释成"已连接"或"有消息"。
@@ -29,8 +29,8 @@ class AssistantStateJsonTest {
         val state = parsed(
             """
             {
+              "version": 2,
               "connected": true,
-              "consent": true,
               "appearance": {
                 "theme": "DARK",
                 "dynamicColor": false,
@@ -47,26 +47,45 @@ class AssistantStateJsonTest {
         assertTrue(appearance.reduceMotion)
     }
 
-    /** 旧版主进程不带 appearance 时保持 null，由调用方回落到本地兜底值。 */
-    @Test fun missingAppearanceStaysNull() {
-        val state = parsed("""{"connected": true, "consent": true}""")
-        assertNull(state.appearance)
+    /**
+     * 首帧之前（还没有任何桥接状态）外观是 null，界面据此回落到本地偏好；
+     * 一旦收到 v2 帧，外观就以主进程下发的值为准。
+     */
+    @Test fun appearanceIsOnlyNullBeforeTheFirstFrame() {
+        assertNull(AssistantState().appearance)
+        // v2 服务端每帧都带 appearance；帧里缺失时取协议默认值，而不是 null。
+        val state = parsed("""{"version": 2, "connected": true}""")
+        assertEquals(THEME_SYSTEM, requireNotNull(state.appearance).theme)
     }
 
     @Test fun publishedPayloadMapsToStateWithoutLosingFields() {
         val state = parsed(
             """
             {
+              "version": 2,
+              "revision": 7,
               "connected": true,
-              "consent": true,
+              "account": {
+                "profileId": "profile-1",
+                "accountId": "account-1",
+                "agentName": "助手"
+              },
+              "sessionId": "session-1",
               "draft": "草稿",
-              "title": "发布计划",
-              "notice": "操作未完成，请检查当前连接或对话",
+              "activeThread": "thread-1",
               "generation": "RUNNING",
-              "threads": [{"id": "thread-1", "title": "发布计划"}, {"id": "thread-2", "title": ""}],
-              "messages": [
-                {"id": "m1", "sender": "user", "text": "你好", "attachments": ["screen.png"], "streaming": false},
-                {"id": "m2", "sender": "assistant", "text": "在的", "attachments": [], "streaming": true}
+              "timelineTruncated": true,
+              "notice": {"code": "AGENT_OFFLINE", "message": "操作未完成，请检查当前连接或对话"},
+              "timeline": [
+                {
+                  "id": "m1",
+                  "sender": "user",
+                  "text": "你好",
+                  "attachments": [
+                    {"draftId": "draft-1", "filename": "screen.png", "mediaType": "image/png", "isImage": true, "localKey": "draft-1", "localState": "PENDING"}
+                  ]
+                },
+                {"id": "m2", "sender": "assistant", "text": "在的", "streaming": true}
               ]
             }
             """.trimIndent(),
@@ -74,53 +93,60 @@ class AssistantStateJsonTest {
 
         assertTrue(state.bridgeAvailable)
         assertTrue(state.connected)
-        assertTrue(state.consent)
         assertTrue(state.canInteract)
-        assertEquals("发布计划", state.title)
+        assertEquals(7L, state.revision)
+        assertEquals("session-1", state.sessionId)
+        assertEquals("thread-1", state.activeThread)
+        assertEquals("account-1", requireNotNull(state.account).accountId)
+        assertEquals("profile-1", state.account?.profileId)
+        assertEquals("助手", state.account?.agentName)
         assertEquals("草稿", state.draft)
         assertEquals("操作未完成，请检查当前连接或对话", state.notice)
         assertTrue(state.isGenerating)
         assertFalse(state.isStopping)
-        assertEquals(2, state.threads.size)
-        assertEquals("thread-2", state.threads[1].id)
-        assertEquals(2, state.messages.size)
-        assertTrue(state.messages[0].fromUser)
-        assertEquals(listOf("screen.png"), state.messages[0].attachments)
-        assertFalse(state.messages[1].fromUser)
-        assertTrue(state.messages[1].streaming)
+        assertTrue(state.timelineTruncated)
+        assertEquals(2, state.timeline.size)
+        assertTrue(state.timeline[0].isUser)
+        assertEquals("draft-1", state.timeline[0].attachments.single().draftId)
+        assertFalse(state.timeline[1].isUser)
+        assertTrue(state.timeline[1].isStreaming)
     }
 
     @Test fun disconnectedPayloadNeverLooksInteractive() {
-        val state = parsed("""{"connected": false, "consent": false}""")
+        val state = parsed("""{"version": 2, "connected": false}""")
 
         assertFalse(state.canInteract)
-        assertTrue(state.messages.isEmpty())
-        assertTrue(state.threads.isEmpty())
+        assertTrue(state.timeline.isEmpty())
+        assertNull(state.account)
+        assertNull(state.sessionId)
+        assertFalse(state.timelineTruncated)
         assertEquals("Gateway 未连接", state.gatewayStatusLabel())
         assertEquals("请先在 App 中连接 Gateway", state.composerBlockReason())
     }
 
-    @Test fun consentOnlyAfterConnectionIsRequiredBeforeContent() {
-        val state = parsed("""{"connected": true, "consent": false}""")
+    @Test fun connectedWithoutAccountStillAllowsInteractionAndPublishesNoAccount() {
+        val state = parsed("""{"version": 2, "connected": true, "account": null}""")
 
-        assertFalse(state.canInteract)
-        assertEquals("Gateway 已连接 · 尚未绑定对话", state.gatewayStatusLabel())
-        assertEquals("绑定当前对话后才会显示内容", state.composerBlockReason())
+        assertTrue(state.canInteract)
+        assertNull(state.account)
+        assertEquals("Gateway 已连接", state.gatewayStatusLabel())
+        assertNull(state.composerBlockReason())
     }
 
     @Test fun jsonNullStringsAreFoldedIntoEmptyText() {
         val state = parsed(
-            """{"connected": true, "consent": true, "title": null, "notice": null, "draft": null}""",
+            """{"version": 2, "connected": true, "draft": null, "activeThread": null, "sessionId": null}""",
         )
 
-        assertEquals("", state.title)
-        assertEquals("", state.notice)
         assertEquals("", state.draft)
+        assertNull(state.activeThread)
+        assertNull(state.sessionId)
+        assertEquals("", state.notice)
     }
 
     @Test fun unknownGenerationOutcomeBlocksSendingAndSaysSo() {
         val state = parsed(
-            """{"connected": true, "consent": true, "generation": "OUTCOME_UNKNOWN"}""",
+            """{"version": 2, "connected": true, "generation": "OUTCOME_UNKNOWN"}""",
         )
 
         assertTrue(state.hasUnknownOutcome)
@@ -128,13 +154,16 @@ class AssistantStateJsonTest {
         assertEquals("上一条消息结果未知，请先在 App 中确认", state.composerBlockReason())
     }
 
-    @Test fun malformedPayloadIsRejectedInsteadOfGuessing() {
+    @Test fun malformedOrWrongVersionPayloadIsRejectedInsteadOfGuessing() {
         assertNull(parseAssistantState("不是 JSON"))
         assertNull(parseAssistantState(""))
+        // v1 帧与新格式不兼容：整帧丢弃，保留上一帧而不是误读旧字段。
+        assertNull(parseAssistantState("""{"version": 1, "connected": true}"""))
+        assertNull(parseAssistantState("""{"connected": true}"""))
     }
 
     @Test fun bridgeFailureIsALocalFactThatOverridesPublishedState() {
-        val base = parsed("""{"connected": true, "consent": true}""")
+        val base = parsed("""{"version": 2, "connected": true}""")
         val failed = base.copy(bridgeAvailable = false)
 
         assertFalse(failed.canInteract)
