@@ -121,7 +121,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
+          # 本工作流跑在 feature 分支与手动触发上，允许写缓存：否则每次都要从
+          # Maven Central / JetBrains 重新拉 Kotlin 编译器（约 16MB），
+          # 上游 504 会直接把打包打成失败。
+          cache-read-only: false
 
       - name: Download the signed plugin packages
         uses: actions/download-artifact@v8
