@@ -172,6 +172,26 @@ IMPACT_TO_ANDROID_LANES = (
 )
 
 
+def android_app_sections(changed_files: list[str]) -> list[str] | None:
+    """App-test sections the local PR run should cover.
+
+    Returns None (meaning "every section") whenever the shared classifier says
+    the change is full-scope or cannot be classified — the local runner must not
+    be more optimistic than CI.
+    """
+    import importlib.util
+
+    path = REPO_ROOT / "tools/ci/impact.py"
+    spec = importlib.util.spec_from_file_location("ci_impact", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    result = module.classify([("M", changed) for changed in changed_files])
+    if result["full_required"]:
+        return None
+    sections = result.get("app_sections") or set()
+    return sorted(sections)
+
+
 def android_test_invocations(
     level: str, impact: dict[str, bool], app_sections: list[str] | None = None
 ) -> list[list[str]]:
@@ -211,7 +231,9 @@ def android_test_invocations(
         invocations.append(["noVpnSurfaceCheck"])
     return invocations
 
-def execute_strategy(level: str, impact: dict[str, bool]) -> int:
+def execute_strategy(
+    level: str, impact: dict[str, bool], app_sections: list[str] | None = None
+) -> int:
     print(f"=== 智能测试验证计划 [Level: {level.upper()}] ===")
     print(f"影响范围评估: {impact}")
 
@@ -332,7 +354,7 @@ def execute_strategy(level: str, impact: dict[str, bool]) -> int:
     # 任务选择由 tools/ci/android_tasks.py 统一提供，CI 与本地取同一份分组，
     # 避免“本地跑一套、流水线跑另一套”造成的漏测。
     android_dir = REPO_ROOT / "apps/android"
-    invocations = android_test_invocations(level, impact)
+    invocations = android_test_invocations(level, impact, app_sections)
 
     if (android_dir / "gradlew").exists():
         for android_tasks in invocations:
@@ -360,7 +382,9 @@ def main() -> int:
         print(f"  ... 及其余 {len(changed_files) - 10} 个文件")
 
     impact = analyze_impact(changed_files)
-    return execute_strategy(args.level, impact)
+    # PR 级与 CI 取同一份域选择：CI 收窄到什么范围，本地就复现什么范围。
+    sections = android_app_sections(changed_files) if args.level == "pr" else None
+    return execute_strategy(args.level, impact, sections)
 
 if __name__ == "__main__":
     sys.exit(main())

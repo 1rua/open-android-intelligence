@@ -225,6 +225,32 @@ def test_play_lane_enables_parallel_forks(tasks):
 # --- end-to-end wiring -----------------------------------------------------
 
 
+def test_local_pr_sections_match_the_shared_classifier():
+    """The local PR run must not be more optimistic than CI.
+
+    `tools/smart-test.py` derives its app-test sections from the same classifier
+    CI uses; a divergence here would let a workstation pass a PR the gate later
+    rejects (or vice versa).
+    """
+    import importlib.util
+
+    smart = Path(REPO_ROOT / "tools/smart-test.py")
+    spec = importlib.util.spec_from_file_location("smart_test_runner", smart)
+    runner = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(runner)
+
+    settings_file = [
+        "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/appearance/AppearanceSettingsScreen.kt"
+    ]
+    assert runner.android_app_sections(settings_file) == ["core", "settings"]
+
+    # A full-scope change must fall back to "every section" (None), never to a
+    # narrower set.
+    assert runner.android_app_sections(["apps/android/gradle.properties"]) is None
+    assert runner.android_app_sections([]) is None
+
+
 def test_ci_workflow_gates_each_lane_on_its_own_output():
     import yaml
 

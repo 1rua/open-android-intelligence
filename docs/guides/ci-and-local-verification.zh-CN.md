@@ -93,7 +93,9 @@ App 回归集是唯一**不**拆分 job 的 lane：实测两个分片各自的 G
 - 每个类名都真实存在于 `apps/android/app/src/test`，且无重复；
 - `[core]` 非空、五个域齐全；
 - 按域过滤时 `[core]` 始终被包含，未知域名直接报错；
-- 本地 `test:pr` 的过滤器集合与 CI 分片并集一致。
+- 本地 `test:pr` 与 CI 使用同一份域选择：`tools/smart-test.py` 从
+  `tools/ci/impact.py` 取 `app_sections`，收窄范围与 CI 完全一致；全量或无法
+  判定时退回全部域。
 
 新增 App 回归测试时，放进 `[core]` 或对应功能域；**不要**只留 CI 全量跑。
 
