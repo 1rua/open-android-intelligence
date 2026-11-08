@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import sys
 from pathlib import Path
 
@@ -38,7 +37,6 @@ MODULE_TASKS = {
         ":screen-control:testDebugUnitTest",
         ":device-primitives:testDebugUnitTest",
     ],
-    "android-platform": [":platform-kernel:testDebugUnitTest"],
     "android-notifications": [
         ":notification-control:testDebugUnitTest",
         ":notification-host:testDebugUnitTest",
@@ -46,6 +44,7 @@ MODULE_TASKS = {
         ":policy-engine:testDebugUnitTest",
         ":encrypted-store:testDebugUnitTest",
         ":sms-collector:testDebugUnitTest",
+        ":call-log-collector:testDebugUnitTest",
     ],
     "android-conversation": [
         ":conversation-domain:testDebugUnitTest",
@@ -53,6 +52,21 @@ MODULE_TASKS = {
         ":conversation-data:testDebugUnitTest",
     ],
     "android-gateway": [":gateway-client:testDebugUnitTest"],
+    # Modules with their own tests that previously had no lane at all: their
+    # suites never ran in CI. `plugins` groups the plugin payload/runtime/UI
+    # modules; `android-platform` keeps the shared kernel helpers.
+    "android-plugins": [
+        ":plugin-package:testDebugUnitTest",
+        ":plugin-runtime-wasm:testDebugUnitTest",
+        ":plugin-ui:testDebugUnitTest",
+    ],
+    "android-platform": [
+        ":platform-kernel:testDebugUnitTest",
+        ":core-model:testDebugUnitTest",
+        ":capability-sync-runtime:testDebugUnitTest",
+        ":artifact-ports:testDebugUnitTest",
+        ":assistant-holder:testDebugUnitTest",
+    ],
 }
 
 # These tests must always run for any Android change: they assert the
@@ -69,6 +83,10 @@ PLAY_TESTS = [
     "--tests=*ScreenControlConfirmationDialogTest",
     "--tests=*NotificationAccessSettingsTest",
     "--tests=*PluginCapabilityRiskTest",
+    # Play-only: asserts the channel exposes no built-in capabilities and
+    # reports BUILT_IN_CHANNEL_UNSUPPORTED. The class skips under the Full
+    # variant, so listing it in the Full manifest does not cover this.
+    "--tests=*BuiltInCapabilitiesTest",
     "--tests=*CapabilityPublisherTest",
     "--tests=*ApplicationCompositionTest",
     "--tests=*AndroidApiCompatibilityTest",
@@ -201,8 +219,13 @@ def play_args() -> list[str]:
 
 
 def emit(arguments: list[str]) -> None:
+    # One argument per line, unquoted. Consumers read this with `mapfile` and
+    # pass the array to Gradle without shell parsing, so shell quoting would be
+    # delivered literally. Arguments here never contain newlines.
     for argument in arguments:
-        print(shlex.quote(argument))
+        if "\n" in argument:
+            raise SystemExit(f"argument contains a newline: {argument!r}")
+        print(argument)
 
 
 def main(argv: list[str] | None = None) -> int:

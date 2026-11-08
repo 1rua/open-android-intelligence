@@ -200,6 +200,11 @@ def android_test_invocations(
     Gradle binds `--tests` to the last Test task named before it, so a filtered
     task must be alone in its invocation. Module tasks (unfiltered) can share
     one invocation; the filtered app task cannot share with anything.
+
+    The forbidden-surface gate is scheduled for every non-`full` level,
+    independently of which lanes were selected: it is the repository's core
+    safety check and must not disappear just because a change happened to be
+    app-only or module-only.
     """
     planner = load_android_planner()
     invocations: list[list[str]] = []
@@ -214,22 +219,30 @@ def android_test_invocations(
         # 本地快速反馈只跑与编译无关的越权面门禁。
         return [["noVpnSurfaceCheck"]]
 
+    # `is_full_required` (build config, contracts, security) means "the affected
+    # module set cannot be narrowed": run every module suite plus the app suite,
+    # rather than falling through to a gate-only invocation.
+    full_required = bool(impact.get("is_full_required"))
+
     module_tasks: list[str] = []
-    for flag, lane in IMPACT_TO_ANDROID_LANES:
-        if impact.get(flag):
-            module_tasks.extend(planner.module_lane_args(lane))
+    if full_required:
+        module_tasks.extend(planner.full_module_tasks())
+    else:
+        for flag, lane in IMPACT_TO_ANDROID_LANES:
+            if impact.get(flag):
+                module_tasks.extend(planner.module_lane_args(lane))
     module_tasks = list(dict.fromkeys(module_tasks))
-    if module_tasks:
-        invocations.append(["noVpnSurfaceCheck"] + module_tasks)
 
-    if impact.get("affects_android_app") or impact.get("affects_android_settings"):
+    # Always keep the safety gate, even when no module or app task is selected.
+    invocations.append(["noVpnSurfaceCheck"] + module_tasks)
+
+    if full_required or impact.get("affects_android_app") or impact.get("affects_android_settings"):
         # Same section selection CI uses, so local PR admission and the PR gate
-        # test the same classes.
-        invocations.append(planner.pr_args_for_sections(app_sections))
+        # test the same classes. A full-required change widens to every section.
+        invocations.append(planner.pr_args_for_sections(None if full_required else app_sections))
 
-    if not invocations:
-        invocations.append(["noVpnSurfaceCheck"])
     return invocations
+
 
 def execute_strategy(
     level: str, impact: dict[str, bool], app_sections: list[str] | None = None

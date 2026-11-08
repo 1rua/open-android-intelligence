@@ -153,24 +153,40 @@ runs:
           export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
         fi
         case "${{ inputs.lane }}" in
-          android-device|android-platform|android-notifications|android-conversation|android-gateway)
-            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
+          android-device|android-platform|android-notifications|android-conversation|android-gateway|android-plugins)
+            planner=(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
             ;;
           app-pr)
             if [ -n "${OAI_APP_SECTIONS:-}" ]; then
-              mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr --sections "$OAI_APP_SECTIONS")
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr --sections "$OAI_APP_SECTIONS")
             else
-              mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group app-pr)
+              planner=(python3 ../../tools/ci/android_tasks.py --group app-pr)
             fi
             ;;
           play)
-            mapfile -t args < <(python3 ../../tools/ci/android_tasks.py --group play)
+            planner=(python3 ../../tools/ci/android_tasks.py --group play)
             ;;
           *)
             echo "::error::Unknown lane: ${{ inputs.lane }}"
             exit 2
             ;;
         esac
+
+        # `mapfile` returns success even when its producer fails, so a planner
+        # rejection would yield an empty array and Gradle would run its default
+        # `help` task — reporting a green lane that tested nothing. Capture the
+        # output first and check both the exit status and the result.
+        if ! planned="$("${planner[@]}")"; then
+          echo "::error::Task planner failed for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+        mapfile -t args <<< "$planned"
+        # `mapfile` on a single empty line yields one empty element.
+        if [ "${#args[@]}" -eq 0 ] || [ -z "${args[0]:-}" ]; then
+          echo "::error::Task planner produced no tasks for lane '${{ inputs.lane }}'"
+          exit 1
+        fi
+
         printf 'gradle %s\n' "${args[*]}"
         ./gradlew "${args[@]}" \
           -Poai.testParallelForks="$OAI_TEST_PARALLEL_FORKS" \

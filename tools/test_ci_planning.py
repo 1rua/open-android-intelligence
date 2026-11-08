@@ -134,6 +134,85 @@ def test_unknown_scope_widens_app_sections(impact):
     assert result["app_sections"] == set(impact.APP_SECTIONS)
 
 
+def test_unclassified_path_is_not_masked_by_a_classified_sibling(impact):
+    """One recognised file must not hide an unrecognised executable change."""
+    result = impact.classify([
+        ("M", "docs/foo.md"),
+        ("M", "weird-new-dir/thing.bin"),
+    ])
+    assert result["full_required"] is True
+    assert result["unknown"] is True
+    assert result["unclassified_paths"] == ["weird-new-dir/thing.bin"]
+
+
+def test_native_only_tests_route_to_hermes(impact):
+    """Core `--ignore`s these files; only the Hermes job executes them."""
+    for path in (
+        "oai-core/tests/test_native_event_sync.py",
+        "oai-core/tests/test_structured_tool_history.py",
+        "oai-core/tests/test_interaction_pipeline.py",
+        "oai-core/tests/test_communication_process_recovery.py",
+        "oai-core/tests/test_native_tool_events.py",
+    ):
+        lanes = impact.classify([("M", path)])["lanes"]
+        assert lanes["hermes"] is True, path
+
+
+def test_executable_manifests_are_not_documentation(impact):
+    """The app regression manifest and fixture requirements control tests."""
+    for path in (
+        "apps/android/ci/app-regression.txt",
+        "apps/android/ci/hermes-fixture-requirements.txt",
+    ):
+        result = impact.classify([("M", path)])
+        assert result["full_required"] is True, path
+
+
+def test_gateway_change_runs_consumer_lanes(impact):
+    """Consumer module tests do not run in the producer's own module task."""
+    lanes = impact.classify([
+        ("M", "apps/android/gateway-client/src/main/kotlin/x/Client.kt"),
+    ])["lanes"]
+    assert lanes["android-gateway"] is True
+    assert lanes["android-conversation"] is True
+    assert lanes["android-device"] is True
+
+
+def test_push_paths_win_over_broad_settings_hint(impact):
+    result = impact.classify([
+        ("M", "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push/PushSettingsScreen.kt"),
+    ])
+    assert "push-notifications" in result["app_sections"]
+
+
+def test_measurement_changes_run_the_hermes_lane(impact):
+    lanes = impact.classify([("M", "tools/measure-communication.py")])["lanes"]
+    assert lanes["hermes"] is True
+
+
+def test_every_module_with_tests_has_a_lane(tasks):
+    """A module test suite with no lane never runs in CI."""
+    android_root = REPO_ROOT / "apps/android"
+    covered = {
+        task.split(":")[1]
+        for lane_tasks in tasks.MODULE_TASKS.values()
+        for task in lane_tasks
+    }
+    missing = []
+    for module_dir in android_root.iterdir():
+        if not module_dir.is_dir():
+            continue
+        # `app` is the application module; it is covered by the app lanes.
+        if module_dir.name == "app":
+            continue
+        test_dir = module_dir / "src/test"
+        if not test_dir.is_dir():
+            continue
+        if any(test_dir.rglob("*Test.kt")) and module_dir.name not in covered:
+            missing.append(module_dir.name)
+    assert not missing, f"modules with tests but no CI lane: {missing}"
+
+
 def test_github_output_uses_underscore_names(impact):
     result = impact.classify([("M", "oai-core/src/oai_core/cli.py")])
     output = impact.to_github_output(result)
@@ -186,6 +265,29 @@ def test_section_filter_always_includes_core(tasks):
 def test_unknown_section_is_rejected(tasks):
     with pytest.raises(SystemExit):
         tasks.pr_args_for_sections(["nope"])
+
+
+def test_regression_manifest_covers_every_app_test_class(tasks):
+    """No app unit test may be silently excluded from the PR gate.
+
+    The manifest is the whole PR-level app regression set. A newly added test
+    that is not listed here would never run in CI, which is how 76 of 152 test
+    classes had quietly dropped out of the gate.
+    """
+    test_root = REPO_ROOT / "apps/android/app/src/test/kotlin"
+    discovered = set()
+    for path in test_root.rglob("*.kt"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            for prefix in ("class ", "internal class ", "abstract class ", "open class "):
+                if stripped.startswith(prefix):
+                    name = stripped[len(prefix):].split("(")[0].split()[0].split("<")[0]
+                    if name.endswith("Test"):
+                        discovered.add(name)
+    listed = set(tasks.read_regression_manifest())
+    missing = sorted(discovered - listed)
+    assert not missing, f"app test classes missing from the PR manifest: {missing}"
 
 
 def test_every_regression_entry_exists_as_a_test_class(tasks):

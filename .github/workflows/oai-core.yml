@@ -25,15 +25,18 @@ name: OAI Core and Session Adapters
 #   * 不为每个 lane 重新编译 Rust 插件，构建一次后走 artifact。
 
 # 职责边界：
-#   * 本工作流 = dev 分支的增量 CI（按变更范围选测 lane）。
-#   * ci.yml     = main 分支的完整回归（不依赖影响分析）。
-# 因此这里不监听 main：同一 SHA 再跑一遍增量测试只会重复消耗 runner，
-# 而 main 的必需检查名也固定在 ci.yml 里。
+#   * 本工作流 = 增量 CI（按变更范围选测 lane），dev 与 main 都跑。
+#   * ci.yml     = main 的完整回归（不依赖影响分析）。
+#
+# 为什么 main 也必须跑本工作流：Core 发行包、Core 安全、Hermes 适配器与
+# DSH 回归只定义在这里。ci.yml 负责的是历史网关兼容性与 Android 完整回归，
+# 并不覆盖上述套件。若本工作流不监听 main，稳定发布门禁就可能接受一次
+# 从未跑过当前 Core 套件的 ci.yml 成功结果。
 on:
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
   push:
-    branches: [dev]
+    branches: [dev, main]
   workflow_dispatch:
 
 permissions:
@@ -59,6 +62,7 @@ jobs:
       runs_android_notifications: ${{ steps.impact.outputs.runs_android_notifications }}
       runs_android_conversation: ${{ steps.impact.outputs.runs_android_conversation }}
       runs_android_gateway: ${{ steps.impact.outputs.runs_android_gateway }}
+      runs_android_plugins: ${{ steps.impact.outputs.runs_android_plugins }}
       runs_android_app: ${{ steps.impact.outputs.runs_android_app }}
       runs_android_play: ${{ steps.impact.outputs.runs_android_play }}
       app_sections: ${{ steps.impact.outputs.app_sections }}
@@ -85,7 +89,7 @@ jobs:
           import json
           lanes = ["fast","core","hermes","dsh","android_device","android_platform",
                    "android_notifications","android_conversation","android_gateway",
-                   "android_app","android_play"]
+                   "android_plugins","android_app","android_play"]
           print("\n".join(f"runs_{lane}=true" for lane in lanes))
           print("full_required=true")
           print("app_sections=core,settings,conversations,plugins,push-notifications")
@@ -467,6 +471,21 @@ jobs:
           lane: android-gateway
           test-parallel-forks: '1'
 
+  android-plugins:
+    name: Android Plugin Modules
+    needs: changes
+    if: needs.changes.outputs.runs_android_plugins == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/android-lane
+        with:
+          lane: android-plugins
+          test-parallel-forks: '1'
+
   android-app:
     name: Android App Regressions
     needs: [changes, android-setup]
@@ -528,6 +547,7 @@ jobs:
       - android-notifications
       - android-conversation
       - android-gateway
+      - android-plugins
       - android-app
       - android-play
     runs-on: ubuntu-latest

@@ -53,9 +53,37 @@ SECURITY_OR_CONTRACT_PATHS = {
     "openclaw-plugin-pin.json",
     "tools/smart-test.py",
     "tools/ci/impact.py",
+    "tools/ci/android_tasks.py",
+    "tools/test_ci_planning.py",
     "tools/test_smart_test.py",
     ".github/workflows/oai-core.yml",
-    ".github/workflows/ci-release-gate.yml",
+    ".github/workflows/release-gate.yml",
+    "apps/android/ci/app-regression.txt",
+    "apps/android/ci/hermes-fixture-requirements.txt",
+}
+
+# Test modules that only the Hermes lane executes. The Core job explicitly
+# `--ignore`s them, so classifying them as "core" alone would let a change to a
+# test file pass CI without ever running that file.
+HERMES_ONLY_TESTS = {
+    "oai-core/tests/test_hermes.py",
+    "oai-core/tests/test_hermes_native.py",
+    "oai-core/tests/test_hermes_native_origin.py",
+    "oai-core/tests/test_hermes_zero_config_native.py",
+    "oai-core/tests/test_hermes_session_key_recovery.py",
+    "oai-core/tests/test_hermes_plugin_zero_config.py",
+    "oai-core/tests/test_hermes_interactions.py",
+    "oai-core/tests/test_hermes_approval_prompts.py",
+    "oai-core/tests/test_hermes_dispatch_delivery.py",
+    "oai-core/tests/test_hermes_communication_reliability.py",
+    "oai-core/tests/test_agent_registration.py",
+    "oai-core/tests/test_native_event_sync.py",
+    "oai-core/tests/test_native_tool_events.py",
+    "oai-core/tests/test_structured_tool_history.py",
+    "oai-core/tests/test_interaction_pipeline.py",
+    "oai-core/tests/test_communication_process_recovery.py",
+    # The measurement suite runs only in the Hermes job.
+    "tools/test_measure_communication.py",
 }
 
 # oai-core authentication, authorization, sync and gateway code invalidates the
@@ -75,6 +103,22 @@ MODULE_LANE_TO_APP_SECTION = {
     "plugins": "plugins",
 }
 
+# Reverse dependencies: changing a library must also run the lanes whose tests
+# exercise it. Derived from `implementation(project(":x"))` in each module's
+# build script (verified by tools/test_ci_planning.py against the real files).
+MODULE_DEPENDENTS = {
+    "gateway-client": ("device", "conversation", "plugins"),
+    "control-ports": ("conversation", "plugins", "notifications"),
+    "capability-ports": ("plugins", "notifications"),
+    "platform-kernel": ("conversation", "plugins", "notifications", "device"),
+    "plugin-package": ("plugins",),
+    "plugin-runtime-wasm": ("plugins",),
+    "encrypted-store": ("notifications", "conversation"),
+    "policy-engine": ("notifications", "plugins"),
+    "device-primitives": ("device", "plugins"),
+    "conversation-domain": ("conversation", "plugins"),
+}
+
 ANDROID_MODULE_LANES = {
     "control-ports": "device",
     "capability-ports": "device",
@@ -85,6 +129,10 @@ ANDROID_MODULE_LANES = {
     "plugin-package": "plugins",
     "plugin-runtime-wasm": "plugins",
     "plugin-ui": "plugins",
+    "core-model": "platform",
+    "capability-sync-runtime": "platform",
+    "artifact-ports": "platform",
+    "assistant-holder": "platform",
     "notification-control": "notifications",
     "notification-host": "notifications",
     "notification-collector": "notifications",
@@ -109,6 +157,7 @@ LANES = (
     "android-notifications",  # settings/notification policy/encrypted state
     "android-conversation",   # conversation ordering/rendering/persistence
     "android-gateway",        # gateway client transport + connectivity
+    "android-plugins",        # plugin package/runtime/UI modules
     "android-app",            # full app unit tests (heaviest lane)
     "android-play",           # Play variant integration
 )
@@ -207,23 +256,18 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         result["app_sections"] = ALL_APP_SECTIONS
         return result
 
-    matched_any = False
+    unclassified: list[str] = []
     for status, path in pairs:
-        hit = classify_path(status, path, lanes, sections)
-        matched_any = matched_any or hit
-        if not hit and path.startswith("oai-core/"):
-            result["full_required"] = True
+        if not classify_path(status, path, lanes, sections):
+            unclassified.append(path)
 
-    if result["full_required"]:
-        for lane in LANES:
-            lanes[lane] = True
-        result["app_sections"] = ALL_APP_SECTIONS
-        return result
-
-    if not matched_any:
-        # A diff we cannot place is treated as full-scope, not as a no-op.
+    if unclassified:
+        # A single path we cannot place widens the matrix, even when a sibling
+        # path (docs, a known module) was classified: otherwise one recognised
+        # file would mask an unrecognised executable change.
         result["unknown"] = True
         result["full_required"] = True
+        result["unclassified_paths"] = unclassified
         for lane in LANES:
             lanes[lane] = True
         result["app_sections"] = ALL_APP_SECTIONS
@@ -261,6 +305,11 @@ def classify_path(
         lanes["core"] = True
         return True
 
+    if path in HERMES_ONLY_TESTS:
+        # The Core job ignores these files; only the Hermes job runs them.
+        lanes["hermes"] = True
+        return True
+
     if path.startswith("oai-core/"):
         lanes["core"] = True
         # Authentication/authorization/session semantics are shared with every
@@ -272,6 +321,8 @@ def classify_path(
         return True
 
     if path.startswith("tools/measure-communication"):
+        # Implementation and its tests both live in the Hermes job.
+        lanes["hermes"] = True
         lanes["core"] = True
         return True
 
@@ -296,6 +347,9 @@ def classify_android(
     lane = ANDROID_MODULE_LANES.get(module)
     if lane:
         lanes[f"android-{lane}"] = True
+        # Consumers' tests do not run in the producer's module task.
+        for dependent in MODULE_DEPENDENTS.get(module, ()):
+            lanes[f"android-{dependent}"] = True
         # Modules are compiled into the app; the app lane must follow them, and
         # the module lane name doubles as the app-test section for the domains we
         # model (settings/conversations/plugins/push-notifications).
@@ -336,18 +390,19 @@ def classify_android(
 # (apps/android/ci/app-regression.txt). The section is what lets a UI copy
 # change run only its own app tests instead of the whole app regression set.
 APP_FEATURE_HINTS = (
+    # Narrower sections first: `/push/` and `/notifications/` also live under the
+    # broad "settings" umbrella, and first match wins.
+    ("push-notifications", "android-notifications", (
+        "/push/", "/notifications/",
+    )),
     ("settings", "android-notifications", (
-        "/settings/", "/notifications/", "/push/",
-        "SettingsScreen", "SettingsNavHost", "SettingsViewModel",
+        "/settings/", "SettingsScreen", "SettingsNavHost", "SettingsViewModel",
     )),
     ("conversations", "android-conversation", (
         "/conversations/", "/conversation/", "Conversation",
     )),
     ("plugins", "android-device", (
         "/plugins/", "Plugin",
-    )),
-    ("push-notifications", "android-notifications", (
-        "/push/", "/notifications/",
     )),
     ("core", "android-gateway", (
         "/gateway/", "/connection/", "/auth/", "Gateway",

@@ -40,6 +40,14 @@ on:
       sha:
         description: Commit SHA to inspect.
         required: true
+      wait-seconds:
+        description: How long to wait for CI on that commit.
+        required: false
+        default: '2400'
+      required-workflow:
+        description: Workflow file whose run must have passed (oai-core.yml or ci.yml).
+        required: false
+        default: oai-core.yml
 
 permissions:
   contents: read
@@ -59,7 +67,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET_SHA: ${{ inputs.sha }}
           WAIT_SECONDS: ${{ inputs.wait-seconds || 2400 }}
-          REQUIRED_WORKFLOW: ${{ inputs.required-workflow }}
+          # workflow_dispatch inputs have no type coercion; keep a hard default so
+          # an empty value cannot make the path filter match nothing.
+          REQUIRED_WORKFLOW: ${{ inputs.required-workflow || 'oai-core.yml' }}
         run: |
           python3 - <<'PY'
           import json
@@ -97,28 +107,43 @@ jobs:
 
               # Only the newest attempt per run id matters; older attempts of the
               # same run are superseded by a re-run.
-              latest = {}
+              # Attempt numbers belong to a single run id: run A attempt 2 must
+              # never outrank the newer run B attempt 1. Keep the newest run per
+              # run id (by attempt), then judge each run independently and let
+              # the newest *run* decide the commit's state.
+              newest_per_run: dict[int, dict] = {}
               for run in runs:
-                  key = run["workflow_id"]
-                  if key not in latest or run["run_attempt"] >= latest[key]["run_attempt"]:
-                      latest[key] = run
-              states = [(r["status"], r["conclusion"]) for r in latest.values()]
+                  key = run["id"]
+                  current = newest_per_run.get(key)
+                  if current is None or run["run_attempt"] >= current["run_attempt"]:
+                      newest_per_run[key] = run
+              ordered = sorted(
+                  newest_per_run.values(),
+                  key=lambda r: (r["created_at"], r["run_attempt"]),
+                  reverse=True,
+              )
+              states = [(r["status"], r["conclusion"]) for r in ordered]
 
-              succeeded = [s for s in states if s[1] == "success"]
-              failed = [s for s in states if s[1] in BAD]
-              pending = [s for s in states if s[0] != "completed"]
+              if not ordered:
+                  newest = None
+              else:
+                  # The newest run is decisive. An older successful run must not
+                  # launder a newer failure into a release.
+                  newest = ordered[0]
 
-              if failed and not succeeded:
-                  print(f"::error::CI failed for {sha} ({states}); refusing to release.")
-                  sys.exit(1)
-
-              if succeeded:
-                  # A successful run exists and no unresolved failure competes
-                  # with it: the commit is verified.
-                  print(f"::notice::CI verified for {sha}: {states}")
-                  with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-                      out.write("ready=true\n")
-                  sys.exit(0)
+              if newest is not None:
+                  status, conclusion = newest["status"], newest["conclusion"]
+                  if conclusion == "success":
+                      print(f"::notice::CI verified for {sha} by the newest run ({states}).")
+                      with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                          out.write("ready=true\n")
+                      sys.exit(0)
+                  if conclusion in BAD:
+                      print(f"::error::The newest CI run for {sha} concluded {conclusion} ({states}); refusing to release.")
+                      sys.exit(1)
+                  pending = status != "completed"
+              else:
+                  pending = True
 
               if time.monotonic() >= deadline:
                   if pending:

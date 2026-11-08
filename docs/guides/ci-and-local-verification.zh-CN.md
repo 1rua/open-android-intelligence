@@ -30,6 +30,7 @@ changes           变更影响分析 → 输出各 lane 开关
   ├─ android-preflight   越权面门禁（独立并行）
   ├─ android-setup       Rust WASM 夹具，只服务 app / play lane
   ├─ android-device      设备能力、本地授权
+  ├─ android-plugins     插件包/运行时/UI 模块
   ├─ android-platform    平台内核恢复
   ├─ android-notifications 设置、通知策略、加密状态
   ├─ android-conversation  会话顺序、渲染、持久化
@@ -164,6 +165,22 @@ APK，重复构建会产生不同 `versionCode` 的两份产物。
 - 冷缓存（改动 `build.gradle.kts` / `gradle.properties`）会让 Gradle 构建缓存
   整体失效，这是本次实测的环境，属于最坏情况。
 - Play lane 8.4 分钟，主要也是编译；已与 app lane 并行。
+
+## 覆盖完整性约束
+
+- `apps/android/ci/app-regression.txt` 必须列出 `apps/android/app/src/test`
+  下的**全部** `*Test` 类；`tools/test_ci_planning.py` 会在漏掉任何类时失败。
+- 每个带测试的 Android 模块都必须归属某个 lane；同上，漏掉即失败。
+- 这两条测试是硬门禁：新增测试或新模块若没接进 CI，测试会红。
+
+## 配置缓存的两个陷阱
+
+1. **任务输入不能是配置期求值的文件列表。** 列表在存储缓存时被冻结，之后新增
+   的源文件不会成为输入，任务保持 `UP-TO-DATE` —— 安全门禁会被新增文件绕过。
+   `noVpnSurfaceCheck` 因此改为声明**源码树**（`fileTree`），每次调用重新求值。
+2. **任务动作不能捕获脚本对象。** `doFirst { android.signingConfigs... }`
+   或闭包引用脚本级 `val` 都会让配置缓存无法存储；稳定发布构建会因此失败。
+   改为独立任务 + 声明的 `Property` 输入。
 
 ## CI 失败时怎么查
 

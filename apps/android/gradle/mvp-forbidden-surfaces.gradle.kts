@@ -81,14 +81,6 @@ val testOnlyOutboundAssertions = setOf(
     "conversation-data/src/test/kotlin/com/openandroidintelligence/conversation/data/HermesHttpInteropTest.kt",
 )
 
-fun sourceFilesUnder(root: File): List<File> =
-    root.walkTopDown()
-        .onEnter { it.name !in generatedDirectoryNames }
-        .filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
-        .filter { it.relativeTo(rootDir).path !in absenceAuditFiles }
-        .filter { it.relativeTo(rootDir).path !in testOnlyLoopbackFixtures }
-        .toList()
-
 /**
  * Unchecked-owner surfaces must be rejected before packaging.
  *
@@ -106,35 +98,45 @@ tasks.register("noVpnSurfaceCheck") {
     group = "verification"
     description = "Reject system VPN, route/DNS, proxy/listener and generic dial surfaces."
 
-    // Derived from the registered modules so a newly included module is covered
-    // by this gate the moment it is added, not by a manual list edit.
-    val ownerFiles = mutableListOf<File>()
-    val strictFiles = mutableListOf<File>()
-    rootProject.subprojects.forEach { project ->
-        val moduleOwnsTransport = project.name in networkOwnerModules
-        sourceFilesUnder(project.projectDir).forEach { file ->
-            val relative = file.relativeTo(rootDir).path
-            if (moduleOwnsTransport || relative in networkOwnerFiles || relative in testOnlyOutboundAssertions) {
-                ownerFiles.add(file)
-            } else {
-                strictFiles.add(file)
-            }
-        }
-    }
-    val ownerSnapshot = ownerFiles.toList()
-    val strictSnapshot = strictFiles.toList()
+    // Ownership decisions are configuration-time facts about *modules* (which
+    // project owns outbound transport) and about explicit path lists.
+    val ownerModuleNames = networkOwnerModules.toSet()
+    val ownerPathList = networkOwnerFiles.toSet()
+    val testOnlyPathList = testOnlyOutboundAssertions.toSet()
+    val absencePathList = absenceAuditFiles.toSet()
+    val loopbackPathList = testOnlyLoopbackFixtures.toSet()
+    val skippedDirs = generatedDirectoryNames.toSet()
     val alwaysPatterns = alwaysForbidden.map { it.pattern }
     val ownerOnlyPatterns = forbiddenOutsideOwners.map { it.pattern }
     val reportedRoot = rootDir.absolutePath
+    val moduleRoots = rootProject.subprojects.map {
+        it.name to it.projectDir.absolutePath
+    }
 
-    inputs.files(ownerSnapshot).withPropertyName("outboundOwnerSources")
+    // Declare the source *trees*, not a resolved file list. A file list is
+    // captured when the configuration cache entry is stored, so a source file
+    // added afterwards was not an input and the task stayed UP-TO-DATE —
+    // letting a newly added forbidden surface through. A file-tree spec is
+    // re-resolved on every invocation, so membership changes invalidate the
+    // task while the configuration cache stays reusable.
+    val sourceTrees = moduleRoots.map { (_, dir) ->
+        layout.files(
+            fileTree(dir) {
+                include("**/*.kt", "**/*.java", "**/*.xml")
+                skippedDirs.forEach { exclude("**/$it/**") }
+            }
+        )
+    }
+    inputs.files(sourceTrees).withPropertyName("scannedSourceTrees")
         .withPathSensitivity(PathSensitivity.RELATIVE)
-    inputs.files(strictSnapshot).withPropertyName("strictSources")
-        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.property("ownerModules", ownerModuleNames.sorted())
+    inputs.property("ownerPaths", ownerPathList.sorted())
+    inputs.property("testOnlyPaths", testOnlyPathList.sorted())
+    inputs.property("absencePaths", absencePathList.sorted())
+    inputs.property("loopbackPaths", loopbackPathList.sorted())
     inputs.property("alwaysBannedPatterns", alwaysPatterns)
     inputs.property("ownerOnlyBannedPatterns", ownerOnlyPatterns)
-    // A marker output lets the task be up-to-date and cacheable. Without an
-    // output the scan re-reads every source file on each invocation.
+    // A marker output lets the task be up-to-date and cacheable.
     val evidenceFile = layout.buildDirectory.file("reports/mvp-forbidden-surfaces/clean.txt")
     outputs.file(evidenceFile)
 
@@ -274,7 +276,7 @@ tasks.register("noVpnSurfaceCheck") {
         }
 
         fun scan(files: Iterable<File>, banned: List<Regex>): List<String> = buildList {
-            files.filter { it.isFile && it.extension in setOf("kt", "java", "xml") }.forEach { file ->
+            files.filter { it.isFile }.forEach { file ->
                 val lines = stripComments(file.readText(), file.extension.equals("xml", ignoreCase = true))
                 lines.forEachIndexed { index, line ->
                     if (banned.any { it.containsMatchIn(line) }) {
@@ -284,14 +286,32 @@ tasks.register("noVpnSurfaceCheck") {
             }
         }
 
-        val violations = buildList {
-            addAll(scan(ownerSnapshot, alwaysBanned))
-            addAll(scan(strictSnapshot, alwaysBanned + ownerOnlyBanned))
+        val violations = mutableListOf<String>()
+        var checked = 0
+        moduleRoots.forEach { (moduleName, dirPath) ->
+            val moduleOwnsTransport = moduleName in ownerModuleNames
+            val sourceRoot = File(dirPath)
+            val files = sourceRoot.walkTopDown()
+                .onEnter { it.name !in skippedDirs }
+                .filter { it.isFile && it.extension in setOf("kt", "java", "xml") }
+                .filter {
+                    val relative = it.relativeTo(root).path
+                    relative !in absencePathList && relative !in loopbackPathList
+                }
+                .toList()
+            files.forEach { file ->
+                val relative = file.relativeTo(root).path
+                val allowsOutbound = moduleOwnsTransport ||
+                    relative in ownerPathList || relative in testOnlyPathList
+                val banned = if (allowsOutbound) alwaysBanned else alwaysBanned + ownerOnlyBanned
+                violations += scan(listOf(file), banned)
+                checked++
+            }
         }
         check(violations.isEmpty()) { violations.sorted().joinToString("\n") }
         val evidence = evidenceFile.get().asFile
         evidence.parentFile.mkdirs()
-        evidence.writeText("checked=${ownerSnapshot.size + strictSnapshot.size}\n")
+        evidence.writeText("checked=$checked\n")
     }
 }
 
