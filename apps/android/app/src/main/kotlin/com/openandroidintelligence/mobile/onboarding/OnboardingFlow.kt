@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -93,6 +94,22 @@ fun OnboardingFlow(
 
     // ---- 权限状态：进入页面时查询一次，回到前台时再查（用户可能去系统设置里改过） ----
     val statuses = remember { mutableStateMapOf<String, PermissionStatus>() }
+    /**
+     * 一次性提示前先确认 RoleManager 的真实结论，再调用这里。
+     *
+     * 引导页没有独立的 notice 通道，用与其它入口一致的短 Toast 呈现；
+     * 只说明「发生了什么、下一步怎么做」，不改变任何权限状态。
+     */
+    fun showRoleNotice(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+    /**
+     * 用户点了「去设置」但还没确认结果的那张卡片。
+     *
+     * 不能把「Intent 启动成功」当成「已设置」：系统页可能根本没有本应用，
+     * 用户也可能直接返回。回到前台时用它决定是否需要给出可见反馈。
+     */
+    var awaitingRoleSetup by remember { mutableStateOf(false) }
     fun refreshPermissions() {
         val entries = buildVisiblePermissions(pluginPrimitives)
         entries.forEach { entry ->
@@ -101,7 +118,18 @@ fun OnboardingFlow(
     }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refreshPermissions()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshPermissions()
+                // 「点了去设置」的那次返回：只以系统真实状态为准。
+                // 仍持有 → 什么都不用说；仍未持有 → 明确告诉用户还差哪一步，
+                // 而不是让界面看起来「点了没反应」。
+                if (awaitingRoleSetup) {
+                    awaitingRoleSetup = false
+                    if (!AssistantRole.isAssistantRoleHeld(context)) {
+                        showRoleNotice("未检测到已设置。请在系统设置中选择 OAI 作为数字助理")
+                    }
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         refreshPermissions()
@@ -150,37 +178,46 @@ fun OnboardingFlow(
 
     val entries = remember(pluginPrimitives) { buildVisiblePermissions(pluginPrimitives) }
 
-    /** 尝试启动 Intent；成功返回 true，系统无对应页面返回 false。 */
+    /**
+     * 尝试启动 Intent。
+     *
+     * 只捕获 `RuntimeException`：部分 ROM 对角色申请或设置页会抛
+     * `SecurityException` / `IllegalStateException`，那样会从 `onClick` 里穿出去，
+     * 用户看到的就是「点了完全没反应」。
+     */
     fun launchOrFallback(intent: Intent): Boolean = try {
         assistantRoleLauncher.launch(intent)
         true
-    } catch (_: android.content.ActivityNotFoundException) {
+    } catch (_: RuntimeException) {
         false
     }
 
     /**
      * 发起系统角色申请。
      *
-     * 顺序：先尝试角色对话框（[AssistantRole.createRequestRoleIntent]）；
-     * 拿不到 Intent（设备不支持该角色，或 ROM 明确不允许普通应用请求）时，
-     * 退回系统「默认数字助理」设置页，让用户手动选择。
-     * 两条路都走不通时，状态会如实标成「不支持」，不留在假的「未设置」。
+     * 顺序由 [AssistantRole.roleSettingsIntents] 决定：角色申请对话框优先，其次是
+     * 可解析的系统设置页（默认应用 → 数字助理 → 应用管理）；不可解析的页面不会
+     * 出现在列表里，所以不会「启动了却什么都不弹」。
+     *
+     * **启动成功不等于设置成功**：这里只记下「正在等用户回来」，真正的结论由
+     * `ON_RESUME` 时重新查询 `RoleManager` 得出。所有入口都启动失败时如实标成
+     * 「不支持」并说明原因，不留在假的「未设置」。
      */
     fun requestSystemRole(role: SystemRole) {
-        val request = when (role) {
-            SystemRole.ASSISTANT -> AssistantRole.createRequestRoleIntent(context)
+        val candidates = when (role) {
+            SystemRole.ASSISTANT -> AssistantRole.roleSettingsIntents(context)
         }
-        if (request != null && launchOrFallback(request)) return
-
-        val fallback = when (role) {
-            SystemRole.ASSISTANT -> AssistantRole.createFallbackSettingsIntent()
-        }
-        if (!launchOrFallback(fallback)) {
-            // 连系统设置页都不存在：如实呈现「不支持」，不伪造状态。
+        if (candidates.any { launchOrFallback(it) }) {
+            awaitingRoleSetup = true
             pendingPermissionId = null
-            val entry = entries.firstOrNull { it.systemRole == role }
-            if (entry != null) statuses[entry.id] = PermissionStatus.UNSUPPORTED
+            return
         }
+
+        // 一条路都走不通：如实呈现「不支持」，并说明为什么点了没反应。
+        pendingPermissionId = null
+        val entry = entries.firstOrNull { it.systemRole == role }
+        if (entry != null) statuses[entry.id] = PermissionStatus.UNSUPPORTED
+        showRoleNotice("系统未提供可用的数字助理设置页，可稍后在系统设置中手动选择")
     }
 
     fun requestPermission(id: String) {
