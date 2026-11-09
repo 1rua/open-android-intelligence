@@ -29,6 +29,7 @@ ApprovalDecisionAuditWiringTest
 ArchitectureBoundaryTest
 AssistantBridgeServiceTest
 AssistantClientScopeTest
+AssistantConversationWorkspaceTest
 AttachmentKeystoreRegressionTest
 AttachmentStreamEndToEndTest
 AuthSessionLifecycleTest

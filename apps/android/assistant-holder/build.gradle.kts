@@ -19,6 +19,16 @@ android {
     }
 }
 
+tasks.withType<Test>().configureEach {
+    // Compose 的 idling resource 与 Android 组件注册表都是进程全局状态：同一 JVM 里
+    // 先跑过的测试类会把未释放的 idler 留给后面的类，后者在 `waitForIdle` 里永远等不到
+    // 静止（表现为 AppNotIdleException 60 秒超时）。App 模块用同样的理由配了 forkEvery=1，
+    // 本模块既有 Compose 行为测试、也有真实 Activity/VoiceInteractionSession 生命周期
+    // 测试，隔离要求相同。只隔离测试 JVM，不关闭 idling 检查。
+    forkEvery = 1
+    maxHeapSize = providers.gradleProperty("oai.testMaxHeap").orNull ?: "1g"
+}
+
 dependencies {
     implementation(project(":core-model"))
     // 复用同一套设计令牌与助理表面：助理进程只组合 UI，不初始化 Gateway。

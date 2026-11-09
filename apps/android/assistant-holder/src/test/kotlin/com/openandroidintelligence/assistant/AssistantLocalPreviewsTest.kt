@@ -153,4 +153,38 @@ class AssistantLocalPreviewsTest {
         assertTrue(store.put("draft_2", byteArrayOf(2)))
         assertNotNull(store.thumbnail("draft_2"))
     }
+
+    @Test
+    fun aPendingScreenshotMovesToTheAuthoritativeAttachmentId() {
+        val store = AssistantLocalPreviews()
+        // 圈选产物先落在本进程临时键上；权威草稿 ID 只有主进程知道。
+        assertTrue(store.put("assistant-screen-selection", byteArrayOf(7, 8, 9)))
+        store.markPendingImage("assistant-screen-selection")
+
+        assertTrue("新出现的图片附件应认领这段字节", store.adoptPendingImage("draft_authoritative"))
+
+        assertNull("临时键上的字节应已迁走", store.thumbnail("assistant-screen-selection"))
+        assertArrayEquals(byteArrayOf(7, 8, 9), store.thumbnail("draft_authoritative"))
+        assertEquals(3, store.bytes)
+    }
+
+    @Test
+    fun adoptingWithoutAPendingImageChangesNothing() {
+        val store = AssistantLocalPreviews()
+        store.put("draft_1", byteArrayOf(1))
+
+        assertFalse("没有待认领项时不得抢走已有缩略图", store.adoptPendingImage("draft_1"))
+        assertArrayEquals(byteArrayOf(1), store.thumbnail("draft_1"))
+    }
+
+    @Test
+    fun aClosedStoreDoesNotAdoptLateScreenshots() {
+        val store = AssistantLocalPreviews()
+        store.put("assistant-screen-selection", byteArrayOf(1))
+        store.markPendingImage("assistant-screen-selection")
+        store.close()
+
+        assertFalse(store.adoptPendingImage("draft_authoritative"))
+        assertNull(store.thumbnail("draft_authoritative"))
+    }
 }

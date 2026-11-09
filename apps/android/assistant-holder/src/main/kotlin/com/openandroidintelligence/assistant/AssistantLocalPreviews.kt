@@ -37,6 +37,16 @@ internal class AssistantLocalPreviews : AutoCloseable {
     private var closed = false
 
     /**
+     * 已发送、但还没等到主进程回传权威附件 ID 的圈选键（先进先出）。
+     *
+     * 圈选产物在助理进程里只能先落在一个**本进程临时键**上：真正的附件草稿 ID 由主进程
+     * 的附件协调器生成，协议回传的 `localKey` 就是那个 ID。两者不一致，缩略图就永远查
+     * 不到。这里记录「这一段字节在等哪一条附件」，等状态帧带来新附件时再把字节改挂到
+     * 权威 ID 上。
+     */
+    private val pendingImageKeys = ArrayDeque<String>()
+
+    /**
      * 修订号：缩略图或时长变化时递增。
      *
      * 它是 Compose 状态，界面在组合期读取后，写入方（录音、圈选回调）更新存储会让
@@ -46,6 +56,48 @@ internal class AssistantLocalPreviews : AutoCloseable {
 
     /** 当前修订号；在组合中读取即可跟踪后续写入。 */
     val revision: Int get() = revisionState.intValue
+
+    /**
+     * 记录「这一段缩略图字节在等主进程回传权威附件 ID」。
+     *
+     * 圈选产物由助理进程裁剪，落库后的草稿 ID 只有主进程知道。发送时把本地键登记进来，
+     * 等状态帧带来新附件时用 [adoptPendingImage] 把字节改挂到权威 ID 上，界面才查得到
+     * 缩略图。键已存在时重复登记不会产生第二条记录。
+     */
+    fun markPendingImage(localKey: String) {
+        if (localKey.isBlank()) return
+        synchronized(lock) {
+            if (closed) return
+            if (localKey in pendingImageKeys) return
+            pendingImageKeys.addLast(localKey)
+        }
+    }
+
+    /**
+     * 把最早的待认领缩略图挂到主进程回传的权威附件 ID 上。
+     *
+     * 只在本次状态帧里**新出现**的图片附件上调用：调用方保证同一个权威 ID 只认领一次，
+     * 否则后来的附件会把前一张图的字节抢走。没有待认领项或本地没有对应字节时返回 false，
+     * 界面继续显示「预览不可用」而不是画一张假图。
+     */
+    fun adoptPendingImage(authoritativeKey: String): Boolean {
+        if (authoritativeKey.isBlank()) return false
+        synchronized(lock) {
+            if (closed) return false
+            while (pendingImageKeys.isNotEmpty()) {
+                val localKey = pendingImageKeys.removeFirst()
+                if (localKey == authoritativeKey) return false
+                val bytes = thumbnails.remove(localKey) ?: continue
+                totalBytes -= bytes.size
+                thumbnails[authoritativeKey] = bytes
+                totalBytes += bytes.size
+                evictLocked()
+                revisionState.intValue++
+                return true
+            }
+            return false
+        }
+    }
 
     /** 当前保存的缩略图数量（测试/诊断用）。 */
     val size: Int get() = synchronized(lock) { thumbnails.size }
@@ -121,6 +173,7 @@ internal class AssistantLocalPreviews : AutoCloseable {
             thumbnails.clear()
             totalBytes = 0
             voiceDurations.clear()
+            pendingImageKeys.clear()
             revisionState.intValue++
         }
     }
@@ -139,6 +192,7 @@ internal class AssistantLocalPreviews : AutoCloseable {
             thumbnails.clear()
             totalBytes = 0
             voiceDurations.clear()
+            pendingImageKeys.clear()
             revisionState.intValue++
         }
     }

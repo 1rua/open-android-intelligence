@@ -55,6 +55,16 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     /** 结束会话只执行一次：返回键与界面结束回调可能同时到达。 */
     private var closing = false
 
+    /**
+     * 当前这一轮展示是否已经开始。
+     *
+     * 系统首次展示时先建窗口（触发 [onCreateContentView] 绑定桥接）再回调 [onShow]，
+     * 因此不能只凭 `client != null` 判断"这是上一次的残留"。`presented` 区分两者：
+     * - `false` 且已有客户端 → 窗口刚刚为本次展示创建，直接沿用；
+     * - `true` → 浮层仍可见时又收到一次唤起，必须换成全新会话。
+     */
+    private var presented = false
+
     override fun onCreateContentView(): View {
         val bridge = AssistantBridgeClient(context).also { client = it }
         val composeHost = AssistantComposeHost(context)
@@ -87,26 +97,41 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        if (client == null) {
-            // 上一次 onHide 已经释放桥接，界面组合也随之解绑；整体重建一套干净的宿主。
+        // 一次 onShow 就是一次新的系统唤起。上一次 onHide 正常会释放桥接；但用户也可能
+        // 在浮层仍可见时再次触发助理手势，此时旧客户端与旧会话都还在。只有那时才需要
+        // 丢弃旧客户端重开；首次展示的客户端刚由 onCreateContentView 建好，必须沿用。
+        if (presented) {
+            client?.let(AssistantSessionLifecycle::leave)
+            client = null
             host?.destroy()
             host = null
-            setContentView(onCreateContentView())
+            // 上一轮的截图与选区只属于上一次唤起。系统本次可能还没交付新截图，
+            // 若把它们留着，新会话就能圈选并提交上一轮的屏幕内容 —— 那既不是
+            // 本次唤起时的屏幕，也从未得到用户对这一轮的确认。
+            resetTransientState()
         }
+        // 没有可用客户端（上一次 onHide 已释放）时，重建一套干净的宿主与桥接。
+        if (client == null || host == null) setContentView(onCreateContentView())
+        presented = true
         // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
         uiState.dispatch(AssistantUiEvent.SessionShown)
         closing = false
         applyWindowLayout()
         host?.resume()
-        client?.connect()
+        // 每次唤起都必然新建会话，不需要再发 `session.new`：`connect` 会为主进程
+        // 建一个全新客户端，主进程随即 `openSession(client, UUID.randomUUID())`
+        // （restoreLastThread=false），即新的会话身份与空的控制器。
+        client?.let(AssistantSessionLifecycle::enter)
     }
 
     override fun onHide() {
         // 隐藏即会话结束：桥接立刻释放，宿主退回 CREATED，组合随视图解绑被回收。
         // 先置位再推进状态：SessionHidden 会走到"结束"分支，不能让它再触发一次 hide。
+        // 退出只断开连接、不取消生成：已提交的任务由主进程继续。
         closing = true
+        presented = false
         uiState.dispatch(AssistantUiEvent.SessionHidden)
-        client?.dispose()
+        client?.let(AssistantSessionLifecycle::leave)
         client = null
         host?.stop()
         resetTransientState()
@@ -114,7 +139,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     override fun onDestroy() {
-        client?.dispose()
+        client?.let(AssistantSessionLifecycle::leave)
         client = null
         resetTransientState()
         host?.destroy()

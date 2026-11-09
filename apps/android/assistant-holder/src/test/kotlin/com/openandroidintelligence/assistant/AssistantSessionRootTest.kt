@@ -15,7 +15,14 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.ApprovalId
+import com.openandroidintelligence.conversation.model.ApprovalOption
+import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
+import com.openandroidintelligence.conversation.model.ApprovalRequest
+import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.conversation.workbench.ApprovalCardTags
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
 import org.junit.Assert.assertEquals
@@ -52,12 +59,40 @@ class AssistantSessionRootTest {
         batchGroupId = null,
     )
 
+    private fun approvalEntry(): TimelineEntry = TimelineEntry(
+        key = "approval_row",
+        sender = "assistant",
+        text = "",
+        isUser = false,
+        timestamp = 3L,
+        pendingAcceptance = false,
+        batchGroupId = null,
+        approval = ApprovalCardState.Waiting(
+            ApprovalRequest(
+                approvalId = ApprovalId("apr_9"),
+                conversationId = null,
+                command = "reboot",
+                reason = "需要重启设备",
+                severity = null,
+                options = listOf(
+                    ApprovalOption(ApprovalChoice.ONCE, "允许一次", ApprovalOptionStyle.PRIMARY),
+                    ApprovalOption(ApprovalChoice.DENY, "拒绝", ApprovalOptionStyle.DANGER),
+                ),
+                timeoutSeconds = 60L,
+                requestedAt = System.currentTimeMillis(),
+            ),
+        ),
+    )
+
     private fun render(
         draft: String = "",
         onSend: () -> Boolean = { true },
         controller: AssistantSessionUiController = AssistantSessionUiController(),
         timeline: List<TimelineEntry> = emptyList(),
         heights: MutableList<Int> = mutableListOf(),
+        attachments: List<AssistantCompactAttachment> = emptyList(),
+        onRemoveAttachment: (String) -> Unit = {},
+        onDecide: (String, ApprovalChoice) -> Unit = { _, _ -> },
     ): AssistantSessionUiController {
         compose.setContent {
             CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
@@ -77,6 +112,9 @@ class AssistantSessionRootTest {
                             timeline = timeline,
                             threadId = "thread_1",
                             onContentHeightChanged = { heights += it },
+                            attachments = attachments,
+                            onRemoveAttachment = onRemoveAttachment,
+                            onDecide = onDecide,
                         )
                     }
                 }
@@ -233,6 +271,50 @@ class AssistantSessionRootTest {
         // 本进程提示可关闭，且关闭动作交回宿主（主进程的 notice 不会在本地被抹掉）。
         compose.onNodeWithContentDescription("关闭提示").performClick()
         assertEquals(1, dismissed)
+    }
+
+    // ---- 接线：审批 / 附件 / 录音 ----
+
+    @Test
+    fun approvalButtonsForwardTheCardIdAndThePressedChoiceToTheHost() {
+        val decisions = mutableListOf<Pair<String, ApprovalChoice>>()
+        val controller = render(timeline = listOf(approvalEntry()), onDecide = { id, choice -> decisions += id to choice })
+        compose.runOnIdle {
+            controller.dispatch(AssistantUiEvent.SendRequested(accepted = true))
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag(ApprovalCardTags.button(ApprovalChoice.DENY)).performClick()
+        compose.waitForIdle()
+
+        // 按键必须真的交回宿主，而且带着被按下那张卡的 approvalId。
+        assertEquals(listOf("apr_9" to ApprovalChoice.DENY), decisions)
+    }
+
+    @Test
+    fun draftAttachmentsAreShownInTheInputBarAndRemovalTargetsTheirDraftId() {
+        val removed = mutableListOf<String>()
+        render(
+            attachments = listOf(
+                AssistantCompactAttachment(id = "draft-1", filename = "截图.png", mediaType = "image/png"),
+                AssistantCompactAttachment(id = "draft-2", filename = "voice_1.m4a", mediaType = "audio/mp4"),
+            ),
+            onRemoveAttachment = { removed += it },
+        )
+
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACHMENTS).assertIsDisplayed()
+        compose.onNodeWithTag(AssistantCompactBarTags.attachment("draft-1")).assertIsDisplayed()
+        compose.onNodeWithTag(AssistantCompactBarTags.attachment("draft-2")).assertIsDisplayed()
+
+        compose.onNodeWithContentDescription("移除附件：voice_1.m4a").performClick()
+        assertEquals(listOf("draft-2"), removed)
+    }
+
+    @Test
+    fun noAttachmentsMeansNoStrip() {
+        render()
+
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACHMENTS).assertDoesNotExist()
     }
 
     // ---- 窗口高度回传 ----

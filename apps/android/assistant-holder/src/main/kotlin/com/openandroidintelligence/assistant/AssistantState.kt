@@ -1,6 +1,7 @@
 package com.openandroidintelligence.assistant
 
 import androidx.compose.runtime.Immutable
+import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
 import com.openandroidintelligence.conversation.assistant.decodeState
 import com.openandroidintelligence.conversation.assistant.decodeTimeline
 import com.openandroidintelligence.conversation.state.TimelineEntry
@@ -37,6 +38,13 @@ internal data class AssistantState(
     val timeline: List<TimelineEntry> = emptyList(),
     /** 时间线条目是否被线上预算整体丢弃过；单条正文截断见各条自身标记。 */
     val timelineTruncated: Boolean = false,
+    /**
+     * 当前草稿里已加入的附件元数据（旧 → 新）。
+     *
+     * 线上只有身份与元数据，没有字节；缩略图按 `localKey` 从本进程的
+     * [AssistantLocalPreviews] 取回，取不到时界面按媒体类型显示图标。
+     */
+    val attachments: List<AssistantAttachmentDto> = emptyList(),
     val notice: String = "",
     val advisory: String? = null,
     /** 主进程下发的已保存外观；首帧到达前为 null，由调用方回落到本地偏好。 */
@@ -101,6 +109,7 @@ internal fun parseAssistantState(payload: String): AssistantState? {
         activeThread = dto.activeThread,
         timeline = decodeTimeline(dto),
         timelineTruncated = dto.timelineTruncated,
+        attachments = dto.attachments,
         notice = dto.notice?.message.orEmpty(),
         // v2 服务端每帧都带 appearance；协议缺省值只在异常生产方下出现。
         appearance = AssistantAppearance(
