@@ -105,7 +105,7 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
     }
 
     suspend fun create(agent: CoreAgent, title: String? = null, requestId: String? = null,
-        beforeDispatch: suspend () -> Unit = {}): NativeAgentSession {
+        beforeDispatch: (suspend () -> Unit)? = null): NativeAgentSession {
         requireCapability(agent.capabilities.create)
         if (!agent.online) throw AgentSessionException("AGENT_OFFLINE")
         val value = request("POST", sessionsTarget(agent), title?.let { mapOf("title" to it) } ?: emptyMap(), requestId,
@@ -488,7 +488,7 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
         if (traceEnabled && key != null) listOf(RawHeader("traceparent", http.operationTraceParent(key))) else emptyList()
 
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null,
-        traceKey: String? = null, beforeDispatch: suspend () -> Unit = {}): JsonValue.JObject {
+        traceKey: String? = null, beforeDispatch: (suspend () -> Unit)? = null): JsonValue.JObject {
         val request = jsonRequest(method, target, body)
         val response = http.execute(request.copy(requestId = requestId, headers = request.headers + traceHeaders(traceKey),
             beforeDispatch = beforeDispatch))

@@ -66,8 +66,8 @@ data class SignedGatewayRequest(
     val requestId: String? = null,
     /** Rechecked at every transport attempt, including a replay after login renewal. */
     val beforeSend: () -> Unit = {},
-    /** 在真实传输开始前持久保存可能已发送的身份；本机预检失败不会触发。 */
-    val beforeDispatch: suspend () -> Unit = {},
+    /** 显式围栏在真实连接前持久保存身份；未提供时保留原传输入口与装饰器。 */
+    val beforeDispatch: (suspend () -> Unit)? = null,
 )
 
 data class GatewayResponse(
@@ -320,7 +320,9 @@ class GatewayHttpClient(
             transportPhase("http.io_dequeued", wire)
             request.beforeSend()
             transportPhase("http.dispatched", wire)
-            val response = transport.execute(wire, request.beforeDispatch)
+            val beforeDispatch = request.beforeDispatch
+            val response = if (beforeDispatch == null) transport.execute(wire)
+                else transport.execute(wire, beforeDispatch)
             transportPhase("http.response_received", wire, response.status)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
