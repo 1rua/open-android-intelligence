@@ -26,7 +26,7 @@
 
 开始时重新核对 ADB，没有已连接设备。用户随后明确本次暂不连接 USB 真机，验收待补。当前没有新增真机通过证据；后续设备验证必须注明实际 APK 提交、版本及签名来源，旧 APK 和旧日志不作为本次修复验收。
 
-本记录将在集成后补充实际红绿结果、门禁、独立评审与剩余限制。
+以下记录实际红绿结果、门禁、独立评审与剩余限制；定向验证和整合门禁分别注明。
 
 ## 正式回归与当前结果
 
@@ -91,3 +91,43 @@ PYTHONPATH=oai-core/src:integrations/hermes-session-adapter/src python3 -m pytes
 规范轴与需求轴分别由没有开发上下文的独立 Agent 审查 `f60f2af2...fe33f9dd` 完整业务差异，均为 0 项剩余实质发现；静态评审没有代替自动化测试。App 回归清单新增三类，`tools/test_ci_planning.py` 42 项通过。
 
 Fast 首轮实际结果为 1201 项通过、21 项失败、2 项跳过，在 Core 阶段停止，未执行后续阶段。19 项失败是既有共享回收目录权限 0755 被安全规则拒绝（要求 0700）；另两项 Hermes 安装器测试分别缺少 CLI 的 `rich` 依赖，以及文件系统创建 `lib64` 符号链接返回 ENOENT。没有将这些失败标为通过，也没有为通过修改共享目录、跳过测试或放宽规则。后续环境复核和 PR 门禁结果会在完成后追加。
+
+
+## 正式门禁环境复核
+
+为保留原测试及安全规则，在 `/tmp` 创建同一 `d21119e8d58edf29964964f0d0435ec546633aa7` 提交的独立验证 worktree。既有 `approval-python` 环境包含 CLI 所需依赖；根仓现有 Node 24.18.0、Hermes SDK `75b083e9399115b12513385252811f09c3503c90`、JDK 17、Gradle 和本地 Maven 缓存继续复用，没有安装或修改依赖。
+
+通过已验证的 Bubblewrap 文件系统命名空间，将固定回收路径挂载到私有 0700 目录；共享回收目录的权限与内容未变。根文件系统只读，验证工作区、私有临时目录及必要构建缓存可写。原工作区创建符号链接返回 ENOENT 的测试在 `/tmp` 原样执行，未复制或改写测试断言作为正式结果。期间另遇只读 Vite 临时缓存，修正缓存挂载后重跑原命令；这些环境失败没有混记为通过。
+
+`npm run test:fast` 最终退出码 0：Core 1224 项及 6 个子测试通过，Hermes 261 项、DSH 89 项、通信测量 25 项通过，Android `noVpnSurfaceCheck` 通过。Core 无失败和跳过。App 清单规划另有 42 项通过。该轮 Fast 验证以 d21119e8 为准；后续兼容修复 fa0c38c9 由完整 PR 门禁重新覆盖全部阶段。
+
+## CI 第一轮发现与兼容修复
+
+`d21119e8` 的远端 Core 两个 Python 版本、其他 Android lane 和 APK 产物成功；App 回归 1760 项中两项失败、1 项跳过。真实失败分别是媒体测试已读取流但 `cache-grant` 观察列表为空，以及通知已完成读取与过滤但领取回包丢失夹具未触发。下载 XML 后追踪确认，新增双参传输入口让 Kotlin 委托包装器绕过原单参 `execute` 覆盖。
+
+已在 `fa0c38c937c602fce4f76b0faeaf594a9641159c` 修正：发送围栏改为可选，普通请求走原单参入口；Core 创建始终显式传回调，仍在连接前保存发送事实。没有修改两个原始 App 测试或降低其断言。新增 `GatewayHttpDispatchCompatibilityTest` 四项正式回归，合法 v2 路径下修复前两项观察断言失败，修复后关联 42 项全过。首次新增夹具使用无效路径的失败已排除，重新完整取红绿后才提交。规范轴与需求轴独立补审均无新增实质发现。
+
+本地 PR 首轮在已通过 Python、Hermes、DSH 与测量回归后，因独立验证工作区缺少预编译参考 WASM 插件而停止。已使用同一提交成功 CI 的 `wasm-fixtures-42535757511-1` artifact 补齐忽略的构建产物，并显式指向既有 Hermes 插件 `ebe527da2426dd25877dd335786e80cf85d1cdde`、固定 SDK 和现有 Python 环境，重新执行原 `npm run test:pr`。原业务文件、测试断言及门禁任务未变。
+
+
+## 最终验证提交
+
+最终业务提交为 `fa0c38c937c602fce4f76b0faeaf594a9641159c`。PR 完整影响范围还包含 API 36 的 Robolectric 加密测试，已按 CI 约定切换到现有 Java 21，保留原测试要求。最终执行前置包括固定 Hermes 源码/SDK、同提交 CI 的参考 WASM 产物、Node 24.18.0、现有 Python 和 Gradle/Maven 缓存；没有放宽门禁或下载替换测试代码。
+
+该提交下 `npm run test:pr` 完整通过、退出码 0。结果如下：
+
+| 门禁部分 | 实际结果 |
+| --- | --- |
+| 依赖锁 | PASS，8 项 |
+| Core、安装卸载与工具 | 1224 项及 6 个子测试通过，0 失败/跳过 |
+| Hermes 原生与工具 | 261 项通过 |
+| DSH | 4 个文件、89 项通过 |
+| 通信测量 | 25 项通过 |
+| Android 安全与模块 | `noVpnSurfaceCheck` 通过；23 个模块合计 2139 项，0 失败/错误/跳过 |
+| App PR 全集 | 1760 项，0 失败/错误、1 项按既有 Full/Play 通道差异跳过 |
+
+App 唯一跳过项是 `BuiltInCapabilitiesTest.aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason`；没有为本次修复新增跳过。原 CI 失败类 `HermesHistoryMediaHttpTest` 的 1 项、`NotificationCapabilityHttpTest` 的 2 项均在本轮通过。
+
+远端第二轮在同一完整 SHA `fa0c38c937c602fce4f76b0faeaf594a9641159c` 上，Core Python 3.11/3.12、全部 Android lane、APK Artifact 和 `CI Gate` 均成功。Core/Android run 为 `42569682845`，Artifact run 为 `42569678961`。后台跟进没有发现评审、讨论或行级评论。第一轮 `d21119e8` 的失败属于历史状态，不能移算为新提交失败，也没有隐去。
+
+本记录之后仅补充验证文档，不再修改业务源码。保留业务验证 SHA 与文档提交的区别；真机和部署待补项不因自动化全绿而关闭。
