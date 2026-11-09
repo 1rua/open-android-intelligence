@@ -107,4 +107,37 @@ class AssistantSessionServiceLifecycleTest {
         assertEquals(1, commands().count { it == "connect" })
         assertTrue("connect already opens a new session", "session.new" !in commands())
     }
+
+    @Test fun reInvokingWhileVisibleDropsThePreviousScreenshot() {
+        val session = session()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        // 上一轮拿到一张截图（真机由系统在唤起时交付）。
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(40, 40, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+
+        // 浮层仍可见时再次唤起：系统这次还没有交付新截图。
+        session.onShow(Bundle(), 0)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        // 旧截图必须已经作废：新会话若还能圈选，就能把上一轮的屏幕内容提交出去。
+        // 行为层面观察——此时点圈选只能得到「没有截图」的提示，而不是进入圈选态。
+        invokeBeginScreenSelection(session)
+        assertTrue(
+            "a re-invocation must not keep the previous screenshot",
+            session.clientOrNull()?.state?.value?.advisory?.contains("没有提供截图") == true,
+        )
+    }
+
+    /** 通过反射调用私有的圈选入口：它是界面按钮的唯一后端，行为即用户所见。 */
+    private fun invokeBeginScreenSelection(session: VoiceInteractionSession) {
+        val method = session.javaClass.getDeclaredMethod("beginScreenSelection").apply { isAccessible = true }
+        method.invoke(session)
+    }
+
+    private fun VoiceInteractionSession.clientOrNull(): AssistantBridgeClient? =
+        javaClass.getDeclaredField("client").apply { isAccessible = true }.get(this) as? AssistantBridgeClient
 }

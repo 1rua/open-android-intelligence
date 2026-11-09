@@ -105,6 +105,10 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             client = null
             host?.destroy()
             host = null
+            // 上一轮的截图与选区只属于上一次唤起。系统本次可能还没交付新截图，
+            // 若把它们留着，新会话就能圈选并提交上一轮的屏幕内容 —— 那既不是
+            // 本次唤起时的屏幕，也从未得到用户对这一轮的确认。
+            resetTransientState()
         }
         // 没有可用客户端（上一次 onHide 已释放）时，重建一套干净的宿主与桥接。
         if (client == null || host == null) setContentView(onCreateContentView())

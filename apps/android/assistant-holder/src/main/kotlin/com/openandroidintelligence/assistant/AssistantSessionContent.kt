@@ -11,8 +11,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -64,11 +66,20 @@ internal fun AssistantSessionContent(
     val context = LocalContext.current
     // 录音器跟随客户端实例创建：会话窗口收起、组合销毁时由 DisposableEffect 关闭，
     // 麦克风与临时音频都不会跨会话残留。
-    val recorder = remember(client, context) {
+    val recorder = remember(client, context, controller) {
         AssistantVoiceRecorder.create(
             context = context,
             // 结束录音与写文件都在后台线程回调；真正的发送（读字节 + 管道）也在这里。
-            onRecorded = { voice, _ -> sendRecordedVoice(client, voice) },
+            // 只有主进程真正接收这条语音时才派发 `VoiceSent`：界面据此展开会话并
+            // 显示 Agent 的回复；失败时保持紧凑形态，与文字发送的 `SendRequested`
+            // 语义一致。
+            onRecorded = { voice, _ ->
+                sendRecordedVoice(
+                    client = client,
+                    voice = voice,
+                    onSent = { controller.dispatch(AssistantUiEvent.VoiceSent) },
+                )
+            },
             onRejected = { rejection ->
                 client.showAdvisory(assistantVoiceRejectionMessage(rejection))
             },
@@ -92,6 +103,21 @@ internal fun AssistantSessionContent(
     val attachments = remember(attachmentKeys, previews, previewsRevision) {
         state.attachments.map { it.toCompactAttachment(previews) }
     }
+    // 圈选产物在助理进程里只能先落在临时键上（`SCREEN_SELECTION_LOCAL_KEY`）：真正的
+    // 附件草稿 ID 由主进程的附件协调器生成，回传的 `localKey` 就是那个 ID。两者不一致，
+    // 缩略图就永远查不到。这里盯住「本次状态帧里新出现的图片附件」，把待认领的字节改挂
+    // 到权威 ID 上，圈选完的缩略图才会在输入栏与时间线里真正显示出来。
+    // 初值先记下已有附件：重连后回放的旧附件不该抢走新的待认领字节。
+    var knownAttachmentIds by remember(client) {
+        mutableStateOf(state.attachments.map { it.draftId }.toSet())
+    }
+    LaunchedEffect(state.attachments) {
+        val current = state.attachments
+        current
+            .filter { it.isImage && it.draftId !in knownAttachmentIds }
+            .forEach { previews.adoptPendingImage(it.draftId) }
+        knownAttachmentIds = current.map { it.draftId }.toSet()
+    }
     AssistantAppearanceScope(
         state = state,
         onResolvedAppearance = onResolvedAppearance,
@@ -104,6 +130,9 @@ internal fun AssistantSessionContent(
                     localKey = SCREEN_SELECTION_LOCAL_KEY,
                     onSelectionReady = { result ->
                         // 产物已由舞台写入本进程预览；这里只把它交给宿主发送，舞台随后关闭。
+                        // 登记这个临时键：主进程建好附件后会回传权威草稿 ID，届时把缩略图
+                        // 改挂过去，输入栏与时间线才查得到这张图。
+                        previews.markPendingImage(result.localKey)
                         onSelectionReady(result)
                         onFinishSelection()
                     },

@@ -17,6 +17,9 @@ import com.openandroidintelligence.conversation.voice.RecordedVoice
  * 主进程若在 [deliveryTimeoutMillis] 内没有读完，看门狗会关闭写端让对面失败关闭，
  * 而不是无限等待。
  *
+ * @param onSent 主进程**真正接收**了这条语音后回调（主线程）。界面据此推进
+ *   `VoiceSent` 展开会话；失败路径不调用它，界面因此保持紧凑形态。
+ *
  * 失败语义：
  * - 读不出字节（文件已被删除、读取异常）→ 一次性提示，不发送半截数据；
  * - 管道创建失败 → 同上；
@@ -26,6 +29,7 @@ import com.openandroidintelligence.conversation.voice.RecordedVoice
 internal fun sendRecordedVoice(
     client: AssistantBridgeClient,
     voice: RecordedVoice,
+    onSent: () -> Unit = {},
     handler: Handler = Handler(Looper.getMainLooper()),
     deliveryTimeoutMillis: Long = VOICE_DELIVERY_TIMEOUT_MILLIS,
 ) {
@@ -58,6 +62,9 @@ internal fun sendRecordedVoice(
                 pipe.forEach { runCatching { it.close() } }
                 return@post
             }
+            // 命令已被主进程接收：界面据此展开会话。命令接收 ≠ 上传成功，
+            // 但界面需要的是"消息已进入时间线"，后续状态帧会给出真实结果。
+            onSent()
             // 主进程若超时仍未读完，关闭写端让那边失败关闭；音频不留在半截状态。
             val timeout = Runnable { runCatching { pipe[1].close() } }
             handler.postDelayed(timeout, deliveryTimeoutMillis)
