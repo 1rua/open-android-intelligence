@@ -144,6 +144,80 @@ class AssistantBridgeProtocolTest {
         assertTrue(entries[1].isStreaming)
     }
 
+    /**
+     * 执行段身份必须完整跨进程：缺 `generationId` 时助手进程永远判不出「这是执行段」，
+     * 工具卡会退化成一条空气泡（见 issue #109）。
+     */
+    @Test
+    fun executionSegmentIdentitySurvivesTheWire() {
+        val step = NativeExecutionStep(
+            stepId = "step-1",
+            eventId = "event-1",
+            toolName = "device.shell",
+            arguments = """{"command":"ls"}""",
+            output = "a.txt",
+            status = NativeExecutionStatus.COMPLETED,
+            revision = 7L,
+            sourceMessageId = "msg-source",
+            occurredAt = 1_700_000_000_000L,
+        )
+        val original = TimelineEntry(
+            key = "execution-fact:gen-1",
+            sender = "system",
+            text = "",
+            isUser = false,
+            timestamp = 1_700_000_000_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "gen-1",
+            executionSteps = listOf(step),
+            executionFact = true,
+            executionGenerationState = GenerationState.COMPLETED,
+        )
+
+        val dto = original.toDto()
+        assertEquals("gen-1", dto.generationId)
+        assertTrue("execution-fact 行必须让对端看出它是执行事实", dto.executionFact)
+        assertEquals("COMPLETED", dto.executionGenerationState)
+        assertEquals(7L, dto.executionSteps.single().revision)
+        assertEquals("msg-source", dto.executionSteps.single().sourceMessageId)
+        assertEquals(1_700_000_000_000L, dto.executionSteps.single().occurredAt)
+
+        // 走一次真实 JSON 编解码，而不是只比较 DTO 对象。
+        val stateDto = requireNotNull(decodeState(encodeState(AssistantStateDto(timeline = listOf(dto)))))
+        val decoded = decodeTimeline(stateDto).single()
+
+        assertEquals("gen-1", decoded.generationId)
+        assertTrue(decoded.executionFact)
+        assertEquals(GenerationState.COMPLETED, decoded.executionGenerationState)
+        // 线上没有独立的 eventId：解码时按既有契约沿用 stepId，其余字段逐一相等。
+        val decodedStep = decoded.executionSteps.single()
+        assertEquals(step.stepId, decodedStep.stepId)
+        assertEquals(step.toolName, decodedStep.toolName)
+        assertEquals(step.arguments, decodedStep.arguments)
+        assertEquals(step.output, decodedStep.output)
+        assertEquals(step.status, decodedStep.status)
+        assertEquals(step.revision, decodedStep.revision)
+        assertEquals(step.sourceMessageId, decodedStep.sourceMessageId)
+        assertEquals(step.occurredAt, decodedStep.occurredAt)
+    }
+
+    @Test
+    fun unknownGenerationStateDecodesAsAbsentRatherThanInvented() {
+        val dto = AssistantTimelineEntryDto(
+            id = "m1",
+            sender = "assistant",
+            generationId = "gen-1",
+            // 未知终态不能猜成 COMPLETED/FAILED，只能当作「不知道」。
+            executionGenerationState = "SOMETHING_NEW",
+        )
+
+        val entry = dto.toTimelineEntry()
+
+        assertEquals("gen-1", entry.generationId)
+        assertNull(entry.executionGenerationState)
+    }
+
     @Test
     fun executionStepsAndApprovalAreNotLost() {
         val options = listOf(

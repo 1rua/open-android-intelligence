@@ -190,8 +190,28 @@ class AssistantStateJsonTest {
         assertEquals("上一条消息结果未知，请先在 App 中确认", state.composerBlockReason())
     }
 
-    @Test fun malformedOrWrongVersionPayloadIsRejectedInsteadOfGuessing() {
-        assertNull(parseAssistantState("不是 JSON"))
+    /**
+     * 渲染层需要强类型终态：执行过程是否该折叠、流式光标是否该收掉都由它决定。
+     * 未知字面量只能是「不知道」，不能猜成已完成。
+     */
+    @Test fun generationStateIsProjectedForTheRendererWithoutGuessingTheOutcome() {
+        assertEquals(
+            "COMPLETED",
+            parsed("""{"version": 2, "connected": true, "generation": "COMPLETED"}""")
+                .generationState?.name,
+        )
+        assertEquals(
+            "RUNNING",
+            parsed("""{"version": 2, "connected": true, "generation": "RUNNING"}""")
+                .generationState?.name,
+        )
+        assertNull(
+            "未知状态名不能猜成任何一种终态",
+            parsed("""{"version": 2, "connected": true, "generation": "SOMETHING_NEW"}""").generationState,
+        )
+    }
+
+    @Test fun malformedOrWrongVersionPayloadIsRejectedInsteadOfGuessing() {        assertNull(parseAssistantState("不是 JSON"))
         assertNull(parseAssistantState(""))
         // v1 帧与新格式不兼容：整帧丢弃，保留上一帧而不是误读旧字段。
         assertNull(parseAssistantState("""{"version": 1, "connected": true}"""))

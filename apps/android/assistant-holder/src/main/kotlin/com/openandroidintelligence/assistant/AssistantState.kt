@@ -4,6 +4,7 @@ import androidx.compose.runtime.Immutable
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
 import com.openandroidintelligence.conversation.assistant.decodeState
 import com.openandroidintelligence.conversation.assistant.decodeTimeline
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 
 /**
@@ -50,6 +51,15 @@ internal data class AssistantState(
     /** 主进程下发的已保存外观；首帧到达前为 null，由调用方回落到本地偏好。 */
     val appearance: AssistantAppearance? = null,
 ) {
+    /**
+     * 当前生成状态的强类型投影。
+     *
+     * `generation` 是线上字面量；渲染层（执行段折叠、流式光标）需要枚举才能判断终态。
+     * 未知字面量折成 null，宁可「不知道结论」也不猜成已完成或失败。
+     */
+    val generationState: GenerationState?
+        get() = GenerationState.entries.firstOrNull { it.name == generation }
+
     /** 主进程只在「桥接可用且已连接当前账号」时才允许读写对话内容。 */
     val canInteract: Boolean get() = bridgeAvailable && connected
 
