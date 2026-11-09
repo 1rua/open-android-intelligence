@@ -78,10 +78,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,8 +89,9 @@ import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
-import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -132,7 +131,7 @@ internal fun AssistantCompactBar(
     hasUnknownOutcome: Boolean = false,
     attachments: List<AssistantCompactAttachment> = emptyList(),
     onRemoveAttachment: (String) -> Unit = {},
-    recording: AssistantCompactRecording? = null,
+    recording: ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
     /**
@@ -208,10 +207,14 @@ internal fun AssistantCompactBar(
             label = "assistant-compact-mode",
         ) { activeRecording ->
             if (activeRecording != null) {
-                CompactRecordingRow(
-                    recording = activeRecording,
+                // 录音态与主会话输入栏共用同一份 [VoiceRecordingRow]：波形、计时、取消与发送
+                // 只有一个来源，两处不会各自演化成两套动画。
+                VoiceRecordingRow(
+                    elapsedMs = activeRecording.elapsedMs,
+                    level = activeRecording.level,
                     onCancel = onCancelRecording,
                     onSend = onFinishRecording,
+                    modifier = Modifier.testTag(AssistantCompactBarTags.RECORDING),
                 )
             } else {
                 CompactInputRow(
@@ -253,19 +256,6 @@ internal data class AssistantCompactAttachment(
     val mediaType: String,
     val thumbnail: ImageBitmap? = null,
 )
-
-/** 正在进行的录音：经过的真实时长与实时音量（0..1）。 */
-@Immutable
-internal data class AssistantCompactRecording(
-    val elapsedMs: Long,
-    val level: Float = 0f,
-)
-
-/** 录音计时文案：`分:秒`，例如 `0:07`、`1:05`。 */
-internal fun formatCompactRecordingDuration(elapsedMs: Long): String {
-    val totalSeconds = elapsedMs.coerceAtLeast(0L) / 1_000L
-    return String.format(Locale.ROOT, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
-}
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -440,77 +430,6 @@ private fun CompactInputRow(
                     onStop = onStop,
                 )
             }
-        }
-    }
-}
-
-/**
- * 录音态：整条内容替换为「× 取消 / 波形 + 计时 / 发送」。
- *
- * 计时与波形都来自宿主传入的真实 [AssistantCompactRecording]，不自行计时或生成伪波形。
- */
-@Composable
-private fun CompactRecordingRow(
-    recording: AssistantCompactRecording,
-    onCancel: () -> Unit,
-    onSend: () -> Unit,
-) {
-    val totalSeconds = recording.elapsedMs.coerceAtLeast(0L) / 1_000L
-    val timer = formatCompactRecordingDuration(recording.elapsedMs)
-
-    Surface(
-        shape = RoundedCornerShape(AppRadius.Bubble),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier
-                .padding(horizontal = Dimensions.SpaceTiny, vertical = Dimensions.SpaceTiny)
-                .heightIn(min = Dimensions.ComposerMinHeight)
-                .testTag(AssistantCompactBarTags.RECORDING),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
-        ) {
-            CompactIconAction(
-                icon = Icons.Outlined.Close,
-                contentDescription = "取消录音",
-                onClick = onCancel,
-            )
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = Dimensions.SpaceSmall)
-                    // 只把"正在录音 + 已录时长"合并成一个朗读节点；
-                    // 取消与发送保持独立可聚焦，TalkBack 能分别操作。
-                    .semantics(mergeDescendants = true) {
-                        contentDescription = "正在录音"
-                        stateDescription = "已录制 $totalSeconds 秒"
-                        liveRegion = LiveRegionMode.Polite
-                    },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                AssistantVoiceWaveform(
-                    level = recording.level,
-                    // 以已录时长为采样键：安静时音量不变，波形也要按真实采样节奏向前滚动。
-                    sampleKey = recording.elapsedMs,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = timer,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            CompactPrimaryAction(
-                stop = false,
-                enabled = true,
-                contentDescription = "发送语音",
-                onSend = onSend,
-                onStop = {},
-            )
         }
     }
 }

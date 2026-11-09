@@ -35,7 +35,7 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
 | `AssistantExpandedPanel.kt` | 可展开会话框容器：高度上限、内部滚动、智能跟随与「回到最新」 |
 | `AssistantTimelineView.kt` | 复用工作台时间线渲染（Markdown/执行段/审批卡/附件）与跟随策略 |
 | `AssistantSelectionStage.kt` | 全屏圈选舞台：截图 → 圈选 → 后台裁剪编码 → PNG 附件 |
-| `AssistantVoiceRecorder.kt` / `AssistantVoiceWaveform.kt` | 录音状态机（防重复提交、切会话丢弃）与真实音量波形 |
+| `AssistantVoiceDelivery.kt` | 把结束的录音经桥接交给主进程（管道 + 看门狗超时） |
 | `AssistantSessionWindowPolicy.kt` | 高度上限与跟随判定的纯函数（0.7 比例、键盘可用区） |
 | `AssistantUiStateMachine.kt` | 界面状态 reducer：唤起重置、发送成功才展开、返回键优先级 |
 | `AssistantLocalPreviews.kt` | `localKey → 缩略图/语音时长` 的会话内存存储 |

@@ -51,6 +51,7 @@ import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -82,6 +83,15 @@ fun WorkbenchScreen(
     onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * 正在录音时的真实时长与音量；null 表示没有录音。
+     *
+     * 录音态原地替换输入坞主行（不弹独立卡片、不遮挡时间线），并与默认数字助手共用
+     * 同一份 [VoiceRecordingRow] 波形/计时/取消/发送实现。
+     */
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     onOpenAssistant: (() -> Unit)? = null,
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
@@ -685,6 +695,9 @@ fun WorkbenchScreen(
                                     onPickGallery = onPickGallery,
                                     onPickDocument = onPickDocument,
                                     onVoiceInput = onVoiceInput,
+                                    recording = recording,
+                                    onCancelRecording = onCancelRecording,
+                                    onFinishRecording = onFinishRecording,
                                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                                     attachments = state.attachments,
                                     inFlightAttachmentIds = state.inFlightAttachmentIds,
