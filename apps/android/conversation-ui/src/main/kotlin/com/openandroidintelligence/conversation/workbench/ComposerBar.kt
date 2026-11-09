@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateContentSize
@@ -23,6 +24,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -64,6 +66,8 @@ import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.collect
 import kotlin.math.roundToInt
@@ -103,6 +107,15 @@ fun ComposerBar(
     applyImePadding: Boolean = true,
     onQuickChip: ((String) -> Unit)? = null,
     voiceInputEnabled: Boolean = true,
+    /**
+     * 正在录音时的真实时长与音量；null 表示没有录音，显示普通输入行。
+     *
+     * 录音态与默认数字助手共用 [VoiceRecordingRow]：同一份波形、计时与取消/发送动作，
+     * 不在这里另画一套录音界面，也不弹独立卡片遮挡会话内容。
+     */
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     inFlightAttachmentIds: Set<String> = emptySet(),
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
     /** Controller and conversation identity; a change discards selection, IME composition and undo. */
@@ -238,44 +251,82 @@ fun ComposerBar(
         }
 
         // ===== 2. 输入坞主行：视觉 44dp / 触摸 48dp，主操作 48dp，行距 8dp =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = Dimensions.SpaceTiny),
-            verticalAlignment = Alignment.Bottom,
-            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-        ) {
-            ComposerIconAction(
-                icon = Icons.Default.Add,
-                contentDescription = "添加附件",
-                onClick = { showAttachmentsSheet = true },
-            )
+        // 录音态原地替换主行而不遮挡会话：波形/计时/取消/发送与默认数字助手是同一份实现。
+        AnimatedContent(
+            targetState = recording,
+            // 每秒的计时更新只是同一段录音的新数据，不应重复播放进入/退出动画。
+            contentKey = { it != null },
+            contentAlignment = Alignment.BottomCenter,
+            transitionSpec = {
+                fadeIn(MotionSpecs.fade(reduced)) togetherWith
+                    fadeOut(MotionSpecs.fade(reduced))
+            },
+            label = "composer-recording-mode",
+        ) { activeRecording ->
+            if (activeRecording != null) {
+                // 录音态与输入态并列保留「添加附件」：录音是独立的附件型消息，但录制期间
+                // 仍然要能继续挑选附件，不能因为换了主行就把附件操作锁死。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Dimensions.SpaceTiny),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    ComposerIconAction(
+                        icon = Icons.Default.Add,
+                        contentDescription = "添加附件",
+                        onClick = { showAttachmentsSheet = true },
+                    )
+                    VoiceRecordingRow(
+                        elapsedMs = activeRecording.elapsedMs,
+                        level = activeRecording.level,
+                        onCancel = onCancelRecording,
+                        onSend = onFinishRecording,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Dimensions.SpaceTiny),
+                    verticalAlignment = Alignment.Bottom,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    ComposerIconAction(
+                        icon = Icons.Default.Add,
+                        contentDescription = "添加附件",
+                        onClick = { showAttachmentsSheet = true },
+                    )
 
-            key(editorKey) {
-                ComposerInputField(
-                    editor = editor,
-                    inputTransformation = reportUserEdits,
-                    isFocused = focused,
-                    onFocusChange = { focused = it },
-                    onPasteImages = onPasteImages,
-                    modifier = Modifier.weight(1f),
-                )
+                    key(editorKey) {
+                        ComposerInputField(
+                            editor = editor,
+                            inputTransformation = reportUserEdits,
+                            isFocused = focused,
+                            onFocusChange = { focused = it },
+                            onPasteImages = onPasteImages,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+
+                    ComposerIconAction(
+                        icon = Icons.Default.Mic,
+                        contentDescription = "语音输入",
+                        enabled = voiceInputEnabled,
+                        onClick = onVoiceInput,
+                    )
+
+                    ComposerSendStopAction(
+                        showStop = showStop,
+                        waitingCancel = waitingCancel,
+                        enabled = actionEnabled,
+                        onSend = submitDraft,
+                        onStop = onStop,
+                    )
+                }
             }
-
-            ComposerIconAction(
-                icon = Icons.Default.Mic,
-                contentDescription = "语音输入",
-                enabled = voiceInputEnabled,
-                onClick = onVoiceInput,
-            )
-
-            ComposerSendStopAction(
-                showStop = showStop,
-                waitingCancel = waitingCancel,
-                enabled = actionEnabled,
-                onSend = submitDraft,
-                onStop = onStop,
-            )
         }
 
         // ===== 3. 生成状态行：输入坞内部左对齐，紧贴输入框下方 =====

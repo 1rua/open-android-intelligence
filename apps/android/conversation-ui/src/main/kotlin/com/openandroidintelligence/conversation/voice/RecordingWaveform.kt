@@ -1,4 +1,4 @@
-package com.openandroidintelligence.assistant
+package com.openandroidintelligence.conversation.voice
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
@@ -26,7 +26,7 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
  * 条数就是滚动窗口长度：24 帧约等于 1.2 秒的采样（电平表 50ms 一次），
  * 既能看出说话节奏，又不会让一根条代表太久以前的声音。
  */
-internal object AssistantVoiceWaveformDefaults {
+object RecordingWaveformDefaults {
     /** 滚动窗口帧数：只保留最近 24 个真实音量样本。 */
     const val BarCount: Int = 24
 
@@ -44,8 +44,8 @@ internal object AssistantVoiceWaveformDefaults {
  * 因此柱数永远是 [barCount]，波形不会随着样本增多而改变宽度。
  * 没有样本时不生成随机数或正弦波——那会让界面看起来"在动"，但实际上什么都没录到。
  */
-internal class AssistantVoiceWaveformWindow(
-    val barCount: Int = AssistantVoiceWaveformDefaults.BarCount,
+class RecordingWaveformWindow(
+    val barCount: Int = RecordingWaveformDefaults.BarCount,
 ) {
     init {
         require(barCount > 0) { "barCount must be positive" }
@@ -78,12 +78,12 @@ internal class AssistantVoiceWaveformWindow(
 }
 
 /**
- * 助理录音波形（MD3 Expressive 风格）。
+ * 录音波形（MD3 Expressive 风格）；主会话与默认数字助手共用同一份实现。
  *
  * 画法：
  * - 每根柱子居中、圆角端头；高度 = 最小比例 + 真实音量，颜色用 `primary`；
  * - 没有样本的位置画 `outlineVariant` 的静态基线，柱数恒定，波形宽度稳定；
- * - 新样本从右侧进入，窗口只保留最近 [AssistantVoiceWaveformDefaults.BarCount] 帧。
+ * - 新样本从右侧进入，窗口只保留最近 [RecordingWaveformDefaults.BarCount] 帧。
  *
  * 动效：历史柱子的高度就是录下时的真实音量；最右一列代表「此刻」，用 [MotionSpecs] 的
  * 轻快吸附平滑落位，避免电平抖动让最新一列闪跳。开启「减少动态」时平滑退化为 `snap`，
@@ -99,15 +99,15 @@ internal class AssistantVoiceWaveformWindow(
  * @param sampleKey 采样序号/时间戳；变化即代表采集到一个新样本。为 null 时按 [level] 变化推进。
  */
 @Composable
-internal fun AssistantVoiceWaveform(
+fun RecordingWaveform(
     level: Float,
     modifier: Modifier = Modifier,
     reduceMotion: Boolean = LocalMotionPolicy.current.reduceMotion,
-    barCount: Int = AssistantVoiceWaveformDefaults.BarCount,
+    barCount: Int = RecordingWaveformDefaults.BarCount,
     sampleKey: Any? = null,
 ) {
     val clamped = level.coerceIn(0f, 1f)
-    val window = remember(barCount) { AssistantVoiceWaveformWindow(barCount) }
+    val window = remember(barCount) { RecordingWaveformWindow(barCount) }
     var bars by remember(barCount) { mutableStateOf(window.bars()) }
 
     // 窗口按电平表的采样节奏推进（默认 50ms 一个样本），因此 24 帧约等于最近 1.2 秒的
@@ -121,20 +121,20 @@ internal fun AssistantVoiceWaveform(
     val newest by animateFloatAsState(
         targetValue = clamped,
         animationSpec = MotionSpecs.snappy(reduceMotion),
-        label = "assistant-voice-waveform-level",
+        label = "voice-waveform-level",
     )
 
     val activeColor = MaterialTheme.colorScheme.primary
     val idleColor = MaterialTheme.colorScheme.outlineVariant
     Canvas(
         modifier = modifier
-            .height(AssistantVoiceWaveformDefaults.Height)
+            .height(RecordingWaveformDefaults.Height)
             .semantics { contentDescription = "录音波形" },
     ) {
         val slot = size.width / barCount
         val barWidth = slot * 0.5f
         val centerY = size.height / 2f
-        val minimum = AssistantVoiceWaveformDefaults.MinFraction
+        val minimum = RecordingWaveformDefaults.MinFraction
         bars.forEachIndexed { index, sample ->
             // 最右一列代表"此刻"，用平滑后的音量；其余是已经录下的历史样本。
             val value = if (index == bars.lastIndex) newest else sample

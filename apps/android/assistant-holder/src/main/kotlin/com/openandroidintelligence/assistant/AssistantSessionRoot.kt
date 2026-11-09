@@ -38,6 +38,7 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.ThinkingIndicator
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
@@ -130,7 +131,7 @@ internal fun AssistantSessionRoot(
     initialText: String? = null,
     onStartRecording: () -> Unit = {},
     /** 正在录音时的真实时长与音量；没有录音时为 null，输入栏回到输入态。 */
-    recording: AssistantCompactRecording? = null,
+    recording: ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
     /** 当前草稿里的附件（元数据 + 本进程缩略图）；移除动作交回宿主。 */

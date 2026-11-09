@@ -8,7 +8,7 @@ import com.openandroidintelligence.conversation.voice.RecordedVoice
 /**
  * 把一段已经结束的录音交给宿主发送。
  *
- * 调用时机：[AssistantVoiceRecorder] 的 `onRecorded` 回调（结束录音与写文件都在后台
+ * 调用时机：[com.openandroidintelligence.conversation.voice.VoiceRecorder] 的 `onRecorded` 回调（结束录音与写文件都在后台
  * 线程上完成），因此这里的文件读取不在主线程。交付完成后**无论成功与否**都会关闭
  * [voice]：临时音频只有一次生命周期，不能让它在缓存目录里留下第二份。
  *
@@ -83,30 +83,6 @@ internal fun sendRecordedVoice(
         voice.close()
     }
 }
-
-/**
- * 录音被拒绝时给用户的中文结论。
- *
- * 每个分支都是对真实原因的直接说明；不做自动重试，也不把拒绝渲染成"已发送"。
- */
-internal fun assistantVoiceRejectionMessage(rejection: AssistantVoiceRejection): String =
-    when (rejection) {
-        AssistantVoiceRejection.NOT_RECORDING -> "当前没有可发送的录音"
-        AssistantVoiceRejection.ALREADY_SENDING -> "语音正在发送，请稍候"
-        AssistantVoiceRejection.SESSION_CHANGED -> "会话已切换，录音未发送"
-        AssistantVoiceRejection.RECORDING_FAILED -> "录音失败，请重试"
-    }
-
-/**
- * 录音状态 → 输入栏的录音态。
- *
- * 只有 [AssistantVoiceState.Recording] 携带可渲染的真实时长与音量；[AssistantVoiceState.Sending]
- * 与 Idle 都回到输入态 —— 发送中的过渡态如果继续显示"正在录音"，用户会以为还能再录一次。
- */
-internal fun AssistantVoiceState.toCompactRecording(): AssistantCompactRecording? =
-    (this as? AssistantVoiceState.Recording)?.let {
-        AssistantCompactRecording(elapsedMs = it.elapsedMs, level = it.level)
-    }
 
 /** 与屏幕附件一致：主进程 10 秒内读不完就放弃这次交付。 */
 private const val VOICE_DELIVERY_TIMEOUT_MILLIS = 10_000L

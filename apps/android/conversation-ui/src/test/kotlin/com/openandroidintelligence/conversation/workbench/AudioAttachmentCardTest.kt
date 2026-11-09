@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performClick
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

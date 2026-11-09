@@ -34,6 +34,7 @@ import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /** 浮动面板里保留的消息条数：足够给出上下文，又不把固定输入坞挤出视野。 */
@@ -58,6 +59,9 @@ fun FloatingConversationPanel(
     controller: WorkbenchController, onClose: () -> Unit,
     onPickCamera: () -> Unit, onPickGallery: () -> Unit, onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit, modifier: Modifier = Modifier,
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     screenCaptureSource: ScreenCaptureSource? = null,
     onNeedScreenCaptureAuthorization: (() -> Unit)? = null,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
@@ -144,6 +148,9 @@ fun FloatingConversationPanel(
                     onPickGallery = onPickGallery,
                     onPickDocument = onPickDocument,
                     onVoiceInput = onVoiceInput,
+                    recording = recording,
+                    onCancelRecording = onCancelRecording,
+                    onFinishRecording = onFinishRecording,
                     attachments = state.attachments,
                     inFlightAttachmentIds = state.inFlightAttachmentIds,
                     pendingDeliveries = state.pendingDeliveries,

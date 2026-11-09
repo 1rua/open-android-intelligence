@@ -57,6 +57,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
+import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import kotlinx.coroutines.delay
@@ -454,12 +455,6 @@ private fun AudioAttachmentCard(
             metadata?.invoke()
         }
     }
-}
-
-/** 语音时长：`分:秒`（例如 `0:07`、`1:05`）；只用于展示真实观察到的时长。 */
-fun formatVoiceDuration(durationMillis: Long): String {
-    val totalSeconds = durationMillis.coerceAtLeast(0L) / 1_000L
-    return "${totalSeconds / 60L}:${(totalSeconds % 60L).toString().padStart(2, '0')}"
 }
 
 /**
