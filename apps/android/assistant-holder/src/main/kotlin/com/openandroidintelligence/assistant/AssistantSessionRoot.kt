@@ -8,10 +8,8 @@ import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -34,7 +32,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.GenerationState
@@ -103,7 +100,7 @@ internal class AssistantSessionUiController(
  * - 数据全部来自宿主（主进程桥接状态），这里不连接 Gateway、不编造消息。
  *
  * 键盘：窗口是 `SOFT_INPUT_ADJUST_NOTHING`，系统不会替我们缩小窗口，因此底部留白
- * 由这里的 `imePadding()` 承担；窗口贴着屏幕底边，输入栏随之抬到键盘上方。
+ * 由这里的窗口 inset 并集（含 IME）承担；窗口贴着屏幕底边，输入栏随之抬到键盘上方。
  *
  * @param onSend 发起发送，返回**主进程是否真正接收**；根组合据此推进状态机：
  *   只有被接收的发送才展开会话，失败保持紧凑形态并保留草稿。
@@ -124,6 +121,8 @@ internal fun AssistantSessionRoot(
     controller: AssistantSessionUiController = remember { AssistantSessionUiController() },
     timeline: List<TimelineEntry> = emptyList(),
     threadId: String? = null,
+    /** 当前生成状态；用于执行段终态折叠与流式光标，缺省表示尚未拿到。 */
+    generation: GenerationState? = null,
     notice: String? = null,
     onDismissNotice: (() -> Unit)? = null,
     previews: AssistantLocalPreviews? = null,
@@ -191,14 +190,9 @@ internal fun AssistantSessionRoot(
     val configuration = LocalConfiguration.current
     // 可用高度取屏幕高度而不是窗口高度：窗口高度正是本层上报的结果，
     // 用它当输入会形成"测量 → 改窗口 → 再测量"的反馈环，面板会来回抖。
+    // 这里只把「屏幕高度（像素）」交给面板，高度上限由面板自己算一次 ——
+    // 两层各算一次会把 0.7 乘两次，键盘一弹出面板就只剩一条消息高。
     val availableHeightPx = with(density) { configuration.screenHeightDp.dp.toPx() }.roundToInt()
-    val imeHeightPx = WindowInsets.ime.getBottom(density)
-    val topInsetPx = WindowInsets.safeDrawing.getTop(density)
-    val maxPanelHeight = with(density) {
-        AssistantSessionWindowPolicy
-            .calculateMaxHeight(availableHeightPx, imeHeightPx, topInsetPx)
-            .toDp()
-    }
     // 宿主通常自己持有会话级预览存储；没有时给一个随会话身份的临时实例，
     // 保证时间线里"本进程圈选/录音"的缩略图与时长仍有统一来源。
     val activePreviews = previews ?: rememberAssistantLocalPreviews(threadId)
@@ -214,10 +208,13 @@ internal fun AssistantSessionRoot(
                 .wrapContentHeight(align = Alignment.Bottom, unbounded = true)
                 .onSizeChanged { onContentHeightChanged(it.height) }
                 // 会话窗口可能落在导航栏/挖孔之上；inset 为 0 时这一层是空操作。
+                // 导航栏、挖孔与键盘必须取**并集**：分别叠加会把同一段高度扣两次，
+                // 键盘弹出后输入栏被推得过高、面板被压扁。
                 .windowInsetsPadding(
-                    WindowInsets.navigationBars.union(WindowInsets.displayCutout),
+                    WindowInsets.navigationBars
+                        .union(WindowInsets.displayCutout)
+                        .union(WindowInsets.ime),
                 )
-                .imePadding()
                 .padding(
                     start = Dimensions.SpaceMedium,
                     end = Dimensions.SpaceMedium,
@@ -262,8 +259,9 @@ internal fun AssistantSessionRoot(
                     timeline = timeline,
                     previews = activePreviews,
                     threadId = threadId,
+                    generation = generation,
                     isGenerating = isGenerating,
-                    maxPanelHeight = maxPanelHeight,
+                    availableHeightPx = availableHeightPx,
                     enabled = enabled,
                     onOpenApp = onOpenApp,
                     onDecide = onDecide,
@@ -277,7 +275,7 @@ internal fun AssistantSessionRoot(
 }
 
 /**
- * 展开态：会话框 + 输入栏共用一张卡片，高度上限由 [maxPanelHeight] 约束。
+ * 展开态：会话框 + 输入栏共用一张卡片，高度上限由面板按 `availableHeightPx` 算一次。
  *
  * 消息渲染直接复用 App 工作台的 `TimelineDisplayRow`：助理界面不是"另一套聊天界面"。
  * 本地缩略图与语音时长由 [previews] 按 `localKey` 补回，取不到时如实显示占位。
@@ -287,14 +285,14 @@ private fun ExpandedConversation(
     timeline: List<TimelineEntry>,
     previews: AssistantLocalPreviews,
     threadId: String?,
+    generation: GenerationState?,
     isGenerating: Boolean,
-    maxPanelHeight: Dp,
+    availableHeightPx: Int,
     enabled: Boolean,
     onOpenApp: () -> Unit,
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit,
     composer: @Composable () -> Unit,
 ) {
-    val generation: GenerationState? = null
     val content = rememberAssistantTimelineContent(
         entries = timeline,
         previews = previews,
@@ -335,7 +333,8 @@ private fun ExpandedConversation(
                     modifier = Modifier.fillMaxWidth(),
                 )
             },
-            modifier = Modifier.heightIn(max = maxPanelHeight),
+            // 高度上限由面板按 availableHeightPx 自己算一次；这一层不再 heightIn。
+            availableHeightPx = availableHeightPx,
         )
     }
 }

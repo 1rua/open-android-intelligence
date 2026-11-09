@@ -159,6 +159,8 @@ internal fun AssistantSessionContent(
                     // 会话身份用于隔离解析缓存与执行耗时：v2 支持切换对话，
                     // 不传就会让新对话沿用上一个对话的耗时记录。
                     threadId = state.activeThread,
+                    // 生成状态必须一起传：执行段的终态折叠与流式光标都依赖它。
+                    generation = state.generationState,
                     notice = state.advisory ?: state.notice.takeIf { it.isNotBlank() },
                     onDismissNotice = if (state.advisory != null) client::clearAdvisory else null,
                     previews = previews,

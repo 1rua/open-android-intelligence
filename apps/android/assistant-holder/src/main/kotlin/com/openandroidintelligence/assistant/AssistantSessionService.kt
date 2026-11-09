@@ -236,10 +236,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         }
         // 常规态：整宽贴底，高度取界面测量值；还没有测量结果时先给一个最小高度，
         // 等第一帧 onSizeChanged 到达就立即校正（不会把窗口停在 0 高）。
+        // 再夹到屏幕高度：测量值本身不该把窗口顶出屏幕（横屏/分屏/异常 inset 时会发生）。
+        val screenHeightPx = context.resources.displayMetrics.heightPixels
+        val boundedHeight = measuredContentHeightPx
+            .coerceAtLeast(MIN_WINDOW_HEIGHT_PX)
+            .let { if (screenHeightPx > 0) it.coerceAtMost(screenHeightPx) else it }
         dialogWindow.setGravity(Gravity.BOTTOM)
         dialogWindow.setLayout(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            measuredContentHeightPx.coerceAtLeast(MIN_WINDOW_HEIGHT_PX),
+            boundedHeight,
         )
     }
 
