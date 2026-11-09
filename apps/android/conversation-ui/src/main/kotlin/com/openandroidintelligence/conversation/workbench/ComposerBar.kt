@@ -264,12 +264,28 @@ fun ComposerBar(
             label = "composer-recording-mode",
         ) { activeRecording ->
             if (activeRecording != null) {
-                VoiceRecordingRow(
-                    elapsedMs = activeRecording.elapsedMs,
-                    level = activeRecording.level,
-                    onCancel = onCancelRecording,
-                    onSend = onFinishRecording,
-                )
+                // 录音态与输入态并列保留「添加附件」：录音是独立的附件型消息，但录制期间
+                // 仍然要能继续挑选附件，不能因为换了主行就把附件操作锁死。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = Dimensions.SpaceTiny),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    ComposerIconAction(
+                        icon = Icons.Default.Add,
+                        contentDescription = "添加附件",
+                        onClick = { showAttachmentsSheet = true },
+                    )
+                    VoiceRecordingRow(
+                        elapsedMs = activeRecording.elapsedMs,
+                        level = activeRecording.level,
+                        onCancel = onCancelRecording,
+                        onSend = onFinishRecording,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             } else {
                 Row(
                     modifier = Modifier

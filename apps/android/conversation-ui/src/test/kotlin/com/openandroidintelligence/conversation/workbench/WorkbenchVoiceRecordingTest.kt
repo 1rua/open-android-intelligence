@@ -94,7 +94,8 @@ class WorkbenchVoiceRecordingTest {
         compose.onNodeWithContentDescription("录音波形", useUnmergedTree = true).assertExists()
         compose.onNodeWithText("0:04").assertExists()
         compose.onNodeWithContentDescription("语音输入").assertDoesNotExist()
-        compose.onNodeWithContentDescription("添加附件").assertDoesNotExist()
+        // 需求要求录制过程不影响附件操作：附件入口在录音态继续可用。
+        compose.onNodeWithContentDescription("添加附件").assertIsDisplayed()
         // 没有任何「结束并发送」的弹窗按钮：录音交互已完全内联。
         compose.onNodeWithText("结束并发送").assertDoesNotExist()
         compose.onNodeWithText("录音结束后会将原始音频直接发送给 Agent。当前草稿和附件会保留。离开应用将取消录音。")

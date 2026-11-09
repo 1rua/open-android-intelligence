@@ -121,8 +121,9 @@ class VoiceRecordingRowTest {
         compose.onNodeWithContentDescription("正在录音").assertIsDisplayed()
         compose.onNodeWithContentDescription("取消录音").assertIsDisplayed()
         compose.onNodeWithContentDescription("语音输入").assertDoesNotExist()
-        compose.onNodeWithContentDescription("添加附件").assertDoesNotExist()
         compose.onNodeWithContentDescription("发送").assertDoesNotExist()
+        // 录音不能顺带锁死附件操作：录入期间仍然可以继续挑选附件。
+        compose.onNodeWithContentDescription("添加附件").assertIsDisplayed()
 
         compose.onNodeWithContentDescription("取消录音").performClick()
         assertEquals(1, cancels)
