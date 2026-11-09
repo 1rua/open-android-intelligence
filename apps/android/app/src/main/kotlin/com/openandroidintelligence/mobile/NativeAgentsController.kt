@@ -78,15 +78,10 @@ class NativeAgentsController(
         catch (failure: Exception) {
             if (revision.get() != expectedRevision) return
             if (failure is AgentSessionException && (failure.status == 404 || failure.code == "UNSUPPORTED")) {
-                _state.update { current ->
-                    current.copy(supported = false, agents = current.agents.map { agent ->
-                        if (agent.id == current.selectedAgentId) agent.copy(online = false) else agent
-                    })
-                }
+                _state.update { it.copy(supported = false) }
             } else _state.update { current ->
-                current.copy(supported = true, agents = current.agents.map { agent ->
-                    if (agent.id == current.selectedAgentId) agent.copy(online = false) else agent
-                }, error = errorCode(failure))
+                // 读取失败只更新本次发现错误；Agent 在线事实仍以成功列表为准。
+                current.copy(supported = true, error = errorCode(failure))
             }
             return
         }

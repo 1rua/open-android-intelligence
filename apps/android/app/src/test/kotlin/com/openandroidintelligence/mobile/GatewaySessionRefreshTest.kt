@@ -1020,6 +1020,46 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
+    fun anIndependentHttpFailureCannotOverrideTheAuthoritativeAgentPresence() {
+        val agents = "/open-android-intelligence/v2/agents"
+        val sessions = "$agents/hermes/sessions"
+        val negotiation = NEGOTIATE_BODY.replace(Regex("\"conversationUi\":\\s*\\[[^]]*]"), "\"conversationUi\":[]")
+        gateway.respond(NEGOTIATE_PATH, negotiation, headers = mapOf("X-OAI-Agent-Sessions" to "1"))
+        gateway.respond(agents, """{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"list":true,"history":true,"send":true}}]}""")
+        gateway.respond(sessions, """{"sessions":[]}""")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.nativeAgents.value?.state?.value?.agent?.online == true &&
+                runtime.controller.value?.state?.value?.isOnline == true &&
+                runtime.controller.value?.state?.value?.threads is com.openandroidintelligence.conversation.state.Loadable.Empty &&
+                gateway.requests.any { it.target == sessions }
+        })
+        val controller = requireNotNull(runtime.controller.value)
+        controller.editDraft("读取失败期间保留的草稿")
+        // 关闭响应连接模拟独立会话列表读取断流；Agent 发现的权威结果保持在线。
+        gateway.respond(sessions, "", status = 0)
+        controller.refreshThreads()
+        val failedReadCompleted = awaitCondition(AWAIT_MILLIS) {
+            runtime.coreHttpHealth.value.reachability == CoreHttpReachability.UNREACHABLE &&
+                controller.state.value.notice?.startsWith("THREAD_SYNC_FAILED:") == true
+        }
+        assertTrue("等待断流读取完成：HTTP=${runtime.coreHttpHealth.value.reachability}，notice=${controller.state.value.notice}，列表=${controller.state.value.threads::class.simpleName}", failedReadCompleted)
+        assertEquals(true, runtime.nativeAgents.value?.state?.value?.agent?.online)
+        assertTrue("一次 HTTP 读取失败不得覆盖 Hermes 权威在线事实", controller.state.value.isOnline)
+        assertEquals("读取失败期间保留的草稿", controller.state.value.draft)
+
+        gateway.respond(sessions, """{"sessions":[]}""")
+        controller.refreshThreads()
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.coreHttpHealth.value.reachability == CoreHttpReachability.REACHABLE
+        })
+        assertSame(controller, runtime.controller.value)
+        assertTrue(controller.state.value.isOnline)
+    }
+
+    @Test
     fun unpairUsesTheRevocationEndpointAndClearsTheActualSigningKeyAfterConfirmation() {
         val path = "/open-android-intelligence/v2/pairings/current"
         gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")

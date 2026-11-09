@@ -703,3 +703,9 @@ interface AttachmentDownloadPort {
 interface ConversationCreationRecovery {
     suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation
 }
+
+/** 原生创建的发送围栏；回调必须在真正连接前完成持久提交。 */
+interface ConversationCreationDispatch {
+    suspend fun createConversation(scope: ConversationScope, clientConversationId: String,
+        beforeDispatch: suspend () -> Unit): Conversation
+}

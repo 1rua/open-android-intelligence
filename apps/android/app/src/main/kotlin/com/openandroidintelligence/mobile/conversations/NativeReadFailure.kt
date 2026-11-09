@@ -5,6 +5,7 @@ import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
 import com.openandroidintelligence.gateway.http.GatewaySecurityException
+import com.openandroidintelligence.gateway.negotiation.NegotiationHttpException
 import java.io.IOException
 import java.security.cert.CertificateException
 import javax.net.ssl.SSLException
@@ -28,9 +29,10 @@ internal fun classifyNativeReadFailure(failure: Exception, defaultStage: String 
     val causes = generateSequence<Throwable>(failure) { it.cause }.take(8).toList()
     val agent = causes.filterIsInstance<AgentSessionException>().firstOrNull()
     val auth = causes.filterIsInstance<GatewayAuthException>().firstOrNull()
-    val status = agent?.status?.takeIf { it != 0 } ?: auth?.httpStatus ?: 0
+    val negotiation = causes.filterIsInstance<NegotiationHttpException>().firstOrNull()
+    val status = agent?.status?.takeIf { it != 0 } ?: auth?.httpStatus?.takeIf { it != 0 } ?: negotiation?.httpStatus ?: 0
     val cause = (failure as? NativeEventSyncFailure)?.cause ?: failure
-    val rawCode = agent?.code ?: auth?.code ?: when (cause) {
+    val rawCode = agent?.code ?: auth?.code ?: negotiation?.code ?: when (cause) {
         is NativeHistoryBehind -> "NATIVE_HISTORY_BEHIND"
         is NativePersistenceFailed -> cause.cause?.javaClass?.simpleName ?: "LOCAL_SAVE_FAILED"
         else -> cause.javaClass.simpleName
@@ -55,11 +57,11 @@ internal fun classifyNativeReadFailure(failure: Exception, defaultStage: String 
         return NativeReadFailure(NativeReadFailureKind.SECURITY, stage, securityCode, status)
     }
     val kind = when {
-        status in setOf(401, 403) || causes.any { it is SessionRecoveryPausedException } ||
+        status in setOf(401, 403) || negotiation?.credentialRefused == true || causes.any { it is SessionRecoveryPausedException } ||
             code in setOf("AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED", "UNAUTHORIZED", "FORBIDDEN",
                 "SESSION_EXPIRED", "SESSION_REVOKED", "SESSION_REJECTED", "REFRESH_REUSED") -> NativeReadFailureKind.AUTHENTICATION
         code in setOf("TLS_ERROR", "TLS_IDENTITY_MISMATCH", "PIN_MISMATCH", "PIN_REQUIRES_HTTPS") -> NativeReadFailureKind.SECURITY
-        code in setOf("NATIVE_HISTORY_BEHIND", "AGENT_RESPONSE_INVALID", "AGENT_STREAM_INVALID", "NATIVE_EVENT_SCOPE_MISMATCH",
+        code in setOf("PROTOCOL_INCOMPATIBLE", "NATIVE_HISTORY_BEHIND", "AGENT_RESPONSE_INVALID", "AGENT_STREAM_INVALID", "NATIVE_EVENT_SCOPE_MISMATCH",
             "NATIVE_APPROVAL_SCOPE_MISMATCH", "UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "GENERATION_NOT_FOUND") -> NativeReadFailureKind.PROTOCOL
         status == 408 || status == 429 || status in 500..599 -> NativeReadFailureKind.TRANSIENT
         status != 0 -> NativeReadFailureKind.PROTOCOL

@@ -18,7 +18,9 @@ data class SavedComposerDraft(val threadId: String?, val text: String, val revis
 data class SavedCancellation(val conversationId: String, val generationId: String)
 data class SavedMessageGeneration(val conversationId: String, val messageId: String, val generationId: String, val revision: Long)
 data class SavedFolderAssignment(val conversationId: String, val folderId: String)
-data class SavedConversationCreation(val clientId: String, val folderId: String?)
+data class SavedConversationCreation(val clientId: String, val folderId: String?,
+    /** 旧 checkpoint 缺少发送事实时保守恢复；只有明确保存 false 才允许首次发送。 */
+    val mayHaveBeenSent: Boolean = true)
 
 /** Durable state never contains preview/screenshot bytes and never implies permission to send. */
 data class WorkbenchCheckpoint(

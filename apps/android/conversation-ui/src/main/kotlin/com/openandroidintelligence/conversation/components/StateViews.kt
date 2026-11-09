@@ -157,6 +157,7 @@ fun specificFailureText(code: String): String? {
             "Agent 迟迟没有返回新建的会话，已停在原会话。请确认 Gateway 与 Agent 正在运行后重试。"
         value.contains("CONVERSATION_CREATE_CANCELLED") || value.contains("USER_CANCELLED") ->
             "已停止等待新建对话，仍停留在原会话。可以重新点击「新建对话」。"
+        value == "CONVERSATION_CREATE_FAILED:OUTCOME_UNKNOWN" -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("CONVERSATION_CREATE_FAILED") ->
             "新建对话失败，已停留在原会话，本地没有留下与 Gateway 不一致的会话。请检查连接后重试。"
         value.contains("RENAME") || value.contains("TITLE_UPDATE") -> "网关没有保存这次重命名，已恢复原标题。请确认网关版本支持会话重命名。"

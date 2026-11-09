@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.negotiation
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -104,6 +105,18 @@ data class GenerationCancelCapability(val agreed: Boolean) {
     }
 }
 
+/** 协商 HTTP 失败保留结构化状态，供凭据恢复与两种事件通道一致分类。 */
+class NegotiationHttpException(val httpStatus: Int, remoteCode: String? = null) : IllegalStateException(
+    if (httpStatus in setOf(406, 409)) "PROTOCOL_INCOMPATIBLE:$httpStatus" else "NEGOTIATION_FAILED:$httpStatus",
+) {
+    val code: String = remoteCode?.takeIf { it.matches(Regex("[A-Z][A-Z0-9_]{0,127}")) }
+        ?: if (httpStatus in setOf(406, 409)) "PROTOCOL_INCOMPATIBLE" else "NEGOTIATION_FAILED"
+    val credentialRefused: Boolean get() = httpStatus in GatewayAuthException.REFUSED_STATUSES ||
+        code in GatewayAuthException.REFUSED_CODES
+    val retryable: Boolean get() = !credentialRefused && code != "PROTOCOL_INCOMPATIBLE" &&
+        (httpStatus in 500..599 || httpStatus in setOf(408, 429))
+}
+
 /**
  * Protocol negotiation, run before authentication.
  *
@@ -159,11 +172,10 @@ class NegotiationClient(
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
         )
-        if (response.status == 406 || response.status == 409) {
-            throw IllegalStateException("PROTOCOL_INCOMPATIBLE:${response.status}")
-        }
         if (response.status !in 200..299) {
-            throw IllegalStateException("NEGOTIATION_FAILED:${response.status}")
+            val envelope = JsonFields.obj(runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull())
+            val error = JsonFields.obj(JsonFields.field(envelope, "error"))
+            throw NegotiationHttpException(response.status, JsonFields.string(error, "code"))
         }
         val body = JsonFields.obj(
             runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull(),

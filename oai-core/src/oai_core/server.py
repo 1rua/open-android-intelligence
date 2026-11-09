@@ -17,7 +17,7 @@ from aiohttp import web
 from .gateway.verifier import AccountPasswordVerifier
 from .gateway.transport import EVENT_STREAM_WS_PROBE_PATH, GatewayTransport
 from .gateway.admin import HostApiCompatibility
-from .gateway.core import GatewayCore, GatewayError, _now
+from .gateway.core import GatewayCore, GatewayError, authentication_storage, _now
 from .gateway.http import _status, create_gateway_exposure
 from .gateway.local_keys import LocalMasterKeyStore, ensure_master_key_file
 from .native_diagnostics import configure_connection_diagnostics
@@ -82,13 +82,18 @@ class OAICore(GatewayCore):
         import sqlite3
         from .gateway.account_paths import account_paths
         try:
-            path = account_paths(self.storage_root, context.account_id).database
-            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
-                row = database.execute("SELECT value FROM account_metadata WHERE key=?", ("core-session-epoch:" + context.session_id,)).fetchone()
-            if row is None:
-                return "SESSION_REVOKED"
-            self.identity_store.assert_epoch(context.account_id, int(row[0]))
-        except (GatewayError, ValueError, sqlite3.Error):
+            with authentication_storage("session-read", context.request_id):
+                path = account_paths(self.storage_root, context.account_id).database
+                with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as database:
+                    row = database.execute("SELECT value FROM account_metadata WHERE key=?", ("core-session-epoch:" + context.session_id,)).fetchone()
+                if row is None:
+                    return "SESSION_REVOKED"
+                self.identity_store.assert_epoch(context.account_id, int(row[0]))
+        except GatewayError as error:
+            if error.code in {"AUTHENTICATION_STORAGE_UNAVAILABLE", "AUTHENTICATION_STORAGE_FAILED"}:
+                raise
+            return "SESSION_REVOKED"
+        except ValueError:
             return "SESSION_REVOKED"
         return None
 
@@ -193,7 +198,8 @@ async def errors(request: web.Request, handler: Any) -> web.StreamResponse:
     try:
         return await handler(request)
     except GatewayError as exc:
-        body = {"error": {"code": exc.code, "message": exc.code, "retryable": exc.code == "DEVICE_OFFLINE", "details": exc.details}}
+        body = {"error": {"code": exc.code, "message": exc.code,
+            "retryable": exc.code in {"DEVICE_OFFLINE", "AUTHENTICATION_STORAGE_UNAVAILABLE"}, "details": exc.details}}
         status = _status(body)
         if exc.code in {"CAPABILITY_DENIED", "GRANT_STALE", "PAIRING_GENERATION_STALE", "IDENTITY_OVERRIDE_REJECTED", "DEVICE_ACCESS_DENIED", "DEVICE_REQUEST_ACCESS_DENIED", "ADMIN_REQUIRED", "MANAGEMENT_REQUIRED"}:
             status = 403

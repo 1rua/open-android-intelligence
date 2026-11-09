@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.auth.GatewaySessionRenewal
 import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
+import com.openandroidintelligence.gateway.negotiation.NegotiationHttpException
 import com.openandroidintelligence.gateway.events.EventCursorStore
 import com.openandroidintelligence.gateway.events.EventStreamStatus
 import com.openandroidintelligence.gateway.events.EventStreamStatusSink
@@ -65,6 +66,8 @@ data class SignedGatewayRequest(
     val requestId: String? = null,
     /** Rechecked at every transport attempt, including a replay after login renewal. */
     val beforeSend: () -> Unit = {},
+    /** 显式围栏在真实连接前持久保存身份；未提供时保留原传输入口与装饰器。 */
+    val beforeDispatch: (suspend () -> Unit)? = null,
 )
 
 data class GatewayResponse(
@@ -317,7 +320,9 @@ class GatewayHttpClient(
             transportPhase("http.io_dequeued", wire)
             request.beforeSend()
             transportPhase("http.dispatched", wire)
-            val response = transport.execute(wire)
+            val beforeDispatch = request.beforeDispatch
+            val response = if (beforeDispatch == null) transport.execute(wire)
+                else transport.execute(wire, beforeDispatch)
             transportPhase("http.response_received", wire, response.status)
             GatewayResponse(response.status, RawHeaders.validate(response.headers), response.body)
         }
@@ -472,7 +477,8 @@ class GatewayHttpClient(
                     }
                     // TLS extends IOException. Test identity and refresh outcome ambiguity before retry decisions.
                     if (GatewayConnectionSecurity.isSecurityFailure(failure) || failure is EventStreamForbiddenException ||
-                        failure is SessionRecoveryPausedException || GatewayAuthException.credentialRefused(failure)) {
+                        failure is SessionRecoveryPausedException || GatewayAuthException.credentialRefused(failure) ||
+                        failure is NegotiationHttpException && failure.credentialRefused) {
                         if (failure is EventStreamForbiddenException && snapshot != sessionProfile()) continue
                         rememberEventFailure(owner, snapshot, failure)
                         logEventFailure(owner, attempt, transportKind, failure, health, null, "terminal")
@@ -547,6 +553,7 @@ class GatewayHttpClient(
 
     private fun recoverableEventFailure(failure: Throwable): Boolean = when (failure) {
         is SessionRecoveryPausedException -> false
+        is NegotiationHttpException -> failure.retryable
         is GatewayAuthException -> !GatewayAuthException.credentialRefused(failure) && failure.retryable == true &&
             (failure.httpStatus in 500..599 || failure.httpStatus in setOf(408, 429))
         is java.nio.file.FileSystemException, is java.io.FileNotFoundException -> false
@@ -566,6 +573,7 @@ class GatewayHttpClient(
         if (activeEventOwner.get() !== owner) return
         val now = monotonicMillis()
         val stage = when (failure) {
+            is NegotiationHttpException -> "NEGOTIATION"
             is GatewayAuthException -> "RENEWAL"
             is EventSnapshotRequestException -> "SNAPSHOT"
             is GatewayWebSocketHandshakeException -> "HANDSHAKE"
@@ -583,6 +591,7 @@ class GatewayHttpClient(
             }
         }
         val status = when (failure) {
+            is NegotiationHttpException -> failure.httpStatus
             is GatewayWebSocketHandshakeException -> failure.status
             is EventSnapshotRequestException -> failure.status
             is GatewayAuthException -> failure.httpStatus

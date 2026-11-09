@@ -14,7 +14,7 @@ from .admin import (
     normalize_host_api,
 )
 from .core import (
-    WIRE_PROTOCOL, GatewayCore, GatewayError, VerifiedGatewayRequest,
+    WIRE_PROTOCOL, AuthenticationStorageError, GatewayCore, GatewayError, VerifiedGatewayRequest,
     create_gateway_core,
 )
 
@@ -94,7 +94,7 @@ def _failure(request: Any, code: str, details: Mapping[str, Any] | None = None) 
         "requestId": request_id, "correlationId": correlation_id, "protocol": WIRE_PROTOCOL,
         "error": {
             "code": code, "message": code,
-            "retryable": code == "ATTACHMENT_STORAGE_UNAVAILABLE",
+            "retryable": code in {"ATTACHMENT_STORAGE_UNAVAILABLE", "AUTHENTICATION_STORAGE_UNAVAILABLE"},
             "retryAfterSeconds": None, "details": dict(details or {}),
         },
     }
@@ -107,6 +107,8 @@ _ERROR_STATUS = {
     "ATTACHMENT_STORAGE_UNAVAILABLE": 503,
     "AUTHENTICATION_REQUIRED": 401,
     "AUTHENTICATION_FAILED": 401,
+    "AUTHENTICATION_STORAGE_UNAVAILABLE": 503,
+    "AUTHENTICATION_STORAGE_FAILED": 500,
     "REFRESH_REUSED": 401,
     "SESSION_EXPIRED": 401,
     "SESSION_REVOKED": 401,
@@ -267,6 +269,9 @@ class GatewayHttpRoute:
                 "rawHeaders": tuple(_get(request, "rawHeaders", "raw_headers", default=()) or ()),
                 "body": _raw_body(request),
             })
+        except AuthenticationStorageError as error:
+            return {"statusCode": _status({"error": {"code": error.code}}), "headers": dict(_RESPONSE_HEADERS),
+                "body": _failure(request, error.code, error.details)}
         except Exception:
             verified = None
         if not isinstance(verified, VerifiedGatewayRequest):
@@ -436,6 +441,9 @@ class GatewayHttpRoute:
                 "rawHeaders": tuple(_get(request, "rawHeaders", "raw_headers", default=()) or ()),
                 "body": body,
             })
+        except AuthenticationStorageError as error:
+            return {"statusCode": _status({"error": {"code": error.code}}), "headers": dict(_RESPONSE_HEADERS),
+                "body": _failure(request, error.code, error.details)}
         except Exception:
             verified = None
         if verified is None:

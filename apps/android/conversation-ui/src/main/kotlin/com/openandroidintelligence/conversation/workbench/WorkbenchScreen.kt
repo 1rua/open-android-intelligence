@@ -229,9 +229,9 @@ fun WorkbenchScreen(
 
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
-            controller.dismissNotice()
-            // A failed send must explain itself: an error code alone reads as "no reaction".
+            // 显示完成后再消费，避免清空 effect 的 key 取消正在显示的说明。
             snackbar.showSnackbar(noticeText(notice))
+            if (controller.state.value.notice == notice) controller.dismissNotice()
         }
     }
     // A dead reply channel is the one cause of "sent but nothing came back"

@@ -151,6 +151,38 @@ class GatewayError(Exception):
         self.details = dict(details or {})
 
 
+class AuthenticationStorageError(GatewayError):
+    """认证事实不可用时拒绝请求，保留受控的存储故障分类。"""
+
+    def __init__(self, error: sqlite3.Error | OSError | GatewayError, stage: str, started: float, request_id: str | None = None):
+        base_code = int(getattr(error, "sqlite_errorcode", 0)) & 0xFF
+        migration_busy = isinstance(error, GatewayError) and error.code == "MESSAGE_MIGRATION_BUSY"
+        transient = migration_busy or base_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+        category = "MESSAGE_MIGRATION_BUSY" if migration_busy else {
+            sqlite3.SQLITE_BUSY: "SQLITE_BUSY", sqlite3.SQLITE_LOCKED: "SQLITE_LOCKED"}.get(
+                base_code, "SQLITE_ERROR" if isinstance(error, sqlite3.Error) else "OS_ERROR")
+        elapsed_ms = max(0, round((monotonic() - started) * 1000))
+        super().__init__("AUTHENTICATION_STORAGE_UNAVAILABLE" if transient else "AUTHENTICATION_STORAGE_FAILED",
+            {"stage": stage, "storageError": category, "elapsedMs": elapsed_ms})
+        safe_id = request_id if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", request_id) else "unavailable"
+        # 只记录白名单类别与请求身份，禁止异常原文、SQL 参数和认证材料。
+        logger.warning("认证存储失败 request_id=%s stage=%s storage_error=%s elapsed_ms=%d", safe_id, stage, category, elapsed_ms)
+
+
+@contextmanager
+def authentication_storage(stage: str, request_id: str | None = None) -> Iterator[None]:
+    started = monotonic()
+    try:
+        yield
+    except (sqlite3.Error, OSError) as error:
+        raise AuthenticationStorageError(error, stage, started, request_id) from error
+    except GatewayError as error:
+        # 只转换账户迁移明确报告的暂时忙，其他协议与安全拒绝保留原语义。
+        if stage == "account-open" and error.code == "MESSAGE_MIGRATION_BUSY":
+            raise AuthenticationStorageError(error, stage, started, request_id) from error
+        raise
+
+
 class TransactionOutcomeUnknown(GatewayError):
     def __init__(self, details: Mapping[str, Any] | None = None):
         super().__init__("OUTCOME_UNKNOWN", details)
@@ -1010,7 +1042,7 @@ def _failure(context: Mapping[str, Any], code: str, details: Mapping[str, Any] |
         "error": {
             "code": code,
             "message": code,
-            "retryable": code == "ATTACHMENT_STORAGE_UNAVAILABLE",
+            "retryable": code in {"ATTACHMENT_STORAGE_UNAVAILABLE", "AUTHENTICATION_STORAGE_UNAVAILABLE"},
             "retryAfterSeconds": None,
             "details": dict(details or {}),
         },
@@ -1048,9 +1080,48 @@ class AccountStore:
         except BaseException:
             self.database.close()
             raise
-        self.database.execute("PRAGMA journal_mode = WAL")
-        self.database.execute("PRAGMA foreign_keys = ON")
         self._transaction_depth = 0
+        try:
+            self.database.execute("PRAGMA journal_mode = WAL")
+            self.database.execute("PRAGMA foreign_keys = ON")
+            self.database.execute("PRAGMA secure_delete = ON")
+            if self._initialization_required():
+                self._initialize_schema()
+        except BaseException:
+            self.database.close()
+            raise
+
+    def _initialization_required(self) -> bool:
+        """只读检查持久迁移状态，普通账户打开不申请写锁。"""
+        if self.database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_metadata'").fetchone() is None:
+            return True
+        metadata = dict(self.database.execute("SELECT key,value FROM account_metadata WHERE key IN "
+            "('account_schema_version','master_key_ref','attachment_storage_format','message_storage_format','message_scrub_pending')"))
+        version = metadata.get("account_schema_version")
+        if version is None:
+            return True
+        if version != "1":
+            raise GatewayError("ACCOUNT_STORAGE_VERSION_UNSUPPORTED")
+        if metadata.get("attachment_storage_format") != "2":
+            raise GatewayError("ATTACHMENT_STORAGE_VERSION_UNSUPPORTED")
+        message_format = metadata.get("message_storage_format")
+        if message_format is not None and message_format != "1":
+            raise GatewayError("MESSAGE_STORAGE_VERSION_UNSUPPORTED")
+        reference = metadata.get("master_key_ref", "")
+        if self.aead is not None and reference and not reference.startswith("host-secret:") and reference != self.master_key_ref:
+            raise GatewayError("MASTER_KEY_REFERENCE_MISMATCH")
+        expected_reference = self.master_key_ref if self.aead is not None else ""
+        if reference != expected_reference or self.aead is not None and message_format is None:
+            return True
+        if "message_scrub_pending" in metadata:
+            return True
+        # 旧事件布局仍须迁移；不能因已有其他存储标记跳过历史顺序保护。
+        return "sequence" not in {row["name"] for row in self.database.execute("PRAGMA table_info(events)")}
+
+    def _initialize_schema(self) -> None:
+        """仅在新建账户、版本升级或恢复未完成迁移时运行写初始化。"""
+        if self.database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_metadata'").fetchone() is not None:
+            self.database.execute("DELETE FROM account_metadata WHERE key='account_schema_version'")
         self.database.executescript(
             """
             CREATE TABLE IF NOT EXISTS account_metadata (
@@ -1321,7 +1392,7 @@ class AccountStore:
         self._metadata("pairing_generation", "1")
         if self.account_id:
             self._metadata("gateway_account_id", self.account_id)
-        self._metadata("deployment_id", f"deploy_{hashlib.sha256(str(paths.root.parent.parent).encode('utf-8')).hexdigest()[:16]}")
+        self._metadata("deployment_id", f"deploy_{hashlib.sha256(str(self.paths.root.parent.parent).encode('utf-8')).hexdigest()[:16]}")
         self._metadata("tls_spki_sha256", "sha256:" + "0" * 64)
         self.database.execute("PRAGMA secure_delete = ON")
         message_format = self.database.execute("SELECT value FROM account_metadata WHERE key = 'message_storage_format'").fetchone()
@@ -1350,6 +1421,8 @@ class AccountStore:
             except BaseException:
                 self.database.close()
                 raise
+        self.database.execute("INSERT INTO account_metadata(key,value) VALUES ('account_schema_version','1') "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value")
 
     def _metadata(self, key: str, value: str) -> None:
         self.database.execute(
@@ -4632,6 +4705,7 @@ class GatewayCore:
 
     def event_session_failure(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> str | None:
         """Classify retained stream credentials without consuming the handshake nonce."""
+        started = monotonic()
         try:
             paths = account_paths(self.storage_root, context.account_id)
             with closing(sqlite3.connect(paths.database.as_uri() + "?mode=ro", uri=True)) as database:
@@ -4644,7 +4718,9 @@ class GatewayCore:
                 if not row or row[0] != "active" or int(row[2]) != context.pairing_generation:
                     return "SESSION_REVOKED"
                 return "SESSION_EXPIRED" if _now(row[1]) <= _now(now) else None
-        except (OSError, sqlite3.Error, AttributeError, TypeError, ValueError):
+        except (sqlite3.Error, OSError) as error:
+            raise AuthenticationStorageError(error, "session-read", started, context.request_id) from error
+        except (AttributeError, TypeError, ValueError):
             return "SESSION_REVOKED"
 
     def is_event_session_active(self, context: VerifiedRequestContext, now: datetime | str | None = None) -> bool:

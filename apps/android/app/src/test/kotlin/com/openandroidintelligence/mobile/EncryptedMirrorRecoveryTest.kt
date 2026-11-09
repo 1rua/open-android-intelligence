@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror
+import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
+import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.*
@@ -25,6 +27,29 @@ class EncryptedMirrorRecoveryTest {
     private val context get()=ApplicationProvider.getApplicationContext<Application>()
     private val key=object:AesGcmKeyProvider {override fun getOrCreate()=SecretKeySpec(ByteArray(32){7},"AES");override fun delete(){}}
     private val scope=ConversationScope("profile_mirror","https://first.example","acct_same","install_one")
+    @Test fun creationDispatchFactsSurviveEncryptedMirrorReopenAndLegacyAbsenceMeansPossiblySent() {
+        for (mayHaveBeenSent in listOf(false, true)) {
+            val testScope = scope.copy(profileId = "creation_dispatch_$mayHaveBeenSent")
+            val pending = SavedConversationCreation("original-client", "work", mayHaveBeenSent)
+            val checkpoint = WorkbenchCheckpoint(emptyList(), null, "", emptyList(), emptyMap(), "保留草稿", 1,
+                emptyList(), null, emptySet(), emptySet(), pendingConversationCreation = pending)
+            EncryptedConversationMirror(context, testScope, key).save(checkpoint)
+            val reopened = EncryptedConversationMirror(context, testScope, key).load()!!
+            assertEquals(pending, reopened.pendingConversationCreation)
+            assertEquals("保留草稿", reopened.draft)
+        }
+        val legacyScope = scope.copy(profileId = "legacy_creation_without_dispatch")
+        val documentScope = "conversation-mirror-v1:" + Json.canonical(Json.of(listOf(
+            legacyScope.profileId, legacyScope.gatewayId, legacyScope.accountId, legacyScope.installId)))
+        val payload = mapOf("version" to 3, "threads" to emptyList<Any>(), "title" to "", "messages" to emptyList<Any>(),
+            "revisions" to emptyMap<String, Long>(), "draft" to "旧草稿", "draftRevision" to 1,
+            "pendingConversationCreation" to mapOf("clientId" to "legacy-client", "folderId" to "work"))
+        EncryptedDocuments(context, documentScope, key).write("workbench", Json.canonical(Json.of(payload)).toByteArray())
+        val legacy = EncryptedConversationMirror(context, legacyScope, key).load()!!
+        assertEquals(SavedConversationCreation("legacy-client", "work", true), legacy.pendingConversationCreation)
+        assertEquals("旧草稿", legacy.draft)
+    }
+
     @Test fun aCrashAfterCursorCommitBeforeControllerDeliveryRetainsCancellationAndRevisionedAssociations() = runTest {
         val testScope=scope.copy(profileId="cursor_cancel_crash")
         val dispatcher=StandardTestDispatcher(testScheduler)

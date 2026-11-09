@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from .core import (WIRE_PROTOCOL, VerifiedGatewayRequest, VerifiedRequestContext, canonicalize_target,
+from .core import (WIRE_PROTOCOL, AuthenticationStorageError, VerifiedGatewayRequest, VerifiedRequestContext,
+                   authentication_storage, canonicalize_target,
                    request_signature_preimage, request_signature_preimage_from_digest)
 
 class LocalCredentialVerifier:
@@ -206,14 +207,10 @@ class VerifiedStreamingHeaders:
 
 
 class GatewayRequestVerifier:
-    """Turns a raw HTTP request into the typed verified-request seam.
+    """验证原始 HTTP 字节签名，构造经过认证的请求。
 
-    This is the host-side half of contract §6: the phone signs the canonical
-    target and the digest of the exact body bytes with the device key it
-    registered at login, so a proxy that rewrote either cannot produce a
-    signature that still verifies. Every failure returns None rather than
-    raising — an authentication seam must fail closed without telling the
-    caller which of the checks it failed.
+    凭据或签名校验失败返回 None，不向调用方透露具体失败项；存储故障也拒绝
+    请求，但保留受控故障分类，避免被误解为凭据失效。
     """
 
     def __init__(self, core: Any, max_clock_skew_seconds: int = 120):
@@ -227,6 +224,8 @@ class GatewayRequestVerifier:
     def __call__(self, input: Mapping[str, Any]) -> VerifiedGatewayRequest | None:
         try:
             return self._verify(input)
+        except AuthenticationStorageError:
+            raise
         except Exception:
             return None
 
@@ -269,6 +268,8 @@ class GatewayRequestVerifier:
                 last_event_id=verified.last_event_id,
                 now=verified.now,
             )
+        except AuthenticationStorageError:
+            raise
         except Exception:
             return None
 
@@ -316,7 +317,7 @@ class GatewayRequestVerifier:
         if abs((datetime.now(timezone.utc) - signed_at).total_seconds()) > self._max_clock_skew_seconds:
             return None
 
-        session = self._resolve_session(account_id, device_id, session_id, access_token, timestamp)
+        session = self._resolve_session(account_id, device_id, session_id, access_token, timestamp, request_id)
         if session is None:
             return None
 
@@ -362,16 +363,21 @@ class GatewayRequestVerifier:
 
     def _resolve_session(
         self, account_id: str, device_id: str, session_id: str, access_token: str, timestamp: str,
+        request_id: str,
     ) -> Mapping[str, Any] | None:
-        exists = getattr(self._core, "account_exists", None)
-        if callable(exists) and not exists(account_id):
-            return None
-        account = self._core.open_gateway_account(account_id)
+        with authentication_storage("account-open", request_id):
+            exists = getattr(self._core, "account_exists", None)
+            if callable(exists) and not exists(account_id):
+                return None
+            account = self._core.open_gateway_account(account_id)
         try:
             resolver = getattr(account.sessions, "resolve_session", None)
             if not callable(resolver):
                 return None
-            return resolver(access_token, session_id, device_id, timestamp)
+            with authentication_storage("session-read", request_id):
+                return resolver(access_token, session_id, device_id, timestamp)
+        except AuthenticationStorageError:
+            raise
         except Exception:
             return None
         finally:

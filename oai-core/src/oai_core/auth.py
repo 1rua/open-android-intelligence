@@ -14,7 +14,7 @@ from typing import Any
 from aiohttp import web
 from .account_sessions import AccountSessions
 from .gateway.verifier import GatewayRequestVerifier
-from .gateway.core import GatewayError, VerifiedRequestContext, _now, _request_context
+from .gateway.core import GatewayError, VerifiedRequestContext, authentication_storage, _now, _request_context
 
 
 @dataclass(frozen=True)
@@ -94,13 +94,14 @@ class Authentication:
             return False
         digest = hashlib.sha256(f"{context.account_id}:{context.device_id}:{context.session_id}:{nonce}".encode()).hexdigest()
         now = time.time()
-        try:
-            with self.database:
-                self.database.execute("DELETE FROM signed_nonces WHERE expires<=?", (now,))
-                self.database.execute("INSERT INTO signed_nonces VALUES (?,?)", (digest, now + 2 * self.verifier.maxClockSkewSeconds + 1))
-            return True
-        except sqlite3.IntegrityError:
-            return False
+        with authentication_storage("nonce-write", context.request_id):
+            try:
+                with self.database:
+                    self.database.execute("DELETE FROM signed_nonces WHERE expires<=?", (now,))
+                    self.database.execute("INSERT INTO signed_nonces VALUES (?,?)", (digest, now + 2 * self.verifier.maxClockSkewSeconds + 1))
+            except sqlite3.IntegrityError:
+                return False
+        return True
 
     def close(self) -> None:
         self.database.close()
@@ -270,13 +271,20 @@ class Authentication:
                          client_id=family["client_id"], auth_epoch=family["auth_epoch"])
 
     async def authenticate(self, request: web.Request) -> Principal:
+        body = await request.read() if "x-open-android-intelligence-signature" in request.headers else b""
+        with authentication_storage("principal-read", request.headers.get("X-Open-Android-Intelligence-Request-Id")):
+            return self._authenticate(request, body)
+
+    def _authenticate(self, request: web.Request, body: bytes) -> Principal:
         if "x-open-android-intelligence-signature" in request.headers:
-            verified = self.verifier(raw_request(request, await request.read()))
+            verified = self.verifier(raw_request(request, body))
             if verified is None or not self.core.is_event_session_active(verified.context):
                 raise GatewayError("AUTHENTICATION_REQUIRED")
-            account = self.core.open_gateway_account(verified.context.account_id)
+            with authentication_storage("account-open", verified.context.request_id):
+                account = self.core.open_gateway_account(verified.context.account_id)
             try:
-                self.core._assert_negotiation_bound(account, _request_context(verified), _now())
+                with authentication_storage("negotiation-read", verified.context.request_id):
+                    self.core._assert_negotiation_bound(account, _request_context(verified), _now())
             finally:
                 account.close()
             ctx = verified.context
