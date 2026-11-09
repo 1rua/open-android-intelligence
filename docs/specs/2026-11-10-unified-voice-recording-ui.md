@@ -4,7 +4,7 @@
 目标分支：`dev`（开发分支 `feature/unified-voice-recording-ui`）。
 关联：[App 界面与动效重构](2026-10-21-app-ui-motion-refactor.md)、
 [对话与助理界面设计](2026-08-29-android-conversation-assistant-ui-design.md)、
-[助理录音状态机说明](../../../apps/android/assistant-holder/README.md)。
+[助理会话说明](../../apps/android/assistant-holder/README.md)。
 
 ## 一、问题
 
@@ -39,7 +39,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `VoiceRecorder.kt` | 录音状态机（`Idle` / `Recording` / `Sending`）：计时、电平采样、取消、结束、防重复提交、切会话丢弃、失败清理。原先的 `AssistantVoiceRecorder` 原样迁移并公开为通用 API。 |
+| `VoiceRecorder.kt` | 录音状态机（`Idle` / `Recording` / `Sending`）：计时、电平采样、取消、结束、防重复提交、切会话丢弃、失败清理。原先的 `AssistantVoiceRecorder` 原样迁移并公开为通用 API；拒绝原因与可渲染的 `ActiveVoiceRecording` 也在这里。 |
 | `RecordingWaveform.kt` | 波形窗口与 Canvas 绘制：24 帧滚动窗口、右侧最新、无样本时画静态基线、最右一列平滑落位、减少动态直接落位。 |
 | `VoiceRecordingRow.kt` | 录音态输入行：`× 取消 / 波形 + 计时 / 发送语音`，含无障碍合并朗读。 |
 | `VoiceDuration.kt` | `分:秒` 格式，录音计时与时间线语音附件共用同一个函数。 |
@@ -78,6 +78,11 @@ onFinishRecording: () -> Unit = {},
 （`contentKey = { it != null }`，避免每秒计时变化重播转场）原地替换主行。
 录音行不覆盖时间线、不拦截滚动，附件条与生成状态行仍在其上方/下方正常显示。
 
+录音期间输入框、麦克风与发送让位给录音行，但「+ 添加附件」保留在同一行左侧：
+需求明确要求录制过程不影响附件操作，语音也是一条独立的附件型消息，
+原草稿与已添加的附件都原样保留。助理的紧凑输入栏没有独立的附件入口，
+它保持原有「整条替换」的形态，附件条仍显示在录音行上方。
+
 ### 3.4 视觉与动效
 
 - 波形颜色取 `primary`（有音量）/ `outlineVariant`（无样本基线），柱高 = 最小比例 + 真实音量；
@@ -96,6 +101,6 @@ onFinishRecording: () -> Unit = {},
 | 波形随实际音量变化 | 通过 | `VoiceRecorderTest.theLevelFollowsTheDeviceAmplitude`；`RecordingWaveformTest` |
 | 录制/取消/结束/发送状态正确 | 通过 | `VoiceRecorderTest` 全量（取消、重复发送、切会话、失败清理、关闭） |
 | 发送后生成正常语音附件 | 通过 | 仍在 `sendVoiceAttachment()` 路径；`InputPlatformRegressionTest` |
-| 数字助手录音功能不受影响 | 通过 | `AssistantCompactBarTest`、`AssistantVoiceDeliveryTest` |
+| 数字助手录音功能不受影响 | 通过 | `AssistantCompactBarTest`、`AssistantVoiceDeliveryTest`（录音行控件、取消/发送回调、交付字节与时长） |
 | 两处复用相同波形实现 | 通过 | 无第二份波形代码；`AssistantCompactBarTest.recordingModeReplacesTheWholeInputRow` 断言共享行的控件 |
-| Android 构建与回归测试 | 通过 | `:app:compileFullDebugKotlin`、`:conversation-ui:testDebugUnitTest`、`:assistant-holder:testDebugUnitTest` |
+| Android 构建与回归测试 | 通过 | `:app:compileFullDebugKotlin`；`:conversation-ui:testDebugUnitTest`（832 项）、`:assistant-holder:testDebugUnitTest`（149 项）全绿；`:app` 的相关回归类同样通过。注：`:conversation-data` 的 `HermesHttpInteropTest`（1 项）在本机报 `HERMES_HISTORY_FIXTURE_START_FAILED`：它用 PATH 上的 `python3` 启动 Hermes 夹具，而本机 `python3` 解析到系统解释器（缺少 SDK 依赖），属于既有环境缺口；CI 上由专用的 legacy-hermes-fixture 解释器提供。`:app` 中同类夹具用例（`HermesHistoryMediaHttpTest`、`AndroidAttachmentContentTypeTest`）在指定 `OAI_HERMES_PYTHON` 后通过 |
