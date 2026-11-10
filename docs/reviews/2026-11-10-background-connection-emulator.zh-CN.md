@@ -76,3 +76,17 @@ adb -s emulator-5562 shell am instrument -w -r \
 前者验证前台保持期间独立运行的主动 Ping，而非等待用户再次进入前台；后者验证明确恢复信号。周期心跳样本已接近十秒目标，单次结果只说明受控环境下通过，不能据此承诺所有机型、网络、调度状态均达标。脱敏证据为 `ws-half-open-periodic.txt`、`ws-half-open-foreground.txt`、`result-ws-half-open-periodic.log`、`result-ws-half-open-foreground.log` 及相应 `status-*.json`。
 
 执行中出现一次测试环境中断：原模拟器宿主 PID 60720 已退出、5562/5563 端口均关闭，ADB 无设备；日志没有产品错误。按原 AVD 保留数据重新启动后继续验证。这是模拟器进程退出，未作为 Android 客户端连接失败或恢复证据。恢复后的模拟器由持续工具会话托管，直到主任务完成后再正常停止。两个 WS 半开夹具与对应端口映射均已清理。
+
+## SSE 持续前台的最终修复复核
+
+在 `2a2d0f02` 及上述三个测试提交组成的 `f246cf37` 上，Core 通过实际 SSE 响应头声明原有一秒心跳节奏，Android 前台按该节奏检测静默。使用同一个真实半开方法、不发显式健康信号，SSE 从此前十秒超时变为 `OK (1 test)`，实际恢复 4022 毫秒；同 APK 的 WS 周期恢复复核为 9210 毫秒。两项均保持三事件顺序和唯一交付、登录 1、订阅 2、Core 重启 0。证据为 `sse-half-open-periodic-final.txt`、`ws-half-open-periodic-final.txt` 和相应 `result-*.log`、脱敏 `status-*.json`。
+
+## 真实 Application 与 Activity 生命周期的修复前反馈
+
+新增仪器方法 `ApplicationConnectionLifecycleInstrumentedTest.destroyingTheActivityKeepsBackgroundDeliveryAndRelaunchRepairsAHalfOpenConnection`，直接调用真实 `Application.gatewayRuntime.login()`，通过 `ActivityScenario` 启动和彻底关闭唯一 `MainActivity`，等待真实 `ProcessLifecycleOwner` 进入后台。没有手工调用 Runtime 生命周期方法。
+
+在尚未加入 Runtime 层修复的 `f246cf37` 上实际观测：Activity 已销毁后后台等待十秒仍 LIVE，Core 事件通过现有通道推进了公开 `AndroidEventCursorStore` 的持久游标，订阅保持一次。同一旧 socket 半开后重新 launch Activity，最终仍收到补发，同一 Application Runtime 保持、订阅变成两次，但从 launch 前到实际游标恢复耗时 **10398 毫秒，未达到十秒目标**。
+
+初次方法只在 `ActivityScenario.launch()` 返回后设置十秒等待，因漏计 Activity 启动时间而显示 `OK (1 test)`；这不是十秒达标证据。现已补充从 launch 前计时的总耗时硬断言，旧样本按该标准为失败。日志显示恢复由 WS 关闭 1006 后重试触发，尚不是 Runtime 主动健康验证。原始证据 `application-lifecycle-baseline.txt`、`result-application-lifecycle-baseline.log`、`lifecycle-connection-events.txt` 与脱敏 `status-application-lifecycle-baseline.json`；后续必须在 Runtime 修复提交上用同一方法复核，不放宽预算。
+
+该方法使用隔离 Core 的私有测试控制返回值与公开账号/游标 Store 核对事件，不访问 Runtime 私有字段。测试控制值不写日志，状态证据移除原始事件游标；日志只保留耗时、布尔结果和计数。

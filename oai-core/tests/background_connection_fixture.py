@@ -139,6 +139,7 @@ class BackgroundConnectionFixture:
         self.restart_count = 0
         self.restarting: asyncio.Task | None = None
         self.markers: list[str] = []
+        self.last_event_id: str | None = None
         self.stopped = asyncio.Event()
         self.proxy: HalfOpenProxy | None = None
 
@@ -165,7 +166,8 @@ class BackgroundConnectionFixture:
 
     def append(self, marker: str):
         with closing(self.core.open_gateway_account(ACCOUNT)) as account:
-            account.events.append("gateway.notice", "cor_" + marker, {"noticeCode": marker})
+            event = account.events.append("gateway.notice", "cor_" + marker, {"noticeCode": marker})
+            self.last_event_id = event["eventId"]
         self.markers.append(marker)
 
     async def restart_after_outage(self):
@@ -182,6 +184,7 @@ class BackgroundConnectionFixture:
         return {"fixture": FIXTURE, "loginCount": self.login_count,
                 "subscriptionCount": self.subscription_count,
                 "restartCount": self.restart_count, "markers": self.markers,
+                "lastEventId": self.last_event_id,
                 **(self.proxy.status() if self.proxy is not None else {})}
 
     async def control(self, request):
