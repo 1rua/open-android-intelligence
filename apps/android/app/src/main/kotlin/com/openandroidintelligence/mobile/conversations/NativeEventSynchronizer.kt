@@ -18,20 +18,33 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 internal class NativeEventSyncFailure(val stage: String, cause: Exception) : Exception(stage, cause)
 internal class NativeHistoryBehind : java.io.IOException("NATIVE_HISTORY_BEHIND")
+internal class NativeNetworkTimeout : java.io.IOException("NATIVE_NETWORK_TIMEOUT")
 
 /** 恢复只取消一次真实网络请求，不取消落盘、状态提交或本地事件发布。 */
-internal class NativeEventNetworkRequests(private val onRequestChanged: (Job?) -> Unit = {}) {
+internal class NativeEventNetworkRequests(
+    private val onRequestChanged: (Job?) -> Unit = {},
+    private val requestTimeoutMillis: () -> Long? = { null },
+) {
     suspend fun <T> run(operation: suspend () -> T): T = supervisorScope {
         val request = async(start = CoroutineStart.LAZY) { operation() }
         onRequestChanged(request)
         try {
             request.start()
-            request.await()
+            val budget = requestTimeoutMillis()
+            if (budget == null) request.await()
+            else try { withTimeout(budget) { request.await() } }
+                catch (_: TimeoutCancellationException) {
+                    currentCoroutineContext().ensureActive()
+                    request.cancel()
+                    throw NativeNetworkTimeout()
+                }
         } finally { onRequestChanged(null) }
     }
 }

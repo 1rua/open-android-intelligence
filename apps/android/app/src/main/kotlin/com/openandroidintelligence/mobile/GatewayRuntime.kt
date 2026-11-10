@@ -2532,6 +2532,8 @@ class GatewayRuntime(
         }
         // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。
         val coreAgentRepositories = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        val nativeReadOwners = java.util.concurrent.ConcurrentHashMap.newKeySet<com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        ownedJob.invokeOnCompletion { nativeReadOwners.clear() }
         fun nativeRepository(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = coreAgentRepositories.computeIfAbsent(agent.id) {
             val discoveryOwner = checkNotNull(_nativeAgents.value)
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
@@ -2548,10 +2550,12 @@ class GatewayRuntime(
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
-            )
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
         fun restoreNativeReads(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
-            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach {
+            if (sessionJob === ownedJob) nativeReadOwners.forEach {
                 it.connectionRestored(expediteRetry, confirmedTransportRebuild,
                     revalidateNetwork = expediteRetry && confirmedTransportRebuild == null)
             }
@@ -2593,7 +2597,9 @@ class GatewayRuntime(
                     com.openandroidintelligence.mobile.conversations.NativeConversationStoreView(nativeStore(current), observer)
                 },
                 onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
-            )
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
 
         /**
@@ -2712,7 +2718,9 @@ class GatewayRuntime(
                         organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                             context, conversationScope, localDocumentKeyProvider),
                         storeForAgent = { store },
-                    )
+                        isForeground = { appVisible },
+                        onClosed = { nativeReadOwners.remove(it) },
+                    ).also(nativeReadOwners::add)
                     // 与主工作台共用同一个按 Agent 分区的附件协调器：交接按 draftId 跟踪
                     // 的必须是同一份暂存/上传状态，否则交过去的是永不推进的引用。
                     val owning = nativeOwningAttachmentCoordinators[assistantAgent.id] ?: attachmentCoordinator
@@ -2735,7 +2743,10 @@ class GatewayRuntime(
                         attachmentCoordinator = attachments,
                         externalBusyThreadIds = { assistantWorkspace?.busyThreadIds().orEmpty() },
                     )
-                    assistantResources[sessionToken] = { runCatching { store.close() } }
+                    assistantResources[sessionToken] = {
+                        repository.close()
+                        runCatching { store.close() }
+                    }
                     controller
                 } else {
                     val assistantStatus = EventStreamStatusSink()

@@ -108,6 +108,8 @@ class CoreAgentConversationRepository(
         kotlin.random.Random.nextLong(base * 4 / 5, (base * 6 / 5).coerceAtMost(60_000) + 1)
     },
     private val nativeMonotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val isForeground: () -> Boolean = { false },
+    private val onClosed: (CoreAgentConversationRepository) -> Unit = {},
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery,
     com.openandroidintelligence.conversation.ports.ConversationCreationRecovery,
     com.openandroidintelligence.conversation.ports.ConversationCreationDispatch,
@@ -375,7 +377,9 @@ class CoreAgentConversationRepository(
      * 关闭的气泡会一直占着网络与镜像锁，账号退出时才被连带清理。
      */
     @Synchronized fun close() {
+        if (closed) return
         closed = true
+        onClosed(this)
         eventSyncOwners.values.forEach { it.job.cancel() }
         eventSyncOwners.clear()
         synchronized(recoveryJobs) {
@@ -464,9 +468,9 @@ class CoreAgentConversationRepository(
                 requireOwner()
                 val store = checkNotNull(storeForAgent).invoke(agent)
                 var committedSnapshot: RecoverySnapshot? = null
-                val network = NativeEventNetworkRequests { request ->
+                val network = NativeEventNetworkRequests(onRequestChanged = { request ->
                     synchronized(this@CoreAgentConversationRepository) { owner.currentRead = request }
-                }
+                }, requestTimeoutMillis = { if (isForeground()) 8_000 else null })
                 val sync = NativeEventSynchronizer(client, agent, conversationId, store,
                     refresh = { page ->
                         val snapshot = recoverySnapshot(agent, conversationId, page, network)
@@ -486,7 +490,7 @@ class CoreAgentConversationRepository(
                 var failures = 0
                 while (isActive) {
                     try {
-                        val more = try { sync.synchronize(if (failures == 0) 25000 else 0) }
+                        val more = try { sync.synchronize(if (failures == 0) { if (isForeground()) 5_000 else 25_000 } else 0) }
                         catch (_: NativeReadReplaced) {
                             currentCoroutineContext().ensureActive()
                             continue

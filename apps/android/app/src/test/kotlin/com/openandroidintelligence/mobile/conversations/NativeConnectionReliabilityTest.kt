@@ -224,6 +224,23 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
     }
 
+    @Test fun aForegroundNativeOnlyHalfOpenRequestRecoversWithoutAnyLifecycleSignal() = runTest {
+        val h = Harness(this).apply { foreground = true }
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(51); runCurrent()
+        assertEquals(2, h.reads)
+        h.resumeReadsThrough = 3
+        h.nextCursor = "foreground-watchdog"
+
+        advanceTimeBy(8_251); runCurrent()
+
+        assertEquals("持续前台必须独立检测并替换 Native 半开网络请求", 1, h.cancelledReads)
+        assertEquals("foreground-watchdog", h.storage.cursor)
+        assertNull(h.storage.pending)
+        assertEquals(1, h.histories)
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
@@ -552,6 +569,7 @@ class NativeConnectionReliabilityTest {
         var responseBody: String? = null
         var reads = 0
         var histories = 0
+        var foreground = false
         var historyGate: CompletableDeferred<Unit>? = null
         var historyBody = """{"messages":[]}"""
         var cancelledReads = 0
@@ -618,6 +636,6 @@ class NativeConnectionReliabilityTest {
             AgentCapabilities(history = true, eventSync = true, send = true, stream = true))
         val repository = CoreAgentConversationRepository(client, { agent }, { conversationId }, scope.backgroundScope,
             dispatcher, storeForAgent = { store }, nativeRetryJitter = { retryBases += it; jitter(it) },
-            nativeMonotonicMillis = { scope.testScheduler.currentTime })
+            nativeMonotonicMillis = { scope.testScheduler.currentTime }, isForeground = { foreground })
     }
 }
