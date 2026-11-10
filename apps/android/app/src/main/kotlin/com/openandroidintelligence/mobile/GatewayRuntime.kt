@@ -34,6 +34,7 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
+import com.openandroidintelligence.gateway.http.GatewayConnectionFactory
 import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
@@ -195,6 +196,7 @@ class GatewayRuntime(
     private val pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost? = null,
     private val localDocumentKeyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
     private val initialConnectionGraceMillis: Long = 8_000L,
+    private val connectionFactory: GatewayConnectionFactory = GatewayConnectionFactory(),
 ) {
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var selectedScreenBinding: com.openandroidintelligence.control.ScreenAuthorizationBinding? = null
@@ -229,6 +231,7 @@ class GatewayRuntime(
     @Volatile private var backgroundRecoveryOnly = false
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
+    @Volatile private var activePlatformHttpClient: GatewayHttpClient? = null
     private var restartNativeReads: (() -> Unit)? = null
     private val pendingRotations = java.util.concurrent.ConcurrentHashMap<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
@@ -863,7 +866,7 @@ class GatewayRuntime(
                         rejected.copy(sessionId = rotated.sessionId, accessToken = rotated.accessToken)
                     }
                 }
-                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile),
+                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile, connectionFactory),
                     signer = { preimage -> deviceKeys.sign(id, preimage) },
                     cursorStore = AndroidEventCursorStore(context, "push:$id"), sessionRenewal = renew)
                     .also { pushHttpClients[id] = it }
@@ -970,14 +973,21 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
-        synchronized(backgroundOwnershipLock) {
+        val becameVisible = synchronized(backgroundOwnershipLock) {
+            val changed = !appVisible
             appVisible = true
             backgroundRecoveryOnly = false
+            changed
         }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(true)
+        GatewayLog.connectionEvent("lifecycle.foreground", platform?.currentEventGeneration() ?: 0,
+            reason = "process_foreground", result = "visible", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
         wakeConnection(PlatformStreamWakeReason.FOREGROUND)
+        if (becameVisible) platform?.requestEventHealthCheck("foreground")
     }
 
     /**
@@ -1120,6 +1130,10 @@ class GatewayRuntime(
         // restart. The service then keeps already submitted work receiving replies.
         refreshBackgroundWork()
         synchronized(backgroundOwnershipLock) { appVisible = false }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(false)
+        GatewayLog.connectionEvent("lifecycle.background", platform?.currentEventGeneration() ?: 0,
+            reason = "process_background", result = "background", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
     }
@@ -2238,6 +2252,7 @@ class GatewayRuntime(
         _coreHttpHealth.value = CoreHttpHealth()
         val transport = GatewayTransport(
             profile,
+            factory = connectionFactory,
             onHttpResponse = { status ->
                 if (sessionRenewal === renewal) _coreHttpHealth.value = CoreHttpHealth(
                     reachability = CoreHttpReachability.REACHABLE,
@@ -3176,7 +3191,13 @@ class GatewayRuntime(
                 val previous = platformJob
                 val replace = reason in setOf(PlatformStreamWakeReason.NETWORK_CHANGED,
                     PlatformStreamWakeReason.CREDENTIAL_CHANGED, PlatformStreamWakeReason.USER_RETRY)
-                if (previous?.isActive == true && !replace) return@start
+                if (previous?.isActive == true && !replace) {
+                    // 任务存活只证明仍持有所有者；由传输层验证实际活动并合并恢复唤醒。
+                    if (reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && platformStatus.status.value != EventStreamStatus.LIVE) {
+                        platformHttp.requestEventHealthCheck(reason.name.lowercase())
+                    }
+                    return@start
+                }
                 previous?.cancel()
                 val owner = ++ownerSequence
                 val next = sessionScope.launchAfterPlatformStream(previous) {
@@ -3220,6 +3241,8 @@ class GatewayRuntime(
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
+            platformHttp.setAppForeground(appVisible)
+            activePlatformHttpClient = platformHttp
             restartPlatformStream = startPlatform
             startPlatform(PlatformStreamWakeReason.INITIAL)
         }
@@ -3291,6 +3314,7 @@ class GatewayRuntime(
         _nativeAgents.value?.close()
         _nativeAgents.value = null
         restartPlatformStream = null
+        activePlatformHttpClient = null
         restartNativeReads = null
         sessionRenewal?.close()
         sessionRenewal = null
@@ -3383,6 +3407,7 @@ class GatewayRuntime(
                 gatewayBaseUrl = gatewayUrl,
                 pinnedSpkiSha256 = pinnedSpkiSha256,
             ),
+            factory = connectionFactory,
             beforeConnect = beforeConnect,
         ),
         installationId = installationId(),

@@ -36,6 +36,7 @@ internal class LoopbackGatewayStub {
     private val responders = ConcurrentHashMap<String, (RecordedGatewayRequest) -> StubResponse>()
     private val recorded = CopyOnWriteArrayList<RecordedGatewayRequest>()
     private val streamReleases = CopyOnWriteArrayList<java.util.concurrent.CountDownLatch>()
+    private val controlledStreams = CopyOnWriteArrayList<ControlledEventStream>()
 
     val baseUrl: String = "http://127.0.0.1:${server.localPort}"
 
@@ -46,7 +47,9 @@ internal class LoopbackGatewayStub {
         thread(isDaemon = true, name = "loopback-gateway") {
             while (!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                runCatching { handle(socket) }
+                thread(isDaemon = true, name = "loopback-gateway-request") {
+                    runCatching { handle(socket) }
+                }
             }
         }
     }
@@ -83,7 +86,49 @@ internal class LoopbackGatewayStub {
         return release
     }
 
+    /** 心跳停止只影响当前连接；重连后的 socket 继续正常提供心跳。 */
+    fun controllableEventStream(path: String): ControlledEventStream {
+        val stream = ControlledEventStream()
+        controlledStreams += stream
+        responders.remove(path)
+        routes[path] = StubResponse(200, "", "text/event-stream", controlledStream = stream)
+        return stream
+    }
+
+    internal class ControlledEventStream {
+        private val release = java.util.concurrent.CountDownLatch(1)
+        private val opened = java.util.concurrent.atomic.AtomicInteger()
+        private val silencedThrough = java.util.concurrent.atomic.AtomicInteger()
+        val heartbeatCount = java.util.concurrent.atomic.AtomicInteger()
+
+        val connectionCount: Int get() = opened.get()
+
+        fun pauseCurrentConnections() { silencedThrough.set(opened.get()) }
+        fun close() { release.countDown() }
+
+        fun write(socket: Socket) {
+            val connection = opened.incrementAndGet()
+            val output = socket.getOutputStream()
+            output.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n".toByteArray())
+            output.flush()
+            while (release.count != 0L) {
+                if (connection > silencedThrough.get()) {
+                    val heartbeat = ": heartbeat\n\n".toByteArray()
+                    output.write((heartbeat.size.toString(16) + "\r\n").toByteArray())
+                    output.write(heartbeat)
+                    output.write("\r\n".toByteArray())
+                    output.flush()
+                    heartbeatCount.incrementAndGet()
+                }
+                if (release.await(100, TimeUnit.MILLISECONDS)) break
+            }
+            output.write("0\r\n\r\n".toByteArray())
+            output.flush()
+        }
+    }
+
     fun closed() {
+        controlledStreams.forEach { it.close() }
         streamReleases.forEach { it.countDown() }
         server.close()
     }
@@ -119,6 +164,7 @@ internal class LoopbackGatewayStub {
 
     private fun write(socket: Socket, response: StubResponse) {
         if (response.status == 0) return // Commit succeeded, but the HTTP response was lost.
+        response.controlledStream?.let { it.write(socket); return }
         response.streamRelease?.let { release ->
             socket.getOutputStream().apply {
                 write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n".toByteArray())
@@ -156,6 +202,7 @@ internal class LoopbackGatewayStub {
         val release: java.util.concurrent.CountDownLatch? = null,
         val headers: Map<String, String> = emptyMap(),
         val streamRelease: java.util.concurrent.CountDownLatch? = null,
+        val controlledStream: ControlledEventStream? = null,
     )
 }
 
