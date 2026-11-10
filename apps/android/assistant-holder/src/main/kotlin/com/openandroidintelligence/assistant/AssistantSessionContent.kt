@@ -57,7 +57,11 @@ internal fun AssistantSessionContent(
     selection: AssistantScreenSelection? = null,
     onFinishSelection: () -> Unit = {},
     onSelectionReady: (AssistantSelectionResult) -> Unit = {},
-    onStartSelection: () -> Unit = {},
+    /**
+     * 屏幕圈选入口：只有 ASSIST 兜底页传（它没有系统截图，点它给出说明）。
+     * 系统助理会话传 null：唤起后直接在定格截图上画圈。
+     */
+    onStartSelection: (() -> Unit)? = null,
     onOpenApp: () -> Unit = {},
     onExit: () -> Unit = {},
     initialText: String? = null,

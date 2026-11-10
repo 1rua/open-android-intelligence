@@ -77,6 +77,9 @@ internal fun AssistantDragHandle(
     // 跟手位移用普通状态同步更新，松手回弹才交给 Animatable：
     // 在拖拽回调里 launch + snapTo 会让位移落后于手指一两帧。
     var dragOffset by remember { mutableFloatStateOf(0f) }
+    // 手势累计位移（不做视觉跟手时也要有）：减少动态下横条不动，但阈值判定仍要看
+    // 用户实际拖了多远，否则「上滑进入主 App」在减少动态下会彻底失效。
+    var dragTravel by remember { mutableFloatStateOf(0f) }
     val rebound = remember { Animatable(0f) }
     var settling by remember { mutableStateOf(false) }
     var pressed by remember { mutableStateOf(false) }
@@ -94,12 +97,22 @@ internal fun AssistantDragHandle(
     }
 
     fun settleToRest() {
+        // 减少动态：不做弹簧回弹，直接落位。横条本来就没有位移，这里只复位状态，
+        // 同步完成、不经过动画帧，用户看不到任何移动。
+        if (reduceMotion) {
+            dragOffset = 0f
+            dragTravel = 0f
+            settling = false
+            currentOnDragProgress(0f)
+            return
+        }
         settling = true
         scope.launch {
             // 从当前位移开始回弹，避免松手瞬间跳回原点。
             rebound.snapTo(dragOffset)
             dragOffset = 0f
             rebound.animateTo(0f, MotionSpecs.MomentumSpring)
+            dragTravel = 0f
             settling = false
             currentOnDragProgress(0f)
         }
@@ -131,19 +144,17 @@ internal fun AssistantDragHandle(
                         settling = false
                         scope.launch { rebound.stop() }
                     }
-                    // 只允许向上拖：向下的分量做阻尼，越拉越沉。
-                    dragOffset = if (delta < 0f) {
-                        dragOffset + delta
-                    } else {
-                        dragOffset + MotionSpecs.rubberband(delta, screenHeightPx)
-                    }
-                    reportProgress(dragOffset)
+                    // 减少动态：横条不产生任何位移（不跟手），但仍累计手势行程，
+                    // 松手时阈值判定照常生效。
+                    dragOffset = dragOffsetStep(dragOffset, delta, reduceMotion, screenHeightPx)
+                    dragTravel += dragTravelStep(delta, screenHeightPx)
+                    reportProgress(if (reduceMotion) 0f else dragOffset)
                 },
                 onDragStarted = { pressed = true },
                 onDragStopped = { velocity ->
                     pressed = false
                     val reached = enabled &&
-                        shouldHandoffDrag(dragOffset, velocity, screenHeightPx, flingThresholdPx)
+                        shouldHandoffDrag(dragTravel, velocity, screenHeightPx, flingThresholdPx)
                     settleToRest()
                     if (reached) currentOnRequestHandoff()
                 },
@@ -162,6 +173,28 @@ internal fun AssistantDragHandle(
         )
     }
 }
+
+/** 减少动态时横条不产生任何视觉位移；手势行程仍由 [dragTravelStep] 累计。 */
+internal fun dragOffsetStep(
+    current: Float,
+    delta: Float,
+    reduceMotion: Boolean,
+    screenHeightPx: Float,
+): Float {
+    if (reduceMotion) return 0f
+    // 只允许向上拖：向下的分量做阻尼，越拉越沉。
+    val step = if (delta < 0f) delta else MotionSpecs.rubberband(delta, screenHeightPx)
+    return current + step
+}
+
+/**
+ * 手势行程：无论是否跟手都要累计，阈值判定看的是用户实际拖了多远。
+ *
+ * 减少动态下横条不动，但「上滑进入主 App」必须照常可用——否则这项能力在减少动态
+ * 用户那里会彻底消失。向下分量同样做阻尼，避免「向下甩」被当成上滑。
+ */
+internal fun dragTravelStep(delta: Float, screenHeightPx: Float): Float =
+    if (delta < 0f) delta else MotionSpecs.rubberband(delta, screenHeightPx)
 
 /**
  * 上滑是否达到「进入主 App」的阈值。

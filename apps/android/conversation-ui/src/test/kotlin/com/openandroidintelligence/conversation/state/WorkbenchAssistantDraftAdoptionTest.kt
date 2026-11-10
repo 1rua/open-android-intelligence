@@ -35,6 +35,7 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -154,6 +155,135 @@ class WorkbenchAssistantDraftAdoptionTest {
 
             assertEquals("交接结果不能被会话切换丢掉", "交接草稿", controller.state.value.draft)
             assertEquals(listOf("a1"), controller.state.value.attachments.map { it.id.value })
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test
+    fun anEmptyAssistantDraftNeverErasesWhatTheMainAppAlreadyWrote() = runTest {
+        val (coordinator, _) = coordinator(emptyList())
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.editDraft("hello")
+
+            // 助手侧什么都没写：上滑交接不能把主 App 已经输入的内容抹掉。
+            val skipped = controller.adoptAssistantDraft("", emptyList())
+            runCurrent()
+
+            assertEquals(0, skipped)
+            assertEquals("助手草稿为空时保留主 App 现有草稿", "hello", controller.state.value.draft)
+            assertTrue(controller.state.value.attachments.isEmpty())
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test
+    fun aNonBlankAssistantDraftWinsOverTheMainAppText() = runTest {
+        val (coordinator, _) = coordinator(emptyList())
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.editDraft("hello")
+
+            controller.adoptAssistantDraft("浮层里的新草稿", emptyList())
+            runCurrent()
+
+            assertEquals("浮层里的新草稿", controller.state.value.draft)
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test
+    fun handoffWaitsForUploadingAttachmentsInsteadOfDroppingThem() = runTest {
+        val uploading = MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("a1"), AttachmentState.UPLOADING),
+        )
+        val coordinator = object : AttachmentDraftCoordinator {
+            override suspend fun prepare(selection: LocalAttachmentSelection) = draft("a1", AttachmentState.UPLOADING)
+            override suspend fun armSubmission(draftId: String, revision: Long) = error("unused")
+            override suspend fun cancelSubmission(intentId: String) = error("unused")
+            override fun observe(draftId: String): Flow<AttachmentDraftState> = uploading
+            override fun retry(draftId: String) = Unit
+            override suspend fun discard(draftId: String) = Unit
+            override suspend fun releaseAfterSubmit(draftId: String) = Unit
+            override fun remoteAttachmentId(draftId: String): String? = null
+        }
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.addAttachment(
+                LocalAttachmentSelection(
+                    filename = "shot.png",
+                    mediaType = "image/png",
+                    contentSource = com.openandroidintelligence.conversation.ports.AttachmentContentSource {
+                        java.io.ByteArrayInputStream(byteArrayOf(1, 2, 3))
+                    },
+                ),
+            )
+            runCurrent()
+            assertEquals(
+                "前置条件：附件仍在上传",
+                AttachmentState.UPLOADING,
+                controller.state.value.attachments.single().state,
+            )
+
+            // 上传完成前不能判定为就绪：直接迁移会让浮层关闭时把它一起丢掉。
+            assertFalse(controller.awaitHandoffAttachments(timeoutMillis = 50L))
+
+            uploading.value = AttachmentDraftState(AttachmentDraftId("a1"), AttachmentState.VERIFIED)
+            runCurrent()
+            assertTrue("校验完成后交接应立即就绪", controller.awaitHandoffAttachments(timeoutMillis = 50L))
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test
+    fun aFailedAttachmentEndsTheHandoffWaitWithoutReachingTheTimeout() = runTest {
+        val failed = MutableStateFlow(
+            AttachmentDraftState(AttachmentDraftId("a1"), AttachmentState.RETRYABLE_FAILURE),
+        )
+        val coordinator = object : AttachmentDraftCoordinator {
+            override suspend fun prepare(selection: LocalAttachmentSelection) = draft("a1", AttachmentState.RETRYABLE_FAILURE)
+            override suspend fun armSubmission(draftId: String, revision: Long) = error("unused")
+            override suspend fun cancelSubmission(intentId: String) = error("unused")
+            override fun observe(draftId: String): Flow<AttachmentDraftState> = failed
+            override fun retry(draftId: String) = Unit
+            override suspend fun discard(draftId: String) = Unit
+            override suspend fun releaseAfterSubmit(draftId: String) = Unit
+            override fun remoteAttachmentId(draftId: String): String? = null
+        }
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.addAttachment(
+                LocalAttachmentSelection(
+                    filename = "shot.png",
+                    mediaType = "image/png",
+                    contentSource = com.openandroidintelligence.conversation.ports.AttachmentContentSource {
+                        java.io.ByteArrayInputStream(byteArrayOf(1, 2, 3))
+                    },
+                ),
+            )
+            runCurrent()
+
+            assertFalse("校验失败必须立即按严格交接拒绝，不必等满上限", controller.awaitHandoffAttachments(timeoutMillis = 5_000L))
+        } finally {
+            controller.close()
+        }
+    }
+
+    @Test
+    fun handoffWithNoAttachmentsIsReadyImmediately() = runTest {
+        val (coordinator, _) = coordinator(emptyList())
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            assertTrue("没有附件时交接不必等待", controller.awaitHandoffAttachments(timeoutMillis = 50L))
         } finally {
             controller.close()
         }

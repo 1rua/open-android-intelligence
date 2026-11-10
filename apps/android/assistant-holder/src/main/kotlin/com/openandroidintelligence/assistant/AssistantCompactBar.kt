@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.CropFree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Image
@@ -107,8 +108,9 @@ import kotlin.math.roundToInt
  *
  * 顶部拖动横条**不在**这里：整个助手只有 [AssistantDragHandle] 一个，由
  * [AssistantSessionRoot] 在会话树最顶部渲染（需求 5.1「始终显示」）。屏幕圈选按钮也已
- * 移除——唤起后直接在定格截图上画圈；[onStartScreenSelection] 仅留给 ASSIST 兜底页
- * 说明「本入口无系统截图」。
+ * 从系统助理的输入栏移除——唤起后直接在定格截图上画圈。ASSIST 兜底页没有系统截图，
+ * 仍需要一条「本入口无系统截图」的说明路径，因此 [onStartScreenSelection] 改成可空：
+ * 只有兜底页传入时才会渲染那个入口，系统会话不传，输入栏里就没有圈选按钮。
  *
  * 动效：
  * - **进场**：首次组合时整条输入栏从屏幕底部之下弹出，位移、缩放与透明度共用
@@ -130,7 +132,13 @@ internal fun AssistantCompactBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
-    onStartScreenSelection: () -> Unit,
+    /**
+     * 屏幕圈选入口：**只有 ASSIST 兜底页**传入（它没有系统截图，点它给出说明）。
+     *
+     * 系统助理会话传 null：唤起后直接在定格截图上画圈，输入栏里不该有第二个入口。
+     * 早先这个参数一直传空 lambda，兜底页的说明路径因此整体不可达。
+     */
+    onStartScreenSelection: (() -> Unit)? = null,
     /** 点击「＋」：打开系统文件 / 媒体选择器（ASSIST 兜底页不走这条路径）。 */
     onAddAttachment: () -> Unit = {},
     modifier: Modifier = Modifier,
@@ -286,7 +294,7 @@ private fun CompactInputRow(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
-    onStartScreenSelection: () -> Unit,
+    onStartScreenSelection: (() -> Unit)?,
     onAddAttachment: () -> Unit,
     cardShape: Shape?,
 ) {
@@ -397,6 +405,16 @@ private fun CompactInputRow(
                     enabled = enabled,
                     onClick = onStartRecording,
                 )
+                // 只有 ASSIST 兜底页会传这个回调：它没有系统截图，点这里给出说明。
+                // 系统会话不传，输入栏里因此没有第二个圈选入口。
+                if (onStartScreenSelection != null) {
+                    CompactIconAction(
+                        icon = Icons.Outlined.CropFree,
+                        contentDescription = "屏幕圈选",
+                        enabled = enabled,
+                        onClick = onStartScreenSelection,
+                    )
+                }
                 CompactPrimaryAction(
                     stop = isGenerating,
                     enabled = if (isGenerating) !isStopping else sendEnabled,

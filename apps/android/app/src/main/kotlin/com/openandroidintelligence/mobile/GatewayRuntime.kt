@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile
 import android.content.Context
 import android.os.Build
 import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoordinator
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.completeTimeline
@@ -45,6 +46,7 @@ import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingSto
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.mobile.assistant.AssistantAttachmentDraftCoordinator
+import com.openandroidintelligence.mobile.assistant.assistantAttachmentWrapperFor
 import com.openandroidintelligence.mobile.assistant.AssistantHandoffReasons
 import com.openandroidintelligence.mobile.assistant.AssistantHandoffResult
 import com.openandroidintelligence.mobile.assistant.AssistantHandoffTarget
@@ -621,15 +623,36 @@ class GatewayRuntime(
     }
 
     /**
+     * 为一个助手会话创建附件包装器，并**同时**登记到 [assistantAttachmentWrappers]。
+     *
+     * 两件事必须在同一处：原生与旧版 Gateway 两条分支都走这里，任何一条忘了登记，
+     * `prepareAssistantHandoff` 的 `disown` 就永远不会执行——浮层关闭时工作区退役，
+     * 包装器会把刚迁给主 App 的草稿连同暂存文件一起 `discard`。把「创建」和「登记」
+     * 绑成一个不可拆分的动作，比让每个分支各自记得登记可靠。
+     */
+    private fun assistantAttachmentWrapper(
+        owning: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator?,
+        sessionToken: String,
+    ): AssistantAttachmentDraftCoordinator? =
+        assistantAttachmentWrapperFor(assistantAttachmentWrappers, owning, sessionToken)
+
+    /**
      * 把助手浮层的会话、草稿与附件交给主 App（「上滑进入主 App」）。
      *
      * 严格失败：身份不匹配、控制器未就绪、目标线程打不开都返回拒绝原因，由浮层保留
      * 草稿与浮层并如实说明，绝不静默丢弃。成功时返回交接目标（含深链需要的身份）。
      *
+     * 附件必须先全部就绪：规格 §3.4 要求「仍有附件在上传/校验中时，交接等待其完成
+     * （有上限）；超时或校验失败按严格交接处理」。这里先等
+     * [ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS]，超时直接拒绝，**不**做「先迁移已
+     * 就绪的、再跳过其余的」——后者会让未迁移的附件留在助手包装器里，浮层关闭时被
+     * 连同暂存文件一起丢弃，而用户几乎看不到那句提示。
+     *
      * 调用顺序：先 `openThread`（它会在别处用主工作台自己的草稿快照覆盖输入栏），
-     * 再 `adoptAssistantDraft`，以助手草稿为准 —— 那是用户刚在浮层里编辑的那一份。
+     * 再 `adoptAssistantDraft`。接管只覆盖非空内容：助手草稿/附件为空时保留主 App
+     * 输入栏里已有的东西（见 [WorkbenchController.adoptAssistantDraft]）。
      */
-    internal fun prepareAssistantHandoff(sessionToken: String): AssistantHandoffResult {
+    internal suspend fun prepareAssistantHandoff(sessionToken: String): AssistantHandoffResult {
         val profileId = connectedProfileId
         val accountId = connectedAccountId
         if (profileId == null || accountId == null) {
@@ -650,6 +673,10 @@ class GatewayRuntime(
             ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.WORKBENCH_NOT_READY)
         val assistantController = runCatching { workspace.open(sessionToken) }.getOrNull()
             ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+        // 等待上传/校验中的附件变成 VERIFIED；超时或校验失败整次拒绝，浮层与草稿原样保留。
+        if (!assistantController.awaitHandoffAttachments(ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS)) {
+            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ATTACHMENTS_NOT_READY)
+        }
         val draft = assistantController.assistantDraftForHandoff()
         val conversationId = assistantController.state.value.activeThreadId
         // 尚未产生会话（首次唤起、还没发过消息）：不打开、也不新建线程，只并入输入栏。
@@ -2666,9 +2693,7 @@ class GatewayRuntime(
                     // 与主工作台共用同一个按 Agent 分区的附件协调器：交接按 draftId 跟踪
                     // 的必须是同一份暂存/上传状态，否则交过去的是永不推进的引用。
                     val owning = nativeOwningAttachmentCoordinators[assistantAgent.id] ?: attachmentCoordinator
-                    val wrapper = owning?.let { AssistantAttachmentDraftCoordinator(it) }
-                    if (wrapper != null) assistantAttachmentWrappers[sessionToken] = wrapper
-                    val attachments = wrapper
+                    val attachments = assistantAttachmentWrapper(owning, sessionToken)
                     val controller = createNativeAssistantWorkbench(
                         scope = sessionScope,
                         conversationScope = conversationScope,
@@ -2700,7 +2725,7 @@ class GatewayRuntime(
                         handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
                         sessionRenewal = renewal,
                     )
-                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                    val attachments = assistantAttachmentWrapper(attachmentCoordinator, sessionToken)
                     createAssistantWorkbench(
                         scope = sessionScope,
                         conversationScope = conversationScope,

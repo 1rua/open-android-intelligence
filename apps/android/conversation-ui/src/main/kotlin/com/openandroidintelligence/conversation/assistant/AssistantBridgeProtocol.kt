@@ -32,6 +32,35 @@ import org.json.JSONObject
  */
 const val ASSISTANT_BRIDGE_VERSION = 2
 
+/**
+ * 助手桥接命令允许出现的 Bundle 键（协议字段封闭）。
+ *
+ * 两端（助理进程的 `AssistantBridgeClient`、主进程的 `AssistantBridgeService`）都必须
+ * 引用这**同一份**集合：任何一侧新增字段而另一侧没同步，命令会被整条丢弃，表现为
+ * 「点了没反应」，很难在真机上定位。测试也直接断言这份集合，避免手写白名单漂移。
+ */
+val ASSISTANT_BRIDGE_ALLOWED_KEYS: Set<String> = setOf(
+    "version", "token", "command", "text", "content", "size",
+    "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
+    "uris", "count",
+)
+
+/**
+ * 交接时等待未就绪附件（上传/校验中）完成的上限。
+ *
+ * 规格 §3.4：交接只接管已 `VERIFIED` 的附件；仍有附件在传时必须等它完成（有上限），
+ * 超时按严格交接处理。3 秒足以覆盖正常大小的图片/文件，又不会让用户觉得上滑没反应。
+ */
+const val ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS = 3_000L
+
+/**
+ * 浮层等待主进程交接回执的上限。
+ *
+ * 必须**大于**服务端的 [ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS]，否则服务端还在等
+ * 附件时浮层就先把结果判成超时，用户看到的就不是真实原因。
+ */
+const val ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS = 5_000L
+
 /** 单条消息正文被预算截断时插入的固定标记；接收方据此显示"已截断"。 */
 const val TEXT_TRUNCATION_MARKER = "\n\n…[内容已截断]…\n\n"
 

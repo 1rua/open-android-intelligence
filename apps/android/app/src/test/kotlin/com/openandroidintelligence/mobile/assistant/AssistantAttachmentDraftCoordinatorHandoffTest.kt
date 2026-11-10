@@ -13,7 +13,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,9 +23,10 @@ import org.junit.Test
  * 交接时的附件所有权转移。
  *
  * 交接要求「先迁移成功再关闭浮层」：主 App 接管附件后，浮层关闭不能把这份附件连同
- * 暂存文件一起丢弃。`disown` 只摘除认领，底层 delegate 的暂存/上传任务仍归主 App；
- * `adopt` 用来把通用协调器里的同一草稿收进包装器，避免两侧各持一个实例导致
- * 按 draftId 交接得到永不推进的引用。
+ * 暂存文件一起丢弃。`disown` 只摘除认领，底层 delegate 的暂存/上传任务仍归主 App。
+ *
+ * 包装器的创建与登记已合并到 `GatewayRuntime` 的同一处（两种 Gateway 分支都走同一
+ * 辅助函数），因此不再需要「跨实例把草稿收进另一个包装器」的 `adopt`。
  */
 class AssistantAttachmentDraftCoordinatorHandoffTest {
 
@@ -61,26 +61,6 @@ class AssistantAttachmentDraftCoordinatorHandoffTest {
         val assistant = AssistantAttachmentDraftCoordinator(Uploads())
 
         assertFalse(assistant.disown("draft_unknown"))
-    }
-
-    @Test
-    fun adoptingRestoresOwnershipSoRestoredDraftsCanBePublished() = runBlocking {
-        val delegate = Uploads()
-        val main = delegate.prepare(selection("shared.png"))
-        val assistant = AssistantAttachmentDraftCoordinator(delegate)
-
-        // 通用协调器里已有同一草稿：交接后助手包装器必须能按 id 观察它。
-        assertTrue(assistant.adopt(main.id.value))
-        assertEquals(AttachmentState.UPLOADING, assistant.observe(main.id.value).first().state)
-        assertEquals(listOf(main.id), assistant.restoredDrafts().map { it.id })
-    }
-
-    @Test
-    fun adoptingAfterCloseIsRejected() = runBlocking {
-        val assistant = AssistantAttachmentDraftCoordinator(Uploads())
-        assistant.close(CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)).join()
-
-        assertFalse("迟到的交接不能复活已回收的协调器", assistant.adopt("draft_late"))
     }
 
     private fun selection(name: String) = LocalAttachmentSelection(

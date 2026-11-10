@@ -23,7 +23,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -171,8 +170,6 @@ internal fun AssistantFrozenSelectionScene(
                 onSend = send,
                 onStop = onStop,
                 onStartRecording = onStartRecording,
-                // 定格态本身就等于圈选入口：不再提供第二个入口。
-                onStartScreenSelection = {},
                 onAddAttachment = onAddAttachment,
                 attachments = attachments,
                 onRemoveAttachment = onRemoveAttachment,
@@ -190,7 +187,3 @@ internal fun AssistantFrozenSelectionScene(
 
 /** 定格态圈选产物的本地键基名；连续圈选会追加序号（见 `liveSelectionLocalKey`）。 */
 private const val FROZEN_SELECTION_LOCAL_KEY = "assistant-frozen-selection"
-
-/** 供诊断使用：输入区矩形是否已经上报（RenderThread 之外的检查）。 */
-internal fun frozenDockMightCover(point: Offset, dockRect: Rect?): Boolean =
-    dockRect != null && dockRect.contains(point)

@@ -111,6 +111,51 @@ class AssistantDragHandleTest {
 
     // ---- 阈值纯函数 ----
 
+    /**
+     * 减少动态：横条不跟手（视觉位移恒为 0），但手势行程仍被累计。
+     *
+     * 若把「不跟手」实现成「不处理手势」，减少动态用户就再也上滑不进主 App；
+     * 若只让进度回调返回 0 而位移照旧，横条又会继续跟手——两者都不对。
+     */
+    @Test
+    fun reduceMotionKeepsTheHandleStillWhileStillTrackingTravel() {
+        assertEquals(0f, dragOffsetStep(current = 0f, delta = -300f, reduceMotion = true, screenHeightPx = 2000f))
+        val continued = dragOffsetStep(current = -120f, delta = -80f, reduceMotion = true, screenHeightPx = 2000f)
+        assertEquals("减少动态下累计拖动也不能产生位移", 0f, continued)
+        // 行程照常累计，阈值判定仍可用。
+        assertEquals(-300f, dragTravelStep(delta = -300f, screenHeightPx = 2000f))
+        assertTrue(shouldHandoffDrag(dragTravelStep(-600f, 2000f), 0f, 2000f, 1200f))
+    }
+
+    @Test
+    fun aReducedMotionDragStillRequestsTheHandoffWithoutMovingTheHandle() {
+        var handoffs = 0
+        val progress = mutableListOf<Float>()
+        compose.setContent {
+            CompositionLocalProvider(
+                LocalMotionPolicy provides MotionPolicy(reduceMotion = true),
+            ) {
+                MaterialTheme {
+                    Box(Modifier.size(360.dp, 640.dp)) {
+                        AssistantDragHandle(
+                            onRequestHandoff = { handoffs++ },
+                            onDragProgress = { progress += it },
+                        )
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).performTouchInput {
+            val start = center
+            swipe(start = start, end = Offset(start.x, start.y - 600f), durationMillis = 400)
+        }
+        compose.waitForIdle()
+
+        assertEquals("减少动态不得取消上滑交接", 1, handoffs)
+        assertTrue("减少动态下进度回调必须恒为 0：$progress", progress.all { it == 0f })
+    }
+
     @Test
     fun distanceOverEighteenPercentTriggersTheHandoff() {
         // 2000px 屏幕：阈值 360px。

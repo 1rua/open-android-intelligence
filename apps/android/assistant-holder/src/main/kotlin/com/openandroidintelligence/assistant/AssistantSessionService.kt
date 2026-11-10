@@ -15,6 +15,7 @@ import android.view.WindowManager
 import androidx.compose.runtime.mutableStateOf
 import android.os.Handler
 import android.os.Looper
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
 import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
 import com.openandroidintelligence.conversation.assistant.AssistantHandoffState
 import kotlinx.coroutines.CoroutineScope
@@ -54,7 +55,11 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private var screenshot: Bitmap? = null
 
     /** 界面形态与覆盖层：唯一的状态真相，界面与窗口都读它。 */
-    private val uiState = AssistantSessionUiController()
+    private val uiState = AssistantSessionUiController().also { controller ->
+        // 窗口几何由状态观察单点驱动：只要覆盖层不再是定格截图，窗口就必须回到测量驱动。
+        // 文字发送、语音发送、返回键、系统重新截图都会清掉覆盖层，逐个调用点补一定会漏。
+        controller.bindOnStateChanged { state -> syncWindowWithOverlay(state) }
+    }
 
     /** 圈选用的系统截图；非 null 表示当前处于全屏圈选态。 */
     private val selectionState = mutableStateOf<AssistantScreenSelection?>(null)
@@ -79,6 +84,22 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     /** 系统选择器结果的会话侧强引用；[onHide]/[onDestroy] 时清空。 */
     private var pendingPickerCallback: ((List<Uri>) -> Unit)? = null
+
+    /**
+     * 选择器「已结束」回调的会话侧强引用。
+     *
+     * broker 只持弱引用：若会话不在这里留一份，这个 lambda 会在 Activity 返回前被回收，
+     * 表现为「选完文件窗口不恢复、浮层再也不出现」。与 [pendingPickerCallback] 同理。
+     */
+    private var pendingPickerFinished: (() -> Unit)? = null
+
+    /**
+     * 会话窗口是否因为系统选择器而被临时停用（`setUiEnabled(false)`）。
+     *
+     * 停用后窗口不可见也不接收触摸，选择器可以正常点击；结果/取消/会话结束时必须恢复，
+     * 否则下一次唤起会因为 `mUiEnabled=false` 而根本建不出窗口。
+     */
+    private var pickerSuspended = false
 
     /** 交接请求是否在等待主进程回执；同一时刻只允许一次。 */
     private var handoffRequested = false
@@ -121,7 +142,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 controller = uiState,
                 previews = previews,
                 selection = selectionState.value,
-                onStartSelection = { beginScreenSelection() },
+                // 系统会话没有第二个圈选入口：唤起后直接在定格截图上画圈。
+                // 「本入口无系统截图」的说明路径只属于 ASSIST 兜底页（见 AssistantActivity）。
+                onStartSelection = null,
                 onFinishSelection = { finishScreenSelection() },
                 onSelectionReady = { result -> submitSelection(result) },
                 onOpenApp = { openMainApp() },
@@ -182,12 +205,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 退出只断开连接、不取消生成：已提交的任务由主进程继续。
         closing = true
         presented = false
+        // 选择器仍打开时被系统收起：窗口必须恢复，下一次唤起才建得出界面。
+        restoreSessionUi()
         uiState.dispatch(AssistantUiEvent.SessionHidden)
         client?.let(AssistantSessionLifecycle::leave)
         client = null
         host?.stop()
         userHasStartedTyping = false
         pendingPickerCallback = null
+        pendingPickerFinished = null
         AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
         super.onHide()
@@ -198,11 +224,14 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         handoffJob = null
         handoffWatchdog?.let(mainHandler::removeCallbacks)
         handoffWatchdog = null
+        restoreSessionUi()
         client?.let(AssistantSessionLifecycle::leave)
         client = null
         pendingPickerCallback = null
+        pendingPickerFinished = null
         AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
+        uiState.bindOnStateChanged(null)
         host?.destroy()
         host = null
         super.onDestroy()
@@ -266,7 +295,10 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         if (screenshot != null && canFreezeForSelection()) {
             enterFrozenSelection()
         } else if (screenshot == null) {
+            // 规格 §3.1：系统未提供截图时不进入全屏，但要给出一条可关闭的说明。
+            // 只派发事件而不提示，用户会以为「唤起了但没有圈选能力」，却看不到任何原因。
             uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
+            client?.showAdvisory("系统未提供截图，无法圈选；可直接输入文字")
         }
     }
 
@@ -313,6 +345,22 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
             uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
         }
+        applyWindowLayout()
+    }
+
+    /**
+     * 状态观察单点：覆盖层不再是定格截图时，窗口同步回到测量驱动。
+     *
+     * 语音发送（`VoiceSent`）会把覆盖层清成 `NONE`，但它走的是录音回调，不经过
+     * `onExitFrozen`。如果窗口几何只由显式调用推进，语音发送后窗口会留在
+     * `MATCH_PARENT × MATCH_PARENT` 的透明全屏上，吞掉下方 App 的触摸；用户再按返回时
+     * 覆盖层已经是 `NONE`，直接被判成结束会话。挂在状态转移点上，所有路径自动一致。
+     */
+    private fun syncWindowWithOverlay(state: AssistantUiState) {
+        if (!frozenFullscreen.value) return
+        val overlay = (state as? AssistantUiState.Visible)?.overlay
+        if (overlay == AssistantOverlay.FROZEN_SCREENSHOT) return
+        frozenFullscreen.value = false
         applyWindowLayout()
     }
 
@@ -498,8 +546,10 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      * 但用户不该在什么都没看到的情况下被关掉界面。
      */
     private fun proceedWithAcceptedHandoff(bridge: AssistantBridgeClient, handoff: AssistantHandoffDto) {
+        // 交接成功即全部附件都已迁移：主进程会等未就绪附件完成，不会再有「跳过」。
+        // 仍保留服务端计数作兜底展示（旧主进程可能给出非零值），但不伪造成功。
         val skipped = if (handoff.skippedAttachments > 0) {
-            "，另有 ${handoff.skippedAttachments} 个附件仍在上传，未能带入"
+            "，另有 ${handoff.skippedAttachments} 个附件未能带入"
         } else {
             ""
         }
@@ -523,6 +573,12 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      *
      * 选中结果经 [AssistantAttachmentPickerBroker] 回到这里：只做「去重 → 按剩余槽位截断 →
      * 交给主进程」，本进程不读字节、不解析 MIME。
+     *
+     * 窗口必须先停用：助手浮层是常驻在其他窗口之上的 `VoiceInteractionSession`，紧凑态
+     * 占着屏幕底部、定格态铺满全屏。选择器虽然在上层，浮层窗口没有让出触摸区域时，
+     * 选择器底部的 `Done` 落在浮层范围内会被吞掉（真机已复现「连点两次毫无反应」）。
+     * `setUiEnabled(false)` 会隐藏会话窗口并把输入焦点交还给上层 Activity；选择器结果
+     * 或取消回来后再恢复。
      */
     private fun requestAttachmentPicker() {
         val bridge = client ?: return
@@ -533,15 +589,40 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             mainHandler.post { deliverPickedAttachments(bridge, uris.map(Uri::toString)) }
         }
         pendingPickerCallback = callback
-        AssistantAttachmentPickerBroker.register(callback)
+        // broker 只持弱引用：会话必须自己强引用「已结束」回调，否则它会在 Activity
+        // 返回前被回收，窗口停在不可见状态。
+        val finished: () -> Unit = { mainHandler.post { restoreSessionUi() } }
+        pendingPickerFinished = finished
+        AssistantAttachmentPickerBroker.register(
+            callback = callback,
+            // 有结果与取消走同一条恢复路径：窗口不能因为用户按了返回就永久不可见。
+            onFinished = finished,
+        )
+        // 先停用再启动：窗口在启动瞬间仍在最上层，晚一步就会吞掉选择器的第一次点击。
+        suspendSessionUiForPicker()
         // `startAssistantActivity` 没有返回值：只能以「没有抛出异常」为准，
         // 真正的失败（回来时没有 URI）由选择器自身的取消路径如实表达。
         try {
             startAssistantActivity(AssistantAttachmentPickerActivity.intent(context))
         } catch (_: Exception) {
             AssistantAttachmentPickerBroker.cancel()
+            restoreSessionUi()
             bridge.showAdvisory("无法打开文件选择器，请稍后再试")
         }
+    }
+
+    /** 选择器期间让出窗口；重复调用是空操作，避免与结果回调互相覆盖。 */
+    private fun suspendSessionUiForPicker() {
+        if (pickerSuspended) return
+        pickerSuspended = true
+        setUiEnabled(false)
+    }
+
+    /** 选择器结束（结果/取消/失败）后恢复窗口；只恢复自己停用过的那一次。 */
+    private fun restoreSessionUi() {
+        if (!pickerSuspended) return
+        pickerSuspended = false
+        setUiEnabled(true)
     }
 
     /** 选择结果 → 主进程附件草稿：去重、按剩余槽位截断，超出部分如实提示。 */
@@ -574,7 +655,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         /** 本地缩略图存储只属于一次会话；同一会话内重建组合沿用同一个实例。 */
         const val SESSION_PREVIEWS_KEY = "assistant-session"
 
-        /** 等待主进程交接回执的上限：超时按失败处理，浮层与草稿原样保留。 */
-        const val HANDOFF_TIMEOUT_MILLIS = 2_000L
+        /** 等待主进程交接回执的上限：必须大于服务端等待附件就绪的上限（3 秒），
+         *  否则浮层会先判超时，用户看到的就不是真实原因。 */
+        const val HANDOFF_TIMEOUT_MILLIS = ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
     }
 }

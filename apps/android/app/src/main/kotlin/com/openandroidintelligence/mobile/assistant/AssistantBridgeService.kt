@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile.assistant
 import android.app.Service
 import android.content.Intent
 import android.os.*
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.assistant.AssistantAccountDto
 import com.openandroidintelligence.conversation.assistant.AssistantAppearanceDto
@@ -109,11 +110,8 @@ class AssistantBridgeService : Service() {
                 publish(client)
             }
             // 交接是唯一「不靠异常报错」的命令：结果必须随状态帧回执，
-            // 因为拒绝原因（账号/Agent 不一致）需要原文展示给用户。
-            "handoff" -> {
-                client.handoff = runHandoff(client)
-                publish(client)
-            }
+            // 因为拒绝原因（账号/Agent 不一致、附件未就绪）需要原文展示给用户。
+            "handoff" -> runHandoff(client, reply)
             else -> {
                 if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
                 val controller = client.controller ?: run { publish(client); return@Handler true }
@@ -334,14 +332,40 @@ class AssistantBridgeService : Service() {
      *
      * 严格失败：所有拒绝原因都带回浮层，草稿与附件保持在助手控制器里。
      * 身份不匹配（账号切换）时连 controller 都不该借用。
+     *
+     * 交接要等附件就绪（有上限），因此它在独立协程里完成；期间的重复请求直接忽略，
+     * 结果随状态帧下发。
      */
-    private fun runHandoff(client: Client): AssistantHandoffResult {
-        val token = client.sessionToken ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
-        if (!client.scope.canShare(runtime.connectedAccountId)) {
-            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+    private fun runHandoff(client: Client, reply: Messenger) {
+        if (handoffInFlight) return
+        val token = client.sessionToken ?: run {
+            client.handoff = AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            publish(client)
+            return
         }
-        return runtime.prepareAssistantHandoff(token)
+        if (!client.scope.canShare(runtime.connectedAccountId)) {
+            client.handoff = AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+            publish(client)
+            return
+        }
+        handoffInFlight = true
+        jobs.launch {
+            val result = try {
+                runtime.prepareAssistantHandoff(token)
+            } catch (_: CancellationException) {
+                AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            } finally {
+                handoffInFlight = false
+            }
+            // 会话已被换掉（session.new / disconnect）时结果不再属于当前客户端。
+            if (clients[reply.binder] !== client || client.sessionToken != token) return@launch
+            client.handoff = result
+            publish(client)
+        }
     }
+
+    /** 同一时刻只允许一次交接：重复上滑不会并发迁移同一份草稿。 */
+    private var handoffInFlight = false
 
     /**
      * 打开一条新会话。
@@ -510,11 +534,7 @@ class AssistantBridgeService : Service() {
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val ATTACHMENT_READ_TIMEOUT_MILLIS = 10_000L
         val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
-        val ALLOWED_KEYS = setOf(
-            "version", "token", "command", "text", "content", "size",
-            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
-            "uris", "count",
-        )
+        val ALLOWED_KEYS = ASSISTANT_BRIDGE_ALLOWED_KEYS
     }
 }
 

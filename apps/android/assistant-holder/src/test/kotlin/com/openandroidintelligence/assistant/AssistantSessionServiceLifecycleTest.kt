@@ -6,6 +6,8 @@ import android.service.voice.VoiceInteractionSession
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -191,6 +193,125 @@ class AssistantSessionServiceLifecycleTest {
             "已有草稿时不强行切全屏",
             AssistantOverlay.NONE,
             session.uiStateOrNull()?.visible()?.overlay,
+        )
+    }
+
+    // ---- 系统选择器与窗口触摸 ----
+
+    /**
+     * 打开系统选择器前必须先停用会话窗口的 UI。
+     *
+     * 助手浮层是常驻在其他窗口之上的 `VoiceInteractionSession`：紧凑态窗口占着屏幕底部、
+     * 定格态铺满全屏。选择器（Photo Picker）虽然在上层，但浮层窗口没有让出触摸区域时，
+     * 选择器底部的 `Done` 落在浮层窗口范围内会被吞掉点击（真机已复现）。因此选择器
+     * 启动前必须 `setUiEnabled(false)`，结果/取消回来后再恢复。
+     */
+    @Test fun openingTheSystemPickerDisablesTheSessionWindowUntilAResultArrives() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestAttachmentPicker(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val shadow = shadowOf(session)
+        assertFalse("选择器期间助手窗口必须让出触摸", shadow.isUiEnabled)
+        assertEquals(
+            "选择器必须由透明 Activity 启动",
+            AssistantAttachmentPickerActivity::class.java.name,
+            shadow.lastAssistantActivityIntent?.component?.className,
+        )
+
+        // 用户取消：必须恢复窗口，否则浮层会永久不可见。
+        AssistantAttachmentPickerBroker.cancel()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertTrue("选择器取消后必须恢复助手窗口", shadow.isUiEnabled)
+    }
+
+    @Test fun aPickedFileRestoresTheSessionWindowAndStillReachesTheDraft() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestAttachmentPicker(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val before = commands()
+
+        AssistantAttachmentPickerBroker.deliver(
+            listOf(android.net.Uri.parse("content://media/picked/1")),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertTrue("选择器返回后必须恢复助手窗口", shadowOf(session).isUiEnabled)
+        assertEquals(
+            "选中的文件仍要进入主进程草稿",
+            listOf("attachment"),
+            commands().drop(before.size),
+        )
+    }
+
+    /**
+     * 真机上系统会先 `doCreate` 再展示会话；`startAssistantActivity` / `hide` 都要求
+     * 已经拿到 token。测试里显式走一次 `doCreate`，否则这两条路径只会抛
+     * `IllegalStateException("Can't call before onCreate()")`，掩盖真实行为。
+     */
+    private fun createdSession(handoffFrame: HandoffFrame? = null): VoiceInteractionSession =
+        session(handoffFrame).also { shadowOf(it).create() }
+
+    private fun invokeRequestAttachmentPicker(session: VoiceInteractionSession) {
+        val method = session.javaClass.getDeclaredMethod("requestAttachmentPicker").apply { isAccessible = true }
+        method.invoke(session)
+    }
+
+    /**
+     * 定格态下发语音：状态机把覆盖层清成 `NONE` 并展开对话，窗口必须同步退出全屏。
+     *
+     * 语音发送路径（`AssistantSessionContent` 的录音回调）只派发 `VoiceSent`，没有像
+     * 文字发送那样显式调用退出定格。窗口几何若只跟「显式退出」绑定，就会留在
+     * `MATCH_PARENT × MATCH_PARENT` 的透明全屏上，吞掉下方 App 的触摸；用户再按返回时
+     * 覆盖层已经是 `NONE`，直接被判定为结束会话。窗口必须由状态观察单点驱动。
+     */
+    @Test fun sendingVoiceFromTheFrozenSelectionLeavesFullscreen() {
+        val session = session()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(40, 40, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        assertEquals(WindowManager.LayoutParams.MATCH_PARENT, window?.attributes?.height)
+
+        // 语音已被主进程接收：界面侧只有这一个事件（不经过文字发送的 onExitFrozen）。
+        session.uiStateOrNull()?.dispatch(AssistantUiEvent.VoiceSent)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(AssistantOverlay.NONE, session.uiStateOrNull()?.visible()?.overlay)
+        assertNotEquals(
+            "语音发送后窗口必须回到测量驱动，不能继续铺满屏幕",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+    }
+
+    @Test fun aMissingScreenshotExplainsWhySelectionIsUnavailable() {
+        val session = session()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        // 系统这次没有交付截图：会话既不能进定格，也不能保持沉默。
+        session.onHandleScreenshot(null)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(AssistantOverlay.NONE, session.uiStateOrNull()?.visible()?.overlay)
+        assertEquals(
+            "系统未提供截图时必须给出一条可关闭的说明",
+            "系统未提供截图，无法圈选；可直接输入文字",
+            session.clientOrNull()?.state?.value?.advisory,
         )
     }
 

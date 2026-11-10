@@ -31,6 +31,14 @@ internal object AssistantHandoffReasons {
     const val ACCOUNT_MISMATCH = "主 App 当前的账号与助手不一致，草稿与附件仍保留在助手中"
     const val WORKBENCH_NOT_READY = "主 App 的会话界面尚未就绪，草稿与附件仍保留在助手中"
     const val AGENT_NOT_READY = "主 App 正在切换到同一个 Agent，请稍后再滑一次"
+
+    /**
+     * 附件仍在暂存/上传/校验中，超过交接等待上限。
+     *
+     * 规格 §3.4：这种情况按严格交接处理——浮层回弹、草稿与附件保留，并说明原因。
+     * 不能「先迁移已就绪的、再跳过其余的」：未迁移的附件会在浮层关闭时被回收。
+     */
+    const val ATTACHMENTS_NOT_READY = "附件仍在上传或校验，交接未完成；草稿与附件仍保留在助手中，请稍后再滑一次"
 }
 
 /**

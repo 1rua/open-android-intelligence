@@ -62,6 +62,7 @@ class AssistantCompactBarTest {
         recording: ActiveVoiceRecording? = null,
         onRemoveAttachment: (String) -> Unit = {},
         reduceMotion: Boolean = false,
+        withScreenSelection: Boolean = false,
     ): TextFieldState {
         val editor = TextFieldState(editorText)
         compose.setContent {
@@ -77,7 +78,7 @@ class AssistantCompactBarTest {
                         onSend = { sends++ },
                         onStop = { stops++ },
                         onStartRecording = { recordings++ },
-                        onStartScreenSelection = { selections++ },
+                        onStartScreenSelection = if (withScreenSelection) ({ selections++ }) else null,
                         onAddAttachment = { added++ },
                         enabled = enabled,
                         hasUnknownOutcome = hasUnknownOutcome,
@@ -179,9 +180,10 @@ class AssistantCompactBarTest {
     }
 
     /**
-     * 输入栏最左侧是「＋」附件入口；圈选按钮已按需求移除（改为唤起后直接画圈）。
+     * 输入栏最左侧是「＋」附件入口；系统会话的输入栏没有圈选按钮。
      *
-     * `onStartScreenSelection` 参数仍保留：ASSIST 兜底页要用它显示「本入口无系统截图」。
+     * ASSIST 兜底页仍然需要「本入口无系统截图」的说明路径：它显式传入
+     * `onStartScreenSelection`，输入栏才渲染那个入口。
      */
     @Test
     fun addAttachmentButtonIsReachableAndScreenSelectionButtonIsGone() {
@@ -194,6 +196,15 @@ class AssistantCompactBarTest {
         assertEquals(1, recordings)
         compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
         assertEquals(0, selections)
+    }
+
+    @Test
+    fun theFallbackEntryKeepsAReachableScreenSelectionExplanation() {
+        render(withScreenSelection = true)
+
+        compose.onNodeWithContentDescription("屏幕圈选").assertIsEnabled().performClick()
+
+        assertEquals("兜底页的说明入口必须真的可点", 1, selections)
     }
 
     @Test

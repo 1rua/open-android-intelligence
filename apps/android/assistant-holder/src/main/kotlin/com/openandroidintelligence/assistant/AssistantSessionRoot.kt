@@ -80,10 +80,26 @@ internal class AssistantSessionUiController(
         onTerminated = callback
     }
 
+    /**
+     * 状态变化观察者：每次 [dispatch] 写入新状态后回调一次。
+     *
+     * 窗口几何必须由**状态观察单点驱动**：文字发送、语音发送、返回键、系统重新截图、
+     * 会话结束都可能把覆盖层从定格态清掉，逐个调用点补「退出全屏」一定会漏掉一条
+     * （语音发送就漏了，窗口留在全屏吞掉下方 App 的触摸）。观察者挂在状态转移点上，
+     * 任何路径都自动一致。
+     */
+    var onStateChanged: ((AssistantUiState) -> Unit)? = null
+        private set
+
+    fun bindOnStateChanged(callback: ((AssistantUiState) -> Unit)?) {
+        onStateChanged = callback
+    }
+
     fun dispatch(event: AssistantUiEvent) {
         val previous = state
         val next = reduce(previous, event)
         state = next
+        onStateChanged?.invoke(next)
         if (next is AssistantUiState.Terminated && previous !is AssistantUiState.Terminated) {
             onTerminated?.invoke()
         }
@@ -143,7 +159,11 @@ internal fun AssistantSessionRoot(
     onRemoveAttachment: (String) -> Unit = {},
     /** 审批决策：卡片把自身的 approvalId 绑定进回调，宿主负责提交。 */
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
-    onStartScreenSelection: () -> Unit = {},
+    /**
+     * 屏幕圈选入口：**只有 ASSIST 兜底页**传入（它没有系统截图，点它给出说明）。
+     * 系统助理会话传 null，输入栏里没有第二个圈选入口。
+     */
+    onStartScreenSelection: (() -> Unit)? = null,
     onOpenApp: () -> Unit = {},
     /** 横条上滑超过阈值：请求把当前会话交给主 App（严格交接，失败保留浮层）。 */
     onRequestHandoff: () -> Unit = {},

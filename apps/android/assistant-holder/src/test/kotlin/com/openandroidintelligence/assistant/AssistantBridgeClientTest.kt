@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
@@ -130,6 +131,13 @@ class AssistantBridgeClientTest {
         assertEquals("submission", sent[9].getString("target"))
     }
 
+    /**
+     * 每条命令的 Bundle 键都必须落在**两端共用的**白名单里。
+     *
+     * 守卫必须真正触发全部命令：早先的用例只发了旧命令，`handoff` 与 `attachment`
+     * 两条新命令的字段（`uris` / `count`）从没被这条断言覆盖过，等于新命令不受保护。
+     * 白名单直接取协议常量，不再在测试里手写第二份。
+     */
     @Test fun commandsOnlyContainFieldsTheServiceAccepts() {
         val target = connect()
         target.sessionNew()
@@ -138,12 +146,16 @@ class AssistantBridgeClientTest {
         target.removeAttachment("draft-1")
         target.decideApproval("apr-1", ApprovalChoice.DENY)
         target.retry(AssistantRetryTarget.TIMELINE)
+        target.requestHandoff()
+        target.attachFiles(listOf("content://media/picked/1"))
         shadowOf(Looper.getMainLooper()).idle()
 
-        val allowed = setOf(
-            "version", "token", "command", "text", "content", "size",
-            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
-        )
+        // 覆盖检查本身要成立：新命令确实发出去了，白名单断言才有意义。
+        val commands = sent.map { it.getString("command") }
+        assertTrue("交接命令必须被触发：$commands", "handoff" in commands)
+        assertTrue("附件命令必须被触发：$commands", "attachment" in commands)
+
+        val allowed = ASSISTANT_BRIDGE_ALLOWED_KEYS
         assertTrue(sent.isNotEmpty())
         assertTrue(sent.all { allowed.containsAll(it.keySet()) })
     }

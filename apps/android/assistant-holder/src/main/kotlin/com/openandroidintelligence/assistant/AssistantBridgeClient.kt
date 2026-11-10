@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
@@ -434,12 +435,8 @@ internal class AssistantBridgeClient(
         const val COMMAND_HANDOFF = "handoff"
         const val COMMAND_DISCONNECT = "disconnect"
 
-        /** 与主进程 `AssistantBridgeService.ALLOWED_KEYS` 一字不差。 */
-        val ALLOWED_KEYS = setOf(
-            "version", "token", "command", "text", "content", "size",
-            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
-            "uris", "count",
-        )
+        /** 与主进程共用同一份字段集合（`ASSISTANT_BRIDGE_ALLOWED_KEYS`），不可能各自漂移。 */
+        val ALLOWED_KEYS = ASSISTANT_BRIDGE_ALLOWED_KEYS
 
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val SCREEN_DELIVERY_TIMEOUT_MILLIS = 10_000L

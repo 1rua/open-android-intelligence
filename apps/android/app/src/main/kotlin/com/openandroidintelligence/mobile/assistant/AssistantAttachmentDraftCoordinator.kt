@@ -83,25 +83,24 @@ internal class AssistantAttachmentDraftCoordinator(
         } else {
             false
         }
-
-    /**
-     * 把通用协调器里的草稿收进本协调器的所有权。
-     *
-     * 交接要求两侧拿到**同一个**包装器：主控制器的 `restoredDrafts()` 只放行自己的
-     * `ownedIds`，若主工作台用的是另一个包装器实例，按 draftId 交过去的附件会变成
-     * 永不推进的引用。这里在交接时显式建立所有权，而不是靠两边实例恰好相同。
-     *
-     * 关闭后调用是空操作并返回 false（迟到的交接不能复活已回收的协调器）。
-     */
-    @Synchronized fun adopt(draftId: String): Boolean {
-        if (closed || draftId.isBlank()) return false
-        return ownedIds.add(draftId)
-    }
-
-    /**
-     * 本协调器当前持有的草稿所有权（交接诊断与跨实例移交用）。
-     *
-     * 返回快照：调用方在另一条线程上遍历时不会被并发 prepare/close 影响。
-     */
-    @Synchronized fun ownedDraftIds(): Set<String> = ownedIds.toSet()
 }
+
+/**
+ * 为一个助手会话创建附件包装器，并**同时**登记到 [wrappers]。
+ *
+ * 创建与登记必须是同一个不可拆分的动作：原生与旧版 Gateway 两条分支都走这里，任何一条
+ * 忘了登记，`prepareAssistantHandoff` 的 `disown` 就永远不会执行——浮层关闭时工作区退役，
+ * 包装器会把刚迁给主 App 的草稿连同暂存文件一起 `discard`。旧版分支正是漏了这一步。
+ *
+ * @return 新建的包装器；[owning] 为 null（没有附件能力）时不创建也不登记。
+ */
+internal fun assistantAttachmentWrapperFor(
+    wrappers: MutableMap<String, AssistantAttachmentDraftCoordinator>,
+    owning: AttachmentDraftCoordinator?,
+    sessionToken: String,
+): AssistantAttachmentDraftCoordinator? =
+    owning?.let { coordinator ->
+        AssistantAttachmentDraftCoordinator(coordinator).also { wrapper ->
+            wrappers[sessionToken] = wrapper
+        }
+    }
