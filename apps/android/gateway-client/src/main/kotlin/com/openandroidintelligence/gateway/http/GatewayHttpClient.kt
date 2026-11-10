@@ -125,7 +125,9 @@ class GatewayHttpClient(
     private val localEventRecoveryMarker = java.util.concurrent.atomic.AtomicReference<Any?>(null)
     private val failedEventSession = java.util.concurrent.atomic.AtomicReference<Pair<GatewayProfile, Throwable>?>(null)
 
-    private class EventOwner(val id: Long)
+    private class EventOwner(val id: Long) {
+        var status: EventStreamStatus? = null
+    }
     private class CursorRecoveryAttempt(val client: GatewayHttpClient, val owner: EventOwner) :
         kotlin.coroutines.AbstractCoroutineContextElement(Key) {
         companion object Key : kotlin.coroutines.CoroutineContext.Key<CursorRecoveryAttempt>
@@ -138,7 +140,13 @@ class GatewayHttpClient(
     }
 
     private fun reportEventStatus(owner: EventOwner, status: EventStreamStatus) = synchronized(eventOwnerLock) {
-        if (activeEventOwner.get() === owner) statusSink?.report(status)
+        if (activeEventOwner.get() === owner) {
+            if (owner.status != status) GatewayLog.connectionEvent("connection.state_changed", owner.id,
+                reason = "platform_events", result = status.name,
+                fields = mapOf("previous" to owner.status?.name))
+            owner.status = status
+            statusSink?.report(status)
+        }
     }
 
     private fun rememberEventFailure(owner: EventOwner, snapshot: GatewayProfile, failure: Throwable) = synchronized(eventOwnerLock) {
@@ -407,7 +415,7 @@ class GatewayHttpClient(
             while (currentCoroutineContext().isActive) {
                 requireEventOwner(owner)
                 val snapshot = sessionProfile()
-                val health = AttemptHealth(owner, snapshot)
+                val health = AttemptHealth(owner, snapshot, attempt + 1)
                 val usingWebSocket = preferWebSocket && webSocketTransport != null
                 val recoveringSession = rejectedSession
                 val rebuildingCursor = recoveringSession == null && cursorRecoveryPending
@@ -418,6 +426,8 @@ class GatewayHttpClient(
                     else -> "SSE"
                 }
                 attempt++
+                if (attempt > 1) GatewayLog.connectionEvent("connection.reconnect_started", owner.id,
+                    reason = "transport_retry", attempt = attempt, result = "started", fields = mapOf("transport" to transportKind))
                 GatewayLog.d(TAG, "event attempt ownerID=${owner.id} attempt=$attempt transport=$transportKind monotonicAt=${monotonicMillis()}")
                 try {
                     if (recoveringSession != null) {
@@ -542,6 +552,8 @@ class GatewayHttpClient(
                         if (consecutiveFailures == maxConsecutiveFailures) GatewayLog.w(TAG, "event retry threshold ownerID=${owner.id} count=$consecutiveFailures")
                     }
                     val nextDelay = reconnect.nextDelayMillis()
+                    GatewayLog.connectionEvent("connection.reconnect_scheduled", owner.id, reason = "transport_retry",
+                        attempt = attempt, result = "scheduled", fields = mapOf("delayMs" to nextDelay))
                     logEventFailure(owner, attempt, transportKind, failure, health, nextDelay, "retry")
                     delayFn(nextDelay)
                 }
@@ -606,6 +618,12 @@ class GatewayHttpClient(
             else -> null
         }
         val lastHeartbeat = health.lastHeartbeatAt.get().takeIf { it >= 0 }
+        GatewayLog.connectionEvent("connection.reconnect_failed", owner.id, reason = action, attempt = attempt,
+            result = failure.javaClass.simpleName, fields = mapOf("transport" to transport, "status" to status,
+                "closeCode" to close, "delayMs" to nextDelay))
+        if (failure is GatewayWebSocketTimeoutException || failure is EventStreamTimeoutException)
+            GatewayLog.connectionEvent("connection.heartbeat_timeout", owner.id, reason = stage, attempt = attempt,
+                result = "timeout", fields = mapOf("transport" to transport, "idleMs" to now - health.lastCompleteAt.get()))
         GatewayLog.w(TAG, "event failure action=$action transport=$transport ownerID=${owner.id} attempt=$attempt " +
             "stage=$stage failure=${failure.javaClass.simpleName} status=$status closeCode=$close nextDelayMillis=$nextDelay " +
             "monotonicAt=$now activityElapsedMillis=${now - health.lastCompleteAt.get()} heartbeatElapsedMillis=${lastHeartbeat?.let { now - it }}")
@@ -619,7 +637,7 @@ class GatewayHttpClient(
         throw EventDeliveryFailed(failure)
     }
 
-    private inner class AttemptHealth(private val owner: EventOwner, private val snapshot: GatewayProfile) {
+    private inner class AttemptHealth(private val owner: EventOwner, private val snapshot: GatewayProfile, private val attempt: Long) {
         private val liveSince = java.util.concurrent.atomic.AtomicLong(-1)
         val lastCompleteAt = java.util.concurrent.atomic.AtomicLong(monotonicMillis())
         val lastHeartbeatAt = java.util.concurrent.atomic.AtomicLong(-1)
@@ -636,6 +654,12 @@ class GatewayHttpClient(
 
         fun ready() {
             if (activeEventOwner.get() !== owner) return
+            if (!isReady && attempt > 1) {
+                GatewayLog.connectionEvent("connection.reconnect_succeeded", owner.id, reason = "authenticated_stream",
+                    attempt = attempt, result = "live")
+                GatewayLog.connectionEvent("connection.subscription_restored", owner.id, reason = "committed_cursor",
+                    attempt = attempt, result = "subscribed")
+            }
             isReady = true
             liveSince.compareAndSet(-1, monotonicMillis())
             if (snapshot == sessionProfile()) reportEventStatus(owner, EventStreamStatus.LIVE)
