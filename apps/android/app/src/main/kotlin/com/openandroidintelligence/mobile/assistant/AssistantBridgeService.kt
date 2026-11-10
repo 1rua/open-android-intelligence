@@ -114,7 +114,13 @@ class AssistantBridgeService : Service() {
             "handoff" -> runHandoff(client, reply)
             else -> {
                 if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
-                val controller = client.controller ?: run { publish(client); return@Handler true }
+                // 没有控制器（未登录 / 工作台尚未就绪）时必须说清为什么没反应。
+                // 静默丢弃会让用户看到「选了文件、界面回来了、什么都没发生」——
+                // 圈选与 ＋ 附件都走这条路径，两者都会变成看起来坏掉的功能。
+                val controller = client.controller ?: run {
+                    publish(client, "尚未连接对话，附件与草稿未能加入；请先在 App 中连接并打开一条会话")
+                    return@Handler true
+                }
                 publish(client, handleCommand(client, controller, command, b))
             }
         }
