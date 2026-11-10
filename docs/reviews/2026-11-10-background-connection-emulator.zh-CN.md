@@ -120,3 +120,13 @@ adb -s emulator-5562 shell am instrument -w -r \
 **三十分钟没有完成，不能宣称息屏三十分钟通过。** 当前证据不足以归因 Android 电源管理、单纯测试控制预算、宿主负载或其他设备活动；也未获得此轮长测结束后的前台恢复断言。两小时、六小时息屏和真实手机电量均未验证。
 
 保留证据位于 `.toolchains/background-connection-e2e/`：`application-screen-30m.txt`、`checkpoints-screen-30m.log`、`system-screen-30m.jsonl`、`system-control-timeout.json`、`connection-failure-screen-30m.log`、`cursor-checkpoint13-boolean.json`、脱敏 `status-screen-30m.json`。只对本任务夹具发送正常停止并撤销本任务 34491/50181 两个映射；其他映射与未知进程、AVD 均不操作。
+
+## 后续设备隔离环境
+
+为避免默认 ADB 服务上的设备被并行任务共用，建立全新 AVD `background-connection-private-api35`，数据目录为根工作区忽略的 `.toolchains/background-connection-private-avd/`，复用已有 Android 15 / API 35 镜像，不移动或复用正在运行的 AVD 数据。配置 2 GiB RAM、2 CPU、KVM、无窗口、无快照；不下载大型依赖。
+
+本机 Emulator 的 `-help-port` 只支持标准端口 5554～5584，因此采用其 `-help-ports` 明确支持的特殊端口对 `-ports 5680,5681`，并以 `ANDROID_ADB_SERVER_PORT=5039` 启动。私有 ADB 服务使用 `adb -P 5039 start-server`，随后显式 `adb -P 5039 connect 127.0.0.1:5681`。
+
+2026 年 11 月 10 日 23:56:45（上海时间）实测：私有设备 `boot_completed=1`，Android 15 / API 35，两个网络具备 VALIDATED，screenOn 为 true，深浅 idle 均为 ACTIVE。`adb -P 5037 devices -l` 没有出现 5680/5681 新设备，私有服务能显式连接 `127.0.0.1:5681`。私有服务也会自动扫描标准端口的其他设备，因此所有后续命令必须明确使用 `-P 5039 -s 127.0.0.1:5681`，不能依靠设备列表唯一性。环境记录为 `.toolchains/background-connection-private-avd/environment.json`；此时尚未安装测试 APK。
+
+所有 instrumentation 后台测试均由活动仪器进程驱动，其系统优先级与普通用户将 App 留在后台不同。它可以验证生命周期调用链、真实 socket、持久游标和恢复逻辑，但不能替代无仪器进程的长期存活、进程被杀后的恢复、实体手机省电策略或真实耗电测试。
