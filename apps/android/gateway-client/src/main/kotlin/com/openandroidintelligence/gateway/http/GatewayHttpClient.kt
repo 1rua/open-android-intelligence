@@ -35,6 +35,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
@@ -143,6 +145,9 @@ class GatewayHttpClient(
     private val eventOwnerLock = Any()
     private val activeEventOwner = java.util.concurrent.atomic.AtomicReference<EventOwner?>(null)
     @Volatile private var appForeground = false
+    private val _eventRecoveryEpoch = MutableStateFlow(0L)
+    val eventRecoveryEpoch: StateFlow<Long> = _eventRecoveryEpoch.asStateFlow()
+    private var hasReadyEventTransport = false
 
     /** 生命周期只更新连接策略，不取消会话或创建新的订阅。 */
     fun setAppForeground(visible: Boolean) {
@@ -694,6 +699,12 @@ class GatewayHttpClient(
 
         fun ready() {
             if (activeEventOwner.get() !== owner) return
+            synchronized(eventOwnerLock) {
+                if (!isReady && activeEventOwner.get() === owner && snapshot == sessionProfile()) {
+                    if (hasReadyEventTransport) _eventRecoveryEpoch.value += 1
+                    hasReadyEventTransport = true
+                }
+            }
             if (!isReady && attempt > 1) {
                 GatewayLog.connectionEvent("connection.reconnect_succeeded", owner.id, reason = "authenticated_stream",
                     attempt = attempt, result = "live")

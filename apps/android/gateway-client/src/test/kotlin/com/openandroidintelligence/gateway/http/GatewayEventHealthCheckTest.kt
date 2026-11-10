@@ -111,6 +111,7 @@ class GatewayEventHealthCheckTest {
         runCurrent()
         assertTrue("静默连接必须在十秒内恢复真实事件，重复唤醒不得累加等待", received.isCompleted)
         assertEquals("recovered", received.await().single().id)
+        assertEquals("真实传输重建必须发布独立于健康状态合并的恢复代次", 1L, client.eventRecoveryEpoch.value)
         assertEquals(2, connections)
         assertTrue(targets.all { it.endsWith("?cursor=committed") })
     }
