@@ -18,11 +18,11 @@ WS 只有在 TLS、完整签名认证和 Upgrade 校验完成后才进入 LIVE�
 
 ## Native 与 HTTP
 
-Native eventSync 继续使用各 Agent 的既有 Core 会话协议、分页、ACK 和不透明游标。正常长轮询 waitMs 为 25000，JSON HTTP 读取预算为 30000 毫秒，和 Platform SSE 空闲预算独立。
+Native eventSync 继续使用各 Agent 的既有 Core 会话协议、分页、ACK 和不透明游标。后台正常长轮询 waitMs 为 25000，JSON HTTP 读取预算为 30000 毫秒；前台事件等待为 5000，每次真实网络操作另有 8000 毫秒绝对预算，和 Platform SSE 空闲预算独立。本地提交与发布不受网络预算取消。前台每个活动读取者最多约十二次事件 GET/分钟，空页同游标不重复保存或 ACK，真机功耗仍需测量。单请求预算不等于整页多阶段同步在十秒内完成。
 
 可恢复读/ACK 失败超过六次仍保持同步所有者、pending ACK 和持续退避；只有 Native 自身成功同步才报告恢复。connectionRestored 是合并唤醒，健康或正在恢复的读取不取消，不重建 synchronizer，不为每个 Platform 心跳刷新完整历史。认证、TLS、协议与本地保存错误分别处理。所有事件和回执核对账号、Agent、会话和 generation 归属。
 
-普通活动仍遵守上述不取消语义。明确网络恢复或实际前台切入可提前结束一次退避等待，失败次数不重置，重复信号有五秒冷却。正式 Platform 已确认重新建立的独立恢复代次，可以替换 Native 当次失效网络读取子任务；外层所有者、同一个 synchronizer、pendingPage、pending ACK 和游标继续保留。不能从 UI 会话加载或普通心跳猜测重建，不能重新 POST 消息。
+普通活动仍遵守上述不取消语义。明确网络恢复或实际前台切入可提前结束一次退避等待并独立重校验旧网络请求，失败次数不重置，重复信号有五秒冷却。正式 Platform 已确认重新建立的独立恢复代次，也可以替换 Native 当次失效网络请求；外层所有者、同一个 synchronizer、pendingPage、pending ACK 和游标继续保留，本地保存、状态提交及发布不取消。不能从 UI 会话加载或普通心跳猜测重建，不能重新 POST 消息。
 
 HTTP Claim、结果上传和普通查询保留现有 API。HTTP 响应证明接口可达，但不能证明 Platform 或 Native 同步正常；401/403、网络不可达和 TLS 拒绝也不能混为同一事实。Core ↔ Session Adapter 继续原架构，手机观察连接关闭不代表 Agent 执行取消或结束。
 
