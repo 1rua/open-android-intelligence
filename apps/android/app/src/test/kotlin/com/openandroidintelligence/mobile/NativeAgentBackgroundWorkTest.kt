@@ -65,7 +65,7 @@ class NativeAgentBackgroundWorkTest {
 
             awaitState(controller.state) { it.generation == GenerationState.COMPLETED }
             assertTrue((controller.state.value.timeline as Loadable.Ready).value.any {
-                it.id == "reply-notification" && it.text == "这是一条已完成的回复" && !it.isStreaming
+                it.key == "reply-notification" && it.text == "这是一条已完成的回复" && !it.isStreaming
             })
             val completed = fixture.runtime.nativeConversationNotifications.sessions.value
                 .singleOrNull { it.target.agentId == "dsh" && it.target.conversationId == "native-session" }
