@@ -109,6 +109,25 @@ class DebounceBatcherTest {
         assertEquals(listOf(listOf("第 21 条")), flushed.drop(1))
     }
 
+    /**
+     * 用户把设置改回 0 秒时，已收集的消息必须立刻发出：否则新消息按 0 秒直发，
+     * 旧批次却还在等原窗口，会话里会出现顺序颠倒。
+     */
+    @Test fun `turning merging off flushes what is already collected`() = runTest {
+        val flushed = mutableListOf<List<String>>()
+        val batcher = DebounceBatcher(this, DebouncePolicy(delay = 30.seconds)) { _, _, messages ->
+            flushed += messages.map { it.text }
+        }
+        batcher.offer(gatewayScope, "conv_a", message("m1", "窗口内的第一条"))
+        runCurrent()
+        assertEquals(emptyList<List<String>>(), flushed)
+
+        batcher.updatePolicy(DebouncePolicy(delay = 0.milliseconds))
+        runCurrent()
+
+        assertEquals(listOf(listOf("窗口内的第一条")), flushed)
+    }
+
     private fun message(id: String, text: String): OutgoingMessage =
         OutgoingMessage(ClientMessageId(id), text, emptyList())
 

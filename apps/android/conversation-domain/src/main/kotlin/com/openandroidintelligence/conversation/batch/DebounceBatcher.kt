@@ -53,6 +53,9 @@ class DebounceBatcher(
     fun updatePolicy(next:DebouncePolicy) {
         require(!next.delay.isNegative() && next.maximumWait>=next.delay && next.maximumMembers>0 && next.maximumBytes>0)
         policy=next
+        // 关闭合并后，已经收集的消息不能再等原窗口：后续消息会立即发出，
+        // 若旧批次拖到几秒后才提交，会话里就会出现新消息先于旧消息到达的乱序。
+        if (next.delay == Duration.ZERO) activeBatches.keys.toList().forEach(::flush)
     }
 
     fun offer(targetScope: ConversationScope, conversationId: String, message: OutgoingMessage) {
