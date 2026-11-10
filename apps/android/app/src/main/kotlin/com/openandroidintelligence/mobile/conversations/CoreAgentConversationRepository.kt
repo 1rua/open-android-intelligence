@@ -70,6 +70,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
@@ -312,7 +314,7 @@ class CoreAgentConversationRepository(
     }
 
     /** A Core connection transition restarts reads only; it never submits a prompt. */
-    fun connectionRestored(expediteRetry: Boolean = false) {
+    fun connectionRestored(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
         (recoveringTurns.values + detachedRecoveringTurns).distinct().filterNot { turn ->
             usesEventSync(turn.agent) || when (turn.recoveryBlocked) {
                 NativeReadFailureKind.AUTHENTICATION -> turn.rejectedCredentialVersion == null ||
@@ -321,8 +323,10 @@ class CoreAgentConversationRepository(
                 else -> false
             }
         }.forEach(::startRecovery)
-        restartEventSync(wakeup = true, expediteRetry = expediteRetry)
+        restartEventSync(wakeup = true, expediteRetry = expediteRetry, confirmedTransportRebuild = confirmedTransportRebuild)
     }
+
+    private class NativeReadReplaced : CancellationException("NATIVE_READ_TRANSPORT_REBUILT")
 
     private class EventSyncOwner(val agent: CoreAgent, val conversationId: String) {
         lateinit var job: Job
@@ -333,6 +337,8 @@ class CoreAgentConversationRepository(
         var wakeRequested = false
         var waitingForRetry = false
         var lastExpeditedAt: Long? = null
+        var lastTransportRebuild = 0L
+        var currentRead: Job? = null
         val retryWakeup = Channel<Unit>(Channel.CONFLATED)
     }
 
@@ -389,7 +395,7 @@ class CoreAgentConversationRepository(
             ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key))
 
     @Synchronized
-    private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false) {
+    private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
         val desired = linkedMapOf<Pair<String, String>, CoreAgent>()
         (turns.values + recoveringTurns.values + detachedRecoveringTurns).forEach {
             desired[it.agent.id to it.conversationId] = it.agent
@@ -401,11 +407,12 @@ class CoreAgentConversationRepository(
         eventSyncOwners.forEach { (key, owner) ->
             if (!eventSyncNeeded(key) && eventSyncOwners.remove(key, owner)) owner.job.cancel()
         }
-        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup, expediteRetry) }
+        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup, expediteRetry, confirmedTransportRebuild) }
     }
 
     @Synchronized
-    private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false, expediteRetry: Boolean = false) {
+    private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false, expediteRetry: Boolean = false,
+        confirmedTransportRebuild: Long? = null) {
         if (!usesEventSync(agent)) return
         val key = agent.id to conversationId
         val previous = eventSyncOwners[key]
@@ -418,7 +425,12 @@ class CoreAgentConversationRepository(
         if (previous?.job?.isActive == true) {
             // 普通活动不改变活跃请求或退避；真实恢复只唤醒等待，同一突发合并为一次。
             if (wakeup) previous.wakeRequested = true
-            if (expediteRetry && previous.waitingForRetry) {
+            val rebuilt = confirmedTransportRebuild?.takeIf { it > previous.lastTransportRebuild && it > 0 }
+            if (rebuilt != null) {
+                previous.lastTransportRebuild = rebuilt
+                previous.currentRead?.cancel(NativeReadReplaced())
+            }
+            if ((expediteRetry || rebuilt != null) && previous.waitingForRetry) {
                 val now = nativeMonotonicMillis()
                 if (previous.lastExpeditedAt?.let { now - it >= 5_000 } != false) {
                     previous.lastExpeditedAt = now
@@ -429,6 +441,7 @@ class CoreAgentConversationRepository(
         }
         val owner = EventSyncOwner(agent, conversationId).apply {
             failure = previous?.failure
+            lastTransportRebuild = maxOf(previous?.lastTransportRebuild ?: 0, confirmedTransportRebuild ?: 0)
             if (previous != null) health = StreamHealth.RECONNECTING
         }
         previous?.job?.cancel()
@@ -461,7 +474,21 @@ class CoreAgentConversationRepository(
                 var failures = 0
                 while (isActive) {
                     try {
-                        val more = sync.synchronize(if (failures == 0) 25000 else 0)
+                        val more = supervisorScope {
+                            val read = async(start = CoroutineStart.LAZY) { sync.synchronize(if (failures == 0) 25000 else 0) }
+                            synchronized(this@CoreAgentConversationRepository) { owner.currentRead = read }
+                            try {
+                                read.start()
+                                read.await()
+                            } catch (_: NativeReadReplaced) {
+                                currentCoroutineContext().ensureActive()
+                                null
+                            } finally {
+                                synchronized(this@CoreAgentConversationRepository) {
+                                    if (owner.currentRead === read) owner.currentRead = null
+                                }
+                            }
+                        } ?: continue
                         failures = 0
                         synchronized(this@CoreAgentConversationRepository) { owner.wakeRequested = false }
                         updateEventHealth(owner, StreamHealth.LIVE, null)

@@ -119,6 +119,64 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
     }
 
+    @Test fun aConfirmedTransportRebuildReplacesTheHalfOpenReadWithoutRecreatingItsSynchronizer() = runTest {
+        val h = Harness(this)
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(51); runCurrent()
+        assertEquals("必须先让旧长轮询真正保持等待", 2, h.reads)
+        assertEquals("next", h.storage.cursor)
+        val acceptedBeforeRecovery = h.requests.count { it.target.endsWith("/events/ack") }
+
+        h.resumeReadsThrough = 3
+        h.nextCursor = "recovered"
+        h.repository.connectionRestored(expediteRetry = true, confirmedTransportRebuild = 1)
+        runCurrent()
+
+        assertEquals("确认正式传输已重建后必须替换旧半开读取", 1, h.cancelledReads)
+        assertEquals(3, h.reads)
+        assertEquals("recovered", h.storage.cursor)
+        assertNull(h.storage.pending)
+        assertEquals("同一个同步器不能重新读取已确认历史", 1, h.histories)
+        assertEquals(acceptedBeforeRecovery + 1, h.requests.count { it.target.endsWith("/events/ack") })
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+
+        advanceTimeBy(51); runCurrent()
+        val healthyReads = h.reads
+        repeat(5) {
+            h.repository.connectionRestored(expediteRetry = true, confirmedTransportRebuild = 1)
+            runCurrent()
+        }
+        h.repository.connectionRestored(confirmedTransportRebuild = 0); runCurrent()
+        assertEquals("同代次或过期通知不能取消恢复后的健康读取", 1, h.cancelledReads)
+        assertEquals(healthyReads, h.reads)
+    }
+
+    @Test fun aConfirmedTransportRebuildRetriesTheSamePendingAckBeforeReadingAnotherPage() = runTest {
+        val h = Harness(this).apply { holdAck = true }
+        h.repository.activeConversationChanged(); runCurrent()
+        assertEquals("next", h.storage.pending)
+        assertEquals(1, h.reads)
+        assertEquals(1, h.saves)
+        assertEquals(1, h.requests.count { it.target.endsWith("/events/ack") })
+
+        h.holdAck = false
+        h.repository.connectionRestored(confirmedTransportRebuild = 2)
+        runCurrent()
+
+        assertEquals("重连只取消旧 ACK 的观察，不能重做本地保存", 1, h.saves)
+        assertEquals(1, h.cancelledAcks)
+        assertNull(h.storage.pending)
+        assertEquals("next", h.storage.cursor)
+        val replayedAckIndex = h.requests.indexOfLast { it.target.endsWith("/events/ack") }
+        val nextReadIndex = h.requests.indexOfLast { it.target.contains("/events?") }
+        assertTrue("补传原 ACK 成功后才可发起下一次长轮询", replayedAckIndex < nextReadIndex)
+        assertEquals(2, h.requests.count { it.target.endsWith("/events/ack") })
+        assertTrue(h.requests.filter { it.target.endsWith("/events/ack") }.all {
+            it.body.toString(Charsets.UTF_8).contains("\"cursor\":\"next\"")
+        })
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
@@ -448,6 +506,10 @@ class NativeConnectionReliabilityTest {
         var reads = 0
         var histories = 0
         var cancelledReads = 0
+        var resumeReadsThrough = 0
+        var nextCursor = "next"
+        var holdAck = false
+        var cancelledAcks = 0
         var rejectSave = false
         var saves = 0
         var saveGate: CompletableDeferred<Unit>? = null
@@ -476,13 +538,17 @@ class NativeConnectionReliabilityTest {
                         if (responseStatus != 200) return WireResponse(responseStatus, emptyList(),
                             responseBody?.toByteArray() ?: ByteArray(0))
                         val session = request.target.substringBefore("/events?")
-                        if (!served.add(session) && request.target.contains("waitMs=")) {
+                        if (!served.add(session) && request.target.contains("waitMs=") && reads > resumeReadsThrough) {
                             try { idle.await() } catch (cancelled: CancellationException) { cancelledReads++; throw cancelled }
                         }
-                        """{"events":[],"cursor":"next","hasMore":false}"""
+                        """{"events":[],"cursor":"$nextCursor","hasMore":false}"""
                     }
                     request.target.endsWith("/history") -> { histories++; """{"messages":[]}""" }
-                    request.target.endsWith("/events/ack") -> """{"cursor":"next"}"""
+                    request.target.endsWith("/events/ack") -> {
+                        if (holdAck) try { idle.await() }
+                            catch (cancelled: CancellationException) { cancelledAcks++; throw cancelled }
+                        """{"cursor":"$nextCursor"}"""
+                    }
                     request.target.endsWith("/messages") -> {
                         contentType = "text/event-stream"
                         "event: message\ndata: {\"type\":\"generation\",\"generationId\":\"gen\",\"clientMessageId\":\"client\",\"userMessageId\":\"user\",\"state\":\"running\",\"revision\":1}\n\n" +
