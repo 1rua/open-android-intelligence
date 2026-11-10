@@ -1883,15 +1883,16 @@ class GatewayRuntime(
         _operationNotice.value = "Gateway 已明确撤销或拒绝会话凭据，请重新登录。账号资料和历史记录已保留。"
     }
 
-    fun updateDebounceSettings(gateway:String?,delayMillis:Int,extend:Boolean) {
+    /**
+     * 保存客户端的合并时长并让当前会话立即采用。
+     *
+     * 只写本机偏好，不向 Core 发任何请求：合并是手机端的发送时机，Core 只接收
+     * 客户端最终提交的消息。
+     */
+    fun updateDebounceSettings(delayMillis:Int) {
         val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        preferences.write(gateway,delayMillis,extend)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
-    }
-    fun useGlobalDebounceSettings(gateway:String) {
-        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        preferences.useGlobal(gateway)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
+        preferences.write(delayMillis)
+        _controller.value?.updateDebouncePolicy(preferences.read())
     }
 
     /**
@@ -1900,6 +1901,11 @@ class GatewayRuntime(
      * 只刷新运行时持有的批处理策略，不写任何偏好：写入早已由导入事务完成，
      * 这里再做一次覆盖就会把「回滚后应恢复的值」重新改掉。
      */
+    fun reloadDebounceSettings() {
+        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
+        _controller.value?.updateDebouncePolicy(preferences.read())
+    }
+
     /**
      * 本机已知的最近一个 Core 地址（设置备份的回落来源）。
      *
@@ -1914,17 +1920,6 @@ class GatewayRuntime(
             ?.takeIf { it.isNotBlank() }?.let { return it }
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_LAST_GATEWAY, null)?.takeIf { it.isNotBlank() }
-    }
-
-    fun reloadDebounceSettings() {
-        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
-    }
-
-    private fun currentDebounceGateway(): String? = when (val phase = _phase.value) {
-        is ConnectionPhase.Connected -> phase.gatewayUrl
-        is ConnectionPhase.OfflineMirror -> phase.gatewayUrl
-        else -> (_localSessionState.value as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
     }
 
     private suspend fun showLocalWorkspace(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,
@@ -2633,7 +2628,7 @@ class GatewayRuntime(
                 organizationStoredLocally = true,
                 authoritativeMessageIds = true,
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
-                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                 externalBusyThreadIds = {
                     _controller.value?.ownedBusyThreadIds.orEmpty()
                 },
@@ -2712,7 +2707,7 @@ class GatewayRuntime(
                             negotiated = "agent-command-catalog-v1" in conversationUi,
                         ),
                         capabilities = conversationUi.toSet(),
-                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                         supportsApprovalCards = approvalClient != null && assistantAgent.capabilities.approvals,
                         onActiveThreadChanged = { active.set(it) },
                         media = mediaCache,
@@ -2742,7 +2737,7 @@ class GatewayRuntime(
                         approvals = approvalClient,
                         generationCancel = generationCancelCapability,
                         capabilities = conversationUi.toSet(),
-                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                         media = mediaCache,
                         downloads = downloads,
                         attachmentCoordinator = attachments,
@@ -2843,7 +2838,7 @@ class GatewayRuntime(
                 scopeFactory = { ownerScope },
                 attachmentCoordinator = ownerAttachments,
                 supportsMessageBatches = !nativeAgentSessions && setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
-                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                 supportsApprovalCards = approvalClient != null && (!nativeAgentSessions ||
                     _nativeAgents.value?.state?.value?.agent?.capabilities?.approvals == true),
@@ -3025,7 +3020,7 @@ class GatewayRuntime(
                 )
                 createBubbleWorkbench(sessionScope, conversationScope, target.conversationId, bubbleHttp, bubbleStatus,
                     approvalClient, generationCancelCapability, conversationUi.toSet(),
-                    com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                    com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                     mediaCache, downloads,
                     managementOperations = mirror,
                     attachmentCoordinator = BubbleAttachmentDraftCoordinator(attachmentCoordinator),

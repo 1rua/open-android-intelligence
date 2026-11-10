@@ -1,7 +1,6 @@
 package com.openandroidintelligence.mobile.settings.backup
 
 import android.content.Context
-import com.openandroidintelligence.conversation.batch.DebounceMode
 import com.openandroidintelligence.conversation.ports.ConversationFolder
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationScope
@@ -64,6 +63,23 @@ data class BackupImportOutcome(
 )
 
 /**
+ * 导入成功后需要让运行时采用的设置变更。
+ *
+ * 抽成接口是为了让「导入中途失败时不得产生不可撤销的发送」可以被测试直接验证，
+ * 而不必在测试里搭一个已连接的工作台。
+ */
+interface SettingsRuntimeRefresh {
+    fun reloadDebounceSettings()
+    fun refreshThreads()
+}
+
+fun gatewayRuntimeRefresh(runtime: com.openandroidintelligence.mobile.GatewayRuntime): SettingsRuntimeRefresh =
+    object : SettingsRuntimeRefresh {
+        override fun reloadDebounceSettings() = runtime.reloadDebounceSettings()
+        override fun refreshThreads() { runtime.controller.value?.refreshThreads() }
+    }
+
+/**
  * 设置备份与恢复的唯一实现。
  *
  * 它只经由各设置**原有权威**读写，不新建第二套存储：
@@ -93,7 +109,19 @@ class SettingsBackupCoordinator(
     private val notificationPolicy: NotificationPolicyPort,
     private val keyProvider: AesGcmKeyProvider? = null,
     private val clock: Clock = Clock.systemDefaultZone(),
+    /**
+     * 运行时刷新入口；默认桥接到 [runtime]，测试可替换为记录器。
+     */
+    private val runtimeRefresh: SettingsRuntimeRefresh? = runtime?.let(::gatewayRuntimeRefresh),
 ) {
+    /**
+     * 导入期间累积的运行时刷新动作，只在全部写入成功后才执行。
+     *
+     * 合并策略的刷新不是纯读：把时长改回 0 会立刻提交已收集的消息。若在导入中途执行，
+     * 后续节失败触发回滚也无法撤回这次发送，界面却会说「已恢复为导入前的状态」。
+     */
+    private val pendingRuntimeRefreshes = mutableListOf<() -> Unit>()
+
     // ---------------------------------------------------------------- 导出
 
     fun export(): BackupExport {
@@ -134,14 +162,8 @@ class SettingsBackupCoordinator(
         )
     }
 
-    private fun currentMessageProcessing(): MessageProcessingSection {
-        val preferences = DebouncePreferences(context)
-        val global = preferences.read(null).toBackupValue()
-        val cores = knownGatewayUrls().filter(preferences::hasOverride).associate { url ->
-            debounceKey(url) to preferences.read(url).toBackupValue()
-        }
-        return MessageProcessingSection(global, cores)
-    }
+    private fun currentMessageProcessing(): MessageProcessingSection =
+        MessageProcessingSection(DebouncePreferences(context).read().delay.inWholeMilliseconds.toInt())
 
     private fun currentOrganizations(): ConversationSection? {
         val installId = installId() ?: return null
@@ -278,6 +300,7 @@ class SettingsBackupCoordinator(
         }
 
         val snapshot = captureSnapshot()
+        pendingRuntimeRefreshes.clear()
         val applied = mutableListOf<String>()
         val skipped = mutableListOf<String>()
         val deferred = mutableListOf<String>()
@@ -300,6 +323,7 @@ class SettingsBackupCoordinator(
             applyNotificationCollection(sections.notificationCollection, applied, skipped, deferred)
         } catch (failure: Exception) {
             // restore() 会返回**确认恢复失败**的清单；只有清单为空才敢说「已恢复原状」。
+            pendingRuntimeRefreshes.clear()
             val unrestored = runCatching { snapshot.restore() }.getOrElse { listOf("设置") }
             return Result.failure(
                 SettingsBackupFormatException(
@@ -312,6 +336,9 @@ class SettingsBackupCoordinator(
                 ),
             )
         }
+        // 所有节都已成功写入，才允许运行时采用新设置。
+        pendingRuntimeRefreshes.forEach { refresh -> runCatching(refresh) }
+        pendingRuntimeRefreshes.clear()
         return Result.success(
             BackupImportOutcome(
                 appliedSummaries = applied,
@@ -372,31 +399,26 @@ class SettingsBackupCoordinator(
         section ?: return
         val preferences = DebouncePreferences(context)
         var written = 0
-        section.global?.let { value ->
-            if (preferences.read(null).toBackupValue() != value) {
-                preferences.write(null, value.delayMillis, value.extendWindow)
-                written++
-            }
-        }
-        val gateways = knownGatewayUrls().associateBy { debounceKey(it) }
-        var unresolved = 0
-        section.cores.forEach { (key, value) ->
-            val url = gateways[key]
-            if (url == null) { unresolved++; return@forEach }
-            if (preferences.read(url).toBackupValue() != value || !preferences.hasOverride(url)) {
-                preferences.write(url, value.delayMillis, value.extendWindow)
+        var unchanged = false
+        section.delayMillis?.let { delay ->
+            if (preferences.read().delay.inWholeMilliseconds.toInt() == delay) {
+                unchanged = true
+            } else {
+                preferences.write(delay)
                 written++
             }
         }
         if (written > 0) {
             applied += section.summary()
-            runtime?.reloadDebounceSettings()
+            pendingRuntimeRefreshes += { runtimeRefresh?.reloadDebounceSettings() }
             deferred += "消息合并已保存；当前会话在下次发送时生效。"
-        } else {
+        } else if (unchanged) {
             applied += section.summary() + "（本机已是该值）"
         }
-        if (unresolved > 0) {
-            skipped += "$unresolved 个 Core 的消息合并覆盖在本机没有对应地址，已跳过；连接该 Core 后可重新设置。"
+        // 旧文件的合并值无法区分「用户主动设置」与「版本默认值」，整节不迁移，如实说明。
+        if (section.hasLegacyMergingSettings) {
+            skipped += "旧版本备份里的 ${section.legacyMergingSettings} 项消息合并设置未导入：" +
+                "旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。"
         }
     }
 
@@ -436,7 +458,7 @@ class SettingsBackupCoordinator(
         }
         if (written > 0) {
             applied += section.summary()
-            runtime?.controller?.value?.refreshThreads()
+            pendingRuntimeRefreshes += { runtimeRefresh?.refreshThreads() }
             deferred += "会话排序与文件夹已保存；若列表未立即变化，重新进入会话列表即可。"
         }
         if (missingProfile > 0) skipped += "$missingProfile 条会话排序未导入：本机还没有对应账号。"
@@ -651,7 +673,7 @@ class SettingsBackupCoordinator(
             }
             attempt("消息处理") {
                 DebouncePreferences(context).restore(debounce)
-                runtime?.reloadDebounceSettings()
+                runtimeRefresh?.reloadDebounceSettings()
             }
             attempt("连接地址") {
                 val written = if (preferredGateway == null) LoginGatewayPrefill.clear(context)
@@ -697,7 +719,7 @@ class SettingsBackupCoordinator(
                 }
             }
             attempt("会话列表刷新") {
-                if (runtime?.controller?.value != null) runtime.controller.value?.refreshThreads()
+                runtimeRefresh?.refreshThreads()
             }
             return failed.distinct()
         }
@@ -760,13 +782,6 @@ class SettingsBackupCoordinator(
     private fun partitionAgents(scope: ConversationScope): Set<String> =
         runCatching { NativeLocalPartitions(context, scope, keyProvider).agents() }.getOrDefault(emptySet())
 
-    /** 本机已知的 Core 地址：已保存账号的地址，去重排序。 */
-    private fun knownGatewayUrls(): List<String> = profiles.list()
-        .map { it.gatewayBaseUrl }
-        .filter { it.isNotBlank() }
-        .distinct()
-        .sorted()
-
     private companion object {
         const val RUNTIME_PREFERENCES = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
@@ -820,18 +835,10 @@ internal fun credentialFreeGateway(url: String): String? = runCatching {
     if (GatewayEndpoint.parse(rebuilt) == null) null else rebuilt
 }.getOrNull()
 
-/** 「网关地址 → 合并偏好存储键」的摘要算法，与 [DebouncePreferences] 内部按键一致。 */
-internal fun debounceKey(gatewayUrl: String): String =
-    MessageDigest.getInstance("SHA-256").digest(gatewayUrl.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-
 /** 档案 ID 在备份文件里只以 SHA-256 出现：文件无法反推出账号名。 */
 internal fun backupProfileKey(profileId: String): String =
     MessageDigest.getInstance("SHA-256").digest(profileId.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
-
-private fun com.openandroidintelligence.conversation.batch.DebouncePolicy.toBackupValue(): DebounceValue =
-    DebounceValue(delay.inWholeMilliseconds.toInt(), mode == DebounceMode.EXTEND_WINDOW)
 
 private fun ConversationOrganization.isDefault(): Boolean =
     revision == 0L && sortMode == ConversationSortMode.UPDATED_DESC &&

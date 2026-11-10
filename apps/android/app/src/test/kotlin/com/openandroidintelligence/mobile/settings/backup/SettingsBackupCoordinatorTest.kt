@@ -90,6 +90,7 @@ class SettingsBackupCoordinatorTest {
     private fun coordinator(
         policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
             NotificationControlRegistry.policyPort(),
+        refreshes: SettingsRuntimeRefresh? = null,
     ) = SettingsBackupCoordinator(
         context = context,
         appearance = appearance,
@@ -102,6 +103,7 @@ class SettingsBackupCoordinatorTest {
         appUpdates = updates,
         notificationPolicy = policy,
         keyProvider = key,
+        runtimeRefresh = refreshes,
     )
 
     @Test
@@ -473,25 +475,18 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
-    fun messageProcessingGlobalRoundTripsAndUnknownCoreKeysAreSkipped() {
+    fun messageProcessingDelayRoundTripsAndLegacyMergingValuesAreReportedNotImported() {
         val preferences = DebouncePreferences(context)
-        preferences.write(null, 3_000, extend = false)
-        val url = "https://core.example.test"
-        preferences.write(url, 500, extend = true)
-        profiles.save(
-            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", url, "alice", "tls-id"),
-            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
-        )
+        preferences.write(3_000)
         val exported = coordinator().export()
-        assertTrue(exported.json.contains(debounceKey(url)))
+        assertTrue(exported.json.contains("\"delayMillis\":3000"))
 
-        preferences.write(null, 1_500, extend = true)
-        preferences.useGlobal(url)
+        preferences.write(0)
         coordinator().import(exported.json).getOrThrow()
-        assertEquals(3_000L, preferences.read(null).delay.inWholeMilliseconds)
-        assertEquals(500L, preferences.read(url).delay.inWholeMilliseconds)
+        assertEquals(3_000L, preferences.read().delay.inWholeMilliseconds)
 
-        // 文件里指向未知 Core 的覆盖被跳过，且不会为该地址生成看不见的键。
+        // 旧文件的合并值（global 固定默认 + 按 Core 覆盖）都没有「用户主动设置」的可信依据：
+        // 整节不写入，也不会为该地址生成看不见的键，并如实告知。
         val unknownKey = "e".repeat(64)
         val text = backupWith(
             "messageProcessing" to mapOf(
@@ -499,18 +494,78 @@ class SettingsBackupCoordinatorTest {
                 "cores" to listOf(mapOf("key" to unknownKey, "delayMillis" to 100, "extendWindow" to false)),
             ),
         )
+        preferences.write(4_000)
         val outcome = coordinator().import(text).getOrThrow()
-        assertTrue(outcome.skipped.any { it.contains("没有对应地址") })
+        assertEquals("旧文件的合并值不覆盖本机现值", 4_000L, preferences.read().delay.inWholeMilliseconds)
+        assertTrue(outcome.skipped.any { it.contains("消息合并设置未导入") })
         val all = context.getSharedPreferences("conversation-debounce-v1", 0).all
         assertTrue(all.keys.none { it.startsWith("gateway:$unknownKey") })
     }
 
-    private fun backupWith(sections: Pair<String, Map<String, Any?>>): String =
-        SettingsBackupCodec.encode(
-            sections = mapOf(
-                sections.first to com.openandroidintelligence.gateway.schema.Json.of(sections.second)
-                    as com.openandroidintelligence.gateway.schema.JsonValue.JObject,
+    /**
+     * 合并策略刷新会把时长归零变成「立即发送已收集的消息」，这是不可撤销的副作用。
+     * 导入必须等全部节写成功后才刷新；中途失败时不得发出任何消息。
+     */
+    @Test
+    fun aFailedImportNeverAppliesTheMergingChangeToTheRunningSession() {
+        val appliedDelays = mutableListOf<Long>()
+        val refreshes = object : SettingsRuntimeRefresh {
+            override fun reloadDebounceSettings() {
+                // 记录运行时真正会看到的时长：0 会让合并器立刻发出已收集的消息。
+                appliedDelays += DebouncePreferences(context).read().delay.inWholeMilliseconds
+            }
+            override fun refreshThreads() = Unit
+        }
+        val rejecting = object : com.openandroidintelligence.notification.control.NotificationPolicyPort {
+            override fun snapshot() = com.openandroidintelligence.notification.control.NotificationPolicySnapshot(
+                installed = true,
+                granted = true,
+                packageIds = emptyList(),
+                fieldAccess = com.openandroidintelligence.core.model.NotificationFieldAccess.METADATA,
+                mode = com.openandroidintelligence.core.model.NotificationDeliveryMode.ON_DEMAND,
+                revision = 1uL,
+            )
+            override fun observe() = kotlinx.coroutines.flow.flowOf(snapshot())
+            override fun update(request: com.openandroidintelligence.notification.control.NotificationPolicyUpdate) =
+                com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Rejected("REVISION_STALE")
+        }
+        DebouncePreferences(context).write(30_000)
+        val text = backupWith(
+            "messageProcessing" to mapOf("delayMillis" to 0),
+            "notificationCollection" to mapOf(
+                "packageIds" to listOf("com.example.chat"),
+                "fieldAccess" to "METADATA",
+                "mode" to "ON_DEMAND",
             ),
+        )
+
+        assertTrue(coordinator(policy = rejecting, refreshes = refreshes).import(text).isFailure)
+        assertTrue("失败导入不得让运行时看到归零设置，否则已收集的消息会被发出：$appliedDelays", appliedDelays.none { it == 0L })
+        assertEquals("偏好必须回滚到导入前", 30_000L, DebouncePreferences(context).read().delay.inWholeMilliseconds)
+    }
+
+    @Test
+    fun aSuccessfulImportAppliesTheMergingChangeOnlyAfterEverySectionIsWritten() {
+        var mergingReloads = 0
+        val refreshes = object : SettingsRuntimeRefresh {
+            override fun reloadDebounceSettings() { mergingReloads++ }
+            override fun refreshThreads() = Unit
+        }
+        DebouncePreferences(context).write(30_000)
+        val outcome = coordinator(refreshes = refreshes)
+            .import(backupWith("messageProcessing" to mapOf("delayMillis" to 2_000))).getOrThrow()
+
+        assertEquals(1, mergingReloads)
+        assertEquals(2_000L, DebouncePreferences(context).read().delay.inWholeMilliseconds)
+        assertTrue(outcome.appliedSummaries.any { it.contains("2.0") })
+    }
+
+    private fun backupWith(vararg sections: Pair<String, Map<String, Any?>>): String =
+        SettingsBackupCodec.encode(
+            sections = sections.associate { (name, fields) ->
+                name to com.openandroidintelligence.gateway.schema.Json.of(fields)
+                    as com.openandroidintelligence.gateway.schema.JsonValue.JObject
+            },
             appVersionName = "1.0.0",
             appVersionCode = 1,
             exportedAt = "2026-11-08T10:00:00Z",

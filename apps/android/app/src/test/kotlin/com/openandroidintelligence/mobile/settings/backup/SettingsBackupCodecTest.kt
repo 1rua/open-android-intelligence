@@ -24,10 +24,7 @@ class SettingsBackupCodecTest {
         val sections = SettingsBackupSections(
             appearance = appearance,
             notifications = NotificationsSection(replyAlertsEnabled = false),
-            messageProcessing = MessageProcessingSection(
-                global = DebounceValue(2_000, extendWindow = true),
-                cores = mapOf("a".repeat(64) to DebounceValue(0, extendWindow = false)),
-            ),
+            messageProcessing = MessageProcessingSection(delayMillis = 2_000),
             conversation = ConversationSection(
                 listOf(
                     ConversationOrganizationValue(
@@ -190,12 +187,7 @@ class SettingsBackupCodecTest {
                 )
             },
         )
-        val cores = MessageProcessingSection(
-            global = null,
-            cores = (1..40).associate { index ->
-                index.toString().padStart(64, '0') to DebounceValue(index * 100, extendWindow = true)
-            },
-        )
+        val messageProcessing = MessageProcessingSection(delayMillis = 30_000)
         val policies = CapabilitiesSection(
             (1..400).associate { index ->
                 "plugin:example:$index" to CapabilityPolicyValue(
@@ -210,7 +202,7 @@ class SettingsBackupCodecTest {
         val text = SettingsBackupCodec.encode(
             sections = SettingsBackupSections(
                 conversation = organizations,
-                messageProcessing = cores,
+                messageProcessing = messageProcessing,
                 capabilities = policies,
             ).encode(),
             appVersionName = "1.0.0",
@@ -219,7 +211,7 @@ class SettingsBackupCodecTest {
         )
         val restored = SettingsBackupSections.decode(decode(text))
         assertEquals(80, restored.conversation!!.organizations.size)
-        assertEquals(40, restored.messageProcessing!!.cores.size)
+        assertEquals(30_000, restored.messageProcessing!!.delayMillis)
         assertEquals(400, restored.capabilities!!.policies.size)
     }
 
@@ -247,7 +239,7 @@ class SettingsBackupCodecTest {
         assertTrue(
             reject(mapOf("appearance" to mapOf("theme" to "DARK", "palette" to "UNKNOWN"))).message!!.contains("palette"),
         )
-        assertTrue(reject(mapOf("messageProcessing" to mapOf("global" to mapOf("delayMillis" to 60_000)))).message!!.contains("delayMillis"))
+        assertTrue(reject(mapOf("messageProcessing" to mapOf("delayMillis" to 60_000))).message!!.contains("delayMillis"))
         assertTrue(
             reject(mapOf("connection" to mapOf("gatewayUrl" to "ftp://nope"))).message!!.contains("gatewayUrl"),
         )
