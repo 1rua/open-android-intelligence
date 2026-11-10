@@ -78,6 +78,29 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
     }
 
+    @Test fun repeatedNetworkRecoverySignalsCannotSkipMultipleRetryDelaysWhileStillOffline() = runTest {
+        val h = Harness(this).apply { failedReads = Int.MAX_VALUE }
+        h.repository.activeConversationChanged(); runCurrent()
+        for (backoff in listOf(250L, 500L, 1000L, 2000L, 4000L, 8000L, 16000L, 32000L)) {
+            advanceTimeBy(backoff); runCurrent()
+        }
+        assertEquals(9, h.reads)
+
+        repeat(5) { h.repository.connectionRestored(expediteRetry = true); runCurrent() }
+
+        assertEquals("同一恢复信号突发只允许提前尝试一次，后续失败保留退避", 10, h.reads)
+        assertTrue(h.retryBases.takeLast(2).all { it == 60_000L })
+        assertEquals("base", h.storage.cursor)
+        assertTrue(h.requests.none { it.target.endsWith("/events/ack") || it.target.endsWith("/messages") })
+
+        advanceTimeBy(5_000)
+        h.failedReads = 0
+        h.repository.connectionRestored(expediteRetry = true); runCurrent()
+        assertEquals("冷却后真正恢复仍须能够唤醒", 11, h.reads)
+        assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
+        assertEquals("next", h.storage.cursor)
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
@@ -461,6 +484,7 @@ class NativeConnectionReliabilityTest {
         private val agent = CoreAgent("hermes", "synthetic", "hermes", true, "account",
             AgentCapabilities(history = true, eventSync = true, send = true, stream = true))
         val repository = CoreAgentConversationRepository(client, { agent }, { conversationId }, scope.backgroundScope,
-            dispatcher, storeForAgent = { store }, nativeRetryJitter = { retryBases += it; jitter(it) })
+            dispatcher, storeForAgent = { store }, nativeRetryJitter = { retryBases += it; jitter(it) },
+            nativeMonotonicMillis = { scope.testScheduler.currentTime })
     }
 }

@@ -107,6 +107,7 @@ class CoreAgentConversationRepository(
     private val nativeRetryJitter: (Long) -> Long = { base ->
         kotlin.random.Random.nextLong(base * 4 / 5, (base * 6 / 5).coerceAtMost(60_000) + 1)
     },
+    private val nativeMonotonicMillis: () -> Long = { System.nanoTime() / 1_000_000 },
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery,
     com.openandroidintelligence.conversation.ports.ConversationCreationRecovery,
     com.openandroidintelligence.conversation.ports.ConversationCreationDispatch,
@@ -331,6 +332,7 @@ class CoreAgentConversationRepository(
         var rejectedCredentialVersion: String? = null
         var wakeRequested = false
         var waitingForRetry = false
+        var lastExpeditedAt: Long? = null
         val retryWakeup = Channel<Unit>(Channel.CONFLATED)
     }
 
@@ -414,9 +416,15 @@ class CoreAgentConversationRepository(
             else -> Unit
         }
         if (previous?.job?.isActive == true) {
-            // 合并活动信号，但不改变活跃请求或退避。若本次恰好退出，完成回调接续一次。
+            // 普通活动不改变活跃请求或退避；真实恢复只唤醒等待，同一突发合并为一次。
             if (wakeup) previous.wakeRequested = true
-            if (expediteRetry && previous.waitingForRetry) previous.retryWakeup.trySend(Unit)
+            if (expediteRetry && previous.waitingForRetry) {
+                val now = nativeMonotonicMillis()
+                if (previous.lastExpeditedAt?.let { now - it >= 5_000 } != false) {
+                    previous.lastExpeditedAt = now
+                    previous.retryWakeup.trySend(Unit)
+                }
+            }
             return
         }
         val owner = EventSyncOwner(agent, conversationId).apply {
