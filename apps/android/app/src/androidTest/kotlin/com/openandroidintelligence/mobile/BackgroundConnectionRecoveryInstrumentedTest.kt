@@ -176,7 +176,19 @@ class BackgroundConnectionRecoveryInstrumentedTest {
         return value.trimEnd('/')
     }
 
-    private suspend fun control(base: String, operation: String, method: String = "POST") = withContext(Dispatchers.IO) {
+    private suspend fun control(base: String, operation: String, method: String = "POST") =
+        isolatedConnectionFixtureControl(base, operation, method)
+
+    private companion object { const val FIXTURE = "isolated-background-connection-v1" }
+}
+
+/** 测试控制面只允许明确的回环地址，不携带任何产品认证。 */
+internal suspend fun isolatedConnectionFixtureControl(base: String, operation: String, method: String = "POST") =
+    withContext(Dispatchers.IO) {
+        val uri = URI(base)
+        require(uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port > 0 && uri.userInfo == null &&
+            uri.query == null && uri.fragment == null && uri.path in setOf("", "/"))
+        require(operation.matches(Regex("[a-z_]+")) && method in setOf("GET", "POST"))
         val connection = URL("$base/$operation").openConnection() as HttpURLConnection
         try {
             connection.requestMethod = method
@@ -186,6 +198,3 @@ class BackgroundConnectionRecoveryInstrumentedTest {
             requireNotNull(JsonFields.obj(Json.parse(connection.inputStream.bufferedReader().use { it.readText() })))
         } finally { connection.disconnect() }
     }
-
-    private companion object { const val FIXTURE = "isolated-background-connection-v1" }
-}
