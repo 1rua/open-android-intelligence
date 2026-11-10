@@ -608,6 +608,14 @@ class GatewayRuntime(
     private fun assistantAgentId(): String? =
         _nativeAgents.value?.state?.value?.agent?.id ?: _workbenchAgentId
 
+    /**
+     * 主工作台当前发布的 Agent。
+     *
+     * 由 IO 线程写入（工作台构建完成时）、主线程读取（交接前的身份校验与就绪判断），
+     * 因此必须是 `@Volatile`：否则主线程可能读到旧值，把「已切到同一 Agent」误判成
+     * 未就绪，交接被莫名拒绝。
+     */
+    @Volatile
     private var _workbenchAgentId: String? = null
 
     private fun clearBubbleWorkTracking() {
