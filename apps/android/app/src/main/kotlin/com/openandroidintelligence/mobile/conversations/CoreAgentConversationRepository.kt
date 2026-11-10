@@ -478,13 +478,13 @@ class CoreAgentConversationRepository(
                             if (classified.kind == NativeReadFailureKind.AUTHENTICATION)
                                 owner.rejectedCredentialVersion = client.credentialVersion()
                         }
+                        if (retryable) synchronized(this@CoreAgentConversationRepository) { owner.waitingForRetry = true }
                         updateEventHealth(owner, if (retryable) StreamHealth.RECONNECTING else StreamHealth.FAILED,
                             if (retryable && failures < 6) null else classified.notice)
                         GatewayLog.w("OaiNativeEvents", "sync failed code=${classified.code} status=${classified.status} attempt=$failures")
                         if (!retryable) return@launch
-                        val retryDelay = nativeRetryDelay(failures)
-                        synchronized(this@CoreAgentConversationRepository) { owner.waitingForRetry = true }
                         try {
+                            val retryDelay = nativeRetryDelay(failures)
                             // 仅真实前台或网络恢复可提前结束退避；同步器与待确认页继续沿用。
                             withTimeoutOrNull(retryDelay) { owner.retryWakeup.receive() }
                         } finally {

@@ -21,7 +21,11 @@ class NativeConnectionReliabilityTest {
         advanceTimeBy(51); runCurrent()
         assertEquals(2, h.reads)
         assertEquals(1, h.histories)
-        repeat(8) { h.repository.connectionRestored(); runCurrent() }
+        repeat(8) {
+            h.repository.connectionRestored()
+            h.repository.connectionRestored(expediteRetry = true)
+            runCurrent()
+        }
         assertEquals(2, h.reads)
         assertEquals(0, h.cancelledReads)
         assertEquals(1, h.histories)
@@ -101,13 +105,27 @@ class NativeConnectionReliabilityTest {
         assertEquals("next", h.storage.cursor)
     }
 
+    @Test fun recoveryWhileChoosingTheRetryDelayCannotLoseItsWakeup() = runTest {
+        lateinit var h: Harness
+        h = Harness(this, jitter = { backoff ->
+            h.repository.connectionRestored(expediteRetry = true)
+            backoff
+        }).apply { failedReads = 1 }
+        h.repository.activeConversationChanged(); runCurrent()
+
+        assertEquals("恢复恰好发生在确定退避的时间边界也必须消费唤醒", 2, h.reads)
+        assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
+        assertEquals("next", h.storage.cursor)
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
             h.repository.activeConversationChanged(); runCurrent()
             assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
             assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_REQUEST_FAILED:$status", h.repository.streamFailure.first())
-            repeat(4) { h.repository.connectionRestored() }
+            repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true) }
             advanceTimeBy(120000); runCurrent()
             assertEquals(1, h.reads)
             assertEquals("base", h.storage.cursor)
@@ -173,7 +191,7 @@ class NativeConnectionReliabilityTest {
             assertEquals("sessionA", client.credentialVersion())
             val rejectedRequests = requests.size
             val failure = repository.streamFailure.first()
-            repeat(4) { repository.connectionRestored(); runCurrent() }
+            repeat(4) { repository.connectionRestored(); repository.connectionRestored(expediteRetry = true); runCurrent() }
             assertEquals(rejectedRequests, requests.size)
             assertEquals(1, refreshes)
             assertEquals(failure, repository.streamFailure.first())
@@ -288,7 +306,7 @@ class NativeConnectionReliabilityTest {
         h.repository.activeConversationChanged(); runCurrent()
         assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
         assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_RESPONSE_INVALID:503", h.repository.streamFailure.first())
-        repeat(4) { h.repository.connectionRestored() }
+        repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true) }
         advanceTimeBy(120000); runCurrent()
         assertEquals(1, h.reads)
     }
