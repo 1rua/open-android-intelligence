@@ -144,7 +144,10 @@ class GatewayHttpClient(
     @Volatile private var appForeground = false
 
     /** 生命周期只更新连接策略，不取消会话或创建新的订阅。 */
-    fun setAppForeground(visible: Boolean) { appForeground = visible }
+    fun setAppForeground(visible: Boolean) {
+        appForeground = visible
+        webSocketTransport?.setAppForeground(visible)
+    }
 
     fun currentEventGeneration(): Long? = activeEventOwner.get()?.id
 
@@ -154,7 +157,8 @@ class GatewayHttpClient(
         val now = monotonicMillis()
         if (owner.lastWakeAt?.let { now - it < HEALTH_WAKE_COOLDOWN_MILLIS } == true) return@synchronized
         owner.lastWakeAt = now
-        owner.healthChecks.trySend(HealthRequest(reason.take(64)))
+        if (webSocketTransport?.requestHealthCheck() != true)
+            owner.healthChecks.trySend(HealthRequest(reason.take(64)))
     }
 
     private fun requireEventOwner(owner: EventOwner) {

@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.FilterInputStream
@@ -77,11 +79,26 @@ open class GatewayWebSocketTransport(
     private val handshakeTimeoutMillis: Long = CONNECT_TIMEOUT_MILLIS.toLong(),
     private val idleTimeoutMillis: Long = READ_TIMEOUT_MILLIS.toLong(),
     private val probeTimeoutMillis: Long = PROBE_TIMEOUT_MILLIS.toLong(),
+    private val foregroundPingIntervalMillis: Long = 5_000,
+    private val healthCheckTimeoutMillis: Long = 3_000,
 ) {
     init {
         sessionRenewal?.requireScope(profile)
-        require(handshakeTimeoutMillis > 0 && idleTimeoutMillis > 0 && probeTimeoutMillis > 0)
+        require(handshakeTimeoutMillis > 0 && idleTimeoutMillis > 0 && probeTimeoutMillis > 0 &&
+            foregroundPingIntervalMillis > 0 && healthCheckTimeoutMillis > 0)
     }
+
+    @Volatile private var appForeground = false
+    private val formalConnection = AtomicReference<Connection?>(null)
+
+    /** 前台使用原连接的控制帧验证双向可达；后台保留原有低频失活预算。 */
+    fun setAppForeground(visible: Boolean) {
+        val changed = appForeground != visible
+        appForeground = visible
+        if (changed && visible) requestHealthCheck()
+    }
+
+    fun requestHealthCheck(): Boolean = formalConnection.get()?.checks?.trySend(Unit)?.isSuccess == true
 
     internal fun bindSessionRenewal(renewal: GatewaySessionRenewal) {
         renewal.requireScope(profile)
@@ -118,7 +135,7 @@ open class GatewayWebSocketTransport(
                 }
                 when (frame.opcode) {
                     OPCODE_PING -> sendFrame(connection.output, OPCODE_PONG, frame.payload)
-                    OPCODE_PONG -> Unit
+                    OPCODE_PONG -> connection.pongs.trySend(frame.payload)
                     OPCODE_CLOSE -> {
                         val code = closeCode(frame.payload)
                         onSignal(GatewayWebSocketSignal.Closed(code, monotonicMillis()))
@@ -213,6 +230,9 @@ open class GatewayWebSocketTransport(
         val hostName = if (host.contains(':') && !host.startsWith('[')) "[$host]" else host
         val hostHeader = if (port == if (isTls) 443 else 80) hostName else "$hostName:$port"
         val socketRef = AtomicReference<Socket?>()
+        val healthFailure = AtomicReference<IOException?>()
+        var connection: Connection? = null
+        var healthJob: Job? = null
         val deadline = Deadline(probe)
         // Register before creating/connecting the default socket, including the TCP and TLS handshake windows.
         val cancelHandle = context[Job]?.invokeOnCompletion(onCancelling = true) { runCatching { socketRef.get()?.close() } }
@@ -262,12 +282,61 @@ open class GatewayWebSocketTransport(
             performHandshake(snapshot, output, input, hostHeader, target)
             deadline.ready()
             context.ensureActive()
-            consume(Connection(input, output, deadline))
+            val ready = Connection(input, output, deadline)
+            connection = ready
+            if (!probe) {
+                formalConnection.set(ready)
+                if (appForeground) ready.checks.trySend(Unit)
+                healthJob = launch(Dispatchers.IO) {
+                    while (isActive) {
+                        val requested = if (appForeground) {
+                            withTimeoutOrNull(foregroundPingIntervalMillis) { ready.checks.receive(); true } == true
+                        } else { ready.checks.receive(); true }
+                        if (!requested && !appForeground) continue
+                        val nonce = ByteArray(32).also(secureRandom::nextBytes)
+                        // 先启动独立超时器，避免写入被半开连接无限阻塞。
+                        val timeout = launch(Dispatchers.Default) {
+                            delay(healthCheckTimeoutMillis)
+                            healthFailure.compareAndSet(null, GatewayWebSocketTimeoutException(
+                                GatewayWebSocketTimeoutStage.IDLE, healthCheckTimeoutMillis))
+                            runCatching { socket.close() }
+                        }
+                        try {
+                            sendFrame(output, OPCODE_PING, nonce)
+                            val proved = withTimeoutOrNull(healthCheckTimeoutMillis) {
+                                while (!MessageDigest.isEqual(nonce, ready.pongs.receive())) Unit
+                                true
+                            } == true
+                            if (!proved) {
+                                healthFailure.compareAndSet(null, GatewayWebSocketTimeoutException(
+                                    GatewayWebSocketTimeoutStage.IDLE, healthCheckTimeoutMillis))
+                                runCatching { socket.close() }
+                                break
+                            }
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                        catch (failure: IOException) {
+                            healthFailure.compareAndSet(null, failure)
+                            runCatching { socket.close() }
+                            break
+                        } finally { timeout.cancel() }
+                    }
+                }
+            }
+            val result = consume(ready)
+            healthFailure.get()?.let { throw it }
+            result
         } catch (failure: IOException) {
             context.ensureActive()
+            healthFailure.get()?.let { throw it }
             if (!GatewayConnectionSecurity.isSecurityFailure(failure) && deadline.remaining() <= 0) throw deadline.timeout()
             throw failure
         } finally {
+            connection?.let {
+                formalConnection.compareAndSet(it, null)
+                healthJob?.cancel()
+                it.checks.close()
+                it.pongs.close()
+            }
             runCatching { socketRef.get()?.close() }
             cancelHandle?.dispose()
             watchdog.cancel()
@@ -297,7 +366,10 @@ open class GatewayWebSocketTransport(
         fun messageCompleted() { check(); messageAt = Long.MAX_VALUE }
     }
 
-    private inner class Connection(val input: InputStream, val output: OutputStream, val deadline: Deadline)
+    private inner class Connection(val input: InputStream, val output: OutputStream, val deadline: Deadline) {
+        val checks = Channel<Unit>(Channel.CONFLATED)
+        val pongs = Channel<ByteArray>(Channel.CONFLATED)
+    }
 
     private fun performHandshake(snapshot: GatewayProfile, output: OutputStream, input: InputStream, host: String, target: String) {
         val signed = GatewayHttpClient.signedInput(snapshot, "GET", target, ByteArray(0))
@@ -395,7 +467,7 @@ open class GatewayWebSocketTransport(
         if (code in setOf(4001, 4401)) throw EventSessionRejectedException(snapshot, closeCode = code)
     }
 
-    private fun sendFrame(output: OutputStream, opcode: Int, payload: ByteArray) {
+    private fun sendFrame(output: OutputStream, opcode: Int, payload: ByteArray) = synchronized(output) {
         output.write(0x80 or opcode)
         val mask = ByteArray(4).also(secureRandom::nextBytes)
         when {
