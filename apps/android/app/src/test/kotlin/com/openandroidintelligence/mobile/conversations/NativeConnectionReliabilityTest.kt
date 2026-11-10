@@ -183,7 +183,7 @@ class NativeConnectionReliabilityTest {
             h.repository.activeConversationChanged(); runCurrent()
             assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
             assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_REQUEST_FAILED:$status", h.repository.streamFailure.first())
-            repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true) }
+            repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true, confirmedTransportRebuild = it + 1L) }
             advanceTimeBy(120000); runCurrent()
             assertEquals(1, h.reads)
             assertEquals("base", h.storage.cursor)
@@ -249,7 +249,7 @@ class NativeConnectionReliabilityTest {
             assertEquals("sessionA", client.credentialVersion())
             val rejectedRequests = requests.size
             val failure = repository.streamFailure.first()
-            repeat(4) { repository.connectionRestored(); repository.connectionRestored(expediteRetry = true); runCurrent() }
+            repeat(4) { repository.connectionRestored(); repository.connectionRestored(expediteRetry = true, confirmedTransportRebuild = it + 1L); runCurrent() }
             assertEquals(rejectedRequests, requests.size)
             assertEquals(1, refreshes)
             assertEquals(failure, repository.streamFailure.first())
@@ -349,7 +349,7 @@ class NativeConnectionReliabilityTest {
             h.repository.activeConversationChanged(); runCurrent()
             assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
             assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:$code", h.repository.streamFailure.first())
-            repeat(4) { h.repository.connectionRestored() }
+            repeat(4) { h.repository.connectionRestored(confirmedTransportRebuild = it + 1L) }
             advanceTimeBy(120000); runCurrent()
             assertEquals(1, h.reads)
             assertEquals("base", h.storage.cursor)
@@ -364,7 +364,7 @@ class NativeConnectionReliabilityTest {
         h.repository.activeConversationChanged(); runCurrent()
         assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
         assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:AGENT_RESPONSE_INVALID:503", h.repository.streamFailure.first())
-        repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true) }
+        repeat(4) { h.repository.connectionRestored(); h.repository.connectionRestored(expediteRetry = true, confirmedTransportRebuild = it + 1L) }
         advanceTimeBy(120000); runCurrent()
         assertEquals(1, h.reads)
     }
@@ -422,7 +422,7 @@ class NativeConnectionReliabilityTest {
         h.repository.activeConversationChanged(); runCurrent()
         assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
         assertEquals("NATIVE_EVENT_SYNC_FAILED:READ_FAILED:NATIVE_EVENT_SCOPE_MISMATCH", h.repository.streamFailure.first())
-        repeat(4) { h.repository.connectionRestored() }
+        repeat(4) { h.repository.connectionRestored(confirmedTransportRebuild = it + 1L) }
         advanceTimeBy(120000); runCurrent()
         assertEquals(1, h.reads)
     }

@@ -2550,10 +2550,12 @@ class GatewayRuntime(
                 storeForAgent = ::nativeStore,
             )
         }
-        fun restoreNativeReads(expediteRetry: Boolean = false) {
-            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored(expediteRetry) }
+        fun restoreNativeReads(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
+            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach {
+                it.connectionRestored(expediteRetry, confirmedTransportRebuild)
+            }
         }
-        restartNativeReads = ::restoreNativeReads
+        restartNativeReads = { expediteRetry -> restoreNativeReads(expediteRetry) }
 
         /**
          * 原生会话事件的提醒出口。
@@ -3166,6 +3168,14 @@ class GatewayRuntime(
             if (sessionJob === ownedJob) com.openandroidintelligence.control.ScreenHostRegistry.current?.connectionChanged(live)
         }
         sessionScope.launch {
+            platformHttp.eventRecoveryEpoch.collect { epoch ->
+                if (epoch > 0 && sessionJob === ownedJob) {
+                    restoreNativeReads(expediteRetry = true,
+                        confirmedTransportRebuild = NATIVE_TRANSPORT_RECOVERY_EPOCH.incrementAndGet())
+                }
+            }
+        }
+        sessionScope.launch {
             platformStatus.status.collect { status ->
                 if (sessionJob !== ownedJob) return@collect
                 val projected = if (platformHasBeenLive && status == EventStreamStatus.CONNECTING)
@@ -3555,6 +3565,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        val NATIVE_TRANSPORT_RECOVERY_EPOCH = java.util.concurrent.atomic.AtomicLong()
         const val WORKBENCH_RECOVERY_NOTICE = "读取本地会话失败，历史记录已保留，请重新连接后重试。"
         const val OFFLINE_MIRROR_NOTICE = "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
