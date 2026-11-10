@@ -56,6 +56,8 @@ class AgentReplyNotificationE2eTest {
             context.packageName == "com.openandroidintelligence.mobile.replyvalidation")
         val manager = context.getSystemService(NotificationManager::class.java)
         assertTrue("须先经真实系统授予通知权限", manager.areNotificationsEnabled())
+        // 专用验收包重跑时只撤回其旧测试通知，保留所有测试账号与会话数据。
+        manager.cancelAll()
         val metadata = control(controlUrl, "/state")
         val conversationId = requireNotNull(JsonFields.string(metadata, "conversationId"))
         val otherConversationId = requireNotNull(JsonFields.string(metadata, "otherConversationId"))
@@ -126,7 +128,7 @@ class AgentReplyNotificationE2eTest {
             assertEquals(generationId, completed.generationId)
             val notification = awaitNotification(manager) { item -> item.notification.channelId == REPLY_CHANNEL_ID &&
                 item.notification.flags and Notification.FLAG_ONGOING_EVENT == 0 &&
-                Notification.MessagingStyle.extractMessagingStyleFromNotification(item.notification)
+                (Notification.Builder.recoverBuilder(context, item.notification).style as? Notification.MessagingStyle)
                     ?.messages?.lastOrNull()?.text?.toString() == FINAL_REPLY }
             assertEquals("同轮最多保留一条会话通知", 1, replyNotifications(manager).size)
             assertEquals(Notification.CATEGORY_MESSAGE, notification.notification.category)
@@ -194,7 +196,8 @@ class AgentReplyNotificationE2eTest {
     }
 
     private fun replyNotifications(manager: NotificationManager) = manager.activeNotifications.filter {
-        it.notification.channelId == REPLY_CHANNEL_ID
+        it.notification.channelId == REPLY_CHANNEL_ID &&
+            it.notification.flags and Notification.FLAG_GROUP_SUMMARY == 0
     }
 
     private fun awaitNotification(manager: NotificationManager, predicate: (android.service.notification.StatusBarNotification) -> Boolean): android.service.notification.StatusBarNotification {
