@@ -54,6 +54,11 @@
 因此 `DebounceBatcher.merges` 明确表达「当前策略是否要合并」，控制器在 0 秒时直接走
 原有的单条发送路径。
 
+### 设置改回 0 秒时
+
+`updatePolicy` 在时长归零时会立刻 `flush` 已收集的批次：否则新消息按 0 秒直接发出、
+旧批次仍在等原窗口，会话里会出现「后发的先到」。改大或改小时长不影响已封存的批次。
+
 ### 待发送消息的状态
 
 `> 0` 秒时，成员在窗口内仍以 `pendingBatch`（时间线上显示「等待合并」）与
@@ -77,6 +82,6 @@
 | 开启防抖后正确合并 | `DebounceBatcherTest.one conversation still aggregates its own members`；`the twentieth member flushes the batch` 同时验证第 21 条不会丢失 |
 | 不产生 Core 配置请求 | 运行时只写本机 SharedPreferences；无新增网络调用 |
 | 不同客户端互不影响 | 配置只存在各自手机的 `conversation-debounce-v1` |
-| 不丢失 / 重复 / 乱序 / 错合并 | `DebounceBatcherTest.two conversations keep separate batches`、`WorkbenchSendPersistenceTest`、`WorkbenchCloseSubmissionTest` |
+| 不丢失 / 重复 / 乱序 / 错合并 | `DebounceBatcherTest.two conversations keep separate batches`、`turning merging off flushes what is already collected`、`WorkbenchSendPersistenceTest`、`WorkbenchCloseSubmissionTest` |
 | 界面无 Core 覆盖入口 | `MessageProcessingSettingsTest` 断言相关文案不存在 |
 | 单测与回归 | `:conversation-domain:testDebugUnitTest`、`:conversation-ui:testDebugUnitTest`、`:app:testFullDebugUnitTest` |
