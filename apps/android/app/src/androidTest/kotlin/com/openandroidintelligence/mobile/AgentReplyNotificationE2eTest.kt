@@ -131,11 +131,16 @@ class AgentReplyNotificationE2eTest {
             if (scenario == "reconnectDuringCompletion") {
                 control(controlUrl, "/start-core", "POST")
                 onMain { runtime.onNetworkAvailable(routeChanged = true) }
+                progress("断线期间宿主已完成，Core 已恢复")
             }
-            val completed = withTimeout(20_000) { runtime.nativeConversationNotifications.sessions.first { sessions ->
+            val completedSessions = withTimeoutOrNull(20_000) { runtime.nativeConversationNotifications.sessions.first { sessions ->
                 sessions.any { it.target == running.target && it.generationId == generationId &&
                     it.status == NativeConversationStatus.COMPLETED && it.latestReply == FINAL_REPLY }
-            } }.single { it.target == running.target }
+            } }
+            assertNotNull("完成投影缺失：${runtime.nativeConversationNotifications.sessions.value}; " +
+                "生成=${workbench.state.value.generation}; 事件=${workbench.state.value.streamHealth}; " +
+                "通知数=${replyNotifications(manager).size}", completedSessions)
+            val completed = requireNotNull(completedSessions).single { it.target == running.target }
             progress("已收到同轮完成事件")
             assertEquals(generationId, completed.generationId)
             val notification = awaitNotification(manager) { item -> item.notification.channelId == REPLY_CHANNEL_ID &&

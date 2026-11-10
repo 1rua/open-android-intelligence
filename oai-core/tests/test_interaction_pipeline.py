@@ -49,7 +49,7 @@ async def request(client, identity, method, path, body=None, request_id=None):
 class ControlledExecution(UnsupportedApprovalMixin):
     """Control only the host task, while exercising real native session state."""
 
-    def __init__(self, backend, conversations):
+    def __init__(self, backend, conversations, *, publish_delivery_events=False):
         self.services = SimpleNamespace(core=backend)
         self._loop = asyncio.get_running_loop()
         self._session_store = object()
@@ -64,6 +64,7 @@ class ControlledExecution(UnsupportedApprovalMixin):
         self.resolver_return_gate = None
         self.host_finished = asyncio.Event()
         self.observer_release = asyncio.Event()
+        self.publish_delivery_events = publish_delivery_events
         backend.generation_canceller = self.cancel
 
     @staticmethod
@@ -120,7 +121,13 @@ class ControlledExecution(UnsupportedApprovalMixin):
         self.turns[(owner, conversation, generation_id)] = asyncio.current_task()
         account = self.services.core.open_gateway_account(owner)
         try:
-            assert account.conversations.workflow.claim(accepted["messageId"])
+            if self.publish_delivery_events:
+                dispatch = account.conversations.claim_dispatch(json.loads(body)["clientMessageId"])
+                assert dispatch and dispatch["messageId"] == accepted["messageId"]
+                account.conversations.update_dispatch_status(dispatch["messageId"], "delivered", None,
+                    f"agent-adopted-{dispatch['messageId']}", claim_token=dispatch["claimToken"])
+            else:
+                assert account.conversations.workflow.claim(accepted["messageId"])
             binding = account.agent_sessions.lookup(conversation)
             session_key = binding["sessionKey"]
         finally:

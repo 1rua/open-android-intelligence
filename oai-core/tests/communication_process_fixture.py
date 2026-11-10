@@ -85,12 +85,27 @@ async def _host(root, conversation, device_history=False):
                 raise
             else:
                 if device_history:
-                    for row in native_history.get((owner, conversation), []):
-                        if row.get("generationId") == accepted["generationId"]:
-                            row["state"] = "CONFIRMED"
+                    with closing(backend.open_gateway_account(owner)) as account:
+                        generation = account.conversations.workflow.for_message(accepted["messageId"])
+                        assert generation["state"] == "completed"
+                        for row in native_history.get((owner, conversation), []):
+                            if row.get("generationId") == accepted["generationId"]:
+                                row["state"] = "CONFIRMED"
+                                if row["sender"] != "assistant":
+                                    continue
+                                # 与真实宿主相同，正文完成事实独立于用户消息成功状态。
+                                account.events.append("conversation.message.completed", row["messageId"], {
+                                    "conversationId": conversation, "messageId": row["messageId"],
+                                    "sender": "assistant", "parts": [{"type": "text", "text": row["text"]}],
+                                    "text": row["text"], "timestamp": 1000,
+                                    "revision": row["contentRevision"], "generationId": accepted["generationId"],
+                                })
+                        # 与真实宿主相同，由投递状态入口产生单独递增的状态修订与事件。
+                        account.conversations.update_dispatch_status(accepted["messageId"], "completed", None,
+                            f"agent-complete-{accepted['messageId']}")
                 _record(journal, "task.finished", **identity)
 
-    runtime = ObservedExecution(backend, {OWNER: conversation})
+    runtime = ObservedExecution(backend, {OWNER: conversation}, publish_delivery_events=device_history)
     detached = asyncio.Event()
     unregister = backend.unregister_event_sink
     loop = asyncio.get_running_loop()
