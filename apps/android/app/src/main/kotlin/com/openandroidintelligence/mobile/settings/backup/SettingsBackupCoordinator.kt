@@ -63,6 +63,23 @@ data class BackupImportOutcome(
 )
 
 /**
+ * 导入成功后需要让运行时采用的设置变更。
+ *
+ * 抽成接口是为了让「导入中途失败时不得产生不可撤销的发送」可以被测试直接验证，
+ * 而不必在测试里搭一个已连接的工作台。
+ */
+interface SettingsRuntimeRefresh {
+    fun reloadDebounceSettings()
+    fun refreshThreads()
+}
+
+fun gatewayRuntimeRefresh(runtime: com.openandroidintelligence.mobile.GatewayRuntime): SettingsRuntimeRefresh =
+    object : SettingsRuntimeRefresh {
+        override fun reloadDebounceSettings() = runtime.reloadDebounceSettings()
+        override fun refreshThreads() { runtime.controller.value?.refreshThreads() }
+    }
+
+/**
  * 设置备份与恢复的唯一实现。
  *
  * 它只经由各设置**原有权威**读写，不新建第二套存储：
@@ -92,7 +109,19 @@ class SettingsBackupCoordinator(
     private val notificationPolicy: NotificationPolicyPort,
     private val keyProvider: AesGcmKeyProvider? = null,
     private val clock: Clock = Clock.systemDefaultZone(),
+    /**
+     * 运行时刷新入口；默认桥接到 [runtime]，测试可替换为记录器。
+     */
+    private val runtimeRefresh: SettingsRuntimeRefresh? = runtime?.let(::gatewayRuntimeRefresh),
 ) {
+    /**
+     * 导入期间累积的运行时刷新动作，只在全部写入成功后才执行。
+     *
+     * 合并策略的刷新不是纯读：把时长改回 0 会立刻提交已收集的消息。若在导入中途执行，
+     * 后续节失败触发回滚也无法撤回这次发送，界面却会说「已恢复为导入前的状态」。
+     */
+    private val pendingRuntimeRefreshes = mutableListOf<() -> Unit>()
+
     // ---------------------------------------------------------------- 导出
 
     fun export(): BackupExport {
@@ -271,6 +300,7 @@ class SettingsBackupCoordinator(
         }
 
         val snapshot = captureSnapshot()
+        pendingRuntimeRefreshes.clear()
         val applied = mutableListOf<String>()
         val skipped = mutableListOf<String>()
         val deferred = mutableListOf<String>()
@@ -293,6 +323,7 @@ class SettingsBackupCoordinator(
             applyNotificationCollection(sections.notificationCollection, applied, skipped, deferred)
         } catch (failure: Exception) {
             // restore() 会返回**确认恢复失败**的清单；只有清单为空才敢说「已恢复原状」。
+            pendingRuntimeRefreshes.clear()
             val unrestored = runCatching { snapshot.restore() }.getOrElse { listOf("设置") }
             return Result.failure(
                 SettingsBackupFormatException(
@@ -305,6 +336,9 @@ class SettingsBackupCoordinator(
                 ),
             )
         }
+        // 所有节都已成功写入，才允许运行时采用新设置。
+        pendingRuntimeRefreshes.forEach { refresh -> runCatching(refresh) }
+        pendingRuntimeRefreshes.clear()
         return Result.success(
             BackupImportOutcome(
                 appliedSummaries = applied,
@@ -376,7 +410,7 @@ class SettingsBackupCoordinator(
         }
         if (written > 0) {
             applied += section.summary()
-            runtime?.reloadDebounceSettings()
+            pendingRuntimeRefreshes += { runtimeRefresh?.reloadDebounceSettings() }
             deferred += "消息合并已保存；当前会话在下次发送时生效。"
         } else if (unchanged) {
             applied += section.summary() + "（本机已是该值）"
@@ -424,7 +458,7 @@ class SettingsBackupCoordinator(
         }
         if (written > 0) {
             applied += section.summary()
-            runtime?.controller?.value?.refreshThreads()
+            pendingRuntimeRefreshes += { runtimeRefresh?.refreshThreads() }
             deferred += "会话排序与文件夹已保存；若列表未立即变化，重新进入会话列表即可。"
         }
         if (missingProfile > 0) skipped += "$missingProfile 条会话排序未导入：本机还没有对应账号。"
@@ -639,7 +673,7 @@ class SettingsBackupCoordinator(
             }
             attempt("消息处理") {
                 DebouncePreferences(context).restore(debounce)
-                runtime?.reloadDebounceSettings()
+                runtimeRefresh?.reloadDebounceSettings()
             }
             attempt("连接地址") {
                 val written = if (preferredGateway == null) LoginGatewayPrefill.clear(context)
@@ -685,7 +719,7 @@ class SettingsBackupCoordinator(
                 }
             }
             attempt("会话列表刷新") {
-                if (runtime?.controller?.value != null) runtime.controller.value?.refreshThreads()
+                runtimeRefresh?.refreshThreads()
             }
             return failed.distinct()
         }

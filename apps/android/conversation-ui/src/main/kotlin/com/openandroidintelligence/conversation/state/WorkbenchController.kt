@@ -3060,8 +3060,16 @@ class WorkbenchController(
             it.delivery == effectiveDelivery && it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
                 it.conversationId?.let { id ->
                     val atom = atomsFor(id)[it.clientMessageId]
-                    atom?.isDeleted == true || atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN ||
-                        steeringWasNotForwarded(atom)
+                    // 普通发送失败后自动回填、用户没再改动的草稿仍是同一条消息：再次点击必须沿用原身份先查询，
+                    // 否则远端其实已受理时会被当成第二条执行。用户改过草稿（修订号前移）才视为新发送。
+                    // 引导（STEER）不适用：每次点击都是一次独立的纠偏操作。
+                    val untouchedHandBack = effectiveDelivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
+                        it.delivery == effectiveDelivery &&
+                        atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                        draftRevision == it.revision
+                    !untouchedHandBack && (atom?.isDeleted == true ||
+                        atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN ||
+                        steeringWasNotForwarded(atom))
                 } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value,
