@@ -61,7 +61,8 @@ async def serve(arguments):
 
     async with AsyncExitStack() as stack:
         conversation, other_conversation = seed_conversations(directory / "adapter")
-        adapter = await CommunicationProcess("adapter", directory / "adapter", conversation=conversation).start()
+        adapter = await CommunicationProcess("adapter", directory / "adapter", conversation=conversation,
+                                             device_history=True).start()
         stack.push_async_callback(adapter.close)
         core = await CommunicationProcess("core", directory / "core", host_url=adapter.url).start()
         stack.push_async_callback(core.close)

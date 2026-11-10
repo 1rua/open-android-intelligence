@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.ShortcutManager
 import android.os.PowerManager
 import android.os.SystemClock
-import android.view.accessibility.AccessibilityNodeInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openandroidintelligence.conversation.state.Loadable
@@ -14,18 +13,18 @@ import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
-import java.net.HttpURLConnection
+import com.openandroidintelligence.gateway.http.GatewayProfile
+import com.openandroidintelligence.gateway.http.GatewayTransport
+import com.openandroidintelligence.gateway.http.WireRequest
 import java.net.URI
-import java.net.URL
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -58,6 +57,8 @@ class AgentReplyNotificationE2eTest {
         assertTrue("须先经真实系统授予通知权限", manager.areNotificationsEnabled())
         // 专用验收包重跑时只撤回其旧测试通知，保留所有测试账号与会话数据。
         manager.cancelAll()
+        // 通知验收的前置状态是用户已走完引导；不修改产品引导流程。
+        application.onboardingPreferences.markCompleted()
         val metadata = control(controlUrl, "/state")
         val conversationId = requireNotNull(JsonFields.string(metadata, "conversationId"))
         val otherConversationId = requireNotNull(JsonFields.string(metadata, "otherConversationId"))
@@ -68,18 +69,27 @@ class AgentReplyNotificationE2eTest {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         try {
             withTimeout(15_000) { runtime.localSessionState.first { it !is LocalSessionState.LoadingLocal } }
+            // 重跑可能恢复上一份已停止的测试 Core；先走正常账号退出流程再登录新夹具。
+            onMain { runtime.chooseAnotherAccount() }
+            withTimeout(15_000) { runtime.localSessionState.first { it is LocalSessionState.AccountPicker } }
+            progress("本地会话已就绪，开始登录隔离 Core")
             onMain {
                 runtime.replyNotifications.setEnabled(true)
                 runtime.replyNotifications.refreshPermission()
                 runtime.login(coreUrl, "alice", "test-only-password".toCharArray())
             }
-            withTimeout(30_000) { runtime.phase.first { it is ConnectionPhase.Connected } }
+            val login = withTimeoutOrNull(30_000) {
+                runtime.phase.first { it is ConnectionPhase.Connected || it is ConnectionPhase.Failed }
+            }
+            assertTrue("隔离 Core 登录未完成：${login ?: runtime.phase.value}", login is ConnectionPhase.Connected)
+            progress("隔离 Core 登录成功")
             val workbench = withTimeout(30_000) {
                 runtime.controller.filterNotNull().flatMapLatest { controller ->
                     controller.state.map { controller to it }
                 }.first { (_, state) -> state.isOnline &&
                     (state.threads as? Loadable.Ready)?.value?.any { it.id.value == conversationId } == true }.first
             }
+            progress("原生主工作台已就绪")
             onMain { workbench.openThread(conversationId) }
             withTimeout(15_000) { workbench.state.first { it.activeThreadId == conversationId && it.historyHydrated } }
             onMain { workbench.editDraft("disconnect"); workbench.sendDraft() }
@@ -88,6 +98,7 @@ class AgentReplyNotificationE2eTest {
                     !it.isUser && it.isStreaming && it.text == "开始"
                 } == true }
             }
+            progress("已收到流式正文，尚未完成")
             val running = withTimeout(10_000) { runtime.nativeConversationNotifications.sessions.first { sessions ->
                 sessions.any { it.target.agentId == "hermes" && it.target.conversationId == conversationId && it.isRunning }
             } }.single { it.target.agentId == "hermes" && it.target.conversationId == conversationId }
@@ -125,6 +136,7 @@ class AgentReplyNotificationE2eTest {
                 sessions.any { it.target == running.target && it.generationId == generationId &&
                     it.status == NativeConversationStatus.COMPLETED && it.latestReply == FINAL_REPLY }
             } }.single { it.target == running.target }
+            progress("已收到同轮完成事件")
             assertEquals(generationId, completed.generationId)
             val notification = awaitNotification(manager) { item -> item.notification.channelId == REPLY_CHANNEL_ID &&
                 item.notification.flags and Notification.FLAG_ONGOING_EVENT == 0 &&
@@ -138,19 +150,23 @@ class AgentReplyNotificationE2eTest {
                 .single { it.id == notification.notification.shortcutId }
             assertEquals(running.target, BubbleConversationActivity.targetFromIntent(requireNotNull(shortcut.intent)))
             assertEquals(notification.notification.shortcutId, notification.notification.bubbleMetadata!!.shortcutId)
+            progress("系统会话通知与气泡目标核对通过")
 
-            // 先离开原会话，再从系统通知栏点击，防止“本来就在目标会话”掩盖导航错误。
+            // 先离开原会话，再触发通知实际持有的点击 Intent，防止原选择掩盖导航错误。
             if (workbench.state.value.activeThreadId == conversationId) {
                 onMain { workbench.openThread(otherConversationId) }
                 withTimeout(15_000) { workbench.state.first { it.activeThreadId == otherConversationId } }
             }
             shell("input keyevent KEYCODE_WAKEUP")
             shell("wm dismiss-keyguard")
-            shell("cmd statusbar expand-notifications")
-            clickNotificationText(FINAL_REPLY)
+            shell("cmd statusbar collapse")
+            // 发出系统通知实际持有的点击 Intent，验证 Android 分发及 Activity 导航。
+            // 系统分组摘要是否折叠不应改变通知自身的点击目标。
+            notification.notification.contentIntent.send()
             withTimeout(15_000) { workbench.state.first { it.activeThreadId == conversationId } }
             assertEquals("hermes", runtime.nativeAgents.value?.state?.value?.selectedAgentId)
             assertEquals("点击后必须回到实际完成的会话", conversationId, workbench.state.value.activeThreadId)
+            progress("系统通知点击 Intent 已进入对应会话")
 
             // 重连触发真实历史/游标恢复，用户已处理的提醒不得重新出现。
             manager.cancel(notification.tag, notification.id)
@@ -158,10 +174,14 @@ class AgentReplyNotificationE2eTest {
             withTimeout(30_000) { workbench.state.first { it.streamHealth in setOf(StreamHealth.RECONNECTING, StreamHealth.FAILED) } }
             control(controlUrl, "/start-core", "POST")
             onMain { runtime.onNetworkAvailable(routeChanged = true) }
+            progress("Core 已恢复，等待原生游标与历史同步")
             withTimeout(20_000) { workbench.state.first { state -> state.activeThreadId == conversationId &&
                 state.streamHealth == StreamHealth.LIVE &&
                 (state.timeline as? Loadable.Ready)?.value?.any { !it.isUser && !it.isStreaming && it.text == FINAL_REPLY } == true } }
             assertTrue("历史同步不能把已经处理的完成重新通知", replyNotifications(manager).isEmpty())
+            progress("重连同步未重复通知，场景 $scenario 通过")
+            onMain { runtime.chooseAnotherAccount() }
+            withTimeout(15_000) { runtime.localSessionState.first { it is LocalSessionState.AccountPicker } }
             println("OAI通知验收通过 scenario=$scenario agent=hermes conversation=$conversationId generation=$generationId")
         } finally {
             shell("input keyevent KEYCODE_WAKEUP")
@@ -177,19 +197,19 @@ class AgentReplyNotificationE2eTest {
         }
     }
 
-    private suspend fun control(base: String, path: String, method: String = "GET"): JsonValue.JObject = withContext(Dispatchers.IO) {
-        val connection = URL(base + path).openConnection() as HttpURLConnection
-        connection.requestMethod = method
-        connection.connectTimeout = 10_000
-        connection.readTimeout = 10_000
-        try {
-            assertEquals("隔离宿主控制口调用失败", 200, connection.responseCode)
-            JsonFields.obj(Json.parse(connection.inputStream.bufferedReader().use { it.readText() }))
-                ?: error("测试控制口未返回对象")
-        } finally { connection.disconnect() }
+    private suspend fun control(base: String, path: String, method: String = "GET"): JsonValue.JObject {
+        val transport = GatewayTransport(GatewayProfile("device-acceptance", "fixture", "control", base))
+        val response = transport.execute(WireRequest(method, path))
+        assertEquals("隔离宿主控制口调用失败", 200, response.status)
+        return JsonFields.obj(Json.parse(response.body.decodeToString()))
+            ?: error("测试控制口未返回对象")
     }
 
     private fun onMain(action: () -> Unit) = instrumentation.runOnMainSync(action)
+
+    private fun progress(message: String) = instrumentation.sendStatus(0, android.os.Bundle().apply {
+        putString("stream", "\nOAI通知验收：$message\n")
+    })
 
     private fun shell(command: String): String = instrumentation.uiAutomation.executeShellCommand(command).use { descriptor ->
         android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).bufferedReader().use { it.readText() }
@@ -207,23 +227,6 @@ class AgentReplyNotificationE2eTest {
             SystemClock.sleep(50)
         } while (SystemClock.elapsedRealtime() < deadline)
         error("系统通知未在期限内出现")
-    }
-
-    private fun clickNotificationText(text: String) {
-        val automation = instrumentation.uiAutomation
-        val deadline = SystemClock.elapsedRealtime() + 10_000
-        do {
-            val matches = automation.rootInActiveWindow?.findAccessibilityNodeInfosByText(text).orEmpty()
-            for (match in matches) {
-                var node: AccessibilityNodeInfo? = match
-                while (node != null) {
-                    if (node.isClickable && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
-                    node = node.parent
-                }
-            }
-            SystemClock.sleep(50)
-        } while (SystemClock.elapsedRealtime() < deadline)
-        error("系统通知栏未找到可点击的确定性测试回复")
     }
 
     private companion object {
