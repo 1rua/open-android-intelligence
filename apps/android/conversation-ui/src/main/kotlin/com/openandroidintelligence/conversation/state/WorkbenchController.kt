@@ -31,6 +31,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
@@ -370,6 +371,43 @@ class WorkbenchController(
     var attachmentTargetRevision: Long = 0
         private set
     private var attachmentPreparations = 0
+
+    /**
+     * 已登记但**尚未进入草稿**的附件数量（正在解析 URI、读元数据的整批文件）。
+     *
+     * 从「用户选完文件」到「附件出现在 `attachments` 里」之间存在一段异步窗口：
+     * 主进程要按 URI 查询 provider、读 MIME 与文件名。交接若只看当前附件列表，
+     * 这段时间里会看到「没有附件」而判定就绪，主进程接受交接、浮层关闭后解析结果
+     * 才会回来，于是刚选的文件既没迁移也没有提示。
+     *
+     * 因此导入方必须在开始异步读取**之前**登记整批，结束时释放；交接等待它归零。
+     */
+    private val pendingAttachmentImports = MutableStateFlow(0)
+
+    /** 当前仍在导入中的附件数量；交接与槽位计算都要把它算进去。 */
+    val pendingAttachmentImportCount: Int get() = pendingAttachmentImports.value
+
+    /**
+     * 登记一批即将导入的附件。
+     *
+     * 必须在启动异步解析之前调用：登记之后 `awaitHandoffAttachments` 会一直等到
+     * 整批结束，而不是在列表还空着的时候误判为「没有附件要交接」。
+     */
+    fun beginAttachmentImport(count: Int = 1) {
+        if (count > 0) pendingAttachmentImports.update { it + count }
+    }
+
+    /** 释放登记。必须放在 `finally` 里：解析失败或被取消同样要结束，否则交接会一直等到超时。 */
+    fun finishAttachmentImport(count: Int = 1) {
+        if (count > 0) pendingAttachmentImports.update { (it - count).coerceAtLeast(0) }
+    }
+
+    /**
+     * 槽位只按「已入草稿 + 正在 prepare」计算，**不**扣导入登记。
+     *
+     * 导入登记是整批一次性登记的：若把它也算进剩余槽位，一批 3 个文件会因为自己
+     * 的登记把槽位减到 0 而互相挤掉。导入方自己按批次裁剪数量即可。
+     */
     val availableAttachmentSlots: Int get() =
         (MAX_COMPOSER_ATTACHMENTS - _state.value.attachments.size - attachmentPreparations).coerceAtLeast(0)
 
@@ -2690,21 +2728,28 @@ class WorkbenchController(
      * 只看**会被迁移的那批附件**：`inFlightAttachmentIds` 属于已经提交给 Agent 的发送，
      * 它们不在草稿里，也不该拖住交接。
      *
-     * @return true 表示草稿附件现在全部可以迁移（空列表同样为 true）。
+     * 还必须等**尚未进草稿的那批导入**结束（[pendingAttachmentImports]）：照片选择器
+     * 返回后立刻上滑时，URI 解析还在 IO 线程上，草稿列表此刻是空的。只看列表会把这
+     * 一刻判成「没有附件要交接」，主进程接受后浮层关闭，解析结果回来时客户端已被移除，
+     * 刚选的文件既没迁移也没有提示。
+     *
+     * @return true 表示草稿附件现在全部可以迁移（空列表且无导入中同样为 true）。
      */
     suspend fun awaitHandoffAttachments(timeoutMillis: Long): Boolean {
         if (timeoutMillis <= 0L) return false
         return withTimeoutOrNull(timeoutMillis) {
-            _state.first { current ->
-                val handoff = current.attachments.filterNot { it.id.value in current.inFlightAttachmentIds }
-                // 空列表或全部就绪、或者已经出现不可能再变好的失败，都可以立即下结论。
-                handoff.all { it.state == AttachmentState.VERIFIED } ||
-                    handoff.any { it.state in UNSETTLED_ATTACHMENT_STATES }
-            }.let { current ->
-                current.attachments
-                    .filterNot { it.id.value in current.inFlightAttachmentIds }
-                    .all { it.state == AttachmentState.VERIFIED }
-            }
+            val settled = combine(_state, pendingAttachmentImports) { state, imports -> state to imports }
+                .first { (state, imports) ->
+                    val handoff = state.attachments.filterNot { it.id.value in state.inFlightAttachmentIds }
+                    // 导入未结束就不能下结论：列表此刻的空是「还没到」而不是「没有」。
+                    imports == 0 && (
+                        handoff.all { it.state == AttachmentState.VERIFIED } ||
+                            handoff.any { it.state in UNSETTLED_ATTACHMENT_STATES }
+                        )
+                }
+            settled.second == 0 && settled.first.attachments
+                .filterNot { it.id.value in settled.first.inFlightAttachmentIds }
+                .all { it.state == AttachmentState.VERIFIED }
         } ?: false
     }
 

@@ -168,7 +168,7 @@ internal fun AssistantSessionRoot(
     /** 横条上滑超过阈值：请求把当前会话交给主 App（严格交接，失败保留浮层）。 */
     onRequestHandoff: () -> Unit = {},
     /** 点击「＋」：打开系统文件/媒体选择器。 */
-    onAddAttachment: () -> Unit = {},
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onContentHeightChanged: (Int) -> Unit = {},
     /**
      * 进入组合时是否当作一次新的系统唤起（重置为紧凑输入）。

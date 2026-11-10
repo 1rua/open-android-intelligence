@@ -4,6 +4,27 @@ import android.net.Uri
 import java.lang.ref.WeakReference
 
 /**
+ * 「＋」可以打开的两类系统选择器。
+ *
+ * 规格 §3.5 要求「Photo Picker 多选 + 文档选择，支持现有全部附件类型」：只给照片
+ * 选择器会让 PDF、文本等现有附件类型在浮层里彻底选不到——用户点开「＋」看到的
+ * 只有相册，没有任何通往文档的入口。
+ */
+internal enum class AssistantAttachmentKind(val wireValue: String) {
+    /** 照片与视频：系统 Photo Picker，多选。 */
+    MEDIA("media"),
+
+    /** 任意文件：SAF 文档选择器。 */
+    DOCUMENT("document"),
+    ;
+
+    companion object {
+        fun of(value: String?): AssistantAttachmentKind =
+            entries.firstOrNull { it.wireValue == value } ?: MEDIA
+    }
+}
+
+/**
  * 进程级的「系统选择器结果」中转站。
  *
  * 为什么需要它：系统助理会话是 `VoiceInteractionSession`，没有 `ActivityResultRegistry`，

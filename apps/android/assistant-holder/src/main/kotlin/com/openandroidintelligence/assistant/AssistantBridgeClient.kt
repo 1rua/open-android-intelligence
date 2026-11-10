@@ -237,11 +237,14 @@ internal class AssistantBridgeClient(
     /**
      * 请求把当前助手会话 + 草稿 + 附件交给主 App（上滑交接）。
      *
-     * 命令本身不带字段：会话身份由主进程已持有的 `sessionToken` 决定。结果随下一次
-     * 状态帧的 `handoff` 字段下发（PENDING/ACCEPTED/REJECTED），调用方必须等回执，
-     * 不能把「命令送达」当成「交接成功」。
+     * 命令只带本次请求的代次 [handoffId]：会话身份由主进程已持有的 `sessionToken` 决定。
+     * 结果随下一次状态帧的 `handoff` 字段下发（PENDING/ACCEPTED/REJECTED）并原样带回同
+     * 一个代次；调用方必须等**本轮**回执，不能把「命令送达」或上一轮的终态当成成功。
      */
-    fun requestHandoff(): Boolean = command(COMMAND_HANDOFF)
+    fun requestHandoff(handoffId: String): Boolean {
+        if (handoffId.isBlank()) return false
+        return command(COMMAND_HANDOFF) { putString("handoffId", handoffId) }
+    }
 
     /**
      * 请求把本进程选中的文件加入主进程的草稿（一次最多 [MAX_COMPOSER_ATTACHMENTS] 个）。

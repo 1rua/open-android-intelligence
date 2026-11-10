@@ -90,10 +90,7 @@ internal fun AssistantDragHandle(
     )
 
     fun reportProgress(offsetPx: Float) {
-        currentOnDragProgress(
-            if (reduceMotion || progressDistancePx <= 0f) 0f
-            else (-offsetPx / progressDistancePx).coerceIn(0f, 1f),
-        )
+        currentOnDragProgress(progressFraction(offsetPx, progressDistancePx))
     }
 
     fun settleToRest() {
@@ -111,7 +108,11 @@ internal fun AssistantDragHandle(
             // 从当前位移开始回弹，避免松手瞬间跳回原点。
             rebound.snapTo(dragOffset)
             dragOffset = 0f
-            rebound.animateTo(0f, MotionSpecs.MomentumSpring)
+            // 回弹过程逐帧上报进度：父级整层位移与透明度都读这个值，只在结束时归零
+            // 会让面板停在拖拽终点、横条单独弹回去，最后整层突然跳回原位。
+            rebound.animateTo(0f, MotionSpecs.MomentumSpring) {
+                currentOnDragProgress(progressFraction(rebound.value, progressDistancePx))
+            }
             dragTravel = 0f
             settling = false
             currentOnDragProgress(0f)
@@ -148,7 +149,8 @@ internal fun AssistantDragHandle(
                     // 松手时阈值判定照常生效。
                     dragOffset = dragOffsetStep(dragOffset, delta, reduceMotion, screenHeightPx)
                     dragTravel += dragTravelStep(delta, screenHeightPx)
-                    reportProgress(if (reduceMotion) 0f else dragOffset)
+                    // 减少动态下 dragOffset 恒为 0，进度自然也是 0（父级不做整层位移）。
+                    reportProgress(dragOffset)
                 },
                 onDragStarted = { pressed = true },
                 onDragStopped = { velocity ->
@@ -186,6 +188,15 @@ internal fun dragOffsetStep(
     val step = if (delta < 0f) delta else MotionSpecs.rubberband(delta, screenHeightPx)
     return current + step
 }
+
+/**
+ * 位移 → 整层进度（0..1，向上为正）。
+ *
+ * 拖拽与回弹必须用**同一套换算**：回弹只是把位移逐帧送回 0，父级整层位移读的正是
+ * 这个进度，两处各写一份会让回弹不再带动整层。
+ */
+internal fun progressFraction(offsetPx: Float, progressDistancePx: Float): Float =
+    if (progressDistancePx <= 0f) 0f else (-offsetPx / progressDistancePx).coerceIn(0f, 1f)
 
 /**
  * 手势行程：无论是否跟手都要累计，阈值判定看的是用户实际拖了多远。

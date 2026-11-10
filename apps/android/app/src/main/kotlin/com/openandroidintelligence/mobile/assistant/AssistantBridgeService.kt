@@ -63,6 +63,8 @@ class AssistantBridgeService : Service() {
         var revision: Long = 0L,
         /** 最近一次交接尝试的结果；没有请求过时为 null（帧里也不出现该字段）。 */
         var handoff: AssistantHandoffResult? = null,
+        /** 上述结果所属的请求代次；与客户端这一次上滑带来的 `handoffId` 对应。 */
+        var handoffId: String? = null,
     )
 
     private val clients = linkedMapOf<IBinder, Client>()
@@ -111,7 +113,8 @@ class AssistantBridgeService : Service() {
             }
             // 交接是唯一「不靠异常报错」的命令：结果必须随状态帧回执，
             // 因为拒绝原因（账号/Agent 不一致、附件未就绪）需要原文展示给用户。
-            "handoff" -> runHandoff(client, reply)
+            // `handoffId` 把回执绑定到这一次请求，避免上一轮的终态被当成本轮结果。
+            "handoff" -> runHandoff(client, reply, b.getString("handoffId").orEmpty())
             else -> {
                 if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
                 // 没有控制器（未登录 / 工作台尚未就绪）时必须说清为什么没反应。
@@ -236,35 +239,59 @@ class AssistantBridgeService : Service() {
      * app 模块里，含 `takePersistableUriPermission`）。
      *
      * 每个 URI 独立入草稿：某个文件读不出来只提示这一个，其余照常加入，不整批失败。
+     *
+     * **整批先登记再解析**：从「收到 URI」到「附件进草稿」之间有一段异步窗口
+     * （查 provider 元数据、加载缩略图）。用户选完立刻上滑时，交接若只看当前附件列表，
+     * 会在这段窗口里看到空列表并判定就绪；主进程接受、浮层关闭后解析结果才回来，
+     * 客户端已被移除，刚选的文件既没迁移也没有提示。登记之后
+     * `awaitHandoffAttachments` 会一直等到整批结束（有上限）。
      */
     private fun queueFileAttachments(client: Client, controller: WorkbenchController, b: Bundle) {
         val uris = fileAttachmentUris(b.getStringArray("uris"), b.getInt("count", -1))
             ?: error("ATTACHMENT_URIS_INVALID")
         val targetRevision = controller.attachmentTargetRevision
+        // 按剩余槽位裁剪这一批：整批登记，整批释放，不留下永久挂起的计数。
+        val accepted = uris.take(controller.availableAttachmentSlots)
+        if (accepted.isEmpty()) {
+            publish(client, "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件，请先移除或发送后再添加")
+            return
+        }
+        controller.beginAttachmentImport(accepted.size)
         jobs.launch {
             var failures = 0
-            for (raw in uris) {
-                val uri = runCatching { android.net.Uri.parse(raw) }.getOrNull()
-                val selection = if (uri != null) {
-                    runCatching { withContext(Dispatchers.IO) { pickedAttachmentSelection(applicationContext, uri) } }.getOrNull()
-                } else {
-                    null
+            val dropped = uris.size - accepted.size
+            try {
+                for (raw in accepted) {
+                    val uri = runCatching { android.net.Uri.parse(raw) }.getOrNull()
+                    val selection = if (uri != null) {
+                        runCatching { withContext(Dispatchers.IO) { pickedAttachmentSelection(applicationContext, uri) } }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (selection == null) {
+                        failures++
+                        continue
+                    }
+                    withContext(Dispatchers.Main) {
+                        // 会话/控制器一旦变化就停止，剩余文件不再加入别人的草稿。
+                        if (clients[client.reply.binder] !== client || client.controller !== controller ||
+                            controller.attachmentTargetRevision != targetRevision) return@withContext
+                        if (controller.availableAttachmentSlots == 0) return@withContext
+                        controller.addAttachment(selection)
+                    }
                 }
-                if (selection == null) {
-                    failures++
-                    continue
-                }
-                withContext(Dispatchers.Main) {
-                    // 会话/控制器一旦变化就停止，剩余文件不再加入别人的草稿。
-                    if (clients[client.reply.binder] !== client || client.controller !== controller ||
-                        controller.attachmentTargetRevision != targetRevision) return@withContext
-                    if (controller.availableAttachmentSlots == 0) return@withContext
-                    controller.addAttachment(selection)
-                }
+            } finally {
+                controller.finishAttachmentImport(accepted.size)
             }
             withContext(Dispatchers.Main) {
+                val reason = when {
+                    failures > 0 && dropped > 0 -> "有 $failures 个附件无法读取，$dropped 个超出数量上限，请重新选择"
+                    failures > 0 -> "有 $failures 个附件无法读取，请重新选择"
+                    dropped > 0 -> "附件已达上限，只加入了前 ${accepted.size} 个"
+                    else -> null
+                }
                 if (clients[client.reply.binder] !== client) return@withContext
-                if (failures > 0) publish(client, "有 $failures 个附件无法读取，请重新选择")
+                if (reason != null) publish(client, reason)
             }
         }
     }
@@ -341,17 +368,25 @@ class AssistantBridgeService : Service() {
      *
      * 交接要等附件就绪（有上限），因此它在独立协程里完成；期间的重复请求直接忽略，
      * 结果随状态帧下发。
+     *
+     * **回执带请求代次**：客户端每次上滑带来一个新的 `handoffId`，结果原样带回。
+     * 没有代次时上一轮的终态会留在状态帧里，下一轮请求会立刻把它当成自己的结果。
      */
-    private fun runHandoff(client: Client, reply: Messenger) {
-        if (handoffInFlight) return
-        val token = client.sessionToken ?: run {
-            client.handoff = AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+    private fun runHandoff(client: Client, reply: Messenger, handoffId: String) {
+        // 重复上滑（同一代次重复送达）直接忽略；不同代次说明这是新的一次请求，
+        // 必须覆盖上一轮结果，否则客户端永远等不到本轮回执。
+        if (handoffInFlight && handoffId == client.handoffId) return
+        fun settle(result: AssistantHandoffResult) {
+            client.handoff = result
+            client.handoffId = handoffId
             publish(client)
+        }
+        val token = client.sessionToken ?: run {
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED))
             return
         }
         if (!client.scope.canShare(runtime.connectedAccountId)) {
-            client.handoff = AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
-            publish(client)
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH))
             return
         }
         handoffInFlight = true
@@ -365,8 +400,7 @@ class AssistantBridgeService : Service() {
             }
             // 会话已被换掉（session.new / disconnect）时结果不再属于当前客户端。
             if (clients[reply.binder] !== client || client.sessionToken != token) return@launch
-            client.handoff = result
-            publish(client)
+            settle(result)
         }
     }
 
@@ -472,7 +506,9 @@ class AssistantBridgeService : Service() {
                 reduceMotion = appearance.reduceMotion,
             ),
             // 交接结果随状态帧下发：浮层据此决定打开主 App 还是保留自己。
-            handoff = client.handoff.takeIf { client.sessionToken != null }?.toDto(accountId, profileId),
+            // 代次一并下发，客户端才能区分「这一轮的回执」与「上一轮残留的终态」。
+            handoff = client.handoff.takeIf { client.sessionToken != null }
+                ?.toDto(accountId, profileId, client.handoffId.orEmpty()),
         )
         val payload = runCatching { encodeState(dto) }.getOrNull() ?: return
         runCatching {
@@ -572,8 +608,10 @@ internal fun noticeFor(message: String): AssistantNoticeDto {
 internal fun AssistantHandoffResult.toDto(
     accountId: String?,
     profileId: String?,
+    handoffId: String = "",
 ): AssistantHandoffDto = when (this) {
     is AssistantHandoffResult.Accepted -> AssistantHandoffDto(
+        handoffId = handoffId,
         state = AssistantHandoffState.ACCEPTED.wireValue,
         conversationId = target.conversationId,
         profileId = target.profileId.ifBlank { profileId.orEmpty() },
@@ -582,6 +620,7 @@ internal fun AssistantHandoffResult.toDto(
         skippedAttachments = skippedAttachments,
     )
     is AssistantHandoffResult.Rejected -> AssistantHandoffDto(
+        handoffId = handoffId,
         state = AssistantHandoffState.REJECTED.wireValue,
         reason = reason,
         profileId = profileId.orEmpty(),

@@ -47,7 +47,7 @@ class AssistantCompactBarTest {
     private var stops = 0
     private var recordings = 0
     private var selections = 0
-    private var added = 0
+    private var added = mutableListOf<AssistantAttachmentKind>()
     private var cancels = 0
     private var finishes = 0
 
@@ -79,7 +79,7 @@ class AssistantCompactBarTest {
                         onStop = { stops++ },
                         onStartRecording = { recordings++ },
                         onStartScreenSelection = if (withScreenSelection) ({ selections++ }) else null,
-                        onAddAttachment = { added++ },
+                        onAddAttachment = { added += it },
                         enabled = enabled,
                         hasUnknownOutcome = hasUnknownOutcome,
                         attachments = attachments,
@@ -190,12 +190,26 @@ class AssistantCompactBarTest {
         render()
 
         compose.onNodeWithContentDescription("添加附件").assertIsEnabled().performClick()
+        // 「＋」展开菜单后两个类别都必须可达：只给照片选择器会让 PDF/文本等
+        // 现有附件类型在浮层里彻底选不到（规格 §3.5）。
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).assertIsDisplayed()
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_DOCUMENT).assertIsDisplayed().performClick()
         compose.onNodeWithContentDescription("语音输入").assertIsEnabled().performClick()
 
-        assertEquals(1, added)
+        assertEquals("文档入口必须真的触发选择", listOf(AssistantAttachmentKind.DOCUMENT), added)
         assertEquals(1, recordings)
         compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
         assertEquals(0, selections)
+    }
+
+    @Test
+    fun theMediaEntryInTheMenuAsksForThePhotoPicker() {
+        render()
+
+        compose.onNodeWithContentDescription("添加附件").performClick()
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
+
+        assertEquals(listOf(AssistantAttachmentKind.MEDIA), added)
     }
 
     @Test

@@ -33,15 +33,25 @@ class AssistantSessionServiceLifecycleTest {
     private val sent = mutableListOf<Bundle>()
     private var serviceController: ServiceController<AssistantSessionService>? = null
 
-    private fun session(handoffFrame: HandoffFrame? = null): VoiceInteractionSession {
-        handoff = handoffFrame
+    private fun session(handoffFrame: HandoffFrame? = null): VoiceInteractionSession =
+        session(listOfNotNull(handoffFrame))
+
+    private fun session(handoffFrames: List<HandoffFrame>): VoiceInteractionSession {
+        handoffs = ArrayDeque(handoffFrames)
         val controller = Robolectric.buildService(AssistantSessionService::class.java).create()
         serviceController = controller
         return controller.get().onNewSession(null)
     }
 
-    /** 主进程在收到 handoff 后回的那一帧（含交接结果）；默认不回。 */
-    private var handoff: HandoffFrame? = null
+    /**
+     * 主进程对第 N 次 handoff 命令回的那一帧；按序消费。
+     *
+     * 用队列是因为要验证「上一轮被拒、这一轮被接受」：两次请求必须拿到不同的回执。
+     */
+    private var handoffs: ArrayDeque<HandoffFrame> = ArrayDeque()
+
+    /** 状态帧序号；每次发帧都要递增，否则接收方会当成重复帧丢弃。 */
+    private var handoffRevisions = 1
 
     /** 完成绑定并回一帧状态，让客户端拿到 token。 */
     private fun attachFakeBridge() {
@@ -51,7 +61,14 @@ class AssistantSessionServiceLifecycleTest {
                 sent += message.data
                 when (message.data.getString("command")) {
                     "connect" -> message.replyTo?.send(handoffStateMessage(1))
-                    "handoff" -> handoff?.let { frame -> message.replyTo?.send(handoffStateMessage(2, frame)) }
+                    // 回执必须原样带回本次请求的代次：真实主进程就是这么做的。
+                    // revision 也必须是递增的：客户端会丢弃乱序/重复帧，同一 revision 的
+                    // 第二次回执会被当成重复帧丢掉，测不出代次语义。
+                    "handoff" -> handoffs.removeFirstOrNull()?.let { frame ->
+                        message.replyTo?.send(
+                            handoffStateMessage(++handoffRevisions, frame, message.data.getString("handoffId").orEmpty()),
+                        )
+                    }
                 }
                 true
             },
@@ -67,14 +84,20 @@ class AssistantSessionServiceLifecycleTest {
 
     private fun commands() = sent.map { it.getString("command") }
 
-    /** 状态帧：第 [revision] 帧，[frame] 非空时带上交接结果。 */
-    private fun handoffStateMessage(revision: Int, frame: HandoffFrame? = null): android.os.Message {
+    /** 状态帧：第 [revision] 帧，[frame] 非空时带上交接结果与本次请求的代次。 */
+    private fun handoffStateMessage(
+        revision: Int,
+        frame: HandoffFrame? = null,
+        handoffId: String = "",
+    ): android.os.Message {
         val handoffJson = when (frame) {
             is AssistantHandoffRejectedFrame ->
-                """{"state":"REJECTED","reason":"${frame.reason}"}"""
+                """{"handoffId":"$handoffId","state":"REJECTED","reason":"${frame.reason}"}"""
             is AssistantHandoffAcceptedFrame -> buildString {
-                append("""{"state":"ACCEPTED","conversationId":"${frame.conversationId}","""")
-                append("""profileId":"${frame.profileId}","accountId":"${frame.accountId}"""")
+                append("""{"handoffId":"$handoffId","state":"ACCEPTED",""")
+                append(""""conversationId":"${frame.conversationId}",""")
+                append(""""profileId":"${frame.profileId}",""")
+                append(""""accountId":"${frame.accountId}"""")
                 frame.agentId?.let { append(""","agentId":"$it"""") }
                 append("}")
             }
@@ -229,6 +252,40 @@ class AssistantSessionServiceLifecycleTest {
         assertTrue("选择器取消后必须恢复助手窗口", shadow.isUiEnabled)
     }
 
+    /**
+     * 「＋」菜单里的文档入口必须把类别一路传到 Activity。
+     *
+     * 只开 Photo Picker 时文档选择器只能靠「启动失败」兜底，正常设备上永远走不到，
+     * PDF/文本等现有附件类型在浮层里因此完全选不到（规格 §3.5）。
+     */
+    @Test fun theDocumentEntryLaunchesTheDocumentPicker() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestAttachmentPicker(session, AssistantAttachmentKind.DOCUMENT)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val intent = shadowOf(session).lastAssistantActivityIntent
+        assertEquals(AssistantAttachmentKind.DOCUMENT, AssistantAttachmentPickerActivity.kindOf(intent))
+    }
+
+    @Test fun theMediaEntryLaunchesThePhotoPicker() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestAttachmentPicker(session, AssistantAttachmentKind.MEDIA)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(
+            AssistantAttachmentKind.MEDIA,
+            AssistantAttachmentPickerActivity.kindOf(shadowOf(session).lastAssistantActivityIntent),
+        )
+    }
+
     @Test fun aPickedFileRestoresTheSessionWindowAndStillReachesTheDraft() {
         val session = createdSession()
         session.onShow(Bundle(), 0)
@@ -260,9 +317,14 @@ class AssistantSessionServiceLifecycleTest {
     private fun createdSession(handoffFrame: HandoffFrame? = null): VoiceInteractionSession =
         session(handoffFrame).also { shadowOf(it).create() }
 
-    private fun invokeRequestAttachmentPicker(session: VoiceInteractionSession) {
-        val method = session.javaClass.getDeclaredMethod("requestAttachmentPicker").apply { isAccessible = true }
-        method.invoke(session)
+    private fun invokeRequestAttachmentPicker(
+        session: VoiceInteractionSession,
+        kind: AssistantAttachmentKind = AssistantAttachmentKind.MEDIA,
+    ) {
+        val method = session.javaClass
+            .getDeclaredMethod("requestAttachmentPicker", AssistantAttachmentKind::class.java)
+            .apply { isAccessible = true }
+        method.invoke(session, kind)
     }
 
     /**
@@ -373,6 +435,48 @@ class AssistantSessionServiceLifecycleTest {
             "test-session",
             started.getStringExtra("com.openandroidintelligence.assistant.SESSION_TOKEN"),
         )
+    }
+
+    /**
+     * 上一轮被拒、这一轮被接受：必须打开主 App。
+     *
+     * 真实主进程会把结果留在状态帧里，`StateFlow` 订阅时立即重放当前值。新一轮请求
+     * 若把重放的旧 REJECTED 当成自己的结果，就会把本轮判成失败；随后真正的 ACCEPTED
+     * 又被「已结束」挡掉——主进程已经接管草稿，浮层却停在失败状态，也没有打开 App。
+     * 回执必须按请求代次归属。
+     */
+    @Test fun aSecondHandoffIsNotJudgedByThePreviousRejection() {
+        val session = session(
+            handoffFrames = listOf(
+                AssistantHandoffRejectedFrame("附件仍在上传，交接未完成"),
+                AssistantHandoffAcceptedFrame(
+                    conversationId = "thread-9",
+                    profileId = "profile-1",
+                    accountId = "account-1",
+                    agentId = "agent-1",
+                ),
+            ),
+        )
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        // 第一次：被拒，浮层保留。
+        invokeRequestHandoff(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(
+            "附件仍在上传，交接未完成",
+            session.clientOrNull()?.state?.value?.advisory,
+        )
+
+        // 第二次：状态里仍残留上一轮的 REJECTED，但本轮回执是 ACCEPTED。
+        invokeRequestHandoff(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val started = org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
+            .nextStartedActivity
+        requireNotNull(started) { "本轮 ACCEPTED 必须打开主 App，不能被上一轮的拒绝挡住" }
+        assertEquals("com.openandroidintelligence.mobile.MainActivity", started.component?.className)
     }
 
     private fun VoiceInteractionSession.uiStateOrNull(): AssistantSessionUiController? =

@@ -383,7 +383,7 @@ class AssistantSessionRootTest {
 
     @Test
     fun tappingAddAttachmentReachesTheHost() {
-        var adds = 0
+        val adds = mutableListOf<AssistantAttachmentKind>()
         compose.setContent {
             MaterialTheme {
                 Box(Modifier.size(360.dp, 640.dp)) {
@@ -397,14 +397,16 @@ class AssistantSessionRootTest {
                         onSend = { true },
                         onStop = {},
                         onExit = {},
-                        onAddAttachment = { adds++ },
+                        onAddAttachment = { adds += it },
                     )
                 }
             }
         }
 
+        // 「＋」先展开菜单，再选类别：照片与文档两条系统选择器都要能到。
         compose.onNodeWithContentDescription("添加附件").performClick()
-        assertEquals(1, adds)
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
+        assertEquals(listOf(AssistantAttachmentKind.MEDIA), adds)
     }
 
     // ---- 窗口高度回传 ----

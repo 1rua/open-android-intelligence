@@ -43,6 +43,8 @@ val ASSISTANT_BRIDGE_ALLOWED_KEYS: Set<String> = setOf(
     "version", "token", "command", "text", "content", "size",
     "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
     "uris", "count",
+    // 交接请求代次：回执必须能对应到「这一次」请求，否则上一轮的终态会被当成这一轮的结果。
+    "handoffId",
 )
 
 /**
@@ -215,6 +217,15 @@ enum class AssistantHandoffState(val wireValue: String) {
  * 没有这个字段的旧帧解码为 null（= 尚未请求过），不能用默认值伪造一次成功的交接。
  */
 data class AssistantHandoffDto(
+    /**
+     * 本次回执对应的请求代次。
+     *
+     * 客户端每次上滑都会带一个新的 `handoffId`，回执原样带回。**没有代次就不能比较**：
+     * 上一轮的 REJECTED 会留在状态帧里，下一轮请求的 `collect` 会立刻重放它并把本轮
+     * 判成失败，随后真正的 ACCEPTED 被忽略——主进程已经接管草稿，浮层却停在失败状态。
+     * 空字符串表示旧主进程不认识这个字段，此时调用方退回「只看终态」的宽容策略。
+     */
+    val handoffId: String = "",
     val state: String = AssistantHandoffState.PENDING.wireValue,
     /** 已本地化的原因；ACCEPTED/PENDING 时为空。 */
     val reason: String = "",
@@ -564,6 +575,7 @@ private fun AssistantNoticeDto.toJson(): JSONObject = JSONObject().apply {
 }
 
 private fun AssistantHandoffDto.toJson(): JSONObject = JSONObject().apply {
+    put("handoffId", handoffId)
     put("state", state)
     put("reason", reason)
     conversationId?.let { put("conversationId", it) }
@@ -578,6 +590,7 @@ private fun JSONObject.toHandoffDto(): AssistantHandoffDto {
     return AssistantHandoffDto(
         // 未知状态按 PENDING 处理：调用方会继续等待并在超时后失败关闭，
         // 绝不把没读懂的字面量升格成一次成功的交接。
+        handoffId = stringOrEmpty("handoffId"),
         state = parsed.wireValue,
         reason = stringOrEmpty("reason"),
         conversationId = stringOrNull("conversationId"),

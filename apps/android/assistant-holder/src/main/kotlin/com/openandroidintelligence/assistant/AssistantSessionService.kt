@@ -103,6 +103,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     /** 交接请求是否在等待主进程回执；同一时刻只允许一次。 */
     private var handoffRequested = false
+
+    /** 正在等待的那一次请求的代次；回执必须带上同一个值才算本轮结果。 */
+    private var pendingHandoffId: String? = null
     private var handoffWatchdog: Runnable? = null
     private var handoffJob: Job? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -152,7 +155,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 // 两者由本类同步推进；窗口几何只看 `immersiveLayout()`。
                 frozenScreenshot = frozenScreenshot(),
                 onRequestHandoff = { requestHandoff() },
-                onAddAttachment = { requestAttachmentPicker() },
+                onAddAttachment = { kind -> requestAttachmentPicker(kind) },
                 // 发送被接收：定格在状态机里已经结束，这里把窗口同步放回测量驱动。
                 onExitFrozen = { exitFrozenSelection() },
                 onExit = { requestExit() },
@@ -181,6 +184,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 没有可用客户端（上一次 onHide 已释放）时，重建一套干净的宿主与桥接。
         if (client == null || host == null) setContentView(onCreateContentView())
         presented = true
+        // 每次唤起都是新的一次会话：上一轮未完成的交接请求不能延续到这一轮。
+        handoffRequested = false
+        pendingHandoffId = null
         // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
         uiState.dispatch(AssistantUiEvent.SessionShown)
         closing = false
@@ -200,6 +206,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         handoffJob = null
         handoffWatchdog?.let(mainHandler::removeCallbacks)
         handoffWatchdog = null
+        // 会话结束：本轮交接代次一并作废，下一次唤起必须从头开始。
+        handoffRequested = false
+        pendingHandoffId = null
         // 隐藏即会话结束：桥接立刻释放，宿主退回 CREATED，组合随视图解绑被回收。
         // 先置位再推进状态：SessionHidden 会走到"结束"分支，不能让它再触发一次 hide。
         // 退出只断开连接、不取消生成：已提交的任务由主进程继续。
@@ -224,6 +233,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         handoffJob = null
         handoffWatchdog?.let(mainHandler::removeCallbacks)
         handoffWatchdog = null
+        handoffRequested = false
+        pendingHandoffId = null
         restoreSessionUi()
         client?.let(AssistantSessionLifecycle::leave)
         client = null
@@ -498,37 +509,51 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             client?.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
             return
         }
-        if (!bridge.requestHandoff()) {
+        // 每次上滑都换一个新的请求代次：上一轮留下的终态不能再被当成本轮结果。
+        val handoffId = java.util.UUID.randomUUID().toString()
+        if (!bridge.requestHandoff(handoffId)) {
             bridge.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
             return
         }
         // 回执随下一次状态帧下发；等待期间不再接受第二次请求，避免重复迁移。
         handoffRequested = true
+        pendingHandoffId = handoffId
         handoffWatchdog?.let(mainHandler::removeCallbacks)
         handoffWatchdog = Runnable {
             if (!handoffRequested) return@Runnable
             handoffRequested = false
+            pendingHandoffId = null
             client?.showAdvisory(AssistantHandoffMessages.TIMEOUT)
         }.also { mainHandler.postDelayed(it, HANDOFF_TIMEOUT_MILLIS) }
-        observeHandoffResult(bridge)
+        observeHandoffResult(bridge, handoffId)
     }
 
-    /** 观察状态帧里的交接结果；ACCEPTED 才打开主 App，REJECTED 立即提示并复位。 */
-    private fun observeHandoffResult(bridge: AssistantBridgeClient) {
+    /**
+     * 观察状态帧里的交接结果；ACCEPTED 才打开主 App，REJECTED 立即提示并复位。
+     *
+     * **只认本轮代次**：`StateFlow` 在订阅或请求后会立即重放当前值，上一轮残留在帧里的
+     * REJECTED 会在新一轮刚开始时被重放一次，把本轮判成失败，随后真正的 ACCEPTED 又被
+     * `handoffRequested == false` 挡掉——主进程已经接管了草稿，浮层却留在失败状态。
+     * 旧主进程不认识 `handoffId`（回执里为空）时退回「只看终态」的宽容策略。
+     */
+    private fun observeHandoffResult(bridge: AssistantBridgeClient, handoffId: String) {
         handoffJob?.cancel()
         handoffJob = handoffScope.launch {
             bridge.state.collect { state ->
-                if (!handoffRequested) return@collect
+                if (!handoffRequested || pendingHandoffId != handoffId) return@collect
                 val handoff = state.handoff ?: return@collect
+                if (handoff.handoffId.isNotEmpty() && handoff.handoffId != handoffId) return@collect
                 when (AssistantHandoffState.of(handoff.state)) {
                     AssistantHandoffState.ACCEPTED -> {
                         handoffRequested = false
+                        pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
                         proceedWithAcceptedHandoff(bridge, handoff)
                     }
                     AssistantHandoffState.REJECTED -> {
                         handoffRequested = false
+                        pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
                         bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.REJECTED })
@@ -569,10 +594,14 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     /**
-     * 点击「＋」：请求选择器 Activity 打开系统选择器（会话本身没有 ActivityResultRegistry）。
+     * 点击「＋」菜单里的某一类入口：请求选择器 Activity 打开对应的系统选择器
+     * （会话本身没有 `ActivityResultRegistry`）。
      *
      * 选中结果经 [AssistantAttachmentPickerBroker] 回到这里：只做「去重 → 按剩余槽位截断 →
      * 交给主进程」，本进程不读字节、不解析 MIME。
+     *
+     * [kind] 必须一路传到 Activity：照片/视频走 Photo Picker 多选，文档走 SAF。
+     * 早先无论点什么都只开 Photo Picker，「文档」这类现有附件类型在浮层里不可达。
      *
      * 窗口必须先停用：助手浮层是常驻在其他窗口之上的 `VoiceInteractionSession`，紧凑态
      * 占着屏幕底部、定格态铺满全屏。选择器虽然在上层，浮层窗口没有让出触摸区域时，
@@ -580,7 +609,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      * `setUiEnabled(false)` 会隐藏会话窗口并把输入焦点交还给上层 Activity；选择器结果
      * 或取消回来后再恢复。
      */
-    private fun requestAttachmentPicker() {
+    private fun requestAttachmentPicker(kind: AssistantAttachmentKind) {
         val bridge = client ?: return
         // 回调必须由会话强引用：broker 只持弱引用，单靠它登记会在 Activity 返回前
         // 被回收，表现为「选完文件没有任何反应」。
@@ -603,7 +632,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // `startAssistantActivity` 没有返回值：只能以「没有抛出异常」为准，
         // 真正的失败（回来时没有 URI）由选择器自身的取消路径如实表达。
         try {
-            startAssistantActivity(AssistantAttachmentPickerActivity.intent(context))
+            startAssistantActivity(AssistantAttachmentPickerActivity.intent(context, kind))
         } catch (_: Exception) {
             AssistantAttachmentPickerBroker.cancel()
             restoreSessionUi()

@@ -289,6 +289,55 @@ class WorkbenchAssistantDraftAdoptionTest {
         }
     }
 
+    /**
+     * 解析中的文件必须拖住交接。
+     *
+     * 从「收到 URI」到「附件进草稿」之间有一段异步窗口：主进程要查 provider 元数据。
+     * 只看 `attachments` 会在这一刻看到空列表并判成就绪，浮层随即关闭，解析结果回来时
+     * 客户端已被移除——刚选的文件既没迁移也没有提示。登记导入后必须等它结束。
+     */
+    @Test
+    fun anAttachmentStillBeingParsedKeepsTheHandoffWaiting() = runTest {
+        val (coordinator, _) = coordinator(emptyList())
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.beginAttachmentImport(2)
+            runCurrent()
+
+            assertFalse(
+                "解析中的文件不能被当成「没有附件要交接」",
+                controller.awaitHandoffAttachments(timeoutMillis = 50L),
+            )
+
+            controller.finishAttachmentImport(2)
+            runCurrent()
+            assertTrue("解析结束且没有附件时应立即就绪", controller.awaitHandoffAttachments(timeoutMillis = 50L))
+        } finally {
+            controller.close()
+        }
+    }
+
+    /** 解析失败或被取消也必须释放登记：否则交接会一直等到超时。 */
+    @Test
+    fun finishingAnImportReleasesTheHandoffGate() = runTest {
+        val (coordinator, _) = coordinator(emptyList())
+        val controller = controller(CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)), coordinator)
+        try {
+            runCurrent()
+            controller.beginAttachmentImport(1)
+            runCurrent()
+            assertEquals(1, controller.pendingAttachmentImportCount)
+
+            controller.finishAttachmentImport(1)
+            runCurrent()
+            assertEquals(0, controller.pendingAttachmentImportCount)
+            assertTrue(controller.awaitHandoffAttachments(timeoutMillis = 50L))
+        } finally {
+            controller.close()
+        }
+    }
+
     private class EmptyRepository : ConversationRepository {
         private val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 4)
 

@@ -78,7 +78,7 @@ internal fun AssistantSessionContent(
      */
     frozenScreenshot: Bitmap? = null,
     onRequestHandoff: () -> Unit = {},
-    onAddAttachment: () -> Unit = {},
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onExitFrozen: () -> Unit = {},
 ) {
     val state by client.state.collectAsState()

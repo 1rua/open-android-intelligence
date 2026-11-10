@@ -146,7 +146,7 @@ class AssistantBridgeClientTest {
         target.removeAttachment("draft-1")
         target.decideApproval("apr-1", ApprovalChoice.DENY)
         target.retry(AssistantRetryTarget.TIMELINE)
-        target.requestHandoff()
+        target.requestHandoff("handoff-test-1")
         target.attachFiles(listOf("content://media/picked/1"))
         shadowOf(Looper.getMainLooper()).idle()
 
@@ -241,18 +241,35 @@ class AssistantBridgeClientTest {
 
     // ---- 交接与文件附件 ----
 
-    @Test fun handoffCommandCarriesNoExtraFields() {
+    /**
+     * 交接命令**只**多带一个请求代次。
+     *
+     * 代次是回执与请求对应起来的唯一依据：没有它，上一轮留在状态帧里的终态会在新一轮
+     * 开始时被重放，本轮结果被误判。除此之外不新增字段——会话身份仍由主进程持有的
+     * token 决定。
+     */
+    @Test fun handoffCommandCarriesOnlyTheRequestId() {
         val target = connect()
 
-        assertTrue(target.requestHandoff())
+        assertTrue(target.requestHandoff("handoff-1"))
         shadowOf(Looper.getMainLooper()).idle()
 
         val handoff = sent.single { it.getString("command") == "handoff" }
         assertEquals(
-            "交接命令不需要新字段：会话身份由主进程已持有的 token 决定",
-            setOf("version", "token", "command"),
+            setOf("version", "token", "command", "handoffId"),
             handoff.keySet(),
         )
+        assertEquals("handoff-1", handoff.getString("handoffId"))
+    }
+
+    /** 空白代次不发：主进程无法把回执对应回去，等于一次注定的假交接。 */
+    @Test fun aBlankHandoffIdIsNeverSent() {
+        val target = connect()
+
+        assertFalse(target.requestHandoff(""))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(listOf("connect"), sent.map { it.getString("command") })
     }
 
     @Test fun fileAttachmentsSendOnlyUriStringsInBoundedBatches() {

@@ -74,7 +74,7 @@ internal fun AssistantFrozenSelectionScene(
     recording: com.openandroidintelligence.conversation.voice.ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
-    onAddAttachment: () -> Unit = {},
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onRequestHandoff: () -> Unit = {},
     onSelectionReady: (AssistantSelectionResult) -> Unit = {},
     onSelectionRejected: () -> Unit = {},

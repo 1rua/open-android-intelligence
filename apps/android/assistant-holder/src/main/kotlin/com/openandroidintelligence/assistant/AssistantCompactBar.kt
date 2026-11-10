@@ -50,6 +50,8 @@ import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -84,6 +86,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.components.bouncyClickable
@@ -139,8 +142,12 @@ internal fun AssistantCompactBar(
      * 早先这个参数一直传空 lambda，兜底页的说明路径因此整体不可达。
      */
     onStartScreenSelection: (() -> Unit)? = null,
-    /** 点击「＋」：打开系统文件 / 媒体选择器（ASSIST 兜底页不走这条路径）。 */
-    onAddAttachment: () -> Unit = {},
+    /**
+     * 点击「＋」菜单里的某一类附件入口。
+     *
+     * 参数区分照片/视频（Photo Picker）与文档（SAF）：规格 §3.5 要求两类都能选。
+     */
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     hasUnknownOutcome: Boolean = false,
@@ -265,6 +272,8 @@ internal object AssistantCompactBarTags {
     const val HANDLE = "assistant_compact_handle"
     const val RECORDING = "assistant_compact_recording"
     const val ATTACHMENTS = "assistant_compact_attachments"
+    const val ATTACH_MEDIA = "assistant_compact_attach_media"
+    const val ATTACH_DOCUMENT = "assistant_compact_attach_document"
     fun attachment(id: String): String = "assistant_compact_attachment_$id"
 }
 
@@ -295,7 +304,7 @@ private fun CompactInputRow(
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
     onStartScreenSelection: (() -> Unit)?,
-    onAddAttachment: () -> Unit,
+    onAddAttachment: (AssistantAttachmentKind) -> Unit,
     cardShape: Shape?,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
@@ -305,6 +314,9 @@ private fun CompactInputRow(
             currentOnDraftChange(asCharSequence().toString())
         }
     }
+    // 「＋」的选择器菜单：照片/视频与文档两个入口。规格 §3.5 要求两类都能选，
+    // 直接开照片选择器会让 PDF、文本等现有附件类型在这里彻底选不到。
+    var attachmentMenuOpen by remember { mutableStateOf(false) }
     // 展开态：输入框获得焦点，或草稿已有内容。两者都消失才收起。
     var focused by remember { mutableStateOf(false) }
     val expanded = focused || editor.text.isNotEmpty()
@@ -357,12 +369,37 @@ private fun CompactInputRow(
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
             ) {
                 // 最左侧「＋」：需求要求的附件入口顺序是 ＋ / 输入框 / 麦克风 / 发送。
-                CompactIconAction(
-                    icon = Icons.Default.Add,
-                    contentDescription = "添加附件",
-                    enabled = enabled,
-                    onClick = onAddAttachment,
-                )
+                // 它展开一个小菜单，让照片与文档两条系统选择器都可达。
+                Box {
+                    CompactIconAction(
+                        icon = Icons.Default.Add,
+                        contentDescription = "添加附件",
+                        enabled = enabled,
+                        onClick = { attachmentMenuOpen = true },
+                    )
+                    DropdownMenu(
+                        expanded = attachmentMenuOpen,
+                        onDismissRequest = { attachmentMenuOpen = false },
+                        offset = DpOffset(0.dp, -Dimensions.MinimumTouchTarget),
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("照片与视频", style = MaterialTheme.typography.bodyMedium) },
+                            onClick = {
+                                attachmentMenuOpen = false
+                                onAddAttachment(AssistantAttachmentKind.MEDIA)
+                            },
+                            modifier = Modifier.testTag(AssistantCompactBarTags.ATTACH_MEDIA),
+                        )
+                        DropdownMenuItem(
+                            text = { Text("文档", style = MaterialTheme.typography.bodyMedium) },
+                            onClick = {
+                                attachmentMenuOpen = false
+                                onAddAttachment(AssistantAttachmentKind.DOCUMENT)
+                            },
+                            modifier = Modifier.testTag(AssistantCompactBarTags.ATTACH_DOCUMENT),
+                        )
+                    }
+                }
                 BasicTextField(
                     state = editor,
                     inputTransformation = reportEdits,
