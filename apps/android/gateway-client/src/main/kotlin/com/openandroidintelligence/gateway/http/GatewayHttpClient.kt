@@ -18,6 +18,7 @@ import com.openandroidintelligence.gateway.ws.GatewayWebSocketClosedException
 import com.openandroidintelligence.gateway.ws.GatewayWebSocketTimeoutException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
@@ -26,12 +27,15 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
@@ -125,8 +129,11 @@ class GatewayHttpClient(
     private val localEventRecoveryMarker = java.util.concurrent.atomic.AtomicReference<Any?>(null)
     private val failedEventSession = java.util.concurrent.atomic.AtomicReference<Pair<GatewayProfile, Throwable>?>(null)
 
+    private data class HealthRequest(val reason: String)
     private class EventOwner(val id: Long) {
         var status: EventStreamStatus? = null
+        val healthChecks = Channel<HealthRequest>(Channel.CONFLATED)
+        var lastWakeAt: Long? = null
     }
     private class CursorRecoveryAttempt(val client: GatewayHttpClient, val owner: EventOwner) :
         kotlin.coroutines.AbstractCoroutineContextElement(Key) {
@@ -134,6 +141,21 @@ class GatewayHttpClient(
     }
     private val eventOwnerLock = Any()
     private val activeEventOwner = java.util.concurrent.atomic.AtomicReference<EventOwner?>(null)
+    @Volatile private var appForeground = false
+
+    /** 生命周期只更新连接策略，不取消会话或创建新的订阅。 */
+    fun setAppForeground(visible: Boolean) { appForeground = visible }
+
+    fun currentEventGeneration(): Long? = activeEventOwner.get()?.id
+
+    /** 合并显式恢复信号；健康流先验证活动，退避中的流可提前恢复一次。 */
+    fun requestEventHealthCheck(reason: String) = synchronized(eventOwnerLock) {
+        val owner = activeEventOwner.get() ?: return@synchronized
+        val now = monotonicMillis()
+        if (owner.lastWakeAt?.let { now - it < HEALTH_WAKE_COOLDOWN_MILLIS } == true) return@synchronized
+        owner.lastWakeAt = now
+        owner.healthChecks.trySend(HealthRequest(reason.take(64)))
+    }
 
     private fun requireEventOwner(owner: EventOwner) {
         if (activeEventOwner.get() !== owner) throw CancellationException("EVENT_STREAM_OWNER_REPLACED")
@@ -555,11 +577,20 @@ class GatewayHttpClient(
                     GatewayLog.connectionEvent("connection.reconnect_scheduled", owner.id, reason = "transport_retry",
                         attempt = attempt, result = "scheduled", fields = mapOf("delayMs" to nextDelay))
                     logEventFailure(owner, attempt, transportKind, failure, health, nextDelay, "retry")
-                    delayFn(nextDelay)
+                    coroutineScope {
+                        val waiting = async { delayFn(nextDelay) }
+                        try {
+                            kotlinx.coroutines.selects.select<Unit> {
+                                waiting.onAwait { }
+                                owner.healthChecks.onReceive { }
+                            }
+                        } finally { waiting.cancelAndJoin() }
+                    }
                 }
             }
         } finally {
             synchronized(eventOwnerLock) { activeEventOwner.compareAndSet(owner, null) }
+            owner.healthChecks.close()
         }
     }
 
@@ -641,6 +672,7 @@ class GatewayHttpClient(
         private val liveSince = java.util.concurrent.atomic.AtomicLong(-1)
         val lastCompleteAt = java.util.concurrent.atomic.AtomicLong(monotonicMillis())
         val lastHeartbeatAt = java.util.concurrent.atomic.AtomicLong(-1)
+        val activityVersion = MutableStateFlow(0L)
         @Volatile var isReady = false
             private set
         @Volatile var hadActivity = false
@@ -670,6 +702,7 @@ class GatewayHttpClient(
             val now = monotonicMillis()
             hadActivity = true
             lastCompleteAt.set(now)
+            activityVersion.value += 1
             ready()
             if (now - liveSince.get() >= STABLE_CONNECTION_MILLIS) wasStable = true
             if (authentication) {
@@ -733,6 +766,21 @@ class GatewayHttpClient(
                     break
                 }
                 kotlinx.coroutines.delay(remaining)
+            }
+        }
+        val validation = launch {
+            for (request in owner.healthChecks) {
+                val observed = health.activityVersion.value
+                val active = withTimeoutOrNull(EVENT_HEALTH_CHECK_MILLIS) {
+                    health.activityVersion.first { it != observed }
+                    true
+                } == true
+                if (!active) {
+                    GatewayLog.connectionEvent("connection.heartbeat_timeout", owner.id,
+                        reason = request.reason, result = "validation_timeout", fields = mapOf("scope" to "transport", "foreground" to appForeground))
+                    items.send(SseItem.Finished(EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)))
+                    break
+                }
             }
         }
         val probe = if (autoReconnect && webSocketTransport != null) launch {
@@ -802,10 +850,12 @@ class GatewayHttpClient(
         } finally {
             sse.cancel()
             watchdog.cancel()
+            validation.cancel()
             probe?.cancel()
             withContext(NonCancellable) {
                 sse.join()
                 watchdog.join()
+                validation.join()
                 probe?.join()
             }
             items.close()
@@ -830,6 +880,8 @@ class GatewayHttpClient(
     ): List<RawHeader> = authenticationHeaders(sessionProfile(), input, signatureBase64Url, method)
 
     companion object {
+        private const val EVENT_HEALTH_CHECK_MILLIS = 3_000L
+        private const val HEALTH_WAKE_COOLDOWN_MILLIS = 5_000L
         const val PROTOCOL_HEADER = "2.1"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         private const val SNAPSHOT_TARGET = "/open-android-intelligence/v2/sync/snapshot"
