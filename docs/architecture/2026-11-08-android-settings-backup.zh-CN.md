@@ -33,10 +33,7 @@
     "appearance": { "theme": "DARK", "dynamicColor": false, "dynamicIconColor": true,
                     "palette": "EMBER", "reduceMotion": false },
     "notifications": { "replyAlertsEnabled": true },
-    "messageProcessing": {
-      "global": { "delayMillis": 1500, "extendWindow": true },
-      "cores": [ { "key": "<gateway-url-sha256>", "delayMillis": 0, "extendWindow": false } ]
-    },
+    "messageProcessing": { "delayMillis": 1500 },
     "conversation": { "organizations": [ { "profileId": "<sha256>", "agentId": "hermes",
                       "sortMode": "custom", "customOrder": [], "folders": [], "assignments": {} } ] },
     "connection": { "gatewayUrl": "https://core.example" },
@@ -58,8 +55,6 @@
 
 ### 为什么用摘要键
 
-- Core 的消息合并覆盖按 **Gateway 地址的 SHA-256** 记录。摘要对同一地址在任何设备上
-  稳定，因此文件不必保存原始地址之外的内容，也不会把地址泄漏成「谁连过哪台服务器」。
 - 会话组织与 Agent 选择按 **账号本地档案 ID 的 SHA-256** 记录。档案 ID 本身是
   「地址 + 用户名」的 Base64，摘要化后文件无法反推出账号名。
 - 导入只写回本机**已知**的地址与档案：文件里多出来的键跳过并在结果里如实说明，
@@ -71,7 +66,7 @@
 |---|---|---|
 | appearance | `AppearancePreferences` | 主题、动态取色、图标动态取色、预设色板、减少动画 |
 | notifications | `ReplyNotificationSettings` | Agent 任务通知开关（系统通知权限不在其中） |
-| messageProcessing | `DebouncePreferences` | 全局默认 + 按 Core 覆盖 |
+| messageProcessing | `DebouncePreferences` | 客户端合并时长（0～30000 毫秒）；旧文件的 `global` 值可继承，`cores` 覆盖跳过并在结果里说明 |
 | conversation | `EncryptedNativeConversationOrganizationStore` | 每个账号/Agent 的排序、文件夹、归类 |
 | connection | `LoginGatewayPrefill` | 仅 Core 地址，用于登录页预填；缺失时回落到运行时最近地址与已保存账号的地址（老版本升级用户）。导出前会去掉 URL 里的 user-info（`https://user:pass@host`），去不干净就整节不写 |
 | agents | `AndroidAccountProfileStore` | 每个账号上次选择的原生 Agent |

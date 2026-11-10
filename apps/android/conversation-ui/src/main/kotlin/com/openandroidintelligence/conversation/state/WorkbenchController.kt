@@ -3267,7 +3267,7 @@ class WorkbenchController(
                         }
                     }
                 }
-                if (supportsMessageBatches && submission.delivery ==
+                if (supportsMessageBatches && batcher.merges && submission.delivery ==
                     com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
                     !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()
                 ) {

@@ -1,7 +1,6 @@
 package com.openandroidintelligence.mobile.settings.backup
 
 import android.content.Context
-import com.openandroidintelligence.conversation.batch.DebounceMode
 import com.openandroidintelligence.conversation.ports.ConversationFolder
 import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationScope
@@ -134,14 +133,8 @@ class SettingsBackupCoordinator(
         )
     }
 
-    private fun currentMessageProcessing(): MessageProcessingSection {
-        val preferences = DebouncePreferences(context)
-        val global = preferences.read(null).toBackupValue()
-        val cores = knownGatewayUrls().filter(preferences::hasOverride).associate { url ->
-            debounceKey(url) to preferences.read(url).toBackupValue()
-        }
-        return MessageProcessingSection(global, cores)
-    }
+    private fun currentMessageProcessing(): MessageProcessingSection =
+        MessageProcessingSection(DebouncePreferences(context).read().delay.inWholeMilliseconds.toInt())
 
     private fun currentOrganizations(): ConversationSection? {
         val installId = installId() ?: return null
@@ -372,19 +365,9 @@ class SettingsBackupCoordinator(
         section ?: return
         val preferences = DebouncePreferences(context)
         var written = 0
-        section.global?.let { value ->
-            if (preferences.read(null).toBackupValue() != value) {
-                preferences.write(null, value.delayMillis, value.extendWindow)
-                written++
-            }
-        }
-        val gateways = knownGatewayUrls().associateBy { debounceKey(it) }
-        var unresolved = 0
-        section.cores.forEach { (key, value) ->
-            val url = gateways[key]
-            if (url == null) { unresolved++; return@forEach }
-            if (preferences.read(url).toBackupValue() != value || !preferences.hasOverride(url)) {
-                preferences.write(url, value.delayMillis, value.extendWindow)
+        section.delayMillis?.let { delay ->
+            if (preferences.read().delay.inWholeMilliseconds.toInt() != delay) {
+                preferences.write(delay)
                 written++
             }
         }
@@ -395,8 +378,10 @@ class SettingsBackupCoordinator(
         } else {
             applied += section.summary() + "（本机已是该值）"
         }
-        if (unresolved > 0) {
-            skipped += "$unresolved 个 Core 的消息合并覆盖在本机没有对应地址，已跳过；连接该 Core 后可重新设置。"
+        // 旧文件里按 Core 分别记录的覆盖按需求不迁移成客户端配置，如实说明而不是静默丢弃。
+        if (section.hasLegacyCoreOverrides) {
+            skipped += "旧版本按 Core 记录的 ${section.legacyCoreOverrideCount} 项消息合并设置未导入：" +
+                "消息合并已改为客户端统一设置，不再按 Core 区分。"
         }
     }
 
@@ -760,13 +745,6 @@ class SettingsBackupCoordinator(
     private fun partitionAgents(scope: ConversationScope): Set<String> =
         runCatching { NativeLocalPartitions(context, scope, keyProvider).agents() }.getOrDefault(emptySet())
 
-    /** 本机已知的 Core 地址：已保存账号的地址，去重排序。 */
-    private fun knownGatewayUrls(): List<String> = profiles.list()
-        .map { it.gatewayBaseUrl }
-        .filter { it.isNotBlank() }
-        .distinct()
-        .sorted()
-
     private companion object {
         const val RUNTIME_PREFERENCES = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
@@ -820,18 +798,10 @@ internal fun credentialFreeGateway(url: String): String? = runCatching {
     if (GatewayEndpoint.parse(rebuilt) == null) null else rebuilt
 }.getOrNull()
 
-/** 「网关地址 → 合并偏好存储键」的摘要算法，与 [DebouncePreferences] 内部按键一致。 */
-internal fun debounceKey(gatewayUrl: String): String =
-    MessageDigest.getInstance("SHA-256").digest(gatewayUrl.toByteArray(Charsets.UTF_8))
-        .joinToString("") { "%02x".format(it) }
-
 /** 档案 ID 在备份文件里只以 SHA-256 出现：文件无法反推出账号名。 */
 internal fun backupProfileKey(profileId: String): String =
     MessageDigest.getInstance("SHA-256").digest(profileId.toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
-
-private fun com.openandroidintelligence.conversation.batch.DebouncePolicy.toBackupValue(): DebounceValue =
-    DebounceValue(delay.inWholeMilliseconds.toInt(), mode == DebounceMode.EXTEND_WINDOW)
 
 private fun ConversationOrganization.isDefault(): Boolean =
     revision == 0L && sortMode == ConversationSortMode.UPDATED_DESC &&

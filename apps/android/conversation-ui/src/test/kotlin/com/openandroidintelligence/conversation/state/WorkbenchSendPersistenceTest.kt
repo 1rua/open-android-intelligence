@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendPersistenceTest {
@@ -409,6 +411,8 @@ class WorkbenchSendPersistenceTest {
         persistence = persistence,
         persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
         supportsMessageBatches = batched,
+        // 客户端默认不合并；批处理用例需要一个可推进的窗口，显式给 1.5 秒。
+        debouncePolicy = if (batched) DebouncePolicy(delay = 1_500.milliseconds) else DebouncePolicy(),
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )
 

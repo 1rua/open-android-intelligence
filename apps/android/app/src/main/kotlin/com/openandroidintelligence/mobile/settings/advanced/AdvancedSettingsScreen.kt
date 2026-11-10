@@ -20,7 +20,6 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.mobile.GatewayRuntime
 import com.openandroidintelligence.mobile.SettingsPresentation
-import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
@@ -33,7 +32,6 @@ private const val ISSUES_URL = "$PROJECT_URL/issues"
 
 @Composable
 internal fun AdvancedSettingsScreen(
-    uiState: SettingsUiState,
     runtime: GatewayRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
@@ -60,7 +58,7 @@ internal fun AdvancedSettingsScreen(
     SettingsPageScaffold(title = "高级设置与关于", presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             SectionLabel("消息处理")
-            MessageProcessingSettings(gatewayUrl = uiState.connectedGatewayUrl, runtime = runtime)
+            MessageProcessingSettings(runtime = runtime)
 
             SectionLabel("应用维护")
             SettingsSectionCard {

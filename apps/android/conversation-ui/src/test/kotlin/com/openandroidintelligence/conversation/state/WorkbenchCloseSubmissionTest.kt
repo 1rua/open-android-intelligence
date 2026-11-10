@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import java.io.ByteArrayInputStream
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchCloseSubmissionTest {
@@ -92,6 +94,8 @@ class WorkbenchCloseSubmissionTest {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("test"),emptyList())
         },{ConversationScope("p","g","a","i")},attachmentCoordinator=uploads,persistence=store,
         persistenceDispatcher=UnconfinedTestDispatcher(testScheduler),supportsMessageBatches=batches,
+        // 客户端默认立即发送；本用例需要一个可推进的合并窗口。
+        debouncePolicy=if(batches) DebouncePolicy(delay=1_500.milliseconds) else DebouncePolicy(),
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
     @Test fun retirementStopsNewRemoteOperationsBeforeWaitingForAnEarlierFlush() = runTest {
         val store=Store()

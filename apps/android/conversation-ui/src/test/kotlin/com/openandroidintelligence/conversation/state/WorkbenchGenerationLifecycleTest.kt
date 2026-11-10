@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.*
@@ -7,6 +8,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchGenerationLifecycleTest {
@@ -616,6 +618,8 @@ class WorkbenchGenerationLifecycleTest {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("v1"),emptyList())
         },{ ConversationScope("p","g","a","i") },
         supportsMessageBatches=batches, persistence=persistence, persistenceDispatcher=StandardTestDispatcher(testScheduler),
+        // 客户端默认立即发送；批处理用例需要一个可推进的合并窗口。
+        debouncePolicy=if(batches) DebouncePolicy(delay=1_500.milliseconds) else DebouncePolicy(),
         onActiveThreadChanged={ repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE },
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
 

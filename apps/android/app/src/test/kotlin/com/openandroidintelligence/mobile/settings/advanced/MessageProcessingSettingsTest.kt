@@ -6,29 +6,21 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.assertIsOff
-import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performSemanticsAction
-import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.conversation.batch.DebounceMode
 import com.openandroidintelligence.mobile.conversations.DebouncePreferences
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -42,8 +34,6 @@ class MessageProcessingSettingsTest {
     @get:Rule val compose = createComposeRule()
     private lateinit var preferences: DebouncePreferences
     private val context get() = ApplicationProvider.getApplicationContext<Application>()
-    private val coreA = "https://core-a.example.test"
-    private val coreB = "https://core-b.example.test"
 
     @Before
     fun setUp() {
@@ -57,90 +47,87 @@ class MessageProcessingSettingsTest {
     }
 
     @Test
-    fun globalAndCoreRemainIndependentlyEditableAndCanReturnToGlobal() {
-        preferences.write(null, 1500, true)
-        show(coreA)
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().assertIsOff().performClick()
-        compose.runOnIdle {
-            assertTrue(preferences.hasOverride(coreA))
-            assertEquals(1500L, preferences.read(coreA).delay.inWholeMilliseconds)
-        }
-        setDelay("当前 Core 覆盖 等待时间", 10000f)
-        compose.runOnIdle {
-            assertEquals(10000L, preferences.read(coreA).delay.inWholeMilliseconds)
-            assertEquals(1500L, preferences.read(null).delay.inWholeMilliseconds)
-        }
-        setDelay("全局默认 等待时间", 0f)
-        compose.runOnIdle {
-            assertEquals(0L, preferences.read(null).delay.inWholeMilliseconds)
-            assertEquals(10000L, preferences.read(coreA).delay.inWholeMilliseconds)
-        }
-        compose.onNodeWithText("当前 Core 覆盖：新消息延长等待").performScrollTo().assertIsOn().performClick()
-        compose.runOnIdle { assertEquals(DebounceMode.FIXED_WINDOW, preferences.read(coreA).mode) }
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().assertIsOn().performClick()
-        compose.runOnIdle {
-            assertFalse(preferences.hasOverride(coreA))
-            assertEquals(0L, preferences.read(coreA).delay.inWholeMilliseconds)
-            assertEquals(30L, preferences.read(coreA).maximumWait.inWholeSeconds)
-            assertEquals(20, preferences.read(coreA).maximumMembers)
-        }
+    fun freshInstallDefaultsToImmediateSendWithoutMerging() {
+        show()
+        compose.onNodeWithText("合并连续消息").performScrollTo().assertExists()
+        compose.onNodeWithText("当前设置：立即发送（不合并）").performScrollTo().assertExists()
+        assertFalse("不得提供覆盖 Core 配置的入口", screenContains("覆盖当前 Core 的设置"))
+        assertFalse(screenContains("当前 Core 使用全局默认。"))
+        compose.runOnIdle { assertEquals(0L, preferences.read().delay.inWholeMilliseconds) }
     }
 
     @Test
-    fun coreChangeReadsCorrectSavedOverrideAndOfflineUrlStillWorks() {
-        preferences.write(coreA, 500, false)
-        preferences.write(coreB, 10000, true)
-        var current by mutableStateOf<String?>(coreA)
-        show(core = { current })
-        compose.onNodeWithText("等待 0.5 秒").assertExists()
-        compose.runOnIdle { current = coreB }
-        compose.onNodeWithText("等待 10.0 秒").performScrollTo().assertExists()
-        compose.onNodeWithText("当前 Core：$coreB").performScrollTo().assertExists()
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().performClick()
-        compose.runOnIdle {
-            assertFalse(preferences.hasOverride(coreB))
-            assertTrue(preferences.hasOverride(coreA))
-        }
+    fun sliderOnlyAcceptsTheDocumentedZeroToThirtySeconds() {
+        show()
+        setDelay(30_000f)
+        compose.runOnIdle { assertEquals(30_000L, preferences.read().delay.inWholeMilliseconds) }
+        compose.onNodeWithText("当前设置：等待 30.0 秒合并").performScrollTo().assertExists()
+        setDelay(0f)
+        compose.runOnIdle { assertEquals(0L, preferences.read().delay.inWholeMilliseconds) }
+        compose.onNodeWithText("当前设置：立即发送（不合并）").performScrollTo().assertExists()
     }
 
     @Test
-    fun writeFailureIsVisibleAndDoesNotClaimAnOverride() {
-        show(coreA, update = { _, _, _ -> error("write failed") })
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().performClick()
+    fun storedValueIsWhatTheScreenShowsOnReturn() {
+        preferences.write(5_000)
+        show()
+        compose.onNodeWithText("当前设置：等待 5.0 秒合并").performScrollTo().assertExists()
+    }
+
+    @Test
+    fun writeFailureIsVisibleAndDoesNotClaimTheValueWasSaved() {
+        preferences.write(0)
+        show(update = { error("write failed") })
+        setDelay(9_000f)
         compose.onNodeWithText("消息处理设置未能保存，重启后可能恢复原设置，请重试。").performScrollTo().assertExists()
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().assertIsOff()
-        compose.runOnIdle { assertFalse(preferences.hasOverride(coreA)) }
+        compose.onNodeWithText("当前设置：立即发送（不合并）").performScrollTo().assertExists()
+        compose.runOnIdle { assertEquals(0L, preferences.read().delay.inWholeMilliseconds) }
     }
 
     @Test
-    fun missingRuntimeShowsDisabledControlsWithoutFakeSuccess() {
+    fun missingRuntimeDisablesTheSliderWithoutFakeSuccess() {
         compose.setContent {
             MaterialTheme {
                 Box(Modifier.size(320.dp, 700.dp).verticalScroll(rememberScrollState())) {
-                    MessageProcessingEditor(preferences, coreA, null, null)
+                    MessageProcessingEditor(preferences, null)
                 }
             }
         }
         compose.onNodeWithText("消息处理暂不可编辑：运行时未连接。").assertExists()
-        compose.onNodeWithText("覆盖当前 Core 的设置").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithContentDescription("合并等待时间").performScrollTo().assertIsNotEnabled()
     }
 
-    private fun setDelay(label: String, value: Float) {
-        compose.onNodeWithContentDescription(label).performScrollTo()
+    /**
+     * 旧版本按 Core 覆盖留下的键不再被界面读取，也不会在新安装上「继承成」客户端配置：
+     * 只有 `global:delay` 才是这里的权威。
+     */
+    @Test
+    fun legacyPerCoreKeysDoNotChangeTheClientSetting() {
+        context.getSharedPreferences("conversation-debounce-v1", 0).edit()
+            .putInt("global:delay", 1500)
+            .putInt("gateway:" + "a".repeat(64) + ":delay", 9_000)
+            .putInt("a".repeat(64) + ":delay", 9_000)
+            .commit()
+        show()
+        compose.onNodeWithText("当前设置：等待 1.5 秒合并").performScrollTo().assertExists()
+        compose.runOnIdle { assertEquals(1_500L, preferences.read().delay.inWholeMilliseconds) }
+    }
+
+    private fun screenContains(text: String): Boolean =
+        compose.onAllNodes(hasText(text)).fetchSemanticsNodes().isNotEmpty()
+
+    private fun setDelay(value: Float) {
+        compose.onNodeWithContentDescription("合并等待时间").performScrollTo()
             .performSemanticsAction(SemanticsActions.SetProgress) { setProgress -> setProgress(value) }
     }
 
-    private fun show(core: String?, update: ((String?, Int, Boolean) -> Unit)? = null) = show({ core }, update)
-
-    private fun show(core: @Composable () -> String?, update: ((String?, Int, Boolean) -> Unit)? = null) {
+    private fun show(update: ((Int) -> Unit)? = null) {
         compose.setContent {
             MaterialTheme {
                 Box(Modifier.size(320.dp, 700.dp).verticalScroll(rememberScrollState())) {
                     MessageProcessingEditor(
                         preferences = preferences,
-                        gatewayUrl = core(),
-                        onUpdateSettings = update ?: { gateway, delay, extend -> preferences.write(gateway, delay, extend) },
-                        onUseGlobalSettings = preferences::useGlobal,
+                        onSaveDelay = update ?: { delay -> preferences.write(delay) },
                     )
                 }
             }

@@ -473,25 +473,17 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
-    fun messageProcessingGlobalRoundTripsAndUnknownCoreKeysAreSkipped() {
+    fun messageProcessingDelayRoundTripsAndLegacyCoreKeysAreReportedNotImported() {
         val preferences = DebouncePreferences(context)
-        preferences.write(null, 3_000, extend = false)
-        val url = "https://core.example.test"
-        preferences.write(url, 500, extend = true)
-        profiles.save(
-            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", url, "alice", "tls-id"),
-            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
-        )
+        preferences.write(3_000)
         val exported = coordinator().export()
-        assertTrue(exported.json.contains(debounceKey(url)))
+        assertTrue(exported.json.contains("\"delayMillis\":3000"))
 
-        preferences.write(null, 1_500, extend = true)
-        preferences.useGlobal(url)
+        preferences.write(0)
         coordinator().import(exported.json).getOrThrow()
-        assertEquals(3_000L, preferences.read(null).delay.inWholeMilliseconds)
-        assertEquals(500L, preferences.read(url).delay.inWholeMilliseconds)
+        assertEquals(3_000L, preferences.read().delay.inWholeMilliseconds)
 
-        // 文件里指向未知 Core 的覆盖被跳过，且不会为该地址生成看不见的键。
+        // 旧文件按 Core 记录的覆盖不再适用：不写入，也不会为该地址生成看不见的键，并如实告知。
         val unknownKey = "e".repeat(64)
         val text = backupWith(
             "messageProcessing" to mapOf(
@@ -500,7 +492,8 @@ class SettingsBackupCoordinatorTest {
             ),
         )
         val outcome = coordinator().import(text).getOrThrow()
-        assertTrue(outcome.skipped.any { it.contains("没有对应地址") })
+        assertEquals(1_000L, preferences.read().delay.inWholeMilliseconds)
+        assertTrue(outcome.skipped.any { it.contains("不再按 Core 区分") })
         val all = context.getSharedPreferences("conversation-debounce-v1", 0).all
         assertTrue(all.keys.none { it.startsWith("gateway:$unknownKey") })
     }

@@ -234,12 +234,15 @@ sealed interface MessagePart {
 
 ### 8.2 设置
 
-- 全局默认，可按 Gateway 覆盖；
-- 时长范围 0–10 秒，默认 1.5 秒；
-- 0 表示关闭；
-- “新消息延长等待”默认开启；
-- 固定窗口：`firstAt + delay`；
-- 延长窗口：`lastAt + delay`；
+> 2026-11-10 起，合并策略改为纯客户端配置（默认 0 秒、0～30 秒、不按 Core 覆盖），
+> 本节其余容量与边界约束继续有效，见
+> [客户端消息合并](2026-11-10-client-owned-message-debounce.md) 与
+> [ADR-0062](../adr/0062-own-message-merging-in-the-android-client.md)。
+
+- 仅本机一个全局设置，不按 Gateway 区分；
+- 时长范围 0–30 秒，默认 0 秒（立即发送）；
+- 0 表示不合并；
+- 窗口总是随新消息顺延：`lastAt + delay`；
 - 从第一条起最长等待 30 秒；
 - 每批最多 20 个发送单元；
 - 总字节不超过协商批次上限；

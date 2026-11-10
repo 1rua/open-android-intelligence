@@ -119,75 +119,67 @@ data class NotificationsSection(val replyAlertsEnabled: Boolean) {
     }
 }
 
-data class DebounceValue(val delayMillis: Int, val extendWindow: Boolean) {
-    fun encodeFields(): List<Pair<String, JsonValue>> = listOf(
-        "delayMillis" to Json.of(delayMillis),
-        "extendWindow" to Json.of(extendWindow),
-    )
-
-    fun label(): String = if (delayMillis == 0) "立即发送" else "${delayMillis / 1000.0} 秒"
-
-    companion object {
-        const val MIN_DELAY = 0
-        const val MAX_DELAY = 10_000
-
-        fun decode(obj: JsonValue.JObject, path: String): DebounceValue {
-            val delay = BackupFields.int(obj, "delayMillis") ?: throw formatError("$path.delayMillis", "缺失。")
-            if (delay !in MIN_DELAY..MAX_DELAY) {
-                throw formatError("$path.delayMillis", "超出 0–10000 毫秒。")
-            }
-            return DebounceValue(delay, BackupFields.boolean(obj, "extendWindow") ?: true)
-        }
-    }
-}
-
 /**
- * 消息合并偏好。
+ * 客户端的消息合并时长；只描述本机发送时机，不代表任何 Core 配置。
  *
- * Core 覆盖按 **Gateway 地址的 SHA-256** 记录：这个键本身是跨设备稳定的
- * （同一地址在任何手机上都得到同一串十六进制），因此导出不需要额外保存原始地址，
- * 也不会把地址以外的内容带进文件。
+ * [legacyCoreOverrideCount] 只在读取旧版本导出的文件时非零：那类文件按 Gateway
+ * 分别记录了覆盖值，需求要求不迁移成客户端配置，导入时需要如实告知用户跳过了几项。
  */
 data class MessageProcessingSection(
-    val global: DebounceValue?,
-    val cores: Map<String, DebounceValue>,
+    val delayMillis: Int?,
+    val legacyCoreOverrideCount: Int = 0,
 ) {
     fun encode(): JsonValue.JObject = JsonValue.JObject(
-        buildList {
-            global?.let { add("global" to it.encodeValue()) }
-            add(
-                "cores" to JsonValue.JArray(
-                    cores.entries.sortedBy { it.key }.map { (key, value) ->
-                        JsonValue.JObject(listOf("key" to Json.of(key)) + value.encodeFields())
-                    },
-                ),
-            )
-        },
+        listOfNotNull(delayMillis?.let { "delayMillis" to Json.of(it) }),
     )
 
-    fun summary(): String = buildString {
-        append("消息处理：全局 ")
-        append(global?.label() ?: "保持本机现值")
-        if (cores.isNotEmpty()) append("，${cores.size} 个 Core 单独覆盖")
+    fun summary(): String {
+        val value = when {
+            delayMillis == null -> "保持本机现值"
+            delayMillis == 0 -> "立即发送"
+            else -> "${delayMillis / 1000.0} 秒"
+        }
+        return "消息合并：$value"
     }
 
-    companion object {
-        private val KEY_PATTERN = Regex("[0-9a-f]{64}")
+    /** 旧文件里按 Core 记录的覆盖已不再适用，导入时需要如实告知。 */
+    val hasLegacyCoreOverrides: Boolean get() = legacyCoreOverrideCount > 0
 
+    companion object {
         fun decode(section: JsonValue.JObject): MessageProcessingSection {
-            val global = BackupFields.objectOrNull(section, "global")
+            val direct = BackupFields.int(section, "delayMillis")
+            // 旧版本导出的形状是 `{global: {delayMillis, extendWindow}, cores: [...]}`。
+            // 全局值属于用户在本机明确做过的选择，可以继承；按 Core 的覆盖按需求不迁移。
+            val legacyGlobal = BackupFields.objectOrNull(section, "global")
                 ?.let { DebounceValue.decode(it, "messageProcessing.global") }
-            val cores = BackupFields.objects(section, "cores").orEmpty().associate { entry ->
-                val key = BackupFields.string(entry, "key") ?: throw formatError("messageProcessing.cores", "缺少 key。")
-                if (!KEY_PATTERN.matches(key)) throw formatError("messageProcessing.cores", "key 必须是 Gateway 地址的 SHA-256。")
-                key to DebounceValue.decode(entry, "messageProcessing.cores[$key]")
+            val delay = direct ?: legacyGlobal?.delayMillis
+            if (delay != null && delay !in DebounceDelayLimits.MIN..DebounceDelayLimits.MAX) {
+                throw formatError("messageProcessing.delayMillis", "超出 0–30000 毫秒。")
             }
-            return MessageProcessingSection(global, cores)
+            val legacyCores = BackupFields.objects(section, "cores").orEmpty()
+            return MessageProcessingSection(delay, legacyCoreOverrideCount = legacyCores.size)
         }
     }
 }
 
-private fun DebounceValue.encodeValue(): JsonValue = JsonValue.JObject(encodeFields())
+/** 客户端合并时长的上下限；界面与备份共用一处，避免两处各写一份。 */
+internal object DebounceDelayLimits {
+    const val MIN = 0
+    const val MAX = 30_000
+}
+
+/** 旧备份里的合并值；只为读取旧文件保留，导出不再产生。 */
+internal data class DebounceValue(val delayMillis: Int) {
+    companion object {
+        fun decode(obj: JsonValue.JObject, path: String): DebounceValue {
+            val delay = BackupFields.int(obj, "delayMillis") ?: throw formatError("$path.delayMillis", "缺失。")
+            if (delay !in 0..DebounceDelayLimits.MAX) {
+                throw formatError("$path.delayMillis", "超出 0–30000 毫秒。")
+            }
+            return DebounceValue(delay)
+        }
+    }
+}
 
 data class ConversationFolderValue(val folderId: String, val name: String)
 
@@ -491,7 +483,9 @@ data class SettingsBackupSections(
 internal object BackupFieldSets {
     val APPEARANCE = setOf("theme", "dynamicColor", "dynamicIconColor", "palette", "reduceMotion")
     val NOTIFICATIONS = setOf("replyAlertsEnabled")
-    val MESSAGE_PROCESSING = setOf("global", "cores")
+    // 新文件只写 `delayMillis`；`global`/`cores` 属于旧版本导出的形状，读取时兼容，
+    // 因此不算「本版本不认识的字段」。
+    val MESSAGE_PROCESSING = setOf("delayMillis", "global", "cores")
     val CONVERSATION = setOf("organizations")
     val NOTIFICATION_COLLECTION = setOf("packageIds", "fieldAccess", "mode")
     val DEVICE_PUSH = setOf("scope", "retentionHours", "maxEvents", "maxQueueBytes")
