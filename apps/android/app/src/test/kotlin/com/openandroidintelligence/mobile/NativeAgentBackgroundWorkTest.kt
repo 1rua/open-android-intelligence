@@ -63,10 +63,12 @@ class NativeAgentBackgroundWorkTest {
             controller.editDraft("验证主工作台完成通知")
             controller.sendDraft()
 
-            awaitState(controller.state) { it.generation == GenerationState.COMPLETED }
-            assertTrue((controller.state.value.timeline as Loadable.Ready).value.any {
-                it.key == "reply-notification" && it.text == "这是一条已完成的回复" && !it.isStreaming
-            })
+            awaitState(controller.state) { state ->
+                state.generation == GenerationState.COMPLETED &&
+                    (state.timeline as? Loadable.Ready)?.value?.any {
+                        it.text == "这是一条已完成的回复" && !it.isStreaming
+                    } == true
+            }
             val completed = fixture.runtime.nativeConversationNotifications.sessions.value
                 .singleOrNull { it.target.agentId == "dsh" && it.target.conversationId == "native-session" }
             assertNotNull("主工作台收到明确完成事件后必须传递给现有通知模块", completed)
@@ -306,6 +308,8 @@ class NativeAgentBackgroundWorkTest {
             gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions/native-session/messages", contentType = "text/event-stream") { request ->
                 check(release?.await(10, TimeUnit.SECONDS) != false) { "测试回复未在期限内释放" }
                 val clientId = JsonFields.string(requireNotNull(JsonFields.obj(Json.parse(request.body))), "clientMessageId")
+                gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions/native-session/history",
+                    """{"messages":[{"id":"user-notification","role":"user","text":"测试问题","clientMessageId":"$clientId","generationId":"gen-notification"},{"id":"reply-notification","role":"assistant","text":"$text","clientMessageId":"$clientId","generationId":"gen-notification","contentRevision":2,"state":"CONFIRMED"}]}""")
                 val frames = listOf(
                     """{"type":"generation","generationId":"gen-notification","clientMessageId":"$clientId","userMessageId":"user-notification","state":"running","revision":1}""",
                     """{"type":"delta","generationId":"gen-notification","messageId":"reply-notification","eventId":"reply-delta","contentRevision":1,"text":"$text"}""",

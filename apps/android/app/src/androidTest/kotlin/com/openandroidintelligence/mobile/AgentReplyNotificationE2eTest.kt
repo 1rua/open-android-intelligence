@@ -49,10 +49,11 @@ class AgentReplyNotificationE2eTest {
         val coreUrl = loopbackUrl("oaiCoreUrl")
         val controlUrl = loopbackUrl("oaiControlUrl")
         val scenario = arguments.getString("oaiNotificationScenario") ?: "screenOff"
-        require(scenario in setOf("background", "screenOff", "otherConversation"))
+        require(scenario in setOf("background", "screenOff", "otherConversation", "reconnectDuringCompletion"))
         val application = context.applicationContext as OpenAndroidIntelligenceApplication
         val runtime = application.gatewayRuntime
-        assertTrue("只能使用没有既有账号的隔离 Android 用户", runtime.savedProfiles.value.isEmpty())
+        assertTrue("只能使用空 Android 用户或本次专用验收包", runtime.savedProfiles.value.isEmpty() ||
+            context.packageName == "com.openandroidintelligence.mobile.replyvalidation")
         val manager = context.getSystemService(NotificationManager::class.java)
         assertTrue("须先经真实系统授予通知权限", manager.areNotificationsEnabled())
         val metadata = control(controlUrl, "/state")
@@ -106,10 +107,18 @@ class AgentReplyNotificationE2eTest {
                     assertFalse("完成前设备必须已息屏", context.getSystemService(PowerManager::class.java).isInteractive)
                 }
             }
+            if (scenario == "reconnectDuringCompletion") {
+                control(controlUrl, "/stop-core", "POST")
+                withTimeout(30_000) { workbench.state.first { it.streamHealth in setOf(StreamHealth.RECONNECTING, StreamHealth.FAILED) } }
+            }
             val released = control(controlUrl, "/release", "POST")
             assertEquals(1L, JsonFields.long(released, "startedCount"))
             assertEquals(1L, JsonFields.long(released, "userCount"))
             assertEquals(0L, JsonFields.long(released, "interrupted"))
+            if (scenario == "reconnectDuringCompletion") {
+                control(controlUrl, "/start-core", "POST")
+                onMain { runtime.onNetworkAvailable(routeChanged = true) }
+            }
             val completed = withTimeout(20_000) { runtime.nativeConversationNotifications.sessions.first { sessions ->
                 sessions.any { it.target == running.target && it.generationId == generationId &&
                     it.status == NativeConversationStatus.COMPLETED && it.latestReply == FINAL_REPLY }
