@@ -103,3 +103,20 @@ adb -s emulator-5562 shell am instrument -w -r \
 修复前 10398 毫秒与修复后 4043 毫秒各为一个实际样本，不能推断所有设备或系统调度均等价。该项证明 Activity 销毁与重新进入前台的实际调用链，仍不代表实体手机、系统强停、Doze、2 小时/6 小时息屏或真实电量验收。
 
 证据为忽略目录 `.toolchains/background-connection-e2e/` 的 `build-application-lifecycle-fixed.log`、`application-lifecycle-fixed.txt`、`result-application-lifecycle-fixed.log`、脱敏 `status-application-lifecycle-fixed.json`。夹具已正常停止，两个 adb reverse 映射已撤销；模拟器继续由主任务持有。
+
+## 30 分钟息屏后台长测：未完成
+
+测试参数化提交 `b1303d4e` 增加 `oaiBackgroundDurationMs`（默认十秒）与分段事件检查；正式启动前先执行十秒短样本，三个分段游标均提交，前台恢复 4154 毫秒，`OK (1 test)`。本项业务基线为 `2047b65e`，不包括随后新增的生产修复。
+
+随后以 `oaiBackgroundDurationMs=1800000`、`oaiWaitForScreenWake=true` 后台运行同一真实 Application/Activity 仪器方法。收到真实后台阶段标记后，外部 ADB 对 `emulator-5562` 发 `KEYCODE_SLEEP`（223）。稳定采样显示 `mWakefulness=Asleep`、`mScreenOn=false`、`mNetworkConnected=true`、深浅 deviceidle 均为 ACTIVE，测试 PID 4929 存活；未强制修改 Doze、后台许可、WakeLock 或省电白名单。模拟器为 AC 供电、100% 电量，只能作为测试环境条件，不能推断真实手机功耗。
+
+已确认的运行证据如下：
+
+- 前十二个每分钟分段事件均通过原订阅接收并持久提交，最后成功标记为 checkpoint 12、elapsed 720531 毫秒；当时登录 1、订阅 1、活连接 1。
+- 后台约 12 分 48 秒出现 Runtime `NETWORK_CHANGED`，正式连接所有者替换为 2 并到达 LIVE；约 13 分 16 秒又出现 `NETWORK_CHANGED`、所有者 3 开始 CONNECTING。这些日志只证明系统向应用报告了路由变化，不能据此认定变化由谁触发或由什么系统机制造成。
+- 仪器测试于总时长 788.13 秒结束，错误是测试控制器 `checkpoint` HTTP 请求的 `getResponseCode()` 读取超时。Core 已追加第十三个测试事件，但在保留现场的布尔检查中，该事件尚未进入此测试 profile 的 Android 持久游标；不能简单视为测试预算过短的假失败。
+- 宿主到测试控制器的三秒只读状态查询正常，夹具日志没有报错，Core 重启次数为 0。故障后采样为屏幕 Awake、原仪器进程已结束、存在其他 App 进程；这是故障后的状态，不能替代故障瞬间的系统约束证据。
+
+**三十分钟没有完成，不能宣称息屏三十分钟通过。** 当前证据不足以归因 Android 电源管理、单纯测试控制预算、宿主负载或其他设备活动；也未获得此轮长测结束后的前台恢复断言。两小时、六小时息屏和真实手机电量均未验证。
+
+保留证据位于 `.toolchains/background-connection-e2e/`：`application-screen-30m.txt`、`checkpoints-screen-30m.log`、`system-screen-30m.jsonl`、`system-control-timeout.json`、`connection-failure-screen-30m.log`、`cursor-checkpoint13-boolean.json`、脱敏 `status-screen-30m.json`。只对本任务夹具发送正常停止并撤销本任务 34491/50181 两个映射；其他映射与未知进程、AVD 均不操作。
