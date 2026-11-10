@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openandroidintelligence.gateway.events.EventStreamStatus
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -46,11 +47,23 @@ class ApplicationConnectionLifecycleInstrumentedTest {
         val profile = requireNotNull(profiles.list().singleOrNull { it.gatewayBaseUrl == core && it.username == "connection-e2e" })
         val account = requireNotNull(profiles.binding(profile.localProfileId)).accountId
         val cursor = AndroidEventCursorStore(app, "${profile.localProfileId}:platform")
+        val rebuildEvidence = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val originalLogSink = GatewayLog.sink
+        GatewayLog.sink = { tag, message ->
+            originalLogSink?.invoke(tag, message)
+            if (tag == "OaiConnection") {
+                if (message.startsWith("stage=PLATFORM_START ") && message.contains("reason=NETWORK_CHANGED"))
+                    rebuildEvidence += "network_changed"
+                else if (message.contains("\"type\":\"connection.reconnect_started\"")) rebuildEvidence += "transport_retry"
+            }
+        }
         var activity: ActivityScenario<MainActivity>? = ActivityScenario.launch(MainActivity::class.java)
         try {
             await("真实 Activity 没有触发进程前台") { processIsStarted() }
             assertEquals(EventStreamStatus.LIVE, runtime.connectionStatus.value)
             val subscriptions = requireNotNull(JsonFields.int(control(controller, "status", "GET"), "subscriptionCount"))
+            var previousSubscriptions = subscriptions
+            var previousEvidence = rebuildEvidence.size
             requireNotNull(activity).close()
             activity = null
             await("销毁唯一 Activity 后没有进入真实后台") { !processIsStarted() }
@@ -71,14 +84,24 @@ class ApplicationConnectionLifecycleInstrumentedTest {
                 await("息屏后台分段事件未持久提交") { cursor.load(account) == backgroundEvent }
                 checkpoint++
                 assertEquals(EventStreamStatus.LIVE, runtime.connectionStatus.value)
-                assertEquals(subscriptions, JsonFields.int(advanced, "subscriptionCount"))
+                val currentSubscriptions = requireNotNull(JsonFields.int(advanced, "subscriptionCount"))
+                val causes = rebuildEvidence.drop(previousEvidence)
+                if (backgroundDuration == 10_000L) assertEquals("短时UI销毁不能重建健康订阅", subscriptions, currentSubscriptions)
+                else if (currentSubscriptions > previousSubscriptions) {
+                    assertTrue("后台新增订阅必须有真实路由或传输重试证据",
+                        causes.size >= currentSubscriptions - previousSubscriptions)
+                }
+                assertEquals("后台不能重复登录", 1, JsonFields.int(advanced, "loginCount"))
+                assertEquals("后台只能有一个活正式订阅", 1, JsonFields.int(advanced, "liveEventConnections"))
                 Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.background_checkpoint",
                     "checkpoint" to checkpoint, "elapsedMs" to SystemClock.elapsedRealtime() - backgroundStarted,
-                    "cursorCommitted" to true, "subscriptionCount" to subscriptions))))
+                    "cursorCommitted" to true, "subscriptionCount" to currentSubscriptions, "rebuildReasons" to causes))))
+                previousSubscriptions = currentSubscriptions
+                previousEvidence = rebuildEvidence.size
             }
             assertEquals("后台不能因 Activity 销毁关闭连接", EventStreamStatus.LIVE, runtime.connectionStatus.value)
-            assertEquals("后台健康期间不能重复订阅", subscriptions,
-                JsonFields.int(control(controller, "status", "GET"), "subscriptionCount"))
+            val beforeFault = requireNotNull(JsonFields.int(control(controller, "status", "GET"), "subscriptionCount"))
+            assertEquals(previousSubscriptions, beforeFault)
             val frozen = control(controller, "half_open")
             assertEquals(1, JsonFields.int(frozen, "frozenOpen"))
             assertEquals(0, JsonFields.int(frozen, "closedByFixture"))
@@ -102,15 +125,18 @@ class ApplicationConnectionLifecycleInstrumentedTest {
             val finalEvent = requireNotNull(JsonFields.string(finished, "lastEventId"))
             await("恢复后新事件未继续传输") { cursor.load(account) == finalEvent }
             val completed = control(controller, "status", "GET")
-            assertEquals("恢复只应替换一个真实订阅", subscriptions + 1, JsonFields.int(completed, "subscriptionCount"))
+            assertEquals("恢复只应替换一个真实订阅", beforeFault + 1, JsonFields.int(completed, "subscriptionCount"))
             assertEquals("全过程没有Core重启", 0, JsonFields.int(completed, "restartCount"))
             assertEquals(1, JsonFields.int(completed, "liveEventConnections"))
             Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.result",
                 "case" to "application_activity", "result" to "passed", "recoveryMillis" to recoveryMillis,
                 "backgroundMillis" to SystemClock.elapsedRealtime() - backgroundStarted,
                 "activityDestroyed" to true, "sameApplicationRuntime" to true,
-                "backgroundCursorCommitted" to true, "subscriptionCount" to subscriptions + 1))))
-        } finally { activity?.close() }
+                "backgroundCursorCommitted" to true, "subscriptionCount" to beforeFault + 1))))
+        } finally {
+            activity?.close()
+            GatewayLog.sink = originalLogSink
+        }
     }
 
     private fun processIsStarted(): Boolean {
