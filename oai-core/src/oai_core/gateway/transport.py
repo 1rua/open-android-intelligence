@@ -40,6 +40,7 @@ SSE_HEARTBEAT = b": ping\n\n"
 
 
 SSE_HEARTBEAT_SECONDS = 15.0
+SSE_IDLE_CHECK_SECONDS = min(1.0, SSE_HEARTBEAT_SECONDS)
 
 
 SSE_QUEUE_SIZE = 100
@@ -393,6 +394,7 @@ class GatewayTransport:
                     "Cache-Control": "no-store",
                     "X-Accel-Buffering": "no",
                     "Connection": "keep-alive",
+                    "X-Open-Android-Intelligence-Event-Heartbeat-Ms": str(int(SSE_IDLE_CHECK_SECONDS * 1000)),
                 },
             )
             await response.prepare(request)
@@ -423,7 +425,7 @@ class GatewayTransport:
                 if not authorized():
                     break
                 try:
-                    frame = await asyncio.wait_for(queue.get(), timeout=min(1.0, SSE_HEARTBEAT_SECONDS))
+                    frame = await asyncio.wait_for(queue.get(), timeout=SSE_IDLE_CHECK_SECONDS)
                 except asyncio.TimeoutError:
                     if not self._running or not authorized():
                         break

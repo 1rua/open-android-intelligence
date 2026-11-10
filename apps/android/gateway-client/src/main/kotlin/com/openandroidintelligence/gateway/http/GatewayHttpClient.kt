@@ -133,6 +133,7 @@ class GatewayHttpClient(
     private class EventOwner(val id: Long) {
         var status: EventStreamStatus? = null
         val healthChecks = Channel<HealthRequest>(Channel.CONFLATED)
+        val policyChanges = Channel<Unit>(Channel.CONFLATED)
         var lastWakeAt: Long? = null
     }
     private class CursorRecoveryAttempt(val client: GatewayHttpClient, val owner: EventOwner) :
@@ -147,6 +148,7 @@ class GatewayHttpClient(
     fun setAppForeground(visible: Boolean) {
         appForeground = visible
         webSocketTransport?.setAppForeground(visible)
+        activeEventOwner.get()?.policyChanges?.trySend(Unit)
     }
 
     fun currentEventGeneration(): Long? = activeEventOwner.get()?.id
@@ -595,6 +597,7 @@ class GatewayHttpClient(
         } finally {
             synchronized(eventOwnerLock) { activeEventOwner.compareAndSet(owner, null) }
             owner.healthChecks.close()
+            owner.policyChanges.close()
         }
     }
 
@@ -708,6 +711,7 @@ class GatewayHttpClient(
             hadActivity = true
             lastCompleteAt.set(now)
             activityVersion.value += 1
+            owner.policyChanges.trySend(Unit)
             ready()
             if (now - liveSince.get() >= STABLE_CONNECTION_MILLIS) wasStable = true
             if (authentication) {
@@ -771,12 +775,16 @@ class GatewayHttpClient(
         }
         val watchdog = launch {
             while (isActive) {
-                val remaining = SSE_COMPLETE_FRAME_TIMEOUT_MILLIS - (monotonicMillis() - health.lastCompleteAt.get())
+                if (health.delivering.value) health.delivering.first { !it }
+                val idleBudget = if (appForeground) transport.eventHeartbeatMillis()
+                    ?.times(3)?.coerceIn(EVENT_HEALTH_CHECK_MILLIS, SSE_COMPLETE_FRAME_TIMEOUT_MILLIS)
+                    ?: SSE_COMPLETE_FRAME_TIMEOUT_MILLIS else SSE_COMPLETE_FRAME_TIMEOUT_MILLIS
+                val remaining = idleBudget - (monotonicMillis() - health.lastCompleteAt.get())
                 if (remaining <= 0) {
                     items.send(SseItem.Finished(EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)))
                     break
                 }
-                kotlinx.coroutines.delay(remaining)
+                withTimeoutOrNull(remaining) { owner.policyChanges.receive() }
             }
         }
         val validation = launch {

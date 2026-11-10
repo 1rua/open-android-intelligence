@@ -674,6 +674,7 @@ async def test_event_reconnect_replays_after_cursor_and_revocation_closes_live_s
             headers["Accept"] = "text/event-stream"
             response = await client.get(path, headers=headers)
             assert response.status == 200, await response.text()
+            assert response.headers.get("X-Open-Android-Intelligence-Event-Heartbeat-Ms") == "1000"
             return response
         return await client.ws_connect(path, headers=headers)
 

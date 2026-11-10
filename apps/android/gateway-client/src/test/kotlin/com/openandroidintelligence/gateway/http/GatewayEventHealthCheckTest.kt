@@ -20,6 +20,33 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class GatewayEventHealthCheckTest {
     @Test
+    fun aForegroundStreamWithAnAdvertisedHeartbeatRecoversWithoutAnyWakeup() = runTest {
+        var attempts = 0
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("健康检测不加载会话")
+            override fun eventHeartbeatMillis(): Long? = 1_000
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                if (++attempts == 1) {
+                    emit(": heartbeat\n\n".toByteArray())
+                    awaitCancellation()
+                } else emit("id: restored\ndata: {}\n\n".toByteArray())
+            }
+        }
+        val client = GatewayHttpClient(
+            GatewayProfile("account", "device", "session", "https://gateway.example", accessToken = "test"),
+            transport, { ByteArray(64) }, InMemoryEventCursorStore(), monotonicMillis = { testScheduler.currentTime },
+            jitterFn = { it },
+        )
+        client.setAppForeground(true)
+        val received = async { client.events().take(1).toList() }
+        runCurrent()
+        advanceTimeBy(9_000)
+        runCurrent()
+        assertTrue("持续前台不能依赖生命周期或会话操作才检测静默连接", received.isCompleted)
+        assertEquals("restored", received.await().single().id)
+        assertEquals(2, attempts)
+    }
+    @Test
     fun localMessageCommitDoesNotCountAsANetworkHeartbeatTimeout() = runTest {
         var connections = 0
         val logs = mutableListOf<String>()
