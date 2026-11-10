@@ -70,6 +70,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import java.time.Instant
@@ -310,7 +311,7 @@ class CoreAgentConversationRepository(
     }
 
     /** A Core connection transition restarts reads only; it never submits a prompt. */
-    fun connectionRestored() {
+    fun connectionRestored(expediteRetry: Boolean = false) {
         (recoveringTurns.values + detachedRecoveringTurns).distinct().filterNot { turn ->
             usesEventSync(turn.agent) || when (turn.recoveryBlocked) {
                 NativeReadFailureKind.AUTHENTICATION -> turn.rejectedCredentialVersion == null ||
@@ -319,7 +320,7 @@ class CoreAgentConversationRepository(
                 else -> false
             }
         }.forEach(::startRecovery)
-        restartEventSync(wakeup = true)
+        restartEventSync(wakeup = true, expediteRetry = expediteRetry)
     }
 
     private class EventSyncOwner(val agent: CoreAgent, val conversationId: String) {
@@ -329,6 +330,8 @@ class CoreAgentConversationRepository(
         var blocked: NativeReadFailureKind? = null
         var rejectedCredentialVersion: String? = null
         var wakeRequested = false
+        var waitingForRetry = false
+        val retryWakeup = Channel<Unit>(Channel.CONFLATED)
     }
 
     private fun usesEventSync(agent: CoreAgent): Boolean = agent.capabilities.eventSync && storeForAgent != null
@@ -384,7 +387,7 @@ class CoreAgentConversationRepository(
             ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key))
 
     @Synchronized
-    private fun restartEventSync(wakeup: Boolean = false) {
+    private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false) {
         val desired = linkedMapOf<Pair<String, String>, CoreAgent>()
         (turns.values + recoveringTurns.values + detachedRecoveringTurns).forEach {
             desired[it.agent.id to it.conversationId] = it.agent
@@ -396,11 +399,11 @@ class CoreAgentConversationRepository(
         eventSyncOwners.forEach { (key, owner) ->
             if (!eventSyncNeeded(key) && eventSyncOwners.remove(key, owner)) owner.job.cancel()
         }
-        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup) }
+        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup, expediteRetry) }
     }
 
     @Synchronized
-    private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false) {
+    private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false, expediteRetry: Boolean = false) {
         if (!usesEventSync(agent)) return
         val key = agent.id to conversationId
         val previous = eventSyncOwners[key]
@@ -413,6 +416,7 @@ class CoreAgentConversationRepository(
         if (previous?.job?.isActive == true) {
             // 合并活动信号，但不改变活跃请求或退避。若本次恰好退出，完成回调接续一次。
             if (wakeup) previous.wakeRequested = true
+            if (expediteRetry && previous.waitingForRetry) previous.retryWakeup.trySend(Unit)
             return
         }
         val owner = EventSyncOwner(agent, conversationId).apply {
@@ -470,7 +474,18 @@ class CoreAgentConversationRepository(
                             if (retryable && failures < 6) null else classified.notice)
                         GatewayLog.w("OaiNativeEvents", "sync failed code=${classified.code} status=${classified.status} attempt=$failures")
                         if (!retryable) return@launch
-                        delay(nativeRetryDelay(failures))
+                        val retryDelay = nativeRetryDelay(failures)
+                        synchronized(this@CoreAgentConversationRepository) { owner.waitingForRetry = true }
+                        try {
+                            // 仅真实前台或网络恢复可提前结束退避；同步器与待确认页继续沿用。
+                            withTimeoutOrNull(retryDelay) { owner.retryWakeup.receive() }
+                        } finally {
+                            synchronized(this@CoreAgentConversationRepository) {
+                                owner.waitingForRetry = false
+                                // 同一等待期的重复信号不能带到下一次失败并跳过下一轮退避。
+                                while (owner.retryWakeup.tryReceive().isSuccess) Unit
+                            }
+                        }
                     }
                 }
             } finally {

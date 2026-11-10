@@ -232,7 +232,7 @@ class GatewayRuntime(
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
     @Volatile private var activePlatformHttpClient: GatewayHttpClient? = null
-    private var restartNativeReads: (() -> Unit)? = null
+    private var restartNativeReads: ((Boolean) -> Unit)? = null
     private val pendingRotations = java.util.concurrent.ConcurrentHashMap<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
@@ -986,7 +986,7 @@ class GatewayRuntime(
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
-        wakeConnection(PlatformStreamWakeReason.FOREGROUND)
+        wakeConnection(PlatformStreamWakeReason.FOREGROUND, expediteNativeRetry = becameVisible)
         if (becameVisible) platform?.requestEventHealthCheck("foreground")
     }
 
@@ -1024,14 +1024,16 @@ class GatewayRuntime(
         // A network callback cannot publish a fabricated stream failure.
     }
 
-    private fun wakeConnection(reason: PlatformStreamWakeReason) {
+    private fun wakeConnection(reason: PlatformStreamWakeReason, expediteNativeRetry: Boolean = false) {
         recoveryWakeup.trySend(Unit)
         if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (_loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         if (_phase.value is ConnectionPhase.Disconnected) restoreSessionIfAvailable()
         else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
-            restartNativeReads?.invoke()
+            restartNativeReads?.invoke(expediteNativeRetry || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
+                reason == PlatformStreamWakeReason.USER_RETRY ||
+                reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && _connectionStatus.value != EventStreamStatus.LIVE)
             restartPlatformStream?.invoke(reason)
             if (_nativeAgents.value == null || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
                 reason == PlatformStreamWakeReason.USER_RETRY || _connectionStatus.value != EventStreamStatus.LIVE) {
@@ -2548,8 +2550,8 @@ class GatewayRuntime(
                 storeForAgent = ::nativeStore,
             )
         }
-        fun restoreNativeReads() {
-            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored() }
+        fun restoreNativeReads(expediteRetry: Boolean = false) {
+            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored(expediteRetry) }
         }
         restartNativeReads = ::restoreNativeReads
 
@@ -3002,9 +3004,9 @@ class GatewayRuntime(
                     approvals = approvalClient != null && available?.capabilities?.approvals == true,
                 )
             }
-            restartNativeReads = {
+            restartNativeReads = { expediteRetry ->
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
-                    restoreNativeReads()
+                    restoreNativeReads(expediteRetry)
                     if (canRetryWorkbenchInitialization) {
                         nativeController.refresh()
                         sessionScope.launch { updateNativeWorkbench(nativeController.state.value) }

@@ -59,6 +59,25 @@ class NativeConnectionReliabilityTest {
         assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
     }
 
+    @Test fun anExplicitNetworkRecoveryResumesACappedRetryWithoutResubmittingTheMessage() = runTest {
+        val h = Harness(this).apply { failedReads = 9 }
+        h.repository.activeConversationChanged(); runCurrent()
+        for (backoff in listOf(250L, 500L, 1000L, 2000L, 4000L, 8000L, 16000L, 32000L)) {
+            advanceTimeBy(backoff); runCurrent()
+        }
+        assertEquals("恢复信号前必须已经进入六十秒退避", 9, h.reads)
+        assertEquals(60_000L, h.retryBases.last())
+        h.repository.connectionRestored(expediteRetry = true)
+        runCurrent()
+
+        assertEquals("网络恢复应立即唤醒原读取者，不能继续等待六十秒", 10, h.reads)
+        assertEquals(StreamHealth.LIVE, h.repository.streamHealth.first())
+        assertEquals("next", h.storage.cursor)
+        assertNull(h.storage.pending)
+        assertEquals(1, h.requests.count { it.target.endsWith("/events/ack") })
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
