@@ -258,6 +258,10 @@ android {
         buildConfig = true
         compose = true
     }
+    androidResources {
+        generateLocaleConfig = true
+        localeFilters += listOf("zh-CN")
+    }
     signingConfigs {
         create("release") {
             storeFile = releaseStoreFile

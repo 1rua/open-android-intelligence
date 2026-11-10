@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 网络、连接与设备配对 (Connection & Pairing)                 -->
+    <!-- 资源前缀: conn_                                                   -->
+    <!-- 适用场景: 服务器地址配置、设备配对、安全证书认证、连接状态监控         -->
+    <!-- ================================================================= -->
+
+    <!-- 服务器连接表单 (统称"服务器"，消除 Gateway/Core 撕裂) -->
+    <string name="conn_server_address_title">服务器地址</string>
+    <string name="conn_server_address_placeholder">https://192.168.1.100:8443</string>
+    <string name="conn_server_address_hint">请输入 OAI 服务器的主机名或 IP 地址及端口</string>
+    <string name="conn_action_connect">连接服务器</string>
+    <string name="conn_action_disconnect">断开连接</string>
+
+    <!-- 实时连接状态反馈 -->
+    <string name="conn_status_connected">服务器已连接</string>
+    <string name="conn_status_connecting">正在连接服务器…</string>
+    <string name="conn_status_disconnected">已断开连接</string>
+    <string name="conn_status_reconnecting">网络中断，正在尝试重新连接…</string>
+
+    <!-- 配对与安全凭据 -->
+    <string name="conn_pairing_title">设备配对</string>
+    <string name="conn_pairing_scan_qr">扫描配对二维码</string>
+    <string name="conn_pairing_code_input_hint">输入 6 位配对验证码</string>
+    <string name="conn_pairing_success">设备配对成功，已建立安全信任</string>
+    <string name="conn_cert_fingerprint_format">证书指纹：%1$s</string>
+</resources>

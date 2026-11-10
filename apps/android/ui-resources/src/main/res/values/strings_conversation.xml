@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 会话、时间线与助理交互 (Conversation & Assistant)            -->
+    <!-- 资源前缀: conv_                                                   -->
+    <!-- 适用场景: 会话工作台、时间线、Markdown 渲染、输入框、助理悬浮窗        -->
+    <!-- ================================================================= -->
+
+    <!-- 会话标题解耦设计: 默认占位标题由展示层动态提供 -->
+    <string name="conv_title_new_default">新对话</string>
+
+    <!-- 输入与发送交互 -->
+    <string name="conv_input_placeholder">给智能助手发送消息…</string>
+    <string name="conv_action_send">发送</string>
+    <string name="conv_action_stop_generating">停止生成</string>
+    <string name="conv_action_regenerate">重新生成</string>
+
+    <!-- 消息状态与反馈 -->
+    <string name="conv_message_copied">消息内容已复制</string>
+    <string name="conv_message_deleted">消息已删除</string>
+
+    <!-- 思考过程与时间线组件 -->
+    <string name="conv_thought_process_expanded">已展开思考过程</string>
+    <string name="conv_thought_process_collapsed">思考过程（点击展开）</string>
+    <string name="conv_thought_duration_seconds">已思考 %1$d 秒</string>
+
+    <!-- 空状态与欢迎引导 -->
+    <string name="conv_empty_welcome_title">你好，我是你的智能助手</string>
+    <string name="conv_empty_welcome_desc">我可以协助你管理设备、处理通知与解答日常疑问</string>
+
+    <!-- 助理悬浮窗与气泡交互 -->
+    <string name="conv_bubble_title">智能助手会话</string>
+    <string name="conv_assistant_overlay_hint">正在聆听，请说话…</string>
+</resources>

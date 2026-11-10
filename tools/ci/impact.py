@@ -118,6 +118,7 @@ MODULE_DEPENDENTS = {
     "policy-engine": ("notifications", "plugins"),
     "device-primitives": ("device", "plugins"),
     "conversation-domain": ("conversation", "plugins"),
+    "ui-resources": ("conversation", "device"),
 }
 
 ANDROID_MODULE_LANES = {
@@ -134,6 +135,7 @@ ANDROID_MODULE_LANES = {
     "capability-sync-runtime": "platform",
     "artifact-ports": "platform",
     "assistant-holder": "platform",
+    "ui-resources": "platform",
     "notification-control": "notifications",
     "notification-host": "notifications",
     "notification-collector": "notifications",

@@ -9,6 +9,7 @@ plugins {
 // Keep the userspace/no-VPN surface gate attached to the root check task so
 // every APK/library build evaluates the same forbidden-surface policy.
 apply(from = "$rootDir/gradle/mvp-forbidden-surfaces.gradle.kts")
+apply(from = "$rootDir/gradle/i18n-quality-gates.gradle.kts")
 
 // 固定调试签名，统一作用于本工程下所有 APK 模块（app、assistant-holder）。
 // 密钥仓库内自带：app/keystore/debug.keystore（alias androiddebugkey / 口令 android，
@@ -47,6 +48,7 @@ val appAndroid12RuntimeLibraries = setOf(
     ":policy-engine",
     ":sms-collector",
     ":screen-control",
+    ":ui-resources",
 )
 
 allprojects {

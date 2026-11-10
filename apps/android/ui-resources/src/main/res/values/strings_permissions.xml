@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 权限申请与隐私授权 (Permissions & Privacy)                 -->
+    <!-- 资源前缀: perm_                                                   -->
+    <!-- 适用场景: 系统运行时权限申请弹窗、特殊权限引导页、圈选截屏授权说明     -->
+    <!-- ================================================================= -->
+
+    <!-- 通用权限弹窗 -->
+    <string name="perm_dialog_title">权限申请与使用说明</string>
+    <string name="perm_action_grant">前往授权</string>
+    <string name="perm_action_deny">暂不授予</string>
+    <string name="perm_action_settings">打开系统设置</string>
+
+    <!-- 屏幕截取授权 (MediaProjection: 统一称"圈选屏幕"或"截取屏幕") -->
+    <string name="perm_screen_capture_title">屏幕截取与圈选分析</string>
+    <string name="perm_screen_capture_desc">智能助手需要屏幕截取权限以便实时分析屏幕信息并提供针对性协助。我们仅在触发分析时截取画面，绝不会在后台静默录制。</string>
+
+    <!-- 通知监听授权 -->
+    <string name="perm_notification_listener_title">通知读取权限</string>
+    <string name="perm_notification_listener_desc">允许助手读取系统通知，以便为你提炼重点消息并在需要时提供快捷回复建议。</string>
+
+    <!-- 麦克风与语音交互 -->
+    <string name="perm_record_audio_title">麦克风语音权限</string>
+    <string name="perm_record_audio_desc">允许助手访问麦克风以使用语音与助手进行日常对话交流。</string>
+</resources>

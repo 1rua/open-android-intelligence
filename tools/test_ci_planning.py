@@ -190,6 +190,24 @@ def test_measurement_changes_run_the_hermes_lane(impact):
     assert lanes["hermes"] is True
 
 
+def test_ui_resources_change_runs_consumer_lanes_and_all_app_sections(impact):
+    """ui-resources changes must run platform, conversation, device, and the full app regression."""
+    result = impact.classify([
+        ("M", "apps/android/ui-resources/src/main/res/values/strings_common.xml"),
+    ])
+    lanes = result["lanes"]
+    assert lanes["android-platform"] is True
+    assert lanes["android-conversation"] is True
+    assert lanes["android-device"] is True
+    assert lanes["android-app"] is True
+    assert lanes["android-play"] is True
+    assert lanes["android-gateway"] is False
+    assert result["full_required"] is False
+    assert result["unknown"] is False
+    # ui-resources 对应用套件是横切的，必须覆盖所有 app sections
+    assert result["app_sections"] == set(impact.APP_SECTIONS)
+
+
 def test_every_module_with_tests_has_a_lane(tasks):
     """A module test suite with no lane never runs in CI."""
     android_root = REPO_ROOT / "apps/android"

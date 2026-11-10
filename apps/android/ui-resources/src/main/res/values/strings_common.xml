@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 通用基础与全局交互 (Common)                                  -->
+    <!-- 资源前缀: common_                                                 -->
+    <!-- 适用场景: 全局按钮、基础状态、常用对话框、单位、通用无障碍标签          -->
+    <!-- ================================================================= -->
+
+    <!-- 应用名与固定品牌标识 (不可翻译) -->
+    <string name="common_app_name" translatable="false">Open Android Intelligence</string>
+    <string name="common_app_short_name" translatable="false">OAI</string>
+
+    <!-- 常用操作动作 -->
+    <string name="common_action_confirm">确定</string>
+    <string name="common_action_cancel">取消</string>
+    <string name="common_action_save">保存</string>
+    <string name="common_action_delete">删除</string>
+    <string name="common_action_edit">编辑</string>
+    <string name="common_action_retry">重试</string>
+    <string name="common_action_copy">复制</string>
+    <string name="common_action_close">关闭</string>
+    <string name="common_action_back">返回</string>
+    <string name="common_action_refresh">刷新</string>
+    <string name="common_action_done">完成</string>
+    <string name="common_action_enable">启用</string>
+    <string name="common_action_disable">禁用</string>
+
+    <!-- 基础状态与反馈 -->
+    <string name="common_status_loading">加载中…</string>
+    <string name="common_status_success">操作成功</string>
+    <string name="common_status_failed">操作失败</string>
+    <string name="common_copied_to_clipboard">已复制到剪贴板</string>
+
+    <!-- 占位符格式化示例: 索引顺序说明 -->
+    <string name="common_pagination_format">第 %1$d 页，共 %2$d 页</string>
+</resources>

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 系统通知与前台服务 (Notifications & Foreground Services)   -->
+    <!-- 资源前缀: notif_                                                  -->
+    <!-- 适用场景: 通知渠道名称/说明、常驻前台服务提示、快捷回复动作            -->
+    <!-- ================================================================= -->
+
+    <!-- 系统通知渠道 (Notification Channels) -->
+    <string name="notif_channel_service_name">后台运行状态</string>
+    <string name="notif_channel_service_desc">用于保持与服务器的实时连接，保证助手的后台响应能力</string>
+    <string name="notif_channel_messages_name">助手消息与提醒</string>
+    <string name="notif_channel_messages_desc">接收来自智能助手的对话回复、任务处理结果与主动提醒</string>
+    <string name="notif_channel_screen_capture_name">屏幕圈选服务</string>
+    <string name="notif_channel_screen_capture_desc">屏幕截取与圈选分析运行时的系统提示</string>
+
+    <!-- 常驻服务前台通知文案 -->
+    <string name="notif_service_running_title">OAI 正在后台运行</string>
+    <string name="notif_service_running_content">保持与服务器的实时连接</string>
+    <string name="notif_screen_capturing_title">正在进行屏幕圈选分析</string>
+    <string name="notif_screen_capturing_content">点击可停止当前屏幕截取任务</string>
+
+    <!-- 通知操作动作 -->
+    <string name="notif_action_reply">快速回复</string>
+    <string name="notif_action_stop">停止服务</string>
+</resources>
