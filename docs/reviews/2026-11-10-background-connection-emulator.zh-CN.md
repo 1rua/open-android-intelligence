@@ -90,3 +90,16 @@ adb -s emulator-5562 shell am instrument -w -r \
 初次方法只在 `ActivityScenario.launch()` 返回后设置十秒等待，因漏计 Activity 启动时间而显示 `OK (1 test)`；这不是十秒达标证据。现已补充从 launch 前计时的总耗时硬断言，旧样本按该标准为失败。日志显示恢复由 WS 关闭 1006 后重试触发，尚不是 Runtime 主动健康验证。原始证据 `application-lifecycle-baseline.txt`、`result-application-lifecycle-baseline.log`、`lifecycle-connection-events.txt` 与脱敏 `status-application-lifecycle-baseline.json`；后续必须在 Runtime 修复提交上用同一方法复核，不放宽预算。
 
 该方法使用隔离 Core 的私有测试控制返回值与公开账号/游标 Store 核对事件，不访问 Runtime 私有字段。测试控制值不写日志，状态证据移除原始事件游标；日志只保留耗时、布尔结果和计数。
+
+## 真实 Application 与 Activity 生命周期的修复后复核
+
+把相同严格计时方法线性更新到包含 Runtime 恢复修复的 `2047b65e`，仪器测试提交为 `b731e154`，再次使用全新隔离 Core。结果 `OK (1 test)`，总耗时 18.852 秒：
+
+- 真实 `ActivityScenario.close()` 销毁唯一 Activity 后，ProcessLifecycleOwner 确实进入后台；Application Runtime 保持相同实例。
+- 后台等待至少十秒，真实 Core 事件已由原有订阅接收并在 `AndroidEventCursorStore` 持久提交，健康期间订阅次数保持一次。
+- 旧事件 socket 由同一用户态代理保持开放并双向丢弃后，再次 launch 真正的 MainActivity；不调用 Runtime 生命周期方法、不切换会话，**从 Activity launch 前到原离线游标实际恢复为 4043 毫秒**，通过十秒总预算。
+- 恢复后新事件继续到达；账号登录 1 次、正式订阅总数 2、Core 重启 0，恢复瞬间正式活连接 1。
+
+修复前 10398 毫秒与修复后 4043 毫秒各为一个实际样本，不能推断所有设备或系统调度均等价。该项证明 Activity 销毁与重新进入前台的实际调用链，仍不代表实体手机、系统强停、Doze、2 小时/6 小时息屏或真实电量验收。
+
+证据为忽略目录 `.toolchains/background-connection-e2e/` 的 `build-application-lifecycle-fixed.log`、`application-lifecycle-fixed.txt`、`result-application-lifecycle-fixed.log`、脱敏 `status-application-lifecycle-fixed.json`。夹具已正常停止，两个 adb reverse 映射已撤销；模拟器继续由主任务持有。
