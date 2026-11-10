@@ -49,4 +49,17 @@ adb -s emulator-5562 shell am instrument -w -r \
 
 恢复计时采用 Android `SystemClock.elapsedRealtime()`，从向隔离控制器发起停机前开始，到停机事件实际到达；含夹具 0.8 秒停机，未作跨机器时间相减。每项只执行一次样本，不能据此保证所有网络、机型和系统状态下均小于十秒。
 
-脱敏原始证据保存在根工作区忽略目录 `.toolchains/background-connection-e2e/` 的 `instrumentation-ws.txt`、`instrumentation-sse.txt`、`result-ws.log`、`result-sse.log`、`status-ws.json`、`status-sse.json`。两个夹具均已停止，对应 adb reverse 映射已撤销；账号/密钥及日志保留，专用模拟器交由主任务继续验收。
+脱敏原始证据保存在根工作区忽略目录 `.toolchains/background-connection-e2e/` 的 `instrumentation-ws.txt`、`instrumentation-sse.txt`、`result-ws.log`、`result-sse.log`、`status-ws.json`、`status-sse.json`。两个基线夹具均已停止，对应 adb reverse 映射已撤销；账号/密钥及日志保留，专用模拟器继续用于后续验收。
+
+## SSE 真实半开纵向验证
+
+基于生产连接健康接口提交 `301d5bce`，测试夹具加入用户态 TCP 代理。代理只按 Core 实际收到的事件请求标记连接，不解析或记录认证头；对选中的旧连接双向丢弃字节，保持两端 socket 开放，新连接正常转发。Core 全程运行，事件仍写入原持久库。
+
+仪器方法 `aHalfOpenSseConnectionIsReplacedAfterAnExplicitForegroundHealthCheck` 首先断言注入时唯一事件 socket 仍表面 LIVE、`closedByFixture=0`，再触发 `requestEventHealthCheck("foreground")`。恢复后断言同一事件流所有者仍在、三事件各一次且顺序正确、总登录 1、总订阅 2、当时正式活连接 1，且代理确实丢弃过旧通道数据。
+
+| 对照 | 结果 | 证据含义 |
+| --- | --- | --- |
+| 相同 APK，参数 `oaiSkipHealthCheck=true` | 10.279 秒结束，`Timed out waiting for 10000 ms`；登录 1、订阅 1、Core 重启 0、旧通道丢弃 316 字节 | 证明真实半开注入能捕捉“表面在线却无法交付”，不能把此对照冒充旧源码 SHA 的测试结果 |
+| 全新夹具，启用显式公开健康检查 | `OK (1 test)`，4.09 秒结束；实际恢复 3839 毫秒；三事件按序各一次，重复 0、登录 1、订阅 2、Core 重启 0 | 在不切换会话、不重启 Core 条件下替换失效 SSE，按原游标补发 |
+
+证据为忽略目录下 `half-open-negative.txt`、`half-open-positive.txt`、`result-half-open.log`、`status-half-open-negative.json` 和 `status-half-open-positive.json`。夹具状态在仪器测试清理后读取，此时 `liveEventConnections=0` 属于测试主动取消收集的结果；恢复瞬间活连接为 1 已由仪器断言检查。
