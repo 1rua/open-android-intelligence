@@ -26,7 +26,6 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_BYTES
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_DURATION_MS
-import com.openandroidintelligence.mobile.AttachmentPickerTarget
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.pickedAttachmentSelection
 import kotlinx.coroutines.*
@@ -235,12 +234,8 @@ class AssistantBridgeService : Service() {
      * 每个 URI 独立入草稿：某个文件读不出来只提示这一个，其余照常加入，不整批失败。
      */
     private fun queueFileAttachments(client: Client, controller: WorkbenchController, b: Bundle) {
-        val uris = b.getStringArray("uris").orEmpty().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.distinct()
-        val declared = b.getInt("count", uris.size)
-        if (uris.isEmpty() || uris.size > MAX_COMPOSER_ATTACHMENTS || declared != uris.size) {
-            error("ATTACHMENT_URIS_INVALID")
-        }
-        val target = AttachmentPickerTarget(controller, controller.state.value.activeThreadId)
+        val uris = fileAttachmentUris(b.getStringArray("uris"), b.getInt("count", -1))
+            ?: error("ATTACHMENT_URIS_INVALID")
         val targetRevision = controller.attachmentTargetRevision
         jobs.launch {
             var failures = 0
@@ -521,6 +516,22 @@ class AssistantBridgeService : Service() {
             "uris", "count",
         )
     }
+}
+
+/**
+ * 文件附件批次的校验与去重（纯函数，便于直接单测）。
+ *
+ * 与屏幕/语音的字节管道不同，文件附件只传 URI：主进程按 URI 直接读文件
+ * （同 UID + 持久化读授权）。`count` 必须等于去重后的实际条数 —— 不一致说明发送方
+ * 与本端对批次的理解已经分裂，宁可整批拒绝，也不猜哪一半是对的。
+ *
+ * @return 去重后的 URI 列表；空列表、超过上限或计数不一致时返回 null。
+ */
+internal fun fileAttachmentUris(uris: Array<String>?, count: Int): List<String>? {
+    val distinct = uris.orEmpty().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.distinct()
+    if (distinct.isEmpty() || distinct.size > MAX_COMPOSER_ATTACHMENTS) return null
+    if (count != distinct.size) return null
+    return distinct
 }
 
 /** 把运行时提示折成稳定诊断码 + 原文；非诊断码前缀统一为 `ASSISTANT_NOTICE`。 */
