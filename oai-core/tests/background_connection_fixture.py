@@ -140,6 +140,7 @@ class BackgroundConnectionFixture:
         self.restarting: asyncio.Task | None = None
         self.markers: list[str] = []
         self.last_event_id: str | None = None
+        self.checkpoint_count = 0
         self.stopped = asyncio.Event()
         self.proxy: HalfOpenProxy | None = None
 
@@ -185,6 +186,7 @@ class BackgroundConnectionFixture:
                 "subscriptionCount": self.subscription_count,
                 "restartCount": self.restart_count, "markers": self.markers,
                 "lastEventId": self.last_event_id,
+                "checkpointCount": self.checkpoint_count,
                 **(self.proxy.status() if self.proxy is not None else {})}
 
     async def control(self, request):
@@ -197,7 +199,10 @@ class BackgroundConnectionFixture:
             self.append("before_outage")
         elif operation == "outage" and self.markers == ["before_outage"] and self.restarting is None:
             self.restarting = asyncio.create_task(self.restart_after_outage())
-        elif operation == "half_open" and self.markers == ["before_outage"] and self.proxy is not None:
+        elif operation == "checkpoint" and self.markers and "during_outage" not in self.markers:
+            self.checkpoint_count += 1
+            self.append("background_" + str(self.checkpoint_count))
+        elif operation == "half_open" and self.markers and "during_outage" not in self.markers and self.proxy is not None:
             frozen = self.proxy.freeze_existing_events()
             self.append("during_outage")
             return web.json_response({**self.status(), **frozen})

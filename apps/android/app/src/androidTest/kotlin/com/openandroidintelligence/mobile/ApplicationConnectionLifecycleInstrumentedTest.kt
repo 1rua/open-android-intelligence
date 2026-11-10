@@ -33,6 +33,8 @@ class ApplicationConnectionLifecycleInstrumentedTest {
         val args = InstrumentationRegistry.getArguments()
         val core = isolatedUrl(requireNotNull(args.getString("oaiCoreUrl")))
         val controller = isolatedUrl(requireNotNull(args.getString("oaiControlUrl")))
+        val backgroundDuration = args.getString("oaiBackgroundDurationMs")?.toLong() ?: 10_000L
+        require(backgroundDuration in 10_000L..21_600_000L)
         assertEquals("isolated-background-connection-v1", JsonFields.string(control(controller, "status", "GET"), "fixture"))
         val app = ApplicationProvider.getApplicationContext<OpenAndroidIntelligenceApplication>()
         val runtime = app.gatewayRuntime
@@ -57,7 +59,23 @@ class ApplicationConnectionLifecycleInstrumentedTest {
             val initialEvent = requireNotNull(JsonFields.string(prepared, "lastEventId"))
             await("后台没有通过真实事件通道提交游标") { cursor.load(account) == initialEvent }
             val backgroundStarted = SystemClock.elapsedRealtime()
-            delay(10_000)
+            Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.background_started",
+                "backgroundDurationMs" to backgroundDuration, "sameApplicationRuntime" to true))))
+            val segmentMillis = minOf(60_000L, backgroundDuration / 3)
+            var checkpoint = 0
+            var backgroundEvent = initialEvent
+            while (SystemClock.elapsedRealtime() - backgroundStarted < backgroundDuration) {
+                delay(minOf(segmentMillis, backgroundDuration - (SystemClock.elapsedRealtime() - backgroundStarted)).coerceAtLeast(1))
+                val advanced = control(controller, "checkpoint")
+                backgroundEvent = requireNotNull(JsonFields.string(advanced, "lastEventId"))
+                await("息屏后台分段事件未持久提交") { cursor.load(account) == backgroundEvent }
+                checkpoint++
+                assertEquals(EventStreamStatus.LIVE, runtime.connectionStatus.value)
+                assertEquals(subscriptions, JsonFields.int(advanced, "subscriptionCount"))
+                Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.background_checkpoint",
+                    "checkpoint" to checkpoint, "elapsedMs" to SystemClock.elapsedRealtime() - backgroundStarted,
+                    "cursorCommitted" to true, "subscriptionCount" to subscriptions))))
+            }
             assertEquals("后台不能因 Activity 销毁关闭连接", EventStreamStatus.LIVE, runtime.connectionStatus.value)
             assertEquals("后台健康期间不能重复订阅", subscriptions,
                 JsonFields.int(control(controller, "status", "GET"), "subscriptionCount"))
@@ -65,7 +83,14 @@ class ApplicationConnectionLifecycleInstrumentedTest {
             assertEquals(1, JsonFields.int(frozen, "frozenOpen"))
             assertEquals(0, JsonFields.int(frozen, "closedByFixture"))
             val replayEvent = requireNotNull(JsonFields.string(frozen, "lastEventId"))
-            assertTrue("半开故障不能提前提交尚未交付的游标", initialEvent == cursor.load(account))
+            assertTrue("半开故障不能提前提交尚未交付的游标", backgroundEvent == cursor.load(account))
+            Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.foreground_ready",
+                "backgroundMillis" to SystemClock.elapsedRealtime() - backgroundStarted))))
+            if (args.getString("oaiWaitForScreenWake") == "true") {
+                await("等待外部ADB结束息屏验收", timeout = 30_000) {
+                    app.getSystemService(android.os.PowerManager::class.java).isInteractive
+                }
+            }
             val started = SystemClock.elapsedRealtime()
             activity = ActivityScenario.launch(MainActivity::class.java)
             await("返回前台后没有自动补发并持久保存原事件", timeout = 10_000) { cursor.load(account) == replayEvent }
