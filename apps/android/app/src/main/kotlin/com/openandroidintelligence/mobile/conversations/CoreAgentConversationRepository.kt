@@ -314,8 +314,9 @@ class CoreAgentConversationRepository(
     }
 
     /** A Core connection transition restarts reads only; it never submits a prompt. */
-    fun connectionRestored(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
+    @Synchronized fun connectionRestored(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
         revalidateNetwork: Boolean = false) {
+        if (closed) return
         (recoveringTurns.values + detachedRecoveringTurns).distinct().filterNot { turn ->
             usesEventSync(turn.agent) || when (turn.recoveryBlocked) {
                 NativeReadFailureKind.AUTHENTICATION -> turn.rejectedCredentialVersion == null ||
@@ -402,6 +403,7 @@ class CoreAgentConversationRepository(
     @Synchronized
     private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
         revalidateNetwork: Boolean = false) {
+        if (closed) return
         val desired = linkedMapOf<Pair<String, String>, CoreAgent>()
         (turns.values + recoveringTurns.values + detachedRecoveringTurns).forEach {
             desired[it.agent.id to it.conversationId] = it.agent
@@ -419,6 +421,7 @@ class CoreAgentConversationRepository(
     @Synchronized
     private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false, expediteRetry: Boolean = false,
         confirmedTransportRebuild: Long? = null, revalidateNetwork: Boolean = false) {
+        if (closed) return
         if (!usesEventSync(agent)) return
         val key = agent.id to conversationId
         val previous = eventSyncOwners[key]
@@ -461,7 +464,7 @@ class CoreAgentConversationRepository(
         owner.job = parentScope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
             previous?.job?.join()
             fun requireOwner() {
-                if (eventSyncOwners[key] !== owner || !parentScope.isActive)
+                if (closed || eventSyncOwners[key] !== owner || !parentScope.isActive)
                     throw CancellationException("NATIVE_EVENT_OWNER_CHANGED")
             }
             try {

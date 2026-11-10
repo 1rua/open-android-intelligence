@@ -270,6 +270,23 @@ class NativeConnectionReliabilityTest {
         assertEquals(1, h.histories)
     }
 
+    @Test fun aClosedRepositoryCannotResumeNetworkOrAccessItsClosedStore() = runTest {
+        val h = Harness(this)
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(51); runCurrent()
+        h.repository.close(); runCurrent()
+        val previousRequests = h.requests.size
+        val previousStoreReads = h.storeReads
+        h.storeClosed = true
+
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true, confirmedTransportRebuild = 1)
+        h.repository.activeConversationChanged()
+        runCurrent()
+
+        assertEquals("关闭后的恢复通知不能重新读取已释放存储", previousStoreReads, h.storeReads)
+        assertEquals("关闭后的恢复通知不能重建网络读取者", previousRequests, h.requests.size)
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
@@ -609,11 +626,18 @@ class NativeConnectionReliabilityTest {
         var cancelledAcks = 0
         var rejectSave = false
         var saves = 0
+        var storeReads = 0
+        var storeClosed = false
         var saveGate: CompletableDeferred<Unit>? = null
         val requests = mutableListOf<WireRequest>()
         val retryBases = mutableListOf<Long>()
         val storage = NativeEventSynchronizerTest.Storage()
         private val store = object : NativeConversationStore by storage {
+            override suspend fun pendingAck(conversationId: String): String? {
+                storeReads++
+                check(!storeClosed) { "测试存储已关闭" }
+                return storage.pendingAck(conversationId)
+            }
             override suspend fun commitPage(conversationId: String, events: List<VerifiedConversationEvent>,
                 approvals: List<NativeEventApproval>, cursor: String) {
                 saves++
