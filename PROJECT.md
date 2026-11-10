@@ -50,8 +50,8 @@
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | 基础架构与配置搭建 | 创建 `:ui-resources` 模块，配置 AGP 语言策略、CI 契约与静态扫描门禁 | none | PLANNED |
-| M2 | 通用、连接、权限与通知文案迁移 | 迁移 strings_common / connection / permissions / notifications 四大功能域文案及服务常驻通知 | M1 | PLANNED |
+| M1 | 基础架构与配置搭建 | 创建 `:ui-resources` 模块，配置 AGP 语言策略、CI 契约与静态扫描门禁 (commit `bdf100da`, 产出 AAR、APK，146 pytest 及所有门禁 100% 通过) | none | DONE |
+| M2 | 通用、连接、权限与通知文案迁移 | 迁移 strings_common / connection / permissions / notifications 四大功能域文案及服务常驻通知，核销基线 413 条 | M1 | DONE |
 | M3 | 会话与助理文案迁移及持久化保护 | 迁移 strings_conversation，重构会话标题逻辑与持久化隔离 | M1 | PLANNED |
 | M4 | 设置中心全量迁移、错误映射与基线闭环 | 迁移 strings_settings / errors，重构结构化错误码，闭环 2,095 处基线台账 | M2, M3 | PLANNED |
 | M5 | 国际化架构决策与指南文档交付 | 编写 `docs/guides/android-i18n.zh-CN.md` 完整规范与新增语言 SOP | M1, M4 | PLANNED |

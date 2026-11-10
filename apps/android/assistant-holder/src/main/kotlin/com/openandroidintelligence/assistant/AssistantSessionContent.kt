@@ -26,6 +26,7 @@ import com.openandroidintelligence.conversation.voice.VoiceRejection
 import com.openandroidintelligence.conversation.voice.VoiceRecorderState
 import com.openandroidintelligence.conversation.voice.activeRecording
 import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 圈选期间由会话持有的系统截图。
@@ -182,7 +183,7 @@ internal fun AssistantSessionContent(
                         ) {
                             // 权限必须在这里显式检查：录音器只会把设备异常折成 RECORDING_FAILED，
                             // 不会替用户区分「没授权」和「麦克风被占用」。
-                            client.showAdvisory("需要麦克风权限，请在系统设置中允许后重试")
+                            client.showAdvisory(context.getString(UiR.string.perm_audio_in_session_required))
                         } else {
                             // start() 自己负责防重入与失败清理；失败原因经 onRejected 提示。
                             recorder.start(state.sessionId)

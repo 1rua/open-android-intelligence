@@ -59,7 +59,7 @@ class LiveUpdateNotificationsTest {
         assertTrue(progress.progressPoints.isEmpty())
         assertTrue("Use the real framework eligibility predicate", live.hasPromotableCharacteristics())
         assertTrue(live.extras.getBoolean(REQUEST_PROMOTED_ONGOING))
-        assertEquals("处理中", live.shortCriticalText)
+        assertEquals(context.getString(com.openandroidintelligence.ui.resources.R.string.notif_status_running), live.shortCriticalText)
         assertEquals("Latest public reply", live.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
         assertTrue(live.flags and Notification.FLAG_ONGOING_EVENT != 0)
         assertTrue(live.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
@@ -103,7 +103,8 @@ class LiveUpdateNotificationsTest {
         val style = Notification.Builder.recoverBuilder(context, notification).style as Notification.MessagingStyle
         val finalText = style.messages.single().text.toString()
         assertTrue(finalText.startsWith("Answer opening. "))
-        assertTrue("Final excerpt tail: ${finalText.takeLast(120)}", finalText.contains("Final answer ending.\n\n$COMPLETE_REPLY_HINT"))
+        val hint = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_excerpt_full_hint)
+        assertTrue("Final excerpt tail: ${finalText.takeLast(120)}", finalText.contains("Final answer ending.\n\n$hint"))
         assertTrue(finalText.length < 1_024)
         assertTrue("The full snapshot remains available to the app", completed.latestReply.length > 5_120)
     }

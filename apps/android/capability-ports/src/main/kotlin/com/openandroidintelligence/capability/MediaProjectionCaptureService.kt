@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import com.openandroidintelligence.ui.resources.R
 import java.util.UUID
 
 /**
@@ -60,16 +61,16 @@ class MediaProjectionCaptureService : Service() {
     private fun ensureChannel() {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "屏幕圈选采集", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "屏幕圈选依赖系统投屏授权，采集期间显示此常驻通知。"
+            NotificationChannel(CHANNEL_ID, getString(R.string.notif_channel_screen_capture_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = getString(R.string.notif_channel_screen_capture_desc)
             },
         )
     }
 
     private fun buildNotification(): Notification =
         Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("屏幕圈选采集中")
-            .setContentText("正在使用你授予的系统投屏权限采集屏幕截图。")
+            .setContentTitle(getString(R.string.notif_screen_capturing_title))
+            .setContentText(getString(R.string.notif_screen_capturing_content))
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setOngoing(true)
             .build()

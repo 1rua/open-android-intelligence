@@ -370,6 +370,7 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
 }
 
 dependencies {
+    implementation(project(":ui-resources"))
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))
     implementation(project(":capability-ports"))

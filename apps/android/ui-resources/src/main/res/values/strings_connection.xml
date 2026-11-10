@@ -3,26 +3,234 @@
     <!-- ================================================================= -->
     <!-- 功能域: 网络、连接与设备配对 (Connection & Pairing)                 -->
     <!-- 资源前缀: conn_                                                   -->
-    <!-- 适用场景: 服务器地址配置、设备配对、安全证书认证、连接状态监控         -->
     <!-- ================================================================= -->
 
-    <!-- 服务器连接表单 (统称"服务器"，消除 Gateway/Core 撕裂) -->
+    <!-- 服务器连接表单与通用提示 -->
     <string name="conn_server_address_title">服务器地址</string>
     <string name="conn_server_address_placeholder">https://192.168.1.100:8443</string>
     <string name="conn_server_address_hint">请输入 OAI 服务器的主机名或 IP 地址及端口</string>
+    <string name="conn_server_address_none">尚未选择服务器</string>
+    <string name="conn_server_address_example">https://gateway.example.local:8443 或 http://10.0.2.2:8045</string>
+    <string name="conn_server_address_validation_error">请输入包含主机名的有效服务器地址（例如 http://10.0.2.2:8045 或 https://gateway.example.com）</string>
     <string name="conn_action_connect">连接服务器</string>
     <string name="conn_action_disconnect">断开连接</string>
+    <string name="conn_login_title">登录 OAI 服务器</string>
+    <string name="conn_login_welcome_subtitle">连接 OAI Core，发现已接入的 Agent</string>
+
+    <!-- 登录模式切换与表单输入项 -->
+    <string name="conn_login_tab_password">改用密码登录</string>
+    <string name="conn_login_tab_invite_code">使用邀请短码</string>
+    <string name="conn_login_qr_content">二维码内容</string>
+    <string name="conn_login_paste_invite_hint">粘贴 oai://pair?… 邀请内容</string>
+    <string name="conn_login_username_label">用户名 / 账号</string>
+    <string name="conn_login_username_hint">输入账号</string>
+    <string name="conn_login_invite_code_label">一次性邀请短码</string>
+    <string name="conn_login_password_label">访问凭据 / 密码</string>
+    <string name="conn_login_password_hint">输入访问凭据或密码</string>
+    <string name="conn_login_keystore_security_hint">凭据只用于本次认证，刷新凭据由 Android Keystore 保护</string>
+    <string name="conn_login_invite_invalid_error">邀请内容无效或已过期，请重新获取。</string>
+    <string name="conn_login_use_paired_key">使用已配对设备密钥登录</string>
+    <string name="conn_login_reconfirm_identity">重新确认服务器身份</string>
+
+    <!-- 账号管理与切换 -->
+    <string name="conn_account_saved_title">已保存账号</string>
+    <string name="conn_account_remove_dialog_title">移除账号</string>
+    <string name="conn_account_remove_dialog_message">将退出 %1$s 并删除本地凭据与缓存，服务端账号不受影响。</string>
+    <string name="conn_reconfirm_identity_dialog_title">重新确认服务器身份</string>
+    <string name="conn_reconfirm_identity_dialog_message">请先向管理员核对部署或证书变更。继续会清除该账号的旧服务器身份和自动登录凭据；下一次密码登录会重新建立 TLS 信任。</string>
+    <string name="conn_reconfirm_identity_confirm">继续</string>
+
+    <!-- 二次验证 (2FA / TOTP / 恢复码) -->
+    <string name="conn_2fa_dialog_title">二次验证</string>
+    <string name="conn_2fa_bind_authenticator">绑定验证器</string>
+    <string name="conn_2fa_save_recovery_code">保存恢复码</string>
+    <string name="conn_2fa_recovery_code_prompt">请输入一次性恢复码。</string>
+    <string name="conn_2fa_totp_prompt">请输入验证器中的动态验证码。</string>
+    <string name="conn_2fa_switch_to_totp">使用动态验证码</string>
+    <string name="conn_2fa_switch_to_recovery">使用恢复码</string>
+    <string name="conn_2fa_recovery_code_label">恢复码</string>
+    <string name="conn_2fa_totp_label">动态验证码</string>
+    <string name="conn_2fa_bind_instruction">请在验证器中添加以下地址或密钥，然后输入动态验证码。</string>
+    <string name="conn_2fa_recovery_instruction">请将以下一次性恢复码安全保存。确认保存后才能完成登录。</string>
+    <string name="conn_2fa_saved_confirm">确认已保存</string>
 
     <!-- 实时连接状态反馈 -->
-    <string name="conn_status_connected">服务器已连接</string>
-    <string name="conn_status_connecting">正在连接服务器…</string>
-    <string name="conn_status_disconnected">已断开连接</string>
-    <string name="conn_status_reconnecting">网络中断，正在尝试重新连接…</string>
+    <string name="conn_status_connected">已连接</string>
+    <string name="conn_status_connecting">正在连接…</string>
+    <string name="conn_status_disconnected">未连接</string>
+    <string name="conn_status_reconnecting">正在重连</string>
+    <string name="conn_status_failed">连接失败</string>
+    <string name="conn_status_connecting_server">正在连接服务器…</string>
+    <string name="conn_status_reconnecting_server">正在重新连接服务器…</string>
+    <string name="conn_status_connecting_core">正在连接 OAI Core…</string>
+    <string name="conn_status_reconnecting_core">正在重新连接 OAI Core…</string>
+    <string name="conn_status_not_connected_gateway">未连接 Gateway</string>
+    <string name="conn_status_verifying_credentials">正在验证凭据…</string>
+    <string name="conn_status_offline_mode_hint">离线模式：仅显示本地缓存，连接后可继续收发</string>
+    <string name="conn_status_connected_user_format">已连接 %1$s</string>
+    <string name="conn_status_not_connected_hint">未连接服务器</string>
 
-    <!-- 配对与安全凭据 -->
+    <!-- 安全证书与传输加密 -->
+    <string name="conn_security_http_warning_part1">未加密连接（HTTP）：账号口令、消息与附件内容在传输途中可被读取或篡改，</string>
+    <string name="conn_security_http_warning_part2">且无法核验服务器身份。请仅在信任的本机或局域网内使用，正式部署请改用 https://。</string>
+    <string name="conn_security_badge_unencrypted">未加密（HTTP）</string>
+    <string name="conn_security_badge_tls_pinned">TLS 已固定</string>
+    <string name="conn_security_badge_system_ca">系统 CA 信任</string>
+    <string name="conn_cert_fingerprint_format">证书指纹：%1$s</string>
+
+    <!-- 连接与账号设置页面 (ConnectionSettingsScreen) -->
+    <string name="conn_screen_title">连接与账号</string>
+    <string name="conn_section_current_connection">当前连接</string>
+    <string name="conn_item_http_connection">HTTP 连接</string>
+    <string name="conn_item_realtime_channel">实时连接</string>
+    <string name="conn_item_diagnostics">连接详情与诊断</string>
+    <string name="conn_section_agent_management">助手管理</string>
+    <string name="conn_item_current_agent">当前助手</string>
+    <string name="conn_agent_not_fetched">未获取，连接后刷新</string>
+    <string name="conn_agent_checking_support">正在检查助手支持情况</string>
+    <string name="conn_agent_unsupported_by_core">当前服务器不支持助手列表</string>
+    <string name="conn_agent_check_core_version">请检查服务器版本</string>
+    <string name="conn_agent_none_discovered">尚未发现助手</string>
+    <string name="conn_agent_check_core_config">请检查服务器上的助手配置</string>
+    <string name="conn_agent_badge_isolated"> · 账号隔离</string>
+    <string name="conn_agent_badge_shared"> · 共享实例</string>
+    <string name="conn_agent_badge_current"> · 当前使用</string>
+    <string name="conn_action_refresh_agent_list">刷新助手列表</string>
+    <string name="conn_section_account_management">账号管理</string>
+    <string name="conn_account_status_not_logged_in">未登录</string>
+    <string name="conn_account_status_restoring">正在恢复登录</string>
+    <string name="conn_account_status_logged_in">已登录</string>
+    <string name="conn_account_status_relogin_required">需要重新登录</string>
+    <string name="conn_item_current_account">当前账号</string>
+    <string name="conn_action_remove_local_account">移除本机账号</string>
+    <string name="conn_action_switch_account">切换账号</string>
+    <string name="conn_action_add_account">添加账号</string>
+    <string name="conn_action_refresh_credentials">刷新登录凭据</string>
+    <string name="conn_status_renewing_credentials">续期中…</string>
+    <string name="conn_desc_refresh_credentials">提前更新当前登录凭据</string>
+    <string name="conn_section_security">连接安全</string>
+    <string name="conn_item_transport_encryption">传输加密</string>
+    <string name="conn_encryption_http_warning">明文（HTTP），易被窃听</string>
+    <string name="conn_encryption_tls_pinned">已加密，证书公钥一致</string>
+    <string name="conn_encryption_system_ca">已加密，系统证书受信任</string>
+    <string name="conn_encryption_none">未建立加密连接</string>
+    <string name="conn_item_core_identity">服务器身份验证</string>
+    <string name="conn_identity_verified_saved">已核对保存的服务器身份</string>
+    <string name="conn_identity_verified_system_ca">通过系统证书验证</string>
+    <string name="conn_identity_http_cannot_verify">HTTP 无法验证身份</string>
+    <string name="conn_identity_unverified">未验证</string>
+
+    <!-- 设备配对与解除 -->
     <string name="conn_pairing_title">设备配对</string>
     <string name="conn_pairing_scan_qr">扫描配对二维码</string>
     <string name="conn_pairing_code_input_hint">输入 6 位配对验证码</string>
     <string name="conn_pairing_success">设备配对成功，已建立安全信任</string>
-    <string name="conn_cert_fingerprint_format">证书指纹：%1$s</string>
+    <string name="conn_item_device_pairing">设备配对</string>
+    <string name="conn_pairing_pending_verification">保留账号资料，待连接核实</string>
+    <string name="conn_pairing_none">无配对信息</string>
+    <string name="conn_action_unpair_device">解除设备配对</string>
+    <string name="conn_desc_unpair_device">取消手机与服务器配对，清理当前账号本地数据</string>
+    <string name="conn_dialog_logout_title">退出当前账号？</string>
+    <string name="conn_dialog_logout_message">将保留已存账号、配对和本地聊天记录。该账号的远程任务与通知推送将暂停。</string>
+    <string name="conn_dialog_remove_account_title">移除本机账号？</string>
+    <string name="conn_dialog_remove_account_message">将移除「%1$s」在手机上的登录与聊天数据；服务器端数据不受影响。\n先返回账号管理，再确认要移除的账号。</string>
+    <string name="conn_action_go_to_account_management">进入账号管理</string>
+
+    <!-- 连接诊断与阶段详情 (ConnectionSettingsScreen / StateViews) -->
+    <string name="conn_section_status_diagnostics">连接状态与诊断</string>
+    <string name="conn_item_connection_phase">连接阶段</string>
+    <string name="conn_phase_normal">连接正常</string>
+    <string name="conn_phase_offline_view">离线查看本地记录，账号未退出</string>
+    <string name="conn_phase_verifying_account">正在验证账号</string>
+    <string name="conn_phase_failed">连接失败，请检查服务器地址、网络及账号</string>
+    <string name="conn_phase_not_connected">尚未连接</string>
+    <string name="conn_reachability_disconnected">网络已断开</string>
+    <string name="conn_reachability_untested">未检测</string>
+    <string name="conn_reachability_reachable">可访问</string>
+    <string name="conn_reachability_reachable_with_code">可访问（HTTP %1$d）</string>
+    <string name="conn_reachability_unreachable">无法连接服务器</string>
+    <string name="conn_reachability_security_blocked">安全校验阻止</string>
+    <string name="conn_section_core_capabilities">此服务器支持的功能</string>
+    <string name="conn_cap_device_execution">设备端任务执行</string>
+    <string name="conn_cap_view_after_connected">连接后可查看</string>
+    <string name="conn_cap_core_not_enabled">当前服务器未开启</string>
+    <string name="conn_cap_plugin_not_ready">插件服务未就绪</string>
+    <string name="conn_cap_supported_requires_auth">已支持，执行需授权</string>
+
+    <!-- StateViews 通道短标签与一句话状态 (conversation-ui) -->
+    <string name="conn_stream_label_idle">实时通道未建立</string>
+    <string name="conn_stream_label_connecting">正在连接…</string>
+    <string name="conn_stream_label_live">已连接</string>
+    <string name="conn_stream_label_reconnecting">重连中…</string>
+    <string name="conn_stream_label_failed">通道已断开</string>
+    <string name="conn_stream_text_connecting">正在连接服务器…</string>
+    <string name="conn_stream_text_reconnecting">连接中断，正在重连…</string>
+    <string name="conn_stream_text_failed">实时通道已断开，暂时收不到回复</string>
+    <string name="conn_state_fallback">无法连接服务器。请检查地址与网络，并确认 App 与插件版本一致后重试；若持续失败，请查看服务器服务与日志。</string>
+
+    <!-- 运行期与生命周期通知/Toast (GatewayRuntime.kt) -->
+    <string name="conn_toast_auto_login_save_failed">自动登录凭据未能保存，下次启动需要重新登录。</string>
+    <string name="conn_toast_logout_state_save_failed">本机退出状态未能保存，请检查设备存储后重试。</string>
+    <string name="conn_toast_offline_logout_locked">本机已退出，离线登出未获服务器确认；本机凭据已锁定保留，重新登录后可继续处理。</string>
+    <string name="conn_toast_account_busy_switch">当前账号操作尚未结束，请稍后再切换。</string>
+    <string name="conn_toast_account_busy_select">当前账号操作尚未结束，请稍后再选择账号。</string>
+    <string name="conn_toast_account_save_failed">账号选择未能保存，请检查本机存储后重试。</string>
+    <string name="conn_toast_old_identity_cleared">旧服务器身份和自动登录凭据已清除，请核对新身份后使用密码重新登录。</string>
+    <string name="conn_toast_identity_cleanup_failed">服务器身份清理失败，请检查本机存储。</string>
+    <string name="conn_toast_remove_account_wait">请先进入账号管理，并等待当前账号操作完成后再移除。</string>
+    <string name="conn_toast_removing_account">正在退出并移除本机账号…</string>
+    <string name="conn_toast_account_removed_server_kept">本机账号已移除；服务器账号和其他设备配对保持有效。</string>
+    <string name="conn_toast_account_busy_retry">当前账号操作尚未结束，请稍后重试。</string>
+    <string name="conn_toast_unpair_requires_connection">需要连接当前服务器后才能解除设备配对。</string>
+    <string name="conn_toast_local_session_save_failed">本地会话未能保存，设备配对和凭据已保留。</string>
+    <string name="conn_toast_unpair_unconfirmed">解除配对未获服务器确认，本机凭据已保留，请检查连接后重试。</string>
+    <string name="conn_toast_unpair_cleanup_failed">服务器已解除配对，但本机数据清理失败，请重试本机账号清理。</string>
+    <string name="conn_toast_unpair_partial_cleanup">配对已解除，但部分本机资料尚未清理。</string>
+    <string name="conn_toast_unpair_interrupted">配对已解除，本机清理被中断，请检查本机账号资料。</string>
+    <string name="conn_toast_unpair_interrupted_reconnect">解除配对被中断，请重新连接后确认配对状态。</string>
+    <string name="conn_toast_no_refresh_token">本机没有为当前账号保存刷新凭据，请重新登录以获取自动登录凭据。</string>
+    <string name="conn_toast_session_renewed">已向服务器续期会话凭据，新的访问令牌已生效。</string>
+    <string name="conn_toast_session_renewal_uncertain">服务器尚未提供刷新结果重放，续期结果暂不确定。账号资料已保留，请更新服务器后重新认证。</string>
+    <string name="conn_toast_session_restore_pending">服务器会话恢复暂未完成，登录资料已保留，连接可用后将自动重试。</string>
+    <string name="conn_toast_session_revoked">服务器已明确撤销或拒绝会话凭据，请重新登录。账号资料和历史记录已保留。</string>
+    <string name="conn_toast_capability_sync_retry_format">设备能力状态同步未完成（%1$s），正在重试。</string>
+    <string name="conn_toast_agent_lost_format">上次使用的智能助手「%1$s」已不在当前列表中，请重新选择。</string>
+    <string name="conn_toast_capability_changed_resync">设备能力状态已变化，正在重新同步；本机开关保持原设置。</string>
+    <string name="conn_toast_read_local_session_failed">读取本地会话失败，历史记录已保留，请重新连接后重试。</string>
+    <string name="conn_toast_offline_mirror_hint">离线镜像：可阅读历史并编辑草稿，重新连接后可发送。</string>
+    <string name="conn_toast_local_attachment_restore_failed">本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。</string>
+    <string name="conn_notice_refresh_reused">服务器拒绝续期：刷新凭据已被使用过，请重新登录以取得新的会话凭据。</string>
+    <string name="conn_notice_identity_changed">刷新服务器凭据失败：服务器部署身份或证书已变更，请核对后重新登录以建立新信任。</string>
+    <string name="conn_notice_version_incompatible">服务器拒绝续期：App 与服务器版本不一致，请把两端升级到同一版本后重试。</string>
+    <string name="conn_notice_token_invalid">服务器拒绝续期：当前凭据已失效或被撤销，请重新登录。</string>
+    <string name="conn_notice_timeout">刷新服务器凭据失败：连接超时，当前连接仍然有效，请检查网络后重试。</string>
+    <string name="conn_notice_unreachable">刷新服务器凭据失败：无法连接服务器，当前连接仍然有效，请检查网络后重试。</string>
+    <string name="conn_notice_fallback">刷新服务器凭据失败，当前连接仍然有效，请稍后重试。</string>
+
+    <!-- 首次引导与部署教程 (Onboarding) -->
+    <string name="conn_onboarding_deploy_choice_title">OAI 服务器\n部署好了吗？</string>
+    <string name="conn_onboarding_deploy_choice_desc">手机只连接一个 OAI 服务器，由服务器接入不同智能助手。若已完成部署，直接进入登录。</string>
+    <string name="conn_onboarding_deploy_choice_already_deployed">我已部署</string>
+    <string name="conn_onboarding_deploy_choice_already_deployed_desc">已启动 OAI 服务端并创建 OAI 账号。使用同一个服务端地址登录。</string>
+    <string name="conn_onboarding_deploy_choice_btn_login">进入登录</string>
+    <string name="conn_onboarding_deploy_choice_not_deployed">我还未部署</string>
+    <string name="conn_onboarding_deploy_choice_not_deployed_desc">查看 OAI 服务端安装、账号创建与启动步骤，也保留兼容指南。</string>
+    <string name="conn_onboarding_deploy_choice_btn_tutorial">查看教程</string>
+    <string name="conn_onboarding_deploy_choice_notice_label">说明</string>
+    <string name="conn_onboarding_deploy_choice_notice_content">暂不提供统一云端服务，需连接自托管服务器</string>
+    <string name="conn_onboarding_guide_btn_deployed">部署完毕，进入登录</string>
+    <string name="conn_onboarding_guide_hint_incomplete">未完成？可稍后在设置中重新查看</string>
+    <string name="conn_onboarding_guide_title_format">%1$s 部署教程</string>
+    <string name="conn_onboarding_guide_open_repo_format">打开官方仓库 %1$s</string>
+    <string name="conn_onboarding_guide_repo_label">官方仓库</string>
+    <string name="conn_onboarding_guide_verified_preview">验证通过的样子</string>
+    <string name="conn_onboarding_welcome_connect_title">连接你的 OAI Core</string>
+    <string name="conn_onboarding_welcome_hero_title">连接一个\nOAI Core</string>
+    <string name="conn_onboarding_welcome_hero_desc_1">一个手机连接入口，由 OAI Core 接入多个自托管 Agent。</string>
+    <string name="conn_onboarding_welcome_hero_desc_2">Agent 会话与设备插件独立管理，设备能力始终需要你的授权。</string>
+    <string name="conn_onboarding_welcome_pill_keystore">凭据存于 Android Keystore · 自托管 Core</string>
+    <string name="conn_onboarding_welcome_pill_permissions">设备能力默认拒绝 · 逐项授权</string>
+    <string name="conn_onboarding_welcome_subtitle">手机只连接一个 Core 服务端，由服务端统一管理与分发。</string>
+    <string name="conn_onboarding_welcome_core_address_label">连接你的 Core 服务端</string>
+    <string name="conn_onboarding_welcome_core_address_hint">手机只连接一个 Core 地址；多个 Agent 接入由 Core 统一管理。</string>
 </resources>

@@ -23,11 +23,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 引导流程顶栏与随步骤平滑指示的进度刻度条。
@@ -45,6 +47,7 @@ fun OnboardingStepHeader(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val backActionLabel = stringResource(UiR.string.common_action_back)
     Column(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -55,7 +58,7 @@ fun OnboardingStepHeader(
         ) {
             IconButton(
                 onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
+                modifier = Modifier.semantics { contentDescription = backActionLabel },
             ) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,

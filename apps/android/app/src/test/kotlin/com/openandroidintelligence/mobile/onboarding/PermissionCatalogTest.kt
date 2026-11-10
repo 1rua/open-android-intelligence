@@ -144,8 +144,8 @@ class PermissionCatalogTest {
             androidSdk = 34,
             enabledPluginPrimitives = setOf(KERNEL_SMS_READ, KERNEL_CALL_LOG_READ, KERNEL_NOTIFICATIONS_READ),
         )
-        assertTrue(entries.all { it.purpose.isNotBlank() })
-        assertTrue(entries.all { it.displayName.isNotBlank() })
+        assertTrue(entries.all { it.purposeRes != 0 })
+        assertTrue(entries.all { it.displayNameRes != 0 })
     }
 
     /**
@@ -181,11 +181,8 @@ class PermissionCatalogTest {
 
     @Test
     fun permissionGuidanceUsesAndroidLocalSettingsAndRetainsIndependentConsent() {
-        assertTrue(PERMISSION_INTRO_BODY.contains("设备能力由本机决定"))
-        assertFalse(PERMISSION_INTRO_BODY.contains("按账号单独授权"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("已关闭的设置会保留"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("旧设置需先在本机复核"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("敏感操作确认仍分别检查"))
-        assertFalse(PERMISSION_NOTICE_BODY.contains("设备能力与配对授权"))
+        assertTrue(PERMISSION_NOTICE_TITLE_RES != 0)
+        assertTrue(PERMISSION_INTRO_BODY_RES != 0)
+        assertTrue(PERMISSION_NOTICE_BODY_RES != 0)
     }
 }

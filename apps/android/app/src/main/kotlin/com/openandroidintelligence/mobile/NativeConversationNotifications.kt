@@ -18,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import com.openandroidintelligence.ui.resources.R as UiR
 import java.time.Instant
 
 internal enum class NativeConversationStatus {
@@ -28,7 +29,7 @@ internal enum class NativeConversationStatus {
 internal data class NativeConversationSession(
     val target: ReplyNotificationTarget,
     val generationId: String?,
-    val title: String = "Agent 会话",
+    val title: String = "",
     val status: NativeConversationStatus,
     val latestReply: String = "",
     val lastOutcome: NativeConversationStatus? = null,
@@ -286,7 +287,7 @@ internal class NativeConversationNotifications(
             .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
         val snapshotCompleted = finalReply?.state?.uppercase() in setOf("CONFIRMED", "COMPLETED")
         val snapshotText = finalReply?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-            ?.ifBlank { if (finalReply.parts.any { it is WireMessagePart.AttachmentRef }) "[附件回复]" else "" }
+            ?.ifBlank { if (finalReply.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
         val snapshotRevision = finalReply?.contentRevision
         val canApplyBody = finalReply != null && !snapshotText.isNullOrBlank() && when {
             observed == null -> true
@@ -355,7 +356,7 @@ internal class NativeConversationNotifications(
                     val body = messages.drop(messages.indexOf(user) + 1).takeWhile { it.sender != "user" }
                         .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
                     val text = body?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-                        ?.ifBlank { if (body.parts.any { it is WireMessagePart.AttachmentRef }) "[附件回复]" else "" }
+                        ?.ifBlank { if (body.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
                     if (body != null && !text.isNullOrBlank()) {
                         replies[remoteKey] = ReplySnapshot(body.messageId, text, body.contentRevision ?: 0L, body.timestamp ?: 0L,
                             completed = body.state.uppercase() in setOf("CONFIRMED", "COMPLETED"))
@@ -488,7 +489,7 @@ internal class NativeConversationNotifications(
                     val unambiguous = generation != null || previous?.generationId == null || previous.generationId.startsWith("legacy:")
                     if (message != null && unambiguous && isPublicAssistantPayload(payload)) {
                         val text = message.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
-                            .ifBlank { if (message.parts.any { it is MessagePart.Attachment }) "[附件回复]" else "" }
+                            .ifBlank { if (message.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
                         if (text.isNotBlank()) {
                             replies[roundKey] = ReplySnapshot(message.id, text, revision ?: 0L, occurredAt, event.event == "conversation.message.completed")
                             if (terminal == null && round != null) activeRounds.getOrPut(target) { linkedMapOf() }[round] = NativeConversationStatus.RUNNING
@@ -661,7 +662,7 @@ internal class NativeConversationNotifications(
     }
 
     private fun sessionTitle(target: ReplyNotificationTarget): String = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
-        ?: "会话 ${target.conversationId.takeLast(12)}"
+        ?: context.getString(UiR.string.notif_conv_fallback_title_format, target.conversationId.takeLast(12))
 
     companion object {
         private const val FINAL_RECONCILIATION_WINDOW = 120_000L

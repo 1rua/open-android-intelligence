@@ -31,6 +31,7 @@ tasks.withType<Test>().configureEach {
 
 dependencies {
     implementation(project(":core-model"))
+    implementation(project(":ui-resources"))
     // 复用同一套设计令牌与助理表面：助理进程只组合 UI，不初始化 Gateway。
     implementation(project(":conversation-ui"))
     // 时间线渲染直接读取领域类型（TimelineEntry / TimelineAttachment / ApprovalChoice）：

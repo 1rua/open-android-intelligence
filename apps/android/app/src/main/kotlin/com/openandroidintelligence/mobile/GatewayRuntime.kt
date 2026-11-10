@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.ui.resources.R as UiR
 import android.content.Context
 import android.os.Build
 import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoordinator
@@ -776,8 +777,11 @@ class GatewayRuntime(
     private val _operationNotice = MutableStateFlow<String?>(null)
     val operationNotice: StateFlow<String?> = _operationNotice.asStateFlow()
     fun dismissOperationNotice() { _operationNotice.value = null }
+    private val workbenchRecoveryNotice by lazy { context.getString(UiR.string.conn_toast_read_local_session_failed) }
+    private val offlineMirrorNotice by lazy { context.getString(UiR.string.conn_toast_offline_mirror_hint) }
+    private val mediaRecoveryNotice by lazy { context.getString(UiR.string.conn_toast_local_attachment_restore_failed) }
     internal val canRetryWorkbenchInitialization: Boolean
-        get() = _operationNotice.value == WORKBENCH_RECOVERY_NOTICE
+        get() = _operationNotice.value == workbenchRecoveryNotice
 
     suspend fun setAccountAvatar(profileId: String, bytes: ByteArray) = withContext(Dispatchers.IO) {
         require(bytes.isNotEmpty() && bytes.size <= ACCOUNT_AVATAR_MAX_BYTES)
@@ -1089,7 +1093,7 @@ class GatewayRuntime(
                         runCatching {
                             credentialStore.saveRefresh(profileId, refreshCred)
                             saveLastProfile(normalized, username, profileId, session, explicitLogin = true)
-                        }.onFailure { _operationNotice.value = "自动登录凭据未能保存，下次启动需要重新登录。" }
+                        }.onFailure { _operationNotice.value = context.getString(UiR.string.conn_toast_auto_login_save_failed) }
                     }
                     establish(
                         endpoint = endpoint,
@@ -1206,7 +1210,7 @@ class GatewayRuntime(
         // 1. 本地优先：立即写入持久退出屏障，防止自动恢复
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         if (!prefs.edit().putBoolean("signed_out_$profileId", true).commit()) {
-            _operationNotice.value = "本机退出状态未能保存，请检查设备存储后重试。"
+            _operationNotice.value = context.getString(UiR.string.conn_toast_logout_state_save_failed)
             return
         }
 
@@ -1249,7 +1253,7 @@ class GatewayRuntime(
                         _operationNotice.value = "本机已退出，登出未获 Gateway 确认，请检查连接后重试。"
                     }
                 } else {
-                    _operationNotice.value = "本机已退出，离线登出未获 Gateway 确认；本机凭据已锁定保留，重新登录后可继续处理。"
+                    _operationNotice.value = context.getString(UiR.string.conn_toast_offline_logout_locked)
                 }
 
                 sessionRenewal?.close()
@@ -1321,7 +1325,7 @@ class GatewayRuntime(
         cancelAccountLogin()
         if (deferUntilSessionEstablished(::chooseAnotherAccount)) return
         if (connectionJob?.isActive == true && !restoringSession) {
-            _operationNotice.value = "当前账号操作尚未结束，请稍后再切换。"
+            _operationNotice.value = context.getString(UiR.string.conn_toast_account_busy_switch)
             return
         }
         cancelRestoration()
@@ -1335,7 +1339,7 @@ class GatewayRuntime(
         cancelAccountLogin()
         if (deferUntilSessionEstablished { selectSavedAccount(profileId) }) return
         if (connectionJob?.isActive == true && !restoringSession) {
-            _operationNotice.value = "当前账号操作尚未结束，请稍后再选择账号。"
+            _operationNotice.value = context.getString(UiR.string.conn_toast_account_busy_select)
             return
         }
         cancelRestoration()
@@ -1348,7 +1352,7 @@ class GatewayRuntime(
                 .putString(KEY_LAST_DEVICE, binding.deviceId).putString(KEY_LAST_SESSION, binding.sessionId)
                 .putInt(KEY_DEVICE_KEY_ENCODING, binding.keyEncoding)
             if (!edit.commit()) {
-                _operationNotice.value = "账号选择未能保存，请检查本机存储后重试。"
+                _operationNotice.value = context.getString(UiR.string.conn_toast_account_save_failed)
                 return@leaveWorkbench
             }
             restoreSessionIfAvailable()
@@ -1410,8 +1414,8 @@ class GatewayRuntime(
             credentialStore.clearRefresh(profileIdFor(endpoint.baseUrl, username))
             identityTrust.forget(endpoint, username)
             _phase.value = ConnectionPhase.Disconnected
-            _operationNotice.value = "旧网关身份和自动登录凭据已清除，请核对新身份后使用密码重新登录。"
-        }.onFailure { _operationNotice.value = "网关身份清理失败，请检查本机存储。" }
+            _operationNotice.value = context.getString(UiR.string.conn_toast_old_identity_cleared)
+        }.onFailure { _operationNotice.value = context.getString(UiR.string.conn_toast_identity_cleanup_failed) }
     }
 
     private suspend fun clearNativeLocalPartitions(localScope: ConversationScope) {
@@ -1434,14 +1438,14 @@ class GatewayRuntime(
 
     fun removeLocalAccount(profileId: String) {
         if (connectionJob?.isActive == true || _phase.value is ConnectionPhase.Connected) {
-            _operationNotice.value = "请先进入账号管理，并等待当前账号操作完成后再移除。"
+            _operationNotice.value = context.getString(UiR.string.conn_toast_remove_account_wait)
             return
         }
         val profile = accountProfiles.find(profileId) ?: return
         val binding = accountProfiles.binding(profileId)
         val accountId = binding?.accountId ?: accountProfiles.accountId(profileId)
         _isManagingProfiles.value = true
-        _operationNotice.value = "正在退出并移除本机账号…"
+        _operationNotice.value = context.getString(UiR.string.conn_toast_removing_account)
         connectionJob = scope.launch {
             var refresh: ByteArray? = null
             try {
@@ -1490,7 +1494,7 @@ class GatewayRuntime(
                 }
                 if (context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_LAST_PROFILE, null) == profileId) clearLastProfile()
                 _savedProfiles.value = accountProfiles.list()
-                _operationNotice.value = "本机账号已移除；Gateway 账号和其他设备配对保持有效。"
+                _operationNotice.value = context.getString(UiR.string.conn_toast_account_removed_server_kept)
             } catch (cancelled: CancellationException) { throw cancelled }
               catch (cause: Exception) { _operationNotice.value = "本机账号移除未完成，资料已保留，请检查连接或存储后重试。" }
             finally { refresh?.fill(0); _isManagingProfiles.value = false }
@@ -1517,7 +1521,7 @@ class GatewayRuntime(
         if (deferUntilSessionEstablished(::unpair)) return
         if (connectionJob?.isActive == true) {
             if (_unpairOperation.value !is LocalOperationState.Running) {
-                _unpairOperation.value = LocalOperationState.Failed("当前账号操作尚未结束，请稍后重试。")
+                _unpairOperation.value = LocalOperationState.Failed(context.getString(UiR.string.conn_toast_account_busy_retry))
             }
             return
         }
@@ -1526,7 +1530,7 @@ class GatewayRuntime(
         val deviceId = lastDeviceId
         val accountId = lastAccountId
         if (current == null || http == null || deviceId == null || accountId == null) {
-            _unpairOperation.value = LocalOperationState.Failed("需要连接当前 Core 后才能解除设备配对。")
+            _unpairOperation.value = LocalOperationState.Failed(context.getString(UiR.string.conn_toast_unpair_requires_connection))
             return
         }
         val profileId = profileIdFor(current.gatewayUrl, current.username)
@@ -1538,7 +1542,7 @@ class GatewayRuntime(
             var partialFailure = false
             try {
                 if (!flushWorkbenchBeforeLeaving()) {
-                    _unpairOperation.value = LocalOperationState.Failed("本地会话未能保存，设备配对和凭据已保留。")
+                    _unpairOperation.value = LocalOperationState.Failed(context.getString(UiR.string.conn_toast_local_session_save_failed))
                     return@launch
                 }
                 try {
@@ -1546,7 +1550,7 @@ class GatewayRuntime(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (cause: Exception) {
-                    val message = "解除配对未获 Core 确认，本机凭据已保留，请检查连接后重试。"
+                    val message = context.getString(UiR.string.conn_toast_unpair_unconfirmed)
                     _operationNotice.value = message
                     _unpairOperation.value = LocalOperationState.Failed(message)
                     return@launch
@@ -1592,16 +1596,16 @@ class GatewayRuntime(
                     ).map { action -> runCatching { action() } }
                     if (cleanup.any { it.isFailure }) {
                         partialFailure = true
-                        _operationNotice.value = "Core 已解除配对，但本机数据清理失败，请重试本机账号清理。"
+                        _operationNotice.value = context.getString(UiR.string.conn_toast_unpair_cleanup_failed)
                     }
                 }
                 _localSessionState.value = LocalSessionState.SignedOut(lastEndpoint = current.gatewayUrl, lastUsername = current.username)
                 _unpairOperation.value = if (partialFailure) {
-                    LocalOperationState.Failed(_operationNotice.value ?: "配对已解除，但部分本机资料尚未清理。", remoteCompleted = true)
+                    LocalOperationState.Failed(_operationNotice.value ?: context.getString(UiR.string.conn_toast_unpair_partial_cleanup), remoteCompleted = true)
                 } else LocalOperationState.Completed
             } catch (cancelled: CancellationException) {
                 _unpairOperation.value = LocalOperationState.Failed(
-                    if (remoteCompleted) "配对已解除，本机清理被中断，请检查本机账号资料。" else "解除配对被中断，请重新连接后确认配对状态。",
+                    if (remoteCompleted) context.getString(UiR.string.conn_toast_unpair_interrupted) else context.getString(UiR.string.conn_toast_unpair_interrupted_reconnect),
                     remoteCompleted,
                 )
                 throw cancelled
@@ -1626,7 +1630,7 @@ class GatewayRuntime(
         } }.getOrDefault(false)
         if (hasRefresh != true) {
             _credentialStatus.value = GatewayCredentialStatus.UNAVAILABLE
-            _operationNotice.value = "本机没有为当前账号保存刷新凭据，请重新登录以获取自动登录凭据。"
+            _operationNotice.value = context.getString(UiR.string.conn_toast_no_refresh_token)
             return
         }
         val rejected = renewal.current
@@ -1634,7 +1638,7 @@ class GatewayRuntime(
             try {
                 renewal.refresh(rejected)
                 if (sessionRenewal === renewal) {
-                    _operationNotice.value = "已向 Gateway 续期会话凭据，新的访问令牌已生效。"
+                    _operationNotice.value = context.getString(UiR.string.conn_toast_session_renewed)
                     restartPlatformStream?.invoke(PlatformStreamWakeReason.CREDENTIAL_CHANGED)
                     resumeWorkbench()
                 }
@@ -1646,8 +1650,8 @@ class GatewayRuntime(
     }
 
     private fun renewalFailureNotice(cause: Throwable): String = when (cause) {
-        is RefreshOutcomeUnknownException -> "Gateway 尚未提供刷新结果重放，续期结果暂不确定。账号资料已保留，请更新 Gateway 后重新认证。"
-        else -> "Gateway 会话恢复暂未完成，登录资料已保留，连接可用后将自动重试。"
+        is RefreshOutcomeUnknownException -> context.getString(UiR.string.conn_toast_session_renewal_uncertain)
+        else -> context.getString(UiR.string.conn_toast_session_restore_pending)
     }
 
     /** Persist the operation before sending, then persist the rotated secret before publication. */
@@ -1741,7 +1745,7 @@ class GatewayRuntime(
         _loginStatus.value = GatewayLoginStatus.REAUTHENTICATION_REQUIRED
         _credentialStatus.value = GatewayCredentialStatus.UNAVAILABLE
         _phase.value = ConnectionPhase.Failed(code)
-        _operationNotice.value = "Gateway 已明确撤销或拒绝会话凭据，请重新登录。账号资料和历史记录已保留。"
+        _operationNotice.value = context.getString(UiR.string.conn_toast_session_revoked)
     }
 
     fun updateDebounceSettings(gateway:String?,delayMillis:Int,extend:Boolean) {
@@ -1814,7 +1818,7 @@ class GatewayRuntime(
             val downloads = com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,media,localOwnerScope,keyProvider=localDocumentKeyProvider)
             val mediaReady = if (nativeMirror != null) prepareNativeMedia(nativeMirror,media)
                 else prepareMediaTransitions(mirror,media)
-            val downloadNotice = if (mediaReady) recoverDownloads(downloads) else MEDIA_RECOVERY_NOTICE
+            val downloadNotice = if (mediaReady) recoverDownloads(downloads) else mediaRecoveryNotice
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             checkOwner()
             val owned = sessionOwner ?: SupervisorJob(scope.coroutineContext[Job]).also { sessionJob = it }
@@ -1832,7 +1836,7 @@ class GatewayRuntime(
         _phase.value=if (initializing) {
             if (restoreLastThread) ConnectionPhase.Reconnecting else ConnectionPhase.Initializing
         } else ConnectionPhase.OfflineMirror(endpoint.baseUrl,username)
-        if (!initializing && _operationNotice.value == null) _operationNotice.value=OFFLINE_MIRROR_NOTICE
+        if (!initializing && _operationNotice.value == null) _operationNotice.value = offlineMirrorNotice
         val mirrorAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
         _localSessionState.value = LocalSessionState.Workspace(mirrorAccount, _phase.value)
     }
@@ -2279,7 +2283,7 @@ class GatewayRuntime(
                                     deviceCapabilityState.value = DeviceCapabilitySyncState("AUTHORIZATION_MODEL_UNSUPPORTED")
                                     break
                                 }
-                                publicationNotice = "设备能力状态同步未完成（${capabilitySyncErrorCode(cause)}），正在重试。"
+                                publicationNotice = context.getString(UiR.string.conn_toast_capability_sync_retry_format, capabilitySyncErrorCode(cause))
                                 _operationNotice.value = publicationNotice
                                 delay(2_000)
                             }
@@ -2319,7 +2323,7 @@ class GatewayRuntime(
             com.openandroidintelligence.mobile.conversations.AndroidAttachmentDownloads(context,mediaCache,conversationScope,keyProvider=localDocumentKeyProvider)
         }
         if (prepareMediaTransitions(mirror,mediaCache)) recoverDownloads(downloads)?.let { _operationNotice.value = it }
-        else _operationNotice.value = MEDIA_RECOVERY_NOTICE
+        else _operationNotice.value = mediaRecoveryNotice
         val mirroredRepository = com.openandroidintelligence.mobile.conversations.MirroredConversationRepository(workbenchRepository,mirror,mediaCache,
             managementCommittedByDelegate = true)
         http.setCursorRecovery {
@@ -2672,7 +2676,7 @@ class GatewayRuntime(
                         attachmentStagingStore(endpoint.baseUrl,conversationScope.accountId,installationId(),existingOnly=true),
                         ownerStaging,legacyRecovery,ownerRecovery,isCancelled={ !ownedJob.isActive })
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { _operationNotice.value = MEDIA_RECOVERY_NOTICE }
+                catch (_: Exception) { _operationNotice.value = mediaRecoveryNotice }
                 GatewayAttachmentDraftCoordinator(AttachmentUploader(HttpAttachmentTransport(http)),
                     com.openandroidintelligence.conversation.attachment.AttachmentSubmissionGate(
                         onSubmit = { error("ATTACHMENT_SUBMISSION_REQUIRES_CONVERSATION_CONTROLLER") }),
@@ -2682,7 +2686,7 @@ class GatewayRuntime(
             if (nativePersistence != null) {
                 if (prepareNativeMedia(nativePersistence,ownerMedia))
                     recoverDownloads(ownerDownloads)?.let { _operationNotice.value = it }
-                else _operationNotice.value = MEDIA_RECOVERY_NOTICE
+                else _operationNotice.value = mediaRecoveryNotice
             }
             return WorkbenchController(
                 scope = sessionScope,
@@ -2754,7 +2758,7 @@ class GatewayRuntime(
             _nativeAgents.value?.close()
             val nativeController = NativeAgentsController(com.openandroidintelligence.gateway.agents.AgentSessionClient(http, traceEnabled = BuildConfig.DEBUG), sessionScope,
                 lastSelectedAgentId = rememberedAgentId,
-                onSelectionLost = { lost -> _operationNotice.value = "上次使用的 Agent「$lost」已不在当前列表中，请重新选择。" })
+                onSelectionLost = { lost -> _operationNotice.value = context.getString(UiR.string.conn_toast_agent_lost_format, lost) })
             _nativeAgents.value = nativeController
             var previousAgent: Pair<String, com.openandroidintelligence.gateway.agents.AgentCapabilities>? = null
             val workbenchHandoff = Mutex()
@@ -2819,12 +2823,12 @@ class GatewayRuntime(
                                 return@withLock
                             }
                             _controller.value = replacement
-                            _operationNotice.compareAndSet(WORKBENCH_RECOVERY_NOTICE, null)
+                            _operationNotice.compareAndSet(workbenchRecoveryNotice, null)
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (cause: Exception) {
                             logConnectionFailure(InitializationStage.WORKBENCH.name, "WORKBENCH_RECOVERY_FAILED", cause)
                             previousAgent = null
-                            _operationNotice.value = WORKBENCH_RECOVERY_NOTICE
+                            _operationNotice.value = workbenchRecoveryNotice
                         }
                     } else {
                         // Initial requests may have run before Agent discovery completed.
@@ -2918,7 +2922,7 @@ class GatewayRuntime(
                 agentName = effectiveAgentName,
             )
             // 仅撤回本次恢复阶段的离线提示，不覆盖附件恢复或其他并发操作的新告警。
-            _operationNotice.compareAndSet(OFFLINE_MIRROR_NOTICE, null)
+            _operationNotice.compareAndSet(offlineMirrorNotice, null)
             _loginStatus.value = GatewayLoginStatus.SIGNED_IN
             val activeAccount = accountProfiles.find(profileId) ?: AccountProfile(profileId, endpoint.baseUrl, username, "")
             _localSessionState.value = LocalSessionState.Workspace(activeAccount, _phase.value)
@@ -3219,7 +3223,7 @@ class GatewayRuntime(
                 executionDriver?.cancelAll()
                 gatewayGrantRevision = revision
                 deviceCapabilityState.value = DeviceCapabilitySyncState()
-                _operationNotice.value = "设备能力状态已变化，正在重新同步；本机开关保持原设置。"
+                _operationNotice.value = context.getString(UiR.string.conn_toast_capability_changed_resync)
             }
         }
         return true
@@ -3385,9 +3389,6 @@ class GatewayRuntime(
     }
 
     private companion object {
-        const val WORKBENCH_RECOVERY_NOTICE = "读取本地会话失败，历史记录已保留，请重新连接后重试。"
-        const val OFFLINE_MIRROR_NOTICE = "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
-        const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
         val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")
         const val PREFS_NAME = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"
@@ -3409,22 +3410,22 @@ class GatewayRuntime(
  * 是「现在该怎么办」，而不是再一次把内部字符串摊给用户。分类只认关键字，
  * 认不出来时给最保守的一条，而不是编造一个更具体的理由。
  */
-internal fun refreshFailureNotice(cause: Throwable): String {
+internal fun refreshFailureNotice(context: Context, cause: Throwable): String {
     val text = (cause.message ?: cause::class.java.simpleName).uppercase()
     return when {
         text.contains("REFRESH_REUSED") ->
-            "Gateway 拒绝续期：刷新凭据已被使用过，请重新登录以取得新的会话凭据。"
+            context.getString(UiR.string.conn_notice_refresh_reused)
         text.contains("GATEWAY_IDENTITY_CHANGED") ->
-            "刷新网关凭据失败：网关部署身份或证书已变更，请核对后重新登录以建立新信任。"
+            context.getString(UiR.string.conn_notice_identity_changed)
         text.contains("PROTOCOL_INCOMPATIBLE") || text.contains(":406") ->
-            "Gateway 拒绝续期：App 与 Gateway 版本不一致，请把两端升级到同一版本后重试。"
+            context.getString(UiR.string.conn_notice_version_incompatible)
         text.contains("401") || text.contains("403") ||
             text.contains("REVOKED") || text.contains("UNAUTHORIZED") ->
-            "Gateway 拒绝续期：当前凭据已失效或被撤销，请重新登录。"
+            context.getString(UiR.string.conn_notice_token_invalid)
         text.contains("TIMEOUT") || text.contains("TIMED OUT") ->
-            "刷新网关凭据失败：连接超时，当前连接仍然有效，请检查网络后重试。"
+            context.getString(UiR.string.conn_notice_timeout)
         text.contains("CONNECT") || text.contains("UNKNOWNHOST") || text.contains("IOEXCEPTION") ->
-            "刷新网关凭据失败：无法连接 Gateway，当前连接仍然有效，请检查网络后重试。"
-        else -> "刷新网关凭据失败，当前连接仍然有效，请稍后重试。"
+            context.getString(UiR.string.conn_notice_unreachable)
+        else -> context.getString(UiR.string.conn_notice_fallback)
     }
 }

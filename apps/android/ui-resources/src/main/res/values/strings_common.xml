@@ -24,13 +24,61 @@
     <string name="common_action_done">完成</string>
     <string name="common_action_enable">启用</string>
     <string name="common_action_disable">禁用</string>
+    <string name="common_action_next">下一步</string>
+    <string name="common_action_previous">上一步</string>
+    <string name="common_action_skip">跳过</string>
+    <string name="common_action_continue">继续</string>
+    <string name="common_action_clear">清除</string>
+    <string name="common_action_reset">重置</string>
+    <string name="common_action_settings">前往设置</string>
+    <string name="common_action_go_to_settings">去设置</string>
+    <string name="common_action_remove">移除</string>
+    <string name="common_action_verify">验证</string>
+    <string name="common_action_start">开始使用</string>
+    <string name="common_action_got_it">知道了</string>
+    <string name="common_action_download">下载</string>
+    <string name="common_action_select_app">选择应用</string>
+    <string name="common_action_select_all">全选</string>
+    <string name="common_action_logout">退出登录</string>
+    <string name="common_action_copy_command">复制命令</string>
 
     <!-- 基础状态与反馈 -->
     <string name="common_status_loading">加载中…</string>
+    <string name="common_status_loading_title">正在加载</string>
     <string name="common_status_success">操作成功</string>
     <string name="common_status_failed">操作失败</string>
+    <string name="common_status_empty">还没有内容</string>
+    <string name="common_status_load_failed">暂时无法加载</string>
+    <string name="common_status_online">在线</string>
+    <string name="common_status_offline">离线</string>
+    <string name="common_status_queued">排队中</string>
+    <string name="common_status_running">执行中</string>
+    <string name="common_status_completed">已完成</string>
+    <string name="common_status_downloading">下载中…</string>
+    <string name="common_status_unknown">未知</string>
+    <string name="common_status_default">默认</string>
+    <string name="common_status_unclassified">未分类</string>
+    <string name="common_status_please_wait">请稍候…</string>
     <string name="common_copied_to_clipboard">已复制到剪贴板</string>
+    <string name="common_copied">已复制</string>
+    <string name="common_copied_command">已复制命令</string>
 
-    <!-- 占位符格式化示例: 索引顺序说明 -->
+    <!-- 无障碍辅助与表单通用标签 -->
+    <string name="common_accessibility_clear_text">清除内容</string>
+    <string name="common_accessibility_show_password">显示密码</string>
+    <string name="common_accessibility_hide_password">隐藏密码</string>
+    <string name="common_accessibility_expanded">已展开</string>
+    <string name="common_accessibility_collapsed">已收起</string>
+
+    <!-- StateViews 公共三态组件文案 (conversation-ui) -->
+    <string name="common_state_idle_hint">选择会话后显示内容</string>
+    <string name="common_state_loading_reading">正在从服务器读取内容…</string>
+    <string name="common_state_content_fallback">暂时无法取得内容。请检查连接后重试；若持续失败，请检查服务器服务。</string>
+
+    <!-- 分页与计数通用格式 -->
     <string name="common_pagination_format">第 %1$d 页，共 %2$d 页</string>
+
+    <!-- 外观引导 (AppearanceSetupScreen) -->
+    <string name="common_onboarding_appearance_title">外观选项</string>
+    <string name="common_onboarding_appearance_desc">选择适合你的界面主题与色彩风格</string>
 </resources>

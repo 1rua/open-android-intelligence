@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile.plugins
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import androidx.annotation.StringRes
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 一项 Android 设备能力的**授权形态**。
@@ -43,12 +45,15 @@ enum class DeviceCapabilityGrantKind {
  */
 data class AndroidPermissionRequirement(
     val key: String,
-    val label: String,
+    @StringRes val labelRes: Int,
     val grantKind: DeviceCapabilityGrantKind,
     val manifestPermission: String? = null,
-    val purpose: String,
+    @StringRes val purposeRes: Int,
     val isFallback: Boolean = false,
-)
+) {
+    val label: String get() = (currentApplicationContext() ?: error("Context required")).getString(labelRes)
+    val purpose: String get() = (currentApplicationContext() ?: error("Context required")).getString(purposeRes)
+}
 
 /**
  * 由 kernel primitive 集合推导所需的 Android 授权需求。
@@ -72,10 +77,10 @@ fun androidPermissionRequirements(
         add(
             AndroidPermissionRequirement(
                 key = "sms",
-                label = "短信读取",
+                labelRes = UiR.string.perm_req_sms_title,
                 grantKind = DeviceCapabilityGrantKind.RUNTIME_PERMISSION,
                 manifestPermission = Manifest.permission.READ_SMS,
-                purpose = "读取本机短信内容供 Agent 查询。不授权时短信能力不可用，其他功能不受影响。",
+                purposeRes = UiR.string.perm_req_sms_purpose,
             ),
         )
     }
@@ -83,10 +88,10 @@ fun androidPermissionRequirements(
         add(
             AndroidPermissionRequirement(
                 key = "call-log",
-                label = "通话记录读取",
+                labelRes = UiR.string.perm_req_call_log_title,
                 grantKind = DeviceCapabilityGrantKind.RUNTIME_PERMISSION,
                 manifestPermission = Manifest.permission.READ_CALL_LOG,
-                purpose = "读取本机通话记录供 Agent 查询。不授权时通话记录能力不可用。",
+                purposeRes = UiR.string.perm_req_call_log_purpose,
             ),
         )
     }
@@ -94,9 +99,9 @@ fun androidPermissionRequirements(
         add(
             AndroidPermissionRequirement(
                 key = "notifications",
-                label = "通知使用权",
+                labelRes = UiR.string.perm_req_notification_access_title,
                 grantKind = DeviceCapabilityGrantKind.NOTIFICATION_ACCESS,
-                purpose = "读取新到通知的内容供 Agent 处理。需要先在系统「通知使用权」里允许本应用。",
+                purposeRes = UiR.string.perm_req_notification_access_purpose,
             ),
         )
     }
@@ -111,12 +116,12 @@ fun androidPermissionRequirements(
         add(
             AndroidPermissionRequirement(
                 key = "accessibility",
-                label = "无障碍服务",
+                labelRes = UiR.string.perm_req_accessibility_title,
                 grantKind = DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE,
-                purpose = if ("kernel.screen.capture" in primitives) {
-                    "读取屏幕内容、执行点按等操作，并在开启后按需截取屏幕画面。必须在系统无障碍设置里开启本应用的服务。"
+                purposeRes = if ("kernel.screen.capture" in primitives) {
+                    UiR.string.perm_req_accessibility_capture_purpose
                 } else {
-                    "读取屏幕内容并执行点按等操作。必须在系统无障碍设置里开启本应用的服务。"
+                    UiR.string.perm_req_accessibility_control_purpose
                 },
             ),
         )
@@ -125,12 +130,16 @@ fun androidPermissionRequirements(
         add(
             AndroidPermissionRequirement(
                 key = "screen-capture",
-                label = if (accessibilityScreenshotSupported) "屏幕共享（备用）" else "屏幕共享",
-                grantKind = DeviceCapabilityGrantKind.MEDIA_PROJECTION,
-                purpose = if (accessibilityScreenshotSupported) {
-                    "仅当无障碍截图不可用、且你明确同意时才需要。每次屏幕共享会话都要单独确认。"
+                labelRes = if (accessibilityScreenshotSupported) {
+                    UiR.string.perm_req_screen_projection_fallback_title
                 } else {
-                    "当前系统不支持无障碍截图，只能通过系统屏幕共享授权截图。每次会话都要单独确认。"
+                    UiR.string.perm_req_screen_projection_title
+                },
+                grantKind = DeviceCapabilityGrantKind.MEDIA_PROJECTION,
+                purposeRes = if (accessibilityScreenshotSupported) {
+                    UiR.string.perm_req_screen_projection_fallback_purpose
+                } else {
+                    UiR.string.perm_req_screen_projection_purpose
                 },
                 isFallback = accessibilityScreenshotSupported,
             ),
@@ -255,18 +264,33 @@ fun AndroidPermissionRequirement.opensMediaProjectionDialog(): Boolean =
 fun AndroidPermissionRequirement.opensNotificationAccessSettings(): Boolean =
     grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS
 
+internal fun currentApplicationContext(): Context? {
+    return runCatching {
+        val activityThreadClass = Class.forName("android.app.ActivityThread")
+        val currentAppMethod = activityThreadClass.getMethod("currentApplication")
+        currentAppMethod.invoke(null) as? Context
+    }.getOrNull() ?: runCatching {
+        val appProvider = Class.forName("androidx.test.core.app.ApplicationProvider")
+        val getContext = appProvider.getMethod("getApplicationContext")
+        getContext.invoke(null) as? Context
+    }.getOrNull()
+}
+
 /**
  * 系统未提供某个设置页时的准确手动引导（问题二要求「无法自动跳转时显示准确的手动操作引导」）。
  *
  * 原文案只有笼统的「无法打开设置」，用户在定制 ROM 上找不到入口。
  */
-fun manualGrantGuidance(requirement: AndroidPermissionRequirement): String = when (requirement.grantKind) {
-    DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE ->
-        "无法自动打开无障碍设置。请手动进入：系统设置 → 无障碍 → 已下载的服务 / 已安装的应用 → 找到本应用 → 开启，并确认服务显示「已连接」。"
-    DeviceCapabilityGrantKind.NOTIFICATION_ACCESS ->
-        "无法自动打开通知使用权设置。请手动进入：系统设置 → 通知 → 通知使用权（或「设备和应用通知」→ 特殊访问权限）→ 找到本应用 → 允许。"
-    DeviceCapabilityGrantKind.MEDIA_PROJECTION ->
-        "屏幕共享需要一次系统授权。请在应用内重新点击「屏幕共享」发起；若系统未提供录屏服务，无障碍截图仍是可用路径。"
-    DeviceCapabilityGrantKind.RUNTIME_PERMISSION ->
-        "无法自动申请该权限。请手动进入：系统设置 → 应用 → 本应用 → 权限 → 允许${requirement.label}。"
+fun manualGrantGuidance(requirement: AndroidPermissionRequirement, context: Context? = null): String {
+    val ctx = context ?: currentApplicationContext() ?: error("Context is required for manualGrantGuidance")
+    return when (requirement.grantKind) {
+        DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE ->
+            ctx.getString(UiR.string.perm_guidance_accessibility)
+        DeviceCapabilityGrantKind.NOTIFICATION_ACCESS ->
+            ctx.getString(UiR.string.perm_guidance_notification_access)
+        DeviceCapabilityGrantKind.MEDIA_PROJECTION ->
+            ctx.getString(UiR.string.perm_guidance_screen_projection)
+        DeviceCapabilityGrantKind.RUNTIME_PERMISSION ->
+            ctx.getString(UiR.string.perm_guidance_runtime_format, ctx.getString(requirement.labelRes))
+    }
 }

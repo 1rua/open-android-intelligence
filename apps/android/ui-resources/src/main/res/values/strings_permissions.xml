@@ -3,24 +3,163 @@
     <!-- ================================================================= -->
     <!-- 功能域: 权限申请与隐私授权 (Permissions & Privacy)                 -->
     <!-- 资源前缀: perm_                                                   -->
-    <!-- 适用场景: 系统运行时权限申请弹窗、特殊权限引导页、圈选截屏授权说明     -->
+    <!-- 适用场景: 系统运行时权限申请弹窗、特殊权限引导页、设备能力授权审批     -->
     <!-- ================================================================= -->
 
-    <!-- 通用权限弹窗 -->
+    <!-- 通用权限动作与说明 -->
     <string name="perm_dialog_title">权限申请与使用说明</string>
     <string name="perm_action_grant">前往授权</string>
     <string name="perm_action_deny">暂不授予</string>
-    <string name="perm_action_settings">打开系统设置</string>
+    <string name="perm_action_settings">前往设置</string>
+    <string name="perm_action_next">下一步</string>
+    <string name="perm_action_skip_optional">跳过可选权限</string>
+    <string name="perm_action_no_op">无需操作</string>
+    <string name="perm_action_unsupported">不支持</string>
+    <string name="perm_action_role_set">已设置</string>
+    <string name="perm_action_enabled">已开启</string>
+    <string name="perm_action_enable">开启</string>
 
-    <!-- 屏幕截取授权 (MediaProjection: 统一称"圈选屏幕"或"截取屏幕") -->
-    <string name="perm_screen_capture_title">屏幕截取与圈选分析</string>
-    <string name="perm_screen_capture_desc">智能助手需要屏幕截取权限以便实时分析屏幕信息并提供针对性协助。我们仅在触发分析时截取画面，绝不会在后台静默录制。</string>
+    <!-- 权限分组与性质提示 -->
+    <string name="perm_group_required">基础功能</string>
+    <string name="perm_group_optional">可选增强</string>
+    <string name="perm_group_device_capability">设备能力</string>
+    <string name="perm_group_hint_optional">OPTIONAL · 可跳过</string>
+    <string name="perm_group_hint_plugin">PLUGIN · 按需</string>
 
-    <!-- 通知监听授权 -->
-    <string name="perm_notification_listener_title">通知读取权限</string>
-    <string name="perm_notification_listener_desc">允许助手读取系统通知，以便为你提炼重点消息并在需要时提供快捷回复建议。</string>
+    <!-- 权限引导卡片状态与徽标 -->
+    <string name="perm_screen_title">按需授权</string>
+    <string name="perm_screen_empty">当前没有需要授权的系统权限。</string>
+    <string name="perm_status_dialog_only">使用时由系统询问 · 无需现在授权</string>
+    <string name="perm_status_role_unsupported">系统未提供可用的数字助理设置页 · 仍可在应用内对话</string>
+    <string name="perm_status_device_unsupported">当前设备不支持</string>
+    <string name="perm_status_role_granted">已设为默认数字助理 · 可用 Assist 手势唤起</string>
+    <string name="perm_status_role_not_set">未设为默认数字助理 · 可在系统设置中选择</string>
+    <string name="perm_status_granted">已授权</string>
+    <string name="perm_status_blocked">已被拒绝 · 需在系统设置开启</string>
+    <string name="perm_status_not_granted">未授权</string>
+    <string name="perm_badge_required">必需</string>
+    <string name="perm_badge_system_settings">系统设置</string>
+    <string name="perm_badge_optional">可选</string>
+    <string name="perm_badge_on_demand">按需</string>
 
-    <!-- 麦克风与语音交互 -->
-    <string name="perm_record_audio_title">麦克风语音权限</string>
-    <string name="perm_record_audio_desc">允许助手访问麦克风以使用语音与助手进行日常对话交流。</string>
+    <!-- 引导页权限目录说明项 (PermissionCatalog) -->
+    <string name="perm_catalog_notifications_title">通知</string>
+    <string name="perm_catalog_notifications_desc">接收助手回复、生成完成与审批提醒。关闭后仍可使用，但需要保持应用在前台。</string>
+    <string name="perm_catalog_microphone_title">麦克风</string>
+    <string name="perm_catalog_microphone_desc">发送语音消息。仅在按下录音时采集，音频直接发往你的助手，不进行转录。</string>
+    <string name="perm_catalog_screen_capture_title">屏幕采集</string>
+    <string name="perm_catalog_screen_capture_desc">圈选屏幕内容发送给助手。</string>
+    <string name="perm_catalog_assistant_role_title">默认数字助理</string>
+    <string name="perm_catalog_assistant_role_desc">把这台设备上的数字助理设为 OAI。设置后可用系统 Assist 手势在任何应用中唤起助手；不设置时仍可在应用内正常对话，只是没有跨应用入口。</string>
+    <string name="perm_catalog_sms_title">短信读取</string>
+    <string name="perm_catalog_sms_desc">用于让助手查询短信验证码与消息通知。</string>
+    <string name="perm_catalog_call_log_title">通话与电话状态</string>
+    <string name="perm_catalog_call_log_desc">用于让助手查询通话记录或检测来电状态，协助进行电话管理。</string>
+    <string name="perm_catalog_notification_access_title">通知使用权</string>
+    <string name="perm_catalog_notification_access_desc">用于让助手查询系统其它应用通知与提醒，需在系统设置中手动开启。</string>
+
+    <!-- 权限与授权区别常驻说明 -->
+    <string name="perm_notice_title">权限 ≠ 授权</string>
+    <string name="perm_intro_body">以下权限只影响对应功能。可选权限跳过不影响登录与对话；设备能力由本机决定：插件启用后默认开启，仍需满足系统权限和本地范围设置。</string>
+    <string name="perm_notice_body">设备能力由 Android 本机决定，可在插件管理中关闭；已关闭的设置会保留。旧设置需先在本机复核。系统权限、通知读取范围、屏幕许可、后台许可和敏感操作确认仍分别检查，不需要再为服务器账号单独开启设备能力。</string>
+
+    <!-- 设备能力系统权限要求与手动引导 (DeviceCapabilityPermissions) -->
+    <string name="perm_req_sms_title">短信读取</string>
+    <string name="perm_req_sms_purpose">读取本机短信内容供助手查询。不授权时短信能力不可用，其他功能不受影响。</string>
+    <string name="perm_req_call_log_title">通话记录读取</string>
+    <string name="perm_req_call_log_purpose">读取本机通话记录供助手查询。不授权时通话记录能力不可用。</string>
+    <string name="perm_req_notification_access_title">通知使用权</string>
+    <string name="perm_req_notification_access_purpose">读取新到通知的内容供助手处理。需要先在系统「通知使用权」里允许本应用。</string>
+    <string name="perm_req_accessibility_title">无障碍服务</string>
+    <string name="perm_req_accessibility_capture_purpose">读取屏幕内容、执行点按等操作，并在开启后按需截取屏幕画面。必须在系统无障碍设置里开启本应用的服务。</string>
+    <string name="perm_req_accessibility_control_purpose">读取屏幕内容并执行点按等操作。必须在系统无障碍设置里开启本应用的服务。</string>
+    <string name="perm_req_screen_projection_fallback_title">屏幕共享（备用）</string>
+    <string name="perm_req_screen_projection_title">屏幕共享</string>
+    <string name="perm_req_screen_projection_fallback_purpose">仅当无障碍截图不可用、且你明确同意时才需要。每次屏幕共享会话都要单独确认。</string>
+    <string name="perm_req_screen_projection_purpose">当前系统不支持无障碍截图，只能通过系统屏幕共享授权截图。每次会话都要单独确认。</string>
+    <string name="perm_guidance_accessibility">无法自动打开无障碍设置。请手动进入：系统设置 → 无障碍 → 已下载的服务 / 已安装的应用 → 找到本应用 → 开启，并确认服务显示「已连接」。</string>
+    <string name="perm_guidance_notification_access">无法自动打开通知使用权设置。请手动进入：系统设置 → 通知 → 通知使用权（或「设备和应用通知」→ 特殊访问权限）→ 找到本应用 → 允许。</string>
+    <string name="perm_guidance_screen_projection">屏幕共享需要一次系统授权。请在应用内重新点击「屏幕共享」发起；若系统未提供录屏服务，无障碍截图仍是可用路径。</string>
+    <string name="perm_guidance_runtime_format">无法自动申请该权限。请手动进入：系统设置 → 应用 → 本应用 → 权限 → 允许%1$s。</string>
+
+    <!-- 设备操作审批弹窗 (ScreenControlConfirmationDialog) -->
+    <string name="perm_confirm_dialog_title">确认设备请求</string>
+    <string name="perm_confirm_agent_format">Agent：%1$s</string>
+    <string name="perm_confirm_purpose_format">用途：%1$s</string>
+    <string name="perm_confirm_audit_note">上述信息由请求方声明，仅供审计记录。</string>
+    <string name="perm_confirm_operation_format">操作类型：%1$s</string>
+    <string name="perm_confirm_params_title">本次参数与范围</string>
+    <string name="perm_confirm_notice">临时允许仅适用于当前操作与数据范围，系统权限仍需单独满足。</string>
+    <string name="perm_confirm_expired">请求已过期，不能继续允许。</string>
+    <string name="perm_confirm_remaining_seconds_format">剩余确认时间：%1$s 秒</string>
+    <string name="perm_confirm_hide_details">隐藏技术详情</string>
+    <string name="perm_confirm_show_details">查看技术详情</string>
+    <string name="perm_confirm_details_format">插件：%1$s\n能力：%2$s\n参数：%3$s</string>
+    <string name="perm_action_allow_once">仅允许本次</string>
+    <string name="perm_action_allow_one_hour">允许 1 小时</string>
+    <string name="perm_action_allow_duration_format">允许 %1$s 分钟</string>
+
+    <!-- 设备操作审批文案字段 (DeviceAuthorizationCopy) -->
+    <string name="perm_auth_cap_screen_capture">获取屏幕截图</string>
+    <string name="perm_auth_cap_screen_read">读取屏幕内容</string>
+    <string name="perm_auth_cap_sms_read">读取短信</string>
+    <string name="perm_auth_cap_sms_sync">设置短信后台同步任务</string>
+    <string name="perm_auth_cap_sms_status">查询短信任务状态</string>
+    <string name="perm_auth_cap_sms_cancel">取消短信后台同步任务</string>
+    <string name="perm_auth_cap_notifications_read">读取通知</string>
+    <string name="perm_auth_cap_call_log_read">读取通话记录</string>
+    <string name="perm_auth_operation_format">设备操作：%1$s</string>
+    <string name="perm_auth_params_unparseable">参数无法解析，请核对技术详情；授权范围以系统实际执行检查为准。</string>
+    <string name="perm_auth_params_empty">未指定额外筛选参数；实际访问范围仍受本机设置限制。</string>
+    <string name="perm_auth_field_app_source">应用来源</string>
+    <string name="perm_auth_field_target_app">目标应用</string>
+    <string name="perm_auth_field_sms_sender">短信发送方</string>
+    <string name="perm_auth_field_start_time">起始时间</string>
+    <string name="perm_auth_field_end_time">结束时间</string>
+    <string name="perm_auth_field_limit">最多读取条数</string>
+    <string name="perm_auth_field_query">查询条件</string>
+    <string name="perm_auth_field_fields">读取字段</string>
+    <string name="perm_auth_field_scope">请求范围</string>
+    <string name="perm_auth_field_screen_action">屏幕动作</string>
+    <string name="perm_auth_field_op_type">操作类型</string>
+    <string name="perm_auth_field_x">横坐标</string>
+    <string name="perm_auth_field_y">纵坐标</string>
+    <string name="perm_auth_field_duration">动作时长（毫秒）</string>
+    <string name="perm_auth_field_target_view">目标控件</string>
+    <string name="perm_auth_field_state_check">屏幕状态校验</string>
+    <string name="perm_auth_field_input_text">输入内容</string>
+    <string name="perm_auth_unspecified">未说明</string>
+    <string name="perm_auth_not_provided">未提供</string>
+    <string name="perm_auth_param_specified">已指定</string>
+    <string name="perm_auth_param_text_format">已提供%1$s，可在技术详情核对</string>
+    <string name="perm_auth_param_chars_format">（%1$d 字符）</string>
+    <string name="perm_auth_param_ellipsis">…（完整内容见技术详情）</string>
+    <string name="perm_auth_param_more_format">另有 %1$d 项参数，请查看技术详情。</string>
+    <string name="perm_auth_risk_control">可能点击、输入文字或切换应用，改变手机当前状态。</string>
+    <string name="perm_auth_risk_screen_read">读取内容可能包含屏幕上的个人信息；截图许可不会授予屏幕控制权限。</string>
+    <string name="perm_auth_risk_data_read">可能涉及正文、来源、号码和时间等敏感信息；仅按实际能力和本机允许范围执行。</string>
+    <string name="perm_auth_risk_generic">可能读取或改变设备数据，请核对操作及访问范围。</string>
+
+    <!-- 麦克风与运行时交互提示 (MainActivity / Assistant) -->
+    <string name="perm_audio_required">需要麦克风权限才能发送语音</string>
+    <string name="perm_audio_error_start_failed">无法开始录音，请检查麦克风权限及占用情况</string>
+    <string name="perm_audio_in_session_required">需要麦克风权限，请在系统设置中允许后重试</string>
+    <string name="perm_role_assistant_not_set_hint">未检测到已设置。请在系统设置中选择 OAI 作为数字助理</string>
+    <string name="perm_role_assistant_settings_unavailable">系统未提供可用的数字助理设置页，可稍后在系统设置中手动选择</string>
+
+    <!-- 屏幕采集授权结果提示 (MainActivity MediaProjection) -->
+    <string name="perm_screen_capture_granted_hint">已获得屏幕采集授权，请再次点击圈选开始截取</string>
+    <string name="perm_screen_capture_session_failed">屏幕采集会话建立失败，圈选暂不可用</string>
+    <string name="perm_screen_capture_denied">未获得屏幕采集授权，圈选暂不可用</string>
+    <string name="perm_screen_capture_disabled">未开启屏幕截图功能</string>
+    <string name="perm_screen_screenshot_denied">未获得屏幕截图授权，截图暂时不可用</string>
+    <string name="perm_screen_screenshot_changed">截图能力或本机设置已变化，请重新发起系统授权</string>
+    <string name="perm_screen_screenshot_revoked">截图能力已撤销，未使用系统授权结果</string>
+    <string name="perm_screen_screenshot_granted">已获得屏幕截图授权</string>
+    <string name="perm_screen_screenshot_session_failed">屏幕截图会话建立失败，截图暂不可用</string>
+    <string name="perm_screen_screenshot_enable_plugin_hint">请先启用截图插件并开启截图权限</string>
+    <string name="perm_screen_screenshot_ready_no_auth">截图已可用，不需要额外的系统授权</string>
+    <string name="perm_screen_record_service_unavailable">系统未提供屏幕录制服务，截图暂不可用</string>
+    <string name="perm_screen_capture_direct_hint">现在可以直接圈选，无需额外授权</string>
+    <string name="perm_screen_capture_unsupported">此设备不支持屏幕采集，圈选不可用</string>
 </resources>

@@ -32,20 +32,24 @@ import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 
+@Composable
 internal fun httpStatusLabel(state: SettingsUiState): String = when (state.coreHttpHealth.reachability) {
-    CoreHttpReachability.UNKNOWN -> if (state.coreHttpHealth.failureCode == "NETWORK_LOST") "网络已断开" else "未检测"
-    CoreHttpReachability.REACHABLE -> "可访问" + (state.coreHttpHealth.httpStatus?.let { "（HTTP $it）" } ?: "")
-    CoreHttpReachability.UNREACHABLE -> "无法访问 Core"
-    CoreHttpReachability.SECURITY_BLOCKED -> "安全校验阻止"
+    CoreHttpReachability.UNKNOWN -> if (state.coreHttpHealth.failureCode == "NETWORK_LOST") stringResource(UiR.string.conn_reachability_disconnected) else stringResource(UiR.string.conn_reachability_untested)
+    CoreHttpReachability.REACHABLE -> state.coreHttpHealth.httpStatus?.let { stringResource(UiR.string.conn_reachability_reachable_with_code, it) } ?: stringResource(UiR.string.conn_reachability_reachable)
+    CoreHttpReachability.UNREACHABLE -> stringResource(UiR.string.conn_reachability_unreachable)
+    CoreHttpReachability.SECURITY_BLOCKED -> stringResource(UiR.string.conn_reachability_security_blocked)
 }
 
+@Composable
 internal fun eventStatusLabel(status: EventStreamStatus): String = when (status) {
-    EventStreamStatus.IDLE -> "未连接"
-    EventStreamStatus.CONNECTING -> "正在连接"
-    EventStreamStatus.LIVE -> "已连接"
-    EventStreamStatus.RECONNECTING -> "正在重连"
-    EventStreamStatus.FAILED -> "连接失败"
+    EventStreamStatus.IDLE -> stringResource(UiR.string.conn_status_disconnected)
+    EventStreamStatus.CONNECTING -> stringResource(UiR.string.conn_status_connecting)
+    EventStreamStatus.LIVE -> stringResource(UiR.string.conn_status_connected)
+    EventStreamStatus.RECONNECTING -> stringResource(UiR.string.conn_status_reconnecting)
+    EventStreamStatus.FAILED -> stringResource(UiR.string.conn_status_failed)
 }
 
 @Composable
@@ -66,30 +70,30 @@ internal fun ConnectionSettingsScreen(
 ) {
     var confirmLogout by rememberSaveable { mutableStateOf(false) }
     var removing by rememberSaveable { mutableStateOf<String?>(null) }
-    SettingsPageScaffold("连接与账号", presentation, onBack) { padding ->
+    SettingsPageScaffold(stringResource(UiR.string.conn_screen_title), presentation, onBack) { padding ->
         SettingsPageColumn(padding) {
-            SectionLabel("当前连接")
+            SectionLabel(stringResource(UiR.string.conn_section_current_connection))
             SettingsSectionCard {
-                SettingsListItem("OAI Core 地址", supporting = uiState.connectedGatewayUrl ?: "尚未选择 Core")
-                SettingsListItem("HTTP 连接", supporting = httpStatusLabel(uiState))
-                SettingsListItem("实时事件通道", supporting = eventStatusLabel(uiState.eventStreamStatus))
-                SettingsNavigationItem("连接详情与诊断", onClick = onOpenDiagnostics)
+                SettingsListItem(stringResource(UiR.string.conn_server_address_title), supporting = uiState.connectedGatewayUrl ?: stringResource(UiR.string.conn_server_address_none))
+                SettingsListItem(stringResource(UiR.string.conn_item_http_connection), supporting = httpStatusLabel(uiState))
+                SettingsListItem(stringResource(UiR.string.conn_item_realtime_channel), supporting = eventStatusLabel(uiState.eventStreamStatus))
+                SettingsNavigationItem(stringResource(UiR.string.conn_item_diagnostics), onClick = onOpenDiagnostics)
             }
-            SectionLabel("Agent 管理")
+            SectionLabel(stringResource(UiR.string.conn_section_agent_management))
             SettingsSectionCard {
                 val agents = uiState.nativeAgentsState
                 when {
-                    agents == null -> SettingsListItem("当前 Agent", supporting = "未获取，连接后刷新")
-                    agents.supported == null -> SettingsListItem("正在检查 Agent 支持情况", supporting = "请稍候…")
-                    agents.supported == false -> SettingsListItem("当前 Core 不支持 Agent 列表", supporting = "请检查 Core 版本")
-                    agents.agents.isEmpty() -> SettingsListItem("尚未发现 Agent", supporting = "请检查 Core 上的 Agent 配置")
+                    agents == null -> SettingsListItem(stringResource(UiR.string.conn_item_current_agent), supporting = stringResource(UiR.string.conn_agent_not_fetched))
+                    agents.supported == null -> SettingsListItem(stringResource(UiR.string.conn_agent_checking_support), supporting = stringResource(UiR.string.common_status_loading))
+                    agents.supported == false -> SettingsListItem(stringResource(UiR.string.conn_agent_unsupported_by_core), supporting = stringResource(UiR.string.conn_agent_check_core_version))
+                    agents.agents.isEmpty() -> SettingsListItem(stringResource(UiR.string.conn_agent_none_discovered), supporting = stringResource(UiR.string.conn_agent_check_core_config))
                     else -> agents.agents.forEach { agent ->
                         val selected = agent.id == agents.selectedAgentId
                         SettingsListItem(
                             agent.name,
-                            supporting = (if (agent.online) "在线" else "离线") +
-                                (if (agent.sessionScope == "account") " · 账号隔离" else " · 共享实例") +
-                                (if (selected) " · 当前使用" else ""),
+                            supporting = (if (agent.online) stringResource(UiR.string.common_status_online) else stringResource(UiR.string.common_status_offline)) +
+                                (if (agent.sessionScope == "account") stringResource(UiR.string.conn_agent_badge_isolated) else stringResource(UiR.string.conn_agent_badge_shared)) +
+                                (if (selected) stringResource(UiR.string.conn_agent_badge_current) else ""),
                             selected = selected,
                             icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
                             enabled = !agents.busy,
@@ -97,17 +101,17 @@ internal fun ConnectionSettingsScreen(
                         )
                     }
                 }
-                SettingsListItem("刷新 Agent 列表", enabled = uiState.isGatewayConnected && agents != null, onClick = onRefreshAgents)
+                SettingsListItem(stringResource(UiR.string.conn_action_refresh_agent_list), enabled = uiState.isGatewayConnected && agents != null, onClick = onRefreshAgents)
             }
-            SectionLabel("账号管理")
+            SectionLabel(stringResource(UiR.string.conn_section_account_management))
             SettingsSectionCard {
                 val login = when (uiState.loginStatus) {
-                    GatewayLoginStatus.SIGNED_OUT -> "未登录"
-                    GatewayLoginStatus.RESTORING -> "正在恢复登录"
-                    GatewayLoginStatus.SIGNED_IN -> "已登录"
-                    GatewayLoginStatus.REAUTHENTICATION_REQUIRED -> "需要重新登录"
+                    GatewayLoginStatus.SIGNED_OUT -> stringResource(UiR.string.conn_account_status_not_logged_in)
+                    GatewayLoginStatus.RESTORING -> stringResource(UiR.string.conn_account_status_restoring)
+                    GatewayLoginStatus.SIGNED_IN -> stringResource(UiR.string.conn_account_status_logged_in)
+                    GatewayLoginStatus.REAUTHENTICATION_REQUIRED -> stringResource(UiR.string.conn_account_status_relogin_required)
                 }
-                SettingsListItem("当前账号", supporting = listOfNotNull(uiState.connectedUsername, login).joinToString(" · "), icon = Icons.Default.Person)
+                SettingsListItem(stringResource(UiR.string.conn_item_current_account), supporting = listOfNotNull(uiState.connectedUsername, login).joinToString(" · "), icon = Icons.Default.Person)
                 uiState.savedProfiles.forEach { profile ->
                     SettingsListItem(
                         profile.username,
@@ -118,39 +122,39 @@ internal fun ConnectionSettingsScreen(
                     TextButton(
                         onClick = { removing = profile.localProfileId },
                         enabled = !uiState.isManagingProfiles,
-                    ) { Text("移除本机账号", color = MaterialTheme.colorScheme.error) }
+                    ) { Text(stringResource(UiR.string.conn_action_remove_local_account), color = MaterialTheme.colorScheme.error) }
                 }
-                SettingsNavigationItem("切换账号", onClick = onManageAccounts, enabled = uiState.hasLocalSession)
-                SettingsNavigationItem("添加账号", onClick = onAddAccount)
+                SettingsNavigationItem(stringResource(UiR.string.conn_action_switch_account), onClick = onManageAccounts, enabled = uiState.hasLocalSession)
+                SettingsNavigationItem(stringResource(UiR.string.conn_action_add_account), onClick = onAddAccount)
                 SettingsListItem(
-                    "刷新登录凭据",
-                    supporting = if (uiState.isRefreshingSession) "续期中…" else "提前更新当前登录凭据",
+                    stringResource(UiR.string.conn_action_refresh_credentials),
+                    supporting = if (uiState.isRefreshingSession) stringResource(UiR.string.conn_status_renewing_credentials) else stringResource(UiR.string.conn_desc_refresh_credentials),
                     enabled = uiState.isGatewayConnected && !uiState.isRefreshingSession,
                     onClick = onRefreshSession,
                 )
                 if (uiState.hasLocalSession) {
                     HorizontalDivider()
-                    SettingsListItem("退出登录", tone = SettingsTone.DANGER, onClick = { confirmLogout = true })
+                    SettingsListItem(stringResource(UiR.string.common_action_logout), tone = SettingsTone.DANGER, onClick = { confirmLogout = true })
                 }
             }
-            SectionLabel("连接安全")
+            SectionLabel(stringResource(UiR.string.conn_section_security))
             SettingsSectionCard {
-                SettingsListItem("传输加密", supporting = when (uiState.connectedTransportSecurity) {
-                    TransportSecurity.PLAINTEXT -> "明文（HTTP），易被窃听"
-                    TransportSecurity.TLS_PINNED -> "已加密，证书公钥一致"
-                    TransportSecurity.TLS_SYSTEM_TRUST -> "已加密，系统证书受信任"
-                    null -> "未建立加密连接"
+                SettingsListItem(stringResource(UiR.string.conn_item_transport_encryption), supporting = when (uiState.connectedTransportSecurity) {
+                    TransportSecurity.PLAINTEXT -> stringResource(UiR.string.conn_encryption_http_warning)
+                    TransportSecurity.TLS_PINNED -> stringResource(UiR.string.conn_encryption_tls_pinned)
+                    TransportSecurity.TLS_SYSTEM_TRUST -> stringResource(UiR.string.conn_encryption_system_ca)
+                    null -> stringResource(UiR.string.conn_encryption_none)
                 })
-                SettingsListItem("Core 身份验证", supporting = when (uiState.connectedTransportSecurity) {
-                    TransportSecurity.TLS_PINNED -> "已核对保存的服务器身份"
-                    TransportSecurity.TLS_SYSTEM_TRUST -> "通过系统证书验证"
-                    TransportSecurity.PLAINTEXT -> "HTTP 无法验证身份"
-                    null -> "未验证"
+                SettingsListItem(stringResource(UiR.string.conn_item_core_identity), supporting = when (uiState.connectedTransportSecurity) {
+                    TransportSecurity.TLS_PINNED -> stringResource(UiR.string.conn_identity_verified_saved)
+                    TransportSecurity.TLS_SYSTEM_TRUST -> stringResource(UiR.string.conn_identity_verified_system_ca)
+                    TransportSecurity.PLAINTEXT -> stringResource(UiR.string.conn_identity_http_cannot_verify)
+                    null -> stringResource(UiR.string.conn_identity_unverified)
                 })
-                SettingsListItem("设备配对", supporting = uiState.pairingSummary ?: if (uiState.hasLocalSession) "保留账号资料，待连接核实" else "无配对信息")
+                SettingsListItem(stringResource(UiR.string.conn_item_device_pairing), supporting = uiState.pairingSummary ?: if (uiState.hasLocalSession) stringResource(UiR.string.conn_pairing_pending_verification) else stringResource(UiR.string.conn_pairing_none))
                 SettingsListItem(
-                    "解除设备配对",
-                    supporting = "取消手机与 Core 配对，清理当前账号本地数据",
+                    stringResource(UiR.string.conn_action_unpair_device),
+                    supporting = stringResource(UiR.string.conn_desc_unpair_device),
                     tone = SettingsTone.DANGER,
                     enabled = uiState.isGatewayConnected,
                     onClick = onRequestUnpair,
@@ -160,51 +164,50 @@ internal fun ConnectionSettingsScreen(
     }
     if (confirmLogout) AlertDialog(
         onDismissRequest = { confirmLogout = false },
-        title = { Text("退出当前账号？") },
-        text = { Text("将保留已存账号、配对和本地聊天记录。该账号的远程任务与通知推送将暂停。") },
-        confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text("退出登录") } },
-        dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text("取消") } },
+        title = { Text(stringResource(UiR.string.conn_dialog_logout_title)) },
+        text = { Text(stringResource(UiR.string.conn_dialog_logout_message)) },
+        confirmButton = { TextButton(onClick = { confirmLogout = false; onLogout() }) { Text(stringResource(UiR.string.common_action_logout)) } },
+        dismissButton = { TextButton(onClick = { confirmLogout = false }) { Text(stringResource(UiR.string.common_action_cancel)) } },
     )
     val profile = uiState.savedProfiles.firstOrNull { it.localProfileId == removing }
     if (profile != null) AlertDialog(
         onDismissRequest = { removing = null },
-        title = { Text("移除本机账号？") },
-        text = { Text("将移除「${profile.username}」在手机上的登录与聊天数据；服务器端数据不受影响。" +
-            if (uiState.isGatewayConnected || uiState.hasLocalSession) "\n先返回账号管理，再确认要移除的账号。" else "") },
+        title = { Text(stringResource(UiR.string.conn_dialog_remove_account_title)) },
+        text = { Text(stringResource(UiR.string.conn_dialog_remove_account_message, profile.username)) },
         confirmButton = { TextButton(onClick = {
             removing = null
             if (uiState.isGatewayConnected || uiState.hasLocalSession) onManageAccounts() else onRemoveAccount(profile.localProfileId)
-        }) { Text(if (uiState.isGatewayConnected || uiState.hasLocalSession) "进入账号管理" else "移除", color = MaterialTheme.colorScheme.error) } },
-        dismissButton = { TextButton(onClick = { removing = null }) { Text("取消") } },
+        }) { Text(if (uiState.isGatewayConnected || uiState.hasLocalSession) stringResource(UiR.string.conn_action_go_to_account_management) else stringResource(UiR.string.common_action_remove), color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { removing = null }) { Text(stringResource(UiR.string.common_action_cancel)) } },
     )
 }
 
 @Composable
 internal fun ConnectionDiagnosticsScreen(uiState: SettingsUiState, presentation: SettingsPresentation, onBack: () -> Unit) {
-    SettingsPageScaffold("连接详情与诊断", presentation, onBack) { padding ->
+    SettingsPageScaffold(stringResource(UiR.string.conn_item_diagnostics), presentation, onBack) { padding ->
         SettingsPageColumn(padding) {
-            SectionLabel("连接状态与诊断")
+            SectionLabel(stringResource(UiR.string.conn_section_status_diagnostics))
             SettingsSectionCard {
-                SettingsListItem("HTTP 连接", supporting = httpStatusLabel(uiState))
-                SettingsListItem("实时事件通道", supporting = eventStatusLabel(uiState.eventStreamStatus))
-                SettingsListItem("连接阶段", supporting = when (uiState.connectionPhase) {
-                    is ConnectionPhase.Connected -> "连接正常"
-                    is ConnectionPhase.OfflineMirror -> "离线查看本地记录，账号未退出"
-                    ConnectionPhase.Initializing, ConnectionPhase.Negotiating -> "正在连接"
-                    ConnectionPhase.Authenticating -> "正在验证账号"
-                    ConnectionPhase.Reconnecting -> "正在重连"
-                    is ConnectionPhase.Failed -> "连接失败，请检查 Core 地址、网络及账号"
-                    ConnectionPhase.Disconnected -> "尚未连接"
+                SettingsListItem(stringResource(UiR.string.conn_item_http_connection), supporting = httpStatusLabel(uiState))
+                SettingsListItem(stringResource(UiR.string.conn_item_realtime_channel), supporting = eventStatusLabel(uiState.eventStreamStatus))
+                SettingsListItem(stringResource(UiR.string.conn_item_connection_phase), supporting = when (uiState.connectionPhase) {
+                    is ConnectionPhase.Connected -> stringResource(UiR.string.conn_phase_normal)
+                    is ConnectionPhase.OfflineMirror -> stringResource(UiR.string.conn_phase_offline_view)
+                    ConnectionPhase.Initializing, ConnectionPhase.Negotiating -> stringResource(UiR.string.conn_status_connecting)
+                    ConnectionPhase.Authenticating -> stringResource(UiR.string.conn_phase_verifying_account)
+                    ConnectionPhase.Reconnecting -> stringResource(UiR.string.conn_status_reconnecting)
+                    is ConnectionPhase.Failed -> stringResource(UiR.string.conn_phase_failed)
+                    ConnectionPhase.Disconnected -> stringResource(UiR.string.conn_phase_not_connected)
                 })
             }
-            SectionLabel("此 Core 支持的功能")
+            SectionLabel(stringResource(UiR.string.conn_section_core_capabilities))
             com.openandroidintelligence.mobile.NegotiatedCapabilitiesGroup(uiState.conversationUi)
             SettingsSectionCard {
-                SettingsListItem("设备端任务执行", supporting = when {
-                    !uiState.isGatewayConnected -> "连接后可查看"
-                    uiState.deviceRequestChannel == null -> "当前 Core 未开启"
-                    !uiState.pluginRuntimesWired -> "插件服务未就绪"
-                    else -> "已支持，执行需授权"
+                SettingsListItem(stringResource(UiR.string.conn_cap_device_execution), supporting = when {
+                    !uiState.isGatewayConnected -> stringResource(UiR.string.conn_cap_view_after_connected)
+                    uiState.deviceRequestChannel == null -> stringResource(UiR.string.conn_cap_core_not_enabled)
+                    !uiState.pluginRuntimesWired -> stringResource(UiR.string.conn_cap_plugin_not_ready)
+                    else -> stringResource(UiR.string.conn_cap_supported_requires_auth)
                 })
             }
         }

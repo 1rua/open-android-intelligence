@@ -4,13 +4,15 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 权限的分组。 */
-enum class PermissionGroup(val label: String) {
-    REQUIRED("基础功能"),
-    OPTIONAL("可选增强"),
-    DEVICE_CAPABILITY("设备能力"),
+enum class PermissionGroup(@StringRes val titleRes: Int) {
+    REQUIRED(UiR.string.perm_group_required),
+    OPTIONAL(UiR.string.perm_group_optional),
+    DEVICE_CAPABILITY(UiR.string.perm_group_device_capability),
 }
 
 /** 该权限在当前设备/当前插件状态下是否真的存在。 */
@@ -26,9 +28,8 @@ enum class PermissionAvailability {
  * 一张权限卡片的静态描述（与设备状态无关的部分）。
  *
  * @param id 稳定标识，用于状态映射与申请归属。
- * @param displayName 权限名称。
- * @param purpose 用途说明：必须讲清「授权后会怎样、不授权会怎样」，
- *   而不是「为了更好的体验」这类空话。
+ * @param displayNameRes 权限名称资源 ID。
+ * @param purposeRes 用途说明资源 ID。
  * @param group 分组，决定卡片上的徽标与排序。
  * @param isSpecialSystemAccess 是否只能通过系统设置页开启（不是运行时弹窗）。
  * @param availability 是否应该展示（不满足条件的权限直接不渲染，不做灰色禁用态）。
@@ -42,8 +43,8 @@ enum class PermissionAvailability {
  */
 data class PermissionEntry(
     val id: String,
-    val displayName: String,
-    val purpose: String,
+    @StringRes val displayNameRes: Int,
+    @StringRes val purposeRes: Int,
     val group: PermissionGroup,
     val isSpecialSystemAccess: Boolean,
     val availability: PermissionAvailability,
@@ -76,8 +77,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "notifications",
-                displayName = "通知",
-                purpose = "接收 Agent 回复、生成完成与审批提醒。关闭后仍可使用，但需要保持应用在前台。",
+                displayNameRes = UiR.string.perm_catalog_notifications_title,
+                purposeRes = UiR.string.perm_catalog_notifications_desc,
                 group = PermissionGroup.REQUIRED,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,
@@ -95,8 +96,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "microphone",
-                displayName = "麦克风",
-                purpose = "发送语音消息。仅在按下录音时采集，音频直接发往你的 Agent，不进行转录。",
+                displayNameRes = UiR.string.perm_catalog_microphone_title,
+                purposeRes = UiR.string.perm_catalog_microphone_desc,
                 group = PermissionGroup.OPTIONAL,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,
@@ -106,8 +107,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "screen_capture",
-                displayName = "屏幕采集",
-                purpose = "圈选屏幕内容发送给 Agent。",
+                displayNameRes = UiR.string.perm_catalog_screen_capture_title,
+                purposeRes = UiR.string.perm_catalog_screen_capture_desc,
                 group = PermissionGroup.OPTIONAL,
                 // 投屏授权由系统 MediaProjection 对话框现场询问，没有可持久查询的状态。
                 isSpecialSystemAccess = true,
@@ -118,9 +119,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "assistant_role",
-                displayName = "默认数字助理",
-                purpose = "把这台设备上的数字助理设为 OAI。设置后可用系统 Assist 手势在任何应用中唤起助手；" +
-                    "不设置时仍可在应用内正常对话，只是没有跨应用入口。",
+                displayNameRes = UiR.string.perm_catalog_assistant_role_title,
+                purposeRes = UiR.string.perm_catalog_assistant_role_desc,
                 group = PermissionGroup.OPTIONAL,
                 // 默认助理是 RoleManager 管理的系统角色，不是运行时权限，
                 // 只能在系统角色对话框或系统设置里授予；状态查询走 AssistantRole。
@@ -135,8 +135,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "sms",
-                displayName = "短信读取",
-                purpose = "用于让 Agent 查询短信验证码与消息通知。",
+                displayNameRes = UiR.string.perm_catalog_sms_title,
+                purposeRes = UiR.string.perm_catalog_sms_desc,
                 group = PermissionGroup.DEVICE_CAPABILITY,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,
@@ -146,8 +146,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "call_log",
-                displayName = "通话与电话状态",
-                purpose = "用于让 Agent 查询通话记录或检测来电状态，协助进行电话管理。",
+                displayNameRes = UiR.string.perm_catalog_call_log_title,
+                purposeRes = UiR.string.perm_catalog_call_log_desc,
                 group = PermissionGroup.DEVICE_CAPABILITY,
                 isSpecialSystemAccess = false,
                 availability = PermissionAvailability.AVAILABLE,
@@ -159,8 +159,8 @@ fun buildVisiblePermissions(
         add(
             PermissionEntry(
                 id = "notification_access",
-                displayName = "通知使用权",
-                purpose = "用于让 Agent 查询系统其它应用通知与提醒，需在系统设置中手动开启。",
+                displayNameRes = UiR.string.perm_catalog_notification_access_title,
+                purposeRes = UiR.string.perm_catalog_notification_access_desc,
                 group = PermissionGroup.DEVICE_CAPABILITY,
                 isSpecialSystemAccess = true,
                 availability = PermissionAvailability.AVAILABLE,
@@ -200,63 +200,57 @@ fun resolvePermissionStatus(context: Context, entry: PermissionEntry): Permissio
     if (entry.systemRole != null) {
         return resolveSystemRoleStatus(context, entry.systemRole)
     }
-    // 通知使用权是特殊系统权限，但**状态是可查询的**：
-    // 通过 NotificationManagerCompat.getEnabledListenerPackages 读取系统当前授权的监听器集合。
-    // 若这里偷懒返回「未开启」，用户去系统设置开启后回到本页仍会看到「未开启」，
-    // 卡片就会一直催他去设置——这正是「不重复弹窗」要避免的循环。
-    if (entry.id == "notification_access") {
-        return if (hasNotificationListenerAccess(context)) {
-            PermissionStatus.GRANTED
-        } else {
-            PermissionStatus.DENIED
-        }
-    }
-    // 其余特殊系统访问权限（屏幕采集）确实没有可持久查询的授权位：
-    // 每次使用都由系统投屏对话框现场确认，因此标记为 NOT_REQUIRED 而非「未授权」。
-    if (entry.isSpecialSystemAccess && entry.manifestPermissions.isEmpty()) {
+
+    // 屏幕采集是纯现场确认型（MediaProjection 对话框）：
+    // 系统不提供「已授权」的持久状态，只能在每次发起圈选时由系统弹窗；
+    // 引导页展示它只是告知用户「有这项能力」，不能也不该在此刻把状态刷成 GRANTED。
+    if (entry.id == "screen_capture") {
         return PermissionStatus.NOT_REQUIRED
     }
-    if (entry.manifestPermissions.isEmpty()) {
-        // 早期 Android（API 32 及以下）没有 POST_NOTIFICATIONS 运行时权限，
-        // 但用户**仍可能在系统设置里关掉本应用的通知**。
-        // 若这里直接返回「已授权」，用户关掉通知后卡片会一直显示「已开启」，
-        // 引导他修复的按钮也就消失了。因此必须查系统真实开关。
-        return if (notificationsAllowedBySystem(context)) {
-            PermissionStatus.GRANTED
-        } else {
-            // 没有可申请的运行时权限，系统对话框也弹不出来 → 只能去设置。
-            PermissionStatus.BLOCKED
+
+    // 特殊系统访问项（如通知使用权）不能走普通的 checkSelfPermission：
+    // 它们不是运行时权限，Manifest 权限列表为空；状态来自对应的系统服务。
+    if (entry.isSpecialSystemAccess) {
+        return when (entry.id) {
+            "notification_access" -> if (hasNotificationListenerAccess(context)) {
+                PermissionStatus.GRANTED
+            } else {
+                PermissionStatus.DENIED
+            }
+            else -> PermissionStatus.NOT_REQUIRED
         }
     }
-    val allGranted = entry.manifestPermissions.all { permission ->
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+
+    // 没有对应 manifest 权限的项直接无需处理（早期系统上的通知）。
+    if (entry.manifestPermissions.isEmpty()) {
+        // Android 12 及以下无 POST_NOTIFICATIONS，但用户仍可能在系统设置里
+        // 把应用的通知总开关关掉；必须核验真实状态，不能直接假定 GRANTED。
+        if (entry.id == "notifications" && !notificationsAllowedBySystem(context)) {
+            return PermissionStatus.BLOCKED
+        }
+        return PermissionStatus.GRANTED
+    }
+
+    // 常规运行时权限：逐项检查 checkSelfPermission。
+    val allGranted = entry.manifestPermissions.all { perm ->
+        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
     }
     if (allGranted) return PermissionStatus.GRANTED
 
-    // 未授予时如何区分 DENIED 与 BLOCKED？
+    // 未授予时，区分「还能弹系统框（DENIED）」与「只能去系统设置（BLOCKED）」。
+    // 官方行为：首次询问前 shouldShowRationale 返回 false；被用户拒绝过一次后
+    // 返回 true；用户在弹窗里勾选了「不再询问」或系统隐式判定永久拒绝后又返回 false。
     //
-    // `shouldShowRequestPermissionRationale` **不能单独作为判据**：
-    // 它对「首次申请前」和「已永久拒绝后」都返回 false，但两者状态完全不同
-    // （前者再点会弹框，后者再点什么都不会发生）。
-    //
-    // 判定顺序（从严到宽）：
-    // 1. 若系统仍愿意展示 rationale ⇒ 一定是可再申请的 DENIED；
-    // 2. 否则，只有在「本会话申请过」且「系统明确不再弹框」时才判 BLOCKED。
-    //
-    // 关键细节：用户可能去系统设置里**手动撤销**已授予的权限再回来。此时
-    // requestedInSession 仍含该权限，但系统对话框其实又可以被拉起了。
-    // 因此 BLOCKED 额外要求「rationale 不可见 + 本会话申请过」同时成立，
-    // 并且优先相信系统给出的 rationale 信号，避免把可恢复的权限锁死成「去设置」。
-    val rationaleVisible = entry.manifestPermissions.any { permission ->
-        ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED &&
-            shouldShowRationale(context, permission)
-    }
-    if (rationaleVisible) return PermissionStatus.DENIED
-
-    // 到这里系统没给 rationale。只有同时满足「本会话确实申请过」才认定永久拒绝；
-    // 从未申请过的情况（首次进入）依然返回 DENIED，保证第一次点「开启」能弹框。
+    // 因此纯凭 shouldShowRationale 无法把「首次启动（从没问过）」与「永久拒绝」
+    // 分开（两者都是 false）。这里引入轻量会话记录：只有在本会话内已经向用户
+    // 发起过申请、且目前仍不是 GRANTED 时，才把 shouldShowRationale == false
+    // 升级为 BLOCKED（需要跳设置）；从没问过的权限必须保持 DENIED，确保用户第一
+    // 次点「开启」能弹框。
     val requestedThisSession = entry.manifestPermissions.any { it in requestedInSession }
-    return if (requestedThisSession) PermissionStatus.BLOCKED else PermissionStatus.DENIED
+    val anyPermanentlyDenied = entry.manifestPermissions.any { perm ->
+        requestedThisSession && !shouldShowRationale(context, perm)
+    }
+    return if (anyPermanentlyDenied) PermissionStatus.BLOCKED else PermissionStatus.DENIED
 }
 
 /**
@@ -284,9 +278,8 @@ private fun shouldShowRationale(context: Context, permission: String): Boolean {
 }
 
 /**
- * 系统角色项的当前状态。
+ * 系统角色（RoleManager）状态解析。
  *
- * 判定顺序刻意是「先支持性、后持有性」：
  * 不支持的角色无论持不持有都不该出现操作按钮；支持但未持有时返回
  * [PermissionStatus.DENIED]（而不是 BLOCKED），因为角色对话框/设置页仍可再次打开，
  * 用户点「设置」就有真实的下一步。
@@ -304,15 +297,10 @@ internal const val KERNEL_NOTIFICATIONS_READ = "kernel.notifications.read"
 internal const val KERNEL_SMS_READ = "kernel.sms.read"
 internal const val KERNEL_CALL_LOG_READ = "kernel.call-log.read"
 
-/** 权限页底部的固定说明：需求要求区分系统权限与 Agent 授权。 */
-const val PERMISSION_NOTICE_TITLE = "权限 ≠ 授权"
-const val PERMISSION_INTRO_BODY =
-    "以下权限只影响对应功能。可选权限跳过不影响登录与对话；" +
-        "设备能力由本机决定：插件启用后默认开启，仍需满足系统权限和本地范围设置。"
-const val PERMISSION_NOTICE_BODY =
-    "设备能力由 Android 本机决定，可在插件管理中关闭；已关闭的设置会保留。" +
-        "旧设置需先在本机复核。系统权限、通知读取范围、屏幕许可、后台许可和敏感操作确认仍分别检查，" +
-        "不需要再为 Gateway 账号单独开启设备能力。"
+/** 权限页底部的固定说明资源 ID。 */
+val PERMISSION_NOTICE_TITLE_RES = UiR.string.perm_notice_title
+val PERMISSION_INTRO_BODY_RES = UiR.string.perm_intro_body
+val PERMISSION_NOTICE_BODY_RES = UiR.string.perm_notice_body
 
 /**
  * 读取系统当前是否已授予本应用「通知使用权」。

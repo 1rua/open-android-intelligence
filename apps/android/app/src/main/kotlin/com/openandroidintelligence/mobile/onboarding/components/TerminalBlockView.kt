@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -43,6 +44,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.data.TerminalBlock
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.delay
 
 /** 复制按钮的视觉高度：小控件档位，但仍用最小触控尺寸兜底点击区域。 */
@@ -180,7 +182,9 @@ private fun CopyButton(
 ) {
     val textColor = if (copied) successColor else MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = if (copied) successColor else MaterialTheme.colorScheme.outlineVariant
-    val label = if (copied) "已复制" else "复制"
+    val label = if (copied) stringResource(UiR.string.common_copied) else stringResource(UiR.string.common_action_copy)
+    val copyCommandDesc = stringResource(UiR.string.common_action_copy_command)
+    val copiedCommandDesc = stringResource(UiR.string.common_copied_command)
 
     // 外层：命中区 + 语义。居中内层按钮，让 48dp 的命中区不改变按钮的视觉重心。
     Box(
@@ -192,7 +196,7 @@ private fun CopyButton(
             .clip(RoundedCornerShape(AppRadius.Small))
             .semantics {
                 role = Role.Button
-                contentDescription = if (copied) "已复制命令" else "复制命令"
+                contentDescription = if (copied) copiedCommandDesc else copyCommandDesc
             }
             .clickable(onClick = onCopy),
         contentAlignment = Alignment.Center,

@@ -47,6 +47,8 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -192,13 +194,13 @@ fun GatewayGuideScreen(
                     }
                     .testTag("onboarding-guide-done"),
             ) {
-                Text(text = "部署完毕，进入登录", style = MaterialTheme.typography.labelLarge)
+                Text(text = stringResource(UiR.string.conn_onboarding_guide_btn_deployed), style = MaterialTheme.typography.labelLarge)
                 Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
                 Text(text = "→", style = MaterialTheme.typography.labelLarge)
             }
             Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
             Text(
-                text = "未完成？可稍后在设置中重新查看",
+                text = stringResource(UiR.string.conn_onboarding_guide_hint_incomplete),
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 0.6.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -220,6 +222,7 @@ private fun GatewayTab(
     else MaterialTheme.colorScheme.onSurfaceVariant
     val borderColor = if (selected) MaterialTheme.colorScheme.onSurface
     else MaterialTheme.colorScheme.outlineVariant
+    val tutorialDesc = stringResource(UiR.string.conn_onboarding_guide_title_format, tutorial.shortName)
 
     Row(
         modifier = Modifier
@@ -231,7 +234,7 @@ private fun GatewayTab(
             .semantics {
                 role = Role.Tab
                 this.selected = selected
-                contentDescription = "${tutorial.shortName} 部署教程"
+                contentDescription = tutorialDesc
             }
             .padding(horizontal = Dimensions.SpaceMedium)
             .testTag("gateway-tab-${tutorial.id}"),
@@ -324,6 +327,7 @@ private fun TutorialBody(
 
         // ===== 官方仓库入口 =====
         Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
+        val openRepoDesc = stringResource(UiR.string.conn_onboarding_guide_open_repo_format, tutorial.repoUrl)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -334,7 +338,7 @@ private fun TutorialBody(
                     MaterialTheme.shapes.small,
                 )
                 .clickable(role = Role.Button, onClick = onOpenRepository)
-                .semantics { contentDescription = "打开官方仓库 ${tutorial.repoUrl}" }
+                .semantics { contentDescription = openRepoDesc }
                 .padding(Dimensions.SpaceCompact),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -346,7 +350,7 @@ private fun TutorialBody(
             )
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
             Text(
-                text = "官方仓库",
+                text = stringResource(UiR.string.conn_onboarding_guide_repo_label),
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -450,7 +454,7 @@ private fun TutorialStepRow(
                     Spacer(modifier = Modifier.width(Dimensions.SpaceCompact))
                     Column {
                         Text(
-                            text = "验证通过的样子",
+                            text = stringResource(UiR.string.conn_onboarding_guide_verified_preview),
                             style = MaterialTheme.typography.labelSmall,
                             letterSpacing = 1.2.sp,
                             color = stateColors.success,

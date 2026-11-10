@@ -1272,10 +1272,10 @@ class GatewaySessionRefreshTest {
                 offline.phase.value is ConnectionPhase.Disconnected && offline.controller.value == null
             })
             assertNull(offline.controller.value)
-            assertTrue("离线退出不能伪造远端凭据已撤销", offline.operationNotice.value?.contains("未获 Gateway 确认") == true)
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            assertEquals("离线退出不能伪造远端凭据已撤销", context.getString(com.openandroidintelligence.ui.resources.R.string.conn_toast_offline_logout_locked), offline.operationNotice.value)
             assertTrue("未通知远端时保留被退出屏障锁定的刷新凭据", credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
-            val context = ApplicationProvider.getApplicationContext<Application>()
             val installId = requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE).getString("installation_id", null))
             val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(
                 context,

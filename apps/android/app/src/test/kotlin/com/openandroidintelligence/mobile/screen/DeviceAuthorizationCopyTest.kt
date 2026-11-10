@@ -4,7 +4,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class DeviceAuthorizationCopyTest {
     @Test fun queryConfirmationNeverCallsSmsOrNotificationsASendOperation() {
         assertEquals("读取短信", deviceRequestAction("org.openandroidintelligence.sms.query@1.0.0", "query", "{}"))
