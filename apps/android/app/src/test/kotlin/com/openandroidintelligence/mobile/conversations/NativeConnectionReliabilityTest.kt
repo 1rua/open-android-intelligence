@@ -222,6 +222,11 @@ class NativeConnectionReliabilityTest {
         assertNull(h.storage.pending)
         assertEquals(1, h.histories)
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
+        advanceTimeBy(51); runCurrent()
+        val healthyReads = h.reads
+        repeat(5) { h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true); runCurrent() }
+        assertEquals("同一次前台恢复的重复信号不能反复取消新读取", 1, h.cancelledReads)
+        assertEquals(healthyReads, h.reads)
     }
 
     @Test fun aForegroundNativeOnlyHalfOpenRequestRecoversWithoutAnyLifecycleSignal() = runTest {
@@ -239,6 +244,30 @@ class NativeConnectionReliabilityTest {
         assertNull(h.storage.pending)
         assertEquals(1, h.histories)
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
+    @Test fun healthyForegroundLongPollsKeepTheirFiveSecondCadenceWithoutReloadingHistory() = runTest {
+        val h = Harness(this).apply { foreground = true; serveLongPollAfterMillis = 5_000 }
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(60_000); runCurrent()
+
+        assertEquals("首次快照加上每五秒一次事件等待", 13, h.reads)
+        assertEquals(0, h.cancelledReads)
+        assertEquals(1, h.histories)
+        assertEquals("健康空页不能重复确认同一游标", 1, h.requests.count { it.target.endsWith("/events/ack") })
+        assertTrue(h.requests.filter { it.target.contains("/events?") && it.target.contains("waitMs=") }
+            .all { it.target.contains("waitMs=5000") })
+    }
+
+    @Test fun backgroundLongPollingKeepsTheOriginalTwentyFiveSecondWaitAndReadBudget() = runTest {
+        val h = Harness(this)
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(20_000); runCurrent()
+
+        assertEquals(2, h.reads)
+        assertEquals(0, h.cancelledReads)
+        assertTrue(h.requests.last { it.target.contains("/events?") }.target.contains("waitMs=25000"))
+        assertEquals(1, h.histories)
     }
 
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
@@ -572,6 +601,7 @@ class NativeConnectionReliabilityTest {
         var foreground = false
         var historyGate: CompletableDeferred<Unit>? = null
         var historyBody = """{"messages":[]}"""
+        var serveLongPollAfterMillis: Long? = null
         var cancelledReads = 0
         var resumeReadsThrough = 0
         var nextCursor = "next"
@@ -606,7 +636,8 @@ class NativeConnectionReliabilityTest {
                             responseBody?.toByteArray() ?: ByteArray(0))
                         val session = request.target.substringBefore("/events?")
                         if (!served.add(session) && request.target.contains("waitMs=") && reads > resumeReadsThrough) {
-                            try { idle.await() } catch (cancelled: CancellationException) { cancelledReads++; throw cancelled }
+                            try { serveLongPollAfterMillis?.let { delay(it) } ?: idle.await() }
+                            catch (cancelled: CancellationException) { cancelledReads++; throw cancelled }
                         }
                         """{"events":[],"cursor":"$nextCursor","hasMore":false}"""
                     }

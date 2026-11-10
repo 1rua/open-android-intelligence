@@ -86,6 +86,11 @@ internal class NativeEventSynchronizer(
             network.run { client.events(agent, conversationId, snapshot = true) }
         }
         pendingPage = page
+        if (!needsRefresh && page.events.isEmpty() && page.approvals == null && page.cursor == cursor) {
+            // 已确认游标的健康空页只证明读取可达，不重复落盘或再次确认同一页。
+            pendingPage = null
+            return@withLock page.hasMore
+        }
         snapshot = snapshot || page.approvals != null
         val approvals = page.approvals.orEmpty().toMutableList()
         val lifecycle = mutableListOf<VerifiedConversationEvent>()
