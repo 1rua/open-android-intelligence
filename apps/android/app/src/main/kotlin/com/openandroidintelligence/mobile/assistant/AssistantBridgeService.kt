@@ -3,10 +3,13 @@ package com.openandroidintelligence.mobile.assistant
 import android.app.Service
 import android.content.Intent
 import android.os.*
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.assistant.AssistantAccountDto
 import com.openandroidintelligence.conversation.assistant.AssistantAppearanceDto
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffState
 import com.openandroidintelligence.conversation.assistant.AssistantNoticeDto
 import com.openandroidintelligence.conversation.assistant.AssistantStateDto
 import com.openandroidintelligence.conversation.assistant.AssistantWireBudget
@@ -16,6 +19,7 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.ComposerState
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
@@ -24,6 +28,7 @@ import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_BYTES
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_DURATION_MS
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+import com.openandroidintelligence.mobile.pickedAttachmentSelection
 import kotlinx.coroutines.*
 import java.io.ByteArrayInputStream
 import java.util.UUID
@@ -56,6 +61,10 @@ class AssistantBridgeService : Service() {
         var visible: Boolean = false,
         /** 单调递增的状态帧序号；接收方据此丢弃乱序帧。 */
         var revision: Long = 0L,
+        /** 最近一次交接尝试的结果；没有请求过时为 null（帧里也不出现该字段）。 */
+        var handoff: AssistantHandoffResult? = null,
+        /** 上述结果所属的请求代次；与客户端这一次上滑带来的 `handoffId` 对应。 */
+        var handoffId: String? = null,
     )
 
     private val clients = linkedMapOf<IBinder, Client>()
@@ -102,9 +111,19 @@ class AssistantBridgeService : Service() {
                 runtime.setAssistantPresence(client.token, client.sessionToken, client.visible)
                 publish(client)
             }
+            // 交接是唯一「不靠异常报错」的命令：结果必须随状态帧回执，
+            // 因为拒绝原因（账号/Agent 不一致、附件未就绪）需要原文展示给用户。
+            // `handoffId` 把回执绑定到这一次请求，避免上一轮的终态被当成本轮结果。
+            "handoff" -> runHandoff(client, reply, b.getString("handoffId").orEmpty())
             else -> {
                 if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
-                val controller = client.controller ?: run { publish(client); return@Handler true }
+                // 没有控制器（未登录 / 工作台尚未就绪）时必须说清为什么没反应。
+                // 静默丢弃会让用户看到「选了文件、界面回来了、什么都没发生」——
+                // 圈选与 ＋ 附件都走这条路径，两者都会变成看起来坏掉的功能。
+                val controller = client.controller ?: run {
+                    publish(client, "尚未连接对话，附件与草稿未能加入；请先在 App 中连接并打开一条会话")
+                    return@Handler true
+                }
                 publish(client, handleCommand(client, controller, command, b))
             }
         }
@@ -140,6 +159,7 @@ class AssistantBridgeService : Service() {
                 }
                 "screen" -> readScreenAttachment(client, controller, b)
                 "voice" -> readVoiceAttachment(client, controller, b)
+                "attachment" -> queueFileAttachments(client, controller, b)
                 else -> error("IPC_COMMAND_UNSUPPORTED")
             }
         } catch (_: Exception) {
@@ -212,6 +232,71 @@ class AssistantBridgeService : Service() {
     }
 
     /**
+     * 文件附件：来自浮层的系统选择器，只带 URI 字符串。
+     *
+     * 不复制字节：同 UID + 持久化读授权让主进程直接读同一 URI，避免 8MB 级字节跨进程
+     * 传输，也避免在本进程再实现一套文件读取逻辑（`pickedAttachmentSelection` 已在
+     * app 模块里，含 `takePersistableUriPermission`）。
+     *
+     * 每个 URI 独立入草稿：某个文件读不出来只提示这一个，其余照常加入，不整批失败。
+     *
+     * **整批先登记再解析**：从「收到 URI」到「附件进草稿」之间有一段异步窗口
+     * （查 provider 元数据、加载缩略图）。用户选完立刻上滑时，交接若只看当前附件列表，
+     * 会在这段窗口里看到空列表并判定就绪；主进程接受、浮层关闭后解析结果才回来，
+     * 客户端已被移除，刚选的文件既没迁移也没有提示。登记之后
+     * `awaitHandoffAttachments` 会一直等到整批结束（有上限）。
+     */
+    private fun queueFileAttachments(client: Client, controller: WorkbenchController, b: Bundle) {
+        val uris = fileAttachmentUris(b.getStringArray("uris"), b.getInt("count", -1))
+            ?: error("ATTACHMENT_URIS_INVALID")
+        val targetRevision = controller.attachmentTargetRevision
+        // 按剩余槽位裁剪这一批：整批登记，整批释放，不留下永久挂起的计数。
+        val accepted = uris.take(controller.availableAttachmentSlots)
+        if (accepted.isEmpty()) {
+            publish(client, "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件，请先移除或发送后再添加")
+            return
+        }
+        controller.beginAttachmentImport(accepted.size)
+        jobs.launch {
+            var failures = 0
+            val dropped = uris.size - accepted.size
+            try {
+                for (raw in accepted) {
+                    val uri = runCatching { android.net.Uri.parse(raw) }.getOrNull()
+                    val selection = if (uri != null) {
+                        runCatching { withContext(Dispatchers.IO) { pickedAttachmentSelection(applicationContext, uri) } }.getOrNull()
+                    } else {
+                        null
+                    }
+                    if (selection == null) {
+                        failures++
+                        continue
+                    }
+                    withContext(Dispatchers.Main) {
+                        // 会话/控制器一旦变化就停止，剩余文件不再加入别人的草稿。
+                        if (clients[client.reply.binder] !== client || client.controller !== controller ||
+                            controller.attachmentTargetRevision != targetRevision) return@withContext
+                        if (controller.availableAttachmentSlots == 0) return@withContext
+                        controller.addAttachment(selection)
+                    }
+                }
+            } finally {
+                controller.finishAttachmentImport(accepted.size)
+            }
+            withContext(Dispatchers.Main) {
+                val reason = when {
+                    failures > 0 && dropped > 0 -> "有 $failures 个附件无法读取，$dropped 个超出数量上限，请重新选择"
+                    failures > 0 -> "有 $failures 个附件无法读取，请重新选择"
+                    dropped > 0 -> "附件已达上限，只加入了前 ${accepted.size} 个"
+                    else -> null
+                }
+                if (clients[client.reply.binder] !== client) return@withContext
+                if (reason != null) publish(client, reason)
+            }
+        }
+    }
+
+    /**
      * 读取有限字节，确认客户端/账号/会话均未变化后交给 [consume]。
      *
      * 10 秒看门狗防止读端挂死；读取失败、长度不符或作用域已变化时丢弃字节并提示，
@@ -274,6 +359,53 @@ class AssistantBridgeService : Service() {
             }
         }
     }
+
+    /**
+     * 执行一次「把助手会话交给主 App」的请求。
+     *
+     * 严格失败：所有拒绝原因都带回浮层，草稿与附件保持在助手控制器里。
+     * 身份不匹配（账号切换）时连 controller 都不该借用。
+     *
+     * 交接要等附件就绪（有上限），因此它在独立协程里完成；期间的重复请求直接忽略，
+     * 结果随状态帧下发。
+     *
+     * **回执带请求代次**：客户端每次上滑带来一个新的 `handoffId`，结果原样带回。
+     * 没有代次时上一轮的终态会留在状态帧里，下一轮请求会立刻把它当成自己的结果。
+     */
+    private fun runHandoff(client: Client, reply: Messenger, handoffId: String) {
+        // 重复上滑（同一代次重复送达）直接忽略；不同代次说明这是新的一次请求，
+        // 必须覆盖上一轮结果，否则客户端永远等不到本轮回执。
+        if (handoffInFlight && handoffId == client.handoffId) return
+        fun settle(result: AssistantHandoffResult) {
+            client.handoff = result
+            client.handoffId = handoffId
+            publish(client)
+        }
+        val token = client.sessionToken ?: run {
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED))
+            return
+        }
+        if (!client.scope.canShare(runtime.connectedAccountId)) {
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH))
+            return
+        }
+        handoffInFlight = true
+        jobs.launch {
+            val result = try {
+                runtime.prepareAssistantHandoff(token)
+            } catch (_: CancellationException) {
+                AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            } finally {
+                handoffInFlight = false
+            }
+            // 会话已被换掉（session.new / disconnect）时结果不再属于当前客户端。
+            if (clients[reply.binder] !== client || client.sessionToken != token) return@launch
+            settle(result)
+        }
+    }
+
+    /** 同一时刻只允许一次交接：重复上滑不会并发迁移同一份草稿。 */
+    private var handoffInFlight = false
 
     /**
      * 打开一条新会话。
@@ -373,6 +505,10 @@ class AssistantBridgeService : Service() {
                 palette = appearance.palette.name,
                 reduceMotion = appearance.reduceMotion,
             ),
+            // 交接结果随状态帧下发：浮层据此决定打开主 App 还是保留自己。
+            // 代次一并下发，客户端才能区分「这一轮的回执」与「上一轮残留的终态」。
+            handoff = client.handoff.takeIf { client.sessionToken != null }
+                ?.toDto(accountId, profileId, client.handoffId.orEmpty()),
         )
         val payload = runCatching { encodeState(dto) }.getOrNull() ?: return
         runCatching {
@@ -440,11 +576,24 @@ class AssistantBridgeService : Service() {
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val ATTACHMENT_READ_TIMEOUT_MILLIS = 10_000L
         val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
-        val ALLOWED_KEYS = setOf(
-            "version", "token", "command", "text", "content", "size",
-            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
-        )
+        val ALLOWED_KEYS = ASSISTANT_BRIDGE_ALLOWED_KEYS
     }
+}
+
+/**
+ * 文件附件批次的校验与去重（纯函数，便于直接单测）。
+ *
+ * 与屏幕/语音的字节管道不同，文件附件只传 URI：主进程按 URI 直接读文件
+ * （同 UID + 持久化读授权）。`count` 必须等于去重后的实际条数 —— 不一致说明发送方
+ * 与本端对批次的理解已经分裂，宁可整批拒绝，也不猜哪一半是对的。
+ *
+ * @return 去重后的 URI 列表；空列表、超过上限或计数不一致时返回 null。
+ */
+internal fun fileAttachmentUris(uris: Array<String>?, count: Int): List<String>? {
+    val distinct = uris.orEmpty().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.distinct()
+    if (distinct.isEmpty() || distinct.size > MAX_COMPOSER_ATTACHMENTS) return null
+    if (count != distinct.size) return null
+    return distinct
 }
 
 /** 把运行时提示折成稳定诊断码 + 原文；非诊断码前缀统一为 `ASSISTANT_NOTICE`。 */
@@ -453,6 +602,30 @@ internal fun noticeFor(message: String): AssistantNoticeDto {
     val candidate = if (separator in 1..64) message.substring(0, separator) else ""
     val stable = candidate.isNotEmpty() && candidate.all { it in 'A'..'Z' || it in '0'..'9' || it == '_' }
     return if (stable) AssistantNoticeDto(candidate, message) else AssistantNoticeDto("ASSISTANT_NOTICE", message)
+}
+
+/** 交接结果 → 状态帧投影；身份字段供浮层构造打开主 App 的深链。 */
+internal fun AssistantHandoffResult.toDto(
+    accountId: String?,
+    profileId: String?,
+    handoffId: String = "",
+): AssistantHandoffDto = when (this) {
+    is AssistantHandoffResult.Accepted -> AssistantHandoffDto(
+        handoffId = handoffId,
+        state = AssistantHandoffState.ACCEPTED.wireValue,
+        conversationId = target.conversationId,
+        profileId = target.profileId.ifBlank { profileId.orEmpty() },
+        accountId = target.accountId.ifBlank { accountId.orEmpty() },
+        agentId = target.agentId,
+        skippedAttachments = skippedAttachments,
+    )
+    is AssistantHandoffResult.Rejected -> AssistantHandoffDto(
+        handoffId = handoffId,
+        state = AssistantHandoffState.REJECTED.wireValue,
+        reason = reason,
+        profileId = profileId.orEmpty(),
+        accountId = accountId.orEmpty(),
+    )
 }
 
 /** 草稿附件投影；线上只传元数据，不传字节或路径。 */

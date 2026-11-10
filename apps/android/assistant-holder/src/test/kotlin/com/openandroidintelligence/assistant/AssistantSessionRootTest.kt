@@ -8,12 +8,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalId
@@ -315,6 +319,94 @@ class AssistantSessionRootTest {
         render()
 
         compose.onNodeWithTag(AssistantCompactBarTags.ATTACHMENTS).assertDoesNotExist()
+    }
+
+    // ---- 顶部横条（需求 5.1） ----
+
+    @Test
+    fun theHandleIsShownFromTheFirstMomentInTheCompactForm() {
+        render()
+
+        // 初次唤起即显示：不需要点输入框、不需要有草稿。
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
+        compose.onNodeWithContentDescription("向上滑动在 App 中打开").assertIsDisplayed()
+    }
+
+    @Test
+    fun theSameHandleStaysAtTheTopWhenTheConversationExpands() {
+        val controller = render()
+
+        compose.runOnIdle { controller.dispatch(AssistantUiEvent.SendRequested(accepted = true)) }
+        compose.waitForIdle()
+
+        // 展开后仍然只有一个横条，且位于整个会话面板之上。
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
+        compose.onNodeWithContentDescription("向上滑动在 App 中打开").assertExists()
+        val handle = compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).getUnclippedBoundsInRoot()
+        val panel = compose.onNodeWithTag(ASSISTANT_EXPANDED_PANEL_TAG).getUnclippedBoundsInRoot()
+        assertTrue(
+            "横条必须在会话面板之上，handle.bottom=${handle.bottom} panel.top=${panel.top}",
+            handle.bottom <= panel.top + 1.dp,
+        )
+    }
+
+    @Test
+    fun swipingUpTheHandleRequestsTheHandoffFromTheHost() {
+        var handoffs = 0
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 640.dp)) {
+                    AssistantSessionRoot(
+                        draft = "",
+                        onDraftChange = {},
+                        enabled = true,
+                        isGenerating = false,
+                        isStopping = false,
+                        hasUnknownOutcome = false,
+                        onSend = { true },
+                        onStop = {},
+                        onExit = {},
+                        onRequestHandoff = { handoffs++ },
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).performTouchInput {
+            val start = center
+            swipe(start = start, end = Offset(start.x, start.y - 600f), durationMillis = 400)
+        }
+        compose.waitForIdle()
+
+        assertEquals(1, handoffs)
+    }
+
+    @Test
+    fun tappingAddAttachmentReachesTheHost() {
+        val adds = mutableListOf<AssistantAttachmentKind>()
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 640.dp)) {
+                    AssistantSessionRoot(
+                        draft = "",
+                        onDraftChange = {},
+                        enabled = true,
+                        isGenerating = false,
+                        isStopping = false,
+                        hasUnknownOutcome = false,
+                        onSend = { true },
+                        onStop = {},
+                        onExit = {},
+                        onAddAttachment = { adds += it },
+                    )
+                }
+            }
+        }
+
+        // 「＋」先展开菜单，再选类别：照片与文档两条系统选择器都要能到。
+        compose.onNodeWithContentDescription("添加附件").performClick()
+        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
+        assertEquals(listOf(AssistantAttachmentKind.MEDIA), adds)
     }
 
     // ---- 窗口高度回传 ----

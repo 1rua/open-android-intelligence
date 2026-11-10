@@ -153,6 +153,25 @@
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
         <!--
+            附件选择器：``VoiceInteractionSession`` 没有 ActivityResultRegistry，
+            因此由这个透明、不可导出、不进最近任务的 Activity 承载系统选择器。
+            同 ``AssistantActivity`` 一样跑在 ``:assistant_session`` 进程，结果由进程级
+            broker 交回当前会话。
+
+            **不要加 ``android:noHistory``**：本 Activity 拉起系统选择器时自己会 stop，
+            而 noHistory 在 stop 时直接销毁它，ActivityResultRegistry 的登记随之丢失，
+            用户选完文件却拿不到结果。它本来就选完即 ``finish()``、也不进最近任务，
+            不需要靠 noHistory 兜底。``singleTask`` 保持不变：同一次唤起只允许一个选择器。
+        -->
+        <activity
+            android:name="com.openandroidintelligence.assistant.AssistantAttachmentPickerActivity"
+            android:process=":assistant_session"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask" />
+        <!--
             数字助理资格判定要求存在 recognitionService（见 voice_interaction_service.xml）。
             本应用不做系统级语音识别，服务里明确返回「未接入」，不伪造识别结果。
         -->

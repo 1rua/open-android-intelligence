@@ -65,4 +65,42 @@ internal class AssistantAttachmentDraftCoordinator(
             }
         }.also { cleanup = it }
     }
+
+    /**
+     * 交接已成功的附件：移出本协调器的所有权，但**不**丢弃底层草稿与上传任务。
+     *
+     * 交接成功后附件归主工作台所有：[close] 再按 `ownedIds` 递归丢弃时，
+     * 就会把主 App 刚接管的附件连同暂存文件一起清掉。这里只摘除认领，
+     * 底层 delegate 的 `discard` / `releaseAfterSubmit` 由新的所有者负责。
+     *
+     * 未登记的 id（不属于本协调器）是空操作，与 `discard` / `releaseAfterSubmit`
+     * 的既有语义一致。
+     */
+    @Synchronized fun disown(draftId: String): Boolean =
+        if (draftId in ownedIds) {
+            ownedIds -= draftId
+            true
+        } else {
+            false
+        }
 }
+
+/**
+ * 为一个助手会话创建附件包装器，并**同时**登记到 [wrappers]。
+ *
+ * 创建与登记必须是同一个不可拆分的动作：原生与旧版 Gateway 两条分支都走这里，任何一条
+ * 忘了登记，`prepareAssistantHandoff` 的 `disown` 就永远不会执行——浮层关闭时工作区退役，
+ * 包装器会把刚迁给主 App 的草稿连同暂存文件一起 `discard`。旧版分支正是漏了这一步。
+ *
+ * @return 新建的包装器；[owning] 为 null（没有附件能力）时不创建也不登记。
+ */
+internal fun assistantAttachmentWrapperFor(
+    wrappers: MutableMap<String, AssistantAttachmentDraftCoordinator>,
+    owning: AttachmentDraftCoordinator?,
+    sessionToken: String,
+): AssistantAttachmentDraftCoordinator? =
+    owning?.let { coordinator ->
+        AssistantAttachmentDraftCoordinator(coordinator).also { wrapper ->
+            wrappers[sessionToken] = wrapper
+        }
+    }
