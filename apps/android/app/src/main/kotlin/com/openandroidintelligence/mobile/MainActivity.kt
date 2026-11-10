@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -49,7 +48,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.lifecycleScope
 import com.openandroidintelligence.capability.MediaProjectionCaptureService
 import com.openandroidintelligence.capability.MediaProjectionRuntime
 import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
@@ -62,8 +60,12 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
-import com.openandroidintelligence.conversation.voice.RecordedVoice
-import com.openandroidintelligence.conversation.voice.VoiceRecording
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.VoiceRecorder
+import com.openandroidintelligence.conversation.voice.VoiceRecorderState
+import com.openandroidintelligence.conversation.voice.VoiceRejection
+import com.openandroidintelligence.conversation.voice.activeRecording
+import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
 import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.conversation.workbench.PastedImageContent
@@ -75,10 +77,11 @@ import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
 import com.openandroidintelligence.mobile.assistant.handoffSessionToken
 import com.openandroidintelligence.mobile.onboarding.OnboardingFlow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.withContext
 import com.openandroidintelligence.mobile.screen.ScreenControlConfirmationDialog
 
@@ -252,31 +255,106 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                var recording by remember { mutableStateOf<VoiceRecording?>(null) }
-                var recordingTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
+                // 语音录制与默认数字助手共用同一个 VoiceRecorder：同一套状态机、同一套
+                // 波形/计时/取消/发送界面。录音态由输入坞原地呈现，不再弹独立卡片遮挡会话。
+                // 录音开始时所属的对话；交付开始后转移到 [sendingTarget]，让「正在交付的那段
+                // 录音」与「用户可能立刻开始的新录音」各自持有自己的目标，不会串对话。
+                // 用原子引用而不是 Compose 状态：交付回调在后台线程读取，界面从不直接渲染它们。
+                val voiceTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
+                val sendingTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
                 var permissionTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
-                var sendingVoice by remember { mutableStateOf(false) }
-                var voiceSendJob by remember { mutableStateOf<Job?>(null) }
-                var voiceSendController by remember { mutableStateOf<WorkbenchController?>(null) }
+                // start() 的失败与交付阶段的失败是两种原因，提示沿用原来的两句话：
+                // 「无法开始录音」发生在按下麦克风的同一帧，交付失败则是之后的后台写文件。
+                val startFailure = remember { AtomicBoolean(false) }
+                val recorder = remember(app) {
+                    VoiceRecorder.create(
+                        context = app,
+                        onRecorded = { voice, sessionKey ->
+                            // 交付在后台线程回调；真正的发送与提示回到主线程，
+                            // 并且必须仍停留在录音所属的对话，绝不把语音发到别的会话。
+                            // 组合已经销毁（作用域已取消）时任务体不会执行，必须在这里
+                            // 自己关闭临时音频，否则缓存目录会留一份没人释放的录音。
+                            if (uiScope.coroutineContext[Job]?.isActive != true) {
+                                voice.close()
+                                sendingTarget.set(null)
+                                return@create
+                            }
+                            // 在回调线程就取走目标：交付收尾会清空 sendingTarget，晚一步就丢了。
+                            val target = sendingTarget.get()
+                            uiScope.launch {
+                                try {
+                                    if (target == null) {
+                                        notify("录音已丢失，请重新录制")
+                                    } else if (runtime.controller.value !== target.first) {
+                                        notify("对话已切换，语音未发送")
+                                    } else if (target.first.state.value.activeThreadId != sessionKey) {
+                                        notify("对话已切换，语音未发送")
+                                    } else if (!target.first.sendVoiceAttachment(voice.selection(), target.second)) {
+                                        notify("语音未发送，请查看对话提示后重试")
+                                    }
+                                } finally {
+                                    voice.close()
+                                    sendingTarget.compareAndSet(target, null)
+                                }
+                            }
+                        },
+                        onRejected = { rejection ->
+                            // ALREADY_SENDING 说明上一段仍在这条交付路径上，目标不能被清掉；
+                            // 其余拒绝都意味着没有在途录音，顺手清掉目标，避免永久挡住下一次发送。
+                            if (rejection != VoiceRejection.ALREADY_SENDING) sendingTarget.set(null)
+                            val message = when {
+                                rejection != VoiceRejection.RECORDING_FAILED ->
+                                    voiceRejectionMessage(rejection)
+                                startFailure.getAndSet(false) ->
+                                    "无法开始录音，请检查麦克风权限及占用情况"
+                                else -> "录音或发送失败，请重试"
+                            }
+                            uiScope.launch { notify(message) }
+                        },
+                    )
+                }
+                DisposableEffect(recorder) {
+                    onDispose { recorder.close() }
+                }
+                val voiceState by recorder.state.collectAsState()
+                val activeRecording = voiceState.activeRecording()
+                // 只有真的取消了一段录音才清掉发送目标：正在写文件/发送时的 cancel() 返回
+                // false，交付仍要落到原来那条对话上，不能被这里顺手清空成"录音已丢失"。
                 val cancelRecording: () -> Unit = {
-                    recording?.close()
-                    recording = null
-                    recordingTarget = null
+                    if (recorder.cancel()) voiceTarget.set(null)
+                }
+                val finishRecording: () -> Unit = {
+                    // 上一段仍在交付时 send() 会拒绝这一次；此时不能动 sendingTarget，
+                    // 否则会把正在交付的音频指向错误的对话。
+                    if (sendingTarget.get() == null) {
+                        val target = voiceTarget.getAndSet(null)
+                        // 目标必须在 send() 之前登记：交付回调可能在后台线程立刻到达，
+                        // 写在 send() 之后会留下"回调先到、目标还是空的"窗口。
+                        sendingTarget.set(target)
+                        val accepted = recorder.send {
+                            runtime.controller.value?.state?.value?.activeThreadId
+                        }
+                        // 被拒绝（未在录音 / 会话已切换）时录音器已回到 Idle，目标一并清掉。
+                        if (!accepted) sendingTarget.compareAndSet(target, null)
+                    }
                 }
                 val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->
                     if (runtime.controller.value !== target.first || target.first.state.value.activeThreadId != target.second) {
                         notify("对话已切换，请重新开始录音")
                     } else if (!target.first.canSendVoiceAttachment(target.second)) {
                         notify("当前对话暂不能发送语音，请等待处理完成后重试")
-                    } else if (recording == null && !sendingVoice) {
-                        try {
-                            val capture = VoiceRecording.create(this@MainActivity)
-                            capture.start()
-                            recordingTarget = target
-                            recording = capture
-                        } catch (_: Exception) {
-                            notify("无法开始录音，请检查麦克风权限及占用情况")
-                        }
+                    } else if (voiceState is VoiceRecorderState.Sending) {
+                        notify(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
+                    } else if (voiceState is VoiceRecorderState.Idle) {
+                        voiceTarget.set(target)
+                        // 失败原因统一由 onRejected 给出，这里不重复提示；
+                        // startFailure 让那条回调区分「起不来」与「交付失败」两种原因。
+                        startFailure.set(true)
+                        val started = recorder.start(target.second)
+                        // start() 失败时 onRejected 已在调用内消费掉这个标记；成功后也要复位，
+                        // 否则之后一次正常的录制失败会被误报成「无法开始录音」。
+                        startFailure.set(false)
+                        if (!started) voiceTarget.compareAndSet(target, null)
                     }
                 }
                 val audioPermissionLauncher = rememberLauncherForActivityResult(
@@ -296,7 +374,9 @@ class MainActivity : ComponentActivity() {
                         notify("对话尚未就绪")
                     } else if (!active.canSendVoiceAttachment(active.state.value.activeThreadId)) {
                         notify("当前对话暂不能发送语音，请等待处理完成后重试")
-                    } else if (recording == null && !sendingVoice && permissionTarget == null) {
+                    } else if (voiceState is VoiceRecorderState.Sending) {
+                        notify(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
+                    } else if (voiceState is VoiceRecorderState.Idle && permissionTarget == null) {
                         val target = active to active.state.value.activeThreadId
                         if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             beginRecording(target)
@@ -304,6 +384,13 @@ class MainActivity : ComponentActivity() {
                             permissionTarget = target
                             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
+                    }
+                }
+                // 录音只属于录制它的对话：宿主切走会话时立即丢弃，而不是等发送时才失败。
+                LaunchedEffect(controller) {
+                    val active = controller ?: return@LaunchedEffect
+                    snapshotFlow { active.state.value.activeThreadId }.collect { threadId ->
+                        if (recorder.onSessionChanged(threadId)) voiceTarget.set(null)
                     }
                 }
                 DisposableEffect(Unit) {
@@ -316,66 +403,9 @@ class MainActivity : ComponentActivity() {
                     lifecycle.addObserver(observer)
                     onDispose {
                         lifecycle.removeObserver(observer)
-                        voiceSendJob?.cancel()
                         permissionTarget = null
                         cancelRecording()
                     }
-                }
-                LaunchedEffect(controller) {
-                    if (recordingTarget?.first?.let { it !== controller } == true) cancelRecording()
-                    if (voiceSendController?.let { it !== controller } == true) voiceSendJob?.cancel()
-                }
-                if (recording != null) {
-                    AlertDialog(
-                        onDismissRequest = cancelRecording,
-                        title = { Text("正在录音") },
-                        text = { Text("录音结束后会将原始音频直接发送给 Agent。当前草稿和附件会保留。离开应用将取消录音。") },
-                        dismissButton = { TextButton(onClick = cancelRecording) { Text("取消") } },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                val capture = recording
-                                val target = recordingTarget
-                                // Consume this recording before scheduling work: repeated clicks cannot resend it.
-                                recording = null
-                                recordingTarget = null
-                                if (capture != null && target != null) {
-                                    sendingVoice = true
-                                    voiceSendController = target.first
-                                    voiceSendJob = lifecycleScope.launch {
-                                        var voice: RecordedVoice? = null
-                                        try {
-                                            val completed = withContext(Dispatchers.IO) { capture.finish() }
-                                            voice = completed
-                                            if (runtime.controller.value !== target.first) {
-                                                notify("对话已切换，语音未发送")
-                                            } else if (!target.first.sendVoiceAttachment(completed.selection(), target.second)) {
-                                                notify("语音未发送，请查看对话提示后重试")
-                                            }
-                                        } catch (cause: CancellationException) {
-                                            throw cause
-                                        } catch (_: Exception) {
-                                            notify("录音或发送失败，请重试")
-                                        } finally {
-                                            voice?.close()
-                                            capture.close()
-                                            sendingVoice = false
-                                            voiceSendController = null
-                                            voiceSendJob = null
-                                        }
-                                    }
-                                }
-                            }) { Text("结束并发送") }
-                        },
-                    )
-                }
-                if (sendingVoice) {
-                    AlertDialog(
-                        onDismissRequest = { voiceSendJob?.cancel() },
-                        title = { Text("正在发送语音") },
-                        text = { CircularProgressIndicator() },
-                        dismissButton = { TextButton(onClick = { voiceSendJob?.cancel() }) { Text("停止等待") } },
-                        confirmButton = {},
-                    )
                 }
 
                 // 启动时自动尝试恢复已存储凭据
@@ -743,6 +773,11 @@ class MainActivity : ComponentActivity() {
                                     onPickDocument = attachmentPickers.document,
                                     onPasteImages = attachmentPickers.paste,
                                     onVoiceInput = startVoiceInput,
+                                    // 录音态只由当前可见的输入坞呈现：助理面板展开时由面板显示，
+                                    // 面板收起后回到工作台，避免同一段录音在两处各画一份。
+                                    recording = activeRecording.takeUnless { showAssistant },
+                                    onCancelRecording = cancelRecording,
+                                    onFinishRecording = finishRecording,
                                     pluginCards = {
                                         com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(
                                             app.pluginHost,
@@ -767,6 +802,9 @@ class MainActivity : ComponentActivity() {
                                         onPickDocument = attachmentPickers.document,
                                         onPasteImages = attachmentPickers.paste,
                                         onVoiceInput = startVoiceInput,
+                                        recording = activeRecording,
+                                        onCancelRecording = cancelRecording,
+                                        onFinishRecording = finishRecording,
                                         screenCaptureSource = screenCaptureSource,
                                         onNeedScreenCaptureAuthorization = {
                                             // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
@@ -868,6 +906,9 @@ internal fun GatewayWorkbenchScreen(
     onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit,
     modifier: Modifier = Modifier,
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     onOpenAssistant: (() -> Unit)? = null,
     pluginCards: @Composable () -> Unit = {},
     header: @Composable () -> Unit = {},
@@ -918,6 +959,9 @@ internal fun GatewayWorkbenchScreen(
                 onPickGallery = onPickGallery,
                 onPickDocument = onPickDocument,
                 onVoiceInput = onVoiceInput,
+                recording = recording,
+                onCancelRecording = onCancelRecording,
+                onFinishRecording = onFinishRecording,
                 modifier = Modifier.weight(1f),
                 onOpenAssistant = onOpenAssistant,
                 onLogout = { runtime.logout(revokeRefresh = true) },

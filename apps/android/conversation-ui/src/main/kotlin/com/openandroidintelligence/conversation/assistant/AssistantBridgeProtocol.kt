@@ -64,6 +64,18 @@ data class AssistantTimelineEntryDto(
     val submissionFailureCode: String? = null,
     val clientMessageId: String? = null,
     val localPlaceholder: Boolean = false,
+    /**
+     * 该条消息所属的生成任务身份。
+     *
+     * 不能省略：渲染层的执行段入口以 `generationId` 非空为门槛
+     * （`TimelineDisplay.build()`），缺它时工具卡与思考过程整体退化，
+     * 最终只剩下一条空气泡。
+     */
+    val generationId: String? = null,
+    /** 该行是「宿主工具调用事实」而不是一条消息；与 `conversation-domain` 的同名字段对应。 */
+    val executionFact: Boolean = false,
+    /** 该执行段所属任务的明确状态名；未知值解码为 null，不伪造终态。 */
+    val executionGenerationState: String? = null,
 )
 
 /**
@@ -89,6 +101,17 @@ data class AssistantExecutionStepDto(
     val status: String = NativeExecutionStatus.UNKNOWN.name,
     val arguments: String = "",
     val output: String? = null,
+    /**
+     * 步骤自身的修订号。
+     *
+     * 宿主会为同一步骤推送多次快照；接收方靠它判断「这一帧更新」，缺它就只能按到达
+     * 顺序接受，迟到的 RUNNING 快照会覆盖已完成的结论。
+     */
+    val revision: Long = 0L,
+    /** 步骤调用所在的源消息身份；用于把步骤放回真实位置，而不是凭时间猜。 */
+    val sourceMessageId: String? = null,
+    /** 原调用事件时间（毫秒）；结果更新不得改写调用位置。 */
+    val occurredAt: Long? = null,
 )
 
 /** 一个审批选项；意图（[choice]）与样式分开，样式只是展示提示。 */
@@ -279,6 +302,9 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
     submissionFailureCode = submissionFailureCode,
     clientMessageId = clientMessageId?.value,
     localPlaceholder = localPlaceholder,
+    generationId = generationId,
+    executionFact = executionFact,
+    executionGenerationState = executionGenerationState?.name,
 )
 
 /** 把一条线上投影还原为界面条目。 */
@@ -298,6 +324,10 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry = TimelineEntry(
     clientMessageId = clientMessageId?.takeIf { it.isNotBlank() }?.let { runCatching { ClientMessageId(it) }.getOrNull() },
     executionSteps = executionSteps.map { it.toNativeExecutionStep() },
     localPlaceholder = localPlaceholder,
+    generationId = generationId,
+    executionFact = executionFact,
+    // 未知状态名折成 null：宁可「不知道任务结论」，也不能猜成已完成或失败。
+    executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
 )
 
 private fun TimelineAttachment.toAssistantAttachmentDto(): AssistantAttachmentDto = AssistantAttachmentDto(
@@ -328,6 +358,9 @@ private fun NativeExecutionStep.toAssistantExecutionStepDto(): AssistantExecutio
         status = status.name,
         arguments = arguments,
         output = output,
+        revision = revision,
+        sourceMessageId = sourceMessageId,
+        occurredAt = occurredAt,
     )
 
 private fun AssistantExecutionStepDto.toNativeExecutionStep(): NativeExecutionStep = NativeExecutionStep(
@@ -339,6 +372,9 @@ private fun AssistantExecutionStepDto.toNativeExecutionStep(): NativeExecutionSt
     output = output,
     status = NativeExecutionStatus.entries.firstOrNull { it.name == status }
         ?: NativeExecutionStatus.UNKNOWN,
+    revision = revision,
+    sourceMessageId = sourceMessageId,
+    occurredAt = occurredAt,
 )
 
 private fun ApprovalCardState.toAssistantApprovalDto(): AssistantApprovalDto = AssistantApprovalDto(
@@ -545,6 +581,9 @@ private fun AssistantExecutionStepDto.toJson(): JSONObject = JSONObject().apply 
     put("status", status)
     put("arguments", arguments)
     output?.let { put("output", it) }
+    put("revision", revision)
+    sourceMessageId?.let { put("sourceMessageId", it) }
+    occurredAt?.let { put("occurredAt", it) }
 }
 
 private fun AssistantApprovalOptionDto.toJson(): JSONObject = JSONObject().apply {
@@ -575,6 +614,9 @@ private fun AssistantTimelineEntryDto.toJson(): JSONObject = JSONObject().apply 
     submissionFailureCode?.let { put("submissionFailureCode", it) }
     clientMessageId?.let { put("clientMessageId", it) }
     put("localPlaceholder", localPlaceholder)
+    generationId?.let { put("generationId", it) }
+    if (executionFact) put("executionFact", true)
+    executionGenerationState?.let { put("executionGenerationState", it) }
 }
 
 /** 测量与编码共用同一份序列化，预算不会和实际 payload 走偏。 */
@@ -620,6 +662,9 @@ private fun JSONObject.toExecutionStepDto(): AssistantExecutionStepDto = Assista
     status = stringOrEmpty("status").ifBlank { NativeExecutionStatus.UNKNOWN.name },
     arguments = stringOrEmpty("arguments"),
     output = stringOrNull("output"),
+    revision = optLong("revision", 0L),
+    sourceMessageId = stringOrNull("sourceMessageId"),
+    occurredAt = if (has("occurredAt") && !isNull("occurredAt")) optLong("occurredAt") else null,
 )
 
 private fun JSONObject.toApprovalOptionDto(): AssistantApprovalOptionDto = AssistantApprovalOptionDto(
@@ -650,6 +695,9 @@ private fun JSONObject.toTimelineEntryDto(): AssistantTimelineEntryDto = Assista
     submissionFailureCode = stringOrNull("submissionFailureCode"),
     clientMessageId = stringOrNull("clientMessageId"),
     localPlaceholder = optBoolean("localPlaceholder", false),
+    generationId = stringOrNull("generationId"),
+    executionFact = optBoolean("executionFact", false),
+    executionGenerationState = stringOrNull("executionGenerationState"),
 )
 
 /**

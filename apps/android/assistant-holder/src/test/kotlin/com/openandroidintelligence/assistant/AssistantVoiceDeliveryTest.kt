@@ -15,7 +15,6 @@ import com.openandroidintelligence.conversation.voice.RecordedVoice
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -149,22 +148,4 @@ class AssistantVoiceDeliveryTest {
         assertTrue(sent.none { it.containsKey("text") || it.containsKey("draftId") })
     }
 
-    @Test fun everyRejectionHasItsOwnReadableConclusion() {
-        val messages = AssistantVoiceRejection.entries.map(::assistantVoiceRejectionMessage)
-
-        assertTrue(messages.all { it.isNotBlank() })
-        assertEquals(messages.size, messages.distinct().size)
-        assertEquals("会话已切换，录音未发送", assistantVoiceRejectionMessage(AssistantVoiceRejection.SESSION_CHANGED))
-    }
-
-    @Test fun onlyAnActiveRecordingMapsToTheRecordingUi() {
-        assertNull(AssistantVoiceState.Idle.toCompactRecording())
-        assertNull(AssistantVoiceState.Sending("thread_a").toCompactRecording())
-
-        val recording = AssistantVoiceState.Recording(sessionKey = "thread_a", elapsedMs = 2_400L, level = 0.4f)
-            .toCompactRecording()
-        assertEquals(2_400L, requireNotNull(recording).elapsedMs)
-        assertEquals(0.4f, recording.level, 0f)
-        assertNotEquals(0f, recording.level)
-    }
 }

@@ -129,6 +129,9 @@ internal val InputBarShape = RoundedCornerShape(
  * @param composer 输入栏内容，固定贴在面板底部。
  * @param emptyContent 没有消息时显示的空态；为 null 时消息区留白。
  * @param itemContent 单条消息的呈现。
+ * @param availableHeightPx 宿主给出的**未扣 inset、未乘 0.7** 的可用高度（像素）。
+ *   给出时高度上限只在这里算一次；为 null 时才回落到本条目的测量约束。
+ *   两个来源不能同时生效——否则同一个 0.7 上限会被乘两次，键盘弹出后面板只剩一条消息高。
  */
 @Composable
 internal fun <T> AssistantExpandedPanel(
@@ -139,6 +142,7 @@ internal fun <T> AssistantExpandedPanel(
     header: (@Composable () -> Unit)? = null,
     composer: (@Composable () -> Unit)? = null,
     emptyContent: (@Composable () -> Unit)? = null,
+    availableHeightPx: Int? = null,
     itemContent: @Composable LazyItemScope.(T) -> Unit,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
@@ -195,10 +199,10 @@ internal fun <T> AssistantExpandedPanel(
         modifier = modifier,
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            // 常规宿主给的是有界高度（窗口级容器 / fillMaxSize）；
-            // 万一被塞进纵向滚动容器拿到无穷大约束，退回屏幕高度作为可用高度 ——
-            // LazyColumn 在无穷高约束下会直接抛错，这里必须换成一个有限值。
-            val availableHeightPx = if (constraints.maxHeight == Constraints.Infinity) {
+            // 上限只有一个计算点：
+            // - 宿主显式给了可用高度 → 用它算一次（它未扣 inset、未乘 0.7）；
+            // - 否则用本条目的测量约束；无穷大时退回屏幕高度，保证 LazyColumn 有界。
+            val baseHeightPx = availableHeightPx ?: if (constraints.maxHeight == Constraints.Infinity) {
                 with(density) { configuration.screenHeightDp.dp.toPx() }.roundToInt()
             } else {
                 with(density) { maxHeight.toPx() }.roundToInt()
@@ -207,7 +211,7 @@ internal fun <T> AssistantExpandedPanel(
             val topInsetPx = WindowInsets.safeDrawing.getTop(density)
             val maxPanelHeight = with(density) {
                 AssistantSessionWindowPolicy
-                    .calculateMaxHeight(availableHeightPx, imeHeightPx, topInsetPx)
+                    .calculateMaxHeight(baseHeightPx, imeHeightPx, topInsetPx)
                     .toDp()
             }
 
@@ -265,7 +269,14 @@ internal fun <T> AssistantExpandedPanel(
                                     // 反向布局：索引 0 是最新一条，永远贴着输入栏；
                                     // 新消息追加时不需要整段跳转就可见。
                                     reverseLayout = true,
-                                    contentPadding = PaddingValues(vertical = Dimensions.SpaceSmall),
+                                    contentPadding = PaddingValues(
+                                        // 横向必须留白：会话框是 28dp 圆角的 Surface，会按形状裁剪；
+                                        // 没有内边距时气泡两侧会直接顶到卡片边缘被切掉。
+                                        start = Dimensions.TimelineHorizontal,
+                                        end = Dimensions.TimelineHorizontal,
+                                        top = Dimensions.SpaceSmall,
+                                        bottom = Dimensions.SpaceSmall,
+                                    ),
                                     verticalArrangement = Arrangement.spacedBy(Dimensions.TimelineSpacing),
                                     modifier = Modifier
                                         .fillMaxWidth()

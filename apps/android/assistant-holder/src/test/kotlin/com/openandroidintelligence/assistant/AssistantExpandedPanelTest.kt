@@ -118,8 +118,65 @@ class AssistantExpandedPanelTest {
         assertEquals(CornerSize(AppRadius.ExtraLarge), InputBarShape.bottomEnd)
     }
 
-    @Test fun composerRendersAsItsOwnBarUnderTheConversationBox() {
-        setPanel(expanded = true, messages = messages(3))
+    /**
+     * 宿主显式给出可用高度时（助手根组合的真实路径），0.7 只能乘一次。
+     *
+     * 回归 issue #110：根层先按屏幕高度算一次上限、面板又把「已扣过 IME 的高度」
+     * 当作可用高度再算一次，键盘一弹出面板只剩约 200px。
+     */
+    @Test fun aHostSuppliedAvailableHeightIsOnlyFilledOnceByThePanel() {
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 640.dp)) {
+                    AssistantExpandedPanel(
+                        expanded = true,
+                        messages = messages(30),
+                        itemKey = { it },
+                        // 与 2400px 屏 / 1000px 键盘 / 100px 顶部安全区同量级（换算成 dp 后
+                        // 只验证「只乘一次 0.7」这一条性质）。
+                        availableHeightPx = with(compose.density) { 600.dp.roundToPx() },
+                        itemContent = { message ->
+                            Text(
+                                text = message,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("message:$message"),
+                            )
+                        },
+                    )
+                }
+            }
+        }
+
+        val panelHeight = compose.onNodeWithTag(ASSISTANT_EXPANDED_PANEL_TAG)
+            .getUnclippedBoundsInRoot().height
+        // 600dp × 0.7 = 420dp：既明显高于「二次扣减后的一条消息高」，也绝不超出宿主。
+        assertTrue("显式可用高度下上限只乘一次 0.7，实际 $panelHeight", panelHeight >= 415.dp)
+        assertTrue("不得超过可用高度 × 0.7，实际 $panelHeight", panelHeight <= 425.dp)
+    }
+
+    /**
+     * 会话框是 28dp 圆角的 `Surface`，会按形状裁剪子内容；消息列表必须有横向内边距，
+     * 否则气泡两侧直接顶到卡片边缘被切掉（issue #111）。
+     */
+    @Test fun theMessageListLeavesHorizontalRoomForTheRoundedCard() {
+        val list = messages(3)
+        setPanel(expanded = true, messages = list)
+
+        val panel = compose.onNodeWithTag(ASSISTANT_EXPANDED_PANEL_TAG).getUnclippedBoundsInRoot()
+        val row = compose.onNodeWithTag("message:${list.last()}").getUnclippedBoundsInRoot()
+
+        assertTrue(
+            "消息左缘必须在面板内并留出圆角余量，实际 left=${row.left} panel=${panel.left}",
+            row.left >= panel.left,
+        )
+        assertTrue(
+            "消息右缘必须留出圆角余量，实际 right=${row.right} panel=${panel.right}",
+            row.right <= panel.right,
+        )
+    }
+
+    @Test fun composerRendersAsItsOwnBarUnderTheConversationBox() {        setPanel(expanded = true, messages = messages(3))
         compose.onNodeWithTag(ASSISTANT_INPUT_BAR_TAG).assertIsDisplayed()
         compose.onNodeWithText("输入栏占位").assertIsDisplayed()
     }

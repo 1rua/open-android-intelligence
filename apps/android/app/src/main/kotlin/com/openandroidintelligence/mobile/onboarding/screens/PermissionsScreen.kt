@@ -309,7 +309,7 @@ private fun PermissionCard(
         }
         unsupported -> {
             statusText = if (isRoleCard) {
-                "当前系统未提供默认数字助理角色 · 仍可在应用内对话"
+                "系统未提供可用的数字助理设置页 · 仍可在应用内对话"
             } else {
                 "当前设备不支持"
             }

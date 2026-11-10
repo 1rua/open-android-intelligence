@@ -3,6 +3,9 @@ package com.openandroidintelligence.mobile.onboarding
 import android.app.Application
 import android.app.role.RoleManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.ResolveInfo
 import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
@@ -99,15 +102,68 @@ class AssistantRoleTest {
         assertEquals(RoleManager.ROLE_ASSISTANT, intent.getStringExtra("android.intent.extra.ROLE_NAME"))
     }
 
-    /** 回退设置页始终可用（不需要设备支持角色）：直达「默认数字助理」设置。 */
+    /**
+     * 回退设置页必须按「官方默认应用页 → 数字助理设置 → 应用管理」的优先级给出，
+     * 并且只在系统真的能解析时才出现：给出一个不存在的页面等于让用户点了没反应。
+     */
     @Test
-    fun fallbackSettingsIntentOpensVoiceInputSettingsAsNewTask() {
-        val intent = AssistantRole.createFallbackSettingsIntent()
+    fun fallbackSettingsIntentsAreOrderedAndOnlyIncludeResolvablePages() {
+        val packageManager = shadowOf(context.packageManager)
 
-        assertEquals(Settings.ACTION_VOICE_INPUT_SETTINGS, intent.action)
+        // 只注册「默认数字助理」设置页：官方默认应用页在本机不存在。
+        packageManager.addResolveInfoForIntent(
+            Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+            ResolveInfo().apply {
+                activityInfo = ActivityInfo().apply {
+                    packageName = "com.android.settings"
+                    name = "com.android.settings.Settings\$VoiceInputSettingsActivity"
+                }
+            },
+        )
+
+        val intents = AssistantRole.fallbackSettingsIntents(context)
+
+        assertEquals(listOf(Settings.ACTION_VOICE_INPUT_SETTINGS), intents.map { it.action })
         assertTrue(
-            "非 Activity 上下文也要能启动",
-            intent.flags and android.content.Intent.FLAG_ACTIVITY_NEW_TASK != 0,
+            "回退页不能带 NEW_TASK：for-result 拿不到结果，也无法判断用户是否真的设置完成",
+            intents.none { it.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0 },
+        )
+        assertEquals(Settings.ACTION_VOICE_INPUT_SETTINGS, AssistantRole.createFallbackSettingsIntent(context)?.action)
+    }
+
+    /** 一个设置页都解析不到时返回空/ null：调用方必须据此呈现「不支持」，而不是留个死按钮。 */
+    @Test
+    fun noResolvableSettingsPageIsReportedAsAbsent() {
+        assertTrue(AssistantRole.fallbackSettingsIntents(context).isEmpty())
+        assertNull(AssistantRole.createFallbackSettingsIntent(context))
+    }
+
+    /** 官方默认应用页可用时排在第一位（API 34+）。 */
+    @Test
+    @Config(sdk = [34])
+    fun theOfficialDefaultAppsPageWinsWhenAvailable() {
+        val packageManager = shadowOf(context.packageManager)
+        listOf(
+            Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+            Settings.ACTION_VOICE_INPUT_SETTINGS,
+        ).forEach { action ->
+            packageManager.addResolveInfoForIntent(
+                Intent(action),
+                ResolveInfo().apply {
+                    activityInfo = ActivityInfo().apply {
+                        packageName = "com.android.settings"
+                        name = "com.android.settings.$action"
+                    }
+                },
+            )
+        }
+
+        assertEquals(
+            listOf(
+                Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS,
+                Settings.ACTION_VOICE_INPUT_SETTINGS,
+            ),
+            AssistantRole.fallbackSettingsIntents(context).map { it.action },
         )
     }
 

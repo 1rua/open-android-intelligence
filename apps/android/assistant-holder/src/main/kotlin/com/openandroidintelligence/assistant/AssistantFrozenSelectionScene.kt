@@ -71,7 +71,8 @@ internal fun AssistantFrozenSelectionScene(
     attachments: List<AssistantCompactAttachment> = emptyList(),
     onRemoveAttachment: (String) -> Unit = {},
     onStartRecording: () -> Unit = {},
-    recording: AssistantCompactRecording? = null,
+    /** 正在录音时的真实时长与音量；null 表示回到输入态。 */
+    recording: com.openandroidintelligence.conversation.voice.ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
     onAddAttachment: () -> Unit = {},

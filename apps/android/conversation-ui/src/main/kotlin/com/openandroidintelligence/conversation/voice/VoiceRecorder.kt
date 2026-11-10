@@ -1,10 +1,8 @@
-package com.openandroidintelligence.assistant
+package com.openandroidintelligence.conversation.voice
 
 import android.content.Context
 import android.os.SystemClock
-import com.openandroidintelligence.conversation.voice.RecordedVoice
-import com.openandroidintelligence.conversation.voice.VoiceLevelMeter
-import com.openandroidintelligence.conversation.voice.VoiceRecording
+import androidx.compose.runtime.Immutable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -25,10 +23,10 @@ import kotlinx.coroutines.launch
  * 只有 [Recording] 携带可渲染的数据；[Sending] 是「录音已结束、正在写文件并交给宿主」的
  * 过渡态。它的存在意义是让重复点击没有可乘之机，而不是给界面一个新的视觉形态。
  */
-internal sealed interface AssistantVoiceState {
+sealed interface VoiceRecorderState {
 
     /** 没有进行中的录音；麦克风已释放，临时文件已删除。 */
-    data object Idle : AssistantVoiceState
+    data object Idle : VoiceRecorderState
 
     /**
      * 正在录音。
@@ -41,14 +39,14 @@ internal sealed interface AssistantVoiceState {
         val sessionKey: String?,
         val elapsedMs: Long,
         val level: Float,
-    ) : AssistantVoiceState
+    ) : VoiceRecorderState
 
     /** 录音已结束，正在写文件并交给宿主发送；此状态下任何再次发送都会被拒绝。 */
-    data class Sending(val sessionKey: String?) : AssistantVoiceState
+    data class Sending(val sessionKey: String?) : VoiceRecorderState
 }
 
 /** 一段录音没有交付给宿主的原因；宿主据此给出提示，而不是静默吞掉。 */
-internal enum class AssistantVoiceRejection {
+enum class VoiceRejection {
 
     /** 当前没有可发送的录音（已经发过、已取消，或从未开始）。 */
     NOT_RECORDING,
@@ -64,17 +62,51 @@ internal enum class AssistantVoiceRejection {
 }
 
 /**
- * 助理语音录音的状态机与设备生命周期。
+ * 录音被拒绝时给用户的中文结论。
+ *
+ * 每个分支都是对真实原因的直接说明；不做自动重试，也不把拒绝渲染成"已发送"。
+ */
+fun voiceRejectionMessage(rejection: VoiceRejection): String = when (rejection) {
+    VoiceRejection.NOT_RECORDING -> "当前没有可发送的录音"
+    VoiceRejection.ALREADY_SENDING -> "语音正在发送，请稍候"
+    VoiceRejection.SESSION_CHANGED -> "会话已切换，录音未发送"
+    VoiceRejection.RECORDING_FAILED -> "录音失败，请重试"
+}
+
+/**
+ * 界面可渲染的「正在录音」：经过的真实时长与实时音量（0..1）。
+ *
+ * 只承载渲染所需数据，不暴露会话身份：会话校验由 [VoiceRecorder] 自己保证。
+ */
+@Immutable
+data class ActiveVoiceRecording(
+    val elapsedMs: Long,
+    val level: Float = 0f,
+)
+
+/**
+ * 录音状态 → 输入栏的录音态。
+ *
+ * 只有 [VoiceRecorderState.Recording] 携带可渲染的真实时长与音量；[VoiceRecorderState.Sending]
+ * 与 Idle 都回到输入态 —— 发送中的过渡态如果继续显示"正在录音"，用户会以为还能再录一次。
+ */
+fun VoiceRecorderState.activeRecording(): ActiveVoiceRecording? =
+    (this as? VoiceRecorderState.Recording)?.let {
+        ActiveVoiceRecording(elapsedMs = it.elapsedMs, level = it.level)
+    }
+
+/**
+ * 语音录音的状态机与设备生命周期；主会话与默认数字助手共用同一份实现。
  *
  * 职责边界：
  * - 只管理「这一条录音」——开始、计时、电平、取消与结束；
  * - 录音结束后生成 [RecordedVoice] 并通过 [onRecorded] 交给宿主发送。本类不连接桥接、
  *   不自己发消息，也不持有会话的权威身份，只记住录音开始时所在的
- *   [AssistantVoiceState.Recording.sessionKey]；
+ *   [VoiceRecorderState.Recording.sessionKey]；
  * - 取消、会话切换、录制失败都会立刻释放麦克风并删除临时文件，不在缓存目录留下可复用的音频。
  *
  * 三条必须守住的规则（由本类而不是界面保证）：
- * 1. **防重复提交**：发送时同步把状态推进到 [AssistantVoiceState.Sending] 并交出录音引用，
+ * 1. **防重复提交**：发送时同步把状态推进到 [VoiceRecorderState.Sending] 并交出录音引用，
  *    第二次点击只能拿到 `false`，不会产生第二条语音消息；
  * 2. **切会话校验**：[send] 在结束录音前后各比对一次当前会话，任何一次不一致都会丢弃音频；
  *    宿主也可以主动调用 [onSessionChanged]；
@@ -90,10 +122,10 @@ internal enum class AssistantVoiceRejection {
  * 生命周期：[start] 之后必须调用 [close]（幂等）；[close] 会取消采样、释放麦克风、删除
  * 尚未交付的临时文件，并停掉内部协程作用域。已经交给宿主的 [RecordedVoice] 由宿主负责关闭。
  */
-internal class AssistantVoiceRecorder(
+class VoiceRecorder(
     private val createRecording: () -> VoiceRecording,
     private val onRecorded: (voice: RecordedVoice, sessionKey: String?) -> Unit,
-    private val onRejected: (AssistantVoiceRejection) -> Unit = {},
+    private val onRejected: (VoiceRejection) -> Unit = {},
     private val elapsedRealtimeMillis: () -> Long = { SystemClock.elapsedRealtime() },
     private val pollIntervalMs: Long = VoiceLevelMeter.DEFAULT_POLL_INTERVAL_MS,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -106,10 +138,10 @@ internal class AssistantVoiceRecorder(
     /** 保护下面全部可变字段：入口来自主线程，采样与交付在后台线程回调。 */
     private val lock = Any()
 
-    private val _state = MutableStateFlow<AssistantVoiceState>(AssistantVoiceState.Idle)
+    private val _state = MutableStateFlow<VoiceRecorderState>(VoiceRecorderState.Idle)
 
     /** 当前录音状态；界面据此渲染「录音中：波形 + 计时」或回到输入态。 */
-    val state: StateFlow<AssistantVoiceState> = _state.asStateFlow()
+    val state: StateFlow<VoiceRecorderState> = _state.asStateFlow()
 
     /**
      * 本类自有的协程作用域：录音期间承载计时与电平采样，结束后承载写文件与交付。
@@ -137,7 +169,7 @@ internal class AssistantVoiceRecorder(
     fun start(sessionKey: String? = null): Boolean {
         var failed = false
         val created = synchronized(lock) {
-            if (_state.value != AssistantVoiceState.Idle) return false
+            if (_state.value != VoiceRecorderState.Idle) return false
             val recording = try {
                 createRecording()
             } catch (_: Exception) {
@@ -156,7 +188,7 @@ internal class AssistantVoiceRecorder(
             capture = recording
             startedAtMillis = elapsedRealtimeMillis()
             meter = VoiceLevelMeter(recording, pollIntervalMs, dispatcher)
-            _state.value = AssistantVoiceState.Recording(
+            _state.value = VoiceRecorderState.Recording(
                 sessionKey = sessionKey,
                 elapsedMs = 0L,
                 level = 0f,
@@ -164,7 +196,7 @@ internal class AssistantVoiceRecorder(
             recording
         }
         if (created == null) {
-            if (failed) onRejected(AssistantVoiceRejection.RECORDING_FAILED)
+            if (failed) onRejected(VoiceRejection.RECORDING_FAILED)
             return false
         }
 
@@ -202,11 +234,11 @@ internal class AssistantVoiceRecorder(
      */
     fun cancel(): Boolean {
         val recording = synchronized(lock) {
-            if (_state.value !is AssistantVoiceState.Recording) return false
+            if (_state.value !is VoiceRecorderState.Recording) return false
             val current = capture ?: return false
             capture = null
             stopSamplingLocked()
-            _state.value = AssistantVoiceState.Idle
+            _state.value = VoiceRecorderState.Idle
             current
         }
         // close() 同时负责释放设备与删除文件；重复调用是幂等的。
@@ -217,7 +249,7 @@ internal class AssistantVoiceRecorder(
     /**
      * 结束录音并交给宿主发送。
      *
-     * 调用会立即把状态推进到 [AssistantVoiceState.Sending] 并交出录音引用，
+     * 调用会立即把状态推进到 [VoiceRecorderState.Sending] 并交出录音引用，
      * 真正的 `finish()`（阻塞写文件）在 [finishDispatcher] 上执行。
      *
      * @param currentSessionKey 读取当前会话身份的入口；结束录音前后各读一次，
@@ -229,44 +261,44 @@ internal class AssistantVoiceRecorder(
         var recording: VoiceRecording? = null
         var sessionKey: String? = null
         var deliveryScope: CoroutineScope? = null
-        var rejection: AssistantVoiceRejection? = null
+        var rejection: VoiceRejection? = null
         // 先读一次当前会话，再进锁判断：宿主传入的读取器可能触碰自己的状态，
         // 不能在持锁时回调外部代码。读取失败时按「已经切走」处理，宁可丢弃也不发错对话。
         val currentSession = runCatching { currentSessionKey() }.getOrNull()
 
         synchronized(lock) {
             when (_state.value) {
-                is AssistantVoiceState.Sending -> {
-                    rejection = AssistantVoiceRejection.ALREADY_SENDING
+                is VoiceRecorderState.Sending -> {
+                    rejection = VoiceRejection.ALREADY_SENDING
                     return@synchronized
                 }
 
-                AssistantVoiceState.Idle -> {
-                    rejection = AssistantVoiceRejection.NOT_RECORDING
+                VoiceRecorderState.Idle -> {
+                    rejection = VoiceRejection.NOT_RECORDING
                     return@synchronized
                 }
 
-                is AssistantVoiceState.Recording -> Unit
+                is VoiceRecorderState.Recording -> Unit
             }
             val current = capture
             if (current == null) {
-                rejection = AssistantVoiceRejection.NOT_RECORDING
+                rejection = VoiceRejection.NOT_RECORDING
                 return@synchronized
             }
-            val startedIn = (_state.value as AssistantVoiceState.Recording).sessionKey
+            val startedIn = (_state.value as VoiceRecorderState.Recording).sessionKey
             if (currentSession != startedIn) {
                 // 会话已经切换：这段录音不属于任何当前对话，直接丢弃。
                 capture = null
                 stopSamplingLocked()
-                _state.value = AssistantVoiceState.Idle
+                _state.value = VoiceRecorderState.Idle
                 runCatching { current.close() }
-                rejection = AssistantVoiceRejection.SESSION_CHANGED
+                rejection = VoiceRejection.SESSION_CHANGED
                 return@synchronized
             }
             // 同步消费录音引用：即使 finish() 还没完成就再次调用，也拿不到第二份音频。
             capture = null
             stopSamplingLocked()
-            _state.value = AssistantVoiceState.Sending(startedIn)
+            _state.value = VoiceRecorderState.Sending(startedIn)
             recording = current
             sessionKey = startedIn
             deliveryScope = scope
@@ -284,7 +316,7 @@ internal class AssistantVoiceRecorder(
         if (scopeToUse == null || !scopeToUse.isActive) {
             runCatching { toDeliver.close() }
             resetToIdle()
-            onRejected(AssistantVoiceRejection.RECORDING_FAILED)
+            onRejected(VoiceRejection.RECORDING_FAILED)
             return false
         }
         scopeToUse.launch(finishDispatcher) {
@@ -302,29 +334,29 @@ internal class AssistantVoiceRecorder(
      */
     fun onSessionChanged(currentSessionKey: String?): Boolean {
         val recording = synchronized(lock) {
-            val active = _state.value as? AssistantVoiceState.Recording ?: return false
+            val active = _state.value as? VoiceRecorderState.Recording ?: return false
             if (active.sessionKey == currentSessionKey) return false
             val current = capture ?: return false
             capture = null
             stopSamplingLocked()
-            _state.value = AssistantVoiceState.Idle
+            _state.value = VoiceRecorderState.Idle
             current
         }
         runCatching { recording.close() }
-        onRejected(AssistantVoiceRejection.SESSION_CHANGED)
+        onRejected(VoiceRejection.SESSION_CHANGED)
         return true
     }
 
     /**
      * 界面销毁或会话结束：取消录音、停掉采样并释放麦克风；幂等。
      *
-     * 正在交付（[AssistantVoiceState.Sending]）时不做中断：结束录音 + 写文件是一个短临界区，
+     * 正在交付（[VoiceRecorderState.Sending]）时不做中断：结束录音 + 写文件是一个短临界区，
      * 它自己会清理文件并回到 Idle；此时强行取消会让状态永远停在 Sending、临时文件无人删除。
      * 已经交给宿主的 [RecordedVoice] 由宿主负责关闭。
      */
     fun close() {
         val stopping = synchronized(lock) {
-            if (_state.value is AssistantVoiceState.Sending) {
+            if (_state.value is VoiceRecorderState.Sending) {
                 // 交付正在进行：只登记"结束后停掉作用域"，不打断写文件；
                 // 交接完成后 deliver() 会完成这一步。
                 stopScopeWhenDelivered = true
@@ -334,7 +366,7 @@ internal class AssistantVoiceRecorder(
             val current = capture
             capture = null
             stopSamplingLocked()
-            _state.value = AssistantVoiceState.Idle
+            _state.value = VoiceRecorderState.Idle
             val previousScope = scope
             scope = newScope()
             previousScope to current
@@ -357,7 +389,7 @@ internal class AssistantVoiceRecorder(
                 val stillOn = runCatching { currentSessionKey() }.getOrNull()
                 if (stillOn != sessionKey) {
                     finished.close()
-                    onRejected(AssistantVoiceRejection.SESSION_CHANGED)
+                    onRejected(VoiceRejection.SESSION_CHANGED)
                     return
                 }
                 // 交给宿主后文件所有权随之转移：这里不再关闭，否则会删掉待发送的音频。
@@ -368,14 +400,14 @@ internal class AssistantVoiceRecorder(
                 throw cause
             } catch (_: Exception) {
                 finished.close()
-                onRejected(AssistantVoiceRejection.RECORDING_FAILED)
+                onRejected(VoiceRejection.RECORDING_FAILED)
             }
         } catch (cause: CancellationException) {
             throw cause
         } catch (_: Exception) {
             // finish() 内部已释放录音器并在失败时删除文件；close() 幂等兜底。
             runCatching { recording.close() }
-            onRejected(AssistantVoiceRejection.RECORDING_FAILED)
+            onRejected(VoiceRejection.RECORDING_FAILED)
         } finally {
             if (!delivered) runCatching { recording.close() }
             // 此时状态仍是 Sending，start() 进不来；先停作用域再回到 Idle，
@@ -404,7 +436,7 @@ internal class AssistantVoiceRecorder(
 
     private fun resetToIdle() {
         synchronized(lock) {
-            _state.value = AssistantVoiceState.Idle
+            _state.value = VoiceRecorderState.Idle
         }
     }
 
@@ -420,7 +452,7 @@ internal class AssistantVoiceRecorder(
 
     private fun publishElapsed() {
         synchronized(lock) {
-            val active = _state.value as? AssistantVoiceState.Recording ?: return
+            val active = _state.value as? VoiceRecorderState.Recording ?: return
             if (capture == null) return
             val elapsed = (elapsedRealtimeMillis() - startedAtMillis).coerceAtLeast(0L)
             if (elapsed == active.elapsedMs) return
@@ -430,7 +462,7 @@ internal class AssistantVoiceRecorder(
 
     private fun publishLevel(level: Float) {
         synchronized(lock) {
-            val active = _state.value as? AssistantVoiceState.Recording ?: return
+            val active = _state.value as? VoiceRecorderState.Recording ?: return
             val clamped = level.coerceIn(0f, 1f)
             if (clamped == active.level) return
             _state.value = active.copy(level = clamped)
@@ -448,8 +480,8 @@ internal class AssistantVoiceRecorder(
         fun create(
             context: Context,
             onRecorded: (voice: RecordedVoice, sessionKey: String?) -> Unit,
-            onRejected: (AssistantVoiceRejection) -> Unit = {},
-        ): AssistantVoiceRecorder = AssistantVoiceRecorder(
+            onRejected: (VoiceRejection) -> Unit = {},
+        ): VoiceRecorder = VoiceRecorder(
             createRecording = { VoiceRecording.create(context.applicationContext) },
             onRecorded = onRecorded,
             onRejected = onRejected,

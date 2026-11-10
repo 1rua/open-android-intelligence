@@ -21,6 +21,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.voice.VoiceRecorder
+import com.openandroidintelligence.conversation.voice.VoiceRecorderState
+import com.openandroidintelligence.conversation.voice.VoiceRejection
+import com.openandroidintelligence.conversation.voice.activeRecording
+import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
 
 /**
  * 圈选期间由会话持有的系统截图。
@@ -77,7 +82,7 @@ internal fun AssistantSessionContent(
     // 录音器跟随客户端实例创建：会话窗口收起、组合销毁时由 DisposableEffect 关闭，
     // 麦克风与临时音频都不会跨会话残留。
     val recorder = remember(client, context, controller) {
-        AssistantVoiceRecorder.create(
+        VoiceRecorder.create(
             context = context,
             // 结束录音与写文件都在后台线程回调；真正的发送（读字节 + 管道）也在这里。
             // 只有主进程真正接收这条语音时才派发 `VoiceSent`：界面据此展开会话并
@@ -91,7 +96,7 @@ internal fun AssistantSessionContent(
                 )
             },
             onRejected = { rejection ->
-                client.showAdvisory(assistantVoiceRejectionMessage(rejection))
+                client.showAdvisory(voiceRejectionMessage(rejection))
             },
         )
     }
@@ -102,7 +107,7 @@ internal fun AssistantSessionContent(
     // 会话身份一变就丢弃进行中的录音：音频只属于录制它的那条对话，绝不带到新会话。
     LaunchedEffect(state.sessionId) { recorder.onSessionChanged(state.sessionId) }
     // 只有「正在录音」才替换输入栏；发送中的过渡态仍显示输入态，重复点击因此没有可乘之机。
-    val recording = voiceState.toCompactRecording()
+    val recording = voiceState.activeRecording()
     // 缩略图按 previews 修订号重算：本地圈选晚到时，附件条不必等下一次桥接帧。
     // 键用附件的稳定字段而不是列表实例：每帧都会生成新的 DTO 列表，按实例缓存会让
     // 流式输出期间每帧都在主线程重复解码同一张缩略图。
@@ -171,6 +176,8 @@ internal fun AssistantSessionContent(
                     // 会话身份用于隔离解析缓存与执行耗时：v2 支持切换对话，
                     // 不传就会让新对话沿用上一个对话的耗时记录。
                     threadId = state.activeThread,
+                    // 生成状态必须一起传：执行段的终态折叠与流式光标都依赖它。
+                    generation = state.generationState,
                     notice = state.advisory ?: state.notice.takeIf { it.isNotBlank() },
                     onDismissNotice = if (state.advisory != null) client::clearAdvisory else null,
                     previews = previews,
@@ -178,9 +185,9 @@ internal fun AssistantSessionContent(
                     onStartRecording = {
                         // 上一段录音还在交付时，start() 会静默返回 false；这里先给出原因，
                         // 避免麦克风键按下去没有任何反应。
-                        if (voiceState is AssistantVoiceState.Sending) {
+                        if (voiceState is VoiceRecorderState.Sending) {
                             client.showAdvisory(
-                                assistantVoiceRejectionMessage(AssistantVoiceRejection.ALREADY_SENDING),
+                                voiceRejectionMessage(VoiceRejection.ALREADY_SENDING),
                             )
                         } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
                             PackageManager.PERMISSION_GRANTED
@@ -229,10 +236,10 @@ internal fun AssistantSessionContent(
                     attachments = attachments,
                     onRemoveAttachment = { draftId -> client.removeAttachment(draftId) },
                     onStartRecording = {
-                        if (voiceState is AssistantVoiceState.Sending) {
-                            client.showAdvisory(
-                                assistantVoiceRejectionMessage(AssistantVoiceRejection.ALREADY_SENDING),
-                            )
+                        // 上一段录音还在交付时，start() 会静默返回 false；这里先给出原因，
+                        // 避免麦克风键按下去没有任何反应。
+                        if (voiceState is VoiceRecorderState.Sending) {
+                            client.showAdvisory(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
                         } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
                             PackageManager.PERMISSION_GRANTED
                         ) {

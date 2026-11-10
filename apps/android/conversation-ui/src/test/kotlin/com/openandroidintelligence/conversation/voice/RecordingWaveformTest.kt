@@ -1,4 +1,4 @@
-package com.openandroidintelligence.assistant
+package com.openandroidintelligence.conversation.voice
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.MaterialTheme
@@ -26,13 +26,13 @@ import org.robolectric.annotation.Config
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w411dp-h891dp-420dpi")
-class AssistantVoiceWaveformTest {
+class RecordingWaveformTest {
 
     @get:Rule val compose = createComposeRule()
 
     @Test
     fun anEmptyWindowIsAFixedRowOfIdleBars() {
-        val window = AssistantVoiceWaveformWindow(barCount = 24)
+        val window = RecordingWaveformWindow(barCount = 24)
 
         val bars = window.bars()
 
@@ -43,7 +43,7 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun samplesEnterFromTheRightAndTheWindowWidthNeverChanges() {
-        val window = AssistantVoiceWaveformWindow(barCount = 4)
+        val window = RecordingWaveformWindow(barCount = 4)
 
         window.push(0.25f)
         assertEquals(listOf(0f, 0f, 0f, 0.25f), window.bars())
@@ -55,10 +55,10 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun theWindowKeepsOnlyTheMostRecentTwentyFourFrames() {
-        val window = AssistantVoiceWaveformWindow()
+        val window = RecordingWaveformWindow()
         (1..30).forEach { window.push(it / 100f) }
 
-        assertEquals(AssistantVoiceWaveformDefaults.BarCount, window.size)
+        assertEquals(RecordingWaveformDefaults.BarCount, window.size)
         // 最近 24 帧是 0.07..0.30，右侧为最新。
         assertEquals(0.07f, window.bars().first(), 0.0001f)
         assertEquals(0.30f, window.bars().last(), 0.0001f)
@@ -66,7 +66,7 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun aSmallerWindowKeepsOnlyItsOwnMostRecentFrames() {
-        val window = AssistantVoiceWaveformWindow(barCount = 3)
+        val window = RecordingWaveformWindow(barCount = 3)
         (1..5).forEach { window.push(it / 10f) }
 
         assertEquals(listOf(0.3f, 0.4f, 0.5f), window.bars())
@@ -75,7 +75,7 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun levelsOutsideZeroToOneAreClampedInsteadOfDrawingPastTheStrip() {
-        val window = AssistantVoiceWaveformWindow(barCount = 2)
+        val window = RecordingWaveformWindow(barCount = 2)
 
         window.push(9f)
         window.push(-4f)
@@ -85,7 +85,7 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun fallingLevelsAreRecordedAsTheyAreNotSmoothedAway() {
-        val window = AssistantVoiceWaveformWindow(barCount = 3)
+        val window = RecordingWaveformWindow(barCount = 3)
 
         window.push(0.8f)
         window.push(0.2f)
@@ -96,7 +96,7 @@ class AssistantVoiceWaveformTest {
 
     @Test
     fun clearingResetsTheWindowToTheIdleBaseline() {
-        val window = AssistantVoiceWaveformWindow(barCount = 3)
+        val window = RecordingWaveformWindow(barCount = 3)
         window.push(0.9f)
 
         window.clear()
@@ -110,7 +110,7 @@ class AssistantVoiceWaveformTest {
         compose.setContent {
             CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = true)) {
                 MaterialTheme {
-                    AssistantVoiceWaveform(
+                    RecordingWaveform(
                         level = 0.6f,
                         modifier = Modifier.fillMaxWidth(),
                     )
@@ -128,7 +128,7 @@ class AssistantVoiceWaveformTest {
         compose.setContent {
             CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
                 MaterialTheme {
-                    AssistantVoiceWaveform(
+                    RecordingWaveform(
                         level = level.value,
                         modifier = Modifier.fillMaxWidth(),
                     )

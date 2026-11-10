@@ -16,6 +16,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
 import org.junit.Assert.assertEquals
@@ -57,7 +59,7 @@ class AssistantCompactBarTest {
         enabled: Boolean = true,
         hasUnknownOutcome: Boolean = false,
         attachments: List<AssistantCompactAttachment> = emptyList(),
-        recording: AssistantCompactRecording? = null,
+        recording: ActiveVoiceRecording? = null,
         onRemoveAttachment: (String) -> Unit = {},
         reduceMotion: Boolean = false,
     ): TextFieldState {
@@ -196,7 +198,7 @@ class AssistantCompactBarTest {
 
     @Test
     fun recordingModeReplacesTheWholeInputRow() {
-        render(recording = AssistantCompactRecording(elapsedMs = 7_400L, level = 0.5f))
+        render(recording = ActiveVoiceRecording(elapsedMs = 7_400L, level = 0.5f))
 
         compose.onNodeWithTag(AssistantCompactBarTags.RECORDING).assertIsDisplayed()
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).assertDoesNotExist()
@@ -209,7 +211,7 @@ class AssistantCompactBarTest {
 
     @Test
     fun recordingTimerIsReadableAndCancelAndSendAreSeparateActions() {
-        render(recording = AssistantCompactRecording(elapsedMs = 65_000L))
+        render(recording = ActiveVoiceRecording(elapsedMs = 65_000L))
 
         compose.onNodeWithContentDescription("正在录音").assertIsDisplayed()
 
@@ -223,11 +225,11 @@ class AssistantCompactBarTest {
 
     @Test
     fun recordingDurationIsFormattedAsMinutesAndSeconds() {
-        assertEquals("0:00", formatCompactRecordingDuration(0L))
-        assertEquals("0:07", formatCompactRecordingDuration(7_400L))
-        assertEquals("1:05", formatCompactRecordingDuration(65_000L))
+        assertEquals("0:00", formatVoiceDuration(0L))
+        assertEquals("0:07", formatVoiceDuration(7_400L))
+        assertEquals("1:05", formatVoiceDuration(65_000L))
         // 负时长这类异常输入也不能产出负数。
-        assertEquals("0:00", formatCompactRecordingDuration(-1_000L))
+        assertEquals("0:00", formatVoiceDuration(-1_000L))
     }
 
     @Test

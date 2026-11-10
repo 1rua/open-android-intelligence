@@ -1,8 +1,5 @@
-package com.openandroidintelligence.assistant
+package com.openandroidintelligence.conversation.voice
 
-import com.openandroidintelligence.conversation.voice.RecordedVoice
-import com.openandroidintelligence.conversation.voice.VoiceRecorderDevice
-import com.openandroidintelligence.conversation.voice.VoiceRecording
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -32,20 +29,20 @@ import java.io.File
  * 会一直推进虚拟时间、永远不到"空闲"。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class AssistantVoiceRecorderTest {
+class VoiceRecorderTest {
 
     @get:Rule val temp = TemporaryFolder()
 
     private var now = 1_000_000L
     private var created = 0
-    private var rejection: AssistantVoiceRejection? = null
+    private var rejection: VoiceRejection? = null
     private val delivered = mutableListOf<RecordedVoice>()
     private val deliveredSessions = mutableListOf<String?>()
 
     private fun TestScope.recorder(
         device: FakeRecorderDevice = FakeRecorderDevice(),
         create: (() -> VoiceRecording)? = null,
-    ): AssistantVoiceRecorder = AssistantVoiceRecorder(
+    ): VoiceRecorder = VoiceRecorder(
         createRecording = create ?: {
             created++
             VoiceRecording(recordingFile(), device) { now }
@@ -85,7 +82,7 @@ class AssistantVoiceRecorderTest {
         assertTrue(recorder.start(sessionKey = "thread_a"))
         runCurrent()
 
-        val state = recorder.state.value as AssistantVoiceState.Recording
+        val state = recorder.state.value as VoiceRecorderState.Recording
         assertEquals("thread_a", state.sessionKey)
         assertEquals(0L, state.elapsedMs)
         assertEquals(0f, state.level)
@@ -104,7 +101,7 @@ class AssistantVoiceRecorderTest {
         advanceTimeBy(POLL_MS + 1)
         runCurrent()
 
-        val state = recorder.state.value as AssistantVoiceState.Recording
+        val state = recorder.state.value as VoiceRecorderState.Recording
         assertEquals(1_500L, state.elapsedMs)
         recorder.close()
     }
@@ -115,7 +112,7 @@ class AssistantVoiceRecorderTest {
         recorder.start()
         runCurrent()
 
-        val state = recorder.state.value as AssistantVoiceState.Recording
+        val state = recorder.state.value as VoiceRecorderState.Recording
         assertTrue("电平应来自设备振幅，实际 ${state.level}", state.level > 0.4f)
         assertTrue("电平不得超过 1", state.level <= 1f)
         recorder.close()
@@ -143,7 +140,7 @@ class AssistantVoiceRecorderTest {
 
         assertTrue(recorder.cancel())
 
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         assertEquals("取消必须释放麦克风", 1, device.releases)
         assertEquals("取消不得走 stop", 0, device.stops)
         assertFalse("临时音频必须删除", file!!.exists())
@@ -156,7 +153,7 @@ class AssistantVoiceRecorderTest {
         val recorder = recorder()
 
         assertFalse(recorder.cancel())
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         // close 也必须是幂等的：窗口销毁时可能被重复调用。
         recorder.close()
         recorder.close()
@@ -169,16 +166,16 @@ class AssistantVoiceRecorderTest {
         runCurrent()
 
         assertTrue(recorder.send { "thread_a" })
-        assertTrue(recorder.state.value is AssistantVoiceState.Sending)
+        assertTrue(recorder.state.value is VoiceRecorderState.Sending)
         assertFalse("同一段录音的第二次发送必须被拒绝", recorder.send { "thread_a" })
-        assertEquals(AssistantVoiceRejection.ALREADY_SENDING, rejection)
+        assertEquals(VoiceRejection.ALREADY_SENDING, rejection)
         runCurrent()
 
         assertEquals("只能交付一条语音", 1, delivered.size)
         assertEquals(listOf<String?>("thread_a"), deliveredSessions)
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         assertFalse("交付后再点发送没有可发送内容", recorder.send { "thread_a" })
-        assertEquals(AssistantVoiceRejection.NOT_RECORDING, rejection)
+        assertEquals(VoiceRejection.NOT_RECORDING, rejection)
         delivered.forEach { it.close() }
         recorder.close()
     }
@@ -221,10 +218,10 @@ class AssistantVoiceRecorderTest {
 
         assertTrue(recorder.onSessionChanged("thread_b"))
 
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         assertEquals(1, device.releases)
         assertFalse("切会话后临时音频必须删除", file!!.exists())
-        assertEquals(AssistantVoiceRejection.SESSION_CHANGED, rejection)
+        assertEquals(VoiceRejection.SESSION_CHANGED, rejection)
         assertTrue("切会话的录音不得交付", delivered.isEmpty())
         recorder.close()
     }
@@ -236,7 +233,7 @@ class AssistantVoiceRecorderTest {
         runCurrent()
 
         assertFalse(recorder.onSessionChanged("thread_a"))
-        assertTrue(recorder.state.value is AssistantVoiceState.Recording)
+        assertTrue(recorder.state.value is VoiceRecorderState.Recording)
         recorder.close()
     }
 
@@ -257,9 +254,9 @@ class AssistantVoiceRecorderTest {
         runCurrent()
 
         assertTrue("切会话后不得交付", delivered.isEmpty())
-        assertEquals(AssistantVoiceRejection.SESSION_CHANGED, rejection)
+        assertEquals(VoiceRejection.SESSION_CHANGED, rejection)
         assertFalse(file!!.exists())
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         recorder.close()
     }
 
@@ -268,8 +265,8 @@ class AssistantVoiceRecorderTest {
         val recorder = recorder { error("microphone busy") }
 
         assertFalse(recorder.start())
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
-        assertEquals(AssistantVoiceRejection.RECORDING_FAILED, rejection)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
+        assertEquals(VoiceRejection.RECORDING_FAILED, rejection)
         recorder.close()
     }
 
@@ -287,10 +284,10 @@ class AssistantVoiceRecorderTest {
         runCurrent()
 
         assertTrue(delivered.isEmpty())
-        assertEquals(AssistantVoiceRejection.RECORDING_FAILED, rejection)
+        assertEquals(VoiceRejection.RECORDING_FAILED, rejection)
         assertEquals(1, device.releases)
         assertFalse(file!!.exists())
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         recorder.close()
     }
 
@@ -307,7 +304,7 @@ class AssistantVoiceRecorderTest {
         recorder.close()
         runCurrent()
 
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         assertEquals(1, device.releases)
         assertFalse(file!!.exists())
         assertTrue("关闭窗口不会留下待发送录音", delivered.isEmpty())
@@ -329,7 +326,7 @@ class AssistantVoiceRecorderTest {
         runCurrent()
 
         assertEquals("已经接受的发送必须完成交付", 1, delivered.size)
-        assertEquals(AssistantVoiceState.Idle, recorder.state.value)
+        assertEquals(VoiceRecorderState.Idle, recorder.state.value)
         assertTrue("交付成功后文件由宿主持有，不应在这里删除", file!!.exists())
         delivered.forEach { it.close() }
         recorder.close()
