@@ -167,8 +167,9 @@ open class GatewayWebSocketTransport(
                             onSignal(GatewayWebSocketSignal.Activity(monotonicMillis()))
                             if (event != null) {
                                 connection.delivering = true
+                                connection.deadline.pauseDelivery()
                                 try { emit(event) } finally {
-                                    connection.deadline.activity()
+                                    connection.deadline.resumeDelivery()
                                     connection.delivering = false
                                 }
                             }
@@ -360,8 +361,9 @@ open class GatewayWebSocketTransport(
         @Volatile private var handshaking = true
         @Volatile private var idleAt = started + handshakeTimeoutMillis
         @Volatile private var messageAt = Long.MAX_VALUE
+        @Volatile private var deliveryPaused = false
         private val totalAt = if (probe) started + probeTimeoutMillis else Long.MAX_VALUE
-        fun remaining(): Long = minOf(idleAt, messageAt, totalAt) - monotonicMillis()
+        fun remaining(): Long = if (deliveryPaused) idleTimeoutMillis else minOf(idleAt, messageAt, totalAt) - monotonicMillis()
         fun timeout(): GatewayWebSocketTimeoutException = GatewayWebSocketTimeoutException(
             when {
                 probe -> GatewayWebSocketTimeoutStage.PROBE
@@ -375,6 +377,8 @@ open class GatewayWebSocketTransport(
         fun activity() { check(); idleAt = monotonicMillis() + idleTimeoutMillis }
         fun messageStarted() { messageAt = monotonicMillis() + idleTimeoutMillis }
         fun messageCompleted() { check(); messageAt = Long.MAX_VALUE }
+        fun pauseDelivery() { deliveryPaused = true }
+        fun resumeDelivery() { idleAt = monotonicMillis() + idleTimeoutMillis; deliveryPaused = false }
     }
 
     private inner class Connection(val input: InputStream, val output: OutputStream, val deadline: Deadline) {
