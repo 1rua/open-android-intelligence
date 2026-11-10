@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSheetTags
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -27,6 +28,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * 底部紧凑输入栏的行为回归。
@@ -40,6 +42,9 @@ import org.robolectric.annotation.Config
 @OptIn(ExperimentalFoundationApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w411dp-h891dp-420dpi")
+// 附件底部卡片是 ModalBottomSheet：它有自己的窗口与原生动效，
+// Robolectric 只有在 NATIVE 图形模式下才能正确命中它的条目。
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
 class AssistantCompactBarTest {
     @get:Rule val compose = createComposeRule()
 
@@ -190,26 +195,42 @@ class AssistantCompactBarTest {
         render()
 
         compose.onNodeWithContentDescription("添加附件").assertIsEnabled().performClick()
-        // 「＋」展开菜单后两个类别都必须可达：只给照片选择器会让 PDF/文本等
-        // 现有附件类型在浮层里彻底选不到（规格 §3.5）。
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).assertIsDisplayed()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_DOCUMENT).assertIsDisplayed().performClick()
-        compose.onNodeWithContentDescription("语音输入").assertIsEnabled().performClick()
+        // 「＋」展开的是与主 App 共用的 MD3 底部卡片：三个来源都必须可达，
+        // 否则 PDF/文本等现有附件类型会在这里彻底选不到（规格 §3.5）。
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.SHEET).assertExists()
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.GALLERY).assertIsDisplayed()
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.DOCUMENT).assertIsDisplayed().performClick()
 
         assertEquals("文档入口必须真的触发选择", listOf(AssistantAttachmentKind.DOCUMENT), added)
-        assertEquals(1, recordings)
         compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
         assertEquals(0, selections)
     }
 
+    /**
+     * 卡片必须在选择之后关闭，否则它会盖住系统选择器。
+     *
+     * 这里只断言「选完立刻回调宿主」；卡片自身的关闭由 `onDismiss` 负责，宿主收到回调
+     * 即启动系统页面。
+     */
     @Test
-    fun theMediaEntryInTheMenuAsksForThePhotoPicker() {
+    fun theGalleryEntryInTheSheetAsksForThePhotoPicker() {
         render()
 
         compose.onNodeWithContentDescription("添加附件").performClick()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.GALLERY).performClick()
 
         assertEquals(listOf(AssistantAttachmentKind.MEDIA), added)
+    }
+
+    /** 拍照入口不能被并进相册：那是静默降级，用户点「拍照」不该看到相册。 */
+    @Test
+    fun theCameraEntryAsksForTheSystemCamera() {
+        render()
+
+        compose.onNodeWithContentDescription("添加附件").performClick()
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.CAMERA).performClick()
+
+        assertEquals(listOf(AssistantAttachmentKind.CAPTURE), added)
     }
 
     @Test

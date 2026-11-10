@@ -27,6 +27,7 @@ import com.openandroidintelligence.conversation.model.ApprovalRequest
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.workbench.ApprovalCardTags
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSheetTags
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
 import org.junit.Assert.assertEquals
@@ -403,9 +404,9 @@ class AssistantSessionRootTest {
             }
         }
 
-        // 「＋」先展开菜单，再选类别：照片与文档两条系统选择器都要能到。
+        // 「＋」先展开与主 App 共用的底部卡片，再选来源：三条选择器路径都要能到。
         compose.onNodeWithContentDescription("添加附件").performClick()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
+        compose.onNodeWithTag(ComposerAttachmentSheetTags.GALLERY).performClick()
         assertEquals(listOf(AssistantAttachmentKind.MEDIA), adds)
     }
 

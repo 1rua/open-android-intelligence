@@ -336,47 +336,19 @@ fun ComposerBar(
     }
 
     // ===== 4. 多模态附件选择底部弹层 =====
+    // 与默认数字助手共用同一份实现（ComposerAttachmentSheet）：两处附件入口的
+    // 圆角、背景、间距与进出场动画必须一致，不能各维护一套视觉相似但独立的菜单。
     if (showAttachmentsSheet) {
-        ModalBottomSheet(onDismissRequest = { showAttachmentsSheet = false }) {
-            Column(
-                Modifier
-                    .navigationBarsPadding()
-                    .padding(bottom = Dimensions.SpaceLarge),
-            ) {
-                Text(
-                    "添加到当前对话",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(
-                        horizontal = Dimensions.SpaceLarge,
-                        vertical = Dimensions.SpaceSmall,
-                    ),
-                )
-                AttachmentChoice(
-                    icon = Icons.Default.PhotoCamera,
-                    title = "拍照",
-                    description = "使用系统相机拍摄照片",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickCamera()
+        ComposerAttachmentSheet(
+            onDismiss = { showAttachmentsSheet = false },
+            onPick = { source ->
+                when (source) {
+                    ComposerAttachmentSource.CAMERA -> onPickCamera()
+                    ComposerAttachmentSource.GALLERY -> onPickGallery()
+                    ComposerAttachmentSource.DOCUMENT -> onPickDocument()
                 }
-                AttachmentChoice(
-                    icon = Icons.Default.PhotoLibrary,
-                    title = "相册选择",
-                    description = "从相册选择一张或多张图片",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickGallery()
-                }
-                AttachmentChoice(
-                    icon = Icons.Default.AttachFile,
-                    title = "文档选择",
-                    description = "通过系统文件选择器添加文档",
-                ) {
-                    showAttachmentsSheet = false
-                    onPickDocument()
-                }
-            }
-        }
+            },
+        )
     }
 }
 
@@ -624,54 +596,6 @@ private fun ComposerGenerationStatus(
     }
 }
 
-/**
- * 底部弹层的单个选项：M3 ListItem 的视觉节奏（40dp tonal 圆形前置图标 +
- * 标题/说明两行），条目最小高度 56dp，并额外应用底部安全区。
- */
-@Composable
-private fun AttachmentChoice(
-    icon: ImageVector,
-    title: String,
-    description: String,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = AttachmentChoiceHeight)
-            .bouncyClickable(
-                role = Role.Button,
-                onClickLabel = title,
-                onClick = onClick,
-            )
-            .padding(horizontal = Dimensions.SpaceLarge, vertical = Dimensions.SpaceCompact),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.size(AttachmentChoiceIconSize),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(Dimensions.Icon),
-                )
-            }
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 @Composable
 private fun AttachmentDraftStrip(
@@ -1049,10 +973,8 @@ private val StopActionWidth = 56.dp
 private const val StopActionCornerPercent = 36f
 
 /** 底部弹层选项的最小高度。 */
-private val AttachmentChoiceHeight = 56.dp
 
 /** 底部弹层选项前置 tonal 圆形图标的直径。 */
-private val AttachmentChoiceIconSize = 40.dp
 
 /** 附件卡片文件名区域的最大宽度，避免长文件名把操作按钮挤出屏幕。 */
 private val AttachmentNameWidth = 150.dp

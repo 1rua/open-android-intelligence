@@ -8,6 +8,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -359,11 +360,67 @@ class AssistantSessionServiceLifecycleTest {
         )
     }
 
-    @Test fun aMissingScreenshotExplainsWhySelectionIsUnavailable() {
+    /**
+     * 高分辨率截图不再被本地像素上限判死。
+     *
+     * 1440×3120（4.49M 像素）是常见旗舰分辨率，旧实现按 4M 上限直接丢弃，再用
+     * 「系统未提供截图」提示——用户明明开着屏幕分析，看到的却是系统没给图。
+     * 现在超限按比例降采样后照常进入定格。
+     */
+    @Test fun aHighResolutionScreenshotIsScaledInsteadOfRejected() {
         val session = session()
         session.onShow(Bundle(), 0)
         attachFakeBridge()
         shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(1440, 3120, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(
+            "超限截图应降采样后进入定格，而不是被判成「系统未提供」",
+            AssistantOverlay.FROZEN_SCREENSHOT,
+            session.uiStateOrNull()?.visible()?.overlay,
+        )
+        val advisory = session.clientOrNull()?.state?.value?.advisory
+        assertTrue("不得再出现「系统未提供截图」：$advisory", advisory != "系统未提供截图，无法圈选；可直接输入文字")
+    }
+
+    /**
+     * 系统这次没请求截图（`showFlags` 不含 `SHOW_WITH_SCREENSHOT`）时，
+     * `onHandleScreenshot` 根本不会被调用。会话必须当场说明，而不是让用户干等。
+     */
+    @Test fun anInvocationWithoutTheScreenshotFlagExplainsWhyThereIsNoSelection() {
+        val session = session()
+        // 0 = 没有任何 show 位；系统不会投递截图。
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(AssistantOverlay.NONE, session.uiStateOrNull()?.visible()?.overlay)
+        assertEquals(
+            "本次唤起未包含系统截图，无法圈选；可直接输入文字",
+            session.clientOrNull()?.state?.value?.advisory,
+        )
+    }
+
+    /** 带截图位的唤起不应该提前给出「没有截图」的提示。 */
+    @Test fun anInvocationWithTheScreenshotFlagDoesNotWarnPrematurely() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNull("已经请求截图时不得抢先报错", session.clientOrNull()?.state?.value?.advisory)
+    }
+
+    @Test fun aMissingScreenshotExplainsWhySelectionIsUnavailable() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.clientOrNull()?.clearAdvisory()
 
         // 系统这次没有交付截图：会话既不能进定格，也不能保持沉默。
         session.onHandleScreenshot(null)
@@ -425,8 +482,7 @@ class AssistantSessionServiceLifecycleTest {
         invokeRequestHandoff(session)
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
-        val started = org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
-            .nextStartedActivity
+        val started = startedMainIntent(session)
         requireNotNull(started) { "交接成功后必须打开主 App" }
         assertEquals("com.openandroidintelligence.mobile.MainActivity", started.component?.className)
         assertEquals("oai-reply", started.data?.scheme)
@@ -473,11 +529,22 @@ class AssistantSessionServiceLifecycleTest {
         invokeRequestHandoff(session)
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
-        val started = org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
-            .nextStartedActivity
+        val started = startedMainIntent(session)
         requireNotNull(started) { "本轮 ACCEPTED 必须打开主 App，不能被上一轮的拒绝挡住" }
         assertEquals("com.openandroidintelligence.mobile.MainActivity", started.component?.className)
     }
+
+    /**
+     * 会话打开主 App 时实际使用的 Intent。
+     *
+     * 真实路径优先走 `VoiceInteractionSession.startAssistantActivity`（助手窗口不是
+     * 「可见应用窗口」，普通 `startActivity` 会被后台启动限制静默拒绝）；Robolectric
+     * 把它记在会话上，普通 `startActivity` 才记在 Application 上。断言必须两条都看，
+     * 否则测试会「因为走了正确路径而失败」。
+     */
+    private fun startedMainIntent(session: VoiceInteractionSession): android.content.Intent? =
+        shadowOf(session).assistantActivityIntents.lastOrNull()
+            ?: org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
 
     private fun VoiceInteractionSession.uiStateOrNull(): AssistantSessionUiController? =
         javaClass.getDeclaredField("uiState").apply { isAccessible = true }.get(this) as? AssistantSessionUiController

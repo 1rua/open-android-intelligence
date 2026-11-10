@@ -95,6 +95,8 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSheet
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlin.math.roundToInt
 
@@ -314,9 +316,8 @@ private fun CompactInputRow(
             currentOnDraftChange(asCharSequence().toString())
         }
     }
-    // 「＋」的选择器菜单：照片/视频与文档两个入口。规格 §3.5 要求两类都能选，
-    // 直接开照片选择器会让 PDF、文本等现有附件类型在这里彻底选不到。
-    var attachmentMenuOpen by remember { mutableStateOf(false) }
+    // 「＋」展开的附件来源卡片；与主 App 输入坞共用 ComposerAttachmentSheet。
+    var attachmentSheetOpen by remember { mutableStateOf(false) }
     // 展开态：输入框获得焦点，或草稿已有内容。两者都消失才收起。
     var focused by remember { mutableStateOf(false) }
     val expanded = focused || editor.text.isNotEmpty()
@@ -352,11 +353,15 @@ private fun CompactInputRow(
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
+                    // 圆形按钮的视觉直径是 44dp、触摸目标 48dp。原先四边只用 4dp 内边距，
+                    // 按钮外圈几乎贴到卡片边框，紧凑态看起来拥挤、圆角也被压。改为 8dp：
+                    // 与 [Dimensions.SpaceSmall]（栅格基本单位）一致，按钮与容器边缘之间
+                    // 留出明确视觉间距，同时不缩小图标或触摸区域。
                     .padding(
-                        start = Dimensions.SpaceTiny,
-                        end = Dimensions.SpaceTiny,
-                        top = Dimensions.SpaceTiny,
-                        bottom = Dimensions.SpaceTiny,
+                        start = Dimensions.SpaceSmall,
+                        end = Dimensions.SpaceSmall,
+                        top = Dimensions.SpaceSmall,
+                        bottom = Dimensions.SpaceSmall,
                     )
                     .heightIn(
                         min = if (expanded) {
@@ -366,40 +371,19 @@ private fun CompactInputRow(
                         },
                     ),
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                // 控件之间同样用 8dp：先前 4dp 会让「＋ / 输入框 / 麦克风 / 发送」粘成一团。
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
                 // 最左侧「＋」：需求要求的附件入口顺序是 ＋ / 输入框 / 麦克风 / 发送。
-                // 它展开一个小菜单，让照片与文档两条系统选择器都可达。
-                Box {
-                    CompactIconAction(
-                        icon = Icons.Default.Add,
-                        contentDescription = "添加附件",
-                        enabled = enabled,
-                        onClick = { attachmentMenuOpen = true },
-                    )
-                    DropdownMenu(
-                        expanded = attachmentMenuOpen,
-                        onDismissRequest = { attachmentMenuOpen = false },
-                        offset = DpOffset(0.dp, -Dimensions.MinimumTouchTarget),
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("照片与视频", style = MaterialTheme.typography.bodyMedium) },
-                            onClick = {
-                                attachmentMenuOpen = false
-                                onAddAttachment(AssistantAttachmentKind.MEDIA)
-                            },
-                            modifier = Modifier.testTag(AssistantCompactBarTags.ATTACH_MEDIA),
-                        )
-                        DropdownMenuItem(
-                            text = { Text("文档", style = MaterialTheme.typography.bodyMedium) },
-                            onClick = {
-                                attachmentMenuOpen = false
-                                onAddAttachment(AssistantAttachmentKind.DOCUMENT)
-                            },
-                            modifier = Modifier.testTag(AssistantCompactBarTags.ATTACH_DOCUMENT),
-                        )
-                    }
-                }
+                // 点击展开与主 App 完全一致的 MD3 底部附件卡片（ComposerAttachmentSheet），
+                // 不再使用自绘的 DropdownMenu —— 后者是直角矩形菜单，与主 App 的圆角
+                // 底部卡片在视觉与手势上都不一致，等于维护了两套附件入口。
+                CompactIconAction(
+                    icon = Icons.Default.Add,
+                    contentDescription = "添加附件",
+                    enabled = enabled,
+                    onClick = { attachmentSheetOpen = true },
+                )
                 BasicTextField(
                     state = editor,
                     inputTransformation = reportEdits,
@@ -465,7 +449,29 @@ private fun CompactInputRow(
                 )
             }
         }
+        // 附件来源卡片与主 App 输入坞共用同一份实现（ComposerAttachmentSheet）：
+        // 圆角、背景、条目间距与进出场动画因此完全一致，不再维护第二套附件菜单。
+        if (attachmentSheetOpen) {
+            ComposerAttachmentSheet(
+                onDismiss = { attachmentSheetOpen = false },
+                onPick = { source ->
+                    onAddAttachment(source.toAssistantAttachmentKind())
+                },
+            )
+        }
     }
+}
+
+/**
+ * 附件来源 → 助手选择器类别。
+ *
+ * 三个入口与主 App 一一对应：拍照走系统相机（返回位图），相册走 Photo Picker，
+ * 文档走 SAF。不能把「拍照」并进相册：那会让用户点「拍照」却看到相册，属于静默降级。
+ */
+private fun ComposerAttachmentSource.toAssistantAttachmentKind(): AssistantAttachmentKind = when (this) {
+    ComposerAttachmentSource.CAMERA -> AssistantAttachmentKind.CAPTURE
+    ComposerAttachmentSource.GALLERY -> AssistantAttachmentKind.MEDIA
+    ComposerAttachmentSource.DOCUMENT -> AssistantAttachmentKind.DOCUMENT
 }
 
 /** 附件缩略条：图片、语音与普通文件共用同一行，横向滑动查看。 */

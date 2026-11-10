@@ -16,9 +16,7 @@ private const val MAX_DEEP_LINK_SEGMENT = 512
 /**
  * 从助理进程打开主 App。
  *
- * 助理会话没有 Activity 栈，必须带 `NEW_TASK`；同一 App 内启动自己的 Activity 不需要
- * 额外权限，但系统仍可能因后台启动限制拒绝，因此失败要如实返回 false，
- * 由界面给出"请从启动器打开"的明确提示，而不是静默无反应。
+ * 助理会话没有 Activity 栈，必须带 `NEW_TASK`。
  */
 internal fun openAssistantMainApp(context: Context): Boolean =
     launchMainActivity(context, handoffIntent = null)
@@ -37,13 +35,39 @@ internal fun openAssistantMainApp(context: Context): Boolean =
 internal fun openAssistantMainApp(context: Context, handoff: AssistantHandoffLink?): Boolean =
     launchMainActivity(context, handoff?.toIntent(context))
 
-private fun launchMainActivity(context: Context, handoffIntent: Intent?): Boolean = runCatching {
-    val target = handoffIntent ?: Intent().setClassName(context.packageName, MAIN_ACTIVITY)
-    context.startActivity(
-        target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-    )
-    true
-}.getOrDefault(false)
+/**
+ * 启动主 App，优先走 `VoiceInteractionSession.startAssistantActivity`。
+ *
+ * 为什么不能只用 `context.startActivity`：助手浮层不是「当前可见的应用窗口」，
+ * 直接 `startActivity` 会落在 Android 10+ 的后台启动（BAL）限制里——系统拒绝、
+ * 既不抛异常也没有任何提示，表现正是「横条上滑动画播完了，什么都没发生」。
+ * `startAssistantActivity` 由 `IVoiceInteractionSession` 委托给系统执行，是助理
+ * 启动 Activity 的官方通道，不受 BAL 限制。
+ *
+ * 仍然保留 `startActivity` 回退：ASSIST 兜底页（`AssistantActivity`）有自己的
+ * Activity，用普通启动即可；两条路径都失败时如实返回 false，交给界面提示。
+ *
+ * @param session 系统助理会话；为 null 时（兜底页）用普通 `startActivity`。
+ */
+internal fun launchMainActivity(
+    context: Context,
+    handoffIntent: Intent?,
+    session: android.service.voice.VoiceInteractionSession? = null,
+): Boolean {
+    val target = (handoffIntent ?: Intent().setClassName(context.packageName, MAIN_ACTIVITY))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    if (session != null) {
+        val viaSession = runCatching { session.startAssistantActivity(target) }.isSuccess
+        AssistantDiagnostics.handoff(
+            "launch",
+            "startAssistantActivity=${if (viaSession) "ok" else "threw"} data=${target.data}",
+        )
+        if (viaSession) return true
+    }
+    val viaContext = runCatching { context.startActivity(target) }.isSuccess
+    AssistantDiagnostics.handoff("launch", "startActivity=$viaContext data=${target.data}")
+    return viaContext
+}
 
 /**
  * 交接后用于打开主 App 的深链（与主进程 `ReplyNotificationTarget` 的线上形状一致）。

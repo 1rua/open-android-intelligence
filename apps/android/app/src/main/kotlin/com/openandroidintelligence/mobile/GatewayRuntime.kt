@@ -661,29 +661,35 @@ class GatewayRuntime(
      * 输入栏里已有的东西（见 [WorkbenchController.adoptAssistantDraft]）。
      */
     internal suspend fun prepareAssistantHandoff(sessionToken: String): AssistantHandoffResult {
+        fun reject(reason: String): AssistantHandoffResult {
+            // 每个拒绝分支都留一条可追踪记录：交接失败时用户只看到一句提示，
+            // 没有日志就无法判断是账号、Agent、工作台还是附件卡住。
+            GatewayLog.d("OaiAssistant", "handoff.reject token=${sessionToken.take(8)} reason=$reason")
+            return AssistantHandoffResult.Rejected(reason)
+        }
         val profileId = connectedProfileId
         val accountId = connectedAccountId
         if (profileId == null || accountId == null) {
-            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            return reject(AssistantHandoffReasons.NOT_CONNECTED)
         }
         val workspace = assistantWorkspace
-            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
         val agentId = assistantAgentId()
         if (!workspace.matches(profileId, accountId, agentId)) {
-            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+            return reject(AssistantHandoffReasons.ACCOUNT_MISMATCH)
         }
         // 主工作台必须已经切到同一个 Agent：否则会把助手草稿并入旧 Agent 的输入栏，
         // 或把另一 Agent 的会话 ID 交给 openThread。原生会话下两者都由发布值证明。
         if (_nativeAgents.value != null && agentId != null && _workbenchAgentId != agentId) {
-            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.AGENT_NOT_READY)
+            return reject(AssistantHandoffReasons.AGENT_NOT_READY)
         }
         val receiver = _controller.value
-            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.WORKBENCH_NOT_READY)
+            ?: return reject(AssistantHandoffReasons.WORKBENCH_NOT_READY)
         val assistantController = runCatching { workspace.open(sessionToken) }.getOrNull()
-            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
         // 等待上传/校验中的附件变成 VERIFIED；超时或校验失败整次拒绝，浮层与草稿原样保留。
         if (!assistantController.awaitHandoffAttachments(ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS)) {
-            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ATTACHMENTS_NOT_READY)
+            return reject(AssistantHandoffReasons.ATTACHMENTS_NOT_READY)
         }
         val draft = assistantController.assistantDraftForHandoff()
         val conversationId = assistantController.state.value.activeThreadId
@@ -697,6 +703,11 @@ class GatewayRuntime(
         }
         val target = AssistantHandoffTarget(profileId, accountId, agentId, conversationId)
         pendingHandoffTargets[sessionToken] = target
+        GatewayLog.d(
+            "OaiAssistant",
+            "handoff.accept token=${sessionToken.take(8)} agent=$agentId conversation=$conversationId " +
+                "attachments=${draft.attachments.size} skipped=$skipped draft=${draft.text.length}chars",
+        )
         return AssistantHandoffResult.Accepted(target, skippedAttachments = skipped)
     }
 
@@ -708,17 +719,25 @@ class GatewayRuntime(
      * 已经真的交接完，未就绪返回 false 交给调用方重试/提示，不把会话开在旧工作台上。
      */
     internal fun openAssistantHandoff(target: AssistantHandoffTarget): Boolean {
-        val connected = _phase.value as? ConnectionPhase.Connected ?: return false
+        fun refuse(stage: String): Boolean {
+            GatewayLog.d("OaiAssistant", "handoff.navigate.refuse stage=$stage agent=${target.agentId}")
+            return false
+        }
+        val connected = _phase.value as? ConnectionPhase.Connected ?: return refuse("not-connected")
         if (target.accountId != connectedAccountId ||
-            target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return false
+            target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return refuse("identity")
         target.agentId?.let { agentId ->
             val agents = _nativeAgents.value ?: return@let
             if (agents.state.value.selectedAgentId != agentId) agents.selectAgent(agentId)
             if (nativeNavigationWaitsForWorkbench(
-                    agentId, agents.state.value.selectedAgentId, _workbenchAgentId)) return false
+                    agentId, agents.state.value.selectedAgentId, _workbenchAgentId)) return refuse("agent-not-ready")
         }
-        val workbench = _controller.value ?: return false
+        val workbench = _controller.value ?: return refuse("controller-null")
         target.conversationId?.let(workbench::openThread)
+        GatewayLog.d(
+            "OaiAssistant",
+            "handoff.navigate.ok agent=${target.agentId} conversation=${target.conversationId}",
+        )
         return true
     }
 

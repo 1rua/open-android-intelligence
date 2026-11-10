@@ -45,6 +45,9 @@ val ASSISTANT_BRIDGE_ALLOWED_KEYS: Set<String> = setOf(
     "uris", "count",
     // 交接请求代次：回执必须能对应到「这一次」请求，否则上一轮的终态会被当成这一轮的结果。
     "handoffId",
+    // 屏幕/拍照附件的展示文件名：主进程原先硬编码「assist-screen.png」，
+    // 拍照来源需要区分，否则相册里会同时出现多张同名不同内容的图。
+    "filename",
 )
 
 /**
