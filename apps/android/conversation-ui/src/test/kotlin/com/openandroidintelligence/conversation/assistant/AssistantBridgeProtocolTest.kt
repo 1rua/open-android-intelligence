@@ -114,9 +114,59 @@ class AssistantBridgeProtocolTest {
         assertEquals(ASSISTANT_BRIDGE_VERSION, decoded.version)
     }
 
+    // ------------------------------------------------------------------
+    // 交接状态
+    // ------------------------------------------------------------------
+
+    /**
+     * 交接结果随状态帧下发：ACCEPTED 携带被接管会话的身份，REJECTED 携带可读原因。
+     * 这些字段只在主进程真正处理过交接后才出现，客户端不得自己造。
+     */
     @Test
-    fun decodeTimelineMapsSenderAndIdentityBackToEntries() {
-        val dto = AssistantStateDto(
+    fun handoffResultSurvivesRoundTrip() {
+        val accepted = AssistantStateDto(
+            revision = 3L,
+            connected = true,
+            handoff = AssistantHandoffDto(
+                state = AssistantHandoffState.ACCEPTED.wireValue,
+                conversationId = "thread-9",
+            ),
+        )
+        val rejected = AssistantStateDto(
+            revision = 4L,
+            connected = true,
+            handoff = AssistantHandoffDto(
+                state = AssistantHandoffState.REJECTED.wireValue,
+                reason = "当前账号不一致，未交接",
+            ),
+        )
+
+        assertEquals(accepted, requireNotNull(decodeState(encodeState(accepted))))
+        assertEquals(rejected, requireNotNull(decodeState(encodeState(rejected))))
+    }
+
+    /** 旧帧（或从未请求过交接）没有 handoff 字段：解码为 null，不能伪造一次成功的交接。 */
+    @Test
+    fun aFrameWithoutHandoffDecodesToNull() {
+        val decoded = requireNotNull(decodeState("""{"version":2,"connected":true}"""))
+
+        assertNull(decoded.handoff)
+    }
+
+    /** 未知状态字面量不升级成 ACCEPTED：按 PENDING 处理，调用方继续等待或超时失败。 */
+    @Test
+    fun anUnknownHandoffStateIsNotTreatedAsAccepted() {
+        val decoded = requireNotNull(
+            decodeState("""{"version":2,"handoff":{"state":"SOMETHING_NEW","reason":""}}"""),
+        )
+
+        val handoff = requireNotNull(decoded.handoff)
+        assertEquals(AssistantHandoffState.PENDING.wireValue, handoff.state)
+        assertNull(AssistantHandoffState.of(handoff.state)?.takeIf { it == AssistantHandoffState.ACCEPTED })
+    }
+
+    @Test
+    fun decodeTimelineMapsSenderAndIdentityBackToEntries() {        val dto = AssistantStateDto(
             timeline = listOf(
                 AssistantTimelineEntryDto(
                     id = "m1",

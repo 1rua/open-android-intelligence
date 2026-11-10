@@ -72,6 +72,7 @@ import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
 import com.openandroidintelligence.core.model.AssistantHandoffRequest
 import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
+import com.openandroidintelligence.mobile.assistant.handoffSessionToken
 import com.openandroidintelligence.mobile.onboarding.OnboardingFlow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.CancellationException
@@ -93,16 +94,24 @@ import com.openandroidintelligence.mobile.screen.ScreenControlConfirmationDialog
  * 系统栏：图标明暗不再由 `themes.xml` 写死，而是在 [setContent] 里按应用内 `isDark`
  * 交给 [applySystemBarContrast]；这样「应用内深色 + 系统浅色」时状态栏图标仍然可读。
  */
+/** 交接导航的重试次数与间隔：覆盖 Agent 切换后工作台发布的那一小段空窗。 */
+private const val HANDOFF_NAVIGATION_ATTEMPTS = 6
+private const val HANDOFF_NAVIGATION_RETRY_MILLIS = 500L
+
 class MainActivity : ComponentActivity() {
     private val sharedAttachments: SharedConversationAttachments by viewModels()
     private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
     private val pendingReply = androidx.compose.runtime.mutableStateOf<ReplyNotificationTarget?>(null)
+
+    /** 助手浮层「上滑交接」带来的会话身份（只由主进程刚刚接受过的那一次产生）。 */
+    private val pendingHandoff = androidx.compose.runtime.mutableStateOf<String?>(null)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
+        intent.handoffSessionToken()?.let { pendingHandoff.value = it }
     }
 
     private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
@@ -119,6 +128,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         pendingReply.value = ReplyNotificationTarget.from(intent)
+        pendingHandoff.value = intent.handoffSessionToken()
 
         val app = application as OpenAndroidIntelligenceApplication
         val runtime = app.gatewayRuntime
@@ -204,6 +214,29 @@ class MainActivity : ComponentActivity() {
                         runtime.replyNotifications.shouldRequestPermission()) {
                         runtime.replyNotifications.markPermissionRequested()
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
+                }
+                // 助手交接：复用 pendingReply 的形状 —— 控制器就绪且主进程确认才能清空。
+                LaunchedEffect(phase, controller, pendingHandoff.value) {
+                    pendingHandoff.value?.let { sessionToken ->
+                        // Agent 切换后工作台要等旧分区的 IO 收尾才发布：短时间内重试几次，
+                        // 而不是第一次失败就把用户推去手动操作。
+                        var attempts = 0
+                        while (attempts < HANDOFF_NAVIGATION_ATTEMPTS) {
+                            if (runtime.consumeAssistantHandoff(sessionToken)) {
+                                showSettings = false
+                                showAssistant = false
+                                pendingHandoff.value = null
+                                intent.data = null
+                                break
+                            }
+                            if (phase !is ConnectionPhase.Connected) break
+                            attempts++
+                            kotlinx.coroutines.delay(HANDOFF_NAVIGATION_RETRY_MILLIS)
+                        }
+                        if (pendingHandoff.value == sessionToken && phase is ConnectionPhase.Connected) {
+                            notify("暂时无法进入助手中的会话，请稍后重试")
+                        }
                     }
                 }
                 LaunchedEffect(phase, controller, pendingReply.value) {

@@ -13,6 +13,7 @@ import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -224,6 +225,43 @@ class AssistantBridgeClientTest {
 
         assertEquals("新会话", target.state.value.draft)
         assertEquals(1L, target.state.value.revision)
+    }
+
+    // ---- 交接与文件附件 ----
+
+    @Test fun handoffCommandCarriesNoExtraFields() {
+        val target = connect()
+
+        assertTrue(target.requestHandoff())
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val handoff = sent.single { it.getString("command") == "handoff" }
+        assertEquals(
+            "交接命令不需要新字段：会话身份由主进程已持有的 token 决定",
+            setOf("version", "token", "command"),
+            handoff.keySet(),
+        )
+    }
+
+    @Test fun fileAttachmentsSendOnlyUriStringsInBoundedBatches() {
+        val target = connect()
+
+        assertTrue(target.attachFiles(listOf(" content://a/1 ", "content://a/2", "content://a/1")))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val attachment = sent.single { it.getString("command") == "attachment" }
+        // 去重后只剩两个；数组按插入顺序保留。
+        assertEquals(listOf("content://a/1", "content://a/2"), attachment.getStringArray("uris")?.toList())
+        assertEquals(2, attachment.getInt("count"))
+        // 只传 URI 与数量：不传字节、路径或 MIME。
+        assertEquals(
+            setOf("version", "token", "command", "uris", "count"),
+            attachment.keySet(),
+        )
+
+        // 空列表与超过上限的批次直接拒绝，不静默裁剪。
+        assertFalse(target.attachFiles(emptyList()))
+        assertFalse(target.attachFiles(List(MAX_COMPOSER_ATTACHMENTS + 1) { "content://a/$it" }))
     }
 
     @Test fun voiceCarriesBytesMetadataAndReleasesTheLocalDescriptor() {

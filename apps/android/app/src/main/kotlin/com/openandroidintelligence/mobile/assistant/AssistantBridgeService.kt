@@ -7,6 +7,8 @@ import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSI
 import com.openandroidintelligence.conversation.assistant.AssistantAccountDto
 import com.openandroidintelligence.conversation.assistant.AssistantAppearanceDto
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffState
 import com.openandroidintelligence.conversation.assistant.AssistantNoticeDto
 import com.openandroidintelligence.conversation.assistant.AssistantStateDto
 import com.openandroidintelligence.conversation.assistant.AssistantWireBudget
@@ -16,6 +18,7 @@ import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.ComposerState
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
@@ -23,7 +26,9 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_BYTES
 import com.openandroidintelligence.core.model.MAX_ASSISTANT_AUDIO_DURATION_MS
+import com.openandroidintelligence.mobile.AttachmentPickerTarget
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+import com.openandroidintelligence.mobile.pickedAttachmentSelection
 import kotlinx.coroutines.*
 import java.io.ByteArrayInputStream
 import java.util.UUID
@@ -56,6 +61,8 @@ class AssistantBridgeService : Service() {
         var visible: Boolean = false,
         /** 单调递增的状态帧序号；接收方据此丢弃乱序帧。 */
         var revision: Long = 0L,
+        /** 最近一次交接尝试的结果；没有请求过时为 null（帧里也不出现该字段）。 */
+        var handoff: AssistantHandoffResult? = null,
     )
 
     private val clients = linkedMapOf<IBinder, Client>()
@@ -102,6 +109,12 @@ class AssistantBridgeService : Service() {
                 runtime.setAssistantPresence(client.token, client.sessionToken, client.visible)
                 publish(client)
             }
+            // 交接是唯一「不靠异常报错」的命令：结果必须随状态帧回执，
+            // 因为拒绝原因（账号/Agent 不一致）需要原文展示给用户。
+            "handoff" -> {
+                client.handoff = runHandoff(client)
+                publish(client)
+            }
             else -> {
                 if (!client.scope.canShare(runtime.connectedAccountId)) { publish(client); return@Handler true }
                 val controller = client.controller ?: run { publish(client); return@Handler true }
@@ -140,6 +153,7 @@ class AssistantBridgeService : Service() {
                 }
                 "screen" -> readScreenAttachment(client, controller, b)
                 "voice" -> readVoiceAttachment(client, controller, b)
+                "attachment" -> queueFileAttachments(client, controller, b)
                 else -> error("IPC_COMMAND_UNSUPPORTED")
             }
         } catch (_: Exception) {
@@ -212,6 +226,51 @@ class AssistantBridgeService : Service() {
     }
 
     /**
+     * 文件附件：来自浮层的系统选择器，只带 URI 字符串。
+     *
+     * 不复制字节：同 UID + 持久化读授权让主进程直接读同一 URI，避免 8MB 级字节跨进程
+     * 传输，也避免在本进程再实现一套文件读取逻辑（`pickedAttachmentSelection` 已在
+     * app 模块里，含 `takePersistableUriPermission`）。
+     *
+     * 每个 URI 独立入草稿：某个文件读不出来只提示这一个，其余照常加入，不整批失败。
+     */
+    private fun queueFileAttachments(client: Client, controller: WorkbenchController, b: Bundle) {
+        val uris = b.getStringArray("uris").orEmpty().mapNotNull { it.trim().takeIf(String::isNotEmpty) }.distinct()
+        val declared = b.getInt("count", uris.size)
+        if (uris.isEmpty() || uris.size > MAX_COMPOSER_ATTACHMENTS || declared != uris.size) {
+            error("ATTACHMENT_URIS_INVALID")
+        }
+        val target = AttachmentPickerTarget(controller, controller.state.value.activeThreadId)
+        val targetRevision = controller.attachmentTargetRevision
+        jobs.launch {
+            var failures = 0
+            for (raw in uris) {
+                val uri = runCatching { android.net.Uri.parse(raw) }.getOrNull()
+                val selection = if (uri != null) {
+                    runCatching { withContext(Dispatchers.IO) { pickedAttachmentSelection(applicationContext, uri) } }.getOrNull()
+                } else {
+                    null
+                }
+                if (selection == null) {
+                    failures++
+                    continue
+                }
+                withContext(Dispatchers.Main) {
+                    // 会话/控制器一旦变化就停止，剩余文件不再加入别人的草稿。
+                    if (clients[client.reply.binder] !== client || client.controller !== controller ||
+                        controller.attachmentTargetRevision != targetRevision) return@withContext
+                    if (controller.availableAttachmentSlots == 0) return@withContext
+                    controller.addAttachment(selection)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                if (clients[client.reply.binder] !== client) return@withContext
+                if (failures > 0) publish(client, "有 $failures 个附件无法读取，请重新选择")
+            }
+        }
+    }
+
+    /**
      * 读取有限字节，确认客户端/账号/会话均未变化后交给 [consume]。
      *
      * 10 秒看门狗防止读端挂死；读取失败、长度不符或作用域已变化时丢弃字节并提示，
@@ -273,6 +332,20 @@ class AssistantBridgeService : Service() {
                 if (!handedOff) bytes?.fill(0)
             }
         }
+    }
+
+    /**
+     * 执行一次「把助手会话交给主 App」的请求。
+     *
+     * 严格失败：所有拒绝原因都带回浮层，草稿与附件保持在助手控制器里。
+     * 身份不匹配（账号切换）时连 controller 都不该借用。
+     */
+    private fun runHandoff(client: Client): AssistantHandoffResult {
+        val token = client.sessionToken ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+        if (!client.scope.canShare(runtime.connectedAccountId)) {
+            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+        }
+        return runtime.prepareAssistantHandoff(token)
     }
 
     /**
@@ -373,6 +446,8 @@ class AssistantBridgeService : Service() {
                 palette = appearance.palette.name,
                 reduceMotion = appearance.reduceMotion,
             ),
+            // 交接结果随状态帧下发：浮层据此决定打开主 App 还是保留自己。
+            handoff = client.handoff.takeIf { client.sessionToken != null }?.toDto(accountId, profileId),
         )
         val payload = runCatching { encodeState(dto) }.getOrNull() ?: return
         runCatching {
@@ -443,6 +518,7 @@ class AssistantBridgeService : Service() {
         val ALLOWED_KEYS = setOf(
             "version", "token", "command", "text", "content", "size",
             "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
+            "uris", "count",
         )
     }
 }
@@ -453,6 +529,27 @@ internal fun noticeFor(message: String): AssistantNoticeDto {
     val candidate = if (separator in 1..64) message.substring(0, separator) else ""
     val stable = candidate.isNotEmpty() && candidate.all { it in 'A'..'Z' || it in '0'..'9' || it == '_' }
     return if (stable) AssistantNoticeDto(candidate, message) else AssistantNoticeDto("ASSISTANT_NOTICE", message)
+}
+
+/** 交接结果 → 状态帧投影；身份字段供浮层构造打开主 App 的深链。 */
+internal fun AssistantHandoffResult.toDto(
+    accountId: String?,
+    profileId: String?,
+): AssistantHandoffDto = when (this) {
+    is AssistantHandoffResult.Accepted -> AssistantHandoffDto(
+        state = AssistantHandoffState.ACCEPTED.wireValue,
+        conversationId = target.conversationId,
+        profileId = target.profileId.ifBlank { profileId.orEmpty() },
+        accountId = target.accountId.ifBlank { accountId.orEmpty() },
+        agentId = target.agentId,
+        skippedAttachments = skippedAttachments,
+    )
+    is AssistantHandoffResult.Rejected -> AssistantHandoffDto(
+        state = AssistantHandoffState.REJECTED.wireValue,
+        reason = reason,
+        profileId = profileId.orEmpty(),
+        accountId = accountId.orEmpty(),
+    )
 }
 
 /** 草稿附件投影；线上只传元数据，不传字节或路径。 */

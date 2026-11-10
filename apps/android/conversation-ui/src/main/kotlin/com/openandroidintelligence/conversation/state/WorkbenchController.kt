@@ -2679,9 +2679,55 @@ class WorkbenchController(
         }
     }
 
+    /**
+     * 接管助手浮层里的草稿与附件（「上滑进入主 App」的交接）。
+     *
+     * 只搬运状态，不发送、不新建会话：调用方必须在 [openThread] 之后再调用本方法，
+     * 并以助手草稿为准覆盖输入栏（那是用户刚在浮层里编辑的那一份）。三条禁忌：
+     * - **不写 `composerDrafts`**：它在 `openThread` 时被当成权威快照，会把接管结果盖掉；
+     * - **不建 `waitingAttachmentSubmissions`**：否则校验一完成就会替用户自动发送；
+     * - **不放进 `inFlightAttachmentIds`**：那会让附件在输入栏不可见、也无法提交。
+     *
+     * 未 VERIFIED 的附件不迁移：上传/校验仍在浮层所属进程手里，带过来只会是一条
+     * 永不推进的引用。返回被跳过的附件数，调用方据此如实提示。
+     *
+     * @param attachments 助手侧草稿附件（按时间顺序）。
+     * @return 未能迁移的附件数量。
+     */
+    fun adoptAssistantDraft(
+        draftText: String,
+        attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft>,
+    ): Int {
+        if (closed) return attachments.size
+        val verified = attachments.filter { it.state == AttachmentState.VERIFIED }
+        val skipped = attachments.size - verified.size
+        val kept = verified
+            .fold(emptyList<com.openandroidintelligence.conversation.model.AttachmentDraft>()) { accepted, next ->
+                // 槽位按主 App 自己的上限收口：多出来的部分同样算「未迁移」，不能静默丢弃。
+                if (accepted.size >= MAX_COMPOSER_ATTACHMENTS) accepted else accepted + next
+            }
+        val keptIds = kept.map { it.id.value }.toSet()
+        val coordinator = attachmentCoordinator
+        update { state -> state.copy(draft = draftText, attachments = kept) }
+        if (coordinator != null) kept.forEach { observeAttachment(coordinator, it.id.value) }
+        return skipped + (verified.size - keptIds.size)
+    }
+
+    /**
+     * 交给主 App 的草稿快照：文字 + 尚未发送的附件。
+     *
+     * 只读，不改任何状态；`inFlightAttachmentIds` 属于已在发送的提交，不在草稿里。
+     */
+    fun assistantDraftForHandoff(): AssistantDraftSnapshot {
+        val state = _state.value
+        return AssistantDraftSnapshot(
+            text = state.draft,
+            attachments = state.attachments.filterNot { it.id.value in state.inFlightAttachmentIds },
+        )
+    }
+
     /** The same live gate is used before recording and before submitting its attachment. */
-    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =
-        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
+    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
             !_state.value.managingThreads && !_state.value.activeThreadArchived &&
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&

@@ -296,27 +296,15 @@ internal fun <T> AssistantExpandedPanel(
                     }
                 }
                 if (composer != null) {
-                    Surface(
-                        shape = InputBarShape,
-                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                        tonalElevation = 0.dp,
-                        shadowElevation = 0.dp,
-                        border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
+                    // 输入栏自带卡片外观（见 `AssistantCompactBar`）：这里不再套第二层
+                    // Surface，否则展开态会出现双边框/双圆角（需求 5.3「只有一个输入栏」）。
+                    // 标签仍由这一层提供，既有容器契约与测试保持不变。
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag(ASSISTANT_INPUT_BAR_TAG),
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(
-                                    horizontal = Dimensions.SpaceMedium,
-                                    vertical = Dimensions.SpaceCompact,
-                                ),
-                        ) {
-                            composer()
-                        }
+                        composer()
                     }
                 }
             }

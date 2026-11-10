@@ -45,6 +45,9 @@ import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingSto
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.mobile.assistant.AssistantAttachmentDraftCoordinator
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffReasons
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffResult
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffTarget
 import com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspace
 import com.openandroidintelligence.mobile.assistant.AssistantSessionFactory
 import com.openandroidintelligence.mobile.assistant.createAssistantWorkbench
@@ -286,6 +289,24 @@ class GatewayRuntime(
     @Volatile private var assistantWorkspaceRetirePending = false
     /** 已声明「正在展示」的客户端 → 会话；只用于抑制同会话的原生通知。 */
     private val assistantPresence = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** 已接受、等待主 App 界面消费的交接目标（sessionToken → 目标）。 */
+    private val pendingHandoffTargets =
+        java.util.concurrent.ConcurrentHashMap<String, AssistantHandoffTarget>()
+
+    /** 每个助手会话的附件包装器：交接成功后据此把草稿移出助手所有权（见 `disown`）。 */
+    private val assistantAttachmentWrappers =
+        java.util.concurrent.ConcurrentHashMap<String, AssistantAttachmentDraftCoordinator>()
+
+    /**
+     * 主工作台与助手会话**共用**的附件协调器（按 Agent 分区）。
+     *
+     * 交接要求两侧拿到同一个包装器/协调器：不同实例按 draftId 交接会得到一个永不推进
+     * 的 `LOCAL_PREPARING` 流，发送时落到 `ATTACHMENT_NOT_VERIFIED`。原生会话模式下主
+     * 工作台与助手工厂都从这里取，保证附件所有权真正可转移。
+     */
+    private val nativeOwningAttachmentCoordinators =
+        java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator>()
     private val _assistantWorkspaceVersion = MutableStateFlow(0)
     /** 助手工作区的安装/退役代次；助理进程据此接回已登记的会话。 */
     internal val assistantWorkspaceVersion: StateFlow<Int> = _assistantWorkspaceVersion.asStateFlow()
@@ -597,6 +618,89 @@ class GatewayRuntime(
             jobs
         }
         retired.forEach(Job::cancel)
+    }
+
+    /**
+     * 把助手浮层的会话、草稿与附件交给主 App（「上滑进入主 App」）。
+     *
+     * 严格失败：身份不匹配、控制器未就绪、目标线程打不开都返回拒绝原因，由浮层保留
+     * 草稿与浮层并如实说明，绝不静默丢弃。成功时返回交接目标（含深链需要的身份）。
+     *
+     * 调用顺序：先 `openThread`（它会在别处用主工作台自己的草稿快照覆盖输入栏），
+     * 再 `adoptAssistantDraft`，以助手草稿为准 —— 那是用户刚在浮层里编辑的那一份。
+     */
+    internal fun prepareAssistantHandoff(sessionToken: String): AssistantHandoffResult {
+        val profileId = connectedProfileId
+        val accountId = connectedAccountId
+        if (profileId == null || accountId == null) {
+            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+        }
+        val workspace = assistantWorkspace
+            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+        val agentId = assistantAgentId()
+        if (!workspace.matches(profileId, accountId, agentId)) {
+            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+        }
+        // 主工作台必须已经切到同一个 Agent：否则会把助手草稿并入旧 Agent 的输入栏，
+        // 或把另一 Agent 的会话 ID 交给 openThread。原生会话下两者都由发布值证明。
+        if (_nativeAgents.value != null && agentId != null && _workbenchAgentId != agentId) {
+            return AssistantHandoffResult.Rejected(AssistantHandoffReasons.AGENT_NOT_READY)
+        }
+        val receiver = _controller.value
+            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.WORKBENCH_NOT_READY)
+        val assistantController = runCatching { workspace.open(sessionToken) }.getOrNull()
+            ?: return AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+        val draft = assistantController.assistantDraftForHandoff()
+        val conversationId = assistantController.state.value.activeThreadId
+        // 尚未产生会话（首次唤起、还没发过消息）：不打开、也不新建线程，只并入输入栏。
+        if (conversationId != null) receiver.openThread(conversationId)
+        val skipped = receiver.adoptAssistantDraft(draft.text, draft.attachments)
+        // 附件所有权已随草稿转移到主工作台：先把它们移出助手包装器，
+        // 否则浮层随后关闭时会把主 App 刚接管的附件连同暂存文件一起丢弃。
+        assistantAttachmentWrappers.remove(sessionToken)?.let { wrapper ->
+            draft.attachments.forEach { migrated -> runCatching { wrapper.disown(migrated.id.value) } }
+        }
+        val target = AssistantHandoffTarget(profileId, accountId, agentId, conversationId)
+        pendingHandoffTargets[sessionToken] = target
+        return AssistantHandoffResult.Accepted(target, skippedAttachments = skipped)
+    }
+
+    /**
+     * 浮层命中交接目标：切到目标 Agent（若不同）、打开会话并关掉 App 内的助手浮层。
+     *
+     * 与 [prepareAssistantHandoff] 的区别是「数据已在主进程」：这里只负责把界面导航到
+     * 那条会话。`agentId` 变化时用 [nativeNavigationWaitsForWorkbench] 判断工作台是否
+     * 已经真的交接完，未就绪返回 false 交给调用方重试/提示，不把会话开在旧工作台上。
+     */
+    internal fun openAssistantHandoff(target: AssistantHandoffTarget): Boolean {
+        val connected = _phase.value as? ConnectionPhase.Connected ?: return false
+        if (target.accountId != connectedAccountId ||
+            target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return false
+        target.agentId?.let { agentId ->
+            val agents = _nativeAgents.value ?: return@let
+            if (agents.state.value.selectedAgentId != agentId) agents.selectAgent(agentId)
+            if (nativeNavigationWaitsForWorkbench(
+                    agentId, agents.state.value.selectedAgentId, _workbenchAgentId)) return false
+        }
+        val workbench = _controller.value ?: return false
+        target.conversationId?.let(workbench::openThread)
+        return true
+    }
+
+    /**
+     * 主 App 界面消费一次交接：用 [sessionToken] 找回被接受的目标并导航到那条会话。
+     *
+     * 只认主进程刚刚接受过的那一次（表里没有就是失败）：通知栈重放或伪造的 token
+     * 都不能借这条路径打开一个会话。返回 false 时调用方如实提示，不清掉浮层状态。
+     */
+    internal fun consumeAssistantHandoff(sessionToken: String): Boolean {
+        val target = pendingHandoffTargets.remove(sessionToken) ?: return false
+        if (!openAssistantHandoff(target)) {
+            // 导航失败（Agent 尚未就绪等）保留目标，交给后续 frame/重试再消费一次。
+            pendingHandoffTargets[sessionToken] = target
+            return false
+        }
+        return true
     }
 
     /** A notification never borrows another account's currently open workbench. */
@@ -2559,7 +2663,12 @@ class GatewayRuntime(
                             context, conversationScope, localDocumentKeyProvider),
                         storeForAgent = { store },
                     )
-                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                    // 与主工作台共用同一个按 Agent 分区的附件协调器：交接按 draftId 跟踪
+                    // 的必须是同一份暂存/上传状态，否则交过去的是永不推进的引用。
+                    val owning = nativeOwningAttachmentCoordinators[assistantAgent.id] ?: attachmentCoordinator
+                    val wrapper = owning?.let { AssistantAttachmentDraftCoordinator(it) }
+                    if (wrapper != null) assistantAttachmentWrappers[sessionToken] = wrapper
+                    val attachments = wrapper
                     val controller = createNativeAssistantWorkbench(
                         scope = sessionScope,
                         conversationScope = conversationScope,
@@ -2683,6 +2792,12 @@ class GatewayRuntime(
                 if (prepareNativeMedia(nativePersistence,ownerMedia))
                     recoverDownloads(ownerDownloads)?.let { _operationNotice.value = it }
                 else _operationNotice.value = MEDIA_RECOVERY_NOTICE
+            }
+            // 原生会话模式下主工作台与助手工厂共用同一个附件协调器（按 Agent 分区）：
+            // 交接要求两侧按 draftId 跟踪的是同一份暂存/上传状态，不同实例会让交过去的
+            // 附件成为永不推进的 LOCAL_PREPARING。
+            if (nativeAgentSessions && ownerAgentId != null) {
+                nativeOwningAttachmentCoordinators[ownerAgentId] = ownerAttachments
             }
             return WorkbenchController(
                 scope = sessionScope,

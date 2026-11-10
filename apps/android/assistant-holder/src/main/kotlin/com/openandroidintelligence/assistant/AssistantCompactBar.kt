@@ -3,7 +3,6 @@ package com.openandroidintelligence.assistant
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
@@ -45,7 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.CropFree
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Mic
@@ -70,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -98,18 +98,23 @@ import kotlin.math.roundToInt
 /**
  * 底部悬浮输入栏（Gemini 风格的单条胶囊）。
  *
- * 只做呈现与本地编辑：草稿状态由宿主持有（[editor]），发送、停止、录音、圈选
+ * 只做呈现与本地编辑：草稿状态由宿主持有（[editor]），发送、停止、录音与添加附件
  * 全部通过回调交回宿主，这里不连接 Gateway、不缓存第二份会话真相。
  *
  * 结构：
- * 1. 附件缩略条：已添加的图片/语音附件一行横滑，高度变化走 [MotionSpecs.morph]；
- * 2. 输入态：多行输入（最多 6 行，高度随行数自然增长）+ 麦克风 + 屏幕圈选 + 发送/停止；
+ * 1. 附件缩略条：已添加的图片/语音/文件附件一行横滑，高度变化走 [MotionSpecs.morph]；
+ * 2. 输入态：多行输入（最多 6 行，高度随行数自然增长）+ 最左「＋」+ 麦克风 + 发送/停止；
  * 3. 录音态：整条内容替换为「× 取消 / 波形 + 计时 / 发送」。
+ *
+ * 顶部拖动横条**不在**这里：整个助手只有 [AssistantDragHandle] 一个，由
+ * [AssistantSessionRoot] 在会话树最顶部渲染（需求 5.1「始终显示」）。屏幕圈选按钮也已
+ * 移除——唤起后直接在定格截图上画圈；[onStartScreenSelection] 仅留给 ASSIST 兜底页
+ * 说明「本入口无系统截图」。
  *
  * 动效：
  * - **进场**：首次组合时整条输入栏从屏幕底部之下弹出，位移、缩放与透明度共用
  *   [MotionSpecs.EntranceSpring] 的非线性弹簧（只作用于 `graphicsLayer`，不参与测量）；
- * - **展开**：输入框获得焦点或已有草稿时，卡片长高约一倍并出现顶部拖动指示条，
+ * - **展开**：输入框获得焦点或已有草稿时，卡片长高约一倍，
  *   圆角从 [AppRadius.Bubble] 过渡到 [AppRadius.ExtraLarge]；收起更快，走
  *   [MotionSpecs.CollapseSpring]。
  *
@@ -127,6 +132,8 @@ internal fun AssistantCompactBar(
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
     onStartScreenSelection: () -> Unit,
+    /** 点击「＋」：打开系统文件 / 媒体选择器（ASSIST 兜底页不走这条路径）。 */
+    onAddAttachment: () -> Unit = {},
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     hasUnknownOutcome: Boolean = false,
@@ -142,6 +149,14 @@ internal fun AssistantCompactBar(
      * 带出，再播一次会形成两段重复位移，因此那里传 false。
      */
     animateEntrance: Boolean = true,
+    /**
+     * 输入栏自身卡片的圆角形状；null 表示按展开态在
+     * [AppRadius.Bubble] / [AppRadius.ExtraLarge] 之间过渡（紧凑态语义）。
+     *
+     * 展开会话里容器是一整张卡片：消息区在上、输入栏在下，输入栏只保留外缘底部两角，
+     * 由 [InputBarShape] 传入。这样不会再套第二层 Surface（双层卡片）。
+     */
+    cardShape: Shape? = null,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val sendEnabled = enabled && editor.text.isNotBlank() && !isGenerating && !hasUnknownOutcome
@@ -225,6 +240,8 @@ internal fun AssistantCompactBar(
                     onStop = onStop,
                     onStartRecording = onStartRecording,
                     onStartScreenSelection = onStartScreenSelection,
+                    onAddAttachment = onAddAttachment,
+                    cardShape = cardShape,
                 )
             }
         }
@@ -280,6 +297,8 @@ private fun CompactInputRow(
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
     onStartScreenSelection: () -> Unit,
+    onAddAttachment: () -> Unit,
+    cardShape: Shape?,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val currentOnDraftChange by rememberUpdatedState(onDraftChange)
@@ -296,7 +315,7 @@ private fun CompactInputRow(
     } else {
         MotionSpecs.collapse<IntSize>(reduceMotion)
     }
-    val cornerRadius by animateDpAsState(
+    val animatedCorner by animateDpAsState(
         targetValue = if (expanded) AppRadius.ExtraLarge else AppRadius.Bubble,
         animationSpec = if (expanded) {
             MotionSpecs.expand(reduceMotion)
@@ -305,9 +324,10 @@ private fun CompactInputRow(
         },
         label = "assistant-compact-corner",
     )
+    val shape = cardShape ?: RoundedCornerShape(animatedCorner)
 
     Surface(
-        shape = RoundedCornerShape(cornerRadius),
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
@@ -320,52 +340,10 @@ private fun CompactInputRow(
             },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            AnimatedVisibility(
-                visible = expanded,
-                // 减少动态：指示条直接出现/消失，不做高度与透明度过渡。
-                enter = if (reduceMotion) {
-                    EnterTransition.None
-                } else {
-                    fadeIn(MotionSpecs.fade(reduceMotion)) +
-                        expandVertically(
-                            animationSpec = MotionSpecs.expand(reduceMotion),
-                            expandFrom = Alignment.Top,
-                        )
-                },
-                exit = if (reduceMotion) {
-                    ExitTransition.None
-                } else {
-                    fadeOut(MotionSpecs.fade(reduceMotion)) +
-                        shrinkVertically(
-                            animationSpec = MotionSpecs.collapse(reduceMotion),
-                            shrinkTowards = Alignment.Top,
-                        )
-                },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = Dimensions.SpaceSmall)
-                        .testTag(AssistantCompactBarTags.HANDLE),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(CompactHandleWidth)
-                            .height(CompactHandleHeight)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                                    .copy(alpha = CompactHandleAlpha),
-                            ),
-                    )
-                }
-            }
-
             Row(
                 modifier = Modifier
                     .padding(
-                        start = Dimensions.SpaceMedium,
+                        start = Dimensions.SpaceTiny,
                         end = Dimensions.SpaceTiny,
                         top = Dimensions.SpaceTiny,
                         bottom = Dimensions.SpaceTiny,
@@ -380,6 +358,13 @@ private fun CompactInputRow(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
             ) {
+                // 最左侧「＋」：需求要求的附件入口顺序是 ＋ / 输入框 / 麦克风 / 发送。
+                CompactIconAction(
+                    icon = Icons.Default.Add,
+                    contentDescription = "添加附件",
+                    enabled = enabled,
+                    onClick = onAddAttachment,
+                )
                 BasicTextField(
                     state = editor,
                     inputTransformation = reportEdits,
@@ -421,12 +406,6 @@ private fun CompactInputRow(
                     contentDescription = "语音输入",
                     enabled = enabled,
                     onClick = onStartRecording,
-                )
-                CompactIconAction(
-                    icon = Icons.Outlined.CropFree,
-                    contentDescription = "屏幕圈选",
-                    enabled = enabled,
-                    onClick = onStartScreenSelection,
                 )
                 CompactPrimaryAction(
                     stop = isGenerating,
@@ -727,11 +706,6 @@ private const val CompactMaxInputLines = 6
 
 /** 展开态输入区的最小高度：紧凑横条的两倍，给输入留出更明显的空间。 */
 private val CompactExpandedMinHeight = Dimensions.ComposerMinHeight * 2
-
-/** 顶部拖动指示条的尺寸与透明度（`onSurfaceVariant` 40%）。 */
-private val CompactHandleWidth = 32.dp
-private val CompactHandleHeight = 4.dp
-private const val CompactHandleAlpha = 0.4f
 
 /** 进场起点：整条输入栏位于自身高度 + 32dp 的屏幕底部之下。 */
 private val CompactEntranceOvershoot = 32.dp

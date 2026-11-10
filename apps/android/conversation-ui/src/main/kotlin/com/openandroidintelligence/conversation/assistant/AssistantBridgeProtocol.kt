@@ -139,6 +139,43 @@ data class AssistantAppearanceDto(
     val reduceMotion: Boolean = false,
 )
 
+/** 交接请求的三种状态，与 [AssistantHandoffDto.state] 的线上字面量一一对应。 */
+enum class AssistantHandoffState(val wireValue: String) {
+    /** 主进程正在接管；客户端应继续等待回执。 */
+    PENDING("PENDING"),
+
+    /** 主进程已经接管草稿与附件，可以打开主 App 并关闭浮层。 */
+    ACCEPTED("ACCEPTED"),
+
+    /** 主进程拒绝（未连接、账号/Agent 不一致等）；[AssistantHandoffDto.reason] 是原因原文。 */
+    REJECTED("REJECTED"),
+    ;
+
+    companion object {
+        fun of(value: String?): AssistantHandoffState? = entries.firstOrNull { it.wireValue == value }
+    }
+}
+
+/**
+ * 一次交接尝试的结果。
+ *
+ * 属于**状态**投影而不是命令字段：交接是主进程发起的动作，客户端只读结果。
+ * 没有这个字段的旧帧解码为 null（= 尚未请求过），不能用默认值伪造一次成功的交接。
+ */
+data class AssistantHandoffDto(
+    val state: String = AssistantHandoffState.PENDING.wireValue,
+    /** 已本地化的原因；ACCEPTED/PENDING 时为空。 */
+    val reason: String = "",
+    /** 主进程接管的会话身份；ACCEPTED 时才有值（尚未产生会话时为 null）。 */
+    val conversationId: String? = null,
+    /** 交接目标身份：助手据此构造打开主 App 的深链，不需要额外的命令字段。 */
+    val profileId: String = "",
+    val accountId: String = "",
+    val agentId: String? = null,
+    /** 未能随草稿迁移的附件数（仍在上传/校验或超出上限）；0 表示全部带过去了。 */
+    val skippedAttachments: Int = 0,
+)
+
 /**
  * 助理进程可见的完整状态。
  *
@@ -161,6 +198,8 @@ data class AssistantStateDto(
     val attachments: List<AssistantAttachmentDto> = emptyList(),
     val notice: AssistantNoticeDto? = null,
     val appearance: AssistantAppearanceDto = AssistantAppearanceDto(),
+    /** 最近一次交接尝试的结果；从未请求过时为 null（旧帧同样为 null）。 */
+    val handoff: AssistantHandoffDto? = null,
 )
 
 // ---------------------------------------------------------------------------
@@ -184,6 +223,7 @@ fun encodeState(state: AssistantStateDto): String = JSONObject().apply {
     put("attachments", state.attachments.toJsonArray { attachment -> attachment.toJson() })
     state.notice?.let { put("notice", it.toJson()) }
     put("appearance", state.appearance.toJson())
+    state.handoff?.let { put("handoff", it.toJson()) }
 }.toString()
 
 /**
@@ -214,6 +254,7 @@ private fun parseState(root: JSONObject): AssistantStateDto = AssistantStateDto(
     attachments = root.optJSONArray("attachments").objects().map { it.toAttachmentDto() },
     notice = root.optJSONObject("notice")?.toNoticeDto(),
     appearance = root.optJSONObject("appearance")?.toAppearanceDto() ?: AssistantAppearanceDto(),
+    handoff = root.optJSONObject("handoff")?.toHandoffDto(),
 )
 
 /** 把状态里的时间线投影还原为界面使用的 [TimelineEntry]。 */
@@ -455,6 +496,31 @@ private fun AssistantAccountDto.toJson(): JSONObject = JSONObject().apply {
 private fun AssistantNoticeDto.toJson(): JSONObject = JSONObject().apply {
     put("code", code)
     put("message", message)
+}
+
+private fun AssistantHandoffDto.toJson(): JSONObject = JSONObject().apply {
+    put("state", state)
+    put("reason", reason)
+    conversationId?.let { put("conversationId", it) }
+    put("profileId", profileId)
+    put("accountId", accountId)
+    agentId?.let { put("agentId", it) }
+    put("skippedAttachments", skippedAttachments)
+}
+
+private fun JSONObject.toHandoffDto(): AssistantHandoffDto {
+    val parsed = AssistantHandoffState.of(stringOrNull("state")) ?: AssistantHandoffState.PENDING
+    return AssistantHandoffDto(
+        // 未知状态按 PENDING 处理：调用方会继续等待并在超时后失败关闭，
+        // 绝不把没读懂的字面量升格成一次成功的交接。
+        state = parsed.wireValue,
+        reason = stringOrEmpty("reason"),
+        conversationId = stringOrNull("conversationId"),
+        profileId = stringOrEmpty("profileId"),
+        accountId = stringOrEmpty("accountId"),
+        agentId = stringOrNull("agentId"),
+        skippedAttachments = optInt("skippedAttachments", 0).coerceAtLeast(0),
+    )
 }
 
 private fun AssistantAppearanceDto.toJson(): JSONObject = JSONObject().apply {

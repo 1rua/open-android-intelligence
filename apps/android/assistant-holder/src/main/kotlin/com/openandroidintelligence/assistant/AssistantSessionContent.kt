@@ -61,6 +61,16 @@ internal fun AssistantSessionContent(
     resetOnEntry: Boolean = true,
     /** 解析出的最终深浅色：宿主据此设置状态栏/导航栏图标明暗。 */
     onResolvedAppearance: (darkTheme: Boolean) -> Unit = {},
+    /**
+     * 定格截图（唤起即画圈）：非 null 时整屏换成 [AssistantFrozenSelectionScene]。
+     *
+     * 与 [selection] 的区别：[selection] 是「裁剪页」覆盖层（有确认步骤，服务 ASSIST
+     * 兜底页与单次圈选）；定格态是唤起后的默认形态，松手即自动加入附件。
+     */
+    frozenScreenshot: Bitmap? = null,
+    onRequestHandoff: () -> Unit = {},
+    onAddAttachment: () -> Unit = {},
+    onExitFrozen: () -> Unit = {},
 ) {
     val state by client.state.collectAsState()
     val context = LocalContext.current
@@ -139,7 +149,9 @@ internal fun AssistantSessionContent(
                     onCancel = onFinishSelection,
                     onCropRejected = { client.showAdvisory("选区太小，请重新圈选") },
                 )
-            } else {
+            } else if (frozenScreenshot == null || frozenScreenshot.isRecycled ||
+                frozenScreenshot.width <= 0 || frozenScreenshot.height <= 0
+            ) {
                 AssistantSessionRoot(
                     draft = state.draft,
                     onDraftChange = client::updateDraft,
@@ -190,8 +202,64 @@ internal fun AssistantSessionContent(
                     onDecide = { approvalId, choice -> client.decideApproval(approvalId, choice) },
                     onStartScreenSelection = onStartSelection,
                     onOpenApp = onOpenApp,
+                    onRequestHandoff = onRequestHandoff,
+                    onAddAttachment = onAddAttachment,
                     onContentHeightChanged = onContentHeightChanged,
                     resetOnEntry = resetOnEntry,
+                )
+            }
+            // 定格截图：同一棵会话状态之上的全屏临时形态。系统截图是唯一底色，
+            // 拿不到就不进（宿主据此保持紧凑输入并给出说明），绝不伪造背景。
+            val frozen = frozenScreenshot?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+            if (frozen != null) {
+                AssistantFrozenSelectionScene(
+                    screenshot = frozen,
+                    previews = previews,
+                    draft = state.draft,
+                    onDraftChange = client::updateDraft,
+                    enabled = state.bridgeAvailable,
+                    isGenerating = state.isGenerating,
+                    isStopping = state.isStopping,
+                    hasUnknownOutcome = state.hasUnknownOutcome,
+                    onSend = client::send,
+                    onStop = client::cancel,
+                    controller = controller,
+                    notice = state.advisory ?: state.notice.takeIf { it.isNotBlank() },
+                    onDismissNotice = if (state.advisory != null) client::clearAdvisory else null,
+                    attachments = attachments,
+                    onRemoveAttachment = { draftId -> client.removeAttachment(draftId) },
+                    onStartRecording = {
+                        if (voiceState is AssistantVoiceState.Sending) {
+                            client.showAdvisory(
+                                assistantVoiceRejectionMessage(AssistantVoiceRejection.ALREADY_SENDING),
+                            )
+                        } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            client.showAdvisory("需要麦克风权限，请在系统设置中允许后重试")
+                        } else {
+                            recorder.start(state.sessionId)
+                        }
+                    },
+                    recording = recording,
+                    onCancelRecording = { recorder.cancel() },
+                    onFinishRecording = { recorder.send { state.sessionId } },
+                    onAddAttachment = onAddAttachment,
+                    onRequestHandoff = onRequestHandoff,
+                    onSelectionReady = { result ->
+                        // 与既有圈选路径一致：先登记临时键，主进程回传权威草稿 ID 后再改挂。
+                        previews.markPendingImage(result.localKey)
+                        onSelectionReady(result)
+                        // 连续圈选：定格态保持，交给宿主提交这一张。
+                        controller.dispatch(AssistantUiEvent.ScreenSelectionCommitted)
+                    },
+                    onSelectionRejected = {
+                        client.showAdvisory("附件已达上限，先移除一个再继续圈选")
+                    },
+                    onExitFrozen = onExitFrozen,
+                    acceptsNewSelection = state.attachments.size < com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS,
+                    // 定格态暂不渲染会话时间线与审批卡：判断是否要切回会话形态由宿主负责
+                    // （返回键第一次退出定格），这里不重复一套对话界面。
                 )
             }
         }

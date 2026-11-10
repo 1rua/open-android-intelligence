@@ -14,6 +14,7 @@ import android.os.Messenger
 import android.os.ParcelFileDescriptor
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,6 +53,14 @@ internal class AssistantBridgeClient(
      * 之后补发一次，而不是让宿主反复重试。
      */
     private var desiredPresence: Boolean? = null
+
+    /**
+     * 用户开始输入的回调（每次 `draft` 命令前触发）。
+     *
+     * 宿主用它在状态帧延迟期间判断「用户已经开始输入」：只看回传草稿会把刚开始打字的
+     * 那几帧误判成初态，从而在全屏定格与输入之间来回切。
+     */
+    var onDraftDispatched: ((String) -> Unit)? = null
 
     /** 主进程已确认收到的可见性；`null` 表示本次绑定还没声明过。 */
     private var sentPresence: Boolean? = null
@@ -200,6 +209,7 @@ internal class AssistantBridgeClient(
         if (text.length > MAX_ASSISTANT_DRAFT_CHARS) {
             showAdvisory("草稿超过 $MAX_ASSISTANT_DRAFT_CHARS 字，超出部分不会同步")
         }
+        onDraftDispatched?.invoke(text)
         command(COMMAND_DRAFT) { putString("text", text.take(MAX_ASSISTANT_DRAFT_CHARS)) }
     }
 
@@ -220,6 +230,31 @@ internal class AssistantBridgeClient(
         return command(COMMAND_APPROVAL) {
             putString("approvalId", approvalId)
             putString("choice", choice.wireValue)
+        }
+    }
+
+    /**
+     * 请求把当前助手会话 + 草稿 + 附件交给主 App（上滑交接）。
+     *
+     * 命令本身不带字段：会话身份由主进程已持有的 `sessionToken` 决定。结果随下一次
+     * 状态帧的 `handoff` 字段下发（PENDING/ACCEPTED/REJECTED），调用方必须等回执，
+     * 不能把「命令送达」当成「交接成功」。
+     */
+    fun requestHandoff(): Boolean = command(COMMAND_HANDOFF)
+
+    /**
+     * 请求把本进程选中的文件加入主进程的草稿（一次最多 [MAX_COMPOSER_ATTACHMENTS] 个）。
+     *
+     * 只传 URI 字符串，不传字节：同 UID + 持久化读授权让主进程直接读同一 URI，
+     * 避免把 8MB 级字节跨进程复制，也避免在本进程再实现一套文件读取逻辑。
+     * 空列表或超限的列表直接拒绝（返回 false），由调用方提示，不静默裁剪。
+     */
+    fun attachFiles(uris: List<String>): Boolean {
+        val bounded = uris.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (bounded.isEmpty() || bounded.size > MAX_COMPOSER_ATTACHMENTS) return false
+        return command(COMMAND_ATTACHMENT) {
+            putStringArray("uris", bounded.toTypedArray())
+            putInt("count", bounded.size)
         }
     }
 
@@ -395,12 +430,15 @@ internal class AssistantBridgeClient(
         const val COMMAND_ATTACHMENT_REMOVE = "attachment.remove"
         const val COMMAND_APPROVAL = "approval"
         const val COMMAND_RETRY = "retry"
+        const val COMMAND_ATTACHMENT = "attachment"
+        const val COMMAND_HANDOFF = "handoff"
         const val COMMAND_DISCONNECT = "disconnect"
 
         /** 与主进程 `AssistantBridgeService.ALLOWED_KEYS` 一字不差。 */
         val ALLOWED_KEYS = setOf(
             "version", "token", "command", "text", "content", "size",
             "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
+            "uris", "count",
         )
 
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024

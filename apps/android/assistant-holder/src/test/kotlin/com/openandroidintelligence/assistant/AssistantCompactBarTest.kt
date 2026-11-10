@@ -45,6 +45,7 @@ class AssistantCompactBarTest {
     private var stops = 0
     private var recordings = 0
     private var selections = 0
+    private var added = 0
     private var cancels = 0
     private var finishes = 0
 
@@ -75,6 +76,7 @@ class AssistantCompactBarTest {
                         onStop = { stops++ },
                         onStartRecording = { recordings++ },
                         onStartScreenSelection = { selections++ },
+                        onAddAttachment = { added++ },
                         enabled = enabled,
                         hasUnknownOutcome = hasUnknownOutcome,
                         attachments = attachments,
@@ -174,15 +176,22 @@ class AssistantCompactBarTest {
         compose.onNodeWithContentDescription("发送消息").assertIsNotEnabled()
     }
 
+    /**
+     * 输入栏最左侧是「＋」附件入口；圈选按钮已按需求移除（改为唤起后直接画圈）。
+     *
+     * `onStartScreenSelection` 参数仍保留：ASSIST 兜底页要用它显示「本入口无系统截图」。
+     */
     @Test
-    fun micAndScreenSelectionAreReachableFromTheInputRow() {
+    fun addAttachmentButtonIsReachableAndScreenSelectionButtonIsGone() {
         render()
 
+        compose.onNodeWithContentDescription("添加附件").assertIsEnabled().performClick()
         compose.onNodeWithContentDescription("语音输入").assertIsEnabled().performClick()
-        compose.onNodeWithContentDescription("屏幕圈选").assertIsEnabled().performClick()
 
+        assertEquals(1, added)
         assertEquals(1, recordings)
-        assertEquals(1, selections)
+        compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
+        assertEquals(0, selections)
     }
 
     @Test
@@ -192,7 +201,7 @@ class AssistantCompactBarTest {
         compose.onNodeWithTag(AssistantCompactBarTags.RECORDING).assertIsDisplayed()
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).assertDoesNotExist()
         compose.onNodeWithContentDescription("语音输入").assertDoesNotExist()
-        compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
+        compose.onNodeWithContentDescription("添加附件").assertDoesNotExist()
         compose.onNodeWithContentDescription("发送消息").assertDoesNotExist()
         compose.onNodeWithContentDescription("取消录音").assertIsDisplayed()
         compose.onNodeWithContentDescription("发送语音").assertIsDisplayed()
@@ -230,7 +239,7 @@ class AssistantCompactBarTest {
             ),
         )
 
-        listOf("助理消息输入", "语音输入", "屏幕圈选", "发送消息").forEach { label ->
+        listOf("助理消息输入", "添加附件", "语音输入", "发送消息").forEach { label ->
             compose.onNodeWithContentDescription(label).assertExists()
         }
         compose.onNodeWithContentDescription("附件：截图.png", useUnmergedTree = true).assertExists()
@@ -270,7 +279,7 @@ class AssistantCompactBarTest {
 
         compose.onNodeWithContentDescription("发送消息").assertHeightIsAtLeast(Dimensions.MinimumTouchTarget)
         compose.onNodeWithContentDescription("语音输入").assertHeightIsAtLeast(Dimensions.MinimumTouchTarget)
-        compose.onNodeWithContentDescription("屏幕圈选").assertHeightIsAtLeast(Dimensions.MinimumTouchTarget)
+        compose.onNodeWithContentDescription("添加附件").assertHeightIsAtLeast(Dimensions.MinimumTouchTarget)
     }
 
     @Test
@@ -292,18 +301,21 @@ class AssistantCompactBarTest {
         compose.onNodeWithContentDescription("发送消息").assertExists()
     }
 
+    /**
+     * 横条已经从输入栏搬到 [AssistantSessionRoot] 的顶部（需求 5.1「始终显示」）。
+     *
+     * 输入栏自身不再持有任何拖动指示条：整个助手只有最顶部那一个。
+     */
     @Test
-    fun tappingTheInputExpandsTheBarAndShowsTheHandle() {
+    fun theCompactBarNeverOwnsTheDragHandle() {
         render()
 
-        // 紧凑态没有拖动指示条：只有一条横条。
         compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertDoesNotExist()
 
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performClick()
         compose.waitForIdle()
 
-        // 点击进入输入态：顶部出现 handle，输入框仍然可用。
-        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
+        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertDoesNotExist()
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).assertIsDisplayed()
     }
 
@@ -313,7 +325,6 @@ class AssistantCompactBarTest {
 
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performClick()
         compose.waitForIdle()
-        compose.onNodeWithTag(AssistantCompactBarTags.HANDLE).assertIsDisplayed()
 
         compose.onNodeWithTag(AssistantCompactBarTags.INPUT).performTextInput("你好")
         compose.waitForIdle()

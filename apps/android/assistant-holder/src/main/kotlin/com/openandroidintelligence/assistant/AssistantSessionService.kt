@@ -1,6 +1,7 @@
 package com.openandroidintelligence.assistant
 
 import android.content.res.Configuration
+import android.net.Uri
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
@@ -12,6 +13,15 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import androidx.compose.runtime.mutableStateOf
+import android.os.Handler
+import android.os.Looper
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class AssistantSessionService : VoiceInteractionSessionService() {
     override fun onNewSession(args: Bundle?): VoiceInteractionSession = AssistantSession(this)
@@ -49,8 +59,33 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     /** 圈选用的系统截图；非 null 表示当前处于全屏圈选态。 */
     private val selectionState = mutableStateOf<AssistantScreenSelection?>(null)
 
+    /**
+     * 定格截图态：系统截图到达后窗口铺满，界面变成「系统截图 + 直接画圈」。
+     *
+     * 与 [selectionState] 分开：后者是**裁剪页**（有「确认选区」步骤），前者是唤起后的
+     * 默认形态。窗口是否全屏只由 [immersiveLayout] 决定，两者共用同一条判断。
+     */
+    private val frozenFullscreen = mutableStateOf(false)
+
     /** 最近一次由 Compose 测量出的内容高度（像素）；0 表示还没有测量结果。 */
     private var measuredContentHeightPx = 0
+
+    /**
+     * 用户是否已经在本进程的输入栏里敲过字（含尚未同步到主进程的按键）。
+     *
+     * 由客户端在派发 `draft` 命令时回调置位；会话结束时清空。
+     */
+    @Volatile private var userHasStartedTyping = false
+
+    /** 系统选择器结果的会话侧强引用；[onHide]/[onDestroy] 时清空。 */
+    private var pendingPickerCallback: ((List<Uri>) -> Unit)? = null
+
+    /** 交接请求是否在等待主进程回执；同一时刻只允许一次。 */
+    private var handoffRequested = false
+    private var handoffWatchdog: Runnable? = null
+    private var handoffJob: Job? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val handoffScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /** 结束会话只执行一次：返回键与界面结束回调可能同时到达。 */
     private var closing = false
@@ -66,7 +101,10 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private var presented = false
 
     override fun onCreateContentView(): View {
-        val bridge = AssistantBridgeClient(context).also { client = it }
+        val bridge = AssistantBridgeClient(context).also {
+            it.onDraftDispatched = { text -> if (text.isNotEmpty()) userHasStartedTyping = true }
+            client = it
+        }
         val composeHost = AssistantComposeHost(context)
         host = composeHost
         // 测量高度回传链路：Compose 根节点 → 宿主 → 会话窗口。
@@ -87,6 +125,13 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 onFinishSelection = { finishScreenSelection() },
                 onSelectionReady = { result -> submitSelection(result) },
                 onOpenApp = { openMainApp() },
+                // 定格截图：只有拿到系统截图**并且**状态机确实进入定格态时才铺满，
+                // 两者由本类同步推进；窗口几何只看 `immersiveLayout()`。
+                frozenScreenshot = frozenScreenshot(),
+                onRequestHandoff = { requestHandoff() },
+                onAddAttachment = { requestAttachmentPicker() },
+                // 发送被接收：定格在状态机里已经结束，这里把窗口同步放回测量驱动。
+                onExitFrozen = { exitFrozenSelection() },
                 onExit = { requestExit() },
                 // 高度回传走宿主：界面不直接依赖窗口，宿主只做转发。
                 onContentHeightChanged = composeHost::reportContentHeight,
@@ -116,6 +161,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
         uiState.dispatch(AssistantUiEvent.SessionShown)
         closing = false
+        // 截图可能在本次 onShow 之前就已投递：唤起后仍处于初态时补一次进入定格。
+        // 用户很快就开始打字时 canFreeze 会因草稿非空而拒绝，从而不打断输入。
+        if (screenshot != null && canFreezeForSelection()) enterFrozenSelection()
         applyWindowLayout()
         host?.resume()
         // 每次唤起都必然新建会话，不需要再发 `session.new`：`connect` 会为主进程
@@ -125,6 +173,10 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     override fun onHide() {
+        handoffJob?.cancel()
+        handoffJob = null
+        handoffWatchdog?.let(mainHandler::removeCallbacks)
+        handoffWatchdog = null
         // 隐藏即会话结束：桥接立刻释放，宿主退回 CREATED，组合随视图解绑被回收。
         // 先置位再推进状态：SessionHidden 会走到"结束"分支，不能让它再触发一次 hide。
         // 退出只断开连接、不取消生成：已提交的任务由主进程继续。
@@ -134,13 +186,22 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         client?.let(AssistantSessionLifecycle::leave)
         client = null
         host?.stop()
+        userHasStartedTyping = false
+        pendingPickerCallback = null
+        AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
         super.onHide()
     }
 
     override fun onDestroy() {
+        handoffJob?.cancel()
+        handoffJob = null
+        handoffWatchdog?.let(mainHandler::removeCallbacks)
+        handoffWatchdog = null
         client?.let(AssistantSessionLifecycle::leave)
         client = null
+        pendingPickerCallback = null
+        AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
         host?.destroy()
         host = null
@@ -154,13 +215,14 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     override fun onBackPressed() {
-        // 返回键先退出覆盖层（圈选），没有覆盖层就把整个会话收掉；
+        // 返回键先退出覆盖层（圈选/定格），没有覆盖层就把整个会话收掉；
         // 无论哪条路径都不碰生成：正在输出的回复由主进程继续，界面没有"就地中断"。
         uiState.dispatch(AssistantUiEvent.BackPressed)
         val visible = uiState.visible()
         if (visible != null) {
             // 还有可见界面：说明刚退出的是覆盖层，窗口回到测量驱动的底部形态。
             selectionState.value = null
+            frozenFullscreen.value = false
             applyWindowLayout()
             return
         }
@@ -192,11 +254,72 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         val usable = bitmap?.takeIf { it.width > 0 && it.height > 0 }
             ?.takeIf { it.width.toLong() * it.height <= MAX_SCREENSHOT_PIXELS }
         screenshot = usable?.let { runCatching { it.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull() }
+        // 已经在定格态时系统又投递了一张：旧帧上的轨迹与选区都失效，退出定格并说明，
+        // 不把新旧截图混用（用户看到的必须是其中一张完整的屏幕）。
+        if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
+            exitFrozenSelection()
+            client?.showAdvisory("屏幕已更新，请重新画圈")
+            return
+        }
+        // 截图是异步到达的：只有会话仍在「刚唤起、未开始输入」的初态才进入定格，
+        // 用户已经在打字/发消息时强行全屏会打断他们正在做的事。
+        if (screenshot != null && canFreezeForSelection()) {
+            enterFrozenSelection()
+        } else if (screenshot == null) {
+            uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
+        }
+    }
+
+    /**
+     * 是否可以在本次唤起的初态进入定格：紧凑输入、无覆盖层、用户还没有开始输入。
+     *
+     * 「还没有开始输入」同时看**主进程回传的草稿**与**本进程输入栏尚未同步的本地编辑**：
+     * 客户端把每次按键都发给主进程，但状态帧回来有延迟；只看回传值会在用户刚开始打字
+     * 的那几帧里误判成「还在初态」。
+     */
+    private fun canFreezeForSelection(): Boolean {
+        val visible = uiState.visible() ?: return false
+        if (visible.overlay != AssistantOverlay.NONE) return false
+        if (visible.surface != AssistantSurfaceState.COMPACT_INPUT) return false
+        return !userHasStartedTyping && client?.state?.value?.draft.isNullOrBlank()
+    }
+
+    /**
+     * 进入定格：状态机与窗口几何同时推进，避免「窗口全屏但界面以为在紧凑态」。
+     *
+     * `mutableStateOf` 的写入发生在组合外，必须回到 UI 线程才能被观察；
+     * 系统回调本身就是主线程，这里只做防御性收敛。
+     */
+    @android.annotation.SuppressLint("MainThread")
+    private fun enterFrozenSelection() {
+        frozenFullscreen.value = true
+        uiState.dispatch(AssistantUiEvent.ScreenshotAvailable)
+        if (uiState.visible()?.overlay != AssistantOverlay.FROZEN_SCREENSHOT) {
+            // 状态机拒绝了（已展开/已有别的覆盖层）：不要留下「窗口全屏但界面紧凑」。
+            frozenFullscreen.value = false
+        }
+        applyWindowLayout()
+    }
+
+    /**
+     * 退出定格：窗口回到测量驱动；界面仍保持紧凑输入（草稿与附件都保留）。
+     *
+     * `applyMeasuredHeight` 有去重：退出后高度可能与进入前相同，不再触发重排，
+     * 因此这里必须主动调用一次 [applyWindowLayout]。
+     */
+    private fun exitFrozenSelection() {
+        if (!frozenFullscreen.value) return
+        frozenFullscreen.value = false
+        if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
+            uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
+        }
+        applyWindowLayout()
     }
 
     /** 一次会话结束时的临时状态：圈选与截图都不跨会话保留。 */
     private fun resetTransientState() {
         selectionState.value = null
+        frozenFullscreen.value = false
         recycleScreenshot()
         measuredContentHeightPx = 0
     }
@@ -214,8 +337,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     private fun applyMeasuredHeight(heightPx: Int) {
         if (heightPx <= 0 || heightPx == measuredContentHeightPx) return
-        if (selectionState.value != null) {
-            // 圈选期间窗口固定全屏：此时的高度回调只记录，等退出圈选再应用。
+        if (immersiveLayout()) {
+            // 圈选/定格期间窗口固定全屏：此时的高度回调只记录，等退出全屏再应用。
             measuredContentHeightPx = heightPx
             return
         }
@@ -223,10 +346,25 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         applyWindowLayout()
     }
 
+    /**
+     * 当前应当渲染定格截图的位图。
+     *
+     * 只认状态机里的 [AssistantOverlay.FROZEN_SCREENSHOT]：渲染分支由它决定，窗口几何由
+     * [immersiveLayout] 决定，两者在同一处（[enterFrozenSelection]/[exitFrozenSelection]）
+     * 同步推进。截图不可用（已回收）时返回 null，界面退回紧凑输入而不画假背景。
+     */
+    private fun frozenScreenshot(): Bitmap? {
+        if (uiState.visible()?.overlay != AssistantOverlay.FROZEN_SCREENSHOT) return null
+        return screenshot?.takeIf { !it.isRecycled }
+    }
+
+    /** 是否处于全屏临时形态（裁剪页或定格截图）。窗口几何的唯一判据。 */
+    private fun immersiveLayout(): Boolean = selectionState.value != null || frozenFullscreen.value
+
     private fun applyWindowLayout() {
         val dialogWindow = window?.window ?: return
-        if (selectionState.value != null) {
-            // 圈选态：临时铺满屏幕，让系统截图按真实比例显示。
+        if (immersiveLayout()) {
+            // 圈选/定格态：临时铺满屏幕，让系统截图按真实比例显示。
             dialogWindow.setGravity(Gravity.TOP or Gravity.START)
             dialogWindow.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -296,6 +434,131 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         }
     }
 
+    /**
+     * 上滑交接：先把会话 + 草稿 + 附件交给主进程，**拿到 ACCEPTED 后**才打开主 App 并关闭浮层。
+     *
+     * 严格模式：命令送不出去、回执被拒或超时都留在浮层，并把原因说清楚。草稿与附件
+     * 在失败时原样保留 —— 这是「先迁移成功再关闭」的全部意义。
+     */
+    private fun requestHandoff() {
+        val bridge = client ?: run {
+            client?.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
+            return
+        }
+        if (!bridge.requestHandoff()) {
+            bridge.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
+            return
+        }
+        // 回执随下一次状态帧下发；等待期间不再接受第二次请求，避免重复迁移。
+        handoffRequested = true
+        handoffWatchdog?.let(mainHandler::removeCallbacks)
+        handoffWatchdog = Runnable {
+            if (!handoffRequested) return@Runnable
+            handoffRequested = false
+            client?.showAdvisory(AssistantHandoffMessages.TIMEOUT)
+        }.also { mainHandler.postDelayed(it, HANDOFF_TIMEOUT_MILLIS) }
+        observeHandoffResult(bridge)
+    }
+
+    /** 观察状态帧里的交接结果；ACCEPTED 才打开主 App，REJECTED 立即提示并复位。 */
+    private fun observeHandoffResult(bridge: AssistantBridgeClient) {
+        handoffJob?.cancel()
+        handoffJob = handoffScope.launch {
+            bridge.state.collect { state ->
+                if (!handoffRequested) return@collect
+                val handoff = state.handoff ?: return@collect
+                when (AssistantHandoffState.of(handoff.state)) {
+                    AssistantHandoffState.ACCEPTED -> {
+                        handoffRequested = false
+                        handoffWatchdog?.let(mainHandler::removeCallbacks)
+                        handoffWatchdog = null
+                        proceedWithAcceptedHandoff(bridge, handoff)
+                    }
+                    AssistantHandoffState.REJECTED -> {
+                        handoffRequested = false
+                        handoffWatchdog?.let(mainHandler::removeCallbacks)
+                        handoffWatchdog = null
+                        bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.REJECTED })
+                    }
+                    AssistantHandoffState.PENDING, null -> Unit
+                }
+            }
+        }
+    }
+
+    /**
+     * 主进程已接管：打开主 App 的对应会话，然后才关闭浮层。
+     *
+     * 打开失败（后台启动被系统拒绝等）时留在浮层并说明 —— 数据已经安全地在主进程里，
+     * 但用户不该在什么都没看到的情况下被关掉界面。
+     */
+    private fun proceedWithAcceptedHandoff(bridge: AssistantBridgeClient, handoff: AssistantHandoffDto) {
+        val skipped = if (handoff.skippedAttachments > 0) {
+            "，另有 ${handoff.skippedAttachments} 个附件仍在上传，未能带入"
+        } else {
+            ""
+        }
+        val link = AssistantHandoffLink.from(
+            profileId = handoff.profileId,
+            accountId = handoff.accountId,
+            conversationId = handoff.conversationId,
+            agentId = handoff.agentId,
+            sessionToken = bridge.state.value.sessionId.orEmpty(),
+        )
+        if (openAssistantMainApp(context, link)) {
+            if (skipped.isNotEmpty()) bridge.showAdvisory("已在 App 中打开$skipped")
+            hide()
+        } else {
+            bridge.showAdvisory("交接已完成，但无法打开 App，请从启动器打开$skipped")
+        }
+    }
+
+    /**
+     * 点击「＋」：请求选择器 Activity 打开系统选择器（会话本身没有 ActivityResultRegistry）。
+     *
+     * 选中结果经 [AssistantAttachmentPickerBroker] 回到这里：只做「去重 → 按剩余槽位截断 →
+     * 交给主进程」，本进程不读字节、不解析 MIME。
+     */
+    private fun requestAttachmentPicker() {
+        val bridge = client ?: return
+        // 回调必须由会话强引用：broker 只持弱引用，单靠它登记会在 Activity 返回前
+        // 被回收，表现为「选完文件没有任何反应」。
+        val callback: (List<Uri>) -> Unit = { uris ->
+            // 回调可能在 Activity 结果线程上：统一回到主线程再发命令。
+            mainHandler.post { deliverPickedAttachments(bridge, uris.map(Uri::toString)) }
+        }
+        pendingPickerCallback = callback
+        AssistantAttachmentPickerBroker.register(callback)
+        // `startAssistantActivity` 没有返回值：只能以「没有抛出异常」为准，
+        // 真正的失败（回来时没有 URI）由选择器自身的取消路径如实表达。
+        try {
+            startAssistantActivity(AssistantAttachmentPickerActivity.intent(context))
+        } catch (_: Exception) {
+            AssistantAttachmentPickerBroker.cancel()
+            bridge.showAdvisory("无法打开文件选择器，请稍后再试")
+        }
+    }
+
+    /** 选择结果 → 主进程附件草稿：去重、按剩余槽位截断，超出部分如实提示。 */
+    private fun deliverPickedAttachments(bridge: AssistantBridgeClient, uris: List<String>) {
+        val distinct = uris.distinct()
+        if (distinct.isEmpty()) return
+        val remaining = (com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS -
+            bridge.state.value.attachments.size).coerceAtLeast(0)
+        if (remaining == 0) {
+            bridge.showAdvisory("每条消息最多添加 ${com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS} 个附件，请先移除或发送")
+            return
+        }
+        val accepted = distinct.take(remaining)
+        if (!bridge.attachFiles(accepted)) {
+            bridge.showAdvisory("附件未能加入草稿，请重新选择")
+            return
+        }
+        if (distinct.size > accepted.size) {
+            bridge.showAdvisory("附件已达上限，只加入了前 ${accepted.size} 个")
+        }
+    }
+
     private companion object {
         /** 首帧测量到达前的最小窗口高度：保证输入栏可见，测量后立即校正。 */
         const val MIN_WINDOW_HEIGHT_PX = 1
@@ -305,5 +568,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
         /** 本地缩略图存储只属于一次会话；同一会话内重建组合沿用同一个实例。 */
         const val SESSION_PREVIEWS_KEY = "assistant-session"
+
+        /** 等待主进程交接回执的上限：超时按失败处理，浮层与草稿原样保留。 */
+        const val HANDOFF_TIMEOUT_MILLIS = 2_000L
     }
 }
