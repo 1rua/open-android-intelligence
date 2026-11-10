@@ -473,7 +473,7 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
-    fun messageProcessingDelayRoundTripsAndLegacyCoreKeysAreReportedNotImported() {
+    fun messageProcessingDelayRoundTripsAndLegacyMergingValuesAreReportedNotImported() {
         val preferences = DebouncePreferences(context)
         preferences.write(3_000)
         val exported = coordinator().export()
@@ -483,7 +483,8 @@ class SettingsBackupCoordinatorTest {
         coordinator().import(exported.json).getOrThrow()
         assertEquals(3_000L, preferences.read().delay.inWholeMilliseconds)
 
-        // 旧文件按 Core 记录的覆盖不再适用：不写入，也不会为该地址生成看不见的键，并如实告知。
+        // 旧文件的合并值（global 固定默认 + 按 Core 覆盖）都没有「用户主动设置」的可信依据：
+        // 整节不写入，也不会为该地址生成看不见的键，并如实告知。
         val unknownKey = "e".repeat(64)
         val text = backupWith(
             "messageProcessing" to mapOf(
@@ -491,9 +492,10 @@ class SettingsBackupCoordinatorTest {
                 "cores" to listOf(mapOf("key" to unknownKey, "delayMillis" to 100, "extendWindow" to false)),
             ),
         )
+        preferences.write(4_000)
         val outcome = coordinator().import(text).getOrThrow()
-        assertEquals(1_000L, preferences.read().delay.inWholeMilliseconds)
-        assertTrue(outcome.skipped.any { it.contains("不再按 Core 区分") })
+        assertEquals("旧文件的合并值不覆盖本机现值", 4_000L, preferences.read().delay.inWholeMilliseconds)
+        assertTrue(outcome.skipped.any { it.contains("消息合并设置未导入") })
         val all = context.getSharedPreferences("conversation-debounce-v1", 0).all
         assertTrue(all.keys.none { it.startsWith("gateway:$unknownKey") })
     }

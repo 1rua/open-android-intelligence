@@ -98,19 +98,30 @@ class MessageProcessingSettingsTest {
     }
 
     /**
-     * 旧版本按 Core 覆盖留下的键不再被界面读取，也不会在新安装上「继承成」客户端配置：
-     * 只有 `global:delay` 才是这里的权威。
+     * 旧版本按 Core 覆盖留下的键（`gateway:<sha256>:delay`）不再被界面读取：
+     * 只有用户自己操作过的 `global:delay` 才是这里的权威。
      */
     @Test
     fun legacyPerCoreKeysDoNotChangeTheClientSetting() {
         context.getSharedPreferences("conversation-debounce-v1", 0).edit()
-            .putInt("global:delay", 1500)
+            .putInt("global:delay", 1_500)
             .putInt("gateway:" + "a".repeat(64) + ":delay", 9_000)
-            .putInt("a".repeat(64) + ":delay", 9_000)
+            .putInt("gateway:" + "a".repeat(64) + ":extend", 0)
             .commit()
         show()
         compose.onNodeWithText("当前设置：等待 1.5 秒合并").performScrollTo().assertExists()
         compose.runOnIdle { assertEquals(1_500L, preferences.read().delay.inWholeMilliseconds) }
+    }
+
+    /** 只有旧版按 Core 覆盖、没有任何全局值时，界面仍是默认的立即发送。 */
+    @Test
+    fun upgradesWithOnlyLegacyCoreKeysStillSendImmediately() {
+        context.getSharedPreferences("conversation-debounce-v1", 0).edit()
+            .putInt("gateway:" + "a".repeat(64) + ":delay", 9_000)
+            .commit()
+        show()
+        compose.onNodeWithText("当前设置：立即发送（不合并）").performScrollTo().assertExists()
+        compose.runOnIdle { assertEquals(0L, preferences.read().delay.inWholeMilliseconds) }
     }
 
     private fun screenContains(text: String): Boolean =

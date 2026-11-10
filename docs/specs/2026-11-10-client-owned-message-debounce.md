@@ -23,7 +23,7 @@
 | 硬上限 | 从首条起最长 30 秒，之后必须提交 |
 | 作用范围 | 仅同一会话；不跨会话、账号、Agent 合并 |
 | 与 Core 的关系 | 只写本机偏好，不发任何 Core 配置请求 |
-| 旧数据 | 旧的按 Core 覆盖键不读取、不迁移；旧备份文件的全局值可继承，按 Core 的覆盖跳过并如实告知 |
+| 旧数据 | 旧的按 Core 覆盖键不读取、不迁移；旧备份文件的合并值无法区分是否用户主动设置，整节不导入并如实告知 |
 
 界面上「消息处理」只剩一组：
 
@@ -45,14 +45,16 @@
 | 发送分支 | `apps/android/conversation-ui/.../state/WorkbenchController.kt` 的 `if (supportsMessageBatches && batcher.merges …)` |
 | 运行时装配 | `GatewayRuntime` 的 `updateDebounceSettings(delayMillis)` / `reloadDebounceSettings()` |
 | 设置界面 | `apps/android/app/.../settings/advanced/MessageProcessingSettings.kt` |
-| 备份 | `MessageProcessingSection(delayMillis)` |
+| 备份 | `MessageProcessingSection(delayMillis)`；旧文件的 `global`/`cores` 只计数不写入 |
 
 ### 0 秒为什么不能走批次
 
-零时长的批次虽然会在同一次调用里 `flush`，但成员仍要先写进 `collectingUnits` 与
-`pendingBatch`，界面会先出现「等待合并」再跳成已发送，而且一次发送要多绕一层持久化。
-因此 `DebounceBatcher.merges` 明确表达「当前策略是否要合并」，控制器在 0 秒时直接走
-原有的单条发送路径。
+零时长的批次虽然会在同一次调用里 `flush`，但成员要先写进 `collectingUnits`、封存一个批次 id
+再提交，一次发送多绕一层持久化与恢复路径。因此 `DebounceBatcher.merges` 明确表达
+「当前策略是否要合并」，控制器在 0 秒时直接走原有的单条发送路径。
+
+注意 0 秒仍然会在点击时写入 `pendingBatch` 作为待发送行：这是既有的本地先行显示，
+与是否合并无关；受理或失败后该行照常移除。区别只在于不进入合并队列、不以批次提交。
 
 ### 设置改回 0 秒时
 
@@ -61,8 +63,9 @@
 
 ### 待发送消息的状态
 
-`> 0` 秒时，成员在窗口内仍以 `pendingBatch`（时间线上显示「等待合并」）与
-`LocalSendAtom` 两份事实存在：前者负责渲染，后者负责崩溃恢复。窗口到期后
+`> 0` 秒时，成员在窗口内仍以 `pendingBatch` 与 `LocalSendAtom` 两份事实存在：
+前者驱动输入坞上方的「N 条 · 等待合并」计数条，后者负责崩溃恢复。时间线上该行仍显示
+「等待 Gateway 接收」——「等待合并」只是批次条的计数文案，不是单条消息的状态。窗口到期后
 `submitBatch` 用同一个 `batchId` 原子提交；失败或结果未知时保留原身份供用户确认重试，
 不伪造成功。
 
@@ -77,11 +80,12 @@
 
 | 验收项 | 覆盖方式 |
 |---|---|
-| 全新安装与升级后默认 0 秒 | `MessageProcessingSettingsTest.freshInstallDefaultsToImmediateSendWithoutMerging`、`DebouncePreferences` 默认值 |
+| 全新安装与升级后默认 0 秒 | `MessageProcessingSettingsTest.freshInstallDefaultsToImmediateSendWithoutMerging`、`legacyPerCoreKeysDoNotChangeTheClientSetting`、`DebouncePreferences` 默认值 |
 | 0 秒不额外等待 | `DebounceBatcherTest.the default policy sends every message immediately`、`zero delay never holds a batch for the timer` |
 | 开启防抖后正确合并 | `DebounceBatcherTest.one conversation still aggregates its own members`；`the twentieth member flushes the batch` 同时验证第 21 条不会丢失 |
 | 不产生 Core 配置请求 | 运行时只写本机 SharedPreferences；无新增网络调用 |
 | 不同客户端互不影响 | 配置只存在各自手机的 `conversation-debounce-v1` |
+| 旧备份不意外开启合并 | `SettingsBackupCoordinatorTest.messageProcessingDelayRoundTripsAndLegacyMergingValuesAreReportedNotImported` |
 | 不丢失 / 重复 / 乱序 / 错合并 | `DebounceBatcherTest.two conversations keep separate batches`、`turning merging off flushes what is already collected`、`WorkbenchSendPersistenceTest`、`WorkbenchCloseSubmissionTest` |
 | 界面无 Core 覆盖入口 | `MessageProcessingSettingsTest` 断言相关文案不存在 |
 | 单测与回归 | `:conversation-domain:testDebugUnitTest`、`:conversation-ui:testDebugUnitTest`、`:app:testFullDebugUnitTest` |

@@ -365,8 +365,11 @@ class SettingsBackupCoordinator(
         section ?: return
         val preferences = DebouncePreferences(context)
         var written = 0
+        var unchanged = false
         section.delayMillis?.let { delay ->
-            if (preferences.read().delay.inWholeMilliseconds.toInt() != delay) {
+            if (preferences.read().delay.inWholeMilliseconds.toInt() == delay) {
+                unchanged = true
+            } else {
                 preferences.write(delay)
                 written++
             }
@@ -375,13 +378,13 @@ class SettingsBackupCoordinator(
             applied += section.summary()
             runtime?.reloadDebounceSettings()
             deferred += "消息合并已保存；当前会话在下次发送时生效。"
-        } else {
+        } else if (unchanged) {
             applied += section.summary() + "（本机已是该值）"
         }
-        // 旧文件里按 Core 分别记录的覆盖按需求不迁移成客户端配置，如实说明而不是静默丢弃。
-        if (section.hasLegacyCoreOverrides) {
-            skipped += "旧版本按 Core 记录的 ${section.legacyCoreOverrideCount} 项消息合并设置未导入：" +
-                "消息合并已改为客户端统一设置，不再按 Core 区分。"
+        // 旧文件的合并值无法区分「用户主动设置」与「版本默认值」，整节不迁移，如实说明。
+        if (section.hasLegacyMergingSettings) {
+            skipped += "旧版本备份里的 ${section.legacyMergingSettings} 项消息合并设置未导入：" +
+                "旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。"
         }
     }
 

@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
 import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.SmsScopeMode
+import com.openandroidintelligence.mobile.conversations.DebouncePreferences
 
 /**
  * 可迁移的客户端偏好数据模型。
@@ -122,12 +123,14 @@ data class NotificationsSection(val replyAlertsEnabled: Boolean) {
 /**
  * 客户端的消息合并时长；只描述本机发送时机，不代表任何 Core 配置。
  *
- * [legacyCoreOverrideCount] 只在读取旧版本导出的文件时非零：那类文件按 Gateway
- * 分别记录了覆盖值，需求要求不迁移成客户端配置，导入时需要如实告知用户跳过了几项。
+ * 旧版本导出的节形是 `{global: {delayMillis, extendWindow}, cores: [...]}`。旧版每次导出都会
+ * 无条件写 `global`（值为读取默认的 1.5 秒），文件里无法区分「用户主动设置」与「从未设置」，
+ * 因此整节旧值都按 [legacyMergingSettings] 计数跳过，不继承——否则升级后默认 0 秒的承诺
+ * 会对导入过旧备份的用户失效。
  */
 data class MessageProcessingSection(
     val delayMillis: Int?,
-    val legacyCoreOverrideCount: Int = 0,
+    val legacyMergingSettings: Int = 0,
 ) {
     fun encode(): JsonValue.JObject = JsonValue.JObject(
         listOfNotNull(delayMillis?.let { "delayMillis" to Json.of(it) }),
@@ -142,41 +145,19 @@ data class MessageProcessingSection(
         return "消息合并：$value"
     }
 
-    /** 旧文件里按 Core 记录的覆盖已不再适用，导入时需要如实告知。 */
-    val hasLegacyCoreOverrides: Boolean get() = legacyCoreOverrideCount > 0
+    /** 旧文件里的合并值已不再适用，导入时需要如实告知。 */
+    val hasLegacyMergingSettings: Boolean get() = legacyMergingSettings > 0
 
     companion object {
         fun decode(section: JsonValue.JObject): MessageProcessingSection {
             val direct = BackupFields.int(section, "delayMillis")
-            // 旧版本导出的形状是 `{global: {delayMillis, extendWindow}, cores: [...]}`。
-            // 全局值属于用户在本机明确做过的选择，可以继承；按 Core 的覆盖按需求不迁移。
-            val legacyGlobal = BackupFields.objectOrNull(section, "global")
-                ?.let { DebounceValue.decode(it, "messageProcessing.global") }
-            val delay = direct ?: legacyGlobal?.delayMillis
-            if (delay != null && delay !in DebounceDelayLimits.MIN..DebounceDelayLimits.MAX) {
+            if (direct != null &&
+                direct !in DebouncePreferences.MIN_DELAY_MILLIS..DebouncePreferences.MAX_DELAY_MILLIS) {
                 throw formatError("messageProcessing.delayMillis", "超出 0–30000 毫秒。")
             }
-            val legacyCores = BackupFields.objects(section, "cores").orEmpty()
-            return MessageProcessingSection(delay, legacyCoreOverrideCount = legacyCores.size)
-        }
-    }
-}
-
-/** 客户端合并时长的上下限；界面与备份共用一处，避免两处各写一份。 */
-internal object DebounceDelayLimits {
-    const val MIN = 0
-    const val MAX = 30_000
-}
-
-/** 旧备份里的合并值；只为读取旧文件保留，导出不再产生。 */
-internal data class DebounceValue(val delayMillis: Int) {
-    companion object {
-        fun decode(obj: JsonValue.JObject, path: String): DebounceValue {
-            val delay = BackupFields.int(obj, "delayMillis") ?: throw formatError("$path.delayMillis", "缺失。")
-            if (delay !in 0..DebounceDelayLimits.MAX) {
-                throw formatError("$path.delayMillis", "超出 0–30000 毫秒。")
-            }
-            return DebounceValue(delay)
+            val legacy = (if (BackupFields.objectOrNull(section, "global") != null) 1 else 0) +
+                BackupFields.objects(section, "cores").orEmpty().size
+            return MessageProcessingSection(direct, legacyMergingSettings = legacy)
         }
     }
 }

@@ -33,7 +33,7 @@
     "appearance": { "theme": "DARK", "dynamicColor": false, "dynamicIconColor": true,
                     "palette": "EMBER", "reduceMotion": false },
     "notifications": { "replyAlertsEnabled": true },
-    "messageProcessing": { "delayMillis": 1500 },
+    "messageProcessing": { "delayMillis": 0 },
     "conversation": { "organizations": [ { "profileId": "<sha256>", "agentId": "hermes",
                       "sortMode": "custom", "customOrder": [], "folders": [], "assignments": {} } ] },
     "connection": { "gatewayUrl": "https://core.example" },
@@ -66,7 +66,7 @@
 |---|---|---|
 | appearance | `AppearancePreferences` | 主题、动态取色、图标动态取色、预设色板、减少动画 |
 | notifications | `ReplyNotificationSettings` | Agent 任务通知开关（系统通知权限不在其中） |
-| messageProcessing | `DebouncePreferences` | 客户端合并时长（0～30000 毫秒）；旧文件的 `global` 值可继承，`cores` 覆盖跳过并在结果里说明 |
+| messageProcessing | `DebouncePreferences` | 客户端合并时长（0～30000 毫秒，字段 `delayMillis`）；旧文件的 `global`/`cores` 无法区分是否用户主动设置，整节跳过并在结果里说明 |
 | conversation | `EncryptedNativeConversationOrganizationStore` | 每个账号/Agent 的排序、文件夹、归类 |
 | connection | `LoginGatewayPrefill` | 仅 Core 地址，用于登录页预填；缺失时回落到运行时最近地址与已保存账号的地址（老版本升级用户）。导出前会去掉 URL 里的 user-info（`https://user:pass@host`），去不干净就整节不写 |
 | agents | `AndroidAccountProfileStore` | 每个账号上次选择的原生 Agent |
