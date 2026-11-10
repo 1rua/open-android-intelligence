@@ -88,12 +88,14 @@ class BackgroundConnectionRecoveryInstrumentedTest {
         }
     }
 
-    @Test fun aHalfOpenSseConnectionIsReplacedAfterAnExplicitForegroundHealthCheck(): Unit = runBlocking {
+    @Test fun aHalfOpenConnectionRecoversWithoutChangingTheEventOwner(): Unit = runBlocking {
         val args = InstrumentationRegistry.getArguments()
         val core = isolatedUrl(requireNotNull(args.getString("oaiCoreUrl")))
         val controller = isolatedUrl(requireNotNull(args.getString("oaiControlUrl")))
         assertEquals(FIXTURE, JsonFields.string(control(controller, "status", "GET"), "fixture"))
-        val (client, profile, sink, cursors) = connect(core, "sse")
+        val transportKind = args.getString("oaiEventTransport") ?: "sse"
+        require(transportKind in setOf("ws", "sse"))
+        val (client, profile, sink, cursors) = connect(core, transportKind)
         client.setAppForeground(true)
         val observed = mutableListOf<String>()
         val events = Channel<String>(Channel.UNLIMITED)
@@ -132,7 +134,8 @@ class BackgroundConnectionRecoveryInstrumentedTest {
             assertEquals("旧连接退出后只保留一个正式订阅", 1, JsonFields.int(completed, "liveEventConnections"))
             assertTrue("必须确实丢弃过旧通道字节", requireNotNull(JsonFields.long(completed, "droppedBytes")) > 0)
             Log.i("OaiConnectionE2E", Json.canonical(Json.of(mapOf("event" to "connection.e2e.result",
-                "case" to "half_open", "transport" to "sse", "recoveryMillis" to recoveryMillis,
+                "case" to "half_open", "transport" to transportKind, "recoveryMillis" to recoveryMillis,
+                "healthSignal" to if (args.getString("oaiSkipHealthCheck") == "true") "periodic" else "foreground",
                 "orderedEvents" to observed.size, "duplicateEvents" to 0, "loginCount" to 1,
                 "subscriptionCount" to 2, "result" to "passed"))))
         } finally {
