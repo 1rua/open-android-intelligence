@@ -5,6 +5,9 @@ import asyncio
 import json
 import logging
 import re
+import time
+import uuid
+from itertools import count
 from typing import Any, Dict, Mapping, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -12,6 +15,17 @@ from aiohttp import WSMsgType, web
 from .core import GatewayError
 
 logger = logging.getLogger(__name__)
+_CONNECTION_BOOT_ID = uuid.uuid4().hex
+
+
+def _record_replayed_event(generation: int, transport: str) -> None:
+    """只在持久积压事件写入成功后记录，不包含账号、游标或消息正文。"""
+    logger.info(json.dumps({
+        "type": "connection.message_replayed", "at": int(time.time() * 1000),
+        "monotonicMs": int(time.monotonic() * 1000), "bootId": _CONNECTION_BOOT_ID,
+        "generation": generation, "reason": "cursor_backlog", "attempt": 1,
+        "result": "sent", "transport": transport,
+    }, separators=(",", ":")))
 
 EVENT_STREAM_PATH = "/open-android-intelligence/v2/events"
 
@@ -218,6 +232,7 @@ class GatewayTransport:
         self._maintenance_task: asyncio.Task | None = None
         self._event_sink = self._publish_event
         self._websocket_handlers: set[asyncio.Task] = set()
+        self._connection_generations = count(1)
 
     def _publish_event(self, account_id: str, event: Mapping[str, Any]) -> None:
         loop = self._loop
@@ -394,6 +409,7 @@ class GatewayTransport:
             for c in query.get("cursor", ()):
                 seen_event_ids[unquote(c)] = None
 
+            generation = next(self._connection_generations)
             for event in handshake.get("events", []):
                 if not authorized():
                     return response
@@ -401,6 +417,7 @@ class GatewayTransport:
                 if eid:
                     seen_event_ids[str(eid)] = None
                 await response.write(_sse_frame(event))
+                _record_replayed_event(generation, "sse")
 
             while self._running:
                 if not authorized():
@@ -582,6 +599,8 @@ class GatewayTransport:
             for c in query.get("cursor", ()):
                 seen_event_ids[unquote(c)] = None
 
+            generation = next(self._connection_generations)
+
             async def send_loop() -> None:
                 for event in handshake.get("events", []):
                     if not authorized():
@@ -591,6 +610,7 @@ class GatewayTransport:
                     if eid:
                         seen_event_ids[str(eid)] = None
                     await ws.send_str(_ws_event_frame(event))
+                    _record_replayed_event(generation, "websocket")
 
                 while self._running and not ws.closed:
                     if not authorized():

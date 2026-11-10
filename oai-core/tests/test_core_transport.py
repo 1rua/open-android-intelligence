@@ -660,7 +660,8 @@ async def test_duplicate_security_headers_fail_closed_even_when_values_are_ident
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel", ["sse", "websocket"])
-async def test_event_reconnect_replays_after_cursor_and_revocation_closes_live_stream(gateway, channel):
+async def test_event_reconnect_replays_after_cursor_and_revocation_closes_live_stream(gateway, channel, caplog):
+    caplog.set_level("INFO", logger="oai_core.gateway.transport")
     client, core, _ = gateway
     bundle, key = await phone_login(client, core)
 
@@ -714,6 +715,12 @@ async def test_event_reconnect_replays_after_cursor_and_revocation_closes_live_s
         replayed = await read_until(resumed, second["eventId"])
         assert first["eventId"] not in {event["eventId"] for event in replayed}
         assert replayed[-1]["payload"]["noticeCode"] == "while_disconnected"
+        diagnostics = [json.loads(record.getMessage()) for record in caplog.records
+                       if record.name == "oai_core.gateway.transport" and record.getMessage().startswith("{")]
+        assert any(record.get("type") == "connection.message_replayed" and
+                   record.get("transport") == channel and record.get("generation", 0) > 0 and
+                   record.get("at", 0) > 0 and record.get("reason") == "cursor_backlog" and
+                   record.get("result") == "sent" for record in diagnostics)
         account = core.open_gateway_account("alice")
         try:
             account.sessions.revoke_session(bundle["sessionId"], "cor_revoke_stream")
