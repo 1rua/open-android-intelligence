@@ -165,7 +165,13 @@ open class GatewayWebSocketTransport(
                             // Preserve the legacy callback's heartbeat semantics for the renewal fence.
                             if (event == null) onActivity()
                             onSignal(GatewayWebSocketSignal.Activity(monotonicMillis()))
-                            if (event != null) emit(event)
+                            if (event != null) {
+                                connection.delivering = true
+                                try { emit(event) } finally {
+                                    connection.deadline.activity()
+                                    connection.delivering = false
+                                }
+                            }
                             continue
                         }
                         if (frame.opcode != OPCODE_CONTINUATION) currentOpcode = frame.opcode
@@ -293,13 +299,16 @@ open class GatewayWebSocketTransport(
                             withTimeoutOrNull(foregroundPingIntervalMillis) { ready.checks.receive(); true } == true
                         } else { ready.checks.receive(); true }
                         if (!requested && !appForeground) continue
+                        if (ready.delivering) continue
                         val nonce = ByteArray(32).also(secureRandom::nextBytes)
                         // 先启动独立超时器，避免写入被半开连接无限阻塞。
                         val timeout = launch(Dispatchers.Default) {
                             delay(healthCheckTimeoutMillis)
-                            healthFailure.compareAndSet(null, GatewayWebSocketTimeoutException(
-                                GatewayWebSocketTimeoutStage.IDLE, healthCheckTimeoutMillis))
-                            runCatching { socket.close() }
+                            if (!ready.delivering) {
+                                healthFailure.compareAndSet(null, GatewayWebSocketTimeoutException(
+                                    GatewayWebSocketTimeoutStage.IDLE, healthCheckTimeoutMillis))
+                                runCatching { socket.close() }
+                            }
                         }
                         try {
                             sendFrame(output, OPCODE_PING, nonce)
@@ -308,6 +317,7 @@ open class GatewayWebSocketTransport(
                                 true
                             } == true
                             if (!proved) {
+                                if (ready.delivering) continue
                                 healthFailure.compareAndSet(null, GatewayWebSocketTimeoutException(
                                     GatewayWebSocketTimeoutStage.IDLE, healthCheckTimeoutMillis))
                                 runCatching { socket.close() }
@@ -327,7 +337,8 @@ open class GatewayWebSocketTransport(
             result
         } catch (failure: IOException) {
             context.ensureActive()
-            healthFailure.get()?.let { throw it }
+            if (!GatewayConnectionSecurity.isSecurityFailure(failure) && failure !is EventSessionRejectedException &&
+                failure !is EventStreamForbiddenException) healthFailure.get()?.let { throw it }
             if (!GatewayConnectionSecurity.isSecurityFailure(failure) && deadline.remaining() <= 0) throw deadline.timeout()
             throw failure
         } finally {
@@ -367,6 +378,7 @@ open class GatewayWebSocketTransport(
     }
 
     private inner class Connection(val input: InputStream, val output: OutputStream, val deadline: Deadline) {
+        @Volatile var delivering = false
         val checks = Channel<Unit>(Channel.CONFLATED)
         val pongs = Channel<ByteArray>(Channel.CONFLATED)
     }

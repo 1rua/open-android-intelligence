@@ -4,6 +4,8 @@ import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.take
@@ -17,6 +19,37 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class GatewayEventHealthCheckTest {
+    @Test
+    fun localMessageCommitDoesNotCountAsANetworkHeartbeatTimeout() = runTest {
+        var connections = 0
+        val logs = mutableListOf<String>()
+        val previous = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, line -> logs += line }
+        try {
+            val transport = object : GatewayByteTransport {
+                override suspend fun execute(request: WireRequest): WireResponse = error("本场景只接收事件")
+                override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+                    connections++
+                    emit("id: saved\ndata: {}\n\n".toByteArray())
+                    while (true) { emit(": heartbeat\n\n".toByteArray()); kotlinx.coroutines.delay(100) }
+                }
+            }
+            val client = GatewayHttpClient(
+                GatewayProfile("account", "device", "session", "https://gateway.example", accessToken = "test"),
+                transport, { ByteArray(64) }, InMemoryEventCursorStore(), monotonicMillis = { testScheduler.currentTime },
+            )
+            val collecting = backgroundScope.launch {
+                client.events().collect { kotlinx.coroutines.delay(5_000) }
+            }
+            runCurrent()
+            client.requestEventHealthCheck("foreground")
+            advanceTimeBy(5_100)
+            runCurrent()
+            assertEquals("本地消息提交阻塞不能误判网络断线", 1, connections)
+            assertTrue("本地提交不得产生网络心跳超时", logs.none { it.contains("connection.heartbeat_timeout") })
+            collecting.cancel()
+        } finally { com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = previous }
+    }
     @Test
     fun foregroundValidationReplacesASilentStreamAndResumesTheCommittedCursor() = runTest {
         val cursors = InMemoryEventCursorStore().apply { save("account", "committed") }

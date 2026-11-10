@@ -677,6 +677,7 @@ class GatewayHttpClient(
         val lastCompleteAt = java.util.concurrent.atomic.AtomicLong(monotonicMillis())
         val lastHeartbeatAt = java.util.concurrent.atomic.AtomicLong(-1)
         val activityVersion = MutableStateFlow(0L)
+        val delivering = MutableStateFlow(false)
         @Volatile var isReady = false
             private set
         @Volatile var hadActivity = false
@@ -751,8 +752,14 @@ class GatewayHttpClient(
                     if (events.isNotEmpty()) activity()
                     for (event in events) {
                         val committed = CompletableDeferred<Unit>()
-                        items.send(SseItem.Event(event, committed))
-                        committed.await()
+                        health.delivering.value = true
+                        try {
+                            items.send(SseItem.Event(event, committed))
+                            committed.await()
+                        } finally {
+                            health.lastCompleteAt.set(monotonicMillis())
+                            health.delivering.value = false
+                        }
                     }
                 }
                 items.send(SseItem.Finished(null))
@@ -774,12 +781,13 @@ class GatewayHttpClient(
         }
         val validation = launch {
             for (request in owner.healthChecks) {
+                if (health.delivering.value) continue
                 val observed = health.activityVersion.value
                 val active = withTimeoutOrNull(EVENT_HEALTH_CHECK_MILLIS) {
                     health.activityVersion.first { it != observed }
                     true
                 } == true
-                if (!active) {
+                if (!active && !health.delivering.value) {
                     GatewayLog.connectionEvent("connection.heartbeat_timeout", owner.id,
                         reason = request.reason, result = "validation_timeout", fields = mapOf("scope" to "transport", "foreground" to appForeground))
                     items.send(SseItem.Finished(EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)))

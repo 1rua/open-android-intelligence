@@ -100,6 +100,20 @@ class GatewayWebSocketReliabilityTest {
         assertTrue(socket.closed)
     }
 
+    @Test fun aDecodedRevocationRemainsTerminalWhenTheHealthDeadlineRaces() = runBlocking {
+        val closed = CountDownLatch(1)
+        val socket = ScriptedSocket(byteArrayOf(0x88.toByte(), 2, 3, 0xF0.toByte()), onClose = { closed.countDown() })
+        val ws = GatewayWebSocketTransport(profile, { ByteArray(64) }, socketFactory = { _, _, _ -> socket },
+            healthCheckTimeoutMillis = 100)
+        ws.setAppForeground(true)
+        val failure = runCatching {
+            ws.events(null, {}, null) { signal ->
+                if (signal is GatewayWebSocketSignal.Closed) assertTrue(closed.await(2, TimeUnit.SECONDS))
+            }.toList()
+        }.exceptionOrNull()
+        assertTrue("已解码的策略撤销不得被并发心跳超时降级为可重试网络错误", failure is EventStreamForbiddenException)
+    }
+
     @Test fun authenticatedUpgradeAndHeartbeatReportHealthWithoutBusinessEvents() = runBlocking {
         val socket = ScriptedSocket(byteArrayOf(0x89.toByte(), 1, 7))
         val signals = mutableListOf<GatewayWebSocketSignal>()
