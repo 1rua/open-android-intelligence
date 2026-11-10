@@ -70,8 +70,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
@@ -455,9 +453,12 @@ class CoreAgentConversationRepository(
                 requireOwner()
                 val store = checkNotNull(storeForAgent).invoke(agent)
                 var committedSnapshot: RecoverySnapshot? = null
+                val network = NativeEventNetworkRequests { request ->
+                    synchronized(this@CoreAgentConversationRepository) { owner.currentRead = request }
+                }
                 val sync = NativeEventSynchronizer(client, agent, conversationId, store,
                     refresh = { page ->
-                        val snapshot = recoverySnapshot(agent, conversationId, page)
+                        val snapshot = recoverySnapshot(agent, conversationId, page, network)
                         committedSnapshot = snapshot
                         snapshot.events
                     },
@@ -470,25 +471,15 @@ class CoreAgentConversationRepository(
                         requireOwner()
                         committedSnapshot?.let { reconcileCommittedSnapshot(agent, conversationId, it) }
                         committedSnapshot = null
-                    }, checkOwner = ::requireOwner)
+                    }, checkOwner = ::requireOwner, network = network)
                 var failures = 0
                 while (isActive) {
                     try {
-                        val more = supervisorScope {
-                            val read = async(start = CoroutineStart.LAZY) { sync.synchronize(if (failures == 0) 25000 else 0) }
-                            synchronized(this@CoreAgentConversationRepository) { owner.currentRead = read }
-                            try {
-                                read.start()
-                                read.await()
-                            } catch (_: NativeReadReplaced) {
-                                currentCoroutineContext().ensureActive()
-                                null
-                            } finally {
-                                synchronized(this@CoreAgentConversationRepository) {
-                                    if (owner.currentRead === read) owner.currentRead = null
-                                }
-                            }
-                        } ?: continue
+                        val more = try { sync.synchronize(if (failures == 0) 25000 else 0) }
+                        catch (_: NativeReadReplaced) {
+                            currentCoroutineContext().ensureActive()
+                            continue
+                        }
                         failures = 0
                         synchronized(this@CoreAgentConversationRepository) { owner.wakeRequested = false }
                         updateEventHealth(owner, StreamHealth.LIVE, null)
@@ -563,9 +554,9 @@ class CoreAgentConversationRepository(
         val currentGenerationId: String? = null)
 
     private suspend fun recoverySnapshot(agent: CoreAgent, conversationId: String,
-        page: com.openandroidintelligence.gateway.agents.NativeEventPage): RecoverySnapshot {
+        page: com.openandroidintelligence.gateway.agents.NativeEventPage, network: NativeEventNetworkRequests): RecoverySnapshot {
         val receipts = mutableListOf<NativeGenerationReceipt>()
-        val history = client.history(agent, conversationId)
+        val history = network.run { client.history(agent, conversationId) }
         val facts = history.map { native ->
             val message = timelineMessage(native, conversationId)
             VerifiedConversationEvent.TimelineUpsert("native-history:${agent.id}:$conversationId:${message.id}:${message.contentRevision}",
@@ -599,7 +590,7 @@ class CoreAgentConversationRepository(
                 }
             }
             for ((clientId, identity) in identities) {
-                val receipt = try { client.generation(agent, conversationId, clientId, identity.generationId) }
+                val receipt = try { network.run { client.generation(agent, conversationId, clientId, identity.generationId) } }
                 catch (failure: AgentSessionException) {
                     // 缺少 ledger 是缺少执行证据：保留正文与未知状态，不阻止其他轮次同步。
                     if (failure.code == "GENERATION_NOT_FOUND") continue
@@ -624,7 +615,7 @@ class CoreAgentConversationRepository(
         // 不用历史顺序、消息时间或不同轮次之间的 revision 大小推断。
         val pending = receipts.filter { it.state in setOf("queued", "running", "unknown") }
         val current = if (pending.size > 1 && agent.online && agent.capabilities.send)
-            client.currentGeneration(agent, conversationId)?.generationId else null
+            network.run { client.currentGeneration(agent, conversationId) }?.generationId else null
         return RecoverySnapshot(facts, receipts, current)
     }
 

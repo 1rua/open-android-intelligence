@@ -14,11 +14,27 @@ import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 internal class NativeEventSyncFailure(val stage: String, cause: Exception) : Exception(stage, cause)
 internal class NativeHistoryBehind : java.io.IOException("NATIVE_HISTORY_BEHIND")
+
+/** 恢复只取消一次真实网络请求，不取消落盘、状态提交或本地事件发布。 */
+internal class NativeEventNetworkRequests(private val onRequestChanged: (Job?) -> Unit = {}) {
+    suspend fun <T> run(operation: suspend () -> T): T = supervisorScope {
+        val request = async(start = CoroutineStart.LAZY) { operation() }
+        onRequestChanged(request)
+        try {
+            request.start()
+            request.await()
+        } finally { onRequestChanged(null) }
+    }
+}
 
 /** 固定的账号/Agent/会话读取者；内存 UI 通知不参与 ACK 的成功判定。 */
 internal class NativeEventSynchronizer(
@@ -31,6 +47,7 @@ internal class NativeEventSynchronizer(
     private val publishApproval: suspend (NativeEventApproval) -> Unit,
     private val committed: suspend () -> Unit = {},
     private val checkOwner: () -> Unit = {},
+    private val network: NativeEventNetworkRequests = NativeEventNetworkRequests(),
 ) {
     private val mutex = Mutex()
     private var needsRefresh = true
@@ -49,11 +66,11 @@ internal class NativeEventSynchronizer(
         val cursor = localStore { store.eventCursor(conversationId) }
         var snapshot = cursor == null
         val page = pendingPage ?: try {
-            client.events(agent, conversationId, cursor, waitMs = if (snapshot || needsRefresh) 0 else waitMs, snapshot = snapshot)
+            network.run { client.events(agent, conversationId, cursor, waitMs = if (snapshot || needsRefresh) 0 else waitMs, snapshot = snapshot) }
         } catch (failure: AgentSessionException) {
             if (failure.code != "CURSOR_EXPIRED") throw failure
             snapshot = true
-            client.events(agent, conversationId, snapshot = true)
+            network.run { client.events(agent, conversationId, snapshot = true) }
         }
         pendingPage = page
         snapshot = snapshot || page.approvals != null
@@ -167,7 +184,7 @@ internal class NativeEventSynchronizer(
 
     private suspend fun acknowledge(cursor: String) {
         checkOwner()
-        try { client.ackEvents(agent, conversationId, cursor) }
+        try { network.run { client.ackEvents(agent, conversationId, cursor) } }
         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (failure: Exception) { throw NativeEventSyncFailure("ACK_FAILED", failure) }
     }

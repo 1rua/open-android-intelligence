@@ -177,6 +177,36 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.target.endsWith("/messages") })
     }
 
+    @Test fun transportRecoveryCannotCancelAlreadySavedEventsWaitingForALocalSubscriber() = runTest {
+        val historyRelease = CompletableDeferred<Unit>()
+        val subscriberRelease = CompletableDeferred<Unit>()
+        val received = mutableListOf<String>()
+        val h = Harness(this).apply {
+            historyGate = historyRelease
+            historyBody = """{"messages":[${(1..8).joinToString(",") { """{"id":"message-$it","role":"assistant","text":"内容$it","contentRevision":1}""" }}]}"""
+        }
+        val subscriber = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            h.repository.observeEvents(ConversationScope("profile", "https://core.example", "account", "install"))
+                .collect { event ->
+                    subscriberRelease.await()
+                    (event as? VerifiedConversationEvent.TimelineUpsert)?.let { received += it.message.id }
+                }
+        }
+        try {
+            historyRelease.complete(Unit); runCurrent()
+            assertEquals("事件页应先完成本地保存", 1, h.saves)
+            assertEquals("next", h.storage.pending)
+            assertTrue("本地订阅尚未消费时不能确认远端页", h.requests.none { it.target.endsWith("/events/ack") })
+
+            h.repository.connectionRestored(confirmedTransportRebuild = 1); runCurrent()
+            subscriberRelease.complete(Unit); runCurrent()
+
+            assertEquals("连接恢复不能跳过尚未发布的已保存消息", (1..8).map { "message-$it" }, received)
+            assertNull(h.storage.pending)
+            assertEquals(1, h.requests.count { it.target.endsWith("/events/ack") })
+        } finally { subscriber.cancel() }
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }
@@ -505,6 +535,8 @@ class NativeConnectionReliabilityTest {
         var responseBody: String? = null
         var reads = 0
         var histories = 0
+        var historyGate: CompletableDeferred<Unit>? = null
+        var historyBody = """{"messages":[]}"""
         var cancelledReads = 0
         var resumeReadsThrough = 0
         var nextCursor = "next"
@@ -543,7 +575,7 @@ class NativeConnectionReliabilityTest {
                         }
                         """{"events":[],"cursor":"$nextCursor","hasMore":false}"""
                     }
-                    request.target.endsWith("/history") -> { histories++; """{"messages":[]}""" }
+                    request.target.endsWith("/history") -> { histories++; historyGate?.await(); historyBody }
                     request.target.endsWith("/events/ack") -> {
                         if (holdAck) try { idle.await() }
                             catch (cancelled: CancellationException) { cancelledAcks++; throw cancelled }
