@@ -312,7 +312,8 @@ class CoreAgentConversationRepository(
     }
 
     /** A Core connection transition restarts reads only; it never submits a prompt. */
-    fun connectionRestored(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
+    fun connectionRestored(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
+        revalidateNetwork: Boolean = false) {
         (recoveringTurns.values + detachedRecoveringTurns).distinct().filterNot { turn ->
             usesEventSync(turn.agent) || when (turn.recoveryBlocked) {
                 NativeReadFailureKind.AUTHENTICATION -> turn.rejectedCredentialVersion == null ||
@@ -321,7 +322,8 @@ class CoreAgentConversationRepository(
                 else -> false
             }
         }.forEach(::startRecovery)
-        restartEventSync(wakeup = true, expediteRetry = expediteRetry, confirmedTransportRebuild = confirmedTransportRebuild)
+        restartEventSync(wakeup = true, expediteRetry = expediteRetry, confirmedTransportRebuild = confirmedTransportRebuild,
+            revalidateNetwork = revalidateNetwork)
     }
 
     private class NativeReadReplaced : CancellationException("NATIVE_READ_TRANSPORT_REBUILT")
@@ -336,6 +338,7 @@ class CoreAgentConversationRepository(
         var waitingForRetry = false
         var lastExpeditedAt: Long? = null
         var lastTransportRebuild = 0L
+        var lastNetworkValidationAt: Long? = null
         var currentRead: Job? = null
         val retryWakeup = Channel<Unit>(Channel.CONFLATED)
     }
@@ -393,7 +396,8 @@ class CoreAgentConversationRepository(
             ambiguousEventGenerations.containsKey(key) || queuedSends.containsKey(key))
 
     @Synchronized
-    private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
+    private fun restartEventSync(wakeup: Boolean = false, expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
+        revalidateNetwork: Boolean = false) {
         val desired = linkedMapOf<Pair<String, String>, CoreAgent>()
         (turns.values + recoveringTurns.values + detachedRecoveringTurns).forEach {
             desired[it.agent.id to it.conversationId] = it.agent
@@ -405,12 +409,12 @@ class CoreAgentConversationRepository(
         eventSyncOwners.forEach { (key, owner) ->
             if (!eventSyncNeeded(key) && eventSyncOwners.remove(key, owner)) owner.job.cancel()
         }
-        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup, expediteRetry, confirmedTransportRebuild) }
+        desired.forEach { (key, agent) -> startEventSync(agent, key.second, wakeup, expediteRetry, confirmedTransportRebuild, revalidateNetwork) }
     }
 
     @Synchronized
     private fun startEventSync(agent: CoreAgent, conversationId: String, wakeup: Boolean = false, expediteRetry: Boolean = false,
-        confirmedTransportRebuild: Long? = null) {
+        confirmedTransportRebuild: Long? = null, revalidateNetwork: Boolean = false) {
         if (!usesEventSync(agent)) return
         val key = agent.id to conversationId
         val previous = eventSyncOwners[key]
@@ -427,6 +431,13 @@ class CoreAgentConversationRepository(
             if (rebuilt != null) {
                 previous.lastTransportRebuild = rebuilt
                 previous.currentRead?.cancel(NativeReadReplaced())
+            }
+            if (revalidateNetwork && previous.currentRead != null) {
+                val now = nativeMonotonicMillis()
+                if (previous.lastNetworkValidationAt?.let { now - it >= 5_000 } != false) {
+                    previous.lastNetworkValidationAt = now
+                    previous.currentRead?.cancel(NativeReadReplaced())
+                }
             }
             if ((expediteRetry || rebuilt != null) && previous.waitingForRetry) {
                 val now = nativeMonotonicMillis()

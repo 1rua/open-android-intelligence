@@ -207,6 +207,23 @@ class NativeConnectionReliabilityTest {
         } finally { subscriber.cancel() }
     }
 
+    @Test fun aRealForegroundRecoveryCanRestoreANativeOnlyHalfOpenRequest() = runTest {
+        val h = Harness(this)
+        h.repository.activeConversationChanged(); runCurrent()
+        advanceTimeBy(51); runCurrent()
+        assertEquals(2, h.reads)
+        h.resumeReadsThrough = 3
+        h.nextCursor = "foreground-recovered"
+
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true); runCurrent()
+
+        assertEquals("Platform 仍正常时，真实前台恢复也须独立替换 Native 半开请求", 1, h.cancelledReads)
+        assertEquals("foreground-recovered", h.storage.cursor)
+        assertNull(h.storage.pending)
+        assertEquals(1, h.histories)
+        assertTrue(h.requests.none { it.target.endsWith("/messages") })
+    }
+
     @Test fun emptyUnauthorizedAndForbiddenResponsesKeepTheirStatusAndPause() = runTest {
         for (status in listOf(401, 403)) {
             val h = Harness(this).apply { responseStatus = status }

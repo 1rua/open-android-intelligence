@@ -2552,7 +2552,8 @@ class GatewayRuntime(
         }
         fun restoreNativeReads(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
             if (sessionJob === ownedJob) coreAgentRepositories.values.forEach {
-                it.connectionRestored(expediteRetry, confirmedTransportRebuild)
+                it.connectionRestored(expediteRetry, confirmedTransportRebuild,
+                    revalidateNetwork = expediteRetry && confirmedTransportRebuild == null)
             }
         }
         restartNativeReads = { expediteRetry -> restoreNativeReads(expediteRetry) }
