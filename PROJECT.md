@@ -9,7 +9,7 @@
   - 注册 `apps/android/build.gradle.kts` 的 `appAndroid12RuntimeLibraries`，确保 `:ui-resources` 的 `minSdk = 31` 与主应用兼容。
   - 注册 `tools/ci/impact.py` 与 `tools/ci/android_tasks.py`，保持 CI 契约通过。
 - **语言配置**:
-  - 应用模块开启 `androidResources.generateLocaleConfig = true` 配合 `localeFilters += listOf("zh-CN")`。
+  - 应用模块开启 `androidResources.generateLocaleConfig = true` 配合 `localeFilters += listOf("zh-rCN")`。
   - 配置 `res/resources.properties` 声明 `unqualifiedResLocale=zh-CN`。
   - 严禁手动声明 `locale_config.xml`。
 - **持久化保护**:
@@ -26,7 +26,7 @@
 |---|---------|-------------|-----------|--------|
 | 1 | 资源模块脚手架 `:ui-resources` | 创建独立资源库、注册 Gradle 与 CI 配置 | M1 | R1.1, Codebase Survey |
 | 2 | AGP 语言自动配置 | generateLocaleConfig 与 unqualifiedResLocale=zh-CN | M1 | R1.2, Codebase Survey |
-| 3 | 语言发布边界控制 | localeFilters 锁定 zh-CN，测试资源隔离 en-US | M1 | R1.3, Codebase Survey |
+| 3 | 语言发布边界控制 | localeFilters 锁定 zh-rCN，测试资源隔离 en-US | M1 | R1.3, Codebase Survey |
 | 4 | 7 个 XML 骨架建立 | values/strings_*.xml 模块化拆分 | M1 | R2.1, R2.2 |
 | 5 | 硬编码中文轻量扫描器 | 秒级 AST/正则扫描器与 4 级白名单/豁免机制 | M1 | R1.6, Test Survey |
 | 6 | 资源完整性与占位符校验器 | %1$s 索引占位符强制与 ID 唯一性校验 | M1 | R1.6, R1.7 |

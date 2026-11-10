@@ -47,6 +47,7 @@ SECURITY_OR_CONTRACT_PATHS = {
     "apps/android/build.gradle.kts",
     "apps/android/settings.gradle.kts",
     "apps/android/gradle/libs.versions.toml",
+    "apps/android/gradle/i18n-quality-gates.gradle.kts",
     "apps/android/app/build.gradle.kts",
     "package.json",
     "package-lock.json",

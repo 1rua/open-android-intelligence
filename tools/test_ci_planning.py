@@ -70,6 +70,7 @@ def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
     "apps/android/build.gradle.kts",
     "apps/android/app/build.gradle.kts",
     "apps/android/gradle/mvp-forbidden-surfaces.gradle.kts",
+    "apps/android/gradle/i18n-quality-gates.gradle.kts",
     "package-lock.json",
     "tools/smart-test.py",
 ])
