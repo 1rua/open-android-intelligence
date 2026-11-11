@@ -182,6 +182,9 @@ class CoreAgentConversationRepository(
         var recoveryWaitingForRetry = false
         var recoveryLastExpeditedAt: Long? = null
         val recoveryRetryWakeup = Channel<Unit>(Channel.CONFLATED)
+        var recoveryCurrentNetwork: Job? = null
+        var recoveryLastRebuild = 0L
+        var recoveryLastValidationAt: Long? = null
     }
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
     private val turns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
@@ -327,7 +330,8 @@ class CoreAgentConversationRepository(
                 NativeReadFailureKind.SECURITY, NativeReadFailureKind.PROTOCOL -> true
                 else -> false
             }
-        }.forEach { startRecovery(it, expediteRetry = expediteRetry) }
+        }.forEach { startRecovery(it, expediteRetry = expediteRetry,
+            confirmedTransportRebuild = confirmedTransportRebuild, revalidateNetwork = revalidateNetwork) }
         restartEventSync(wakeup = true, expediteRetry = expediteRetry, confirmedTransportRebuild = confirmedTransportRebuild,
             revalidateNetwork = revalidateNetwork)
     }
@@ -1056,8 +1060,8 @@ class CoreAgentConversationRepository(
             )
         }
 
-    private suspend fun restoreHistory(turn: NativeTurn) {
-        val history = client.history(turn.agent, turn.conversationId)
+    private suspend fun restoreHistory(turn: NativeTurn, network: NativeEventNetworkRequests) {
+        val history = network.run { client.history(turn.agent, turn.conversationId) }
         for (native in history) {
             val message = timelineMessage(native, turn.conversationId)
             val previous = turn.messageRevisions[message.id] ?: -1L
@@ -1071,7 +1075,8 @@ class CoreAgentConversationRepository(
         }
     }
 
-    private fun startRecovery(turn: NativeTurn, expediteRetry: Boolean = false) {
+    private fun startRecovery(turn: NativeTurn, expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null,
+        revalidateNetwork: Boolean = false) {
         if (turn.recoveryBlocked == NativeReadFailureKind.AUTHENTICATION &&
             (turn.rejectedCredentialVersion == null || turn.rejectedCredentialVersion == client.credentialVersion())) return
         val clientId = turn.clientMessageId ?: return
@@ -1088,11 +1093,24 @@ class CoreAgentConversationRepository(
         }
         val job = synchronized(recoveryJobs) {
             if (closed) return
+            if (turn.recoveryBlocked == NativeReadFailureKind.SECURITY || turn.recoveryBlocked == NativeReadFailureKind.PROTOCOL) return
             // 历史查询不能抢占当前轮次；已经跟踪的旧轮次可以继续独立恢复。
             if (!ownsTurn(turn) && (turns.containsKey(key) || recoveringTurns.containsKey(key)) ||
                 isSettled(key, clientId)) return
             if (recoveryJobs[turn]?.isActive == true || recoveryJobs[turn]?.isCompleted == false) {
-                if (expediteRetry && turn.recoveryWaitingForRetry) {
+                val rebuilt = confirmedTransportRebuild?.takeIf { it > turn.recoveryLastRebuild && it > 0 }
+                if (rebuilt != null) {
+                    turn.recoveryLastRebuild = rebuilt
+                    turn.recoveryCurrentNetwork?.cancel(NativeReadReplaced())
+                }
+                if (revalidateNetwork && turn.recoveryCurrentNetwork != null) {
+                    val now = nativeMonotonicMillis()
+                    if (turn.recoveryLastValidationAt?.let { now - it >= 5_000 } != false) {
+                        turn.recoveryLastValidationAt = now
+                        turn.recoveryCurrentNetwork?.cancel(NativeReadReplaced())
+                    }
+                }
+                if ((expediteRetry || rebuilt != null) && turn.recoveryWaitingForRetry) {
                     val now = nativeMonotonicMillis()
                     if (turn.recoveryLastExpeditedAt?.let { now - it >= 5_000 } != false) {
                         turn.recoveryLastExpeditedAt = now
@@ -1101,6 +1119,7 @@ class CoreAgentConversationRepository(
                 }
                 return
             }
+            turn.recoveryLastRebuild = maxOf(turn.recoveryLastRebuild, confirmedTransportRebuild ?: 0)
             observeRecoveryTurn(turn)
             parentScope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
                 val ownedRecovery = currentCoroutineContext()[Job]
@@ -1108,6 +1127,12 @@ class CoreAgentConversationRepository(
                     if (closed || !parentScope.isActive || recoveryJobs[turn] !== ownedRecovery)
                         throw CancellationException("NATIVE_RECOVERY_OWNER_CHANGED")
                 }
+                val network = NativeEventNetworkRequests(onRequestChanged = { request ->
+                    synchronized(recoveryJobs) {
+                        if (request != null) requireRecoveryOwner()
+                        turn.recoveryCurrentNetwork = request
+                    }
+                })
                 var failures = 0
                 var unchangedUnknown = 0
                 var drainAfterRecovery = false
@@ -1116,9 +1141,10 @@ class CoreAgentConversationRepository(
                         requireRecoveryOwner()
                         try {
                             val previousRevision = turn.receiptRevision
-                            val receipt = client.generation(turn.agent, turn.conversationId, clientId,
+                            val receipt = network.run { client.generation(turn.agent, turn.conversationId, clientId,
                                 turn.hostGenerationId, previousRevision.takeIf { it >= 0 },
-                                if (previousRevision >= 0) 25000 else 0)
+                                if (previousRevision >= 0) 25000 else 0) }
+                            requireRecoveryOwner()
                             if (receipt.revision < previousRevision) throw AgentSessionException("AGENT_RESPONSE_INVALID")
                             if (turn.state in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
                                 receipt.state !in setOf("completed", "failed", "cancelled"))
@@ -1135,7 +1161,7 @@ class CoreAgentConversationRepository(
                                 receipt.userMessageId, clientId, ConversationId(turn.conversationId), agentReceived = false))
                             // Snapshot compensation restores all real messages and structured steps, including
                             // earlier non-prefix edits in a generation with more than one assistant message.
-                            restoreHistory(turn)
+                            restoreHistory(turn, network)
                             turn.state = when (receipt.state) {
                                 "queued" -> GenerationState.QUEUED
                                 "running" -> GenerationState.RUNNING
@@ -1182,6 +1208,10 @@ class CoreAgentConversationRepository(
                                 updateTurnHealth(turn, StreamHealth.FAILED)
                                 return@launch
                             }
+                        } catch (_: NativeReadReplaced) {
+                            currentCoroutineContext().ensureActive()
+                            requireRecoveryOwner()
+                            continue
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (failure: Exception) {
                             failures = (failures.toLong() + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()

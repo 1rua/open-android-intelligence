@@ -35,6 +35,20 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
     }
 
+    @Test fun aForegroundSignalReplacesALegacyHostsHalfOpenGenerationRead() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { runningUntilRead = 2; holdGenerationRead = 2 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        assertEquals("必须先持有真实旧回执长轮询", 2, h.generationReads)
+
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true)
+        runCurrent()
+
+        assertEquals("前台恢复须独立取消旧宿主半开网络请求", 1, h.cancelledGenerations)
+        assertEquals(3, h.generationReads)
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+        assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
+    }
+
     @Test fun healthyActivityKeepsTheSameReadAndDoesNotReloadHistory() = runTest {
         val h = Harness(this)
         h.repository.activeConversationChanged(); runCurrent()
@@ -629,12 +643,16 @@ class NativeConnectionReliabilityTest {
     private class LegacyRecoveryHarness(scope: TestScope) {
         var failedGenerations = 0
         var generationReads = 0
+        var runningUntilRead = 0
+        var holdGenerationRead: Int? = null
+        var cancelledGenerations = 0
         var generationFailure: Exception = IOException("测试旧宿主暂时离线")
         var foreground = false
         val requests = mutableListOf<WireRequest>()
         val retryBases = mutableListOf<Long>()
         val storage = NativeEventSynchronizerTest.Storage()
         private val dispatcher = UnconfinedTestDispatcher(scope.testScheduler)
+        private val heldGeneration = CompletableDeferred<Unit>()
         private val agent = CoreAgent("legacy", "旧宿主回归", "hermes", true, "account",
             AgentCapabilities(history = true, generationRecovery = true, eventSync = false))
         private val transport = object : GatewayByteTransport {
@@ -645,7 +663,10 @@ class NativeConnectionReliabilityTest {
                     request.target.contains("/generation?") -> {
                         generationReads++
                         if (failedGenerations > 0) { failedGenerations--; throw generationFailure }
-                        """{"generation":{"generationId":"legacy-generation","conversationId":"chat","clientMessageId":"legacy-client","userMessageId":"legacy-user","state":"completed","revision":2}}"""
+                        if (holdGenerationRead == generationReads) try { heldGeneration.await() }
+                            catch (cancelled: CancellationException) { cancelledGenerations++; throw cancelled }
+                        val running = generationReads <= runningUntilRead
+                        """{"generation":{"generationId":"legacy-generation","conversationId":"chat","clientMessageId":"legacy-client","userMessageId":"legacy-user","state":"${if (running) "running" else "completed"}","revision":${if (running) 1 else 2}}}"""
                     }
                     else -> error("旧宿主恢复只能读取历史与原执行回执")
                 }
