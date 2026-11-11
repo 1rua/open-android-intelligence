@@ -32,10 +32,10 @@ internal data class StreamingPresentationFrame(
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
-    private data class Observation(val revision: Long, val length: Int, val hash: Int) {
-        constructor(entry: TimelineEntry) : this(entry.presentation?.revision ?: -1L, entry.text.length, entry.text.hashCode())
-        fun isPrefixOf(entry: TimelineEntry): Boolean = entry.text.length > length &&
-            entry.text.substring(0, length).hashCode() == hash
+    private data class Observation(val revision: Long, val text: String) {
+        constructor(entry: TimelineEntry) : this(entry.presentation?.revision ?: -1L, entry.text)
+        val length: Int get() = text.length
+        fun isPrefixOf(entry: TimelineEntry): Boolean = entry.text.length > length && entry.text.startsWith(text)
     }
     private data class ReplyIdentity(
         val key: String, val generation: String?, val client: String?, val placeholder: Boolean,
@@ -148,7 +148,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val previous = observed[entry.key] ?: return ""
         if (entry.text.length < previous.length) return entry.text
         val prefix = entry.text.substring(0, previous.length)
-        return if (prefix.hashCode() == previous.hash) prefix else entry.text
+        return if (prefix == previous.text) prefix else entry.text
     }
 
     private fun rememberAll(entries: List<TimelineEntry>) {
