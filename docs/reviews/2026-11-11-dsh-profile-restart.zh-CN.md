@@ -22,4 +22,21 @@
 
 ## 当前状态
 
-2026-11-11：已读取根目录规范、诊断技能和既有审计 AUD-006；当前独立工作区干净，准备先加入保护性回归测试。修复和测试结果将在本记录中更新。
+2026-11-11：任务启动文档提交 `4eba75cd`，草稿 PR #144，Issue 认领评论 `6797746979`。
+
+## 已确认根因与改动
+
+- 原重启函数重新发现全部 Home 后按固定服务名或模糊进程名选择目标，忽略调用方选中的 Home/Profile；升级仅返回布尔值，注册补救时再次丢失所选目标。
+- 现在要求明确目标，从真实进程命令行、环境、属主及工作目录核对 Home/Profile，并检查 systemd 下一次启动的参数、环境和工作目录。自定义服务名可以被发现；多个目标或归属不明时拒绝自动重启。
+- 旧 PID 文件启动路径保留原完整命令、环境和工作目录，使用绑定到进程的句柄发送终止信号，避免 PID 被其他进程重用后误停；保留启动日志，不再扫描并停止模糊匹配进程。
+- 升级结果保留 Home/Profile，通过宿主官方 `--dump-config` 读取有效端口和实例标识（含命令行补丁）；注册前核验监听端口属于所选进程，再执行真实握手。无法核验时明确显示已安装但未自动重启或注册。
+- 自动更新入口保留原目标参数，在无法自动重启时给出明确提示，不以任意在线实例的健康结果代替目标身份。
+
+## 本地验证
+
+1. 修复前运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -k 'restart_rejects or restart_requires or selected_upgrade_target' -p no:cacheprovider --tb=line`：**4 failed**。分别复现错误服务重启、PID 文件不足以证明身份、无目标仍选择服务以及升级后丢失所选 Profile；全部服务操作和信号均被模拟。
+2. 修复后运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py oai-core/tests/test_dsh_installation.py -p no:cacheprovider --tb=short`：**82 passed，0 failed**（6.71 秒）。覆盖两个 Home/Profile、自定义服务、配置不一致、归属不明、PID 重启参数与环境保留、监听端口归属及自定义 instanceId/端口真实握手注册。
+3. 运行 `PYTHONPATH=oai-core/src python -m pytest -q tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py oai-core/tests/test_agent_handshake_errors.py -p no:cacheprovider --tb=short`：**30 passed，0 failed**（3.39 秒）。
+4. `git diff --check` 通过；项目 `test:fast` 和 `test:pr` 状态后续补充。
+
+以上为隔离单元与 Core 握手集成证据，没有执行真实服务停止、重启、部署或 Android 验收。真实双实例升级与活跃任务不中断仍须单独验收。
