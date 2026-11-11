@@ -92,7 +92,7 @@ private val FreehandSampleStep = Dimensions.SpaceTiny / 2
  *
  * **坐标契约：画布坐标 ≡ 帧坐标。** 画布尺寸只由本层的 `onSizeChanged` 测量并通过
  * [onCanvasSizeChanged] 上报；截图被拉伸铺满整个画布，因此回调的选区坐标可以按
- * `截图像素 / 画布像素` 的比例直接换算回帧像素（见 `cropPngSelection`）。调用方不得
+ * `截图像素 / 画布像素` 的比例直接换算回帧像素。调用方不得
  * 再加自己的 inset 或二次测量，否则两套坐标会出现漂移。
  *
  * 截图是输入而不是产物：没有截图时明确渲染不可用态，绝不以松手冒充提交；拖动只

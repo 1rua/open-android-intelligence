@@ -2,8 +2,8 @@
   "$schema": "i18n-baseline-v1",
   "version": 1,
   "summary": {
-    "total_entries": 1623,
-    "unique_texts": 1334
+    "total_entries": 1618,
+    "unique_texts": 1330
   },
   "entries": [
     {
@@ -10178,34 +10178,6 @@
       "action": "PENDING_MIGRATION"
     },
     {
-      "id": "I18N-1454",
-      "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/FloatingConversationPanel.kt",
-      "line": 126,
-      "text": "浮动对话",
-      "action": "PENDING_MIGRATION"
-    },
-    {
-      "id": "I18N-1455",
-      "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/FloatingConversationPanel.kt",
-      "line": 165,
-      "text": "浮动对话仅在此 App 内显示",
-      "action": "PENDING_MIGRATION"
-    },
-    {
-      "id": "I18N-1456",
-      "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/FloatingConversationPanel.kt",
-      "line": 250,
-      "text": "与当前 Gateway 继续对话",
-      "action": "PENDING_MIGRATION"
-    },
-    {
-      "id": "I18N-1457",
-      "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/FloatingConversationPanel.kt",
-      "line": 255,
-      "text": "新建对话",
-      "action": "PENDING_MIGRATION"
-    },
-    {
       "id": "I18N-1458",
       "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimeline.kt",
       "line": 191,
@@ -10770,13 +10742,6 @@
       "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt",
       "line": 986,
       "text": "附件库",
-      "action": "PENDING_MIGRATION"
-    },
-    {
-      "id": "I18N-1539",
-      "file": "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt",
-      "line": 995,
-      "text": "浮动助理",
       "action": "PENDING_MIGRATION"
     },
     {

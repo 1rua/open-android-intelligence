@@ -602,9 +602,10 @@ class WorkbenchLayoutRegressionTest {
         // 没有活动线程时菜单项存在但不可用：动作在，语义明确，不假装能改。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
         compose.onNodeWithContentDescription("更多操作").performClick()
 
-        // Open thread
+        // 打开会话。
         compose.runOnIdle {
             controller.openThread("conv_rename")
         }
@@ -612,6 +613,32 @@ class WorkbenchLayoutRegressionTest {
         // 有活动线程后同一个菜单项变为可用，点击即打开重命名对话框。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+    }
+
+    @Test
+    // 附件库使用独立弹层窗口，点击坐标需要原生图形模式，与附件选择回归保持一致。
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun overflowKeepsAttachmentLibraryAndSettingsActionsWithoutFloatingAssistant() {
+        val controller = sidebarController()
+        var settingsOpened = false
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", { settingsOpened = true }, {}, {}, {}, {}, onLogout = {})
+            }
+        }
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+        compose.onNode(hasText("设置") and hasAnyAncestor(isPopup())).assertIsDisplayed().assertIsEnabled()
+        compose.onNode(hasText("附件库") and hasAnyAncestor(isPopup())).assertIsDisplayed().assertIsEnabled().performClick()
+        compose.onNodeWithText("还没有选择附件").assertIsDisplayed()
+        compose.onNodeWithContentDescription("关闭附件库").performClick()
+        compose.onNodeWithContentDescription("关闭附件库").assertDoesNotExist()
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNode(hasText("设置") and hasAnyAncestor(isPopup())).performClick()
+        compose.runOnIdle { assertTrue(settingsOpened) }
     }
 
     private fun sidebarController(): WorkbenchController = WorkbenchController(
