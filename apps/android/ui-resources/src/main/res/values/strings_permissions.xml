@@ -148,9 +148,6 @@
     <string name="perm_role_assistant_settings_unavailable">系统未提供可用的数字助理设置页，可稍后在系统设置中手动选择</string>
 
     <!-- 屏幕采集授权结果提示 (MainActivity MediaProjection) -->
-    <string name="perm_screen_capture_granted_hint">已获得屏幕采集授权，请再次点击圈选开始截取</string>
-    <string name="perm_screen_capture_session_failed">屏幕采集会话建立失败，圈选暂不可用</string>
-    <string name="perm_screen_capture_denied">未获得屏幕采集授权，圈选暂不可用</string>
     <string name="perm_screen_capture_disabled">未开启屏幕截图功能</string>
     <string name="perm_screen_screenshot_denied">未获得屏幕截图授权，截图暂时不可用</string>
     <string name="perm_screen_screenshot_changed">截图能力或本机设置已变化，请重新发起系统授权</string>
@@ -160,6 +157,4 @@
     <string name="perm_screen_screenshot_enable_plugin_hint">请先启用截图插件并开启截图权限</string>
     <string name="perm_screen_screenshot_ready_no_auth">截图已可用，不需要额外的系统授权</string>
     <string name="perm_screen_record_service_unavailable">系统未提供屏幕录制服务，截图暂不可用</string>
-    <string name="perm_screen_capture_direct_hint">现在可以直接圈选，无需额外授权</string>
-    <string name="perm_screen_capture_unsupported">此设备不支持屏幕采集，圈选不可用</string>
 </resources>
