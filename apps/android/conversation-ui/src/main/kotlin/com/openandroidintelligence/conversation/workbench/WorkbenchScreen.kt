@@ -132,6 +132,7 @@ fun WorkbenchScreen(
     settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
+    val displayStreamHealth = workbenchDisplayStreamHealth(connectionHealth, state.streamHealth)
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val sidebarPanel = if (settingsOpen) SidebarPanel.SETTINGS else SidebarPanel.CONVERSATIONS
@@ -333,7 +334,7 @@ fun WorkbenchScreen(
                 agentName = agentName,
                 avatar = accountAvatar,
                 onChangeAvatar = onChangeAvatar,
-                streamHealth = connectionHealth ?: state.streamHealth,
+                streamHealth = displayStreamHealth,
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
@@ -427,7 +428,7 @@ fun WorkbenchScreen(
                         WorkbenchTopBar(
                             threadTitle = state.activeThreadTitle,
                             gatewayLabel = gatewayLabel,
-                            streamHealth = connectionHealth ?: state.streamHealth,
+                            streamHealth = displayStreamHealth,
                             expanded = expanded,
                             canRename = state.activeThreadId != null,
                             creatingThread = state.creatingThread,
@@ -451,7 +452,7 @@ fun WorkbenchScreen(
                         if (stackedContext) {
                             WorkbenchContextLine(
                                 gatewayLabel = gatewayLabel,
-                                streamHealth = connectionHealth ?: state.streamHealth,
+                                streamHealth = displayStreamHealth,
                                 modifier = Modifier.padding(
                                     start = Dimensions.SpaceMedium,
                                     end = Dimensions.SpaceMedium,
@@ -1016,6 +1017,14 @@ private fun WorkbenchTopBar(
         },
     )
 }
+
+/** Core 已连接时允许原生请求正常空闲，同时保留原生连接、恢复和失败状态。 */
+internal fun workbenchDisplayStreamHealth(coreHealth: StreamHealth?, nativeHealth: StreamHealth): StreamHealth =
+    when {
+        coreHealth == null -> nativeHealth
+        coreHealth == StreamHealth.LIVE && nativeHealth != StreamHealth.IDLE -> nativeHealth
+        else -> coreHealth
+    }
 
 /**
  * 顶栏第二行：`Gateway 主机名 · 连接状态`。

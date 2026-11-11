@@ -1025,6 +1025,8 @@ internal fun workbenchConnectionHealth(
                 StreamHealth.RECONNECTING
             EventStreamStatus.FAILED ->
                 StreamHealth.FAILED
+            EventStreamStatus.LIVE ->
+                StreamHealth.LIVE
             else -> null
         }
         else -> null
