@@ -23,6 +23,8 @@ import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.mobile.updates.appBuildChannelLabel
 import com.openandroidintelligence.mobile.updates.installedAppBuild
 
@@ -55,48 +57,48 @@ internal fun AdvancedSettingsScreen(
         }
     }
 
-    SettingsPageScaffold(title = "高级设置与关于", presentation = presentation, onBack = onBack) { padding ->
+    SettingsPageScaffold(title = stringResource(UiR.string.settings_title_advanced), presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
-            SectionLabel("消息处理")
+            SectionLabel(stringResource(UiR.string.settings_section_message_processing))
             MessageProcessingSettings(runtime = runtime)
 
-            SectionLabel("应用维护")
+            SectionLabel(stringResource(UiR.string.settings_section_app_maintenance))
             SettingsSectionCard {
                 SettingsNavigationItem(
-                    headline = "应用更新",
-                    supporting = "检查正式版和预览版更新",
+                    headline = stringResource(UiR.string.settings_update_app),
+                    supporting = stringResource(UiR.string.settings_update_app_desc),
                     onClick = onOpenUpdates,
                 )
                 SettingsNavigationItem(
-                    headline = "备份与恢复",
-                    supporting = "导出或导入本机设置，换机与重装后无需逐项重配",
+                    headline = stringResource(UiR.string.settings_backup_restore),
+                    supporting = stringResource(UiR.string.settings_backup_restore_desc),
                     onClick = onOpenBackup,
                 )
             }
 
-            SectionLabel("帮助与反馈")
+            SectionLabel(stringResource(UiR.string.settings_help_feedback))
             SettingsSectionCard {
                 SettingsNavigationItem(
-                    headline = "新手引导与部署教程",
-                    supporting = "查看 Gateway 部署教程与权限说明",
+                    headline = stringResource(UiR.string.settings_tutorial),
+                    supporting = stringResource(UiR.string.settings_tutorial_desc),
                     onClick = onReplayOnboarding,
                 )
-                SettingsNavigationItem(headline = "项目文档", onClick = { openUrl(DOCUMENTATION_URL) })
-                SettingsNavigationItem(headline = "问题与反馈", onClick = { openUrl(ISSUES_URL) })
+                SettingsNavigationItem(headline = stringResource(UiR.string.settings_docs), onClick = { openUrl(DOCUMENTATION_URL) })
+                SettingsNavigationItem(headline = stringResource(UiR.string.settings_issues), onClick = { openUrl(ISSUES_URL) })
                 if (DOCUMENTATION_URL in failedUrls || ISSUES_URL in failedUrls) ExternalLinkFailure()
             }
 
-            SectionLabel("关于 OAI")
+            SectionLabel(stringResource(UiR.string.settings_about_oai))
             SettingsSectionCard {
-                SettingsListItem(headline = "版本", supporting = installed.versionName.ifBlank { "未知" })
+                SettingsListItem(headline = stringResource(UiR.string.settings_version), supporting = installed.versionName.ifBlank { stringResource(UiR.string.settings_unknown) })
                 SettingsListItem(
-                    headline = "构建渠道",
+                    headline = stringResource(UiR.string.settings_build_channel),
                     supporting = settingsBuildChannelLabel(installed),
                 )
-                SettingsListItem(headline = "Git Commit", supporting = installed.commit.ifBlank { "未知" })
-                SettingsNavigationItem(headline = "构建详情", onClick = onOpenBuildDetails)
-                SettingsNavigationItem(headline = "开源许可证", onClick = onOpenLicenses)
-                SettingsNavigationItem(headline = "项目地址", supporting = PROJECT_URL, onClick = { openUrl(PROJECT_URL) })
+                SettingsListItem(headline = stringResource(UiR.string.settings_commit), supporting = installed.commit.ifBlank { stringResource(UiR.string.settings_unknown) })
+                SettingsNavigationItem(headline = stringResource(UiR.string.settings_build_details), onClick = onOpenBuildDetails)
+                SettingsNavigationItem(headline = stringResource(UiR.string.settings_licenses), onClick = onOpenLicenses)
+                SettingsNavigationItem(headline = stringResource(UiR.string.settings_project_url), supporting = PROJECT_URL, onClick = { openUrl(PROJECT_URL) })
                 if (PROJECT_URL in failedUrls) ExternalLinkFailure()
             }
         }
@@ -106,7 +108,7 @@ internal fun AdvancedSettingsScreen(
 @Composable
 private fun ExternalLinkFailure() {
     Text(
-        "无法打开链接，请检查系统浏览器后重试。",
+        stringResource(UiR.string.settings_err_open_link),
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
