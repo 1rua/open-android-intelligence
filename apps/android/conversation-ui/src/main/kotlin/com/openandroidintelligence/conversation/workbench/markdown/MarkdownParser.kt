@@ -71,9 +71,29 @@ private const val MaxBlockquoteDepth = 8
         }
     }
 
-    private fun parseThoughtBlocks(text: String): List<TimelineBlock> {
+    internal fun parseTraced(
+        text: String,
+        trace: MarkdownParseTrace,
+        offset: Int = 0,
+        narrative: Boolean = false,
+    ): List<TimelineBlock> {
+        val source = MarkdownSourceText.original(text, offset)
+        if (text.isEmpty()) return listOf(trace.record(TimelineBlock.Paragraph(""), source))
+        return if (narrative) {
+            parseContentWithCodeBlocks(text, recognizeToolCalls = false, trace = trace, source = source)
+                .ifEmpty { listOf(trace.record(TimelineBlock.Paragraph(text), source)) }
+        } else {
+            parseThoughtBlocks(text, trace, source)
+        }
+    }
+
+    private fun parseThoughtBlocks(
+        text: String,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
+    ): List<TimelineBlock> {
         if (!text.contains("<think", ignoreCase = true)) {
-            return parseContentWithXmlToolCalls(text).ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+            return parseContentWithXmlToolCalls(text, trace, source).ifEmpty { listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
         }
 
         val blocks = mutableListOf<TimelineBlock>()
@@ -84,7 +104,7 @@ private const val MaxBlockquoteDepth = 8
             if (startMatch == null) {
                 val remaining = text.substring(currentIndex).trim()
                 if (remaining.isNotEmpty()) {
-                    blocks.addAll(parseContentWithXmlToolCalls(remaining))
+                    blocks.addAll(parseContentWithXmlToolCalls(remaining, trace, source?.slice(currentIndex)?.trim()))
                 }
                 break
             }
@@ -92,28 +112,36 @@ private const val MaxBlockquoteDepth = 8
             if (startMatch.range.first > currentIndex) {
                 val before = text.substring(currentIndex, startMatch.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseContentWithXmlToolCalls(before))
+                    blocks.addAll(parseContentWithXmlToolCalls(before, trace, source?.slice(currentIndex, startMatch.range.first)?.trim()))
                 }
             }
 
             val endMatch = thinkEndRegex.find(text, startIndex = startMatch.range.last + 1)
             if (endMatch != null) {
                 val thought = text.substring(startMatch.range.last + 1, endMatch.range.first).trim()
-                blocks.add(TimelineBlock.ThoughtBlock(thought = thought, isComplete = true))
+                blocks.add(record(trace, TimelineBlock.ThoughtBlock(thought = thought, isComplete = true),
+                    source?.slice(startMatch.range.first, endMatch.range.last + 1),
+                    source?.slice(startMatch.range.last + 1, endMatch.range.first)?.trim()?.let(::listOf).orEmpty()))
                 currentIndex = endMatch.range.last + 1
             } else {
                 val thought = text.substring(startMatch.range.last + 1).trim()
-                blocks.add(TimelineBlock.ThoughtBlock(thought = thought, isComplete = false))
+                blocks.add(record(trace, TimelineBlock.ThoughtBlock(thought = thought, isComplete = false),
+                    source?.slice(startMatch.range.first),
+                    source?.slice(startMatch.range.last + 1)?.trim()?.let(::listOf).orEmpty(), closed = false))
                 currentIndex = text.length
             }
         }
 
-        return blocks.ifEmpty { listOf(TimelineBlock.Paragraph(text)) }
+        return blocks.ifEmpty { listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
     }
 
-    private fun parseContentWithXmlToolCalls(text: String): List<TimelineBlock> {
+    private fun parseContentWithXmlToolCalls(
+        text: String,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
+    ): List<TimelineBlock> {
         if (!text.contains("<tool_call", ignoreCase = true)) {
-            return parseContentWithCodeBlocks(text)
+            return parseContentWithCodeBlocks(text, trace = trace, source = source)
         }
 
         val blocks = mutableListOf<TimelineBlock>()
@@ -124,18 +152,18 @@ private const val MaxBlockquoteDepth = 8
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseContentWithCodeBlocks(before))
+                    blocks.addAll(parseContentWithCodeBlocks(before, trace = trace, source = source?.slice(lastIndex, match.range.first)?.trim()))
                 }
                 val toolNameAttr = match.groups[1]?.value?.trim()?.ifBlank { null } ?: "执行命令"
                 val content = match.groupValues[2]
-                blocks.add(parseXmlToolCallContent(toolNameAttr, content))
+                blocks.add(record(trace, parseXmlToolCallContent(toolNameAttr, content), source?.slice(match.range.first, match.range.last + 1), emptyList()))
                 lastIndex = match.range.last + 1
             }
             val remaining = text.substring(lastIndex).trim()
             if (remaining.isNotEmpty()) {
                 // 剩余文本里可能还有尚未闭合的 <tool_call>（流式下一段工具调用）。
                 // 继续走同一入口，才能把它标成 isRunning，而不是当成普通段落。
-                blocks.addAll(parseContentWithXmlToolCalls(remaining))
+                blocks.addAll(parseContentWithXmlToolCalls(remaining, trace, source?.slice(lastIndex)?.trim()))
             }
             return blocks
         }
@@ -145,15 +173,15 @@ private const val MaxBlockquoteDepth = 8
         if (unclosedMatch != null) {
             val before = text.substring(0, unclosedMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseContentWithCodeBlocks(before))
+                blocks.addAll(parseContentWithCodeBlocks(before, trace = trace, source = source?.slice(0, unclosedMatch.range.first)?.trim()))
             }
             val toolNameAttr = unclosedMatch.groups[1]?.value?.trim()?.ifBlank { null } ?: "执行命令"
             val content = unclosedMatch.groupValues[2]
-            blocks.add(parseXmlToolCallContent(toolNameAttr, content).copy(isRunning = true))
+            blocks.add(record(trace, parseXmlToolCallContent(toolNameAttr, content).copy(isRunning = true), source?.slice(unclosedMatch.range.first), emptyList(), closed = false))
             return blocks
         }
 
-        return parseContentWithCodeBlocks(text)
+        return parseContentWithCodeBlocks(text, trace = trace, source = source)
     }
 
     /**
@@ -167,9 +195,11 @@ private const val MaxBlockquoteDepth = 8
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
     ): List<TimelineBlock> {
         if (!text.contains("```")) {
-            return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
+            return parseNonCodeText(text, quoteDepth, recognizeToolCalls, trace, source)
         }
 
         val matches = codeBlockRegex.findAll(text).toList()
@@ -179,16 +209,18 @@ private const val MaxBlockquoteDepth = 8
             for (match in matches) {
                 val before = text.substring(lastIndex, match.range.first).trim()
                 if (before.isNotEmpty()) {
-                    blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
+                    blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls, trace, source?.slice(lastIndex, match.range.first)?.trim()))
                 }
                 val language = match.groupValues[1].trim()
                 val code = match.groupValues[2].trimEnd()
 
                 val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
                 if (toolCall != null) {
-                    blocks.add(toolCall)
+                    blocks.add(record(trace, toolCall, source?.slice(match.range.first, match.range.last + 1), emptyList()))
                 } else {
-                    blocks.add(TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code))
+                    blocks.add(record(trace, TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code),
+                        source?.slice(match.range.first, match.range.last + 1),
+                        source?.slice(match.groups[2]!!.range.first, match.groups[2]!!.range.last + 1)?.trimEnd()?.let(::listOf).orEmpty()))
                 }
                 lastIndex = match.range.last + 1
             }
@@ -202,6 +234,8 @@ private const val MaxBlockquoteDepth = 8
                         remaining,
                         quoteDepth = quoteDepth,
                         recognizeToolCalls = recognizeToolCalls,
+                        trace = trace,
+                        source = source?.slice(lastIndex)?.trim(),
                     ),
                 )
             }
@@ -214,20 +248,22 @@ private const val MaxBlockquoteDepth = 8
             val blocks = mutableListOf<TimelineBlock>()
             val before = text.substring(0, unclosedCodeMatch.range.first).trim()
             if (before.isNotEmpty()) {
-                blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls))
+                blocks.addAll(parseNonCodeText(before, quoteDepth, recognizeToolCalls, trace, source?.slice(0, unclosedCodeMatch.range.first)?.trim()))
             }
             val language = unclosedCodeMatch.groupValues[1].trim()
             val code = unclosedCodeMatch.groupValues[2].trimEnd()
             val toolCall = if (recognizeToolCalls) tryParseCodeBlockAsToolCall(language, code) else null
             if (toolCall != null) {
-                blocks.add(toolCall.copy(isRunning = true))
+                blocks.add(record(trace, toolCall.copy(isRunning = true), source?.slice(unclosedCodeMatch.range.first), emptyList(), closed = false))
             } else {
-                blocks.add(TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code))
+                blocks.add(record(trace, TimelineBlock.CodeBlock(language.ifBlank { "代码" }, code),
+                    source?.slice(unclosedCodeMatch.range.first),
+                    source?.slice(unclosedCodeMatch.groups[2]!!.range.first)?.trimEnd()?.let(::listOf).orEmpty(), closed = false))
             }
             return blocks
         }
 
-        return parseNonCodeText(text, quoteDepth, recognizeToolCalls)
+        return parseNonCodeText(text, quoteDepth, recognizeToolCalls, trace, source)
     }
 
     private fun tryParseCodeBlockAsToolCall(language: String, code: String): TimelineBlock.ToolCallBlock? {
@@ -405,13 +441,18 @@ private const val MaxBlockquoteDepth = 8
         text: String,
         quoteDepth: Int = 0,
         recognizeToolCalls: Boolean = true,
+        trace: MarkdownParseTrace? = null,
+        source: MarkdownSourceText? = null,
     ): List<TimelineBlock> {
         val lines = text.lines()
+        val sourceLines = source?.lines()
+        fun sourceRange(start: Int, end: Int) = sourceLines?.subList(start, end)?.let(MarkdownSourceText::join)
         val blocks = mutableListOf<TimelineBlock>()
         var lineIndex = 0
 
         while (lineIndex < lines.size) {
             val line = lines[lineIndex]
+            val blockStart = lineIndex
 
             // 跳过空行
             if (line.isBlank()) {
@@ -421,7 +462,7 @@ private const val MaxBlockquoteDepth = 8
 
             // 1. 分割线
             if (thematicBreakRegex.matches(line)) {
-                blocks.add(TimelineBlock.ThematicBreak)
+                blocks.add(record(trace, TimelineBlock.ThematicBreak, sourceLines?.get(lineIndex), emptyList()))
                 lineIndex++
                 continue
             }
@@ -431,7 +472,8 @@ private const val MaxBlockquoteDepth = 8
             if (headingMatch != null) {
                 val level = headingMatch.groupValues[1].length
                 val title = headingMatch.groupValues[2].trim()
-                blocks.add(TimelineBlock.Heading(level, title))
+                blocks.add(record(trace, TimelineBlock.Heading(level, title), sourceLines?.get(lineIndex),
+                    sourceLines?.get(lineIndex)?.slice(headingMatch.groups[2]!!.range.first, headingMatch.groups[2]!!.range.last + 1)?.trim()?.let(::listOf).orEmpty()))
                 lineIndex++
                 continue
             }
@@ -439,7 +481,11 @@ private const val MaxBlockquoteDepth = 8
             // 3. 块级数学公式 $$ ... $$
             val mathBlock = parseMathBlock(lines, lineIndex)
             if (mathBlock != null) {
-                blocks.add(mathBlock.block)
+                val mathSource = sourceRange(lineIndex, mathBlock.nextLine)
+                val raw = mathSource?.trim()
+                val content = raw?.slice(2, if (raw.text.endsWith("$$")) raw.text.length - 2 else raw.text.length)?.trim()
+                blocks.add(record(trace, mathBlock.block, mathSource, content?.let(::listOf).orEmpty(),
+                    closed = raw?.text?.endsWith("$$") ?: true))
                 lineIndex = mathBlock.nextLine
                 continue
             }
@@ -455,13 +501,14 @@ private const val MaxBlockquoteDepth = 8
                     paragraphLines.add(lines[lineIndex])
                     lineIndex++
                 }
-                blocks.add(TimelineBlock.Paragraph(paragraphLines.joinToString("\n")))
+                blocks.add(record(trace, TimelineBlock.Paragraph(paragraphLines.joinToString("\n")), sourceRange(blockStart, lineIndex)))
                 continue
             }
 
             // 4. 表格检测
             if (line.contains("|") && lineIndex + 1 < lines.size && isTableSeparatorRow(lines[lineIndex + 1])) {
                 val headers = parseTableCells(line)
+                val cellSources = sourceLines?.get(lineIndex)?.let(::tableCellSources)?.toMutableList()
                 val separatorCells = parseTableCells(lines[lineIndex + 1])
                 val alignments = separatorCells.map { cell ->
                     val trimmed = cell.trim()
@@ -475,15 +522,17 @@ private const val MaxBlockquoteDepth = 8
                 val rows = mutableListOf<List<String>>()
                 while (lineIndex < lines.size && lines[lineIndex].isNotBlank() && lines[lineIndex].contains("|")) {
                     rows.add(parseTableCells(lines[lineIndex]))
+                    sourceLines?.get(lineIndex)?.let(::tableCellSources)?.let { cellSources?.addAll(it) }
                     lineIndex++
                 }
-                blocks.add(TimelineBlock.Table(headers, alignments, rows))
+                blocks.add(record(trace, TimelineBlock.Table(headers, alignments, rows), sourceRange(blockStart, lineIndex), cellSources.orEmpty()))
                 continue
             }
 
             // 5. 引用块：剥掉一层 `>` 后递归解析，嵌套引用自然形成 Blockquote(Blockquote(...))
             if (isBlockquoteLine(line)) {
                 val quoteLines = mutableListOf<String>()
+                val quoteSources = mutableListOf<MarkdownSourceText>()
                 val atDepthLimit = quoteDepth >= MaxBlockquoteDepth
                 while (lineIndex < lines.size && isBlockquoteLine(lines[lineIndex])) {
                     val stripped = if (atDepthLimit) {
@@ -492,21 +541,25 @@ private const val MaxBlockquoteDepth = 8
                         stripBlockquoteMarker(lines[lineIndex])
                     }
                     quoteLines.add(stripped)
+                    sourceLines?.get(lineIndex)?.let { raw -> quoteSources.add(raw.slice(raw.text.length - stripped.length)) }
                     lineIndex++
                 }
                 val innerText = quoteLines.joinToString("\n")
+                val innerSource = quoteSources.takeIf { source != null }?.let(MarkdownSourceText::join)
                 if (innerText.isNotBlank()) {
                     if (atDepthLimit) {
                         // 超出深度预算：保留内容但停止递归，避免无限嵌套与栈溢出
-                        blocks.add(TimelineBlock.Paragraph(innerText.trim()))
+                        blocks.add(record(trace, TimelineBlock.Paragraph(innerText.trim()), innerSource?.trim()))
                     } else {
                         val innerBlocks = parseContentWithCodeBlocks(
                             innerText,
                             quoteDepth + 1,
                             recognizeToolCalls = recognizeToolCalls,
+                            trace = trace,
+                            source = innerSource,
                         )
                         if (innerBlocks.isNotEmpty()) {
-                            blocks.add(TimelineBlock.Blockquote(innerBlocks))
+                            blocks.add(record(trace, TimelineBlock.Blockquote(innerBlocks), sourceRange(blockStart, lineIndex), emptyList()))
                         }
                     }
                 }
@@ -514,9 +567,9 @@ private const val MaxBlockquoteDepth = 8
             }
 
             // 6. 列表：一次收集整个列表（含嵌套项），层级与任务标记在解析阶段定好
-            val listBlock = parseListBlock(lines, lineIndex)
+            val listBlock = parseListBlock(lines, lineIndex, sourceLines)
             if (listBlock != null) {
-                blocks.add(listBlock.block)
+                blocks.add(record(trace, listBlock.block, sourceRange(blockStart, listBlock.nextLine), listBlock.sources))
                 lineIndex = listBlock.nextLine
                 continue
             }
@@ -534,7 +587,7 @@ private const val MaxBlockquoteDepth = 8
                 lineIndex++
             }
             if (paragraphLines.isNotEmpty()) {
-                blocks.add(TimelineBlock.Paragraph(paragraphLines.joinToString("\n")))
+                blocks.add(record(trace, TimelineBlock.Paragraph(paragraphLines.joinToString("\n")), sourceRange(blockStart, lineIndex)))
             }
         }
 
@@ -629,12 +682,14 @@ private const val MaxBlockquoteDepth = 8
     private data class ParsedListBlock(
         val block: TimelineBlock.ListBlock,
         val nextLine: Int,
+        val sources: List<MarkdownSourceText> = emptyList(),
     )
 
     private data class RawListItem(
         val indent: Int,
         val ordinal: Int?,
         val text: String,
+        val source: MarkdownSourceText? = null,
     )
 
     /**
@@ -642,7 +697,7 @@ private const val MaxBlockquoteDepth = 8
      * 判定顺序：先按行收集原始缩进，再用「最小正缩进差」推断每级步长，
      * 因此 2 空格与 4 空格两种主流写法都能得到正确的父子关系。
      */
-    private fun parseListBlock(lines: List<String>, start: Int): ParsedListBlock? {
+    private fun parseListBlock(lines: List<String>, start: Int, sourceLines: List<MarkdownSourceText>? = null): ParsedListBlock? {
         val firstMatch = listItemRegex.matchEntire(lines[start]) ?: return null
         val firstIndent = indentColumns(firstMatch.groupValues[1])
 
@@ -660,7 +715,8 @@ private const val MaxBlockquoteDepth = 8
                 val marker = match.groupValues[2]
                 // `-` 等无序标记没有序号；`1.` / `1)` 取数字部分
                 val ordinal = marker.dropLast(1).toIntOrNull()
-                raws.add(RawListItem(indent = indent, ordinal = ordinal, text = match.groupValues[3]))
+                raws.add(RawListItem(indent = indent, ordinal = ordinal, text = match.groupValues[3],
+                    source = sourceLines?.get(index)?.slice(match.groups[3]!!.range.first, match.groups[3]!!.range.last + 1)))
                 lastItemIndent = indent
                 index++
                 continue
@@ -670,7 +726,9 @@ private const val MaxBlockquoteDepth = 8
             val indent = indentColumns(line)
             if (raws.isNotEmpty() && indent > lastItemIndent && !startsStructuralBlock(lines, index)) {
                 val last = raws.removeAt(raws.lastIndex)
-                raws.add(last.copy(text = last.text + " " + line.trim()))
+                raws.add(last.copy(text = last.text + " " + line.trim(), source = last.source?.let { previous ->
+                    sourceLines?.get(index)?.trim()?.let { MarkdownSourceText.join(listOf(previous, it), " ") }
+                }))
                 index++
                 continue
             }
@@ -721,7 +779,11 @@ private const val MaxBlockquoteDepth = 8
             )
         }
 
-        return ParsedListBlock(TimelineBlock.ListBlock(items), index)
+        val itemSources = raws.mapNotNull { raw ->
+            val match = taskItemRegex.matchEntire(raw.text)
+            if (match == null) raw.source else raw.source?.slice(match.groups[2]!!.range.first, match.groups[2]!!.range.last + 1)?.trim()
+        }
+        return ParsedListBlock(TimelineBlock.ListBlock(items), index, itemSources)
     }
 
     private fun parseTaskState(text: String): Pair<String, TaskState> {
@@ -762,4 +824,25 @@ private const val MaxBlockquoteDepth = 8
         if (trimmed.endsWith("|")) trimmed = trimmed.substring(0, trimmed.length - 1)
         return trimmed.split("|").map { it.trim() }
     }
+    private fun record(
+        trace: MarkdownParseTrace?,
+        block: TimelineBlock,
+        source: MarkdownSourceText?,
+        leaves: List<MarkdownSourceText> = source?.let(::listOf).orEmpty(),
+        closed: Boolean = true,
+    ): TimelineBlock = trace?.record(block, source, leaves, closed) ?: block
+
+    private fun tableCellSources(line: MarkdownSourceText): List<MarkdownSourceText> {
+        var trimmed = line.trim()
+        if (trimmed.text.startsWith("|")) trimmed = trimmed.slice(1)
+        if (trimmed.text.endsWith("|")) trimmed = trimmed.slice(0, trimmed.text.length - 1)
+        val cells = ArrayList<MarkdownSourceText>()
+        var start = 0
+        trimmed.text.forEachIndexed { index, character ->
+            if (character == '|') { cells.add(trimmed.slice(start, index).trim()); start = index + 1 }
+        }
+        cells.add(trimmed.slice(start).trim())
+        return cells
+    }
+
 }
