@@ -164,3 +164,16 @@ APK 业务含关闭保护 `66c85da7`，仪器源码 `4597d8f0`、夹具一致修
 在 `foreground_ready` 后执行 `deviceidle unforce`、`battery reset`、唤醒键 224，真实 Activity 自动检查并恢复半开连接；从 launch 前到原离线游标实际恢复 **2837 毫秒**，`OK (1 test)`，总 48.511 秒，Application Runtime 身份保持、总订阅 2。没有切换会话、手动 Runtime 生命周期调用或修改产品权限。
 
 收尾实测 `mForceIdle=false`、深浅 idle ACTIVE、屏幕 Awake、AC 供电恢复，夹具与专用映射已停止。证据 `doze-lifecycle.txt`、`result-doze.log`、`doze-state.json`、`doze-restored.json`、脱敏 `status-doze.json`。这验证了强制状态/解除后的调用链，不替代真实机型对 Doze 网络限制及恢复窗口的验收。
+
+## 最终业务提交的同 APK 短复核与资源收尾
+
+在最终业务 `0e391fc3`、精确 checkout `963e94904c04466307d3219265db81f4c98d52f8` 上重新一次增量构建完整调试 APK 和仪器测试 APK，连同 `noVpnSurfaceCheck` 通过（`BUILD SUCCESSFUL in 2m 22s`，485 项任务中 460 项为 up-to-date）。仅在私有 ADB 设备运行两个全新隔离夹具，结果与此前旧 SHA 的样本分开保存：
+
+| 最终同 APK 场景 | 结果 | 实际恢复耗时 |
+| --- | --- | --- |
+| Native-only 半开，Platform 保持健康，原加密镜像保存后 ACK，不重新提交输入 | `OK (1 test)`，总 10.748 秒；三消息有序各一次、无重复、pending ACK 为空、Platform 订阅 1、prompt POST 0 | **8578 毫秒** |
+| 默认十秒真实 Activity 销毁/后台分段投递后重新进入前台，健康短窗口订阅严格保持一次 | `OK (1 test)`，总 22.236 秒；同 Application Runtime、后台游标保存、最终总订阅 2 | **4384 毫秒** |
+
+恢复耗时均为实际半开注入到可用事实或 Activity launch 前到原游标恢复的单调时间，不把整个测试包含初始化与背景等待的总时长当作重连耗时。证据为 `.toolchains/background-connection-private-e2e/` 的 `build-exact-final.log`、`native-exact-final.txt`、`lifecycle-exact-final.txt`、`result-native-exact-final.log`、`result-lifecycle-exact-final.log` 和相应脱敏状态 JSON。此次没有重复三十分钟或 Doze 测试，先前证据继续按各自业务 SHA 标注。
+
+2026 年 11 月 11 日 11:04:56（上海时间）完成正常收尾：所有本任务 Core/Adapter 夹具已停止，专用 reverse 映射撤销；私有模拟器通过官方 `adb -P 5039 -s emulator-5680 emu kill` 正常关闭，私有 ADB 5039 服务停止，5680/5681 与测试端口均关闭。早先本任务 `background-connection-api35` 的 5562 已在核对无活动仪器、前台为系统桌面后，经明确授权正常 `emu kill`；其映射随设备退出自然撤销，没有操作其他设备或默认 ADB 5037 服务。AVD 数据、日志、账号测试目录和未合并 worktree 均保留，未执行永久删除。
