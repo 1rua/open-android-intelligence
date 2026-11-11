@@ -27,6 +27,7 @@ data class StreamingTextPresentation(
     val active: Boolean,
     val reduceMotion: Boolean,
     val onVisibleAdvance: (Long) -> Unit = {},
+    val hapticSourceRanges: List<IntRange>? = null,
 )
 
 internal val LocalStreamingMarkdownDocument = staticCompositionLocalOf<StreamingMarkdownDocument?> { null }
@@ -266,8 +267,9 @@ internal fun streamingAtomicModifier(
         val width = position.size.width.toFloat()
         val height = position.size.height.toFloat()
         // 公式内容后续增长仍是可见推进；只消费 LaTeX 正文映射，不因闭合定界符或测量回调补震。
+        val liveRanges = progress.hapticSourceRanges ?: listOf(progress.sourceRevealStart until progress.sourceRevealEnd)
         val added = source.text.indices.any { index ->
-            !source.text[index].isWhitespace() && source.offsets[index] in progress.sourceRevealStart until progress.sourceRevealEnd
+            !source.text[index].isWhitespace() && liveRanges.any { source.offsets[index] in it }
         }
         state.register(key, StreamingTextLayout(
             source.end, position, Rect(width, 0f, width + 1f, height),
@@ -299,8 +301,10 @@ internal fun streamingTextModifier(
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val current = LocalStreamingTextPresentation.current ?: state.presentation
-    val activeRanges = remember(text, sourceOffsets, current.batchId) {
-        visibleSourceRanges(text, sourceOffsets, current.sourceRevealStart, current.sourceRevealEnd)
+    val activeRanges = remember(text, sourceOffsets, current.batchId, current.hapticSourceRanges) {
+        (current.hapticSourceRanges ?: listOf(current.sourceRevealStart until current.sourceRevealEnd)).flatMap {
+            visibleSourceRanges(text, sourceOffsets, it.first, it.last + 1)
+        }
     }
     fun publish() {
         val measured = layout ?: return

@@ -160,9 +160,10 @@ class NativeEventSynchronizerTest {
         val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().map { it.eventId }
         assertEquals("权威历史只落盘一次", listOf("history-reply"), saved)
         val published = h.published.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
-        assertEquals("实时正文先于历史确认进入界面，首次吐字不能被快照抢先完整显示", listOf("e1", "history-reply"), published.map { it.eventId })
+        assertEquals("保留历史事实和宿主正文的原有发布顺序", listOf("history-reply", "e1"), published.map { it.eventId })
         assertEquals(StreamPresentationOrigin.LIVE, published.first().presentationOrigin)
-        assertEquals(StreamPresentationOrigin.SNAPSHOT, published.last().presentationOrigin)
+        assertEquals(StreamPresentationOrigin.LIVE, published.last().presentationOrigin)
+        assertEquals(StreamPresentationOrigin.SNAPSHOT, h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().presentationOrigin)
         // 提醒层按 eventId 前缀过滤手机合成的事件；宿主帧必须保持原身份。
         assertTrue(published.last().eventId.isNotBlank())
         assertTrue(published.last().message.id == "reply")

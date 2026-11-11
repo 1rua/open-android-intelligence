@@ -417,6 +417,10 @@ fun MarkdownTableView(
     val evenBg = MaterialTheme.colorScheme.surfaceContainerLowest
     val oddBg = MaterialTheme.colorScheme.surfaceContainerLow
     val density = LocalDensity.current
+    val rowSourceStarts = remember(block.headers.size, block.rows) {
+        var offset = block.headers.size
+        block.rows.map { cells -> offset.also { offset += cells.size } }
+    }
 
     // 单元格最小宽度保证表头与简短内容整齐；最大宽度促成长文本在单元格内折行，防止穿透
     val columnMinimum = 84.dp
@@ -522,7 +526,7 @@ fun MarkdownTableView(
                                 rowIdx == block.rows.lastIndex &&
                                 colIdx == block.headers.lastIndex
                             val cellSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
-                                ?.get(block)?.leaves?.getOrNull(block.headers.size + block.rows.take(rowIdx).sumOf { it.size } + colIdx)
+                                ?.get(block)?.leaves?.getOrNull(rowSourceStarts[rowIdx] + colIdx)
                                 ?.takeIf { colIdx < rowCells.size }
                             Box(
                                 modifier = Modifier

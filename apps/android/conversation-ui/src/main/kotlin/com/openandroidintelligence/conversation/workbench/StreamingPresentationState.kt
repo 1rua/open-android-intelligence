@@ -14,6 +14,7 @@ data class StreamingRevealAdvance(
     val hapticEligible: Boolean = false,
     val corrected: Boolean = false,
     val advancedGraphemes: Int = 0,
+    val liveSourceRanges: List<IntRange> = emptyList(),
 ) {
     val changed: Boolean get() = corrected || endOffset > startOffset
 }
@@ -137,14 +138,16 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
     }
 
     private fun revealTo(end: Int, start: Int): StreamingRevealAdvance {
-        val live = sources.any { it.live && it.end > start && it.start < end }
+        val liveRanges = sources.filter { it.live && it.end > start && it.start < end }
+            .map { maxOf(start, it.start) until minOf(end, it.end) }
         val startSearch = boundaries.binarySearch(start)
         val completeStart = if (startSearch >= 0) startSearch else -startSearch - 1
         // 续接已可见的末字素只补齐绘制范围，不能计作一个新的打字事件。
         val count = (boundaryFloor(end) - completeStart).coerceAtLeast(0)
         revealOffset = end
         discardConsumedSources()
-        return StreamingRevealAdvance(start, end, live && count > 0, advancedGraphemes = count)
+        return StreamingRevealAdvance(start, end, liveRanges.isNotEmpty() && count > 0,
+            advancedGraphemes = count, liveSourceRanges = liveRanges)
     }
 
     private fun boundaryFloor(offset: Int): Int {

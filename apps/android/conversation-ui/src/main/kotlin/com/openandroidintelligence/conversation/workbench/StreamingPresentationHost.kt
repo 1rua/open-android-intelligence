@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
@@ -28,6 +29,7 @@ internal data class StreamingPresentationFrame(
     val end: Int = 0,
     val hapticEligible: Boolean = false,
     val advancedGraphemes: Int = 0,
+    val liveSourceRanges: List<IntRange> = emptyList(),
 )
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
@@ -72,9 +74,12 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
     internal fun isBaseline(entry: TimelineEntry): Boolean = frameFor(entry) == null
 
     internal fun frameFor(entry: TimelineEntry): StreamingPresentationFrame? {
+        // 临时首帧投影也必须订阅已提交进度；否则组合只读普通字段，首个 accept 后
+        // frame 的变化没有订阅者，正文会停在空投影而调度器仍在后台推进。
+        val committed = frame
         if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
-        if (currentIdentity?.key == entry.key) return frame
-        if (currentIdentity?.isUpgrade(entry) == true) return frame
+        if (currentIdentity?.key == entry.key) return committed
+        if (currentIdentity?.isUpgrade(entry) == true) return committed
         if (!canStart(entry)) return null
         // accept 在组合提交后运行；先给新 LIVE 一个仅含旧前缀的投影，首帧不能闪现整段全文。
         return StreamingPresentationFrame(baselineText(entry), active = true)
@@ -126,6 +131,13 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         observed.clear()
     }
 
+    internal fun hide() {
+        // ON_STOP 时 Recomposer 可能已暂停，必须立即退役呈现，不等待下一次组合应用。
+        surfaceVisible = false
+        visible = false
+        clearActive()
+    }
+
     /** 一个可见批次最多消费一次；关闭设置后再打开也不会补震旧文字。 */
     internal fun consumeHaptic(batchId: Long): Boolean {
         val current = frame ?: return false
@@ -172,6 +184,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
                 if (advance.corrected) state.revealOffset else advance.startOffset,
                 state.revealOffset, advance.hapticEligible && !advance.corrected,
                 advance.advancedGraphemes,
+                advance.liveSourceRanges,
             )
         } else if (previous == null || previous.active != state.isPresenting || previous.text != state.displayedText) {
             frame = (previous ?: StreamingPresentationFrame(state.displayedText)).copy(
@@ -189,12 +202,14 @@ fun rememberStreamingPresentations(
     enabled: Boolean = true,
 ): StreamingPresentationRegistry {
     val view = LocalView.current
+    val registry = remember(owner) { StreamingPresentationRegistry(entries) }
     var foreground by remember(view) { mutableStateOf(view.windowVisibility == View.VISIBLE) }
-    DisposableEffect(view) {
+    DisposableEffect(view, registry) {
         val lifecycle = view.findViewTreeLifecycleOwner()?.lifecycle
         fun update() {
             foreground = view.windowVisibility == View.VISIBLE &&
                 (lifecycle == null || lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
+            if (!foreground) registry.hide()
         }
         val listener = LifecycleEventObserver { _, _ -> update() }
         lifecycle?.addObserver(listener)
@@ -207,7 +222,6 @@ fun rememberStreamingPresentations(
             if (observer.isAlive) observer.removeOnWindowFocusChangeListener(visibilityListener)
         }
     }
-    val registry = remember(owner) { StreamingPresentationRegistry(entries) }
     DisposableEffect(registry) { onDispose { registry.close() } }
     val visible = enabled && foreground
     registry.prepare(entries, visible)
@@ -265,21 +279,26 @@ internal fun StreamingReplyBody(
 ) {
     val frame = registry?.frameFor(entry)
     val displayed = frame?.text ?: entry.text
-    val active = frame?.active == true
-    val haptic = if (frame != null) {
-        rememberStreamingHapticAdvance(frame, requireNotNull(registry))
+    val document = rememberStreamingMarkdownDocument(displayed)
+    var committedFrame by remember(entry.key) { mutableStateOf<StreamingPresentationFrame?>(null) }
+    val renderFrame = if (document.sourceText == displayed || frame?.start == frame?.end) frame else committedFrame
+    SideEffect { if (document.sourceText == displayed) committedFrame = frame }
+    // 已消费完源文仍需等待最后一次 Markdown 解析真正上屏，之后才结束光标。
+    val active = frame?.active == true || (frame != null && document.sourceText != displayed)
+    val haptic = if (renderFrame != null) {
+        rememberStreamingHapticAdvance(renderFrame, requireNotNull(registry))
     } else {
         null
     }
     val presentation = StreamingTextPresentation(
-        batchId = frame?.batchId ?: 0L,
-        sourceRevealStart = frame?.start ?: 0,
-        sourceRevealEnd = frame?.end ?: 0,
+        batchId = renderFrame?.batchId ?: 0L,
+        sourceRevealStart = renderFrame?.start ?: 0,
+        sourceRevealEnd = renderFrame?.end ?: 0,
         active = active,
         reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
         onVisibleAdvance = { id -> haptic?.invoke(id) },
+        hapticSourceRanges = renderFrame?.liveSourceRanges.orEmpty(),
     )
-    val document = rememberStreamingMarkdownDocument(displayed)
     // 执行事实仍按完整消息分组；最终正文仅使用同一次解析中最后一个执行块之后的节点，
     // 不能把整条 entry 重新当 narrative 解析，也不能按字符串相似度寻找正文。
     val blocks = remember(document, finalOnly) {

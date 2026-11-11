@@ -11,6 +11,20 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class StreamingPresentationStateTest {
+    @Test fun 同一帧的实时闭合语法不能让同步快照正文获得触觉() {
+        val state = StreamingPresentationState("**旧文", 0)
+        state.update("**旧文**", 1, LIVE, true, 0)
+        state.update("**旧文**恢复字", 2, SNAPSHOT, true, 1_000_000)
+        val advance = state.advance(100_000_000)
+        assertTrue(advance.liveSourceRanges.isNotEmpty())
+        val color = androidx.compose.ui.graphics.Color.Black
+        val inline = buildMarkdownInline(state.displayedText, MarkdownColors(color, color, color, color, color, color))
+        val offsets = sourceOffsetsFor(inline, MarkdownSourceText.original(state.displayedText))
+        assertTrue(advance.liveSourceRanges.flatMap {
+            visibleSourceRanges(inline.annotated.text, offsets, it.first, it.last + 1)
+        }.isEmpty())
+        assertTrue(inline.annotated.text.startsWith("旧文恢"))
+    }
     @Test fun 首批立即显示一个字素且突发全文不会瞬间弹出() {
         val state = StreamingPresentationState()
         val advance = state.update("字".repeat(150), 1, LIVE, true, 0)
