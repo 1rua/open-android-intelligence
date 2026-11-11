@@ -110,14 +110,14 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_prepare_release_notes.py'
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_bundled_plugins.py'
 
-      # The plugin packages a contract snapshot generated from a pinned commit.
-      # Compare all contract inputs (source, schemas, registry and vectors)
-      # rather than commit identity, so unrelated app commits need no plugin bump.
-      - name: Verify the plugin pins this commit's contract
+      # 冻结历史夹具验证自己的固定契约；现行插件仍必须匹配当前契约。
+      # 后续跨宿主及 Android HTTP 测试继续把当前契约交给历史运行时，不能替代或跳过。
+      - name: Verify historical and current plugin contracts
         run: |
-          python gateway-contract/tools/check-contract-pin.py --plugin-root-env HERMES_PLUGIN_ROOT
+          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" gateway-contract/tools/verify-historical-gateway-contract.py \
+            --plugin-root-env HERMES_PLUGIN_ROOT --output "$RUNNER_TEMP/historical-hermes-contract"
           python gateway-contract/tools/check-contract-pin.py --plugin-root-env OPENCLAW_PLUGIN_ROOT
-          python -m pytest -q gateway-contract/tools/test_check_contract_pin.py
+          python -m pytest -q gateway-contract/tools/test_check_contract_pin.py gateway-contract/tools/test_historical_gateway_contract.py
           python tools/check-openclaw-plugin-pin.py
           npm --prefix .openclaw-gateway-plugin run contract:check
         env:
