@@ -1601,10 +1601,10 @@ def _dsh_processes(home: Path, name: str) -> list[_DshProcess]:
         return []
 
 
-def _dsh_unit_matches(properties: dict, process: _DshProcess, home: Path, name: str) -> bool:
+def _dsh_unit_matches(properties: dict, process: _DshProcess, home: Path, name: str, *, user_service: bool) -> bool:
     """同时检查当前进程与服务的下一次启动配置，避免重启到另一个实例。"""
     try:
-        directory = properties.get("WorkingDirectory", "")
+        directory = properties.get("WorkingDirectory") or (process.environment.get("HOME", "") if user_service else "/")
         execution = re.search(r"argv\[\]=(.*?)\s+;", properties.get("ExecStart", ""))
         if not directory or not execution:
             return False
@@ -1671,7 +1671,7 @@ def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name
                 managed_pids.add(pid)
                 process = _read_dsh_process(pid)
                 if (_dsh_process_matches(process, home, profile_name)
-                        and _dsh_unit_matches(properties, process, home, profile_name)):
+                        and _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix)):
                     matches.append((prefix, unit, process))
         except (OSError, ValueError, subprocess.SubprocessError):
             continue
@@ -1689,7 +1689,7 @@ def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name
             properties = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
             if (shown.returncode or properties.get("MainPID") != str(process.pid)
                     or properties.get("ActiveState") not in {"active", "activating", "reloading"}
-                    or not _dsh_unit_matches(properties, process, home, profile_name)):
+                    or not _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix)):
                 return False
             subprocess.run([*prefix, "restart", unit], capture_output=True, text=True, timeout=15,
                            check=True, env=environment)
