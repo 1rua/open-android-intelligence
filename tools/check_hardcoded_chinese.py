@@ -101,20 +101,46 @@ def compute_suppression_lines(lines: list[str]) -> set[int] | str:
     return suppressed_lines
 
 
-def is_syntax_pattern_exempt(lines: list[str], line_idx: int) -> tuple[bool, str | None]:
-    """计算 Level 3 语法模式自动豁免 (向上回溯当前语句的前缀)。"""
-    stmt_lines = []
-    for i in range(line_idx, -1, -1):
-        clean = lines[i].split("//")[0].strip()
-        stmt_lines.append(clean)
-        if any(clean.startswith(k) for k in ("fun ", "class ", "interface ", "object ", "val ", "var ", "@")):
-            break
-        if clean.endswith(";") or (i < line_idx and (clean.endswith("}") or clean == "")):
-            break
-        if len(stmt_lines) >= 15:
-            break
+def strip_string_literals_and_comments(s: str) -> str:
+    """去除行内的双引号字符串字面量与单行注释，保留纯语法骨架。"""
+    s = s.split("//")[0]
+    out = []
+    in_str = False
+    escape = False
+    for ch in s:
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            else:
+                out.append(ch)
+    return "".join(out)
 
-    stmt = " ".join(reversed(stmt_lines))
+
+def count_unclosed_delimiters(syntax_str: str) -> tuple[int, int]:
+    """计算未闭合的圆括号 ( 与方括号 [ 数量。"""
+    parens = 0
+    brackets = 0
+    for ch in syntax_str:
+        if ch == "(":
+            parens += 1
+        elif ch == ")":
+            parens = max(0, parens - 1)
+        elif ch == "[":
+            brackets += 1
+        elif ch == "]":
+            brackets = max(0, brackets - 1)
+    return parens, brackets
+
+
+def check_syntax_patterns(stmt: str) -> tuple[bool, str | None]:
+    """检查语句是否匹配 4 类语法豁免正则。"""
     if SYNTAX_LOG_PATTERN.search(stmt):
         return True, "Log.*"
     if SYNTAX_CHECK_REQUIRE_PATTERN.search(stmt):
@@ -124,6 +150,104 @@ def is_syntax_pattern_exempt(lines: list[str], line_idx: int) -> tuple[bool, str
     if SYNTAX_DEPRECATED_PATTERN.search(stmt):
         return True, "@Deprecated"
     return False, None
+
+
+def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: str | None = None) -> tuple[bool, str | None]:
+    """计算 Level 3 语法模式自动豁免 (严格阻断跨代码块与跨控制流语句的向上回溯)。"""
+    if prefix_on_line is not None:
+        raw_prefix = prefix_on_line.split("//")[0].rstrip()
+    else:
+        raw_prefix = lines[line_idx].split("//")[0].rstrip()
+
+    clean_prefix = strip_string_literals_and_comments(raw_prefix)
+
+    # 1. 块闭合截断：当前行前缀若包含 '}'，其前序代码块已闭合，必须丢弃 '}' 之前的一切内容
+    if "}" in clean_prefix:
+        clean_prefix = clean_prefix.rsplit("}", 1)[1]
+
+    # 2. 块开启截断：当前行前缀若包含 '{'，需判断是否属于 check/require 等合法尾随 lambda
+    can_backtrack = True
+    if "{" in clean_prefix:
+        before_brace, after_brace = clean_prefix.rsplit("{", 1)
+        if SYNTAX_CHECK_REQUIRE_PATTERN.search(before_brace + " {"):
+            return True, "check/require/assert/error"
+        # 否则 '{' 属于控制块 (catch/try/if/lambda/函数体)，截断且严禁向上跨越该作用域边界
+        curr_prefix = after_brace
+        can_backtrack = False
+    else:
+        curr_prefix = clean_prefix
+
+    # 3. 控制流关键字边界：catch, finally, try 等关键字禁止向上穿透
+    if re.search(r"\b(?:catch|finally|try)\b", curr_prefix):
+        can_backtrack = False
+
+    # 4. 当前行局部检查
+    is_ex, reason = check_syntax_patterns(curr_prefix.strip())
+    if is_ex:
+        return True, reason
+
+    if not can_backtrack:
+        return False, None
+
+    # 5. 向上回溯当前语句的前缀 (多行语句场景)
+    stmt_parts = [curr_prefix.strip()]
+    accumulated_parens, accumulated_brackets = count_unclosed_delimiters(curr_prefix)
+
+    for i in range(line_idx - 1, max(-1, line_idx - 15), -1):
+        clean_raw = lines[i].split("//")[0].strip()
+        if not clean_raw:
+            break
+
+        # 分号显式终结
+        if clean_raw.endswith(";"):
+            break
+
+        clean = strip_string_literals_and_comments(clean_raw).strip()
+
+        # 向上遇到闭合块 '}'，立即终止回溯
+        if "}" in clean:
+            break
+
+        # 遇到控制流关键字，立即终止回溯
+        if re.search(r"\b(?:catch|finally|try)\b", clean):
+            break
+
+        # 遇到开启块 '{'
+        if "{" in clean:
+            before_brace, _ = clean.rsplit("{", 1)
+            if SYNTAX_CHECK_REQUIRE_PATTERN.search(before_brace + " {"):
+                stmt_parts.append(clean)
+                return True, "check/require/assert/error"
+            break
+
+        p_parens, p_brackets = count_unclosed_delimiters(clean)
+        accumulated_parens += p_parens
+        accumulated_brackets += p_brackets
+
+        # 判断上一行与当前行是否构成跨行语句延续 (continuation)
+        prev_is_continuation = (
+            accumulated_parens > 0
+            or accumulated_brackets > 0
+            or clean.endswith(("=", "+", "-", "*", "/", "%", "&&", "||", ",", "->", "?:", ".", "\\"))
+            or (len(clean.split()) > 0 and clean.split()[-1] in ("throw", "return", "in", "is", "as"))
+            or (len(stmt_parts[0].split()) > 0 and stmt_parts[0].startswith((".", "+", "-", "*", "/", "%", "&&", "||", "->", "?:", ",")))
+        )
+
+        if not prev_is_continuation:
+            break
+
+        stmt_parts.append(clean)
+
+        combined = " ".join(reversed(stmt_parts))
+        is_ex, reason = check_syntax_patterns(combined)
+        if is_ex:
+            return True, reason
+
+        if any(clean.startswith(k) for k in ("fun ", "class ", "interface ", "object ", "val ", "var ", "@")):
+            break
+
+    combined = " ".join(reversed(stmt_parts))
+    return check_syntax_patterns(combined)
 
 
 def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
@@ -202,7 +326,9 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
             if CHINESE_CHAR_PATTERN.search(content):
                 is_suppressed = str_start_line in suppression
                 is_l1 = any(line_level1_exempt.get(l, False) for l in range(str_start_line, line + content.count("\n") + 1))
-                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1)
+                last_nl = text.rfind("\n", 0, i)
+                prefix_on_line = text[last_nl + 1 : i] if last_nl != -1 else text[:i]
+                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1, prefix_on_line)
 
                 is_exempt = is_suppressed or is_l1 or is_l3
                 reason = "suppress" if is_suppressed else ("inline_comment" if is_l1 else (f"syntax_{l3_reason}" if is_l3 else None))
@@ -236,7 +362,9 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
             if CHINESE_CHAR_PATTERN.search(content):
                 is_suppressed = str_start_line in suppression
                 is_l1 = line_level1_exempt.get(str_start_line, False)
-                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1)
+                last_nl = text.rfind("\n", 0, i)
+                prefix_on_line = text[last_nl + 1 : i] if last_nl != -1 else text[:i]
+                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1, prefix_on_line)
 
                 is_exempt = is_suppressed or is_l1 or is_l3
                 reason = "suppress" if is_suppressed else ("inline_comment" if is_l1 else (f"syntax_{l3_reason}" if is_l3 else None))

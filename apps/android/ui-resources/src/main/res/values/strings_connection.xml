@@ -14,6 +14,7 @@
     <string name="conn_server_address_validation_error">请输入包含主机名的有效服务器地址（例如 http://10.0.2.2:8045 或 https://gateway.example.com）</string>
     <string name="conn_action_connect">连接服务器</string>
     <string name="conn_action_disconnect">断开连接</string>
+    <string name="conn_action_reconnect">重新连接</string>
     <string name="conn_login_title">登录 OAI 服务器</string>
     <string name="conn_login_welcome_subtitle">连接 OAI Core，发现已接入的 Agent</string>
 
@@ -206,6 +207,26 @@
     <string name="conn_notice_timeout">刷新服务器凭据失败：连接超时，当前连接仍然有效，请检查网络后重试。</string>
     <string name="conn_notice_unreachable">刷新服务器凭据失败：无法连接服务器，当前连接仍然有效，请检查网络后重试。</string>
     <string name="conn_notice_fallback">刷新服务器凭据失败，当前连接仍然有效，请稍后重试。</string>
+
+    <!-- 运行期与生命周期通知/Toast 补充 (GatewayRuntime.kt) -->
+    <string name="conn_toast_mfa_code_failed">验证码未通过，请重试。</string>
+    <string name="conn_toast_mfa_or_recovery_failed">验证码或恢复码未通过，请重试。</string>
+    <string name="conn_toast_logout_local_session_save_failed">本机已退出，但本地会话保存失败，请检查设备存储。</string>
+    <string name="conn_toast_logout_unconfirmed">本机已退出，登出未获服务器确认，请检查连接后重试。</string>
+    <string name="conn_toast_logout_cleanup_failed">服务器已登出，但本机凭据清理失败，请检查设备存储。</string>
+    <string name="conn_toast_logout_unconfirmed_cleanup_failed">本机已退出，登出未获服务器确认，且本机凭据清理失败，请检查设备存储。</string>
+    <string name="conn_toast_workbench_save_failed">本地会话保存失败，请检查手机存储后重试。</string>
+    <string name="conn_toast_account_switch_failed">账号切换未完成，请检查手机存储后重试。</string>
+    <string name="conn_toast_account_remove_failed">本机账号移除未完成，资料已保留，请检查连接或存储后重试。</string>
+    <string name="conn_toast_unpair_close_workbench_failed">服务器已解除配对，本机任务收尾失败，请重试本机账号清理。</string>
+    <string name="conn_toast_unpair_wipe_downloads_failed">服务器已解除配对，未完成下载的恢复记录清理失败，请重试本机账号清理。</string>
+    <string name="conn_toast_unpair_remote_done_cleanup_failed">配对已解除，本机清理未完成，请检查存储后重试本机账号清理。</string>
+    <string name="conn_toast_unpair_failed_credentials_retained">解除配对未完成，本机凭据已保留，请检查连接后重试。</string>
+    <string name="conn_toast_local_mirror_read_failed">本地镜像读取失败，正在尝试连接。</string>
+    <string name="conn_toast_device_result_delivery_retry">设备结果交付重试中。</string>
+    <string name="conn_notice_event_stream_rejected">服务器事件通道认证仍被拒绝，已暂停该通道。登录和本机授权已保留，请检查服务器会话与设备认证配置。</string>
+    <string name="conn_notice_event_stream_paused">服务器事件通道恢复已暂停，登录资料已保留，请检查连接配置或本机存储后重试。</string>
+    <string name="conn_toast_download_recovery_failed">未完成的下载恢复失败，已保留恢复记录，可在附件卡片重试。</string>
 
     <!-- 首次引导与部署教程 (Onboarding) -->
     <string name="conn_onboarding_deploy_choice_title">OAI 服务器\n部署好了吗？</string>

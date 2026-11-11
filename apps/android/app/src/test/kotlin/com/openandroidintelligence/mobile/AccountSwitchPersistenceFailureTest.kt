@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.kernel.AndroidAuditStore
@@ -92,7 +93,7 @@ class AccountSwitchPersistenceFailureTest {
             assertEquals("写盘失败不能进入账号选择器", workspace, runtime.localSessionState.value)
             assertTrue(runtime.localSessionState.value is LocalSessionState.Workspace)
             assertEquals("PROTOCOL_INCOMPATIBLE:406", (runtime.phase.value as ConnectionPhase.Failed).code)
-            assertEquals("账号切换未完成，请检查手机存储后重试。", runtime.operationNotice.value)
+            assertEquals(context.getString(UiR.string.conn_toast_account_switch_failed), runtime.operationNotice.value)
             assertEquals(lastProfile, CLEAR_KEYS.associateWith { prefs.all[it] })
             assertEquals(credential, credentials.loadRefresh(profileId)!!.decodeToString())
             assertTrue(keys.hasKey(profileId))

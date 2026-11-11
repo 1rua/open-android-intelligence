@@ -45,6 +45,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -778,11 +779,11 @@ class MainActivity : ComponentActivity() {
                                             // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
                                             // 不再把用户推进一次多余的投屏确认流程。
                                             if (screenCaptureSource.isAvailable) {
-                                                notify("现在可以直接圈选，无需额外授权")
+                                                notify(getString(UiR.string.perm_screen_capture_direct_hint))
                                             } else {
                                                 val intent = screenCaptureSource.createAuthorizationIntent()
                                                 if (intent == null) {
-                                                    notify("此设备不支持屏幕采集，圈选不可用")
+                                                    notify(getString(UiR.string.perm_screen_capture_unsupported))
                                                 } else {
                                                     screenCaptureAuthLauncher.launch(intent)
                                                 }
@@ -851,13 +852,13 @@ private fun OfflineMirrorBanner(onReconnect: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "离线模式：仅显示本地缓存，连接后可继续收发",
+                text = stringResource(UiR.string.conn_status_offline_mode_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = Dimensions.SpaceSmall),
             )
-            TextButton(onClick = onReconnect) { Text("重新连接") }
+            TextButton(onClick = onReconnect) { Text(stringResource(UiR.string.conn_action_reconnect)) }
         }
     }
 }

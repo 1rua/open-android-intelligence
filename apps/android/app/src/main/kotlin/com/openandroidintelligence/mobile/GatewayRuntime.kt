@@ -1157,7 +1157,7 @@ class GatewayRuntime(
                     throw cancelled
                 } catch (cause: Exception) {
                     if (!retryableProofFailure(cause)) throw cause
-                    error = "验证码未通过，请重试。"
+                    error = context.getString(UiR.string.conn_toast_mfa_code_failed)
                     continue
                 } finally {
                     proof.fill('\u0000')
@@ -1183,7 +1183,7 @@ class GatewayRuntime(
                 throw cancelled
             } catch (cause: Exception) {
                 if (!retryableProofFailure(cause)) throw cause
-                error = "验证码或恢复码未通过，请重试。"
+                error = context.getString(UiR.string.conn_toast_mfa_or_recovery_failed)
             } finally {
                 proof.fill('\u0000')
             }
@@ -1239,7 +1239,7 @@ class GatewayRuntime(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
-                    _operationNotice.value = "本机已退出，但本地会话保存失败，请检查设备存储。"
+                    _operationNotice.value = context.getString(UiR.string.conn_toast_logout_local_session_save_failed)
                 }
 
                 var confirmed = false
@@ -1250,7 +1250,7 @@ class GatewayRuntime(
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
-                        _operationNotice.value = "本机已退出，登出未获 Gateway 确认，请检查连接后重试。"
+                        _operationNotice.value = context.getString(UiR.string.conn_toast_logout_unconfirmed)
                     }
                 } else {
                     _operationNotice.value = context.getString(UiR.string.conn_toast_offline_logout_locked)
@@ -1275,9 +1275,9 @@ class GatewayRuntime(
                             throw cancelled
                         } catch (_: Exception) {
                             _operationNotice.value = if (confirmed) {
-                                "Gateway 已登出，但本机凭据清理失败，请检查设备存储。"
+                                context.getString(UiR.string.conn_toast_logout_cleanup_failed)
                             } else {
-                                "本机已退出，登出未获 Gateway 确认，且本机凭据清理失败，请检查设备存储。"
+                                context.getString(UiR.string.conn_toast_logout_unconfirmed_cleanup_failed)
                             }
                         }
                     }
@@ -1364,7 +1364,7 @@ class GatewayRuntime(
         true
     } catch (cancelled: CancellationException) { throw cancelled }
       catch (_: Exception) {
-        _operationNotice.value = "本地会话保存失败，请检查手机存储后重试。"
+        _operationNotice.value = context.getString(UiR.string.conn_toast_workbench_save_failed)
         false
     }
 
@@ -1398,7 +1398,7 @@ class GatewayRuntime(
                 }
                 if (profileId != null) sessionOperationMutex(profileId).withLock { leave() } else leave()
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (_: Exception) { _operationNotice.value = "账号切换未完成，请检查手机存储后重试。" }
+              catch (_: Exception) { _operationNotice.value = context.getString(UiR.string.conn_toast_account_switch_failed) }
             finally { if (connectionJob === owned) connectionJob = null }
         }
         connectionJob = owned
@@ -1496,7 +1496,7 @@ class GatewayRuntime(
                 _savedProfiles.value = accountProfiles.list()
                 _operationNotice.value = context.getString(UiR.string.conn_toast_account_removed_server_kept)
             } catch (cancelled: CancellationException) { throw cancelled }
-              catch (cause: Exception) { _operationNotice.value = "本机账号移除未完成，资料已保留，请检查连接或存储后重试。" }
+              catch (cause: Exception) { _operationNotice.value = context.getString(UiR.string.conn_toast_account_remove_failed) }
             finally { refresh?.fill(0); _isManagingProfiles.value = false }
         }
     }
@@ -1563,7 +1563,7 @@ class GatewayRuntime(
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) {
                         partialFailure = true
-                        _operationNotice.value = "Core 已解除配对，本机任务收尾失败，请重试本机账号清理。"
+                        _operationNotice.value = context.getString(UiR.string.conn_toast_unpair_close_workbench_failed)
                     }
                     teardown()
                     val localScope = ConversationScope(profileId,current.gatewayUrl,accountId,installationId())
@@ -1573,7 +1573,7 @@ class GatewayRuntime(
                     } catch (cancelled: CancellationException) { throw cancelled }
                       catch (_: Exception) {
                         partialFailure = true
-                        _operationNotice.value = "Core 已解除配对，未完成下载的恢复记录清理失败，请重试本机账号清理。"
+                        _operationNotice.value = context.getString(UiR.string.conn_toast_unpair_wipe_downloads_failed)
                     }
                     val cleanup = listOf<suspend () -> Unit>(
                         { clearNativeLocalPartitions(localScope) },
@@ -1611,7 +1611,7 @@ class GatewayRuntime(
                 throw cancelled
             } catch (_: Exception) {
                 _unpairOperation.value = LocalOperationState.Failed(
-                    if (remoteCompleted) "配对已解除，本机清理未完成，请检查存储后重试本机账号清理。" else "解除配对未完成，本机凭据已保留，请检查连接后重试。",
+                    if (remoteCompleted) context.getString(UiR.string.conn_toast_unpair_remote_done_cleanup_failed) else context.getString(UiR.string.conn_toast_unpair_failed_credentials_retained),
                     remoteCompleted,
                 )
             }
@@ -1915,7 +1915,7 @@ class GatewayRuntime(
                     try { showLocalWorkspace(endpoint, lastUser, profileId, accountId, checkOwner = ::checkOwner,
                         initializing = true, restoreLastThread = !startOnBlank) }
                     catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { _operationNotice.value = "本地镜像读取失败，正在尝试连接。" }
+                    catch (_: Exception) { _operationNotice.value = context.getString(UiR.string.conn_toast_local_mirror_read_failed) }
                 }
                 while (isActive) {
                     if (graceRemaining() == 0L) lastTransientFailure?.let { showConfirmedFailure(it) }
@@ -2252,7 +2252,7 @@ class GatewayRuntime(
                 sessionScope.launch(Dispatchers.IO) {
                     while (isActive) {
                         try { executor.recoverPending(); com.openandroidintelligence.mobile.plugins.PluginJobScheduler.maintain(context) }
-                        catch (cancelled:CancellationException) { throw cancelled } catch (_:Exception) { _operationNotice.value="设备结果交付重试中。" }
+                        catch (cancelled:CancellationException) { throw cancelled } catch (_:Exception) { _operationNotice.value = context.getString(UiR.string.conn_toast_device_result_delivery_retry) }
                         delay(30_000)
                     }
                 }
@@ -3055,7 +3055,7 @@ class GatewayRuntime(
                         blockedSnapshot = renewal.current
                         updateScreenConnection(false)
                         _connectionStatus.value = EventStreamStatus.FAILED
-                        _operationNotice.value = "Gateway 事件通道认证仍被拒绝，已暂停该通道。登录和本机授权已保留，请检查 Gateway 会话与设备认证配置。"
+                        _operationNotice.value = context.getString(UiR.string.conn_notice_event_stream_rejected)
                     } catch (cause: RefreshOutcomeUnknownException) {
                         ensureActive()
                         if (sessionJob !== ownedJob) return@launchAfterPlatformStream
@@ -3073,7 +3073,7 @@ class GatewayRuntime(
                         _connectionStatus.value = EventStreamStatus.FAILED
                         nativeConversationNotifications.disconnect()
                         GatewayLog.w("OaiConnection", "stage=PLATFORM_PAUSED owner=$owner code=${cause.javaClass.simpleName}")
-                        _operationNotice.value = "Gateway 事件通道恢复已暂停，登录资料已保留，请检查连接配置或本机存储后重试。"
+                        _operationNotice.value = context.getString(UiR.string.conn_notice_event_stream_paused)
                     }
                 }
                 platformJob = next
@@ -3107,7 +3107,7 @@ class GatewayRuntime(
         downloads.recoverPendingDownloads()
         null
     } catch (cancelled: CancellationException) { throw cancelled }
-      catch (_: Exception) { "未完成的下载恢复失败，已保留恢复记录，可在附件卡片重试。" }
+      catch (_: Exception) { context.getString(UiR.string.conn_toast_download_recovery_failed) }
 
     /** 本机初始化的失败只清理本次运行态，账号资料、密钥、刷新凭据和历史文件全部保留。 */
     private inline fun <T> initializePostLogin(stage: InitializationStage, operation: () -> T): T {
