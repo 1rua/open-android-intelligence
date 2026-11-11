@@ -211,6 +211,32 @@ it("官方follow开场快照恢复既有attempt并继续接收正文分片", asy
   expect(response.frames.filter((frame) => frame.type === "delta").map((frame) => frame.text)).toEqual(["已有前缀", "后续分片"]);
   expect(response.frames.at(-1)).toMatchObject({ type: "done" });
 });
+it("follow开场已覆盖助手正文时后续仅终态仍保留完整回复身份", async () => {
+  const h = fixture(undefined, "running", { observationTimeoutMs: 100 });
+  h.services.sessionController.follow = async function* () {
+    h.events.push({ seq: 3, type: "assistant/message", data: { turn: 7, message: { id: "opening-answer", role: "assistant", content: [{ type: "text", text: "开场已覆盖回复" }] } } });
+    yield { type: "snapshot", assistantStream: { revision: 3 } };
+    const terminal = { seq: 4, type: "turn/end", data: { turn: 7, reason: { kind: "completed" } } };
+    h.emit(terminal);
+    yield { type: "event", event: terminal };
+  };
+  const response = await h.request("/messages", "POST", { text: "合成输入", clientMessageId: "stable-client" });
+  expect(response.frames.at(-1)).toMatchObject({ type: "done", text: "开场已覆盖回复", messageId: "opening-answer" });
+});
+it("预查排队而follow开场已运行时先绑定轮次再恢复前缀和分片", async () => {
+  const h = fixture(runningLog().slice(0, 1), "idle", { observationTimeoutMs: 100 });
+  h.services.sessionController.follow = async function* () {
+    h.agent.status = "running";
+    h.events.push(...runningLog().slice(1));
+    yield { type: "snapshot", assistantStream: { revision: 2, activeAttempt: { turn: 7, attemptId: "promoted-attempt", stream: [{ type: "text-chunks", texts: ["开场前缀"] }] } } };
+    yield { type: "assistant-stream", frame: { type: "chunk", attemptId: "promoted-attempt", chunk: { type: "text-delta", text: "继续分片" } } };
+    const terminal = { seq: 3, type: "turn/end", data: { turn: 7, reason: { kind: "completed" } } };
+    h.emit(terminal);
+    yield { type: "event", event: terminal };
+  };
+  const response = await h.request("/messages", "POST", { text: "合成输入", clientMessageId: "stable-client" });
+  expect(response.frames.filter((frame) => frame.type === "delta").map((frame) => frame.text)).toEqual(["开场前缀", "继续分片"]);
+});
 it("中断恢复终态仍以未知原身份阻挡后续队列", () => {
   const events = runningLog();
   events.push({ seq: 3, type: "turn/end", data: { turn: 7, reason: { kind: "interrupted" } } });

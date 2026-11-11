@@ -312,6 +312,13 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
         for await (const item of controller.follow({ address: { kind: "session", sessionId: id }, assistantStream: true, maxMessages: 1 }, followAbort.signal)) {
           if (ending || stopped) break;
           if (item.type === "snapshot") {
+            // 开场快照可能晚于预查：先同步权威轮次、正文和身份，再恢复活动尝试。
+            const latest = findGeneration(liveProjection(id) ?? { generations: [] }, { clientMessageId: requestId });
+            if (latest) {
+              if (latest.nativeTurn !== undefined) ownTurn = latest.nativeTurn;
+              finalText = latest.text;
+              if (latest.messageId !== undefined) identity.messageId = latest.messageId;
+            }
             const attempt = item.assistantStream?.activeAttempt;
             if (attempt?.turn === ownTurn) ownAttempts.add(attempt.attemptId);
             let prefix = "", bytes = 0;
@@ -323,11 +330,7 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
               prefix += text;
             }
             if (prefix && !stopped) enqueue({ type: "delta", text: prefix });
-            const latest = findGeneration(liveProjection(id) ?? { generations: [] }, { clientMessageId: requestId });
-            if (latest?.nativeTurn !== undefined) ownTurn = latest.nativeTurn;
             if (latest && ["completed", "failed", "cancelled"].includes(latest.state)) {
-              finalText = latest.text;
-              if (latest.messageId !== undefined) identity.messageId = latest.messageId;
               finish(latest.state === "completed" ? { type: "done", text: finalText, ...identity }
                 : { type: "error", code: latest.code ?? "AGENT_FAILED", ...identity });
             }
