@@ -1673,10 +1673,6 @@ def _dsh_unit_environment(properties: dict, process: _DshProcess, *, user_servic
     if properties.get("PAMName"):
         raise ValueError("PAM environment cannot be predicted")
     environment = dict(manager_environment)
-    if not user_service:
-        for key in shlex.split(properties.get("PassEnvironment", "")):
-            if key in manager_process_environment:
-                environment[key] = manager_process_environment[key]
     configured_user = properties.get("User", "")
     if configured_user:
         expected_uid = int(configured_user) if configured_user.isdecimal() else pwd.getpwnam(configured_user).pw_uid
@@ -1687,6 +1683,10 @@ def _dsh_unit_environment(properties: dict, process: _DshProcess, *, user_servic
     if properties.get("SetLoginEnvironment", "") != "no" and configured_user:
         identity = pwd.getpwuid(process.uid)
         environment.update(HOME=identity.pw_dir, LOGNAME=identity.pw_name, SHELL=identity.pw_shell)
+    if not user_service:
+        for key in shlex.split(properties.get("PassEnvironment", "")):
+            if key in manager_process_environment:
+                environment[key] = manager_process_environment[key]
     environment.update(item.split("=", 1) for item in shlex.split(properties.get("Environment", "")) if "=" in item)
     files = properties.get("EnvironmentFiles", "")
     position = 0
