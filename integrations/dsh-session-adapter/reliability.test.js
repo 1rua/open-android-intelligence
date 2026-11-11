@@ -191,7 +191,7 @@ describe("DSH execution and observer lifetimes", () => {
     const h = fixture(async (input) => { h.start(input); return { accepted: true }; });
     const post = await serve(h);
     const frames = (await (await post("one")).text()).trim().split("\n").map(JSON.parse);
-    expect(frames).toEqual([{ type: "error", code: "OUTCOME_UNKNOWN", state: "unknown" }]);
+    expect(frames).toEqual([{ type: "error", code: "OUTCOME_UNKNOWN", userMessageId: "native-user", state: "unknown" }]);
     expect(h.count()).toBe(0);
     expect(h.controller.cancel).not.toHaveBeenCalled();
   });
