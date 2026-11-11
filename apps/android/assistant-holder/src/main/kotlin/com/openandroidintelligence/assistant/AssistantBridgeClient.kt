@@ -283,7 +283,7 @@ internal class AssistantBridgeClient(
      *
      * 没有当前绑定、已关闭或未连接时立即回收并丢弃：绝不把附件塞进别人的会话。
      */
-    fun attachScreen(bitmap: Bitmap) {
+    fun attachScreen(bitmap: Bitmap, filename: String = SCREEN_ATTACHMENT_FILENAME) {
         val expectedBridge = bridge
         val expectedToken = token
         if (!canSendAttachment(expectedBridge, expectedToken)) {
@@ -313,6 +313,8 @@ internal class AssistantBridgeClient(
                     val delivered = command(COMMAND_SCREEN) {
                         putParcelable("content", pipe[0])
                         putInt("size", bytes.size)
+                        // 拍照来源要与圈选区分：主进程据此命名，两张附件才不会同名。
+                        putString("filename", filename)
                     }
                     if (!delivered) {
                         pipe.forEach { runCatching { it.close() } }
@@ -443,6 +445,9 @@ internal class AssistantBridgeClient(
 
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val SCREEN_DELIVERY_TIMEOUT_MILLIS = 10_000L
+
+        /** 圈选截图的默认展示文件名；拍照来源会传入自己的名字。 */
+        const val SCREEN_ATTACHMENT_FILENAME = "assist-screen.png"
     }
 }
 

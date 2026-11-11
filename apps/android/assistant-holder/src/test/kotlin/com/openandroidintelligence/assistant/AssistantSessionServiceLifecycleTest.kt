@@ -8,6 +8,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -359,11 +360,121 @@ class AssistantSessionServiceLifecycleTest {
         )
     }
 
-    @Test fun aMissingScreenshotExplainsWhySelectionIsUnavailable() {
+    /**
+     * 高分辨率截图不再被本地像素上限判死。
+     *
+     * 1440×3120（4.49M 像素）是常见旗舰分辨率，旧实现按 4M 上限直接丢弃，再用
+     * 「系统未提供截图」提示——用户明明开着屏幕分析，看到的却是系统没给图。
+     * 现在超限按比例降采样后照常进入定格。
+     */
+    @Test fun aHighResolutionScreenshotIsScaledInsteadOfRejected() {
         val session = session()
         session.onShow(Bundle(), 0)
         attachFakeBridge()
         shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(1440, 3120, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(
+            "超限截图应降采样后进入定格，而不是被判成「系统未提供」",
+            AssistantOverlay.FROZEN_SCREENSHOT,
+            session.uiStateOrNull()?.visible()?.overlay,
+        )
+        val advisory = session.clientOrNull()?.state?.value?.advisory
+        assertTrue("不得再出现「系统未提供截图」：$advisory", advisory != "系统未提供截图，无法圈选；可直接输入文字")
+    }
+
+    /**
+     * 系统这次没请求截图（`showFlags` 不含 `SHOW_WITH_SCREENSHOT`）时，
+     * `onHandleScreenshot` 根本不会被调用。会话必须当场说明，而不是让用户干等。
+     */
+    @Test fun anInvocationWithoutTheScreenshotFlagExplainsWhyThereIsNoSelection() {
+        val session = session()
+        // 0 = 没有任何 show 位；系统不会投递截图。
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(AssistantOverlay.NONE, session.uiStateOrNull()?.visible()?.overlay)
+        assertEquals(
+            "本次唤起未包含系统截图，无法圈选；可直接输入文字",
+            session.clientOrNull()?.state?.value?.advisory,
+        )
+    }
+
+    /** 带截图位的唤起不应该提前给出「没有截图」的提示。 */
+    /**
+     * 上滑手势期间窗口必须铺满，松手后按结果收回。
+     *
+     * 紧凑态窗口只有输入栏高（实测 420px）：手指一旦上移出窗口边界，系统就不再向
+     * 本窗口派发 MOVE，位移只累计到 63px 就停，阈值永远达不到 —— 这正是「有动画但
+     * 进不去主 App」。铺满后整段手势都能被收到（实测同一手势达 -1056px 并触发交接）。
+     */
+    @Test fun draggingTheHandleExpandsTheWindowAndReleasingRestoresIt() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        val compactHeight = window?.attributes?.height
+
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(
+            "拖拽期间窗口必须铺满，否则手势移出边界后收不到 MOVE",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+
+        invokeDragWindowExpanded(session, false)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals("松手后必须回到测量驱动的高度", compactHeight, window?.attributes?.height)
+    }
+
+    /** 交接被拒绝：窗口必须收回，否则浮层会停在满屏挡住下方 App。 */
+    @Test fun aRejectedHandoffRestoresTheCompactWindow() {
+        val session = session(handoffFrame = AssistantHandoffRejectedFrame("当前账号不一致，未交接"))
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestHandoff(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNotEquals(
+            "拒绝后不能留在全屏",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+    }
+
+    private fun invokeDragWindowExpanded(session: VoiceInteractionSession, expanded: Boolean) {
+        val method = session.javaClass.getDeclaredMethod("setDragWindowExpanded", Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+        method.invoke(session, expanded)
+    }
+
+    @Test fun anInvocationWithTheScreenshotFlagDoesNotWarnPrematurely() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNull("已经请求截图时不得抢先报错", session.clientOrNull()?.state?.value?.advisory)
+    }
+
+    @Test fun aMissingScreenshotExplainsWhySelectionIsUnavailable() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.clientOrNull()?.clearAdvisory()
 
         // 系统这次没有交付截图：会话既不能进定格，也不能保持沉默。
         session.onHandleScreenshot(null)
@@ -425,8 +536,7 @@ class AssistantSessionServiceLifecycleTest {
         invokeRequestHandoff(session)
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
-        val started = org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
-            .nextStartedActivity
+        val started = startedMainIntent(session)
         requireNotNull(started) { "交接成功后必须打开主 App" }
         assertEquals("com.openandroidintelligence.mobile.MainActivity", started.component?.className)
         assertEquals("oai-reply", started.data?.scheme)
@@ -473,11 +583,22 @@ class AssistantSessionServiceLifecycleTest {
         invokeRequestHandoff(session)
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
-        val started = org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication())
-            .nextStartedActivity
+        val started = startedMainIntent(session)
         requireNotNull(started) { "本轮 ACCEPTED 必须打开主 App，不能被上一轮的拒绝挡住" }
         assertEquals("com.openandroidintelligence.mobile.MainActivity", started.component?.className)
     }
+
+    /**
+     * 会话打开主 App 时实际使用的 Intent。
+     *
+     * 真实路径优先走 `VoiceInteractionSession.startAssistantActivity`（助手窗口不是
+     * 「可见应用窗口」，普通 `startActivity` 会被后台启动限制静默拒绝）；Robolectric
+     * 把它记在会话上，普通 `startActivity` 才记在 Application 上。断言必须两条都看，
+     * 否则测试会「因为走了正确路径而失败」。
+     */
+    private fun startedMainIntent(session: VoiceInteractionSession): android.content.Intent? =
+        shadowOf(session).assistantActivityIntents.lastOrNull()
+            ?: org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
 
     private fun VoiceInteractionSession.uiStateOrNull(): AssistantSessionUiController? =
         javaClass.getDeclaredField("uiState").apply { isAccessible = true }.get(this) as? AssistantSessionUiController
@@ -486,6 +607,152 @@ class AssistantSessionServiceLifecycleTest {
     private fun VoiceInteractionSession.dispatchDraft(text: String) {
         val client = clientOrNull() ?: return
         client.updateDraft(text)
+    }
+
+    /**
+     * 定格态换帧：界面必须换到新截图，不能继续引用已回收的旧图。
+     *
+     * 系统可能在定格态再投递一张截图。旧实现只写普通字段 `screenshot`，父级组合
+     * 求得的参数不会重新计算，子级仍收到已回收的旧位图 —— 界面退回普通输入栏，
+     * 而窗口还停在全屏，圈选也继续不了。截图因此改为可观察状态。
+     */
+    @Test fun aSecondFrozenScreenshotReplacesTheFirstWithoutLeavingARecycledFrame() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(40, 40, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val first = invokeFrozenScreenshot(session)
+        requireNotNull(first) { "首帧必须进入定格" }
+
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(60, 60, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val second = invokeFrozenScreenshot(session)
+        requireNotNull(second) { "换帧后仍必须有一张可用的截图" }
+        assertTrue("旧帧在换帧后应被释放", first.isRecycled)
+        assertTrue("新帧不能被回收", !second.isRecycled)
+        assertEquals("新帧尺寸应与新投递的一致", 60, second.width)
+        assertEquals(
+            "换帧不影响定格态",
+            AssistantOverlay.FROZEN_SCREENSHOT,
+            session.uiStateOrNull()?.visible()?.overlay,
+        )
+    }
+
+    private fun invokeFrozenScreenshot(session: VoiceInteractionSession): android.graphics.Bitmap? {
+        val method = session.javaClass.getDeclaredMethod("frozenScreenshot").apply { isAccessible = true }
+        return method.invoke(session) as? android.graphics.Bitmap
+    }
+
+    /**
+     * 打开附件卡片后按返回：只关卡片，会话、草稿与附件都保留。
+     *
+     * 卡片是最上层的临时界面，返回键必须先关它。否则一次返回直接结束会话，
+     * 尚未交接的草稿与附件会随会话释放（规格 §203、§338 要求取消不丢草稿）。
+     */
+    @Test fun backClosesTheAttachmentSheetBeforeEndingTheSession() {
+        val session = session()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        invokeSetAttachmentSheet(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onBackPressed()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals("返回只关卡片，会话仍在", AssistantSurfaceState.COMPACT_INPUT,
+            session.uiStateOrNull()?.visible()?.surface)
+        assertTrue("卡片必须已收起", !invokeAttachmentSheetOpen(session))
+        assertTrue("不得断开连接", commands().none { it == "disconnect" })
+    }
+
+    /** 定格态打开卡片后按返回：先关卡片，**不**同时退出定格。 */
+    @Test fun backClosesTheSheetWithoutLeavingTheFrozenSelection() {
+        val session = session()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(40, 40, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        invokeSetAttachmentSheet(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onBackPressed()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertEquals(
+            "返回只关卡片，定格态保持",
+            AssistantOverlay.FROZEN_SCREENSHOT,
+            session.uiStateOrNull()?.visible()?.overlay,
+        )
+        assertTrue("卡片必须已收起", !invokeAttachmentSheetOpen(session))
+    }
+
+    /**
+     * 交接命令发不出去（未连接）：拖拽铺满的窗口必须收回。
+     *
+     * 早退路径若不收回，透明全屏会一直拦住下方 App 的触摸——用户会以为整个手机卡死。
+     */
+    @Test fun aFailedHandoffCommandRestoresTheCompactWindow() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        // 故意不接假桥接：客户端为空，requestHandoff 走早退路径。
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestHandoff(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNotEquals(
+            "命令发送失败后不能留在全屏",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+    }
+
+    /** 拖动中收起助手再唤起：不得继承上一次的全屏窗口。 */
+    @Test fun reInvokingAfterADragDoesNotInheritTheFullscreenWindow() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onHide()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.onShow(Bundle(), 0)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val window = session.window?.window
+        assertNotEquals(
+            "新一次唤起不能继承全屏窗口",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+    }
+
+    private fun invokeSetAttachmentSheet(session: VoiceInteractionSession, open: Boolean) {
+        session.javaClass.getDeclaredMethod("setAttachmentSheetOpen", Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+            .invoke(session, open)
+    }
+
+    private fun invokeAttachmentSheetOpen(session: VoiceInteractionSession): Boolean {
+        val field = session.javaClass.getDeclaredField("attachmentSheetOpen").apply { isAccessible = true }
+        val state = field.get(session) as androidx.compose.runtime.MutableState<Boolean>
+        return state.value
     }
 
     private fun invokeRequestHandoff(session: VoiceInteractionSession) {

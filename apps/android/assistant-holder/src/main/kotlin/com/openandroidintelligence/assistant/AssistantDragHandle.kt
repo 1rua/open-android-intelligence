@@ -63,6 +63,14 @@ internal fun AssistantDragHandle(
     /** 当前形态的朗读摘要，例如「紧凑输入」或「展开会话」。 */
     stateDescription: String = "紧凑输入",
     onDragProgress: (Float) -> Unit = {},
+    /**
+     * 拖拽开始/结束：宿主据此把窗口临时铺满。
+     *
+     * 必须铺满的原因：紧凑态窗口只有输入栏那么高（实测 420px），手指一旦上移出
+     * 窗口边界，系统就不再向本窗口派发后续 MOVE —— 实测位移只累计到 63px 就停了，
+     * 阈值永远达不到，于是「有动画但进不去主 App」。铺满后手势整段都在窗口内。
+     */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val density = LocalDensity.current
@@ -152,13 +160,26 @@ internal fun AssistantDragHandle(
                     // 减少动态下 dragOffset 恒为 0，进度自然也是 0（父级不做整层位移）。
                     reportProgress(dragOffset)
                 },
-                onDragStarted = { pressed = true },
+                onDragStarted = {
+                    pressed = true
+                    onDragWindowExpanded(true)
+                },
                 onDragStopped = { velocity ->
                     pressed = false
                     val reached = enabled &&
                         shouldHandoffDrag(dragTravel, velocity, screenHeightPx, flingThresholdPx)
+                    AssistantDiagnostics.handoff(
+                        "gesture",
+                        "travel=$dragTravel velocity=$velocity screen=$screenHeightPx enabled=$enabled reached=$reached",
+                    )
                     settleToRest()
-                    if (reached) currentOnRequestHandoff()
+                    if (reached) {
+                        // 交接需要主进程回执（最长 5 秒）：窗口保持铺满，浮层才不会
+                        // 在手势结束瞬间被裁回输入栏高度而闪一下。失败时它会被收回。
+                        currentOnRequestHandoff()
+                    } else {
+                        onDragWindowExpanded(false)
+                    }
                 },
             ),
         contentAlignment = Alignment.Center,

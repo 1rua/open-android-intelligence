@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentOverlay
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.voice.VoiceRecorder
 import com.openandroidintelligence.conversation.voice.VoiceRecorderState
@@ -75,11 +77,27 @@ internal fun AssistantSessionContent(
      *
      * 与 [selection] 的区别：[selection] 是「裁剪页」覆盖层（有确认步骤，服务 ASSIST
      * 兜底页与单次圈选）；定格态是唤起后的默认形态，松手即自动加入附件。
+     *
+     * 类型是 [State] 而不是裸 `Bitmap?`：系统可能在定格态再投递一张新截图，界面必须
+     * 跟着换到新帧。裸参数只在组合时求值一次，新帧到达后组合不会重建，界面会继续
+     * 引用**已被回收**的旧图（随后退回普通输入栏，而窗口仍是全屏）。
      */
-    frozenScreenshot: Bitmap? = null,
+    frozenScreenshot: State<Bitmap?>? = null,
     onRequestHandoff: () -> Unit = {},
+    /**
+     * 拖动横条期间窗口是否需要临时铺满。
+     *
+     * 紧凑态窗口只有输入栏那么高，手指移出窗口边界后系统就不再派发 MOVE，
+     * 位移累计不到阈值（实测只到 63px），上滑交接因此永远不会触发。
+     */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
     onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onExitFrozen: () -> Unit = {},
+    /** 附件来源卡片是否展开；由宿主维护，卡片本身渲染在会话窗口内。 */
+    attachmentSheetVisible: Boolean = false,
+    onDismissAttachmentSheet: () -> Unit = {},
+    /** 用户在卡片里选了某一类来源。 */
+    onPickAttachmentSource: (com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource) -> Unit = {},
 ) {
     val state by client.state.collectAsState()
     val context = LocalContext.current
@@ -137,6 +155,12 @@ internal fun AssistantSessionContent(
             .forEach { previews.adoptPendingImage(it.draftId) }
         knownAttachmentIds = current.map { it.draftId }.toSet()
     }
+    // 定格截图：**在组合期读取一次**，本组合因此订阅了宿主的 State。
+    // 系统可能在定格态再投递一张新截图（旧帧随即回收）：只有通过可观察状态读取，
+    // 新帧到达时才会重组并换到新图；读裸字段会让界面一直引用已被回收的旧位图。
+    val frozenSource = frozenScreenshot?.value
+        ?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+
     AssistantAppearanceScope(
         state = state,
         onResolvedAppearance = onResolvedAppearance,
@@ -158,10 +182,12 @@ internal fun AssistantSessionContent(
                     onCancel = onFinishSelection,
                     onCropRejected = { client.showAdvisory("选区太小，请重新圈选") },
                 )
-            } else if (frozenScreenshot == null || frozenScreenshot.isRecycled ||
-                frozenScreenshot.width <= 0 || frozenScreenshot.height <= 0
-            ) {
+            } else if (frozenSource == null) {
                 AssistantSessionRoot(
+                    // 根 Box 在**无界高度**下测量（窗口高度由它的测量结果决定），
+                    // 默认从顶部开始排就会把内容顶到窗口上沿，输入栏与卡片之间出现空隙。
+                    // 显式贴底：卡片贴着窗口下沿，与紧凑态一致。
+                    modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter),
                     draft = state.draft,
                     onDraftChange = client::updateDraft,
                     // 未连接时不禁用输入：发送失败会保留草稿并给出提示。
@@ -214,6 +240,7 @@ internal fun AssistantSessionContent(
                     onStartScreenSelection = onStartSelection,
                     onOpenApp = onOpenApp,
                     onRequestHandoff = onRequestHandoff,
+                    onDragWindowExpanded = onDragWindowExpanded,
                     onAddAttachment = onAddAttachment,
                     onContentHeightChanged = onContentHeightChanged,
                     resetOnEntry = resetOnEntry,
@@ -221,7 +248,7 @@ internal fun AssistantSessionContent(
             }
             // 定格截图：同一棵会话状态之上的全屏临时形态。系统截图是唯一底色，
             // 拿不到就不进（宿主据此保持紧凑输入并给出说明），绝不伪造背景。
-            val frozen = frozenScreenshot?.takeIf { !it.isRecycled && it.width > 0 && it.height > 0 }
+            val frozen = frozenSource
             if (frozen != null) {
                 AssistantFrozenSelectionScene(
                     screenshot = frozen,
@@ -273,6 +300,14 @@ internal fun AssistantSessionContent(
                     // （返回键第一次退出定格），这里不重复一套对话界面。
                 )
             }
+            // 附件来源卡片覆盖在整块内容之上（含定格态）：它与主 App 共用同一份内容与令牌，
+            // 但**不新建 Dialog 窗口** —— 会话宿主是 VoiceInteractionSession（type=2031），
+            // ModalBottomSheet 的 TYPE_APPLICATION 窗口会被系统拒绝并崩溃。
+            ComposerAttachmentOverlay(
+                visible = attachmentSheetVisible,
+                onDismiss = onDismissAttachmentSheet,
+                onPick = onPickAttachmentSource,
+            )
         }
     }
 }

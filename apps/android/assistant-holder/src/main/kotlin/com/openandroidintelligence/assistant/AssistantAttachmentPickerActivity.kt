@@ -46,6 +46,23 @@ class AssistantAttachmentPickerActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 系统相机：`TakePicturePreview` 返回一张缩略位图，不需要 FileProvider 与额外权限。
+     *
+     * 助手浮层运行在 `VoiceInteractionSession` 里，没有自己的 Activity 栈；用预览位图
+     * 而不是完整尺寸拍照，可以避免为一次附件选择引入临时文件与 URI 授权。位图经
+     * broker 交给会话，再走既有的「编码 → 屏幕附件」通道。
+     */
+    private val capture = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) {
+            AssistantAttachmentPickerBroker.deliverCapture(bitmap)
+            finish()
+        } else {
+            AssistantAttachmentPickerBroker.cancel()
+            finish()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState != null) {
@@ -55,11 +72,25 @@ class AssistantAttachmentPickerActivity : ComponentActivity() {
         when (kind()) {
             AssistantAttachmentKind.MEDIA -> launchGallery()
             AssistantAttachmentKind.DOCUMENT -> launchDocument()
+            AssistantAttachmentKind.CAPTURE -> launchCapture()
+            // SHEET 只表示「展开宿主窗口内的卡片」，不应启动本 Activity；
+            // 真到了这里说明调用方弄错了类别，按相册处理而不是无声结束。
+            AssistantAttachmentKind.SHEET -> launchGallery()
         }
     }
 
     private fun kind(): AssistantAttachmentKind =
         AssistantAttachmentKind.of(intent?.getStringExtra(EXTRA_KIND))
+
+    /** 拍照：没有可用相机时如实退回相册选择，不假装已经拍了一张。 */
+    private fun launchCapture() {
+        if (launched) return
+        launched = true
+        runCatching { capture.launch(null) }.onFailure {
+            launched = false
+            launchGallery()
+        }
+    }
 
     private fun launchGallery() {
         if (launched) return

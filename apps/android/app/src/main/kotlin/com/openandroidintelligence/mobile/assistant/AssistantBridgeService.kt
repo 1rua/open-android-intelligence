@@ -173,11 +173,19 @@ class AssistantBridgeService : Service() {
         val fd = b.parcelFileDescriptor("content") ?: error("CONTENT_REQUIRED")
         val size = b.getInt("size")
         if (size !in 1..MAX_SCREEN_ATTACHMENT_BYTES) { fd.close(); error("CONTENT_TOO_LARGE") }
+        // 展示文件名由助手进程给出：圈选与拍照都走这条命令，硬编码会让两张附件同名。
+        // 只接受安全形状（非空、无路径分隔符、长度受限），其余回落到圈选默认名 ——
+        // 这个名字会出现在附件卡与相册里，不能把任意字符串直接塞进去。
+        val requested = b.getString("filename").orEmpty()
+        val filename = requested.takeIf {
+            it.isNotBlank() && it.length <= MAX_ATTACHMENT_FILENAME_CHARS &&
+                '/' !in it && '\\' !in it && it.none { ch -> ch.isISOControl() }
+        } ?: SCREEN_ATTACHMENT_FILENAME
         enqueueAttachmentRead(client, controller, fd, size, "屏幕附件无法读取，请重新圈选",
             build = { bytes ->
                 check(bytes.take(PNG_SIGNATURE.size).toByteArray().contentEquals(PNG_SIGNATURE)) { "CONTENT_TYPE_INVALID" }
                 LocalAttachmentSelection(
-                    filename = "assist-screen.png",
+                    filename = filename,
                     mediaType = "image/png",
                     // 与 v1 一致：暂存消费完这批字节后立即清零本地副本。
                     contentSource = AttachmentContentSource.fromWriter { output ->
@@ -575,6 +583,10 @@ class AssistantBridgeService : Service() {
         const val MAX_DRAFT_CHARS = 50_000
         const val MAX_SCREEN_ATTACHMENT_BYTES = 8 * 1024 * 1024
         const val ATTACHMENT_READ_TIMEOUT_MILLIS = 10_000L
+        /** 附件展示文件名的长度上限；超出按默认名处理，不把任意长串塞进附件卡。 */
+        const val MAX_ATTACHMENT_FILENAME_CHARS = 120
+        /** 圈选附件的默认展示文件名；助手进程未给名字时使用。 */
+        const val SCREEN_ATTACHMENT_FILENAME = "assist-screen.png"
         val PNG_SIGNATURE = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
         val ALLOWED_KEYS = ASSISTANT_BRIDGE_ALLOWED_KEYS
     }

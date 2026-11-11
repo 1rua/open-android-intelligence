@@ -76,6 +76,8 @@ internal fun AssistantFrozenSelectionScene(
     onFinishRecording: () -> Unit = {},
     onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onRequestHandoff: () -> Unit = {},
+    /** 拖动横条期间窗口是否需要临时铺满；定格态本身已是满屏，透传保持语义一致。 */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
     onSelectionReady: (AssistantSelectionResult) -> Unit = {},
     onSelectionRejected: () -> Unit = {},
     /** 当前附件是否已达上限：达到后停止接受新选区，并给出一次提示。 */
@@ -159,6 +161,7 @@ internal fun AssistantFrozenSelectionScene(
             }
             AssistantDragHandle(
                 onRequestHandoff = onRequestHandoff,
+                onDragWindowExpanded = onDragWindowExpanded,
                 enabled = enabled,
                 stateDescription = "画圈选屏",
             )

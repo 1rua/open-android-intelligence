@@ -52,7 +52,14 @@ class AssistantSessionService : VoiceInteractionSessionService() {
 internal class AssistantSession(service: AssistantSessionService) : VoiceInteractionSession(service) {
     private var host: AssistantComposeHost? = null
     private var client: AssistantBridgeClient? = null
-    private var screenshot: Bitmap? = null
+    /**
+     * 系统截图：**Compose 可观察状态**。
+     *
+     * 界面必须能跟着换帧。系统可能在定格态再投递一张新截图，此时旧帧会被回收；
+     * 若界面读的是普通字段，新帧到达后组合不会重建，仍引用已回收的旧位图
+     * （随后退回普通输入栏，而窗口仍停在全屏）。
+     */
+    private val screenshot = androidx.compose.runtime.mutableStateOf<Bitmap?>(null)
 
     /** 界面形态与覆盖层：唯一的状态真相，界面与窗口都读它。 */
     private val uiState = AssistantSessionUiController().also { controller ->
@@ -72,6 +79,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     private val frozenFullscreen = mutableStateOf(false)
 
+    /**
+     * 会话级本地预览存储。
+     *
+     * 由会话持有而不是只在组合里 `remember`：拍照回调在组合之外触发，必须在位图被
+     * 编码回收**之前**把缩略图写进去。界面复用同一个实例，`adoptPendingImage` 才能把
+     * 本进程的预览改挂到主进程回传的权威附件 ID 上。
+     */
+    private val previews = AssistantLocalPreviews()
+
     /** 最近一次由 Compose 测量出的内容高度（像素）；0 表示还没有测量结果。 */
     private var measuredContentHeightPx = 0
 
@@ -82,8 +98,32 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     @Volatile private var userHasStartedTyping = false
 
+    /**
+     * 附件来源卡片是否展开（渲染在会话窗口内，不新建 Dialog 窗口）。
+     *
+     * 用 Compose 状态而不是普通字段：它直接驱动界面可见性，写入发生在主线程。
+     */
+    /**
+     * 上滑交接手势进行中：窗口临时铺满。
+     *
+     * 紧凑态窗口只有输入栏高（实测 420px）。手指一旦上移出窗口边界，系统就不再向
+     * 本窗口派发后续 MOVE —— 实测位移只累计到 63px 就停，阈值永远达不到，
+     * 表现正是「有动画但进不去主 App」。铺满后整段手势都在窗口内，松手再按结果决定收回。
+     */
+    private val dragExpanded = mutableStateOf(false)
+
+    private val attachmentSheetOpen = mutableStateOf(false)
+
     /** 系统选择器结果的会话侧强引用；[onHide]/[onDestroy] 时清空。 */
     private var pendingPickerCallback: ((List<Uri>) -> Unit)? = null
+
+    /**
+     * 拍照结果的会话侧强引用（仅「拍照」来源会登记）。
+     *
+     * 与 [pendingPickerCallback] 同理：broker 只持弱引用，会话不留一份的话位图回调
+     * 会在 Activity 返回前被回收，表现为「拍完照回到助手什么都没发生」。
+     */
+    private var pendingCaptureCallback: ((android.graphics.Bitmap) -> Unit)? = null
 
     /**
      * 选择器「已结束」回调的会话侧强引用。
@@ -139,7 +179,6 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         window?.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
         window?.window?.setDecorFitsSystemWindows(false)
         composeHost.setContent {
-            val previews = rememberAssistantLocalPreviews(sessionKey = SESSION_PREVIEWS_KEY)
             AssistantSessionContent(
                 client = bridge,
                 controller = uiState,
@@ -153,9 +192,22 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 onOpenApp = { openMainApp() },
                 // 定格截图：只有拿到系统截图**并且**状态机确实进入定格态时才铺满，
                 // 两者由本类同步推进；窗口几何只看 `immersiveLayout()`。
-                frozenScreenshot = frozenScreenshot(),
+                // 传 State 而不是快照：界面读 value 才会在新帧到达时重组。
+                frozenScreenshot = frozenScreenshotState(),
                 onRequestHandoff = { requestHandoff() },
-                onAddAttachment = { kind -> requestAttachmentPicker(kind) },
+                onDragWindowExpanded = { expanded -> setDragWindowExpanded(expanded) },
+                // 「＋」先展开会话窗口内的附件来源卡片（与主 App 同一份内容），
+                // 用户真正选了某一类来源后才启动对应的系统页面。
+                onAddAttachment = { kind ->
+                    if (kind == AssistantAttachmentKind.SHEET) setAttachmentSheetOpen(true)
+                    else requestAttachmentPicker(kind)
+                },
+                attachmentSheetVisible = attachmentSheetOpen.value,
+                onDismissAttachmentSheet = { setAttachmentSheetOpen(false) },
+                onPickAttachmentSource = { source ->
+                    setAttachmentSheetOpen(false)
+                    requestAttachmentPicker(source.toPickerKind())
+                },
                 // 发送被接收：定格在状态机里已经结束，这里把窗口同步放回测量驱动。
                 onExitFrozen = { exitFrozenSelection() },
                 onExit = { requestExit() },
@@ -168,6 +220,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        AssistantDiagnostics.configure(context)
+        // 系统是否请求了截图，是「为什么没有截图画圈」的第一个分叉点：
+        // SHOW_WITH_SCREENSHOT=2 未置位时系统根本不会调用 onHandleScreenshot，
+        // 我们只能提示「本次唤起未包含截图」，而不是等超时后说「系统未提供」。
+        val wantsScreenshot = (showFlags and VoiceInteractionSession.SHOW_WITH_SCREENSHOT) != 0
+        AssistantDiagnostics.screenshot(
+            "request",
+            "showFlags=$showFlags screenshotFlag=$wantsScreenshot args=${args?.keySet()?.joinToString(",")} presented=$presented",
+        )
         // 一次 onShow 就是一次新的系统唤起。上一次 onHide 正常会释放桥接；但用户也可能
         // 在浮层仍可见时再次触发助理手势，此时旧客户端与旧会话都还在。只有那时才需要
         // 丢弃旧客户端重开；首次展示的客户端刚由 onCreateContentView 建好，必须沿用。
@@ -187,12 +248,20 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 每次唤起都是新的一次会话：上一轮未完成的交接请求不能延续到这一轮。
         handoffRequested = false
         pendingHandoffId = null
+        // 卡片是上一次唤起的临时状态：新一次唤起必须从收起状态开始。
+        attachmentSheetOpen.value = false
         // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
         uiState.dispatch(AssistantUiEvent.SessionShown)
         closing = false
         // 截图可能在本次 onShow 之前就已投递：唤起后仍处于初态时补一次进入定格。
         // 用户很快就开始打字时 canFreeze 会因草稿非空而拒绝，从而不打断输入。
-        if (screenshot != null && canFreezeForSelection()) enterFrozenSelection()
+        if (screenshot.value != null && canFreezeForSelection()) enterFrozenSelection()
+        // 系统明确没有请求截图：不会再有 onHandleScreenshot，必须现在就说清楚，
+        // 否则用户会一直等着画圈，或在超时后才看到一条误导性的「系统未提供截图」。
+        if (!wantsScreenshot) {
+            AssistantDiagnostics.screenshot("request", "系统未请求截图，无法圈选")
+            client?.showAdvisory("本次唤起未包含系统截图，无法圈选；可直接输入文字")
+        }
         applyWindowLayout()
         host?.resume()
         // 每次唤起都必然新建会话，不需要再发 `session.new`：`connect` 会为主进程
@@ -221,7 +290,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         client = null
         host?.stop()
         userHasStartedTyping = false
+        attachmentSheetOpen.value = false
         pendingPickerCallback = null
+        pendingCaptureCallback = null
         pendingPickerFinished = null
         AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
@@ -239,10 +310,12 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         client?.let(AssistantSessionLifecycle::leave)
         client = null
         pendingPickerCallback = null
+        pendingCaptureCallback = null
         pendingPickerFinished = null
         AssistantAttachmentPickerBroker.cancel()
         resetTransientState()
         uiState.bindOnStateChanged(null)
+        previews.close()
         host?.destroy()
         host = null
         super.onDestroy()
@@ -255,7 +328,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     override fun onBackPressed() {
-        // 返回键先退出覆盖层（圈选/定格），没有覆盖层就把整个会话收掉；
+        // 返回键先关最上层的临时界面，顺序与视觉层级一致：
+        // 附件来源卡片 → 圈选/定格覆盖层 → 收起整个会话。
+        // 卡片必须在这里拦下：否则一次返回会直接结束会话，尚未交接的草稿与附件
+        // 随之被释放（规格 §203、§338 要求取消选择不丢草稿）。
+        if (attachmentSheetOpen.value) {
+            setAttachmentSheetOpen(false)
+            return
+        }
+        // 覆盖层其次（圈选/定格），没有覆盖层就把整个会话收掉；
         // 无论哪条路径都不碰生成：正在输出的回复由主进程继续，界面没有"就地中断"。
         uiState.dispatch(AssistantUiEvent.BackPressed)
         val visible = uiState.visible()
@@ -284,34 +365,117 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     override fun onHandleScreenshot(bitmap: Bitmap?) {
-        // 系统每次唤起最多给一张截图；新的一张取代旧的，旧图立即释放。
-        recycleScreenshot()
+        // 新的一张取代旧的。**先发布新帧、再释放旧帧**：界面可能正在绘制旧图，
+        // 先回收会让它读到已回收的位图。新帧写入可观察状态后，组合会换到新图，
+        // 旧帧此时已经没有读者。
+        val previous = screenshot.value
         if (selectionState.value != null) {
             // 新截图到达说明上一次圈选已经失效：覆盖层同步退出，避免展示旧帧。
             selectionState.value = null
             uiState.dispatch(AssistantUiEvent.SelectionCancelled)
         }
-        val usable = bitmap?.takeIf { it.width > 0 && it.height > 0 }
-            ?.takeIf { it.width.toLong() * it.height <= MAX_SCREENSHOT_PIXELS }
-        screenshot = usable?.let { runCatching { it.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull() }
-        // 已经在定格态时系统又投递了一张：旧帧上的轨迹与选区都失效，退出定格并说明，
-        // 不把新旧截图混用（用户看到的必须是其中一张完整的屏幕）。
+        val prepared = prepareScreenshot(bitmap)
+        screenshot.value = prepared.bitmap
+        // 降采样/转换会产出新位图：系统那份原件已经没人要，及时释放。
+        if (bitmap != null && bitmap !== prepared.bitmap && bitmap !== previous &&
+            !bitmap.isRecycled
+        ) {
+            bitmap.recycle()
+        }
+        if (previous !== prepared.bitmap && previous?.isRecycled == false) previous.recycle()
+        // 已经在定格态时系统又投递了一张：旧帧上的轨迹与选区都失效。
+        // 这里**重新进入定格**而不是退出后不管：系统只投递一次截图、界面上也没有第二个
+        // 圈选入口，退出后用户就再也回不到可画圈的状态了。
         if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
-            exitFrozenSelection()
-            client?.showAdvisory("屏幕已更新，请重新画圈")
+            if (prepared.bitmap != null) {
+                // 截图已就位：轨迹清空由新的 source 实例驱动，保持定格即可。
+                client?.showAdvisory("屏幕已更新，请重新画圈")
+            } else {
+                exitFrozenSelection()
+                client?.showAdvisory(prepared.failureMessage)
+            }
             return
         }
         // 截图是异步到达的：只有会话仍在「刚唤起、未开始输入」的初态才进入定格，
         // 用户已经在打字/发消息时强行全屏会打断他们正在做的事。
-        if (screenshot != null && canFreezeForSelection()) {
-            enterFrozenSelection()
-        } else if (screenshot == null) {
-            // 规格 §3.1：系统未提供截图时不进入全屏，但要给出一条可关闭的说明。
-            // 只派发事件而不提示，用户会以为「唤起了但没有圈选能力」，却看不到任何原因。
-            uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
-            client?.showAdvisory("系统未提供截图，无法圈选；可直接输入文字")
+        if (prepared.bitmap != null) {
+            if (canFreezeForSelection()) {
+                enterFrozenSelection()
+            } else {
+                // 有截图但当前不适合全屏（已展开、已在输入、正在录音）：留一句说明，
+                // 否则用户会以为「系统没给截图」，而实际上截图是好的、只是这会儿不切。
+                client?.showAdvisory("已在对话中，暂不进入圈选；再次唤起助手即可在屏幕上画圈")
+            }
+            return
         }
+        uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)
+        client?.showAdvisory(prepared.failureMessage)
     }
+
+    /** 一次截图准备的结果：可用位图，或带具体原因的失败文案。 */
+    private class PreparedScreenshot(val bitmap: Bitmap?, val failureMessage: String)
+
+    /**
+     * 校验并归一化系统投递的截图。
+     *
+     * 与旧实现的关键差别：**像素数不再直接判死**。1440×3120（4.49M）、1344×2992（4.02M）
+     * 这类常见旗舰分辨率都超过旧上限，旧代码把它们与「系统没给截图」混成同一条提示，
+     * 用户看到「系统未提供截图」却明明开着屏幕分析。现在超限按比例降采样——
+     * 圈选的坐标换算本来就按实际位图尺寸做，缩放不影响正确性。
+     *
+     * 每一步失败都带自己的原因，不再统一落到「系统未提供截图」。
+     */
+    private fun prepareScreenshot(bitmap: Bitmap?): PreparedScreenshot {
+        if (bitmap == null) {
+            AssistantDiagnostics.screenshot("callback", "bitmap=null（系统未投递或采集失败）")
+            return PreparedScreenshot(null, "系统未提供截图，无法圈选；可直接输入文字")
+        }
+        AssistantDiagnostics.screenshot(
+            "callback",
+            "size=${bitmap.width}x${bitmap.height} config=${bitmap.config} recycled=${bitmap.isRecycled}",
+        )
+        if (bitmap.isRecycled) {
+            AssistantDiagnostics.screenshot("validate", "recycled")
+            return PreparedScreenshot(null, "截图已失效，请重新唤起助手后再圈选")
+        }
+        if (bitmap.width <= 0 || bitmap.height <= 0) {
+            AssistantDiagnostics.screenshot("validate", "invalid-size")
+            return PreparedScreenshot(null, "截图尺寸无效，请重新唤起助手后再圈选")
+        }
+        val pixels = bitmap.width.toLong() * bitmap.height
+        val scaled = if (pixels > MAX_SCREENSHOT_PIXELS) {
+            // 只缩不放；失败时如实说明是「缩小失败」而不是「系统没给」。
+            AssistantDiagnostics.screenshot("validate", "pixels=$pixels over=$MAX_SCREENSHOT_PIXELS 降采样")
+            scaleScreenshot(bitmap)
+                ?: run {
+                    AssistantDiagnostics.screenshot("validate", "scale-failed")
+                    return PreparedScreenshot(null, "截图过大且无法缩小，请重新唤起助手后再圈选")
+                }
+        } else {
+            bitmap
+        }
+        AssistantDiagnostics.screenshot("validate", "ready=${scaled.width}x${scaled.height}")
+        // 系统投递到应用侧时已是软件位图（跨 Binder 只接受 N32/565/4444/A8），
+        // 这里通常不需要再复制一份；只有硬件位图或可变性不符时才复制。
+        val normalized = if (scaled.config == Bitmap.Config.ARGB_8888 && !scaled.isMutable) {
+            scaled
+        } else {
+            runCatching { scaled.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
+                ?: run {
+                    AssistantDiagnostics.screenshot("validate", "copy-failed config=${scaled.config}")
+                    return PreparedScreenshot(null, "截图无法转换，请重新唤起助手后再圈选")
+                }
+        }
+        return PreparedScreenshot(normalized, "")
+    }
+
+    /** 把超限截图按比例缩到 [MAX_SCREENSHOT_PIXELS] 以内；失败返回 null。 */
+    private fun scaleScreenshot(source: Bitmap): Bitmap? = runCatching {
+        val ratio = kotlin.math.sqrt(MAX_SCREENSHOT_PIXELS.toDouble() / (source.width.toLong() * source.height))
+        val width = (source.width * ratio).toInt().coerceAtLeast(1)
+        val height = (source.height * ratio).toInt().coerceAtLeast(1)
+        Bitmap.createScaledBitmap(source, width, height, true)
+    }.getOrNull()
 
     /**
      * 是否可以在本次唤起的初态进入定格：紧凑输入、无覆盖层、用户还没有开始输入。
@@ -379,13 +543,19 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private fun resetTransientState() {
         selectionState.value = null
         frozenFullscreen.value = false
+        // 拖拽铺满与附件卡片都是**本次唤起**的临时状态：会话结束时必须复位，
+        // 否则下一次唤起会继承全屏窗口/展开的卡片。
+        dragExpanded.value = false
+        attachmentSheetOpen.value = false
+        // 预览字节属于本次会话：结束即清空，避免上一次唤起的屏幕内容留在内存里。
+        previews.clear()
         recycleScreenshot()
         measuredContentHeightPx = 0
     }
 
     private fun recycleScreenshot() {
-        screenshot?.recycle()
-        screenshot = null
+        screenshot.value?.recycle()
+        screenshot.value = null
     }
 
     /**
@@ -414,11 +584,27 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     private fun frozenScreenshot(): Bitmap? {
         if (uiState.visible()?.overlay != AssistantOverlay.FROZEN_SCREENSHOT) return null
-        return screenshot?.takeIf { !it.isRecycled }
+        return screenshot.value?.takeIf { !it.isRecycled }
     }
 
+    /**
+     * 交给界面的定格截图**状态**（不是快照）。
+     *
+     * 界面在组合期读 `value`，因此系统在定格态换帧时会重组并换到新图；
+     * 传快照会让界面一直引用已被回收的旧位图。
+     */
+    private fun frozenScreenshotState(): androidx.compose.runtime.State<Bitmap?> =
+        androidx.compose.runtime.derivedStateOf {
+            if (uiState.visible()?.overlay != AssistantOverlay.FROZEN_SCREENSHOT) null
+            else screenshot.value?.takeIf { !it.isRecycled }
+        }
+
     /** 是否处于全屏临时形态（裁剪页或定格截图）。窗口几何的唯一判据。 */
-    private fun immersiveLayout(): Boolean = selectionState.value != null || frozenFullscreen.value
+    private fun immersiveLayout(): Boolean =
+        selectionState.value != null || frozenFullscreen.value || dragExpanded.value ||
+            // 附件来源卡片是模态层（带遮罩），内容比紧凑窗口高得多：
+            // 不铺满的话卡片下半截会被窗口下沿裁掉，用户只能看到第一项。
+            attachmentSheetOpen.value
 
     private fun applyWindowLayout() {
         val dialogWindow = window?.window ?: return
@@ -447,7 +633,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     /** 屏幕圈选：把 window 临时铺满全屏，让系统截图按真实比例显示。 */
     private fun beginScreenSelection() {
-        val source = screenshot
+        val source = screenshot.value
         if (source == null || source.isRecycled) {
             client?.showAdvisory("系统没有提供截图，请重新唤起助理后再圈选")
             return
@@ -491,7 +677,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     private fun openMainApp() {
-        if (openAssistantMainApp(context)) {
+        if (launchMainActivity(context, handoffIntent = null, session = this)) {
             hide()
         } else {
             client?.showAdvisory("无法打开 App，请从启动器打开")
@@ -507,11 +693,16 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private fun requestHandoff() {
         val bridge = client ?: run {
             client?.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
+            // 早退也必须收回拖拽铺满的窗口：否则透明全屏会一直拦住下方 App 的触摸。
+            setDragWindowExpanded(false)
             return
         }
         // 每次上滑都换一个新的请求代次：上一轮留下的终态不能再被当成本轮结果。
         val handoffId = java.util.UUID.randomUUID().toString()
+        AssistantDiagnostics.handoff("request", "handoffId=$handoffId connected=${bridge.state.value.connected}")
         if (!bridge.requestHandoff(handoffId)) {
+            AssistantDiagnostics.handoff("request", "命令未送达")
+            setDragWindowExpanded(false)
             bridge.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
             return
         }
@@ -523,6 +714,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             if (!handoffRequested) return@Runnable
             handoffRequested = false
             pendingHandoffId = null
+            AssistantDiagnostics.handoff("watchdog", "超时未收到回执")
+            setDragWindowExpanded(false)
             client?.showAdvisory(AssistantHandoffMessages.TIMEOUT)
         }.also { mainHandler.postDelayed(it, HANDOFF_TIMEOUT_MILLIS) }
         observeHandoffResult(bridge, handoffId)
@@ -545,17 +738,25 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 if (handoff.handoffId.isNotEmpty() && handoff.handoffId != handoffId) return@collect
                 when (AssistantHandoffState.of(handoff.state)) {
                     AssistantHandoffState.ACCEPTED -> {
+                        AssistantDiagnostics.handoff(
+                            "receipt",
+                            "ACCEPTED conversation=${handoff.conversationId} agent=${handoff.agentId}",
+                        )
                         handoffRequested = false
                         pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
+                        setDragWindowExpanded(false)
                         proceedWithAcceptedHandoff(bridge, handoff)
                     }
                     AssistantHandoffState.REJECTED -> {
+                        AssistantDiagnostics.handoff("receipt", "REJECTED ${handoff.reason}")
                         handoffRequested = false
                         pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
+                        // 交接失败：窗口必须收回，否则浮层会停在满屏挡住下方 App。
+                        setDragWindowExpanded(false)
                         bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.REJECTED })
                     }
                     AssistantHandoffState.PENDING, null -> Unit
@@ -585,7 +786,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             agentId = handoff.agentId,
             sessionToken = bridge.state.value.sessionId.orEmpty(),
         )
-        if (openAssistantMainApp(context, link)) {
+        if (launchMainActivity(context, link?.toIntent(context), session = this)) {
             if (skipped.isNotEmpty()) bridge.showAdvisory("已在 App 中打开$skipped")
             hide()
         } else {
@@ -618,6 +819,15 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             mainHandler.post { deliverPickedAttachments(bridge, uris.map(Uri::toString)) }
         }
         pendingPickerCallback = callback
+        // 拍照来源拿到的是位图：走既有的「编码 → 屏幕附件」通道，与圈选共用同一条
+        // 已验证的路径（含大小上限、管道看门狗与失败提示），不另开一套图片上传。
+        val captured: ((android.graphics.Bitmap) -> Unit)? =
+            if (kind == AssistantAttachmentKind.CAPTURE) { bitmap ->
+                mainHandler.post { attachCapturedPhoto(bridge, bitmap) }
+            } else {
+                null
+            }
+        pendingCaptureCallback = captured
         // broker 只持弱引用：会话必须自己强引用「已结束」回调，否则它会在 Activity
         // 返回前被回收，窗口停在不可见状态。
         val finished: () -> Unit = { mainHandler.post { restoreSessionUi() } }
@@ -626,6 +836,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             callback = callback,
             // 有结果与取消走同一条恢复路径：窗口不能因为用户按了返回就永久不可见。
             onFinished = finished,
+            onCaptured = captured,
         )
         // 先停用再启动：窗口在启动瞬间仍在最上层，晚一步就会吞掉选择器的第一次点击。
         suspendSessionUiForPicker()
@@ -639,6 +850,52 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             bridge.showAdvisory("无法打开文件选择器，请稍后再试")
         }
     }
+
+    /**
+     * 拍照结果 → 附件草稿。
+     *
+     * 与原圈选路径保持一致：**先把缩略图写进本进程的 [AssistantLocalPreviews] 并登记为
+     * 待认领**，再把位图交给桥接编码上传。桥接在编码后会回收位图，而主进程只回传附件
+     * 元数据、不传字节——不在回收前留下预览，输入栏与发送后的时间线就只能显示
+     * 「预览不可用」。等状态帧带回权威附件 ID 时，`adoptPendingImage` 会把预览改挂过去。
+     */
+    private fun attachCapturedPhoto(bridge: AssistantBridgeClient, bitmap: android.graphics.Bitmap) {
+        if (bitmap.isRecycled) return
+        val localKey = CAPTURE_PREVIEW_KEY
+        if (encodeCapturePreview(bitmap)?.let { previews.put(localKey, it) } == true) {
+            // 只登记**真的存下了预览**的键：没有预览却登记，会让后一张图被误认领。
+            previews.markPendingImage(localKey)
+        }
+        bridge.attachScreen(bitmap, filename = captureFilename())
+    }
+
+    /** 拍照附件的展示文件名：带时间戳，避免同一次会话里多张照片互相覆盖。 */
+    private fun captureFilename(): String =
+        "assistant-photo-${System.currentTimeMillis()}.png"
+
+    /**
+     * 上滑手势开始/结束时的窗口铺满与收回。
+     *
+     * 交接被拒绝或超时后必须收回：否则浮层会永久停在满屏，挡住下方的 App。
+     */
+    private fun setDragWindowExpanded(expanded: Boolean) {
+        if (dragExpanded.value == expanded) return
+        dragExpanded.value = expanded
+        applyWindowLayout()
+    }
+
+    /**
+     * 展开/收起附件来源卡片，并同步窗口几何。
+     *
+     * 卡片是模态层且比紧凑窗口高：展开时窗口必须铺满，否则卡片下半截被下沿裁掉；
+     * 收起后立刻回到测量驱动的高度。重复调用是空操作，不产生多余重排。
+     */
+    private fun setAttachmentSheetOpen(open: Boolean) {
+        if (attachmentSheetOpen.value == open) return
+        attachmentSheetOpen.value = open
+        applyWindowLayout()
+    }
+
 
     /** 选择器期间让出窗口；重复调用是空操作，避免与结果回调互相覆盖。 */
     private fun suspendSessionUiForPicker() {
@@ -681,11 +938,74 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         /** 超过约 400 万像素的截图不接收：内存与裁剪成本都不值得。 */
         const val MAX_SCREENSHOT_PIXELS = 4_000_000L
 
-        /** 本地缩略图存储只属于一次会话；同一会话内重建组合沿用同一个实例。 */
-        const val SESSION_PREVIEWS_KEY = "assistant-session"
-
         /** 等待主进程交接回执的上限：必须大于服务端等待附件就绪的上限（3 秒），
          *  否则浮层会先判超时，用户看到的就不是真实原因。 */
         const val HANDOFF_TIMEOUT_MILLIS = ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
     }
 }
+
+/**
+ * 卡片里选中的来源 → 选择器 Activity 的类别。
+ *
+ * 「拍照」走系统相机（返回位图，经既有屏幕附件通道交给主进程）；相册走 Photo Picker
+ * 多选；文档走 SAF。三者与主 App 的附件入口一一对应，不做任何静默降级。
+ */
+private fun com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.toPickerKind(): AssistantAttachmentKind =
+    when (this) {
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.CAMERA ->
+            AssistantAttachmentKind.CAPTURE
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.GALLERY ->
+            AssistantAttachmentKind.MEDIA
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.DOCUMENT ->
+            AssistantAttachmentKind.DOCUMENT
+    }
+
+/**
+ * 把拍照位图编码成缩略条用的预览字节。
+ *
+ * 桥接在编码后会回收位图，主进程又只回传附件元数据、不传字节——所以预览必须在
+ * 交给桥接**之前**留下。先按最长边缩到 [CAPTURE_PREVIEW_MAX_EDGE]，再以 JPEG 压缩：
+ * 预览只用于缩略条，几百像素足够，也避免被 `AssistantLocalPreviews` 的 4MB 总预算拒掉。
+ *
+ * @return 可直接写入 `AssistantLocalPreviews` 的字节；已回收或编码失败时返回 null
+ *   （界面按媒体类型显示图标，不伪造预览）。
+ */
+internal fun encodeCapturePreview(
+    source: android.graphics.Bitmap,
+    maxEdge: Int = CAPTURE_PREVIEW_MAX_EDGE,
+    quality: Int = CAPTURE_PREVIEW_QUALITY,
+): ByteArray? {
+    if (source.isRecycled || source.width <= 0 || source.height <= 0) return null
+    val longest = maxOf(source.width, source.height)
+    val scaled = if (longest <= maxEdge) {
+        source
+    } else {
+        val ratio = maxEdge.toFloat() / longest
+        runCatching {
+            android.graphics.Bitmap.createScaledBitmap(
+                source,
+                (source.width * ratio).toInt().coerceAtLeast(1),
+                (source.height * ratio).toInt().coerceAtLeast(1),
+                true,
+            )
+        }.getOrNull() ?: return null
+    }
+    return try {
+        val output = java.io.ByteArrayOutputStream()
+        if (scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, output)) {
+            output.toByteArray()
+        } else {
+            null
+        }
+    } finally {
+        // 只在缩放产生了新位图时释放，调用方的原图仍要交给桥接。
+        if (scaled !== source && !scaled.isRecycled) scaled.recycle()
+    }
+}
+
+/** 拍照预览在本进程的临时键；主进程回传权威附件 ID 后由此改挂。 */
+internal const val CAPTURE_PREVIEW_KEY = "assistant-capture-preview"
+
+/** 拍照预览的 JPEG 质量与最长边。 */
+internal const val CAPTURE_PREVIEW_QUALITY = 85
+internal const val CAPTURE_PREVIEW_MAX_EDGE = 720

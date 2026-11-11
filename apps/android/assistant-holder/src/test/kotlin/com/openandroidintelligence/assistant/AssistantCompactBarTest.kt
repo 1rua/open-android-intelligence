@@ -182,43 +182,27 @@ class AssistantCompactBarTest {
     /**
      * 输入栏最左侧是「＋」附件入口；系统会话的输入栏没有圈选按钮。
      *
+     * 「＋」只负责**请求展开附件来源卡片**（`AssistantAttachmentKind.SHEET`）：卡片本身
+     * 渲染在会话窗口内（`ComposerAttachmentOverlay`），不在这里。会话宿主据此把卡片
+     * 叠到整块内容之上 —— `ModalBottomSheet` 的 Dialog 窗口会被
+     * `VoiceInteractionSession` 的窗口类型拒绝（模拟器已复现崩溃）。
+     *
      * ASSIST 兜底页仍然需要「本入口无系统截图」的说明路径：它显式传入
      * `onStartScreenSelection`，输入栏才渲染那个入口。
      */
     @Test
-    fun addAttachmentButtonIsReachableAndScreenSelectionButtonIsGone() {
+    fun addAttachmentButtonAsksTheHostToOpenTheSheet() {
         render()
 
         compose.onNodeWithContentDescription("添加附件").assertIsEnabled().performClick()
-        // 「＋」展开菜单后两个类别都必须可达：只给照片选择器会让 PDF/文本等
-        // 现有附件类型在浮层里彻底选不到（规格 §3.5）。
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).assertIsDisplayed()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_DOCUMENT).assertIsDisplayed().performClick()
-        compose.onNodeWithContentDescription("语音输入").assertIsEnabled().performClick()
 
-        assertEquals("文档入口必须真的触发选择", listOf(AssistantAttachmentKind.DOCUMENT), added)
-        assertEquals(1, recordings)
+        assertEquals(
+            "「＋」必须请求展开附件来源卡片",
+            listOf(AssistantAttachmentKind.SHEET),
+            added,
+        )
         compose.onNodeWithContentDescription("屏幕圈选").assertDoesNotExist()
         assertEquals(0, selections)
-    }
-
-    @Test
-    fun theMediaEntryInTheMenuAsksForThePhotoPicker() {
-        render()
-
-        compose.onNodeWithContentDescription("添加附件").performClick()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
-
-        assertEquals(listOf(AssistantAttachmentKind.MEDIA), added)
-    }
-
-    @Test
-    fun theFallbackEntryKeepsAReachableScreenSelectionExplanation() {
-        render(withScreenSelection = true)
-
-        compose.onNodeWithContentDescription("屏幕圈选").assertIsEnabled().performClick()
-
-        assertEquals("兜底页的说明入口必须真的可点", 1, selections)
     }
 
     @Test

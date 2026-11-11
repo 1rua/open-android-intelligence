@@ -167,6 +167,8 @@ internal fun AssistantSessionRoot(
     onOpenApp: () -> Unit = {},
     /** 横条上滑超过阈值：请求把当前会话交给主 App（严格交接，失败保留浮层）。 */
     onRequestHandoff: () -> Unit = {},
+    /** 拖动横条期间窗口是否需要临时铺满（见 [AssistantDragHandle.onDragWindowExpanded]）。 */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
     /** 点击「＋」：打开系统文件/媒体选择器。 */
     onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onContentHeightChanged: (Int) -> Unit = {},
@@ -269,6 +271,7 @@ internal fun AssistantSessionRoot(
                 enabled = enabled,
                 stateDescription = if (expanded) "展开会话" else "紧凑输入",
                 onDragProgress = { handoffProgress = it },
+                onDragWindowExpanded = onDragWindowExpanded,
             )
             if (!notice.isNullOrBlank()) {
                 AssistantNoticeBar(

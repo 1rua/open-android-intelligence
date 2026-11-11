@@ -113,8 +113,16 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
-        ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
-        intent.handoffSessionToken()?.let { pendingHandoff.value = it }
+        // 助手交接的深链与回复通知同形（同一 action、同一条 oai-reply:// 路径），
+        // 两者都会被解析出来。交接意图必须**只**进 pendingHandoff：否则回复通知那条
+        // 路径会先跑、忽略 agentId 去 openThread，把用户带到旧 Agent 的同名会话或直接失败，
+        // 而真正的交接导航又被它抢先消费掉。
+        val handoffToken = intent.handoffSessionToken()
+        if (handoffToken != null) {
+            pendingHandoff.value = handoffToken
+        } else {
+            ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
+        }
     }
 
     private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
@@ -130,8 +138,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
-        pendingReply.value = ReplyNotificationTarget.from(intent)
-        pendingHandoff.value = intent.handoffSessionToken()
+        // 与 onNewIntent 同一规则：交接意图只进 pendingHandoff，不重复当回复通知处理。
+        val initialHandoffToken = intent.handoffSessionToken()
+        if (initialHandoffToken != null) {
+            pendingHandoff.value = initialHandoffToken
+        } else {
+            pendingReply.value = ReplyNotificationTarget.from(intent)
+        }
 
         val app = application as OpenAndroidIntelligenceApplication
         val runtime = app.gatewayRuntime

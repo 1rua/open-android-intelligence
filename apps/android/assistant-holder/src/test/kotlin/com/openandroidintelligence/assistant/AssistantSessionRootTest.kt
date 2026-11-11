@@ -403,10 +403,9 @@ class AssistantSessionRootTest {
             }
         }
 
-        // 「＋」先展开菜单，再选类别：照片与文档两条系统选择器都要能到。
+        // 「＋」只请求宿主展开附件来源卡片（卡片本身渲染在会话窗口内）。
         compose.onNodeWithContentDescription("添加附件").performClick()
-        compose.onNodeWithTag(AssistantCompactBarTags.ATTACH_MEDIA).performClick()
-        assertEquals(listOf(AssistantAttachmentKind.MEDIA), adds)
+        assertEquals(listOf(AssistantAttachmentKind.SHEET), adds)
     }
 
     // ---- 窗口高度回传 ----
