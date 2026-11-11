@@ -26,7 +26,7 @@
 
 尝试运行 `:conversation-ui:testDebugUnitTest` 的流式状态、Markdown 渲染和消息流式回归时，Robolectric 在测试启动前下载 `org.robolectric:android-all-instrumented:14-robolectric-10818077-i7` 被 Maven Central 返回 HTTP 429。22 个测试均停在 `MavenArtifactFetcher` 初始化阶段，没有进入业务断言；因此不能将这次运行记为通过或代码失败。
 
-远端 Actions 已触发（run `43090012366`）。当前读取到 Dependency Lock Evidence、Android Fixtures、Change Impact Analysis 和 Fast Gate 通过，其余 Android 作业仍为 pending；未执行前台轮询。
+远端 Actions 已触发（当前 run `43091954307`，另有 APK run `43091945182`）。当前读取到 Device & Authorization、Android Fixtures、Android Settings & Notifications、Dependency Lock Evidence、Fast Gate、Change Impact Analysis、sign-plugin-packages 和 apk 相关前置检查通过；其余 Android 编译/回归作业仍为 pending；未执行前台轮询。
 
 ## 尚未完成的实证
 
