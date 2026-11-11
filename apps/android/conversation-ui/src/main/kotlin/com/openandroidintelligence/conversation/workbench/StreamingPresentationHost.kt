@@ -46,7 +46,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         frame.takeIf { currentKey == entry.key }
 
     internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long) {
-        if (!pageVisible || !visible) {
+        if (!pageVisible) {
             observed.clear()
             entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
             baseline = entries.lastOrNull { !it.isUser && it.isStreaming && !it.executionFact }
@@ -55,6 +55,21 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
             frame = null
             hasPending = false
             visible = pageVisible
+            return
+        }
+        if (!visible) {
+            // 页面重开只建立当前事实基线：显示已有全文，但不恢复旧吐字、渐入、拖尾或触觉。
+            val active = entries.lastOrNull { !it.isUser && it.isStreaming && !it.executionFact }
+            currentKey = active?.key
+            engine = active?.let {
+                StreamingPresentationState(it.text, it.presentation?.revision ?: -1L)
+            }
+            frame = active?.let { StreamingPresentationFrame(it.text, active = false) }
+            hasPending = false
+            observed.clear()
+            entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
+            baseline = null
+            visible = true
             return
         }
         val current = entries.firstOrNull { it.key == currentKey }
@@ -210,15 +225,17 @@ internal fun StreamingReplyBody(
         StreamingTextPresentation(0L, 0, 0, false, false)
     }
     val document = rememberStreamingMarkdownDocument(displayed, narrative = finalOnly)
-    val blocks = when {
-        displayed == entry.text && sourceBlocks != null -> sourceBlocks
-        else -> document.blocks
+    val renderedDocument = if (displayed == entry.text && sourceBlocks != null) {
+        document.rebindBlocks(sourceBlocks)
+    } else {
+        document
     }
+    val blocks = renderedDocument.blocks
     StreamingMarkdownContainer(
         sourceText = displayed,
         presentation = presentation,
         modifier = modifier,
-        document = document.takeIf { displayed != entry.text || sourceBlocks == null },
+        document = renderedDocument,
     ) {
         content(blocks, active)
     }

@@ -57,7 +57,7 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         // 但同修订的非前缀改写不能覆盖已展示内容。
         if (revision < this.revision ||
             (revision == this.revision && text != receivedText &&
-                !(origin == StreamPresentationOrigin.LIVE && text.startsWith(receivedText)))) {
+                !text.startsWith(receivedText))) {
             return unchanged
         }
         val oldText = receivedText

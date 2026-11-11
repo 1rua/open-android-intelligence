@@ -258,6 +258,7 @@ fun MarkdownListView(
     } else {
         MaterialTheme.colorScheme.onSurface
     }
+    val listLeaves = LocalStreamingMarkdownDocument.current?.trace?.blocks?.get(block)?.leaves.orEmpty()
 
     Column(
         modifier = modifier,
@@ -279,23 +280,27 @@ fun MarkdownListView(
             val itemColor = if (checked) MaterialTheme.colorScheme.onSurfaceVariant else baseColor
             val baseStyle = if (compact) AppTextStyles.Thought else MaterialTheme.typography.bodyLarge
 
-            Row(
-                modifier = Modifier
-                    .padding(start = Dimensions.ListIndent * item.level),
-                verticalAlignment = Alignment.Top,
+            CompositionLocalProvider(
+                LocalMarkdownLeafSource provides listLeaves.getOrNull(index),
             ) {
-                ListItemMarker(item = item, height = markerHeight)
-                Spacer(Modifier.width(Dimensions.SpaceSmall))
-                MarkdownInlineText(
-                    text = item.text,
-                    colors = colors,
-                    isStreaming = isLast,
-                    modifier = Modifier.weight(1f, fill = false),
-                    style = baseStyle.copy(
-                        textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
-                    ),
-                    color = itemColor,
-                )
+                Row(
+                    modifier = Modifier
+                        .padding(start = Dimensions.ListIndent * item.level),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    ListItemMarker(item = item, height = markerHeight)
+                    Spacer(Modifier.width(Dimensions.SpaceSmall))
+                    MarkdownInlineText(
+                        text = item.text,
+                        colors = colors,
+                        isStreaming = isLast,
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = baseStyle.copy(
+                            textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
+                        ),
+                        color = itemColor,
+                    )
+                }
             }
         }
     }
@@ -459,6 +464,8 @@ fun MarkdownTableView(
                             TableAlignment.CENTER -> TextAlign.Center
                             TableAlignment.RIGHT -> TextAlign.End
                         }
+                        val headerSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
+                            ?.get(block)?.leaves?.getOrNull(colIdx)
                         Box(
                             modifier = Modifier
                                 .width(colWidth)
@@ -469,15 +476,17 @@ fun MarkdownTableView(
                                 TableAlignment.RIGHT -> Alignment.CenterEnd
                             },
                         ) {
-                            MarkdownInlineText(
-                                text = header,
-                                colors = colors,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                fontSize = 13.sp,
-                                textAlign = textAlign,
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
+                            CompositionLocalProvider(LocalMarkdownLeafSource provides headerSource) {
+                                MarkdownInlineText(
+                                    text = header,
+                                    colors = colors,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    fontSize = 13.sp,
+                                    textAlign = textAlign,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
                         }
                         if (colIdx < block.headers.lastIndex) {
                             Box(
@@ -513,6 +522,8 @@ fun MarkdownTableView(
                             val isLastCell = isStreaming &&
                                 rowIdx == block.rows.lastIndex &&
                                 colIdx == block.headers.lastIndex
+                            val cellSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
+                                ?.get(block)?.leaves?.getOrNull(block.headers.size + rowIdx * block.headers.size + colIdx)
                             Box(
                                 modifier = Modifier
                                     .width(colWidth)
@@ -523,17 +534,19 @@ fun MarkdownTableView(
                                     TableAlignment.RIGHT -> Alignment.CenterEnd
                                 },
                             ) {
-                                MarkdownInlineText(
-                                    text = cellText,
-                                    colors = colors,
-                                    isStreaming = isLastCell,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 18.sp,
-                                    textAlign = textAlign,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
+                                CompositionLocalProvider(LocalMarkdownLeafSource provides cellSource) {
+                                    MarkdownInlineText(
+                                        text = cellText,
+                                        colors = colors,
+                                        isStreaming = isLastCell,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 18.sp,
+                                        textAlign = textAlign,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
                             }
                             if (colIdx < block.headers.lastIndex) {
                                 Box(

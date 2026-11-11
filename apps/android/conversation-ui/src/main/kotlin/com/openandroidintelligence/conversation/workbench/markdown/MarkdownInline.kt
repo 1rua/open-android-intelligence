@@ -366,7 +366,9 @@ private class InlineRenderer(
         val id = "md_math_${mathSpans.size}"
         val start = builder.length
         builder.appendInlineContent(id, latex)
-        latex.indices.forEach { sourceOffsets.add(sourceStart + it) }
+        // AnnotatedString 中公式只占一个 InlineContent 占位；来源数组必须与输出 UTF-16
+        // 单元一一对应，不能把 LaTeX 源码长度直接写进数组，否则公式后的正文整体错位。
+        sourceOffsets.add(sourceStart)
         mathSpans.add(MarkdownInlineMathSpan(id, latex, start, builder.length))
     }
 
