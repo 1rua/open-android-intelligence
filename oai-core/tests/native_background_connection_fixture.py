@@ -37,7 +37,8 @@ class NativeFixture(BackgroundConnectionFixture):
             account.agent_sessions.attach(self.conversation, "native-test-session", "native-test-key")
         self.backend = SessionBackend(self.host_core.storage_root, [OWNER], secret_store=self.host_core.secret_store)
         self.backend.acquire_accounts()
-        self.backend.history_reader = lambda owner, conversation: []
+        self.history_rows = []
+        self.backend.history_reader = lambda owner, conversation: [dict(item) for item in self.history_rows]
         self.runtime = ControlledExecution(self.backend, {OWNER: self.conversation})
         self.bridge = web.AppRunner(create_hermes_bridge_app(HermesSessionAdapter(self.backend, self.runtime), TOKEN, [OWNER]), access_log=None)
         await self.bridge.setup()
@@ -86,11 +87,15 @@ class NativeFixture(BackgroundConnectionFixture):
         self.port = site._server.sockets[0].getsockname()[1]
 
     def append_native(self, identity):
+        timestamp = (len(self.message_ids) + 1) * 1000
+        # 受控宿主先提交可查询历史，再提交通知事件；客户端仍使用生产覆盖检查。
+        self.history_rows.append({"messageId": identity, "sender": "assistant", "text": identity,
+                                  "timestamp": timestamp, "contentRevision": 1, "state": "CONFIRMED"})
         with closing(self.backend.open_gateway_account(OWNER)) as account:
             account.events.append("conversation.message.completed", identity, {
                 "conversationId": self.conversation, "messageId": identity, "sender": "assistant",
                 "text": identity, "parts": [{"type": "text", "text": identity}],
-                "timestamp": (len(self.message_ids) + 1) * 1000, "revision": 1})
+                "timestamp": timestamp, "revision": 1})
         self.message_ids.append(identity)
 
     def native_status(self):
