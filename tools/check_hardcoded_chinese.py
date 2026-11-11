@@ -43,6 +43,197 @@ SYNTAX_CHECK_REQUIRE_PATTERN = re.compile(r"\b(?:check|require|checkNotNull|requ
 SYNTAX_THROW_PATTERN = re.compile(r"\bthrow\s+[A-Za-z0-9_.]*(?:\(|\s+|$)")
 SYNTAX_DEPRECATED_PATTERN = re.compile(r"@Deprecated\s*\(")
 
+CHECK_REQUIRE_FUNC_NAMES = {
+    "check",
+    "require",
+    "checkNotNull",
+    "requireNotNull",
+    "assert",
+    "error",
+}
+
+
+def strip_string_literals_and_comments(s: str) -> str:
+    """去除行内的双引号字符串字面量、三引号多行字符串、单引号字符字面量与注释，保留纯语法骨架。"""
+    out = []
+    i = 0
+    n = len(s)
+    block_comment = 0
+
+    while i < n:
+        if block_comment > 0:
+            if s[i : i + 2] == "*/":
+                block_comment -= 1
+                i += 2
+            elif s[i : i + 2] == "/*":
+                block_comment += 1
+                i += 2
+            else:
+                i += 1
+            continue
+
+        # 块注释起止 (支持嵌套)
+        if s[i : i + 2] == "/*":
+            block_comment += 1
+            i += 2
+            continue
+
+        # 单行注释起止 (仅在字符串及字符字面量外部有效)
+        if s[i : i + 2] == "//":
+            break
+
+        # 三引号原始字符串: """..."""
+        if s[i : i + 3] == '"""':
+            end_idx = s.find('"""', i + 3)
+            out.append('""')
+            if end_idx == -1:
+                break
+            i = end_idx + 3
+            continue
+
+        # 普通单行字符串: "..."
+        if s[i] == '"':
+            j = i + 1
+            escape = False
+            while j < n:
+                if s[j] == "\n":
+                    break
+                if escape:
+                    escape = False
+                    j += 1
+                elif s[j] == "\\":
+                    escape = True
+                    j += 1
+                elif s[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            out.append('""')
+            i = j
+            continue
+
+        # 字符字面量 (如 '\'' 或 '\"')
+        if s[i] == "'":
+            j = i + 1
+            escape = False
+            while j < n:
+                if s[j] == "\n":
+                    break
+                if escape:
+                    escape = False
+                    j += 1
+                elif s[j] == "\\":
+                    escape = True
+                    j += 1
+                elif s[j] == "'":
+                    j += 1
+                    break
+                else:
+                    j += 1
+            out.append("''")
+            i = j
+            continue
+
+        out.append(s[i])
+        i += 1
+
+    return "".join(out)
+
+
+def is_brace_check_require_lambda(lines: list[str], brace_line_idx: int, prefix_before_brace: str) -> bool:
+    """判断给定 '{' 是否属于 check/require/checkNotNull/requireNotNull/assert/error 的尾随 lambda 或参数 lambda。
+    向上回溯匹配闭合的圆括号链与函数调用标识符，严格阻断 catch/try/if/while/for 等控制块。
+    """
+    chars_rev = list(reversed(prefix_before_brace))
+    line_idx = brace_line_idx
+
+    def get_next_char() -> str | None:
+        nonlocal line_idx, chars_rev
+        while True:
+            if chars_rev:
+                return chars_rev.pop(0)
+            line_idx -= 1
+            if line_idx >= 0 and line_idx >= max(-1, brace_line_idx - 15):
+                clean_line = strip_string_literals_and_comments(lines[line_idx])
+                chars_rev = list(reversed(clean_line))
+            else:
+                return None
+
+    ch = get_next_char()
+    while ch is not None and ch.isspace():
+        ch = get_next_char()
+
+    if ch is None:
+        return False
+
+    if ch == ")":
+        paren_depth = 1
+        while True:
+            ch = get_next_char()
+            if ch is None:
+                return False
+            if ch == ")":
+                paren_depth += 1
+            elif ch == "(":
+                paren_depth -= 1
+                if paren_depth == 0:
+                    break
+            elif ch in (";", "}") and paren_depth <= 1:
+                return False
+
+        ch = get_next_char()
+        while ch is not None and ch.isspace():
+            ch = get_next_char()
+
+        ident_chars = []
+        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
+            ident_chars.append(ch)
+            ch = get_next_char()
+
+        func_name = "".join(reversed(ident_chars)).split(".")[-1]
+        return func_name in CHECK_REQUIRE_FUNC_NAMES
+
+    elif ch.isalnum() or ch == "_":
+        ident_chars = [ch]
+        ch = get_next_char()
+        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
+            ident_chars.append(ch)
+            ch = get_next_char()
+
+        func_name = "".join(reversed(ident_chars)).split(".")[-1]
+        return func_name in CHECK_REQUIRE_FUNC_NAMES
+
+    elif ch == ",":
+        paren_depth = 0
+        while True:
+            ch = get_next_char()
+            if ch is None:
+                return False
+            if ch == ")":
+                paren_depth += 1
+            elif ch == "(":
+                if paren_depth > 0:
+                    paren_depth -= 1
+                else:
+                    break
+            elif ch in (";", "}") and paren_depth == 0:
+                return False
+
+        ch = get_next_char()
+        while ch is not None and ch.isspace():
+            ch = get_next_char()
+
+        ident_chars = []
+        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
+            ident_chars.append(ch)
+            ch = get_next_char()
+
+        func_name = "".join(reversed(ident_chars)).split(".")[-1]
+        return func_name in CHECK_REQUIRE_FUNC_NAMES
+
+    return False
+
 
 class HardcodedFinding:
     def __init__(
@@ -83,7 +274,7 @@ def compute_suppression_lines(lines: list[str]) -> set[int] | str:
             brace_count = 0
             found_first_brace = False
             for j in range(idx, len(lines)):
-                code_part = lines[j].split("//")[0]
+                code_part = strip_string_literals_and_comments(lines[j])
                 suppressed_lines.add(j + 1)
                 for ch in code_part:
                     if ch == "{":
@@ -99,28 +290,6 @@ def compute_suppression_lines(lines: list[str]) -> set[int] | str:
                     if not stripped.endswith(("=", "+", "-", "&&", "||", ",", "\\")):
                         break
     return suppressed_lines
-
-
-def strip_string_literals_and_comments(s: str) -> str:
-    """去除行内的双引号字符串字面量与单行注释，保留纯语法骨架。"""
-    s = s.split("//")[0]
-    out = []
-    in_str = False
-    escape = False
-    for ch in s:
-        if in_str:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_str = False
-        else:
-            if ch == '"':
-                in_str = True
-            else:
-                out.append(ch)
-    return "".join(out)
 
 
 def count_unclosed_delimiters(syntax_str: str) -> tuple[int, int]:
@@ -154,12 +323,8 @@ def check_syntax_patterns(stmt: str) -> tuple[bool, str | None]:
 
 def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: str | None = None) -> tuple[bool, str | None]:
     """计算 Level 3 语法模式自动豁免 (严格阻断跨代码块与跨控制流语句的向上回溯)。"""
-    if prefix_on_line is not None:
-        raw_prefix = prefix_on_line.split("//")[0].rstrip()
-    else:
-        raw_prefix = lines[line_idx].split("//")[0].rstrip()
-
-    clean_prefix = strip_string_literals_and_comments(raw_prefix)
+    raw_prefix = prefix_on_line if prefix_on_line is not None else lines[line_idx]
+    clean_prefix = strip_string_literals_and_comments(raw_prefix).rstrip()
 
     # 1. 块闭合截断：当前行前缀若包含 '}'，其前序代码块已闭合，必须丢弃 '}' 之前的一切内容
     if "}" in clean_prefix:
@@ -171,17 +336,24 @@ def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: st
         before_brace, after_brace = clean_prefix.rsplit("{", 1)
         if SYNTAX_CHECK_REQUIRE_PATTERN.search(before_brace + " {"):
             return True, "check/require/assert/error"
+        if is_brace_check_require_lambda(lines, line_idx, before_brace):
+            return True, "check/require/assert/error"
         # 否则 '{' 属于控制块 (catch/try/if/lambda/函数体)，截断且严禁向上跨越该作用域边界
         curr_prefix = after_brace
         can_backtrack = False
     else:
         curr_prefix = clean_prefix
 
-    # 3. 控制流关键字边界：catch, finally, try 等关键字禁止向上穿透
+    # 3. 同行分号隔离：若当前语句前存在分号 ';'，截断丢弃分号前的前序语句，并禁止向上回溯跨越语句边界
+    if ";" in curr_prefix:
+        curr_prefix = curr_prefix.rsplit(";", 1)[1]
+        can_backtrack = False
+
+    # 4. 控制流关键字边界：catch, finally, try 等关键字禁止向上穿透
     if re.search(r"\b(?:catch|finally|try)\b", curr_prefix):
         can_backtrack = False
 
-    # 4. 当前行局部检查
+    # 5. 当前行局部检查
     is_ex, reason = check_syntax_patterns(curr_prefix.strip())
     if is_ex:
         return True, reason
@@ -189,20 +361,25 @@ def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: st
     if not can_backtrack:
         return False, None
 
-    # 5. 向上回溯当前语句的前缀 (多行语句场景)
+    # 6. 向上回溯当前语句的前缀 (多行语句场景)
     stmt_parts = [curr_prefix.strip()]
     accumulated_parens, accumulated_brackets = count_unclosed_delimiters(curr_prefix)
 
     for i in range(line_idx - 1, max(-1, line_idx - 15), -1):
-        clean_raw = lines[i].split("//")[0].strip()
-        if not clean_raw:
+        clean = strip_string_literals_and_comments(lines[i]).strip()
+        if not clean:
             break
 
-        # 分号显式终结
-        if clean_raw.endswith(";"):
+        # 分号隔离：若上行包含分号，仅取分号后内容且终止后续向上回溯
+        if ";" in clean:
+            clean = clean.rsplit(";", 1)[1].strip()
+            if clean:
+                stmt_parts.append(clean)
+                combined = " ".join(reversed(stmt_parts))
+                is_ex, reason = check_syntax_patterns(combined)
+                if is_ex:
+                    return True, reason
             break
-
-        clean = strip_string_literals_and_comments(clean_raw).strip()
 
         # 向上遇到闭合块 '}'，立即终止回溯
         if "}" in clean:
@@ -212,10 +389,13 @@ def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: st
         if re.search(r"\b(?:catch|finally|try)\b", clean):
             break
 
-        # 遇到开启块 '{'
+        # 遇到开启块 '{'：检查是否属于 check/require 的尾随 lambda
         if "{" in clean:
             before_brace, _ = clean.rsplit("{", 1)
             if SYNTAX_CHECK_REQUIRE_PATTERN.search(before_brace + " {"):
+                stmt_parts.append(clean)
+                return True, "check/require/assert/error"
+            if is_brace_check_require_lambda(lines, i, before_brace):
                 stmt_parts.append(clean)
                 return True, "check/require/assert/error"
             break
