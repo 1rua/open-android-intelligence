@@ -157,6 +157,52 @@ class StreamingReplyInstrumentedTest {
     }
 
     @Test
+    fun blockMathCursorFollowsActualCenteredGlyphBounds() {
+        val fixture = openFixture()
+        update(fixture, "\$\$x^2\$\$", streaming = true)
+        val measured = java.util.concurrent.atomic.AtomicReference<Rect?>()
+        await("公式没有提供实际 DOM 字形边界") {
+            requireNotNull(scenario).onActivity { activity ->
+                fun webView(view: View): android.webkit.WebView? {
+                    if (view is android.webkit.WebView) return view
+                    if (view is android.view.ViewGroup) repeat(view.childCount) { index ->
+                        webView(view.getChildAt(index))?.let { return it }
+                    }
+                    return null
+                }
+                webView(activity.window.decorView)?.let { web ->
+                    val origin = IntArray(2).also(web::getLocationOnScreen)
+                    val density = activity.resources.displayMetrics.density
+                    web.evaluateJavascript("(function(){var e=document.querySelector('.katex-html');if(!e)return '';var r=e.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom].join(',');})()") { raw ->
+                        val value = runCatching { org.json.JSONArray("[$raw]").getString(0) }.getOrNull()
+                        val coordinates = value?.split(',')?.mapNotNull { it.toFloatOrNull() }
+                        if (coordinates?.size == 4 && coordinates[2] > coordinates[0]) {
+                            measured.set(Rect((origin[0] + coordinates[0] * density).roundToInt(),
+                                (origin[1] + coordinates[1] * density).roundToInt(),
+                                (origin[0] + coordinates[2] * density).roundToInt(),
+                                (origin[1] + coordinates[3] * density).roundToInt()))
+                        }
+                    }
+                }
+            }
+            measured.get() != null
+        }
+        await("块公式光标没有贴合实际居中字形右缘") {
+            val bounds = requireNotNull(measured.get())
+            val screenshot = instrumentation.uiAutomation.takeScreenshot() ?: return@await false
+            try {
+                val region = Rect(bounds.left - 16, bounds.top - 16, bounds.right + 16, bounds.bottom + 16)
+                val cursor = cursorStripe(screenshot, region)
+                val correct = cursor != null && abs(cursor.left - bounds.right) <= 8
+                if (correct) saveWindow("centered-math-cursor", screenshot)
+                correct
+            } finally { screenshot.recycle() }
+        }
+        update(fixture, fixture.entry.text, streaming = false)
+        await("公式终态后仍保留光标") { cursorStatus() == false }
+    }
+
+    @Test
     fun liveHapticPreferenceAndReducedMotionUseSimulatedHapticSink() {
         val fixture = openFixture(hapticProbe = true)
         val first = "触觉关闭期间新增正文。".repeat(12) + "第一阶段结束"
