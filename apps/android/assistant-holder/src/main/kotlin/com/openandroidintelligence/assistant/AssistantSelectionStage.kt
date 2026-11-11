@@ -33,9 +33,6 @@ internal object AssistantSelectionStageTags {
  * 图片必须留在本进程的 [AssistantLocalPreviews] 里，界面才按这个键取回缩略图。
  * 字节用 owned copy 语义暴露（[pngBytes] 每次返回新副本），宿主可以安全地把它交给
  * 发送管道，也可以在发送前清零自己的副本而不影响预览。
- *
- * 与工作台里的 `ScreenSelectionCrop` 保持同一套所有权约定，避免两个宿主对
- * “这些字节谁负责复制”产生不同理解。
  */
 internal class AssistantSelectionResult internal constructor(
     val localKey: String,
