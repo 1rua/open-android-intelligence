@@ -16,9 +16,9 @@ NativeConversationMirror.saveCheckpoint 在 IO 调用 EncryptedConversationMirro
 
 | 固定源码 | 用例/结果 | 证据 |
 |---|---|---|
-| 基线 02ad53e0 | successfulRetryClearsOnlyTheCheckpointFailureAndCanBeLoaded：1 失败；写入恢复可 load，但旧通知未清 | original-notice-red.xml / .log |
-| 首轮候选 6e9bf91f | sameValueEventFailureSurvivesAnUnrelatedCheckpointRecovery：1 失败；未恢复的事件来源错误被后续 checkpoint 成功误清 | same-source-red.xml / .log |
-| 新候选修正 pending 去重前 | 12 用例中 1 失败；跨会话 pending 未被重启，flush 再抛原 IOException | cross-thread-retry-red.xml / .log |
+| 基线 02ad53e0 | successfulRetryClearsOnlyTheCheckpointFailureAndCanBeLoaded：1 失败；写入恢复可 load，但旧通知未清 | original-notice-red.xml / .txt |
+| 首轮候选 6e9bf91f | sameValueEventFailureSurvivesAnUnrelatedCheckpointRecovery：1 失败；未恢复的事件来源错误被后续 checkpoint 成功误清 | same-source-red.xml / .txt |
+| 新候选修正 pending 去重前 | 12 用例中 1 失败；跨会话 pending 未被重启，flush 再抛原 IOException | cross-thread-retry-red.xml / .txt |
 
 ## 当前验证
 
@@ -26,7 +26,7 @@ NativeConversationMirror.saveCheckpoint 在 IO 调用 EncryptedConversationMirro
 
 真实 NativeConversationMirror → EncryptedConversationMirror → SQLite 回归：1 通过、0 失败、0 跳过，Gradle 21 秒。公开 editDraft 注入 checkpoint 保存端口一次失败，恢复后 load 可读、旧提示清除；controller.closeAndAwait 与 store 关闭后重新创建镜像，恢复草稿和 composerDrafts 均可读。故障注入发生在真正 SQLite 写入调用前，用于验证该调用链的失败恢复，不宣称模拟 SQLite 引擎内部崩溃或满盘。
 
-首次 SQLite 运行在 Robolectric class 初始化阶段因 Maven HTTP 429 失败，未执行产品测试体；保留 sqlite-environment-first.log/xml。随后复用本机既有相同 android-all jar，以 offline init 执行通过；没有更改产品代码、断言或 SDK 版本来绕过失败。
+首次 SQLite 运行在 Robolectric class 初始化阶段因 Maven HTTP 429 失败，未执行产品测试体；保留 sqlite-environment-first.txt/xml。随后复用本机既有相同 android-all jar，以 offline init 执行通过；没有更改产品代码、断言或 SDK 版本来绕过失败。
 
 Fast：退出 0；依赖锁 8 行、硬编码中文新增违规 0、noVpnSurfaceCheck 通过。git diff --check 通过。源码身份见 artifacts/source-digests.json；远端 CI、独立复核与真实模拟器验收由主任务收口，未执行的不标通过。
 
