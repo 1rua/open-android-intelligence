@@ -15,6 +15,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -58,6 +59,7 @@ class AppearanceSettingsScreenTest {
                     onSetDynamicIconColor = { settings = settings.copy(dynamicIconColor = it) },
                     onSetPalette = { settings = settings.copy(palette = it) },
                     onSetReduceMotion = { settings = settings.copy(reduceMotion = it) },
+                    onStreamingHapticFeedbackChange = { settings = settings.copy(streamingHapticFeedback = it) },
                 )
             }
         }
@@ -75,6 +77,36 @@ class AppearanceSettingsScreenTest {
             assertTrue(settings.dynamicIconColor)
             assertTrue(settings.reduceMotion)
         }
+    }
+
+    @Test
+    fun streamingHapticFeedbackHasExactCopyAndUpdatesImmediately() {
+        var settings by mutableStateOf(AppearanceSettings())
+        compose.setContent {
+            MaterialTheme {
+                AppearanceSettingsScreen(
+                    uiState = SettingsUiState(appearance = settings),
+                    presentation = SettingsPresentation.SCREEN,
+                    onBack = {},
+                    onSetTheme = {},
+                    onSetDynamicColor = {},
+                    onSetDynamicIconColor = {},
+                    onSetPalette = {},
+                    onSetReduceMotion = {},
+                    onStreamingHapticFeedbackChange = { settings = settings.copy(streamingHapticFeedback = it) },
+                )
+            }
+        }
+
+        compose.onNodeWithText("震动反馈").performScrollTo().assertExists()
+        compose.onNodeWithText("输出时伴随轻微震动触觉反馈").performScrollTo().assertExists()
+        assertEquals(1, compose.onAllNodesWithText("震动反馈").fetchSemanticsNodes().size)
+        compose.runOnIdle { assertFalse(settings.streamingHapticFeedback) }
+
+        compose.onNodeWithText("震动反馈").performScrollTo().performClick()
+        compose.runOnIdle { assertTrue(settings.streamingHapticFeedback) }
+        compose.onNodeWithText("震动反馈").performScrollTo().performClick()
+        compose.runOnIdle { assertFalse(settings.streamingHapticFeedback) }
     }
 
     @Test
@@ -119,6 +151,7 @@ class AppearanceSettingsScreenTest {
                     uiState = SettingsUiState(), presentation = SettingsPresentation.SCREEN, onBack = {},
                     onSetTheme = { error("cannot save") }, onSetDynamicColor = {},
                     onSetDynamicIconColor = {}, onSetPalette = {}, onSetReduceMotion = {},
+                    onStreamingHapticFeedbackChange = {},
                 )
             }
         }
@@ -139,7 +172,7 @@ class AppearanceSettingsScreenTest {
                         AppearanceSettingsScreen(
                             uiState = SettingsUiState(), presentation = SettingsPresentation.SIDEBAR, onBack = {},
                             onSetTheme = {}, onSetDynamicColor = {}, onSetDynamicIconColor = {},
-                            onSetPalette = {}, onSetReduceMotion = {},
+                            onSetPalette = {}, onSetReduceMotion = {}, onStreamingHapticFeedbackChange = {},
                         )
                     }
                 }

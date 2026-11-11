@@ -49,6 +49,7 @@ data class AppearanceSection(
     val dynamicIconColor: Boolean,
     val palette: String,
     val reduceMotion: Boolean,
+    val streamingHapticFeedback: Boolean = false,
 ) {
     fun encode(): JsonValue.JObject = JsonValue.JObject(
         listOf(
@@ -57,6 +58,7 @@ data class AppearanceSection(
             "dynamicIconColor" to Json.of(dynamicIconColor),
             "palette" to Json.of(palette),
             "reduceMotion" to Json.of(reduceMotion),
+            "streamingHapticFeedback" to Json.of(streamingHapticFeedback),
         ),
     )
 
@@ -87,6 +89,7 @@ data class AppearanceSection(
                 dynamicIconColor = BackupFields.boolean(section, "dynamicIconColor") ?: false,
                 palette = palette,
                 reduceMotion = BackupFields.boolean(section, "reduceMotion") ?: false,
+                streamingHapticFeedback = BackupFields.boolean(section, "streamingHapticFeedback") ?: false,
             )
         }
     }

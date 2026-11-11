@@ -65,6 +65,7 @@ internal fun AppearanceSettingsScreen(
     onSetDynamicIconColor: (Boolean) -> Unit,
     onSetPalette: (ThemePalette) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
+    onStreamingHapticFeedbackChange: (Boolean) -> Unit,
 ) {
     SettingsPageScaffold(title = stringResource(UiR.string.settings_title_appearance), presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
@@ -75,6 +76,7 @@ internal fun AppearanceSettingsScreen(
                 onSetDynamicIconColor = onSetDynamicIconColor,
                 onSetPalette = onSetPalette,
                 onSetReduceMotion = onSetReduceMotion,
+                onStreamingHapticFeedbackChange = onStreamingHapticFeedbackChange,
             )
         }
     }
@@ -91,10 +93,14 @@ internal fun AppearanceEditorContent(
     onSetPalette: (ThemePalette) -> Unit,
     onSetDynamicIconColor: ((Boolean) -> Unit)? = null,
     onSetReduceMotion: ((Boolean) -> Unit)? = null,
+    onStreamingHapticFeedbackChange: ((Boolean) -> Unit)? = null,
     showAdvanced: Boolean = true,
     allowPaletteWhileDynamic: Boolean = false,
 ) {
-    require(!showAdvanced || (onSetDynamicIconColor != null && onSetReduceMotion != null))
+    require(
+        !showAdvanced ||
+            (onSetDynamicIconColor != null && onSetReduceMotion != null && onStreamingHapticFeedbackChange != null),
+    )
     var failures by remember { mutableStateOf(emptySet<String>()) }
     fun save(control: String, action: () -> Unit) {
         try {
@@ -177,6 +183,17 @@ internal fun AppearanceEditorContent(
                     onCheckedChange = { value -> save("motion") { checkNotNull(onSetReduceMotion)(value) } },
                 )
                 if ("motion" in failures) AppearanceSaveFailure()
+                AppearanceSwitch(
+                    headline = stringResource(UiR.string.settings_streaming_haptic_feedback),
+                    supporting = stringResource(UiR.string.settings_streaming_haptic_feedback_description),
+                    checked = settings.streamingHapticFeedback,
+                    onCheckedChange = { value ->
+                        save("streamingHapticFeedback") {
+                            checkNotNull(onStreamingHapticFeedbackChange)(value)
+                        }
+                    },
+                )
+                if ("streamingHapticFeedback" in failures) AppearanceSaveFailure()
             }
         }
     }

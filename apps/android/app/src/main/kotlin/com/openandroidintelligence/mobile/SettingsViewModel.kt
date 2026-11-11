@@ -333,6 +333,10 @@ class SettingsViewModel(
         environment.appearance.setReduceMotion(enabled)
     }
 
+    fun setStreamingHapticFeedback(enabled: Boolean) {
+        environment.appearance.setStreamingHapticFeedback(enabled)
+    }
+
     fun setNotificationsGrant(enabled: Boolean): Boolean {
         val saved = runtime?.replyNotifications?.setEnabled(enabled) == true
         if (!saved) {

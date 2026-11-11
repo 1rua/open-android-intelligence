@@ -160,6 +160,7 @@ class SettingsBackupCoordinator(
             dynamicIconColor = settings.dynamicIconColor,
             palette = settings.palette.name,
             reduceMotion = settings.reduceMotion,
+            streamingHapticFeedback = settings.streamingHapticFeedback,
         )
     }
 
@@ -364,6 +365,7 @@ class SettingsBackupCoordinator(
             dynamicIconColor = section.dynamicIconColor,
             palette = ThemePalette.valueOf(section.palette),
             reduceMotion = section.reduceMotion,
+            streamingHapticFeedback = section.streamingHapticFeedback,
         )
         val current = appearance.settings.value
         if (next == current) {

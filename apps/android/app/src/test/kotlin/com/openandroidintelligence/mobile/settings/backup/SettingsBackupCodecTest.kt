@@ -17,6 +17,7 @@ class SettingsBackupCodecTest {
         dynamicIconColor = false,
         palette = "INDIGO",
         reduceMotion = true,
+        streamingHapticFeedback = true,
     )
 
     @Test
@@ -85,6 +86,31 @@ class SettingsBackupCodecTest {
 
         val restored = SettingsBackupSections.decode(document, setOf("EMBER", "INDIGO"))
         assertEquals(sections, restored)
+    }
+
+    @Test
+    fun olderAppearanceSectionWithoutStreamingHapticFeedbackDefaultsOff() {
+        val text = Json.canonical(
+            Json.of(
+                mapOf(
+                    "schemaVersion" to 1,
+                    "exportedAt" to "2026-11-08T10:00:00Z",
+                    "appVersionName" to "1.0.0",
+                    "appVersionCode" to 1,
+                    "settings" to mapOf(
+                        "appearance" to mapOf(
+                            "theme" to "SYSTEM",
+                            "palette" to "EMBER",
+                            "reduceMotion" to false,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val restored = SettingsBackupSections.decode(decode(text), setOf("EMBER")).appearance
+        assertFalse(requireNotNull(restored).streamingHapticFeedback)
+        assertEquals(1, decode(text).schemaVersion)
     }
 
     @Test
