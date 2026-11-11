@@ -93,6 +93,16 @@ class NativeAgentBackgroundWorkTest {
         verifyCrossAgentManagement(delete = true)
     }
 
+    @Test fun archiveWithoutOtherAgentWorkUsesTheSameJvmTransportBoundary() {
+        Fixture().use { fixture ->
+            val controller = fixture.openWorkbench("codex")
+            controller.archiveThread("native-session")
+            awaitState(controller.state) { !it.managingThreads && it.notice != null }
+            assertEquals("本机 JVM 的 PATCH 限制与另一 Agent 是否运行无关",
+                JVM_PATCH_NOTICE, controller.state.value.notice)
+        }
+    }
+
     private fun verifyCrossAgentManagement(delete: Boolean) {
         Fixture(concurrentGateway = true).use { fixture ->
             val first = fixture.openWorkbench("dsh")
@@ -111,11 +121,15 @@ class NativeAgentBackgroundWorkTest {
                         else threads.any { it.id.value == "native-session" && it.archived }
                     } == true)
             }
-            assertNull(second.state.value.notice)
-            assertTrue("管理请求必须实际发给当前 Agent", fixture.gateway.requests.any {
-                it.target == "${AgentSessionClient.ROOT}/codex/sessions/native-session" &&
-                    it.method == if (delete) "DELETE" else "PATCH"
-            })
+            if (delete) {
+                assertNull(second.state.value.notice)
+                assertTrue("删除必须实际发给当前 Agent", fixture.gateway.requests.any {
+                    it.target == "${AgentSessionClient.ROOT}/codex/sessions/native-session" && it.method == "DELETE"
+                })
+            } else {
+                // 归档已越过忙碌检查；宿主 JVM 在发出 PATCH 前拒绝该方法，空闲对照相同。
+                assertEquals(JVM_PATCH_NOTICE, second.state.value.notice)
+            }
             assertTrue("另一 Agent 的任务仍在运行", fixture.runtime.nativeConversationNotifications.sessions.value
                 .any { it.target.agentId == "dsh" && it.isRunning })
         }
@@ -129,6 +143,21 @@ class NativeAgentBackgroundWorkTest {
             assertTrue(controller.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
             controller.deleteThread("native-session")
             assertTrue(controller.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
+            assertTrue(fixture.gateway.requests.none { it.method in setOf("PATCH", "DELETE") })
+        }
+    }
+
+    @Test fun returningToTheSameAgentStillProtectsItsRunningConversation() {
+        Fixture(concurrentGateway = true).use { fixture ->
+            val first = fixture.openWorkbench("dsh")
+            fixture.startControlledReply(first, "dsh")
+            val other = fixture.openWorkbench("codex", previous = first)
+            val restored = fixture.openWorkbench("dsh", previous = other)
+            assertTrue(restored !== first)
+            restored.archiveThread("native-session")
+            assertTrue(restored.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
+            restored.deleteThread("native-session")
+            assertTrue(restored.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
             assertTrue(fixture.gateway.requests.none { it.method in setOf("PATCH", "DELETE") })
         }
     }
@@ -453,6 +482,7 @@ class NativeAgentBackgroundWorkTest {
                 "event: message\ndata: " +
                     """{"type":"done","generationId":"gen-cross-agent","clientMessageId":"$clientId","userMessageId":"user-cross-agent","messageId":"reply-cross-agent","eventId":"cross-agent-done","contentRevision":2,"revision":2,"text":"最终回复","outcome":"completed"}""" + "\n\n"
             })
+            releases += release
             controller.editDraft("验证跨 Agent 会话身份")
             controller.sendDraft()
             awaitState(controller.state) { state ->
@@ -524,6 +554,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     private companion object {
+        const val JVM_PATCH_NOTICE = "CONVERSATION_MANAGEMENT_FAILED:Invalid HTTP method: PATCH"
         /** Wait for real state emissions while driving Android's owner looper; no sleep-based assertions. */
         fun <T> awaitState(state: StateFlow<T>, predicate: (T) -> Boolean): T {
             val result = CompletableFuture<T>()
