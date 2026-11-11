@@ -253,7 +253,7 @@ class MainActivity : ComponentActivity() {
                             kotlinx.coroutines.delay(HANDOFF_NAVIGATION_RETRY_MILLIS)
                         }
                         if (pendingHandoff.value == sessionToken && phase is ConnectionPhase.Connected) {
-                            notify("暂时无法进入助手中的会话，请稍后重试")
+                            notify(getString(UiR.string.assistant_main_enter_session_failed))
                         }
                     }
                 }

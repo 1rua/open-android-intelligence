@@ -696,7 +696,7 @@ class WorkbenchDuplicateAndDeliveryTest {
             listOf(ConversationSummary(ConversationId("conv_a"), "A", 1)), null,
         )
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-            Conversation(ConversationId("conv_new"), "新对话", 1)
+            Conversation(ConversationId("conv_new"), "", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         val submitted = mutableListOf<String>()
         val submittedModes = mutableListOf<MessageDeliveryMode>()

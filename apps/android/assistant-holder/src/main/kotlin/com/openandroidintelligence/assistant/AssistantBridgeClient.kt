@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
@@ -34,7 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * [state] 是唯一对外状态；Compose 直接收集它，测试也只需要这一个出口。
  */
 internal class AssistantBridgeClient(
-    private val context: Context,
+    internal val context: Context,
     private val mainHandler: Handler = Handler(Looper.getMainLooper()),
 ) {
     private val current = MutableStateFlow(AssistantState())
@@ -98,7 +99,7 @@ internal class AssistantBridgeClient(
             if (disposed) return
             bridge = service?.let(::Messenger)
             if (bridge == null) {
-                markDisconnected("助理服务无法连接，请打开 App")
+                markDisconnected(context.getString(UiR.string.assistant_service_unavailable_open_app))
                 return
             }
             // 重新绑定会得到新的 token 与从 1 重新开始的服务端帧序号，
@@ -110,7 +111,7 @@ internal class AssistantBridgeClient(
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
-            markDisconnected("助理连接已中断，请重新打开助理")
+            markDisconnected(context.getString(UiR.string.assistant_service_interrupted_reopen))
         }
 
         override fun onBindingDied(name: ComponentName?) = onServiceDisconnected(name)
@@ -129,7 +130,7 @@ internal class AssistantBridgeClient(
             )
         }.getOrDefault(false)
         if (!bound) {
-            markDisconnected("助理服务无法连接，请打开 App")
+            markDisconnected(context.getString(UiR.string.assistant_service_unavailable_open_app))
         }
     }
 
@@ -208,7 +209,7 @@ internal class AssistantBridgeClient(
     /** 草稿同步：上限与主进程校验保持一致（50 000 字符）。 */
     fun updateDraft(text: String) {
         if (text.length > MAX_ASSISTANT_DRAFT_CHARS) {
-            showAdvisory("草稿超过 $MAX_ASSISTANT_DRAFT_CHARS 字，超出部分不会同步")
+            showAdvisory(context.getString(UiR.string.assistant_draft_exceed_limit, MAX_ASSISTANT_DRAFT_CHARS))
         }
         onDraftDispatched?.invoke(text)
         command(COMMAND_DRAFT) { putString("text", text.take(MAX_ASSISTANT_DRAFT_CHARS)) }
@@ -297,17 +298,17 @@ internal class AssistantBridgeClient(
                         return@post
                     }
                     if (bytes == null) {
-                        showAdvisory("屏幕附件无法编码，请重新圈选")
+                        showAdvisory(context.getString(UiR.string.assistant_screen_attachment_encode_failed))
                         return@post
                     }
                     if (bytes.size > MAX_SCREEN_ATTACHMENT_BYTES) {
                         bytes.fill(0)
-                        showAdvisory("圈选图片过大，请缩小范围")
+                        showAdvisory(context.getString(UiR.string.assistant_screen_selection_image_too_large))
                         return@post
                     }
                     val pipe = runCatching { ParcelFileDescriptor.createPipe() }.getOrElse {
                         bytes.fill(0)
-                        showAdvisory("屏幕附件无法读取，请重新圈选")
+                        showAdvisory(context.getString(UiR.string.assistant_screen_attachment_read_failed))
                         return@post
                     }
                     val delivered = command(COMMAND_SCREEN) {
@@ -415,7 +416,7 @@ internal class AssistantBridgeClient(
             target.send(Message.obtain().apply { data = body; replyTo = receiver })
             true
         }.getOrElse {
-            if (!disposed) markDisconnected("连接已中断，请重新打开助理")
+            if (!disposed) markDisconnected(context.getString(UiR.string.assistant_connection_interrupted_reopen))
             false
         }
     }

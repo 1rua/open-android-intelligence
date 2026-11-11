@@ -23,6 +23,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
@@ -61,7 +63,7 @@ internal fun AssistantDragHandle(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     /** 当前形态的朗读摘要，例如「紧凑输入」或「展开会话」。 */
-    stateDescription: String = "紧凑输入",
+    stateDescription: String = stringResource(UiR.string.assistant_handle_state_compact),
     onDragProgress: (Float) -> Unit = {},
     /**
      * 拖拽开始/结束：宿主据此把窗口临时铺满。
@@ -135,7 +137,7 @@ internal fun AssistantDragHandle(
             .height(Dimensions.MinimumTouchTarget)
             .testTag(AssistantCompactBarTags.HANDLE)
             .semantics {
-                contentDescription = "向上滑动在 App 中打开"
+                contentDescription = stringResource(UiR.string.assistant_handle_content_desc)
                 this.stateDescription = stateDescription
             }
             .graphicsLayer {

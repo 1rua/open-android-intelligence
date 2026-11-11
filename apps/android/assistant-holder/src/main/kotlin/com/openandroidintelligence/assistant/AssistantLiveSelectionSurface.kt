@@ -19,6 +19,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -191,7 +193,7 @@ internal fun AssistantLiveSelectionSurface(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { canvasSize = it }
-            .semantics { contentDescription = "在屏幕上圈选" },
+            .semantics { contentDescription = stringResource(UiR.string.assistant_selection_surface_desc) },
     ) {
         // 底层：定格截图（系统截图，不重新截图），铺满画布。
         Image(

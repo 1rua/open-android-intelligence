@@ -471,8 +471,8 @@ class CoreAgentConversationRepositoryTest {
         assertEquals("关于量子计算", page.conversations[0].title)
         assertEquals(ConversationId("s_1"), page.conversations[0].id)
         assertFalse(page.conversations[0].archived)
-        // Empty title should fallback to "新对话"
-        assertEquals("新对话", page.conversations[1].title)
+        // Empty title should preserve empty placeholder string in domain/data layer
+        assertEquals("", page.conversations[1].title)
         assertEquals(ConversationId("s_2"), page.conversations[1].id)
         assertTrue(page.conversations[1].archived)
     }

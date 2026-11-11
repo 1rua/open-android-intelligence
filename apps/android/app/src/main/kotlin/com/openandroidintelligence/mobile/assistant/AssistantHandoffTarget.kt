@@ -1,5 +1,8 @@
 package com.openandroidintelligence.mobile.assistant
 
+import android.content.Context
+import com.openandroidintelligence.ui.resources.R as UiR
+
 /**
  * 一次交接尝试的主进程侧结果。
  *
@@ -25,12 +28,12 @@ internal data class AssistantHandoffTarget(
     val conversationId: String?,
 )
 
-/** 交接被拒绝时给用户看的中文原因；每一条都对应一个真实的前置条件。 */
+/** 交接被拒绝时给用户看的本地化原因；每一条都对应一个真实的前置条件。 */
 internal object AssistantHandoffReasons {
-    const val NOT_CONNECTED = "主 App 尚未连接，草稿与附件仍保留在助手中"
-    const val ACCOUNT_MISMATCH = "主 App 当前的账号与助手不一致，草稿与附件仍保留在助手中"
-    const val WORKBENCH_NOT_READY = "主 App 的会话界面尚未就绪，草稿与附件仍保留在助手中"
-    const val AGENT_NOT_READY = "主 App 正在切换到同一个 Agent，请稍后再滑一次"
+    fun notConnected(context: Context): String = context.getString(UiR.string.assistant_handoff_target_main_not_connected)
+    fun accountMismatch(context: Context): String = context.getString(UiR.string.assistant_handoff_target_account_mismatch)
+    fun workbenchNotReady(context: Context): String = context.getString(UiR.string.assistant_handoff_target_session_not_ready)
+    fun agentNotReady(context: Context): String = context.getString(UiR.string.assistant_handoff_target_switching_agent)
 
     /**
      * 附件仍在暂存/上传/校验中，超过交接等待上限。
@@ -38,7 +41,7 @@ internal object AssistantHandoffReasons {
      * 规格 §3.4：这种情况按严格交接处理——浮层回弹、草稿与附件保留，并说明原因。
      * 不能「先迁移已就绪的、再跳过其余的」：未迁移的附件会在浮层关闭时被回收。
      */
-    const val ATTACHMENTS_NOT_READY = "附件仍在上传或校验，交接未完成；草稿与附件仍保留在助手中，请稍后再滑一次"
+    fun attachmentsNotReady(context: Context): String = context.getString(UiR.string.assistant_handoff_target_attachment_busy)
 }
 
 /**

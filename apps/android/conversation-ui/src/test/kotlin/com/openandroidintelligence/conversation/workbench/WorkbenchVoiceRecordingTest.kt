@@ -116,7 +116,7 @@ class WorkbenchVoiceRecordingTest {
             ConversationPage(emptyList<ConversationSummary>(), null)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-            Conversation(ConversationId("conv_test"), "新对话", 0)
+            Conversation(ConversationId("conv_test"), "", 0)
         override suspend fun submitMessage(message: OutgoingMessage) =
             MessageAcceptance("msg_test", message.clientMessageId.value)
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)

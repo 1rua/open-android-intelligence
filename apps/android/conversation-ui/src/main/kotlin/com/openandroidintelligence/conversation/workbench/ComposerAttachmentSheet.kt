@@ -25,6 +25,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -126,7 +128,7 @@ fun ComposerAttachmentSheetContent(
             .padding(bottom = Dimensions.SpaceLarge),
     ) {
         Text(
-            "添加到当前对话",
+            stringResource(UiR.string.conv_attachment_sheet_title),
             style = MaterialTheme.typography.titleLarge,
             modifier = Modifier.padding(
                 horizontal = Dimensions.SpaceLarge,
@@ -135,20 +137,20 @@ fun ComposerAttachmentSheetContent(
         )
         ComposerAttachmentChoice(
             icon = Icons.Default.PhotoCamera,
-            title = "拍照",
-            description = "使用系统相机拍摄照片",
+            title = stringResource(UiR.string.conv_attachment_sheet_camera_title),
+            description = stringResource(UiR.string.conv_attachment_sheet_camera_desc),
             tag = ComposerAttachmentSheetTags.CAMERA,
         ) { choose(ComposerAttachmentSource.CAMERA) }
         ComposerAttachmentChoice(
             icon = Icons.Default.PhotoLibrary,
-            title = "相册选择",
-            description = "从相册选择一张或多张图片",
+            title = stringResource(UiR.string.conv_attachment_sheet_gallery_title),
+            description = stringResource(UiR.string.conv_attachment_sheet_gallery_desc),
             tag = ComposerAttachmentSheetTags.GALLERY,
         ) { choose(ComposerAttachmentSource.GALLERY) }
         ComposerAttachmentChoice(
             icon = Icons.Default.AttachFile,
-            title = "文档选择",
-            description = "通过系统文件选择器添加文档",
+            title = stringResource(UiR.string.conv_attachment_sheet_doc_title),
+            description = stringResource(UiR.string.conv_attachment_sheet_doc_desc),
             tag = ComposerAttachmentSheetTags.DOCUMENT,
         ) { choose(ComposerAttachmentSource.DOCUMENT) }
     }

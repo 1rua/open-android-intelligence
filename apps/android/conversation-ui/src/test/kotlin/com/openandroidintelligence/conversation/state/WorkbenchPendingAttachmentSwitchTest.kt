@@ -464,7 +464,7 @@ class WorkbenchPendingAttachmentSwitchTest {
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String):Conversation {
             if (failCreation) error("SYNTHETIC_CREATION_FAILED")
-            return Conversation(ConversationId("conv_created"), "新对话", 0)
+            return Conversation(ConversationId("conv_created"), "", 0)
         }
 
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)

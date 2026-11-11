@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.workbench.ComposerAttachmentOverlay
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.voice.VoiceRecorder
@@ -181,7 +182,7 @@ internal fun AssistantSessionContent(
                         onFinishSelection()
                     },
                     onCancel = onFinishSelection,
-                    onCropRejected = { client.showAdvisory("选区太小，请重新圈选") },
+                    onCropRejected = { client.showAdvisory(context.getString(UiR.string.assistant_selection_crop_too_small)) },
                 )
             } else if (frozenSource == null) {
                 AssistantSessionRoot(
@@ -275,7 +276,7 @@ internal fun AssistantSessionContent(
                         } else if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) !=
                             PackageManager.PERMISSION_GRANTED
                         ) {
-                            client.showAdvisory("需要麦克风权限，请在系统设置中允许后重试")
+                            client.showAdvisory(context.getString(UiR.string.assistant_voice_permission_required))
                         } else {
                             recorder.start(state.sessionId)
                         }
@@ -293,7 +294,7 @@ internal fun AssistantSessionContent(
                         controller.dispatch(AssistantUiEvent.ScreenSelectionCommitted)
                     },
                     onSelectionRejected = {
-                        client.showAdvisory("附件已达上限，先移除一个再继续圈选")
+                        client.showAdvisory(context.getString(UiR.string.assistant_selection_attachment_limit_reached))
                     },
                     onExitFrozen = onExitFrozen,
                     acceptsNewSelection = state.attachments.size < com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS,

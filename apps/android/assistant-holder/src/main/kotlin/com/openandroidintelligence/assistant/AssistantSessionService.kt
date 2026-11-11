@@ -18,6 +18,7 @@ import android.os.Looper
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
 import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
 import com.openandroidintelligence.conversation.assistant.AssistantHandoffState
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -259,8 +260,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 系统明确没有请求截图：不会再有 onHandleScreenshot，必须现在就说清楚，
         // 否则用户会一直等着画圈，或在超时后才看到一条误导性的「系统未提供截图」。
         if (!wantsScreenshot) {
-            AssistantDiagnostics.screenshot("request", "系统未请求截图，无法圈选")
-            client?.showAdvisory("本次唤起未包含系统截图，无法圈选；可直接输入文字")
+            AssistantDiagnostics.screenshot("request", "系统未请求截图，无法圈选") // i18n-ignore: internal diagnostics
+            client?.showAdvisory(context.getString(UiR.string.assistant_screenshot_not_included_advisory))
         }
         applyWindowLayout()
         host?.resume()
@@ -389,7 +390,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
             if (prepared.bitmap != null) {
                 // 截图已就位：轨迹清空由新的 source 实例驱动，保持定格即可。
-                client?.showAdvisory("屏幕已更新，请重新画圈")
+                client?.showAdvisory(context.getString(UiR.string.assistant_screenshot_updated_redraw_hint))
             } else {
                 exitFrozenSelection()
                 client?.showAdvisory(prepared.failureMessage)
@@ -404,7 +405,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             } else {
                 // 有截图但当前不适合全屏（已展开、已在输入、正在录音）：留一句说明，
                 // 否则用户会以为「系统没给截图」，而实际上截图是好的、只是这会儿不切。
-                client?.showAdvisory("已在对话中，暂不进入圈选；再次唤起助手即可在屏幕上画圈")
+                client?.showAdvisory(context.getString(UiR.string.assistant_screenshot_busy_conversation_hint))
             }
             return
         }
@@ -427,8 +428,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     private fun prepareScreenshot(bitmap: Bitmap?): PreparedScreenshot {
         if (bitmap == null) {
-            AssistantDiagnostics.screenshot("callback", "bitmap=null（系统未投递或采集失败）")
-            return PreparedScreenshot(null, "系统未提供截图，无法圈选；可直接输入文字")
+            AssistantDiagnostics.screenshot("callback", "bitmap=null（系统未投递或采集失败）") // i18n-ignore: internal diagnostics
+            return PreparedScreenshot(null, context.getString(UiR.string.assistant_screenshot_not_provided))
         }
         AssistantDiagnostics.screenshot(
             "callback",
@@ -436,20 +437,20 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         )
         if (bitmap.isRecycled) {
             AssistantDiagnostics.screenshot("validate", "recycled")
-            return PreparedScreenshot(null, "截图已失效，请重新唤起助手后再圈选")
+            return PreparedScreenshot(null, context.getString(UiR.string.assistant_screenshot_recycled))
         }
         if (bitmap.width <= 0 || bitmap.height <= 0) {
             AssistantDiagnostics.screenshot("validate", "invalid-size")
-            return PreparedScreenshot(null, "截图尺寸无效，请重新唤起助手后再圈选")
+            return PreparedScreenshot(null, context.getString(UiR.string.assistant_screenshot_invalid_size))
         }
         val pixels = bitmap.width.toLong() * bitmap.height
         val scaled = if (pixels > MAX_SCREENSHOT_PIXELS) {
             // 只缩不放；失败时如实说明是「缩小失败」而不是「系统没给」。
-            AssistantDiagnostics.screenshot("validate", "pixels=$pixels over=$MAX_SCREENSHOT_PIXELS 降采样")
+            AssistantDiagnostics.screenshot("validate", "pixels=$pixels over=$MAX_SCREENSHOT_PIXELS 降采样") // i18n-ignore: internal diagnostics
             scaleScreenshot(bitmap)
                 ?: run {
                     AssistantDiagnostics.screenshot("validate", "scale-failed")
-                    return PreparedScreenshot(null, "截图过大且无法缩小，请重新唤起助手后再圈选")
+                    return PreparedScreenshot(null, context.getString(UiR.string.assistant_screenshot_scale_failed))
                 }
         } else {
             bitmap
@@ -463,7 +464,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             runCatching { scaled.copy(Bitmap.Config.ARGB_8888, false) }.getOrNull()
                 ?: run {
                     AssistantDiagnostics.screenshot("validate", "copy-failed config=${scaled.config}")
-                    return PreparedScreenshot(null, "截图无法转换，请重新唤起助手后再圈选")
+                    return PreparedScreenshot(null, context.getString(UiR.string.assistant_screenshot_convert_failed))
                 }
         }
         return PreparedScreenshot(normalized, "")
@@ -635,7 +636,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private fun beginScreenSelection() {
         val source = screenshot.value
         if (source == null || source.isRecycled) {
-            client?.showAdvisory("系统没有提供截图，请重新唤起助理后再圈选")
+            client?.showAdvisory(context.getString(UiR.string.assistant_screenshot_none_available))
             return
         }
         selectionState.value = AssistantScreenSelection(source)
@@ -664,7 +665,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             android.graphics.BitmapFactory.decodeByteArray(result.pngBytes(), 0, result.byteSize)
         }.getOrNull()
         if (bitmap == null) {
-            client?.showAdvisory("圈选图片无法读取，请重新圈选")
+            client?.showAdvisory(context.getString(UiR.string.assistant_selection_image_decode_failed))
             return
         }
         client?.attachScreen(bitmap)
@@ -680,7 +681,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         if (launchMainActivity(context, handoffIntent = null, session = this)) {
             hide()
         } else {
-            client?.showAdvisory("无法打开 App，请从启动器打开")
+            client?.showAdvisory(context.getString(UiR.string.assistant_open_app_failed_from_launcher))
         }
     }
 
@@ -692,7 +693,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     private fun requestHandoff() {
         val bridge = client ?: run {
-            client?.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
+            client?.showAdvisory(AssistantHandoffMessages.notConnected(context))
             // 早退也必须收回拖拽铺满的窗口：否则透明全屏会一直拦住下方 App 的触摸。
             setDragWindowExpanded(false)
             return
@@ -701,9 +702,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         val handoffId = java.util.UUID.randomUUID().toString()
         AssistantDiagnostics.handoff("request", "handoffId=$handoffId connected=${bridge.state.value.connected}")
         if (!bridge.requestHandoff(handoffId)) {
-            AssistantDiagnostics.handoff("request", "命令未送达")
+            AssistantDiagnostics.handoff("request", "命令未送达") // i18n-ignore: internal diagnostics
             setDragWindowExpanded(false)
-            bridge.showAdvisory(AssistantHandoffMessages.NOT_CONNECTED)
+            bridge.showAdvisory(AssistantHandoffMessages.notConnected(context))
             return
         }
         // 回执随下一次状态帧下发；等待期间不再接受第二次请求，避免重复迁移。
@@ -714,9 +715,9 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             if (!handoffRequested) return@Runnable
             handoffRequested = false
             pendingHandoffId = null
-            AssistantDiagnostics.handoff("watchdog", "超时未收到回执")
+            AssistantDiagnostics.handoff("watchdog", "超时未收到回执") // i18n-ignore: internal diagnostics
             setDragWindowExpanded(false)
-            client?.showAdvisory(AssistantHandoffMessages.TIMEOUT)
+            client?.showAdvisory(AssistantHandoffMessages.timeout(context))
         }.also { mainHandler.postDelayed(it, HANDOFF_TIMEOUT_MILLIS) }
         observeHandoffResult(bridge, handoffId)
     }
@@ -757,7 +758,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                         handoffWatchdog = null
                         // 交接失败：窗口必须收回，否则浮层会停在满屏挡住下方 App。
                         setDragWindowExpanded(false)
-                        bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.REJECTED })
+                        bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.rejected(context) })
                     }
                     AssistantHandoffState.PENDING, null -> Unit
                 }
@@ -774,11 +775,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private fun proceedWithAcceptedHandoff(bridge: AssistantBridgeClient, handoff: AssistantHandoffDto) {
         // 交接成功即全部附件都已迁移：主进程会等未就绪附件完成，不会再有「跳过」。
         // 仍保留服务端计数作兜底展示（旧主进程可能给出非零值），但不伪造成功。
-        val skipped = if (handoff.skippedAttachments > 0) {
-            "，另有 ${handoff.skippedAttachments} 个附件未能带入"
-        } else {
-            ""
-        }
+        val hasSkipped = handoff.skippedAttachments > 0
         val link = AssistantHandoffLink.from(
             profileId = handoff.profileId,
             accountId = handoff.accountId,
@@ -787,10 +784,17 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             sessionToken = bridge.state.value.sessionId.orEmpty(),
         )
         if (launchMainActivity(context, link?.toIntent(context), session = this)) {
-            if (skipped.isNotEmpty()) bridge.showAdvisory("已在 App 中打开$skipped")
+            if (hasSkipped) {
+                bridge.showAdvisory(context.getString(UiR.string.assistant_handoff_opened_in_app_with_skipped, handoff.skippedAttachments))
+            }
             hide()
         } else {
-            bridge.showAdvisory("交接已完成，但无法打开 App，请从启动器打开$skipped")
+            val msg = if (hasSkipped) {
+                context.getString(UiR.string.assistant_handoff_open_failed_with_skipped, handoff.skippedAttachments)
+            } else {
+                context.getString(UiR.string.assistant_handoff_open_failed)
+            }
+            bridge.showAdvisory(msg)
         }
     }
 
@@ -847,7 +851,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         } catch (_: Exception) {
             AssistantAttachmentPickerBroker.cancel()
             restoreSessionUi()
-            bridge.showAdvisory("无法打开文件选择器，请稍后再试")
+            bridge.showAdvisory(context.getString(UiR.string.assistant_picker_open_failed))
         }
     }
 
@@ -918,16 +922,16 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         val remaining = (com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS -
             bridge.state.value.attachments.size).coerceAtLeast(0)
         if (remaining == 0) {
-            bridge.showAdvisory("每条消息最多添加 ${com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS} 个附件，请先移除或发送")
+            bridge.showAdvisory(context.getString(UiR.string.assistant_composer_attachment_max_reached, com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS))
             return
         }
         val accepted = distinct.take(remaining)
         if (!bridge.attachFiles(accepted)) {
-            bridge.showAdvisory("附件未能加入草稿，请重新选择")
+            bridge.showAdvisory(context.getString(UiR.string.assistant_attachment_add_to_draft_failed))
             return
         }
         if (distinct.size > accepted.size) {
-            bridge.showAdvisory("附件已达上限，只加入了前 ${accepted.size} 个")
+            bridge.showAdvisory(context.getString(UiR.string.assistant_attachment_limit_partial_added, accepted.size))
         }
     }
 

@@ -510,7 +510,7 @@ class ApprovalStateMachineTest {
         )
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId(clientConversationId), "新对话", 0L)
+            Conversation(ConversationId(clientConversationId), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(

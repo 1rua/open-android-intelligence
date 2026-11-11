@@ -228,7 +228,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 "eventId" to receipt.eventId,"occurredAt" to receipt.occurredAt)))
             val current = threads().orEmpty()
             if (current.none { it.id.value == session.id } && !isConversationDeleted(session.id)) {
-                saveThreads(current + ConversationSummary(ConversationId(session.id), session.title?.takeIf(String::isNotBlank) ?: "新对话",
+                saveThreads(current + ConversationSummary(ConversationId(session.id), session.title?.takeIf(String::isNotBlank) ?: "",
                     receipt.occurredAt, session.archived))
             }
         }

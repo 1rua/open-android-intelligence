@@ -104,7 +104,7 @@ class WorkbenchTitleRegressionTest {
         controller.sendDraft()
         advanceUntilIdle()
 
-        assertEquals("新对话", controller.state.value.activeThreadTitle)
+        assertEquals("", controller.state.value.activeThreadTitle)
         assertNull(repository.lastUpdatedTitle)
         controller.cancel()
     }
@@ -153,7 +153,7 @@ class WorkbenchTitleRegressionTest {
 
         assertEquals(1, repository.titleUpdates)
         assertEquals("如何理解量子纠缠？", repository.lastUpdatedTitle)
-        assertEquals("新对话", controller.state.value.activeThreadTitle)
+        assertEquals("", controller.state.value.activeThreadTitle)
         controller.cancel()
     }
 
@@ -177,7 +177,7 @@ class WorkbenchTitleRegressionTest {
         var lastUpdatedConversationId: String? = null
         var lastUpdatedTitle: String? = null
         var titleUpdates = 0
-        var storedTitle = "新对话"
+        var storedTitle = ""
         var listRequests = 0
 
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
@@ -186,7 +186,7 @@ class WorkbenchTitleRegressionTest {
         }
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId("conv_test"), "新对话", 100L)
+            Conversation(ConversationId("conv_test"), "", 100L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(emptyList(), null)

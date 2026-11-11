@@ -333,7 +333,7 @@ class TimelineTurnDedupTest {
             ConversationPage(listOf(ConversationSummary(ConversationId(CONVERSATION_ID), "会话", 1L)), null)
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId("conv_created"), "新对话", 0L)
+            Conversation(ConversationId("conv_created"), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(messages, null)

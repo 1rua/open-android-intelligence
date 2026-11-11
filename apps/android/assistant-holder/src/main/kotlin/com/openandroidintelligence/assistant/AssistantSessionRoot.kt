@@ -28,6 +28,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
@@ -269,7 +271,7 @@ internal fun AssistantSessionRoot(
             AssistantDragHandle(
                 onRequestHandoff = onRequestHandoff,
                 enabled = enabled,
-                stateDescription = if (expanded) "展开会话" else "紧凑输入",
+                stateDescription = if (expanded) stringResource(UiR.string.assistant_handle_state_expanded) else stringResource(UiR.string.assistant_handle_state_compact),
                 onDragProgress = { handoffProgress = it },
                 onDragWindowExpanded = onDragWindowExpanded,
             )
@@ -413,20 +415,20 @@ private fun AssistantEmptyState(
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
             if (enabled) {
-                Text(text = "还没有消息", style = MaterialTheme.typography.titleSmall)
+                Text(text = stringResource(UiR.string.assistant_empty_state_title), style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "这里会显示当前对话的真实消息，输入内容后发送即可开始。",
+                    text = stringResource(UiR.string.assistant_empty_state_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Text(text = "助理服务未连接", style = MaterialTheme.typography.titleSmall)
+                Text(text = stringResource(UiR.string.assistant_disconnected_title), style = MaterialTheme.typography.titleSmall)
                 Text(
-                    text = "助理进程无法访问主进程的对话状态。请先打开 App，再从系统助理重新唤起。",
+                    text = stringResource(UiR.string.assistant_disconnected_desc),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = onOpenApp) { Text("打开 App") }
+                Button(onClick = onOpenApp) { Text(stringResource(UiR.string.assistant_disconnected_action_open_app)) }
             }
         }
     }
