@@ -12,6 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.openandroidintelligence.ui.resources.R as UiR
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
@@ -81,7 +83,7 @@ internal fun MessageProcessingEditor(
             )
             if (failed) DebounceSaveFailure()
             Text(
-                "设置为 0 秒时立即发送；大于 0 秒时合并短时间内连续发送的消息。",
+                "stringResource(UiR.string.settings_msg_proc_delay_zero)",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -110,7 +112,7 @@ private fun DebounceDelayEditor(
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
         Text("合并连续消息", style = MaterialTheme.typography.bodyLarge)
         Text(
-            if (draftDelay.toInt() == 0) "当前设置：立即发送（不合并）" else "当前设置：等待 ${draftDelay.toInt() / 1000.0} 秒合并",
+            if (draftDelay.toInt() == 0) "stringResource(UiR.string.settings_msg_proc_current_immediate)" else "stringResource(UiR.string.settings_msg_proc_current_delay, draftDelay.toInt() / 1000.0)",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -122,7 +124,7 @@ private fun DebounceDelayEditor(
             enabled = enabled,
             onValueChange = { draftDelay = it },
             onValueChangeFinished = { onSave(draftDelay.toInt()) },
-            modifier = Modifier.semantics { contentDescription = "合并等待时间" },
+            modifier = Modifier.semantics { contentDescription = "stringResource(UiR.string.settings_msg_proc_delay_label)" },
         )
     }
 }

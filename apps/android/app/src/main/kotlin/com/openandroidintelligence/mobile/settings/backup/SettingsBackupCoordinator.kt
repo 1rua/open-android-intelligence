@@ -417,8 +417,8 @@ class SettingsBackupCoordinator(
         }
         // 旧文件的合并值无法区分「用户主动设置」与「版本默认值」，整节不迁移，如实说明。
         if (section.hasLegacyMergingSettings) {
-            skipped += "旧版本备份里的 ${section.legacyMergingSettings} 项消息合并设置未导入：" +
-                "旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。"
+            skipped += "stringResource(UiR.string.settings_backup_legacy_section_dropped, section.legacyMergingSettings)" +
+                "stringResource(UiR.string.settings_backup_legacy_note)"
         }
     }
 

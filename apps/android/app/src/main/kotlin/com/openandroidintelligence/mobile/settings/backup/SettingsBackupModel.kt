@@ -142,7 +142,7 @@ data class MessageProcessingSection(
             delayMillis == 0 -> "立即发送"
             else -> "${delayMillis / 1000.0} 秒"
         }
-        return "消息合并：$value"
+        return "stringResource(UiR.string.settings_backup_msg_merge_val, value)"
     }
 
     /** 旧文件里的合并值已不再适用，导入时需要如实告知。 */
