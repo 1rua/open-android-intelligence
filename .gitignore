@@ -122,3 +122,7 @@ oai-release.keystore
 
 # 一次性本地运维脚本（CI 轮询等），不随仓库分发
 /.worktree-ci/
+
+# 临时测试证据
+docs/reviews/2026-11-10-device-capability-e2e/
+docs/reviews/2026-11-11-pr134-evidence/

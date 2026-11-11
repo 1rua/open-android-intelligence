@@ -27,7 +27,10 @@ Design rules:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -55,11 +58,15 @@ SECURITY_OR_CONTRACT_PATHS = {
     "tools/smart-test.py",
     "tools/ci/impact.py",
     "tools/ci/android_tasks.py",
+    "tools/ci/android_app_performance.py",
+    "tools/test_android_app_performance.py",
+    "tools/test_android_jvm_reuse.py",
     "tools/test_ci_planning.py",
     "tools/test_smart_test.py",
     ".github/workflows/oai-core.yml",
     ".github/workflows/release-gate.yml",
     "apps/android/ci/app-regression.txt",
+    "apps/android/ci/app-jvm-reuse.txt",
     "apps/android/ci/hermes-fixture-requirements.txt",
 }
 
@@ -169,16 +176,17 @@ LANES = (
 
 def _run_git(args: list[str]) -> str:
     result = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), *args], capture_output=True, text=True
+        ["git", "-C", str(REPO_ROOT), *args], capture_output=True
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git failed")
-    return result.stdout
+        raise RuntimeError(os.fsdecode(result.stderr).strip() or "git failed")
+    # 文本模式会把文件名内的回车转成换行，直接解码字节才能保留文件系统路径。
+    return os.fsdecode(result.stdout)
 
 
 def changed_paths(base: str | None, head: str | None, staged: bool = False) -> list[tuple[str, str]]:
     """Return (status, path) pairs, expanding renames to both sides."""
-    args = ["diff", "--name-status", "-M", "--find-renames"]
+    args = ["diff", "--name-status", "-z", "-M", "--find-renames"]
     if staged:
         args.append("--cached")
     if base:
@@ -195,25 +203,31 @@ def changed_paths(base: str | None, head: str | None, staged: bool = False) -> l
     except RuntimeError:
         return pairs
 
-    for line in output.splitlines():
-        if not line.strip():
+    # Git 的换行输出会转义中文、制表符和换行；以 NUL 分隔才能保留原始路径。
+    fields = iter(output.split("\0"))
+    for field in fields:
+        if not field:
             continue
-        fields = line.split("\t")
-        status = fields[0][:1]
-        if status in {"R", "C"} and len(fields) >= 3:
-            pairs.append(("D", fields[1]))
-            pairs.append(("A", fields[2]))
-        elif len(fields) >= 2:
-            pairs.append((status, fields[1]))
+        status = field[:1]
+        try:
+            path = next(fields)
+            if status in {"R", "C"}:
+                pairs.append(("D", path))
+                pairs.append(("A", next(fields)))
+            else:
+                pairs.append((status, path))
+        except StopIteration:
+            # 无法完整解析时交回空差异，让调用方按现有规则退到全量。
+            return []
 
     # Untracked files are part of the change even before they are added.
     try:
-        untracked = _run_git(["ls-files", "--others", "--exclude-standard"])
+        untracked = _run_git(["ls-files", "-z", "--others", "--exclude-standard"])
     except RuntimeError:
         untracked = ""
-    for path in untracked.splitlines():
-        if path.strip():
-            pairs.append(("A", path.strip()))
+    for path in untracked.split("\0"):
+        if path:
+            pairs.append(("A", path))
 
     seen: set[tuple[str, str]] = set()
     unique: list[tuple[str, str]] = []
@@ -288,7 +302,9 @@ def classify_path(
 ) -> bool:
     """Mark the lanes a single path affects. Returns True when it was classified."""
     # Documentation and review artefacts never gate code lanes.
-    if path.startswith(("docs/", "tmp/")) or path.endswith((".md", ".txt")):
+    if path.startswith(("docs/", "tmp/")) or (
+        path.endswith((".md", ".txt")) and not path.startswith("apps/android/app/src/test/")
+    ):
         return True
 
     if path.startswith(("plugins/", "plugin-tooling/")):
@@ -373,6 +389,22 @@ def classify_android(
         # gateway/notification suites.
         lanes["android-app"] = True
         lanes["android-play"] = True
+        if rest.startswith("app/src/test/"):
+            # 新测试漏登清单必须被快速门禁发现；文件名提示不能代替真实所属组。
+            lanes["fast"] = True
+            sections.update(app_test_sections(path))
+        if rest.startswith("app/src/main/"):
+            # 这些源码的真实回归位于独立分组，额外补组而不替换原有任务选择。
+            if "/onboarding/" in rest or "/updates/" in rest:
+                sections.add("settings")
+            if "/screen/" in rest:
+                sections.add("push-notifications")
+                if rest.endswith("/AccessibilityServiceState.kt"):
+                    # 能力设置页面读取此状态，需覆盖该页面的授权恢复回归。
+                    sections.add("settings")
+                if rest.endswith("/TemporaryApprovalCopy.kt"):
+                    # ProductionPluginHost.approveRequest 调用这里生成授权摘要。
+                    sections.add("plugins")
         for section, lane, hints in APP_FEATURE_HINTS:
             if any(hint in rest for hint in hints):
                 lanes[lane] = True
@@ -385,6 +417,36 @@ def classify_android(
         return True
 
     return False
+
+
+def app_test_sections(path: str) -> set[str]:
+    """测试改动按共享清单归组；新类、辅助文件和无法确认的路径覆盖全部组。"""
+    planner_path = Path(__file__).with_name("android_tasks.py")
+    spec = importlib.util.spec_from_file_location("ci_android_tasks", planner_path)
+    planner = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(planner)
+    owners = {
+        name: section
+        for section, names in planner.read_regression_sections().items()
+        for name in names
+    }
+
+    try:
+        source = (REPO_ROOT / path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        # 删除后仅凭文件名无法还原文件内的其他类，必须覆盖所有可能的所属组。
+        return set(ALL_APP_SECTIONS)
+    else:
+        # 一个 Kotlin 文件可以有多个测试类，必须合并它们各自的所属组。
+        names = set(re.findall(
+            r"^\s*(?:(?:internal|abstract|open)\s+)*class\s+(\w+Test)\b",
+            source,
+            re.MULTILINE,
+        )) or {Path(path).stem}
+    if names - owners.keys():
+        return set(ALL_APP_SECTIONS)
+    return {owners[name] for name in names}
 
 
 # Package/directory hints inside apps/android/app. Order matters: the first

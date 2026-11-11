@@ -90,6 +90,7 @@ class AssistantSessionServiceLifecycleTest {
         revision: Int,
         frame: HandoffFrame? = null,
         handoffId: String = "",
+        attachmentsJson: String = "[]",
     ): android.os.Message {
         val handoffJson = when (frame) {
             is AssistantHandoffRejectedFrame ->
@@ -106,6 +107,7 @@ class AssistantSessionServiceLifecycleTest {
         }
         val state = buildString {
             append("""{"version":2,"revision":$revision,"connected":true,"sessionId":"test-session"""")
+            append(""","attachments":$attachmentsJson""")
             handoffJson?.let { append(""","handoff":$it""") }
             append("}")
         }
@@ -181,9 +183,16 @@ class AssistantSessionServiceLifecycleTest {
         assertEquals(WindowManager.LayoutParams.MATCH_PARENT, window?.attributes?.height)
     }
 
-    @Test fun backLeavesTheFrozenSelectionWithoutEndingTheSession() {
-        val session = session()
-        session.onShow(Bundle(), 0)
+    /**
+     * 定格态按一次返回就退出会话（与平台默认一致）。
+     *
+     * 旧实现只清覆盖层，用户会看到一个「下层 App 可见、但既不能画圈也不能输入」的
+     * 中间态，必须再按一次才退出。空草稿时没有任何内容会因此丢失。
+     */
+    @Test fun backEndsTheFrozenSelectionSessionImmediately() {
+        // 结束会话会走到 hide()，它要求会话已经 doCreate（真机由系统先 create 再 show）。
+        val session = createdSession()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
         attachFakeBridge()
         shadowOf(android.os.Looper.getMainLooper()).idle()
         session.onHandleScreenshot(
@@ -192,12 +201,41 @@ class AssistantSessionServiceLifecycleTest {
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
         session.onBackPressed()
+
+        // 状态在 onBackPressed 内同步推进，必须在 idle() 之前断言：
+        // Robolectric 的 hide() 不会触发 onHide（既有用例也是直接调 onHide 才能看到
+        // disconnect），而 host 停止后组合会被重新挂上，`resetOnEntry` 的 LaunchedEffect
+        // 又会派发一次 SessionShown 把状态"复活"。两者都是测试宿主的重放，不是产品行为
+        // （真机上 hide() 之后 view 已解绑，不会再重组）。
+        assertNull("定格态按返回必须直接结束会话，不得停在输入栏", session.uiStateOrNull()?.visible())
+    }
+
+    /**
+     * 定格态已有圈选附件时，返回先退回紧凑输入栏、**不**结束会话。
+     *
+     * 直接结束会连同草稿与附件一起释放（规格 §338 要求取消不丢草稿），
+     * 所以这里保留两段式：先退出定格，让用户仍能把刚圈的内容发出去。
+     */
+    @Test fun backKeepsTheSessionWhenTheFrozenSelectionAlreadyHasAttachments() {
+        val session = createdSession()
+        session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        session.onHandleScreenshot(
+            android.graphics.Bitmap.createBitmap(40, 40, android.graphics.Bitmap.Config.ARGB_8888),
+        )
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        // 模拟主进程回传了一个已加入草稿的圈选附件。
+        publishAttachmentFrame(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        session.onBackPressed()
         shadowOf(android.os.Looper.getMainLooper()).idle()
 
         val visible = session.uiStateOrNull()?.visible()
-        requireNotNull(visible) { "第一次返回只退出定格，不得结束会话" }
-        assertEquals(AssistantOverlay.NONE, visible.overlay)
-        assertTrue("退出定格后不撤销可见性", "disconnect" !in commands())
+        requireNotNull(visible) { "已有附件时不得结束会话" }
+        assertEquals("只退出定格，保留输入栏与附件", AssistantOverlay.NONE, visible.overlay)
+        assertTrue("不得断开连接", commands().none { it == "disconnect" })
     }
 
     @Test fun aScreenshotWhileTheUserAlreadyTypedDoesNotStealTheCompactInput() {
@@ -753,6 +791,22 @@ class AssistantSessionServiceLifecycleTest {
         val field = session.javaClass.getDeclaredField("attachmentSheetOpen").apply { isAccessible = true }
         val state = field.get(session) as androidx.compose.runtime.MutableState<Boolean>
         return state.value
+    }
+
+    /**
+     * 让主进程「回传」一个已加入草稿的圈选附件。
+     *
+     * 走真实的状态帧路径（`replyTo` → 客户端解析 JSON），而不是直接改会话字段：
+     * 这样断言的是用户真实会看到的状态，而不是测试自己拼出来的内部值。
+     */
+    private fun publishAttachmentFrame(session: VoiceInteractionSession) {
+        val client = session.clientOrNull() ?: error("必须先连接假桥接")
+        val messenger = client.javaClass.getDeclaredField("receiver")
+            .apply { isAccessible = true }.get(client) as android.os.Messenger
+        val attachment = """[{"draftId":"draft-1","filename":"assist-screen.png",""" +
+            """"mediaType":"image/png","isImage":true,"localKey":"draft-1","localState":"VERIFIED"}]"""
+        // revision 必须递增：客户端会丢弃乱序/重复帧。
+        messenger.send(handoffStateMessage(50, attachmentsJson = attachment))
     }
 
     private fun invokeRequestHandoff(session: VoiceInteractionSession) {

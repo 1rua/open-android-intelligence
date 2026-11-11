@@ -1,0 +1,347 @@
+[
+  {
+    "run_id": "42983598051",
+    "configuration": {
+      "mode": "isolated",
+      "jit": "default",
+      "forks": 4,
+      "gc": "default",
+      "seed": 135
+    },
+    "head_sha": "7109adb9531356cb0ae6a652db1cbcf1516fcde6",
+    "app_job_seconds": 696.0,
+    "workflow_seconds": 731.0,
+    "conclusion": "success",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    },
+    "class_selection": {
+      "status": "passed",
+      "missing": [],
+      "unexpected": []
+    },
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 1564.022,
+      "case_seconds_sum": 1561.122,
+      "first_method_seconds_sum": 796.378
+    },
+    "gradle_profile": {
+      "summary_seconds": {
+        "Total Build Time": 642.95,
+        "Startup": 4.381,
+        "Settings and buildSrc": 0.637,
+        "Loading Projects": 0.204,
+        "Configuring Projects": 13.137,
+        "Artifact Transforms": 0.402,
+        "Task Execution": 630.9
+      },
+      "tasks": [
+        {
+          "task": ":app:testFullDebugUnitTest",
+          "seconds": 515.9,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugKotlin",
+          "seconds": 49.747,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugUnitTestKotlin",
+          "seconds": 46.24,
+          "result": ""
+        }
+      ]
+    },
+    "host": {
+      "logical_cpus": 4,
+      "affinity_cpus": 4,
+      "mem_total_bytes": 16759439360,
+      "cpu_models": [
+        "AMD EPYC 9V74 80-Core Processor"
+      ],
+      "cpu_quota": null
+    },
+    "robolectric_initialization": {
+      "status": "measured",
+      "elapsed_ns_sum": 724722860172,
+      "count": 1345
+    },
+    "gc_pause_seconds_sum": 44.480442,
+    "cpu_mean_percent": 94.24472142821718
+  },
+  {
+    "run_id": "42983699710",
+    "configuration": {
+      "mode": "isolated",
+      "jit": "startup",
+      "forks": 2,
+      "gc": "default"
+    },
+    "head_sha": "7109adb9531356cb0ae6a652db1cbcf1516fcde6",
+    "app_job_seconds": 869.0,
+    "workflow_seconds": 1012.0,
+    "conclusion": "success",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    },
+    "class_selection": {
+      "status": "passed",
+      "missing": [],
+      "unexpected": []
+    },
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 693.259,
+      "case_seconds_sum": 692.484,
+      "first_method_seconds_sum": 301.924
+    },
+    "gradle_profile": {
+      "summary_seconds": {
+        "Total Build Time": 820.64,
+        "Startup": 12.692,
+        "Settings and buildSrc": 13.843,
+        "Loading Projects": 0.185,
+        "Configuring Projects": 35.834,
+        "Artifact Transforms": 17.887,
+        "Task Execution": 1070.13
+      },
+      "tasks": [
+        {
+          "task": ":app:testFullDebugUnitTest",
+          "seconds": 489.41,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugKotlin",
+          "seconds": 51.16,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugUnitTestKotlin",
+          "seconds": 46.443,
+          "result": ""
+        }
+      ]
+    },
+    "host": {
+      "logical_cpus": 4,
+      "affinity_cpus": 4,
+      "mem_total_bytes": 16759439360,
+      "cpu_models": [
+        "AMD EPYC 9V74 80-Core Processor"
+      ],
+      "cpu_quota": null
+    },
+    "robolectric_initialization": {
+      "status": "measured",
+      "elapsed_ns_sum": 272572316101,
+      "count": 1345
+    },
+    "gc_pause_seconds_sum": 14.320465,
+    "cpu_mean_percent": 60.83575985671175
+  },
+  {
+    "run_id": "42983703887",
+    "configuration": {
+      "mode": "isolated",
+      "jit": "startup",
+      "forks": 2,
+      "gc": "serial"
+    },
+    "head_sha": "7109adb9531356cb0ae6a652db1cbcf1516fcde6",
+    "app_job_seconds": 962.0,
+    "workflow_seconds": 1149.0,
+    "conclusion": "success",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    },
+    "class_selection": {
+      "status": "passed",
+      "missing": [],
+      "unexpected": []
+    },
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 738.758,
+      "case_seconds_sum": 737.958,
+      "first_method_seconds_sum": 344.252
+    },
+    "gradle_profile": {
+      "summary_seconds": {
+        "Total Build Time": 922.03,
+        "Startup": 13.328,
+        "Settings and buildSrc": 16.563,
+        "Loading Projects": 0.219,
+        "Configuring Projects": 41.619,
+        "Artifact Transforms": 24.565,
+        "Task Execution": 1251.97
+      },
+      "tasks": [
+        {
+          "task": ":app:testFullDebugUnitTest",
+          "seconds": 525.73,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugKotlin",
+          "seconds": 59.427,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugUnitTestKotlin",
+          "seconds": 54.411,
+          "result": ""
+        }
+      ]
+    },
+    "host": {
+      "logical_cpus": 4,
+      "affinity_cpus": 4,
+      "mem_total_bytes": 16759439360,
+      "cpu_models": [
+        "AMD EPYC 7763 64-Core Processor"
+      ],
+      "cpu_quota": null
+    },
+    "robolectric_initialization": {
+      "status": "measured",
+      "elapsed_ns_sum": 312639157453,
+      "count": 1345
+    },
+    "gc_pause_seconds_sum": 42.254245,
+    "cpu_mean_percent": 66.10503638721482
+  },
+  {
+    "run_id": "42983701444",
+    "configuration": {
+      "mode": "isolated",
+      "jit": "startup",
+      "forks": 4,
+      "gc": "serial"
+    },
+    "head_sha": "7109adb9531356cb0ae6a652db1cbcf1516fcde6",
+    "app_job_seconds": 841.0,
+    "workflow_seconds": 1000.0,
+    "conclusion": "success",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    },
+    "class_selection": {
+      "status": "passed",
+      "missing": [],
+      "unexpected": []
+    },
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 1034.688,
+      "case_seconds_sum": 1033.33,
+      "first_method_seconds_sum": 497.864
+    },
+    "gradle_profile": {
+      "summary_seconds": {
+        "Total Build Time": 785.03,
+        "Startup": 13.605,
+        "Settings and buildSrc": 16.413,
+        "Loading Projects": 0.218,
+        "Configuring Projects": 41.327,
+        "Artifact Transforms": 22.962,
+        "Task Execution": 1106.9
+      },
+      "tasks": [
+        {
+          "task": ":app:testFullDebugUnitTest",
+          "seconds": 391.05,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugUnitTestKotlin",
+          "seconds": 57.561,
+          "result": ""
+        },
+        {
+          "task": ":app:compileFullDebugKotlin",
+          "seconds": 57.062,
+          "result": ""
+        }
+      ]
+    },
+    "host": {
+      "logical_cpus": 4,
+      "affinity_cpus": 4,
+      "mem_total_bytes": 16759439360,
+      "cpu_models": [
+        "AMD EPYC 7763 64-Core Processor"
+      ],
+      "cpu_quota": null
+    },
+    "robolectric_initialization": {
+      "status": "measured",
+      "elapsed_ns_sum": 458410988458,
+      "count": 1345
+    },
+    "gc_pause_seconds_sum": 63.639105,
+    "cpu_mean_percent": 84.092016338931
+  }
+]

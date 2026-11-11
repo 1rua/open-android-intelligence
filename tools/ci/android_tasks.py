@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGRESSION_MANIFEST = REPO_ROOT / "apps/android/ci/app-regression.txt"
+JVM_REUSE_MANIFEST = REPO_ROOT / "apps/android/ci/app-jvm-reuse.txt"
+JVM_REUSE_GROUP_PREFIX = "com.openandroidintelligence.mobile.ci.ReusableAppTestGroup"
 
 # Module tests grouped by lane. Keep in sync with impact.ANDROID_MODULE_LANES.
 MODULE_TASKS = {
@@ -77,27 +80,27 @@ ALWAYS_TASKS = ["noVpnSurfaceCheck", ":app:compileFullDebugKotlin"]
 # Tests that assert Play-variant policy and cross-variant UI behaviour.
 PLAY_TESTS = [
     ":app:testPlayDebugUnitTest",
-    "--tests=*SettingsResponsiveHostRegressionTest",
-    "--tests=*ScreenExecutionErrorsTest",
-    "--tests=*ScreenCapabilityPresentationTest",
-    "--tests=*ScreenCaptureSystemConsentTest",
-    "--tests=*ScreenControlConfirmationDialogTest",
-    "--tests=*NotificationAccessSettingsTest",
-    "--tests=*PluginCapabilityRiskTest",
+    "--tests=SettingsResponsiveHostRegressionTest",
+    "--tests=ScreenExecutionErrorsTest",
+    "--tests=ScreenCapabilityPresentationTest",
+    "--tests=ScreenCaptureSystemConsentTest",
+    "--tests=ScreenControlConfirmationDialogTest",
+    "--tests=NotificationAccessSettingsTest",
+    "--tests=PluginCapabilityRiskTest",
     # Play-only: asserts the channel exposes no built-in capabilities and
     # reports BUILT_IN_CHANNEL_UNSUPPORTED. The class skips under the Full
     # variant, so listing it in the Full manifest does not cover this.
-    "--tests=*BuiltInCapabilitiesTest",
-    "--tests=*CapabilityPublisherTest",
-    "--tests=*ApplicationCompositionTest",
-    "--tests=*AndroidApiCompatibilityTest",
-    "--tests=*CoreAgentConversationRepositoryTest",
-    "--tests=*ColdStartConnectionTest",
-    "--tests=*AccountSwitchPersistenceFailureTest",
-    "--tests=*IndependentConnectionDiscoveryTest",
-    "--tests=*AdditionalDeviceConnectionsTest",
-    "--tests=*SettingsViewModelTest",
-    "--tests=*NativeEventDeletionPersistenceTest",
+    "--tests=BuiltInCapabilitiesTest",
+    "--tests=CapabilityPublisherTest",
+    "--tests=ApplicationCompositionTest",
+    "--tests=AndroidApiCompatibilityTest",
+    "--tests=CoreAgentConversationRepositoryTest",
+    "--tests=ColdStartConnectionTest",
+    "--tests=AccountSwitchPersistenceFailureTest",
+    "--tests=IndependentConnectionDiscoveryTest",
+    "--tests=AdditionalDeviceConnectionsTest",
+    "--tests=SettingsViewModelTest",
+    "--tests=NativeEventDeletionPersistenceTest",
 ]
 
 
@@ -151,7 +154,7 @@ def modules(impact: dict[str, object]) -> list[str]:
 
 def read_shard_args(name: str) -> list[str]:
     """Gradle arguments for one app shard: the Test task, then its filters."""
-    return [":app:testFullDebugUnitTest"] + [f"--tests=*{entry}" for entry in read_shard(name)]
+    return [":app:testFullDebugUnitTest"] + [f"--tests={entry}" for entry in read_shard(name)]
 
 
 def module_lane_args(lane: str) -> list[str]:
@@ -170,7 +173,35 @@ def full_module_tasks() -> list[str]:
     return tasks
 
 
-def pr_args_for_sections(sections: list[str] | None) -> list[str]:
+def read_jvm_reuse_manifest() -> list[str]:
+    """读取显式审计清单；错误配置必须失败，不能静默扩大复用范围。"""
+    names = [line.split("#", 1)[0].strip() for line in JVM_REUSE_MANIFEST.read_text(encoding="utf-8").splitlines()]
+    names = [name for name in names if name]
+    if not names or len(names) != len(set(names)):
+        raise SystemExit("JVM 复用清单为空或存在重复类")
+    known = set(read_regression_manifest())
+    short_names: set[str] = set()
+    for name in names:
+        short_name = name.rsplit(".", 1)[-1]
+        if not re.fullmatch(r"com\.openandroidintelligence\.mobile\.(?:[A-Za-z_][\w]*\.)*[A-Za-z_][\w]*Test", name):
+            raise SystemExit(f"无效的 JVM 复用类名: {name!r}")
+        if short_name not in known or short_name in short_names:
+            raise SystemExit(f"JVM 复用类未登记或短类名冲突: {name}")
+        short_names.add(short_name)
+    return names
+
+
+def jvm_reuse_group(name: str) -> int:
+    """与 Java String.hashCode/floorMod 完全一致，保证清单只分配一次。"""
+    value = 0
+    for character in name:
+        value = (31 * value + ord(character)) & 0xFFFFFFFF
+    if value >= 0x80000000:
+        value -= 0x100000000
+    return value % 4
+
+
+def pr_args_for_sections(sections: list[str] | None, *, jvm_reuse: bool = False, seed: int = 0) -> list[str]:
     """One Test task plus filters for [core] + the requested sections.
 
     `sections=None` means "everything" (no narrowing).
@@ -186,23 +217,27 @@ def pr_args_for_sections(sections: list[str] | None) -> list[str]:
         for section in ("core", *sorted(set(sections) - {"core"})):
             names.extend(available[section])
     ordered = list(dict.fromkeys(names))
-    return [":app:testFullDebugUnitTest"] + [f"--tests=*{name}" for name in ordered]
+    arguments = [":app:testFullDebugUnitTest"] + [f"--tests={name}" for name in ordered]
+    if jvm_reuse:
+        selected = [name for name in read_jvm_reuse_manifest() if name.rsplit(".", 1)[-1] in ordered]
+        if selected:
+            groups = sorted({jvm_reuse_group(name) for name in selected})
+            arguments.extend(f"--tests={JVM_REUSE_GROUP_PREFIX}{group}" for group in groups)
+            arguments.extend([
+                f"-Poai.testReuseClasses={','.join(selected)}",
+                f"-Poai.testReuseSeed={seed}",
+            ])
+    return arguments
 
 
 def pr_app_args() -> list[str]:
-    """The PR regression set: every shard entry on one Test task.
+    """同一任务覆盖完整 PR 清单，只编译一次；按实际阶段测量决定后续调度。
 
-    Compiling the app is the dominant cost of this lane (measured on CI: ~5-11
-    minutes of the lane's wall time versus ~3 minutes of test execution). Running
-    the set as several parallel jobs would compile the same variant once per job,
-    so the whole set runs in a single job and wins its parallelism from
-    `-Poai.testParallelForks` instead. `mode` selects the invocation shape:
-
-      * ``shard`` (default) — one entry per line, used by the local runner;
-      * ``args`` — the exact argv list, used by CI.
+    使用大写开头的简单类名，让 Gradle 在测试发现前排除未选中的类。
+    前导通配符会使未选中的类也启动 JVM，定向两个类曾实际启动 166 个进程。
     """
     ordered = read_regression_manifest()
-    return [":app:testFullDebugUnitTest"] + [f"--tests=*{name}" for name in ordered]
+    return [":app:testFullDebugUnitTest"] + [f"--tests={name}" for name in ordered]
 
 
 def pr_app_shard_names() -> list[str]:
@@ -234,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--group", required=True,
                         choices=["modules", "app-shard", "app-pr", "play", "lint", "full"])
     parser.add_argument("--shard", default=None, help="shard name for --group app-shard")
+    parser.add_argument("--jvm-reuse", action="store_true", help="仅让显式审计清单中的 App 测试复用 JVM")
+    parser.add_argument("--seed", type=int, default=0, help="JVM 复用组内测试乱序的固定种子")
     parser.add_argument(
         "--sections",
         default=None,
@@ -267,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
         sections = None
         if args.sections:
             sections = [part.strip() for part in args.sections.split(",") if part.strip()]
-        arguments = pr_args_for_sections(sections)
+        arguments = pr_args_for_sections(sections, jvm_reuse=args.jvm_reuse, seed=args.seed)
     elif args.group == "play":
         arguments = play_args()
     elif args.group == "lint":

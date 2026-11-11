@@ -28,6 +28,26 @@ inputs:
     description: Test JVM forks. Only meaningful for the app test lanes.
     required: false
     default: '1'
+  app-jvm-mode:
+    description: App 测试逐类隔离，或仅对审计清单使用 JUnit Suite 复用
+    required: false
+    default: isolated
+  app-test-seed:
+    description: App 安全复用测试的乱序种子
+    required: false
+    default: '135'
+  app-jit:
+    description: App 测试使用默认 JIT 或仅一级编译的启动对照
+    required: false
+    default: default
+  app-gc:
+    description: 测试 JVM 的默认或串行垃圾回收器对照
+    required: false
+    default: default
+  app-performance:
+    description: 采集 App 测试进程、Gradle Profile 与 Robolectric 公开指标
+    required: false
+    default: 'false'
   hermes-fixtures:
     description: >-
       Provision the historical Hermes HTTP fixture, the pinned native SDK and an
@@ -73,7 +93,10 @@ runs:
         # The configuration cache is now usable: the forbidden-surface gate no
         # longer captures the script instance, so repeated invocations skip
         # configuration entirely.
-        cache-read-only: ${{ inputs.gradle-cache-read-only == 'true' }}
+        # 手动实验的所有通道均只读，避免同时运行的模块通道改变 App 对照快照。
+        cache-read-only: ${{ inputs.gradle-cache-read-only == 'true' || github.event_name == 'workflow_dispatch' }}
+        # 同源码实验只恢复本通道的缓存，禁止回退到运行中其它模块刚发布的快照。
+        gradle-home-cache-strict-match: ${{ github.event_name == 'workflow_dispatch' }}
 
     - name: Restore the WASM fixtures
       if: inputs.wasm-artifact != ''
@@ -142,6 +165,11 @@ runs:
         OAI_TEST_PARALLEL_FORKS: ${{ inputs.test-parallel-forks }}
         OAI_APP_SECTIONS: ${{ inputs.app-sections }}
         HERMES_FIXTURES: ${{ inputs.hermes-fixtures }}
+        OAI_APP_JVM_MODE: ${{ inputs.app-jvm-mode }}
+        OAI_APP_TEST_SEED: ${{ inputs.app-test-seed }}
+        OAI_APP_JIT: ${{ inputs.app-jit }}
+        OAI_APP_GC: ${{ inputs.app-gc }}
+        OAI_APP_PERFORMANCE: ${{ inputs.app-performance }}
       run: |
         set -euo pipefail
         if [ "$HERMES_FIXTURES" = "true" ]; then
@@ -162,6 +190,11 @@ runs:
             else
               planner=(python3 ../../tools/ci/android_tasks.py --group app-pr)
             fi
+            case "$OAI_APP_JVM_MODE" in
+              isolated) ;;
+              reuse) planner+=(--jvm-reuse --seed "$OAI_APP_TEST_SEED") ;;
+              *) echo "::error::无效的 App 测试进程模式"; exit 2 ;;
+            esac
             ;;
           play)
             planner=(python3 ../../tools/ci/android_tasks.py --group play)
@@ -188,9 +221,28 @@ runs:
         fi
 
         printf 'gradle %s\n' "${args[*]}"
-        ./gradlew "${args[@]}" \
-          -Poai.testParallelForks="$OAI_TEST_PARALLEL_FORKS" \
-          --stacktrace
+        command=(./gradlew "${args[@]}" -Poai.testParallelForks="$OAI_TEST_PARALLEL_FORKS" --stacktrace)
+        if [ "${{ inputs.lane }}" = "app-pr" ]; then
+          command+=(-Poai.testJit="$OAI_APP_JIT" -Poai.testGc="$OAI_APP_GC")
+        fi
+        if [ "$OAI_APP_PERFORMANCE" = "true" ]; then
+          command+=(-Poai.testPerformance=true --profile --info --console=plain)
+          python3 ../../tools/ci/android_app_performance.py run \
+            --output app/build/reports/app-performance -- "${command[@]}"
+        else
+          "${command[@]}"
+        fi
+
+    - name: 汇总 App 性能与用例清单
+      if: always() && inputs.app-performance == 'true'
+      shell: bash
+      working-directory: apps/android
+      run: |
+        python3 ../../tools/ci/android_app_performance.py summary \
+          --results app/build/test-results/testFullDebugUnitTest \
+          --profile build/reports/profile \
+          --metrics app/build/reports/app-performance \
+          --output app/build/reports/app-performance/summary.json
 
     - name: Preserve test evidence
       if: always()
@@ -202,3 +254,5 @@ runs:
         path: |
           apps/android/**/build/test-results/**/*.xml
           apps/android/**/build/reports/tests/**
+          apps/android/app/build/reports/app-performance/**
+          apps/android/build/reports/profile/**

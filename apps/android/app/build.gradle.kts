@@ -76,6 +76,48 @@ tasks.withType<Test>().configureEach {
     maxParallelForks = (providers.gradleProperty("oai.testParallelForks").orNull?.toIntOrNull() ?: 1)
         .coerceAtLeast(1)
     maxHeapSize = providers.gradleProperty("oai.testMaxHeap").orNull ?: "1g"
+    when (providers.gradleProperty("oai.testJit").orElse("default").get()) {
+        "default" -> Unit
+        // 仅实验切换编译层级；保持测试断言、超时、线程与进程隔离不变。
+        "startup" -> jvmArgs("-XX:TieredStopAtLevel=1")
+        else -> error("无效的测试 JIT 策略")
+    }
+    when (providers.gradleProperty("oai.testGc").orElse("default").get()) {
+        "default" -> Unit
+        "serial" -> jvmArgs("-XX:+UseSerialGC")
+        else -> error("无效的测试垃圾回收策略")
+    }
+    // 仅显式清单中的测试允许经 JUnit Suite 复用进程；其余测试仍逐类启动 JVM。
+    // 默认关闭，完成同源码、重复、乱序、并行验收后由 CI 明确启用。
+    val reuseClasses = providers.gradleProperty("oai.testReuseClasses").orElse("").get()
+        .split(',').filter(String::isNotBlank)
+    val reuseAllowlist = rootProject.file("ci/app-jvm-reuse.txt")
+    val allowedClasses = if (reuseAllowlist.isFile) reuseAllowlist.readLines()
+        .map { it.substringBefore('#').trim() }.filter(String::isNotBlank).toSet() else emptySet()
+    check(reuseClasses.all { it in allowedClasses }) { "JVM 复用请求包含未审计的测试类" }
+    inputs.file(reuseAllowlist).optional().withPropertyName("jvmReuseAllowlist")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("oai.testReuseClasses", reuseClasses.joinToString(","))
+    systemProperty("oai.testReuseAllowlist", allowedClasses.sorted().joinToString("\n"))
+    systemProperty("oai.testReuseSeed", providers.gradleProperty("oai.testReuseSeed").orElse("0").get())
+    if (reuseClasses.isEmpty()) {
+        exclude("**/ci/ReusableAppTestGroup*.class")
+    } else {
+        // 只排除被 Suite 接管的类文件。真实类名仍保留在 --tests 过滤器中，
+        // JUnit 子树及 JUnit XML 因而保留原始类/方法身份。
+        reuseClasses.forEach { exclude("${it.replace('.', '/')}.class") }
+    }
+
+    val performanceEnabled = providers.gradleProperty("oai.testPerformance").orElse("false").get().toBooleanStrict()
+    if (performanceEnabled) {
+        // 性能验收需要真实执行；仅禁用测试结果复用，编译和依赖缓存照常使用。
+        outputs.upToDateWhen { false }
+        outputs.doNotCacheIf("性能验收必须实际执行测试") { true }
+        val performancePath = layout.buildDirectory.dir("reports/app-performance").get().asFile.absolutePath
+        systemProperty("oai.testPerformanceDir", performancePath)
+        jvmArgs("-Xlog:gc:file=$performancePath/gc-%p.log:time,uptime")
+        doFirst { File(performancePath).mkdirs() }
+    }
     // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
     // 因此这些输入变动必须让测试失效，不能复用旧结果。
     for (spec in listOf(
@@ -300,6 +342,10 @@ android {
             // String is captured here, so this stays configuration-cache safe.
             it.doFirst { File(testHomePath).mkdirs() }
         }
+    }
+    if (providers.gradleProperty("oai.testPerformance").orElse("false").get().toBooleanStrict()) {
+        // 性能实验才注册公开的 Robolectric 统计插件，普通门禁不额外开启其统计器。
+        sourceSets.getByName("test").resources.srcDir("src/testPerformance/resources")
     }
 }
 

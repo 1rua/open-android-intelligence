@@ -128,21 +128,54 @@ class ColdStartConnectionTest {
     @Test
     fun repeatedAvailabilityAndForegroundKeepTheHealthyPlatformEventOwner() {
         val current = connectedRuntimeWithHistory(native = true).runtime
+        val controller = requireNotNull(current.controller.value)
+        val historyPath = "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"
+        val synchronizedMessageId = "$OLD_MESSAGE-route-synchronized"
+        val synchronizedText = "初始路由同步完成后的历史消息"
+        val initialHistoryEntered = CountDownLatch(1)
+        val initialHistoryRelease = CountDownLatch(1)
+        gateway.respond(historyPath) {
+            initialHistoryEntered.countDown()
+            check(initialHistoryRelease.await(AWAIT_MILLIS, TimeUnit.MILLISECONDS)) { "初始路由历史响应必须被释放" }
+            200 to """{"messages":[
+                {"id":"$OLD_MESSAGE","role":"assistant","text":"$OLD_TEXT","timestamp":1},
+                {"id":"$synchronizedMessageId","role":"assistant","text":"$synchronizedText","timestamp":2}
+            ]}""".trimIndent()
+        }
+        val streamRequestsBeforeRouteChange = requestCount("GET", "$API/events")
         val release = gateway.openEventStream("$API/events")
         try {
             current.onNetworkAvailable(routeChanged = true)
-            assertTrue("必须从真实 SSE 心跳建立健康连接", awaitCondition {
-                current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
+            assertTrue("必须从新路由的真实 SSE 心跳建立健康连接，并实际开始历史同步", awaitCondition {
+                requestCount("GET", "$API/events") > streamRequestsBeforeRouteChange &&
+                    current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE &&
+                    initialHistoryEntered.count == 0L
             })
+            assertEquals("平台流健康时，受控的初始历史响应仍未释放", 1L, initialHistoryRelease.count)
+            // 平台 LIVE 不代表工作台历史已同步；用响应中的唯一消息确认这次初始读取完成。
+            initialHistoryRelease.countDown()
+            assertTrue("记录基线前，初始路由的历史必须真实进入当前工作台", awaitCondition {
+                (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().any {
+                    it.key == synchronizedMessageId && it.text == synchronizedText
+                }
+            })
+            // 采样前必须在途请求已静默：前面的连接/快照重试跑在 IO 线程上，
+            // idle() 只推进主线程，晚到的一次 history 请求会被算成「重复补历史」。
+            assertTrue("采样前在途请求必须已静默", awaitRequestQuiescence())
             val streamCount = requestCount("GET", "$API/events")
-            val historyCount = requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history")
+            val historyCount = requestCount("GET", historyPath)
             repeat(5) { current.onNetworkAvailable(); current.onAppForegrounded() }
             org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            // 同理：重复通知触发的读取也必须在断言前落地，否则计数会飘。
+            assertTrue("重复通知后在途请求必须已静默", awaitRequestQuiescence())
             assertEquals("重复通知不能重建健康平台订阅", streamCount, requestCount("GET", "$API/events"))
             assertEquals("健康 Native 不能因 Platform 活动重复补历史", historyCount,
-                requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"))
+                requestCount("GET", historyPath))
             assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, current.connectionStatus.value)
-        } finally { release.countDown() }
+        } finally {
+            initialHistoryRelease.countDown()
+            release.countDown()
+        }
     }
 
     @Test
@@ -996,6 +1029,24 @@ class ColdStartConnectionTest {
     }
 
     private fun elapsedMillis(startedAt: Long) = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+
+    /**
+     * 等回环桩上的请求数稳定下来（一段时间内没有新增）。
+     *
+     * 断言「重复通知不能新增请求」之前必须确认测量端点已经静止：连接建立、快照重试
+     * 都跑在 IO 线程上，`Looper.idle()` 不会等它们落地，晚到的请求会被误计成
+     * 「重复通知导致的新请求」。只等待、不放宽断言——稳态语义仍被严格验证。
+     */
+    private fun awaitRequestQuiescence(quietMillis: Long = 300, timeoutMillis: Long = AWAIT_MILLIS): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        while (System.nanoTime() < deadline) {
+            val before = gateway.requests.size
+            Thread.sleep(quietMillis)
+            ShadowLooper.idleMainLooper(POLL_MILLIS, TimeUnit.MILLISECONDS)
+            if (gateway.requests.size == before) return true
+        }
+        return false
+    }
 
     private fun awaitCondition(timeoutMillis: Long = AWAIT_MILLIS, condition: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
