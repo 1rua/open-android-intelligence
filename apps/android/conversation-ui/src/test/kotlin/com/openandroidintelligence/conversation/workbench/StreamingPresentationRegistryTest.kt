@@ -8,6 +8,10 @@ import com.openandroidintelligence.conversation.state.StreamPresentationMetadata
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TestRule
+import org.junit.runners.model.Statement
+import androidx.compose.runtime.snapshots.Snapshot
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -15,6 +19,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class StreamingPresentationRegistryTest {
+    @get:Rule val snapshotIsolation = TestRule { base, _ ->
+        object : Statement() {
+            override fun evaluate() {
+                // 注册器纯测试不创建 Recomposer，修改只保存在未应用快照内，不留全局 pending changes。
+                val snapshot = Snapshot.takeMutableSnapshot()
+                try { snapshot.enter { base.evaluate() } } finally { snapshot.dispose() }
+            }
+        }
+    }
     @Test fun 首次挂载现有LIVE和快照都以完整正文建立基线() {
         for (origin in listOf(LIVE, SNAPSHOT)) {
             val cached = reply(text = "缓存正文", origin = origin)

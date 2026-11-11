@@ -152,6 +152,8 @@ class StreamingMarkdownCache {
 @Composable
 fun rememberStreamingMarkdownDocument(sourceText: String, narrative: Boolean = false): StreamingMarkdownDocument {
     val cache = remember(narrative) { StreamingMarkdownCache() }
+    // 短正文和首字无需经过后台往返；有界同步解析保留既有即时布局，长尾仍由下方唯一任务消费。
+    if (sourceText.length <= 256) return remember(sourceText, cache) { cache.parse(sourceText, narrative) }
     // 首个小片段立即解析，不给首字增加异步等待；后续可变尾段由唯一的可取消收集器处理。
     var document by remember(cache) { mutableStateOf(cache.parse(sourceText, narrative)) }
     val latestText by rememberUpdatedState(sourceText)

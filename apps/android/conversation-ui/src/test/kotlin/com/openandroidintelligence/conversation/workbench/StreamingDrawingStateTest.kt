@@ -5,6 +5,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TestRule
+import org.junit.runners.model.Statement
+import androidx.compose.runtime.snapshots.Snapshot
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -12,6 +16,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class StreamingDrawingStateTest {
+    @get:Rule val snapshotIsolation = TestRule { base, _ ->
+        object : Statement() {
+            override fun evaluate() {
+                // 纯状态断言没有 Recomposer 负责提交全局快照；隔离并丢弃写入，避免污染后续 UI 空闲判断。
+                val snapshot = Snapshot.takeMutableSnapshot()
+                try { snapshot.enter { base.evaluate() } } finally { snapshot.dispose() }
+            }
+        }
+    }
     @Test fun 权威改写清除旧范围和光标轨迹而最终排空保留末批渐入() {
         val state = StreamingDecorationState()
         val document = StreamingMarkdownCache().parse("已有文字新增")

@@ -498,7 +498,8 @@ class StreamingReplyInstrumentedTest {
 
     /** 所有产物仅写独立验收包的外部文件目录，不混入源码或现有应用的数据。 */
     private fun evidenceFile(relative: String): File {
-        val root = File(requireNotNull(instrumentation.targetContext.getExternalFilesDir(null)),
+        // 多用户模拟器的外置存储对 run-as 不可见；内部 files 仍可按独立包身份导出证据。
+        val root = File(instrumentation.targetContext.filesDir,
             "streaming-evidence/$evidenceRun/$currentTest")
         return File(root, relative).also { requireNotNull(it.parentFile).mkdirs() }
     }

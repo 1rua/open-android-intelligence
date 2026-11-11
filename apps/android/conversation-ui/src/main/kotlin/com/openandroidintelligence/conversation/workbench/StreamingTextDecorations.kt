@@ -52,7 +52,9 @@ internal data class StreamingTextLayout(
 /** 绘制帧只更新本状态，不读取或重新解析 Markdown。 */
 @Stable
 internal class StreamingDecorationState {
-    var presentation by mutableStateOf(StreamingTextPresentation(0, 0, 0, false, false))
+    // 回调每次组合都可能换实例；它不属于可观察绘制事实，不能靠整个 data class 的
+    // equals 驱动重组。批次/终态/布局变化统一通过 invalidation 使 Canvas 失效。
+    var presentation: StreamingTextPresentation = StreamingTextPresentation(0, 0, 0, false, false)
     var document: StreamingMarkdownDocument? = null
     var container: LayoutCoordinates? = null
     val batches = ArrayList<StreamingFadeBatch>(MaximumFadeBatches)
@@ -123,6 +125,8 @@ internal class StreamingDecorationState {
         placements.remove(key)
         if (layouts.remove(key) != null) invalidation++
     }
+
+    fun expireFades() { invalidation++ }
 
     fun notifyVisible(layout: StreamingTextLayout) {
         val current = presentation
@@ -214,7 +218,7 @@ fun StreamingMarkdownContainer(
                 }
                 previousTime = frame
                 state.frameMillis = now
-                state.batches.removeAll { now - it.enteredAt >= TextFadeMillis }
+                if (state.batches.removeAll { now - it.enteredAt >= TextFadeMillis }) state.expireFades()
                 if (now - state.trailStarted >= CursorTrailMillis) state.trailOrigin = null
             }
         } while (state.hasAnimation(SystemClock.uptimeMillis()))
@@ -229,6 +233,7 @@ fun StreamingMarkdownContainer(
                 state.positionContainer(it)
             }.drawWithContent {
                 drawContent()
+                state.invalidation
                 state.frameMillis
                 if (!state.presentation.active) return@drawWithContent
                 val target = state.target() ?: return@drawWithContent
@@ -287,6 +292,7 @@ internal fun streamingAtomicModifier(
     SideEffect { publish() }
     DisposableEffect(state, key) { onDispose { state.unregister(key) } }
     return modifier.onGloballyPositioned { coordinates = it; publish() }.graphicsLayer {
+        state.invalidation
         state.frameMillis
         val batch = state.batches.lastOrNull { source.start in it.sourceStart until it.sourceEnd }
         alpha = if (state.presentation.reduceMotion || batch == null) 1f else {
@@ -327,11 +333,15 @@ internal fun streamingTextModifier(
     DisposableEffect(state, key) { onDispose { state.unregister(key) } }
     // 路径只在文字布局或批次变化时生成；动画帧只读取透明度，不重扫全文或重建 AnnotatedString。
     val fadingPaths = remember(text, sourceOffsets, layout) { mutableMapOf<StreamingFadeBatch, List<Path>>() }
-    val decorated = modifier
-        .onGloballyPositioned { coordinates = it; publish() }
+    val layoutModifier = modifier.onGloballyPositioned { coordinates = it; publish() }
+    val fadeRanges = state.batches.map { it.sourceStart until it.sourceEnd } +
+        if (state.presentation.batchId != current.batchId) listOf(current.sourceRevealStart until current.sourceRevealEnd) else emptyList()
+    val needsFadeLayer = !current.reduceMotion && sourceOffsets.any { offset -> fadeRanges.any { offset in it } }
+    val decorated = if (!needsFadeLayer) layoutModifier else layoutModifier
         .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
         .drawWithContent {
             drawContent()
+            state.invalidation
             state.frameMillis
             if (state.presentation.reduceMotion) return@drawWithContent
             val measured = layout ?: return@drawWithContent
