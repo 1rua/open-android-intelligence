@@ -219,7 +219,7 @@ class GatewayRuntime(
     }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications,
-        suppress = { target -> isAssistantConversationVisible(target.conversationId) })
+        suppress = ::isAssistantConversationVisible)
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
     private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
@@ -421,11 +421,12 @@ class GatewayRuntime(
     private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
 
     /** 系统助理界面是否正展示这条会话；同会话的原生通知气泡因此不再打扰用户。 */
-    internal fun isAssistantConversationVisible(conversationId: String): Boolean {
+    internal fun isAssistantConversationVisible(target: ReplyNotificationTarget): Boolean {
         if (assistantPresence.isEmpty()) return false
         val workspace = assistantWorkspace ?: return false
+        if (!workspace.matches(target.profileId, target.accountId, target.agentId)) return false
         return assistantPresence.values.any { sessionToken ->
-            workspace.conversationFor(sessionToken) == conversationId
+            workspace.conversationFor(sessionToken) == target.conversationId
         }
     }
 
@@ -504,11 +505,13 @@ class GatewayRuntime(
     private fun publishAssistantPresence(clientToken: String, sessionToken: String?) {
         if (sessionToken == null) assistantPresence.remove(clientToken)
         else assistantPresence[clientToken] = sessionToken
-        val conversationId = sessionToken?.let { token -> assistantWorkspace?.conversationFor(token) }
+        val workspace = assistantWorkspace ?: return
+        val conversationId = sessionToken?.let(workspace::conversationFor)
         if (conversationId != null) replyPublisher.cancel(ReplyNotificationTarget(
-            profileId = connectedProfileId.orEmpty(),
-            accountId = connectedAccountId.orEmpty(),
+            profileId = workspace.profileId,
+            accountId = workspace.accountId,
             conversationId = conversationId,
+            agentId = workspace.agentId,
         ))
     }
 
@@ -2530,6 +2533,19 @@ class GatewayRuntime(
         ownedJob.invokeOnCompletion {
             nativeStores.values.forEach { store -> runCatching { store.close() } }
         }
+        /**
+         * 原生会话事件的提醒出口。
+         *
+         * 主工作台、助手与气泡各自读取事件，共用已有的持久完成围栏；同一轮次
+         * 即使从多个读取者到达也只提醒一次，历史合成事件仍由桥接层过滤。
+         */
+        fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
+            if (activeHttpClient !== http || sessionJob !== ownedJob) return
+            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
+                accountId = session.accountId, agentId = agentId, event = event,
+            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
+        }
+
         // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。
         val coreAgentRepositories = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
         val nativeReadOwners = java.util.concurrent.ConcurrentHashMap.newKeySet<com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
@@ -2550,6 +2566,7 @@ class GatewayRuntime(
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
+                onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
                 isForeground = { appVisible },
                 onClosed = { nativeReadOwners.remove(it) },
             ).also(nativeReadOwners::add)
@@ -2561,19 +2578,6 @@ class GatewayRuntime(
             }
         }
         restartNativeReads = { expediteRetry -> restoreNativeReads(expediteRetry) }
-
-        /**
-         * 原生会话事件的提醒出口。
-         *
-         * 主界面、气泡和后台读取共用同一个 Agent 仓储，所以同一条回复只会经过这里
-         * 一次；提醒层再做一层持久围栏，进程重启后的重放也不会重复提醒。
-         */
-        fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
-            if (activeHttpClient !== http || sessionJob !== ownedJob) return
-            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
-                accountId = session.accountId, agentId = agentId, event = event,
-            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
-        }
 
         /** 气泡自己的仓储：同一 Agent、同一份镜像，但拥有独立的读取者身份与事件订阅。 */
         fun bubbleRepository(
@@ -2718,6 +2722,9 @@ class GatewayRuntime(
                         organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                             context, conversationScope, localDocumentKeyProvider),
                         storeForAgent = { store },
+                        onEventPublished = { publishedAgentId, event ->
+                            if (publishedAgentId == assistantAgent.id) publishNativeNotification(publishedAgentId, event)
+                        },
                         isForeground = { appVisible },
                         onClosed = { nativeReadOwners.remove(it) },
                     ).also(nativeReadOwners::add)
@@ -2886,7 +2893,9 @@ class GatewayRuntime(
                 externalBusyThreadIds = {
                     bubbleBusyConversationIds() + assistantBusyThreadIds() +
                         nativeConversationNotifications.sessions.value
-                            .filter { it.isRunning }.map { it.target.conversationId }
+                            .filter { it.isRunning && it.target.profileId == profileId &&
+                                it.target.accountId == session.accountId && it.target.agentId == ownerAgentId }
+                            .map { it.target.conversationId }
                 },
                 onActiveThreadChanged = { threadId ->
                     if (!nativeAgentSessions || _nativeAgents.value?.state?.value?.selectedAgentId == ownerAgentId) {

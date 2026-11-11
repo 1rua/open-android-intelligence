@@ -127,6 +127,21 @@ internal class LoopbackGatewayStub {
         }
     }
 
+    /** 流式回复保持连接时，测试可继续切换 Agent，最后显式释放真实终态。 */
+    fun controlledStream(
+        path: String,
+        initial: (RecordedGatewayRequest) -> String,
+        final: (RecordedGatewayRequest) -> String,
+    ): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        streamReleases += release
+        responders[path] = { request ->
+            StubResponse(200, initial(request), "text/event-stream", streamRelease = release,
+                finalBody = { final(request) })
+        }
+        return release
+    }
+
     fun closed() {
         controlledStreams.forEach { it.close() }
         streamReleases.forEach { it.countDown() }
@@ -174,6 +189,11 @@ internal class LoopbackGatewayStub {
                 write("\r\n".toByteArray())
                 flush()
                 check(release.await(20, TimeUnit.SECONDS)) { "SSE test owner was not released" }
+                response.finalBody?.invoke()?.toByteArray(Charsets.UTF_8)?.let { final ->
+                    write((final.size.toString(16) + "\r\n").toByteArray())
+                    write(final)
+                    write("\r\n".toByteArray())
+                }
                 write("0\r\n\r\n".toByteArray())
                 flush()
             }
@@ -203,6 +223,7 @@ internal class LoopbackGatewayStub {
         val headers: Map<String, String> = emptyMap(),
         val streamRelease: java.util.concurrent.CountDownLatch? = null,
         val controlledStream: ControlledEventStream? = null,
+        val finalBody: (() -> String)? = null,
     )
 }
 
