@@ -1,9 +1,9 @@
 # Open Android Intelligence (OAI) Android 全量中文文案审计与用户体验优化报告
 
-> **审计基准 Commit**: `8820fe250aa810cfb11925d6b07d4e6714f60be5`  
-> **审计基准分支**: `dev` (工作区分支: `audit_chinese_copywriting`)  
-> **审计范围**: Android App 生产代码与资源（涵盖 7 个子模块与 AndroidManifest.xml）  
-> **报告生成原则**: 纯静态与调用链全面只读审计，本阶段严禁且未修改任何生产业务代码。  
+> **审计基准 Commit**: `8820fe250aa810cfb11925d6b07d4e6714f60be5`
+> **审计基准分支**: `dev` (工作区分支: `audit_chinese_copywriting`)
+> **审计范围**: Android App 生产代码与资源（涵盖 7 个子模块与 AndroidManifest.xml）
+> **报告生成原则**: 纯静态与调用链全面只读审计，本阶段严禁且未修改任何生产业务代码。
 
 ---
 
@@ -2718,4 +2718,3 @@
    - 在 Gradle 构建流水线与 CI 门禁中开启 `HardcodedText` 规则，严禁后续在 Kotlin/Compose 代码中直接编写裸中文字符串，从源头杜绝硬编码再生。
 
 ---
-
