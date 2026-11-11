@@ -1,0 +1,28 @@
+
+com.openandroidintelligence.mobile.AgentReplyNotificationE2eTest:
+OAI通知验收：本地会话已就绪，开始登录隔离 Core
+
+OAI通知验收：隔离 Core 登录成功
+
+OAI通知验收：原生主工作台已就绪
+
+OAI通知验收：已收到流式正文，尚未完成
+
+OAI通知验收：断线期间宿主已完成，Core 已恢复
+
+OAI通知验收：已收到同轮完成事件
+
+OAI通知验收：系统会话通知与气泡目标核对通过
+
+OAI通知验收：系统通知点击 Intent 已进入对应会话
+
+OAI通知验收：Core 已恢复，等待原生游标与历史同步
+
+OAI通知验收：重连同步未重复通知，场景 reconnectDuringCompletion 通过
+.
+
+Time: 11.863
+
+OK (1 test)
+
+

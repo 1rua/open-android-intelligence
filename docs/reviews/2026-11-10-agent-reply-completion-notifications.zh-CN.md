@@ -62,13 +62,29 @@ Core sessions.py 校验并转发宿主 done
 ## 验证记录
 
 - 真实 Runtime 主工作台：修复前通知模块无完成记录，修复后系统消息通知、气泡信息与点击目标通过。
-- 原有通知链路与新增接线回归：10 类、347 项通过；包括系统助理可见性、去重、历史、跨 Agent、导航与气泡。新增静默重发回归修复后正在执行最终全组验证。
+- 最终业务提交 `44ee5155`：10 类、353 项 Android 回归全部通过，0 失败、0 错误、0 跳过；包括系统助理可见性、去重、历史、跨 Agent、导航与气泡。新增静默重发回归在 API 31 至 36 六个版本运行。
 - 受控宿主与进程恢复：13 项通过；最终设备模式增加的完成状态使用真实投递入口。
 - 本地静态门禁 `noVpnSurfaceCheck`、验收 APK 和 instrumentation APK 构建通过。
 - `npm run test:fast` 首轮使用系统 Python，部分子进程缺少依赖；换成项目已有 Python 后，`npm run test:pr` 得到 1210 项通过、13 项跳过，仅剩 `test_probe_succeeds_when_invoked_via_parent_relative_venv_python` 创建 `venv/lib64` 符号链接时的 `ENOENT`。单独重跑仍复现此环境限制，未绕过或禁用用例；因此本地 Fast/PR 整体不记为通过。
 - 远端 `6f344ac2`：Core Python 3.11/3.12、App 回归、Play 回归、Gateway Client 与 APK 通过；Safety Gate 失败于设备测试绕过统一 HTTP 入口，已改为 `GatewayTransport` 且本地门禁通过。后续提交的最终 CI 另行记录，不借用旧提交的结果。
-- 设备四场景分别曾通过：后台、息屏、其他会话、断线期间完成后恢复；连续复跑发现上述静默重发缺口后，最终版本仍须四场景一起通过。
+- 最终业务提交 `44ee5155` 在 2026-11-11 连续完成四种设备场景，全部通过：后台、息屏、其他会话、断线期间完成后恢复。各场景还包含完成后再启停 Core、恢复游标和历史、已经处理的通知不重新出现。
+- 设备原始测试回执、会话身份与 APK 哈希保存在相邻目录 [验证汇总](2026-11-10-agent-reply-completion-notifications/验证汇总.json)；该目录包含四份 `.txt` instrumentation 回执，不含凭据或真实消息。
+- `44ee5155` 的远端 CI 已触发：[Core、App 与门禁](https://github.com/1rua/open-android-intelligence/actions/runs/42947960623)、[APK 构建](https://github.com/1rua/open-android-intelligence/actions/runs/42947954172)。归档时仍在运行，采用后台只读跟进，不记为已通过。
 
 ## 独立评审
 
-按固定基线 `4cbe21b8`，由无开发上下文的规范轴与需求轴分别只读评审。初版接线无生产代码缺陷；需求轴指出缺少“断线期间完成”的设备场景，已补齐。设备验收过程发现的夹具前置、统一传输入口、真实历史与投递修订分别修正，最终新增去重修复将再次独立复核。
+按固定基线 `4cbe21b8`，由无开发上下文的规范轴与需求轴分别只读评审。初版接线无生产代码缺陷；需求轴指出缺少“断线期间完成”的设备场景，已补齐。设备验收过程发现的夹具前置、统一传输入口、真实历史与投递修订分别修正。
+
+- 规范轴最终复核 `44ee5155`：明确规范违规 0 项，有价值的判断性味道 0 项。
+- 需求轴最终复核 `44ee5155`：无阻塞代码问题；确认重复终稿只跳过投影、完成观察器继续执行，迟到正文、新修订、跨轮次和后续任务规则保持。
+- 两轴都是静态独立评审；设备与回归通过结论来自上述固定业务提交的实际执行记录。
+
+## 复验入口
+
+在独立模拟器或专用验收包中运行，不清除或覆盖既有业务数据。APK 可通过本地 Gradle 初始化配置覆盖 `applicationId`，该配置不进入产品源码。
+
+1. 用已具备 Core、适配器及固定 Hermes SDK 依赖的 Python 运行 `oai-core/tests/agent_reply_notification_device_fixture.py --state-dir <新的空目录> --ready-file <元数据文件>`。
+2. 将元数据中的 Core 与控制口分别通过 `adb reverse tcp:<端口> tcp:<端口>` 提供给模拟器。
+3. 为专用 Android 用户安装业务 APK 和测试 APK，授予测试包通知权限。
+4. 定向执行 `AgentReplyNotificationE2eTest`，传入 `oaiReplyNotificationE2e=isolated`、`oaiCoreUrl`、`oaiControlUrl`；`oaiNotificationScenario` 分别取 `background`、`screenOff`、`otherConversation`、`reconnectDuringCompletion`。各场景使用新夹具目录。
+5. 验收后调用控制口 `POST /stop`，撤回本次端口转发并切回原 Android 用户；状态和证据目录保留人工复核。
