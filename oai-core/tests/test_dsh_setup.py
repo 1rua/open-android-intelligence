@@ -498,21 +498,43 @@ def test_pid_restart_preserves_command_environment_and_directory(tmp_path, monke
     assert pid_file.read_text() == "41003\n"
 
 
-def test_profile_entry_uses_runtime_patch_port_and_instance(tmp_path, monkeypatch, simulated_dsh_processes):
-    home = tmp_path / "target"
-    _, args, env = simulated_dsh_processes(41001, home, "worker", arguments=[
-        "/usr/bin/dsh", "--profile", "worker", "--patch", "custom patch.yml", "--port", "8123"])
+@pytest.fixture
+def isolated_node_identity_probe(tmp_path, monkeypatch):
+    """单元测试只模拟 Node 边界，不依赖机器偶然安装的 DSH 或 Node。"""
+    isolated_tools = tmp_path / "isolated-tools"
+    isolated_tools.mkdir()
+    node = isolated_tools / "node"
+    node.write_text("#!/bin/sh\nexit 99\n")
+    node.chmod(0o700)
+    monkeypatch.setenv("PATH", str(isolated_tools))
     calls = []
 
-    def dump(command, **kwargs):
-        calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout='{"port":9127,"instanceId":"target-worker"}')
+    def configure(instance_id):
+        def probe(command, **kwargs):
+            assert command == [str(node), "--input-type=module", "-e", configuration._DSH_PROFILE_PROBE]
+            request = json.loads(kwargs["input"])
+            assert request["name"] == "worker"
+            assert request["environment"]["PATH"] == str(isolated_tools)
+            calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"port": 9127, "instanceId": instance_id}))
 
-    monkeypatch.setattr("subprocess.run", dump)
+        monkeypatch.setattr("subprocess.run", probe)
+        return isolated_tools, calls
+
+    return configure
+
+
+def test_profile_entry_uses_runtime_patch_port_and_instance(tmp_path, monkeypatch, simulated_dsh_processes, isolated_node_identity_probe):
+    home = tmp_path / "target"
+    isolated_tools, calls = isolated_node_identity_probe("target-worker")
+    _, args, env = simulated_dsh_processes(41001, home, "worker", arguments=[
+        "/usr/bin/dsh", "--profile", "worker", "--patch", "custom patch.yml", "--port", "8123"],
+        environment={"PATH": str(isolated_tools)})
     actual = configuration._dsh_profile_entry(home, "worker", {"id": "dsh", "secretFile": "bridge.secret"})
     assert actual["url"] == "http://127.0.0.1:9127"
     assert actual["instanceId"] == "target-worker"
     assert actual["secretFile"] == "bridge.secret"
+    assert len(calls) == 1
     request = json.loads(calls[0][1]["input"])
     assert request["prefix"] == [args[0]]
     assert request["name"] == "worker"
@@ -623,7 +645,7 @@ def test_official_shebang_service_keeps_automatic_restart(tmp_path, monkeypatch,
                                            manager_environment={"PATH": os.environ["PATH"]}) is True
 
 
-def test_profile_identity_does_not_require_python_yaml(tmp_path, monkeypatch, simulated_dsh_processes):
+def test_profile_identity_does_not_require_python_yaml(tmp_path, monkeypatch, simulated_dsh_processes, isolated_node_identity_probe):
     import builtins
     original_import = builtins.__import__
 
@@ -634,13 +656,13 @@ def test_profile_identity_does_not_require_python_yaml(tmp_path, monkeypatch, si
 
     monkeypatch.setattr(builtins, "__import__", without_yaml)
     home = tmp_path / "target"
-    simulated_dsh_processes(41001, home, "worker")
-    monkeypatch.setattr("subprocess.run", lambda command, **kwargs:
-                        SimpleNamespace(returncode=0, stdout='{"port":9127,"instanceId":"selected-worker"}'))
+    isolated_tools, calls = isolated_node_identity_probe("selected-worker")
+    simulated_dsh_processes(41001, home, "worker", environment={"PATH": str(isolated_tools)})
     actual = configuration._dsh_profile_entry(home, "worker", {"id": "dsh", "secretFile": "bridge.secret"})
     assert actual is not None
     assert actual["url"] == "http://127.0.0.1:9127"
     assert actual["instanceId"] == "selected-worker"
+    assert len(calls) == 1
 
 
 def test_normal_environment_files_keep_automatic_restart(tmp_path, monkeypatch, simulated_dsh_processes):
