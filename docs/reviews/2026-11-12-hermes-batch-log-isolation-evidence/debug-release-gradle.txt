@@ -1,0 +1,110 @@
+[0.002s][warning][perf,memops] Cannot use file /tmp/hsperfdata_djbd/18 because it is locked by another process (errno = 11)
+Starting a Gradle Daemon, 1 busy and 1 incompatible and 3 stopped Daemons could not be reused, use --status for details
+Calculating task graph as no cached configuration is available for tasks: :conversation-data:testDebugUnitTest --tests com.openandroidintelligence.conversation.data.HermesHttpInteropTest :conversation-data:testReleaseUnitTest --tests com.openandroidintelligence.conversation.data.HermesHttpInteropTest
+
+> Configure project :app
+Unable to initialize metrics, ensure <用户目录>/.android is writable, details: <用户目录>/.android/analytics.settings (Read-only file system)
+Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
+
+> Task :conversation-data:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-domain:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :conversation-data:verifyLocaleConfigPrerequisites
+> Task :conversation-domain:verifyLocaleConfigPrerequisites
+> Task :conversation-domain:preBuild
+> Task :conversation-data:preBuild
+> Task :conversation-domain:preDebugBuild
+> Task :conversation-data:preDebugBuild
+> Task :gateway-client:verifyLocaleConfigPrerequisites
+> Task :conversation-data:preDebugUnitTestBuild
+> Task :conversation-data:preReleaseBuild
+> Task :gateway-client:preBuild
+> Task :gateway-client:preDebugBuild
+> Task :conversation-domain:preReleaseBuild
+> Task :gateway-client:preReleaseBuild
+> Task :gateway-client:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-domain:generateDebugResValues UP-TO-DATE
+> Task :gateway-client:generateDebugResValues UP-TO-DATE
+> Task :conversation-data:generateDebugResValues UP-TO-DATE
+> Task :conversation-domain:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-data:preReleaseUnitTestBuild
+> Task :conversation-data:javaPreCompileDebugUnitTest UP-TO-DATE
+> Task :conversation-data:javaPreCompileDebug UP-TO-DATE
+> Task :conversation-data:generateDebugResources UP-TO-DATE
+> Task :gateway-client:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:generateDebugResources UP-TO-DATE
+> Task :conversation-domain:packageDebugResources UP-TO-DATE
+> Task :conversation-data:packageDebugResources UP-TO-DATE
+> Task :gateway-client:packageDebugResources UP-TO-DATE
+> Task :conversation-domain:generateReleaseResValues FROM-CACHE
+> Task :gateway-client:generateReleaseResValues FROM-CACHE
+> Task :conversation-data:generateReleaseResValues FROM-CACHE
+> Task :gateway-client:javaPreCompileRelease FROM-CACHE
+> Task :conversation-data:javaPreCompileReleaseUnitTest FROM-CACHE
+> Task :conversation-data:javaPreCompileRelease FROM-CACHE
+> Task :conversation-domain:javaPreCompileRelease FROM-CACHE
+> Task :conversation-domain:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:parseDebugLocalResources UP-TO-DATE
+> Task :conversation-data:parseDebugLocalResources UP-TO-DATE
+> Task :gateway-client:generateDebugRFile UP-TO-DATE
+> Task :conversation-data:generateDebugRFile UP-TO-DATE
+> Task :conversation-domain:generateDebugRFile UP-TO-DATE
+> Task :conversation-data:generateDebugUnitTestStubRFile UP-TO-DATE
+> Task :conversation-data:generateReleaseResources
+> Task :conversation-domain:generateReleaseResources
+> Task :gateway-client:generateReleaseResources
+> Task :gateway-client:compileDebugKotlin UP-TO-DATE
+> Task :conversation-domain:compileDebugKotlin UP-TO-DATE
+> Task :gateway-client:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :gateway-client:processDebugJavaRes UP-TO-DATE
+> Task :conversation-domain:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :gateway-client:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-domain:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-data:compileDebugKotlin UP-TO-DATE
+> Task :conversation-data:compileDebugJavaWithJavac NO-SOURCE
+> Task :conversation-domain:packageReleaseResources
+> Task :conversation-data:bundleLibRuntimeToJarDebug UP-TO-DATE
+> Task :conversation-data:processDebugJavaRes UP-TO-DATE
+> Task :gateway-client:packageReleaseResources
+> Task :conversation-data:packageReleaseResources
+> Task :conversation-data:bundleLibCompileToJarDebug UP-TO-DATE
+> Task :conversation-domain:parseReleaseLocalResources FROM-CACHE
+> Task :conversation-data:parseReleaseLocalResources FROM-CACHE
+> Task :gateway-client:parseReleaseLocalResources FROM-CACHE
+> Task :conversation-domain:generateReleaseRFile FROM-CACHE
+> Task :gateway-client:generateReleaseRFile FROM-CACHE
+> Task :conversation-data:generateReleaseRFile FROM-CACHE
+> Task :conversation-data:generateReleaseUnitTestStubRFile FROM-CACHE
+> Task :conversation-data:compileDebugUnitTestKotlin UP-TO-DATE
+> Task :conversation-data:compileDebugUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processDebugUnitTestJavaRes UP-TO-DATE
+> Task :conversation-data:testDebugUnitTest
+> Task :conversation-domain:compileReleaseKotlin
+> Task :conversation-domain:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-domain:processReleaseJavaRes
+> Task :conversation-domain:bundleLibRuntimeToJarRelease
+> Task :conversation-domain:bundleLibCompileToJarRelease
+
+> Task :gateway-client:compileReleaseKotlin
+w: file://<工作副本>/apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/schema/DispatchedSchemaRegistry.kt:15:28 Java type mismatch: inferred type is 'String?', but 'String' was expected.
+
+> Task :gateway-client:compileReleaseJavaWithJavac NO-SOURCE
+> Task :gateway-client:processReleaseJavaRes
+> Task :gateway-client:bundleLibCompileToJarRelease
+> Task :gateway-client:bundleLibRuntimeToJarRelease
+> Task :conversation-data:compileReleaseKotlin
+> Task :conversation-data:compileReleaseJavaWithJavac NO-SOURCE
+> Task :conversation-data:processReleaseJavaRes
+> Task :conversation-data:bundleLibCompileToJarRelease
+> Task :conversation-data:bundleLibRuntimeToJarRelease
+> Task :conversation-data:compileReleaseUnitTestKotlin
+> Task :conversation-data:compileReleaseUnitTestJavaWithJavac NO-SOURCE
+> Task :conversation-data:processReleaseUnitTestJavaRes
+> Task :conversation-data:testReleaseUnitTest
+
+BUILD SUCCESSFUL in 1m 24s
+73 actionable tasks: 25 executed, 14 from cache, 34 up-to-date
+Configuration cache entry stored.

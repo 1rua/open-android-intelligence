@@ -45,6 +45,13 @@ import com.openandroidintelligence.gateway.events.GatewayEvent
  * 不会跳过——否则这条真实链路会退化成无人验证的绿。
  */
 class HermesHttpInteropTest {
+    private fun fixtureLog(root: File, prefix: String): File {
+        val directory = File(root, "tmp/conversation-bugfix").also { it.mkdirs() }
+        // Debug、Release 及独立测试进程可并行启动夹具，不能互相截断执行证据。
+        // 保留各实例日志，失败后仍可核对真实宿主记录。
+        return File.createTempFile("$prefix-", ".txt", directory)
+    }
+
     @Test fun reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage() = runBlocking {
         coroutineScope {
             val root = File("../../..").canonicalFile
@@ -55,7 +62,7 @@ class HermesHttpInteropTest {
                 ?: error("HERMES_SDK_ROOT_REQUIRED")
             val sdkRoot = File(sdkValue).let { if (it.isAbsolute) it else File(root, sdkValue) }.canonicalFile
             check(File(sdkRoot, "hermes_state.py").isFile) { "HERMES_SDK_SOURCE_MISSING" }
-            val log = File(root, "tmp/conversation-bugfix/hermes-history-http.txt").also { it.parentFile!!.mkdirs() }
+            val log = fixtureLog(root, "hermes-history-http")
             val builder = ProcessBuilder("python3", fixture.path, "--history-agent", "--contract-root",
                 System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
                 .directory(pluginRoot).redirectError(log)
@@ -196,7 +203,7 @@ class HermesHttpInteropTest {
         val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
         check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
         val channelName = if (defaultWebSocket) "websocket" else "sse"
-        val log = File(root, "tmp/conversation-bugfix/hermes-stream-$channelName.txt").also { it.parentFile!!.mkdirs() }
+        val log = fixtureLog(root, "hermes-stream-$channelName")
         val process = ProcessBuilder("python3", fixture.path, "--stream-agent", "--contract-root",
             System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
             .directory(pluginRoot).redirectError(log).start()
@@ -289,11 +296,11 @@ class HermesHttpInteropTest {
         val pluginRoot = (System.getenv("HERMES_PLUGIN_ROOT")?.let(::File) ?: File(root, ".hermes-gateway-plugin")).canonicalFile
         val fixture = File(pluginRoot, "tests/android_gateway_fixture.py")
         check(fixture.isFile) { "HERMES_FIXTURE_MISSING" }
-        val log = File(root, "tmp/conversation-bugfix/hermes-batch-interop.txt").also { it.parentFile!!.mkdirs() }
+        val log = fixtureLog(root, "hermes-batch-interop")
         val process = ProcessBuilder("python3", fixture.path, "--echo-agent", "--contract-root",
             System.getenv("OPEN_ANDROID_GATEWAY_CONTRACT_ROOT") ?: File(root, "gateway-contract").path)
             .directory(pluginRoot).redirectError(log).start()
-        try {
+        val expectedConversationId = try {
             val baseUrl = process.inputStream.bufferedReader().readLine()
             check(baseUrl?.startsWith("http://127.0.0.1:") == true) { "HERMES_FIXTURE_START_FAILED" }
             val keyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
@@ -338,6 +345,7 @@ class HermesHttpInteropTest {
                 subscription.cancelAndJoin()
                 replies.close()
             }
+            conversation.id.value
         } catch (failure: Throwable) {
             // 隔离夹具只记录阶段及测试身份，启动失败时输出实际原因供 CI 定位。
             runCatching { log.readText() }.getOrNull()?.let { diagnostics ->
@@ -349,15 +357,24 @@ class HermesHttpInteropTest {
             process.destroy()
             check(process.waitFor(10, TimeUnit.SECONDS)) { "HERMES_FIXTURE_STOP_FAILED" }
         }
-        val turns = log.readLines().count { line ->
-            runCatching { JsonFields.string(JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(line)), "fixtureEvent") == "agent-turn" }.getOrDefault(false)
+        val turns = log.readLines().mapNotNull { line ->
+            runCatching {
+                val entry = JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(line))
+                if (JsonFields.string(entry, "fixtureEvent") == "agent-turn") {
+                    JsonFields.string(entry, "conversationId") to JsonFields.string(entry, "clientMessageId")
+                } else null
+            }.getOrNull()
         }
-        assertEquals("批次重放不能再次执行宿主回合", 2, turns)
+        assertEquals("批次重放不能再次执行宿主回合", 2, turns.size)
+        assertEquals("执行记录必须属于本实例的批次首消息与后继普通消息", listOf(
+            expectedConversationId to "cm_batch_one",
+            expectedConversationId to "cm_after_batch",
+        ), turns)
     }
 
     @Test fun passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes() = runBlocking {
         val root = File("../../..").canonicalFile
-        val log = File(root, "tmp/bugfix-20260915/hermes-interop.log").also { it.parentFile!!.mkdirs() }
+        val log = fixtureLog(root, "hermes-login-interop")
         // The plugin checkout is located by convention rather than only by
         // environment: CI checks it out at .hermes-gateway-plugin, and a reused
         // Gradle daemon can carry the environment of an earlier run, which would
