@@ -74,6 +74,9 @@ Android 使用现有 `GatewayLog` 输出内部 JSON：`connection.state_changed`
 | 最终 Native 半开关联三类 | 64 项通过，集成业务 `69ac1360` 仍待正式门禁复核 | ColdStart 19、NativeConnectionReliability 24、NativeEventSynchronizer 21；含 ACK、重复代次及安全拒绝 |
 | 评审修复后 App 关联三类 | 69 项通过，业务 `ee4f0e83` | ColdStart 19、NativeConnectionReliability 29、NativeEventSynchronizer 21；含落盘后发布背压、Native 独立前台预算及空页减写 |
 | Gateway 模块完整回归 | 403 项通过，零失败/错误/跳过 | 含真实 TCP、认证/证书、事件重放、取消、前台探活和本地背压 |
+| 真实 Native 独立半开 | 8409 毫秒完成消息镜像及 ACK，三消息按序各一次 | 真实 Android、生产 Hermes 桥/SessionBackend 与加密镜像；Platform 持续 LIVE/订阅一，prompt POST 为零 |
+| 私有 Android 15 三十分钟后台段 | 30 个分段事件均持久提交，末次 1800035 毫秒 | 登录一次、活订阅唯一；15/30 分钟自然 4001 续签后自动恢复。整条仪器方法随后等待外部唤醒超时，前台尾段未完成，不能将方法整体写为通过 |
+| 强制 Doze 进入与解除 | deep IDLE/light OVERRIDE；解除后前台恢复 2837 毫秒，仪器方法通过 | instrumentation 可能豁免，未证明网络实际被完全暂停；已恢复原电池/空闲/屏幕状态 |
 | Core 关联测试 | 141 passed，1 个既有 aiohttp RequestKey 警告 | 真实签名 WS/SSE、离线补发、在线引用、Native ACK 和 OS 进程恢复 |
 | 真实 Android 15 + 隔离 Core 重建 | WS 848 毫秒、SSE 1928 毫秒 | 同账号/端口补发，三事件按序各一次，登录一次 |
 | 真实 Android 15 + SSE 半开 | 无检查十秒超时；显式检查 3839 毫秒 | socket 双向丢字节但不主动关闭，旧游标恢复，总订阅二/活一 |
@@ -83,9 +86,11 @@ Android 使用现有 `GatewayLog` 输出内部 JSON：`connection.state_changed`
 
 ## 正式门禁与独立评审记录
 
-2026 年 11 月 11 日，固定业务 `ee4f0e837745bef218275c7ef621953c49ef706d` 的 `npm run test:fast` 全阶段通过：Core 1224 项及 6 个子测试、Hermes 261 项、DSH 89 项、通信测量 25 项与 `noVpnSurfaceCheck`。PR 等级门禁仍在执行，不能提前写为通过。
+2026 年 11 月 11 日，固定业务 `ee4f0e837745bef218275c7ef621953c49ef706d` 的 `npm run test:fast` 全阶段通过：Core 1224 项及 6 个子测试、Hermes 261 项、DSH 89 项、通信测量 25 项与 `noVpnSurfaceCheck`。第一次 PR 等级门禁的模块阶段通过，App 1795 项中仅 `PlatformSnapshotRecoveryTest.aFailedRequestRecoveryDoesNotAdvanceThePlatformCursor` 失败（另有一个既有 Full/Play 差异跳过）。新增退避子任务使取消异常经 `async.await` 被复制，违反既有同原因传播断言；`0e391fc3` 改为值传递原异常并在等待作用域外抛出，旧断言不变。关联复跑通过，并修正 WS 心跳通道关闭与取消并发时的 `ClosedReceiveChannelException`。最终 PR 门禁正在重新执行，不能提前写为通过。
 
 执行环境复用了现有 Node 24、Java 21、完整 Python 和有效 Robolectric 缓存。先前环境失败分别是临时路径无法创建符号链接、私有回收目录权限、隔离 Python 子进程缺依赖、一次配置事务子进程偶发超时；在私有 tmpfs、0700 回收目录及已验证完整解释器下对照后恢复。生产代码与测试安全校验没有为这些环境失败放宽。测试网络 owner 按既有机制仅登记三份完整测试路径，生产网络、VPN 和监听禁令不变。
+
+初始复用 Node 缓存中 Vitest 为 4.1.10，补以私有 tmpfs 按锁文件安装 4.1.11 后 DSH 89 项再次通过；最终 PR 重跑统一使用精确锁文件版本和同一持久 npm 缓存，不改仓库依赖声明。远端旧 head `74abf4e2` 的 APK Artifact run `42855054965` 成功，Core/Android run `42855063510` 因同一取消断言失败；两者不能充当修复后 head 的 CI 结论。
 
 独立规范轴与需求轴第一轮发现并修复本地发布被恢复取消、Native 独立半开恢复缺口；发布背压真实回归由只送达五条转为八条完整送达。需求轴第二轮确认具体 P1/P2 可关闭，并要求同步文档与功耗边界，相关文档已同步。规范轴第二轮另发现关闭仓储会被迟到恢复信号重新启动，公开测试复现关闭后存储访问由两次增至四次；`66c85da7` 使用与 `close()` 相同仓储锁和关闭栅栏修复，第三轮独立复核确认关闭，无剩余实质规范发现。代码评审已在三轮内收敛，尚未测完的设备边界继续单独保留。
 
@@ -96,3 +101,15 @@ Android 使用现有 `GatewayLog` 输出内部 JSON：`connection.state_changed`
 前台断线、半开、Core 重启、后台及前台返回、网络恢复和切换、强制 Doze、设备调用恢复、离线消息有序补发、界面零变更。息屏 30 分钟、2 小时、6 小时和电量对照必须分别记录真实设备、系统条件、构建 SHA、实际时长与结果；缺少条件时明确列为未验证。
 
 当前无实体手机接入；不得把 Android 15 模拟器的电池 100% 或 KVM 运行表现作为真实手机功耗证据。用户现场长期断联、Android 12～16 全机型、Wi-Fi/蜂窝真实切换及长时息屏未全部验收。本轮测试事件证明 Platform 有序恢复，不能单独替代 Native 双方消息镜像或真实能力插件端到端验证。既有 Core 设备事件有保留期限，请求也有自身期限，不承诺无限离线保存。
+
+## Android 官方规范核对
+
+核对日期为 2026 年 11 月 11 日。官方资料说明 Android 15 对 `dataSync` 等前台服务设运行时限，Android 16 中与前台服务并行的 WorkManager/JobScheduler 工作也受配额约束；前台服务不是无限实时保活许可。因此保留已有用户任务服务和通知，不将 WorkManager 当长连接替代品，不新增不匹配类型、WakeLock 或后台启动权限。
+
+- [前台服务版本变化](https://developer.android.com/develop/background-work/services/fgs/changes)
+- [前台服务类型及前置要求](https://developer.android.com/develop/background-work/services/fgs/service-types)
+- [Android 16 全应用行为变化](https://developer.android.com/about/versions/16/behavior-changes-all)
+- [电源管理资源限制](https://developer.android.com/topic/performance/power/power-details)
+- [Doze 与 App Standby 及官方 ADB 测试命令](https://developer.android.com/training/monitoring-device-state/doze-standby)
+
+后续强制 Doze 验收应按官方 `dumpsys battery unplug`、`dumpsys deviceidle force-idle` 记录真实空闲状态、网络与进程条件；退出时 `unforce` 并 `battery reset`，再验证无会话操作恢复。未实跑前不写为通过。
