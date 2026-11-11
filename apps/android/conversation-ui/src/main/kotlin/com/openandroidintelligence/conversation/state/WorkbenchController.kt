@@ -944,6 +944,13 @@ class WorkbenchController(
     private var pendingCheckpoint: WorkbenchCheckpoint? = null
     private var savedCheckpoint: WorkbenchCheckpoint? = null
     private var checkpointFailure: Throwable? = null
+    /** 只清理同一会话和修订成功恢复后仍未被其他状态覆盖的通知。 */
+    private data class CheckpointFailureNotice(
+        val value: String,
+        val threadId: String?,
+        val draftVersion: Long,
+    )
+    private var checkpointFailureNotice: CheckpointFailureNotice? = null
     private var closingJobs: List<Job> = emptyList()
     private val persistenceLifecycleMutex = Mutex()
     private var persistenceRetired = false
@@ -5932,21 +5939,42 @@ class WorkbenchController(
         pendingCheckpoint = checkpoint
         if (checkpointJob?.isActive == true) return
         checkpointJob = workScope.launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            var writingCheckpoint: WorkbenchCheckpoint? = null
             try {
                 while (true) {
                     val next = pendingCheckpoint ?: break
                     pendingCheckpoint = null
+                    writingCheckpoint = next
                     withContext(persistenceDispatcher) {
                         val durable=store as? AwaitableWorkbenchPersistence
                         if (durable!=null) durable.saveCheckpoint(next) else store.save(next)
                     }
                     savedCheckpoint = next
+                    writingCheckpoint = null
                 }
                 checkpointFailure = null
+                checkpointFailureNotice?.let { failedNotice ->
+                    val recovered = savedCheckpoint?.let { checkpoint ->
+                        checkpoint.threadId == failedNotice.threadId && checkpoint.draftVersion >= failedNotice.draftVersion
+                    } == true
+                    if (recovered) {
+                        _state.update { current ->
+                            if (current.notice == failedNotice.value) current.copy(notice = null) else current
+                        }
+                        checkpointFailureNotice = null
+                    }
+                }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 checkpointFailure = failure
-                _state.update { it.copy(notice="LOCAL_SAVE_FAILED:${errorCodeOf(failure)}") }
+                val notice = "LOCAL_SAVE_FAILED:${errorCodeOf(failure)}"
+                val failedCheckpoint = writingCheckpoint ?: pendingCheckpoint
+                checkpointFailureNotice = CheckpointFailureNotice(
+                    notice,
+                    failedCheckpoint?.threadId,
+                    failedCheckpoint?.draftVersion ?: 0L,
+                )
+                _state.update { it.copy(notice=notice) }
             }
         }
     }
