@@ -31,7 +31,14 @@ internal data class StreamingPresentationFrame(
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
-    private val observed = initial.associate { it.key to (it.presentation?.revision ?: -1L) }.toMutableMap()
+    // 首次挂载时，已有 LIVE 尾条仍可建立事实基线；SNAPSHOT 则保持静默完整展示。
+    private val observed = initial.associate {
+        it.key to if (it.presentation?.origin == StreamPresentationOrigin.SNAPSHOT) {
+            it.presentation.revision
+        } else {
+            -1L
+        }
+    }.toMutableMap()
     private var currentKey: String? = null
     private var engine: StreamingPresentationState? = null
     private var nextBatch = 0L
