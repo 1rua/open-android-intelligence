@@ -158,10 +158,17 @@ def test_gc_pauses_are_not_added_to_concurrent_cycle_duration(tmp_path):
     assert result["pause_seconds_max"] == pytest.approx(.004648)
 
 
-def test_run_allows_preexisting_reporter_artifacts(tmp_path):
-    (tmp_path / "gc-1.log").write_text("Using G1\n")
+@pytest.mark.parametrize("artifact", ["gc-1.log", "robolectric-1.jsonl"])
+def test_run_rejects_preexisting_reporter_artifacts(tmp_path, artifact):
+    (tmp_path / artifact).write_text("旧采集证据\n")
+    with pytest.raises(ValueError, match="已有"):
+        perf.run_command(tmp_path, [sys.executable, "-c", "raise SystemExit(99)"])
+    assert not (tmp_path / "run.json").exists()
+    assert (tmp_path / artifact).read_text() == "旧采集证据\n"
+
+
+def test_run_allows_an_existing_empty_directory(tmp_path):
     assert perf.run_command(tmp_path, [sys.executable, "-c", "pass"]) == 0
-    assert (tmp_path / "gc-1.log").read_text() == "Using G1\n"
 
 
 def test_additional_test_identity_fails_strict_same_source_comparison(tmp_path):
@@ -174,3 +181,107 @@ def test_additional_test_identity_fails_strict_same_source_comparison(tmp_path):
     assert code == 1
     assert result["comparison"]["added"] == [("a", "unexpected")]
     assert result["comparison"]["status"] == "failed"
+
+
+@pytest.mark.parametrize("run_record", [
+    {"status": "running"},
+    {"status": "completed"},
+    {"status": "interrupted", "exit_code": 0},
+    {"status": "completed", "exit_code": 7},
+    {},
+])
+def test_existing_run_record_must_prove_success(tmp_path, run_record):
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    metrics = tmp_path / "metrics"
+    perf.write_json(metrics / "run.json", run_record)
+    result, code = perf.build_summary(results, None, metrics)
+    assert code != 0
+    assert result["status"] == "failed"
+    assert result["measurement_status"] != "measured"
+
+
+@pytest.mark.parametrize("baseline_change", [
+    {"status": "failed"},
+    {"run": {"status": "running"}},
+    {"run": {"status": "completed"}},
+    {"run": {"status": "completed", "exit_code": 7}},
+])
+def test_failed_or_incomplete_baseline_cannot_pass_comparison(tmp_path, baseline_change):
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    baseline, _ = perf.build_summary(results, None, None)
+    baseline.update(baseline_change)
+    baseline_path = tmp_path / "baseline.json"
+    perf.write_json(baseline_path, baseline)
+    with pytest.raises(ValueError, match="基线"):
+        perf.build_summary(results, None, None, baseline_path)
+
+
+def test_history_without_run_is_identity_only(tmp_path):
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    baseline, _ = perf.build_summary(results, None, None)
+    baseline_path = tmp_path / "baseline.json"
+    perf.write_json(baseline_path, baseline)
+    result, code = perf.build_summary(results, None, None, baseline_path)
+    assert code == 0
+    assert result["comparison"]["status"] == "passed"
+    assert result["measurement_status"] == "unknown"
+
+
+def make_profile(path, seconds=1):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'<h2>Summary</h2><table><tr><td>Total Build Time</td><td>{seconds}s</td></tr></table>')
+
+
+def test_reporter_creation_without_reports_is_not_measured(tmp_path):
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    metrics = tmp_path / "metrics"
+    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0})
+    (metrics / "metrics.jsonl").write_text(json.dumps({"host": {"cpu_busy_percent": 20, "memory": {"MemAvailable": 1024}}}) + "\n")
+    (metrics / "robolectric-1.jsonl").write_text(json.dumps({"event": "reporter-created", "pid": 1, "metrics": []}) + "\n")
+    (metrics / "gradle.log").write_text("2026-11-11T01:00:00+00:00 Starting process 'Gradle Test Executor 2'\n2026-11-11T01:00:01+00:00 Gradle Test Executor 2 started executing tests.\n")
+    profile = tmp_path / "profile.html"
+    make_profile(profile)
+    result, code = perf.build_summary(results, profile, metrics)
+    assert code == 0
+    assert result["robolectric"]["report_count"] == 0
+    assert result["robolectric"]["status"] == "unknown"
+    assert result["measurement_status"] != "measured"
+
+
+def test_run_records_decoded_profile_relative_to_gradle_cwd(tmp_path, monkeypatch):
+    gradle_cwd = tmp_path / "安卓 项目"
+    gradle_cwd.mkdir()
+    profile = gradle_cwd / "build" / "reports" / "profile" / "profile-本次 报告.html"
+    make_profile(profile)
+    monkeypatch.chdir(gradle_cwd)
+    command = [sys.executable, "-c", f"print('See the profiling report at: {profile.as_uri()}')"]
+    output = tmp_path / "metrics"
+    assert perf.run_command(output, command) == 0
+    record = json.loads((output / "run.json").read_text())
+    assert record["profile_reports"] == ["build/reports/profile/profile-本次 报告.html"]
+
+
+def test_profile_directory_requires_unique_current_run_reference(tmp_path):
+    profiles = tmp_path / "profiles"
+    make_profile(profiles / "profile-old.html", 999)
+    make_profile(profiles / "profile-current.html", 5)
+    metrics = tmp_path / "metrics"
+    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0, "profile_reports": ["build/reports/profile/profile-current.html"]})
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    result, _ = perf.build_summary(results, profiles, metrics)
+    assert result["gradle_profile"]["status"] == "measured"
+    assert len(result["gradle_profile"]["reports"]) == 1
+    assert result["gradle_profile"]["reports"][0]["file"] == "profile-current.html"
+    assert result["gradle_profile"]["reports"][0]["summary_seconds"]["Total Build Time"] == 5
+
+
+@pytest.mark.parametrize("recorded", [[], ["build/reports/profile/absent.html"], ["build/reports/profile/profile-one.html", "build/reports/profile/profile-two.html"]])
+def test_unassociated_or_ambiguous_profile_directory_is_unknown(tmp_path, recorded):
+    profiles = tmp_path / "profiles"
+    make_profile(profiles / "profile-one.html")
+    make_profile(profiles / "profile-two.html")
+    metrics = tmp_path / "metrics"
+    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0, "profile_reports": recorded})
+    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    result, _ = perf.build_summary(results, profiles, metrics)
+    assert result["gradle_profile"]["status"] == "unknown"

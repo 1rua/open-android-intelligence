@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
 SCHEMA_VERSION = 1
@@ -181,14 +182,29 @@ def checkout_metadata() -> dict:
     return {"status": "measured", "commit_sha": commit, "working_tree_dirty": bool(status), "source_hash": None, "limits": "记录提交和脏状态；尚未计算全部工作区源码内容哈希，脏工作区不能按提交相同认定输入相同。"}
 
 
+def profile_report_from_stdout(line: str, working_directory: Path) -> str | None:
+    """只信任本次 Gradle 输出的 file URI，不用修改时间猜报告归属。"""
+    plain = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line)
+    match = re.search(r"See the profiling report at:\s*(file:.*)", plain)
+    if not match:
+        return None
+    uri = urlparse(match[1].strip())
+    if uri.scheme != "file" or uri.netloc not in ("", "localhost") or not uri.path:
+        return None
+    path = Path(unquote(uri.path))
+    if not path.is_absolute():
+        path = working_directory / path
+    return os.path.relpath(path, working_directory)
+
+
 def run_command(output: Path, command: list[str]) -> int:
     if not command:
         raise ValueError("-- 后必须提供 Gradle 命令")
     output.mkdir(parents=True, exist_ok=True)
-    if any((output / name).exists() for name in ("run.json", "metrics.jsonl", "gradle.log")):
+    if any(output.iterdir()):
         raise ValueError("采集目录已有结果，请使用新的目录保存本次证据")
     memory = parse_meminfo(read_text(Path("/proc/meminfo")) or "")
-    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running", "command": command, "git": checkout_metadata(), "host": {"logical_cpus": os.cpu_count(), "affinity_cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None, "mem_total_bytes": memory.get("MemTotal")}}
+    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running", "command": command, "profile_reports": [], "git": checkout_metadata(), "host": {"logical_cpus": os.cpu_count(), "affinity_cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None, "mem_total_bytes": memory.get("MemTotal")}}
     write_json(output / "run.json", record)
     sampler = ResourceSampler(output / "metrics.jsonl", Path.cwd())
     thread = threading.Thread(target=sampler.collect, name="android-perf-sampler", daemon=True)
@@ -215,6 +231,9 @@ def run_command(output: Path, command: list[str]) -> int:
                     stamped = f"{utc_now()} {line.rstrip()}\n"
                     log.write(stamped)
                     log.flush()
+                    report = profile_report_from_stdout(line, Path.cwd())
+                    if report is not None and report not in record["profile_reports"]:
+                        record["profile_reports"].append(report)
                     if re.search(r"> Task |BUILD |failed|\berror\b|exception", line, re.I):
                         print(stamped, end="", flush=True)
                 return_code = child.wait()
@@ -321,9 +340,20 @@ def parse_duration(value: str) -> float:
     return sum(float(number.replace(",", "")) * units[unit] for number, unit in parts)
 
 
-def parse_gradle_profile(profile: Path | None) -> dict:
-    paths = [profile] if profile and profile.is_file() else sorted(profile.glob("profile-*.html")) if profile and profile.exists() else []
-    if not paths:
+def parse_gradle_profile(profile: Path | None, run: dict | None = None) -> dict:
+    if profile and profile.is_file():
+        paths = [profile]
+        selection = "explicit_file"
+    elif profile and profile.is_dir():
+        recorded = run.get("profile_reports", []) if run else []
+        if not isinstance(recorded, list) or any(not isinstance(path, str) for path in recorded) or len(set(recorded)) != 1:
+            return {**UNKNOWN, "reason": "run.json 没有唯一的本次 profile 路径，禁止混入目录中的历史报告"}
+        path = profile / Path(recorded[0]).name
+        if not path.is_file():
+            return {**UNKNOWN, "reason": "本次记录的 profile 文件不在指定目录中", "recorded_relative_path": recorded[0]}
+        paths = [path]
+        selection = "run_stdout"
+    else:
         return {**UNKNOWN, "reason": "没有 Gradle --profile HTML"}
     reports = []
     for path in paths:
@@ -356,7 +386,7 @@ def parse_gradle_profile(profile: Path | None) -> dict:
                     task = f"{project.rstrip(':')}:{label}"
                     tasks.append({"task": task, "seconds": seconds, "result": cells[2]})
         reports.append({"file": path.name, "summary_seconds": summary, "configuration": configuration, "tasks": tasks})
-    return {"status": "measured" if any(r["tasks"] or r["summary_seconds"] for r in reports) else "unknown", "reports": reports, "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"}
+    return {"status": "measured" if any(r["tasks"] or r["summary_seconds"] for r in reports) else "unknown", "selection": selection, "reports": reports, "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"}
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -406,15 +436,20 @@ def parse_gc_logs(metrics: Path) -> dict:
 
 def parse_metrics(metrics: Path | None) -> dict:
     if not metrics or not metrics.exists():
-        return {"host_metrics": UNKNOWN, "executor_bootstrap": UNKNOWN, "robolectric": UNKNOWN, "run": UNKNOWN, "gc": UNKNOWN}
+        return {"host_metrics": UNKNOWN, "executor_bootstrap": UNKNOWN, "robolectric": UNKNOWN, "run": {**UNKNOWN, "record_present": False}, "gc": UNKNOWN}
     run_path, samples_path = metrics / "run.json", metrics / "metrics.jsonl"
-    run = json.loads(run_path.read_text()) if run_path.exists() else UNKNOWN
+    run = json.loads(run_path.read_text()) if run_path.exists() else {**UNKNOWN, "record_present": False}
+    if not isinstance(run, dict):
+        raise ValueError("run.json 必须是运行记录对象")
+    if run_path.exists():
+        run["record_present"] = True
     samples = read_jsonl(samples_path) if samples_path.exists() else []
     cpu = [sample["host"]["cpu_busy_percent"] for sample in samples if sample.get("host", {}).get("cpu_busy_percent") is not None]
     available = [sample["host"]["memory"]["MemAvailable"] for sample in samples if sample.get("host", {}).get("memory", {}).get("MemAvailable") is not None]
     robo_rows = [row for path in sorted(metrics.glob("robolectric-*.jsonl")) for row in read_jsonl(path)]
     initialization = [metric for row in robo_rows if row.get("event") == "robolectric" for metric in row.get("metrics", []) if metric.get("name") == "initialization"]
-    robo = {"status": "measured" if robo_rows else "unknown", "report_count": sum(row.get("event") == "robolectric" for row in robo_rows), "reporter_created_count": sum(row.get("event") == "reporter-created" for row in robo_rows), "initialization": {"status": "measured", "elapsed_ns_sum": sum(metric["elapsed_ns"] for metric in initialization), "count": sum(metric.get("count", 1) for metric in initialization)} if initialization else UNKNOWN, "metrics_by_name": {}, "gc": UNKNOWN, "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"}
+    report_count = sum(row.get("event") == "robolectric" for row in robo_rows)
+    robo = {"status": "measured" if report_count else "unknown", "report_count": report_count, "reporter_created_count": sum(row.get("event") == "reporter-created" for row in robo_rows), "initialization": {"status": "measured", "elapsed_ns_sum": sum(metric["elapsed_ns"] for metric in initialization), "count": sum(metric.get("count", 1) for metric in initialization)} if initialization else UNKNOWN, "metrics_by_name": {}, "gc": UNKNOWN, "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"}
     for row in robo_rows:
         for metric in row.get("metrics", []):
             aggregate = robo["metrics_by_name"].setdefault(metric["name"], {"elapsed_ns_sum": 0, "count": 0})
@@ -431,7 +466,27 @@ def parse_metrics(metrics: Path | None) -> dict:
     return {"run": run, "host_metrics": {"status": "measured" if samples and any(sample.get("host") for sample in samples) else "unknown", "sample_count": len(samples), "host_cpu_busy_percent_peak": max(cpu) if cpu else None, "host_cpu_busy_percent_mean": sum(cpu) / len(cpu) if cpu else None, "host_mem_available_bytes_min": min(available) if available else None, "test_process_peaks": run.get("test_process_peaks", []), "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"}, "executor_bootstrap": parse_executor_bootstrap(metrics / "gradle.log"), "robolectric": robo, "gc": parse_gc_logs(metrics)}
 
 
+def run_failure_reason(run: dict | None) -> str | None:
+    """有运行记录时必须有明确完成和零退出码；缺记录只允许历史身份统计。"""
+    if run is None:
+        return None
+    if not isinstance(run, dict):
+        return "运行记录不是对象"
+    if run.get("record_present") is False and run.get("status") == "unknown" and set(run) <= {"status", "record_present"}:
+        return None
+    if run.get("status") != "completed":
+        return "运行记录未明确完成"
+    if type(run.get("exit_code")) is not int or run["exit_code"] != 0:
+        return "运行记录缺少明确的零退出码"
+    return None
+
+
 def compare_manifests(current: dict, baseline: dict) -> dict:
+    if baseline.get("status") == "failed":
+        raise ValueError("基线已明确失败，不能作为验收依据")
+    baseline_run_failure = run_failure_reason(baseline.get("run"))
+    if baseline_run_failure:
+        raise ValueError(f"基线{baseline_run_failure}，不能作为验收依据")
     old_manifest = baseline.get("test_manifest", {})
     old_rows = old_manifest.get("identities", [])
     new_rows = current["identities"]
@@ -457,7 +512,8 @@ def compare_manifests(current: dict, baseline: dict) -> dict:
 def build_summary(results: Path, profile: Path | None, metrics: Path | None, compare: Path | None = None) -> tuple[dict, int]:
     parsed = parse_xml_results(results)
     manifest = parsed["manifest"]
-    result = {"schema_version": SCHEMA_VERSION, "generated_at": utc_now(), "test_manifest": manifest, "xml_summary": parsed["summary"], "rankings": parsed["rankings"], "gradle_profile": parse_gradle_profile(profile), **parse_metrics(metrics), "unknown": {"pure_jvm_startup_seconds": None, "test_body_seconds": None, "unattributed_overhead_seconds": None}, "limits": ["XML 是 JUnit 类和方法累计时间，不能作为精确 Test task 墙钟。", "first_method_seconds 包含有效测试和准备成本，不能等同 JVM 或 Robolectric 初始化。"]}
+    measurements = parse_metrics(metrics)
+    result = {"schema_version": SCHEMA_VERSION, "generated_at": utc_now(), "test_manifest": manifest, "xml_summary": parsed["summary"], "rankings": parsed["rankings"], "gradle_profile": parse_gradle_profile(profile, measurements["run"]), **measurements, "unknown": {"pure_jvm_startup_seconds": None, "test_body_seconds": None, "unattributed_overhead_seconds": None}, "limits": ["XML 是 JUnit 类和方法累计时间，不能作为精确 Test task 墙钟。", "first_method_seconds 包含有效测试和准备成本，不能等同 JVM 或 Robolectric 初始化。"]}
     failed = bool(manifest["duplicates"] or manifest["failures"])
     unexpected_skips = [row for row in manifest["skipped"] if (row["classname"], row["name"]) != EXPECTED_FULL_SKIP]
     if unexpected_skips:
@@ -466,12 +522,15 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
     if compare:
         result["comparison"] = compare_manifests(manifest, json.loads(compare.read_text(encoding="utf-8")))
         failed |= result["comparison"]["status"] == "failed"
-    if result["run"].get("exit_code", 0) != 0:
+    run_failure = run_failure_reason(result["run"])
+    if run_failure:
+        result["run_validation"] = {"status": "failed", "reason": run_failure}
         failed = True
     result["status"] = "failed" if failed else "passed"
     measured_fields = ("gradle_profile", "host_metrics", "executor_bootstrap", "robolectric")
     measured_count = sum(result[key].get("status") == "measured" for key in measured_fields)
-    result["measurement_status"] = "measured" if measured_count == len(measured_fields) else "partial" if measured_count else "unknown"
+    run_confirmed = result["run"].get("record_present") and run_failure is None
+    result["measurement_status"] = "unknown" if not run_confirmed else "measured" if measured_count == len(measured_fields) else "partial" if measured_count else "unknown"
     result["validation_scope"] = "status 只判断命令与用例完整性，不代表缺失的性能观测已通过；性能观测状态单列于 measurement_status。"
     return result, 1 if failed else 0
 
