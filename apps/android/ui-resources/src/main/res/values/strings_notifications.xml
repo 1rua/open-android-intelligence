@@ -59,7 +59,7 @@
     <string name="notif_reply_excerpt_full_hint">点击查看完整回复</string>
 
     <!-- 原生会话标题与附件占位 -->
-    <string name="notif_conv_default_title">助手对话</string>
+    <string name="notif_conv_default_title">Agent 会话</string>
     <string name="notif_reply_attachment_placeholder">[附件回复]</string>
     <string name="notif_conv_fallback_title_format">会话 %1$s</string>
 

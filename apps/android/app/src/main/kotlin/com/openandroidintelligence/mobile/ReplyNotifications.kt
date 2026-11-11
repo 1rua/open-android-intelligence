@@ -184,6 +184,8 @@ internal class AndroidReplyNotificationPublisher(
         val hasLiveUpdate = liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
+        // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
+        val title = session.title.ifBlank { context.getString(UiR.string.notif_conv_default_title) }
         val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
@@ -194,7 +196,7 @@ internal class AndroidReplyNotificationPublisher(
         val bubbleIntent = target.bubbleIntent(context)
         val shortcutManager = context.getSystemService(ShortcutManager::class.java)
         val accountGroup = replyAccountGroup(target.profileId, target.accountId)
-        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(session.title)
+        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(title)
             .setActivity(android.content.ComponentName(context, MainActivity::class.java))
             .setCategories(setOf("android.shortcut.conversation"))
             .setLongLived(true).setPersons(arrayOf(localUser, agent)).setIcon(icon)
@@ -203,10 +205,10 @@ internal class AndroidReplyNotificationPublisher(
         // A device may disable shortcuts/bubbles. The notification still works.
         val keepBubble = hasLiveUpdate && userSelectedBubble(manager, shortcutId, tag)
         val bubbleMetadata = try {
-            if (publishedShortcuts[shortcutId] != session.title) {
+            if (publishedShortcuts[shortcutId] != title) {
                 shortcutManager.enableShortcuts(listOf(shortcutId))
                 shortcutManager.pushDynamicShortcut(shortcut)
-                publishedShortcuts[shortcutId] = session.title
+                publishedShortcuts[shortcutId] = title
             }
             Notification.BubbleMetadata.Builder(shortcutId).setDesiredHeight(640)
                 .setSuppressNotification(keepBubble).build()
@@ -240,7 +242,7 @@ internal class AndroidReplyNotificationPublisher(
             NativeConversationStatus.DISCONNECTED -> context.getString(UiR.string.notif_reply_preview_reconnecting)
         } }
         val style = Notification.MessagingStyle(localUser)
-            .setConversationTitle(session.title).addMessage(preview, session.updatedAt, agent)
+            .setConversationTitle(title).addMessage(preview, session.updatedAt, agent)
         val notification = Notification.Builder(context, REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
             .setContentTitle(heading)
