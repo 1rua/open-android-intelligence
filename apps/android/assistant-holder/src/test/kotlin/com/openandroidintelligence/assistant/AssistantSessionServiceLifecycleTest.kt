@@ -406,6 +406,60 @@ class AssistantSessionServiceLifecycleTest {
     }
 
     /** 带截图位的唤起不应该提前给出「没有截图」的提示。 */
+    /**
+     * 上滑手势期间窗口必须铺满，松手后按结果收回。
+     *
+     * 紧凑态窗口只有输入栏高（实测 420px）：手指一旦上移出窗口边界，系统就不再向
+     * 本窗口派发 MOVE，位移只累计到 63px 就停，阈值永远达不到 —— 这正是「有动画但
+     * 进不去主 App」。铺满后整段手势都能被收到（实测同一手势达 -1056px 并触发交接）。
+     */
+    @Test fun draggingTheHandleExpandsTheWindowAndReleasingRestoresIt() {
+        val session = createdSession()
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        val compactHeight = window?.attributes?.height
+
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(
+            "拖拽期间窗口必须铺满，否则手势移出边界后收不到 MOVE",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+
+        invokeDragWindowExpanded(session, false)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals("松手后必须回到测量驱动的高度", compactHeight, window?.attributes?.height)
+    }
+
+    /** 交接被拒绝：窗口必须收回，否则浮层会停在满屏挡住下方 App。 */
+    @Test fun aRejectedHandoffRestoresTheCompactWindow() {
+        val session = session(handoffFrame = AssistantHandoffRejectedFrame("当前账号不一致，未交接"))
+        session.onShow(Bundle(), 0)
+        attachFakeBridge()
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+        val window = session.window?.window
+        invokeDragWindowExpanded(session, true)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        invokeRequestHandoff(session)
+        shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        assertNotEquals(
+            "拒绝后不能留在全屏",
+            WindowManager.LayoutParams.MATCH_PARENT,
+            window?.attributes?.height,
+        )
+    }
+
+    private fun invokeDragWindowExpanded(session: VoiceInteractionSession, expanded: Boolean) {
+        val method = session.javaClass.getDeclaredMethod("setDragWindowExpanded", Boolean::class.javaPrimitiveType)
+            .apply { isAccessible = true }
+        method.invoke(session, expanded)
+    }
+
     @Test fun anInvocationWithTheScreenshotFlagDoesNotWarnPrematurely() {
         val session = session()
         session.onShow(Bundle(), VoiceInteractionSession.SHOW_WITH_SCREENSHOT)

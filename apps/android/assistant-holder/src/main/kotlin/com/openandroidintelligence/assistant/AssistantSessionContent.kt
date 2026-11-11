@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.conversation.workbench.ComposerAttachmentOverlay
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.voice.VoiceRecorder
 import com.openandroidintelligence.conversation.voice.VoiceRecorderState
@@ -78,8 +79,20 @@ internal fun AssistantSessionContent(
      */
     frozenScreenshot: Bitmap? = null,
     onRequestHandoff: () -> Unit = {},
+    /**
+     * 拖动横条期间窗口是否需要临时铺满。
+     *
+     * 紧凑态窗口只有输入栏那么高，手指移出窗口边界后系统就不再派发 MOVE，
+     * 位移累计不到阈值（实测只到 63px），上滑交接因此永远不会触发。
+     */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
     onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onExitFrozen: () -> Unit = {},
+    /** 附件来源卡片是否展开；由宿主维护，卡片本身渲染在会话窗口内。 */
+    attachmentSheetVisible: Boolean = false,
+    onDismissAttachmentSheet: () -> Unit = {},
+    /** 用户在卡片里选了某一类来源。 */
+    onPickAttachmentSource: (com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource) -> Unit = {},
 ) {
     val state by client.state.collectAsState()
     val context = LocalContext.current
@@ -162,6 +175,10 @@ internal fun AssistantSessionContent(
                 frozenScreenshot.width <= 0 || frozenScreenshot.height <= 0
             ) {
                 AssistantSessionRoot(
+                    // 根 Box 在**无界高度**下测量（窗口高度由它的测量结果决定），
+                    // 默认从顶部开始排就会把内容顶到窗口上沿，输入栏与卡片之间出现空隙。
+                    // 显式贴底：卡片贴着窗口下沿，与紧凑态一致。
+                    modifier = androidx.compose.ui.Modifier.align(androidx.compose.ui.Alignment.BottomCenter),
                     draft = state.draft,
                     onDraftChange = client::updateDraft,
                     // 未连接时不禁用输入：发送失败会保留草稿并给出提示。
@@ -214,6 +231,7 @@ internal fun AssistantSessionContent(
                     onStartScreenSelection = onStartSelection,
                     onOpenApp = onOpenApp,
                     onRequestHandoff = onRequestHandoff,
+                    onDragWindowExpanded = onDragWindowExpanded,
                     onAddAttachment = onAddAttachment,
                     onContentHeightChanged = onContentHeightChanged,
                     resetOnEntry = resetOnEntry,
@@ -273,6 +291,14 @@ internal fun AssistantSessionContent(
                     // （返回键第一次退出定格），这里不重复一套对话界面。
                 )
             }
+            // 附件来源卡片覆盖在整块内容之上（含定格态）：它与主 App 共用同一份内容与令牌，
+            // 但**不新建 Dialog 窗口** —— 会话宿主是 VoiceInteractionSession（type=2031），
+            // ModalBottomSheet 的 TYPE_APPLICATION 窗口会被系统拒绝并崩溃。
+            ComposerAttachmentOverlay(
+                visible = attachmentSheetVisible,
+                onDismiss = onDismissAttachmentSheet,
+                onPick = onPickAttachmentSource,
+            )
         }
     }
 }

@@ -73,6 +73,9 @@ class AssistantAttachmentPickerActivity : ComponentActivity() {
             AssistantAttachmentKind.MEDIA -> launchGallery()
             AssistantAttachmentKind.DOCUMENT -> launchDocument()
             AssistantAttachmentKind.CAPTURE -> launchCapture()
+            // SHEET 只表示「展开宿主窗口内的卡片」，不应启动本 Activity；
+            // 真到了这里说明调用方弄错了类别，按相册处理而不是无声结束。
+            AssistantAttachmentKind.SHEET -> launchGallery()
         }
     }
 

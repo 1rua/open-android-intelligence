@@ -24,6 +24,16 @@ internal enum class AssistantAttachmentKind(val wireValue: String) {
      * 编码后走既有的屏幕附件通道。合并成两项会让「拍照」静默退化成相册选择。
      */
     CAPTURE("capture"),
+
+    /**
+     * 展开宿主自己窗口内的附件来源卡片（不启动任何系统页面）。
+     *
+     * 为什么不是 `ModalBottomSheet`：它内部是 `Dialog`（`TYPE_APPLICATION`），而系统
+     * 助理会话的宿主窗口是 `VoiceInteractionSession`（type=2031+），系统会直接抛
+     * `Window type mismatch` 并崩溃（模拟器已复现）。卡片以图层形式渲染在会话窗口内，
+     * 内容与主 App 完全一致，只是不新建窗口。
+     */
+    SHEET("sheet"),
     ;
 
     companion object {

@@ -95,8 +95,6 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
-import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSheet
-import com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlin.math.roundToInt
 
@@ -316,8 +314,6 @@ private fun CompactInputRow(
             currentOnDraftChange(asCharSequence().toString())
         }
     }
-    // 「＋」展开的附件来源卡片；与主 App 输入坞共用 ComposerAttachmentSheet。
-    var attachmentSheetOpen by remember { mutableStateOf(false) }
     // 展开态：输入框获得焦点，或草稿已有内容。两者都消失才收起。
     var focused by remember { mutableStateOf(false) }
     val expanded = focused || editor.text.isNotEmpty()
@@ -382,7 +378,7 @@ private fun CompactInputRow(
                     icon = Icons.Default.Add,
                     contentDescription = "添加附件",
                     enabled = enabled,
-                    onClick = { attachmentSheetOpen = true },
+                    onClick = { onAddAttachment(AssistantAttachmentKind.SHEET) },
                 )
                 BasicTextField(
                     state = editor,
@@ -449,30 +445,10 @@ private fun CompactInputRow(
                 )
             }
         }
-        // 附件来源卡片与主 App 输入坞共用同一份实现（ComposerAttachmentSheet）：
-        // 圆角、背景、条目间距与进出场动画因此完全一致，不再维护第二套附件菜单。
-        if (attachmentSheetOpen) {
-            ComposerAttachmentSheet(
-                onDismiss = { attachmentSheetOpen = false },
-                onPick = { source ->
-                    onAddAttachment(source.toAssistantAttachmentKind())
-                },
-            )
-        }
+
     }
 }
 
-/**
- * 附件来源 → 助手选择器类别。
- *
- * 三个入口与主 App 一一对应：拍照走系统相机（返回位图），相册走 Photo Picker，
- * 文档走 SAF。不能把「拍照」并进相册：那会让用户点「拍照」却看到相册，属于静默降级。
- */
-private fun ComposerAttachmentSource.toAssistantAttachmentKind(): AssistantAttachmentKind = when (this) {
-    ComposerAttachmentSource.CAMERA -> AssistantAttachmentKind.CAPTURE
-    ComposerAttachmentSource.GALLERY -> AssistantAttachmentKind.MEDIA
-    ComposerAttachmentSource.DOCUMENT -> AssistantAttachmentKind.DOCUMENT
-}
 
 /** 附件缩略条：图片、语音与普通文件共用同一行，横向滑动查看。 */
 @Composable

@@ -82,6 +82,22 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
      */
     @Volatile private var userHasStartedTyping = false
 
+    /**
+     * 附件来源卡片是否展开（渲染在会话窗口内，不新建 Dialog 窗口）。
+     *
+     * 用 Compose 状态而不是普通字段：它直接驱动界面可见性，写入发生在主线程。
+     */
+    /**
+     * 上滑交接手势进行中：窗口临时铺满。
+     *
+     * 紧凑态窗口只有输入栏高（实测 420px）。手指一旦上移出窗口边界，系统就不再向
+     * 本窗口派发后续 MOVE —— 实测位移只累计到 63px 就停，阈值永远达不到，
+     * 表现正是「有动画但进不去主 App」。铺满后整段手势都在窗口内，松手再按结果决定收回。
+     */
+    private val dragExpanded = mutableStateOf(false)
+
+    private val attachmentSheetOpen = mutableStateOf(false)
+
     /** 系统选择器结果的会话侧强引用；[onHide]/[onDestroy] 时清空。 */
     private var pendingPickerCallback: ((List<Uri>) -> Unit)? = null
 
@@ -163,7 +179,19 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                 // 两者由本类同步推进；窗口几何只看 `immersiveLayout()`。
                 frozenScreenshot = frozenScreenshot(),
                 onRequestHandoff = { requestHandoff() },
-                onAddAttachment = { kind -> requestAttachmentPicker(kind) },
+                onDragWindowExpanded = { expanded -> setDragWindowExpanded(expanded) },
+                // 「＋」先展开会话窗口内的附件来源卡片（与主 App 同一份内容），
+                // 用户真正选了某一类来源后才启动对应的系统页面。
+                onAddAttachment = { kind ->
+                    if (kind == AssistantAttachmentKind.SHEET) setAttachmentSheetOpen(true)
+                    else requestAttachmentPicker(kind)
+                },
+                attachmentSheetVisible = attachmentSheetOpen.value,
+                onDismissAttachmentSheet = { setAttachmentSheetOpen(false) },
+                onPickAttachmentSource = { source ->
+                    setAttachmentSheetOpen(false)
+                    requestAttachmentPicker(source.toPickerKind())
+                },
                 // 发送被接收：定格在状态机里已经结束，这里把窗口同步放回测量驱动。
                 onExitFrozen = { exitFrozenSelection() },
                 onExit = { requestExit() },
@@ -204,6 +232,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 每次唤起都是新的一次会话：上一轮未完成的交接请求不能延续到这一轮。
         handoffRequested = false
         pendingHandoffId = null
+        // 卡片是上一次唤起的临时状态：新一次唤起必须从收起状态开始。
+        attachmentSheetOpen.value = false
         // 每次唤起都从紧凑输入开始：不继承上一次会话的展开态与覆盖层。
         uiState.dispatch(AssistantUiEvent.SessionShown)
         closing = false
@@ -244,6 +274,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         client = null
         host?.stop()
         userHasStartedTyping = false
+        attachmentSheetOpen.value = false
         pendingPickerCallback = null
         pendingCaptureCallback = null
         pendingPickerFinished = null
@@ -517,7 +548,11 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     }
 
     /** 是否处于全屏临时形态（裁剪页或定格截图）。窗口几何的唯一判据。 */
-    private fun immersiveLayout(): Boolean = selectionState.value != null || frozenFullscreen.value
+    private fun immersiveLayout(): Boolean =
+        selectionState.value != null || frozenFullscreen.value || dragExpanded.value ||
+            // 附件来源卡片是模态层（带遮罩），内容比紧凑窗口高得多：
+            // 不铺满的话卡片下半截会被窗口下沿裁掉，用户只能看到第一项。
+            attachmentSheetOpen.value
 
     private fun applyWindowLayout() {
         val dialogWindow = window?.window ?: return
@@ -625,6 +660,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
             handoffRequested = false
             pendingHandoffId = null
             AssistantDiagnostics.handoff("watchdog", "超时未收到回执")
+            setDragWindowExpanded(false)
             client?.showAdvisory(AssistantHandoffMessages.TIMEOUT)
         }.also { mainHandler.postDelayed(it, HANDOFF_TIMEOUT_MILLIS) }
         observeHandoffResult(bridge, handoffId)
@@ -655,6 +691,7 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                         pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
+                        setDragWindowExpanded(false)
                         proceedWithAcceptedHandoff(bridge, handoff)
                     }
                     AssistantHandoffState.REJECTED -> {
@@ -663,6 +700,8 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
                         pendingHandoffId = null
                         handoffWatchdog?.let(mainHandler::removeCallbacks)
                         handoffWatchdog = null
+                        // 交接失败：窗口必须收回，否则浮层会停在满屏挡住下方 App。
+                        setDragWindowExpanded(false)
                         bridge.showAdvisory(handoff.reason.ifBlank { AssistantHandoffMessages.REJECTED })
                     }
                     AssistantHandoffState.PENDING, null -> Unit
@@ -761,6 +800,30 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
     private fun captureFilename(): String =
         "assistant-photo-${System.currentTimeMillis()}.png"
 
+    /**
+     * 上滑手势开始/结束时的窗口铺满与收回。
+     *
+     * 交接被拒绝或超时后必须收回：否则浮层会永久停在满屏，挡住下方的 App。
+     */
+    private fun setDragWindowExpanded(expanded: Boolean) {
+        if (dragExpanded.value == expanded) return
+        dragExpanded.value = expanded
+        applyWindowLayout()
+    }
+
+    /**
+     * 展开/收起附件来源卡片，并同步窗口几何。
+     *
+     * 卡片是模态层且比紧凑窗口高：展开时窗口必须铺满，否则卡片下半截被下沿裁掉；
+     * 收起后立刻回到测量驱动的高度。重复调用是空操作，不产生多余重排。
+     */
+    private fun setAttachmentSheetOpen(open: Boolean) {
+        if (attachmentSheetOpen.value == open) return
+        attachmentSheetOpen.value = open
+        applyWindowLayout()
+    }
+
+
     /** 选择器期间让出窗口；重复调用是空操作，避免与结果回调互相覆盖。 */
     private fun suspendSessionUiForPicker() {
         if (pickerSuspended) return
@@ -810,3 +873,19 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         const val HANDOFF_TIMEOUT_MILLIS = ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
     }
 }
+
+/**
+ * 卡片里选中的来源 → 选择器 Activity 的类别。
+ *
+ * 「拍照」走系统相机（返回位图，经既有屏幕附件通道交给主进程）；相册走 Photo Picker
+ * 多选；文档走 SAF。三者与主 App 的附件入口一一对应，不做任何静默降级。
+ */
+private fun com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.toPickerKind(): AssistantAttachmentKind =
+    when (this) {
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.CAMERA ->
+            AssistantAttachmentKind.CAPTURE
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.GALLERY ->
+            AssistantAttachmentKind.MEDIA
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.DOCUMENT ->
+            AssistantAttachmentKind.DOCUMENT
+    }
