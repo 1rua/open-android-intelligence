@@ -1,0 +1,10 @@
+NativeConversationMirrorTest > workbenchReopensCancelledPlaceholderAndReadsNativeHistoryWithoutPostingAgain FAILED
+    java.lang.AssertionError at NativeConversationMirrorTest.kt:44
+
+1 test completed, 1 failed
+1 test completed, 1 failed
+BUILD FAILED in 2m 44s
+443 actionable tasks: 28 executed, 2 from cache, 413 up-to-date
+Configuration cache entry stored.
+BUILD FAILED in 2m 44s
+443 actionable tasks: 28 executed, 2 from cache, 413 up-to-date

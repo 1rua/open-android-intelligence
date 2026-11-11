@@ -1,0 +1,29 @@
+ Test Files  5 passed | 1 skipped (6)
+      Tests  120 passed | 3 skipped (123)
+HermesHttpInteropTest > reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage FAILED
+    java.lang.IllegalStateException: HERMES_FIXTURE_MISSING
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage$1$1.invokeSuspend(HermesHttpInteropTest.kt:53)
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$reopenedNativeHistoryPreservesOriginalMessageToolsAndRetrievableImage$1$1.invoke(HermesHttpInteropTest.kt)
+HermesHttpInteropTest > streamedReplyIsObservableBeforeCompletionOverSse FAILED
+    java.lang.IllegalStateException: HERMES_FIXTURE_MISSING
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$assertStreamingReply$2.invokeSuspend(HermesHttpInteropTest.kt:197)
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$assertStreamingReply$2.invoke(HermesHttpInteropTest.kt)
+HermesHttpInteropTest > streamedReplyIsObservableBeforeCompletionOverTheDefaultWebSocket FAILED
+    java.lang.IllegalStateException: HERMES_FIXTURE_MISSING
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$assertStreamingReply$2.invokeSuspend(HermesHttpInteropTest.kt:197)
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$assertStreamingReply$2.invoke(HermesHttpInteropTest.kt)
+HermesHttpInteropTest > passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes FAILED
+    java.lang.IllegalStateException: 未找到 Hermes 网关插件的 fixture: /mnt/data/projects/open-android-intelligence/.worktrees/dsh-history-placeholder/.hermes-gateway-plugin/tests/android_gateway_fixture.py（HERMES_PLUGIN_ROOT=/mnt/data/projects/open-android-intelligence/.worktrees/dsh-history-placeholder/.hermes-gateway-plugin）
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$passwordLoginCreateUploadVerifyAndSendAgainstShippedHermes$1.invokeSuspend(HermesHttpInteropTest.kt:371)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+HermesHttpInteropTest > batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary FAILED
+    java.lang.IllegalStateException: HERMES_FIXTURE_MISSING
+        at com.openandroidintelligence.conversation.data.HermesHttpInteropTest$batchAcceptanceDispatchReplyAndReplayUseTheRealHttpAndSseBoundary$1.invokeSuspend(HermesHttpInteropTest.kt:291)
+        at kotlin.coroutines.jvm.internal.BaseContinuationImpl.resumeWith(ContinuationImpl.kt:33)
+61 tests completed, 5 failed
+BUILD FAILED in 30s
+134 actionable tasks: 17 executed, 12 from cache, 105 up-to-date
+Configuration cache entry stored.
+检测到变更文件数量: 4
+BUILD FAILED in 30s
+134 actionable tasks: 17 executed, 12 from cache, 105 up-to-date

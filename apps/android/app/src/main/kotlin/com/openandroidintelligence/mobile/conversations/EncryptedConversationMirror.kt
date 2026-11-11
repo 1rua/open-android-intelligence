@@ -454,11 +454,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
 
     private fun mergeAtom(existing: LocalSendAtom,incoming: LocalSendAtom): LocalSendAtom {
-        val legacySteeringIdentity = existing.delivery == MessageDeliveryMode.STEER &&
-            incoming.delivery == MessageDeliveryMode.STEER && existing.clientMessageId == incoming.clientMessageId &&
-            existing.messageId == "steer_${existing.clientMessageId.value}"
+        val steering = existing.delivery == MessageDeliveryMode.STEER && incoming.delivery == MessageDeliveryMode.STEER
+        fun provisional(atom: LocalSendAtom) = atom.messageId == atom.clientMessageId.value ||
+            (steering && LocalSendAtom.isLegacySyntheticSteerId(atom.messageId,atom.clientMessageId))
+        val existingProvisional=provisional(existing)
+        val incomingProvisional=provisional(incoming)
         check(existing.messageId == null || incoming.messageId == null || existing.messageId == incoming.messageId ||
-            legacySteeringIdentity) { "MESSAGE_ID_CONFLICT" }
+            existingProvisional || incomingProvisional) { "MESSAGE_ID_CONFLICT" }
+        // 明确客户端占位可以升级；迟到的占位回写不能把已取得的原生身份降回去。
+        val messageId=if (existing.messageId != null && !existingProvisional && incomingProvisional) existing.messageId
+            else incoming.messageId ?: existing.messageId
         val content=if (existing.contentRevision >= 0L && existing.contentRevision >= incoming.contentRevision) existing else incoming
         val status=if (existing.status != null && existing.statusRevision >= incoming.statusRevision) existing else incoming
         val contentRevision=maxOf(existing.contentRevision,incoming.contentRevision)
@@ -466,7 +471,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val snapshotDeleted=existing.snapshotDeleted || incoming.snapshotDeleted
         val submission=if (existing.submissionState == LocalSubmissionState.ACCEPTED) LocalSubmissionState.ACCEPTED else incoming.submissionState
         return incoming.copy(
-            messageId=incoming.messageId ?: existing.messageId,batchId=incoming.batchId ?: existing.batchId,
+            messageId=messageId,batchId=incoming.batchId ?: existing.batchId,
             timestamp=existing.timestamp.takeIf { it > 0L } ?: incoming.timestamp,
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,

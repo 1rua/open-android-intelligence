@@ -1,0 +1,18 @@
+NativeConversationMirrorTest > acceptedIdentityUpgradeAndStalePlaceholderWritePreserveNativeIdentityAndNewerFacts FAILED
+    java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+        Caused by: java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+
+NativeConversationMirrorTest > historySnapshotCanUpgradePlaceholderWhileRealIdentityConflictsStillRollback FAILED
+    java.lang.IllegalStateException at NativeConversationMirrorTest.kt:92
+
+NativeConversationMirrorTest > cancelledClientPlaceholderAdoptsNativeHistoryAfterReopenWithoutLosingTerminalFacts FAILED
+NativeConversationMirrorTest > cancelledClientPlaceholderAdoptsNativeHistoryAfterReopenWithoutLosingTerminalFacts FAILED
+    java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+        Caused by: java.lang.IllegalStateException at EncryptedConversationMirror.kt:460
+
+4 tests completed, 3 failed
+BUILD FAILED in 3m 5s
+443 actionable tasks: 180 executed, 263 from cache
+Configuration cache entry stored.
+BUILD FAILED in 3m 5s
+443 actionable tasks: 180 executed, 263 from cache
