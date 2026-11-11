@@ -475,3 +475,160 @@ def test_level_3_block_barrier_negative_isolation():
     # 唯有合法的前置断言消息获得豁免
     assert exempt_map["前置合法异常提示"] == (True, "syntax_check/require/assert/error")
 
+
+
+def test_string_template_nested_url_double_slash_isolation():
+    """用例组 1: 字符串模板 ${...} 内部嵌套 URL // 不得泄漏语法豁免至下一行。"""
+    code = """
+    package com.test
+    fun testTemplateUrlIsolation() {
+        Log.d(TAG, "url: ${\"http://example.com/api//v1\"}")
+        val userNotice = "下一行独立用户文案"
+        GatewayLog.e("TAG", "path: ${\"https://gateway.internal//auth?q=1\"}")
+        showToast("网关日志后的用户提示")
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["下一行独立用户文案"] == (False, None)
+    assert exempt_map["网关日志后的用户提示"] == (False, None)
+
+
+def test_string_template_inner_chinese_extraction():
+    """用例组 2: 字符串模板 ${...} 内部表达式的中文硬编码必须被 100% 抽取到 findings 中。"""
+    code = """
+    package com.test
+    fun testInnerTemplateChinese(cond: Boolean, name: String?) {
+        val label = "Prefix: ${\"未豁免硬编码中文\"}"
+        val branch = "Prefix: ${if (cond) \"单次请求\" else \"相同参数请求\"}"
+        val fallback = "User: ${name ?: \"默认用户\"}"
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    contents = [f.content for f in findings]
+    assert "未豁免硬编码中文" in contents
+    assert "单次请求" in contents
+    assert "相同参数请求" in contents
+    assert "默认用户" in contents
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["未豁免硬编码中文"] == (False, None)
+    assert exempt_map["单次请求"] == (False, None)
+    assert exempt_map["相同参数请求"] == (False, None)
+    assert exempt_map["默认用户"] == (False, None)
+
+
+def test_control_flow_with_assertion_condition_not_exempt():
+    """用例组 3: if/while 条件包含 checkNotNull/check 时，主体代码块首行文案必须判定为 is_exempt == False。"""
+    code = """
+    package com.test
+    fun testControlFlowAssertionCondition(x: String?, items: List<String>) {
+        if (checkNotNull(x)) {
+            showToast("保存成功")
+        }
+        if (check(items.isNotEmpty())) {
+            showSnackbar("列表加载完成")
+        }
+        while (requireNotNull(x).isNotEmpty()) {
+            displayNotice("循环提示")
+            break
+        }
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["保存成功"] == (False, None)
+    assert exempt_map["列表加载完成"] == (False, None)
+    assert exempt_map["循环提示"] == (False, None)
+
+
+def test_assertion_with_inline_lambda_condition_exempt():
+    """用例组 4: check/require 条件内含有 lambda (如 any { it.isActive }) 时，必须判定为 is_exempt == True。"""
+    code = """
+    package com.test
+    fun testAssertionWithLambdaCondition(users: List<String>, items: List<String>) {
+        check(users.any { it.isNotEmpty() }) {
+            "错误提示"
+        }
+        require(items.isNotEmpty() && items.all { it.isNotBlank() }) {
+            "所有项必须有效"
+        }
+        checkNotNull(items.find { it == "target" }) {
+            "找不到指定项"
+        }
+        requireNotNull(users.firstOrNull { it == "admin" }) {
+            "找不到首个有效用户"
+        }
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["错误提示"] == (True, "syntax_check/require/assert/error")
+    assert exempt_map["所有项必须有效"] == (True, "syntax_check/require/assert/error")
+    assert exempt_map["找不到指定项"] == (True, "syntax_check/require/assert/error")
+    assert exempt_map["找不到首个有效用户"] == (True, "syntax_check/require/assert/error")
+
+
+def test_preceding_throw_statement_not_pollute_next_line():
+    """用例组 5: 前置独立行的 throw RuntimeException(...) 换行后跟随普通文案调用，普通文案绝不得被误豁免为 syntax_throw。"""
+    code = """
+    package com.test
+    fun testThrowIsolation() {
+        if (cond) throw CancellationException("NATIVE_CREATE_OWNER_CHANGED")
+        attempt.session = created
+        val conversation = Conversation(ConversationId(created.id), created.title?.takeIf(String::isNotBlank) ?: "新对话", parseDate(created.updatedAt))
+
+        if (failed) throw RuntimeException("ERR")
+        updateStatus("严重漏报的面向用户中文")
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["新对话"] == (False, None)
+    assert exempt_map["严重漏报的面向用户中文"] == (False, None)
+
+
+def test_preceding_block_semicolon_not_pollute_next_line():
+    """用例组 6: 前置代码块内部带分号的 { fd.close(); error(...) } 换行后跟随普通文案调用，普通文案绝不得被误豁免。"""
+    code = """
+    package com.test
+    fun testBlockSemicolonIsolation(size: Long, mediaType: String) {
+        if (size !in 1..100) { fd.close(); error("CONTENT_TOO_LARGE") }
+        enqueueAttachmentRead("屏幕附件无法读取，请重新圈选")
+
+        if (!mediaType.startsWith("audio/")) { fd.close(); error("CONTENT_TYPE_INVALID") }
+        enqueueAttachmentRead("语音附件无法读取，请重新录制")
+
+        if (x > 0) { fd.close(); error("ERR") }
+        showNotice("击穿大括号的面向用户中文")
+    }
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as tf:
+        tf.write(code)
+        tf.flush()
+        findings = extract_strings_from_kotlin_file(Path(tf.name))
+
+    exempt_map = {f.content: (f.is_exempt, f.exempt_reason) for f in findings}
+    assert exempt_map["屏幕附件无法读取，请重新圈选"] == (False, None)
+    assert exempt_map["语音附件无法读取，请重新录制"] == (False, None)
+    assert exempt_map["击穿大括号的面向用户中文"] == (False, None)
