@@ -1,5 +1,8 @@
 package com.openandroidintelligence.conversation.components
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -18,9 +21,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
@@ -43,6 +47,7 @@ import org.robolectric.annotation.GraphicsMode
 class SettingsItemMorphTest {
     @get:Rule
     val compose = createComposeRule()
+    private lateinit var contentView: View
 
     @Test
     fun lightThemePressMorphsContinuouslyAndClipsRipple() = verifyPress(lightColorScheme(), "浅色")
@@ -143,6 +148,7 @@ class SettingsItemMorphTest {
         val scheme = lightColorScheme()
         compose.setContent {
             MaterialTheme(colorScheme = scheme) {
+                contentView = LocalView.current
                 SettingsListItem("附件库", selected = true, onClick = {}, modifier = Modifier.width(320.dp).testTag("item"))
             }
         }
@@ -153,6 +159,7 @@ class SettingsItemMorphTest {
     @Composable
     private fun Fixture(scheme: ColorScheme, content: @Composable () -> Unit) {
         MaterialTheme(colorScheme = scheme, shapes = Shapes(medium = RoundedCornerShape(4.dp))) {
+            contentView = LocalView.current
             Box(Modifier.width(320.dp).background(scheme.background)) {
                 SettingsSectionCard(contentPadding = PaddingValues(8.dp)) { content() }
             }
@@ -160,9 +167,17 @@ class SettingsItemMorphTest {
     }
 
     private fun capture(name: String): PixelMap {
-        val image = compose.onNodeWithTag("item").captureToImage()
+        val bounds = compose.onNodeWithTag("item").fetchSemanticsNode().boundsInRoot
+        // Robolectric 没有真实窗口帧回调，直接绘制 View 树，仍包含 Compose 的裁剪与波纹。
+        val image = compose.runOnIdle {
+            val bitmap = Bitmap.createBitmap(bounds.width.toInt(), bounds.height.toInt(), Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.translate(-bounds.left, -bounds.top)
+            contentView.draw(canvas)
+            bitmap.asImageBitmap()
+        }
         val file = File("build/reports/settings-item-morph/$name.png")
-        file.parentFile.mkdirs()
+        file.parentFile?.mkdirs()
         file.outputStream().use { image.asAndroidBitmap().compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
         return image.toPixelMap()
     }

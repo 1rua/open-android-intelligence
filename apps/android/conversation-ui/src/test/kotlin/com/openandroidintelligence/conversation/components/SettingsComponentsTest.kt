@@ -37,12 +37,12 @@ class SettingsComponentsTest {
         compose.setContent {
             MaterialTheme {
                 SettingsSectionCard(contentPadding = PaddingValues()) {
-                SettingsNavigationItem(
-                    headline = "外观与动效",
-                    supporting = "主题模式、动态取色与动画微调",
-                    icon = Icons.Default.Palette,
-                    onClick = { clicked = true },
-                )
+                    SettingsNavigationItem(
+                        headline = "外观与动效",
+                        supporting = "主题模式、动态取色与动画微调",
+                        icon = Icons.Default.Palette,
+                        onClick = { clicked = true },
+                    )
                 }
             }
         }
@@ -57,12 +57,12 @@ class SettingsComponentsTest {
         compose.setContent {
             MaterialTheme {
                 SettingsSectionCard(contentPadding = PaddingValues()) {
-                SettingsSwitchItem(
-                    headline = "系统动态取色",
-                    modifier = Modifier.testTag("switch-row"),
-                    checked = checkedState.value,
-                    onCheckedChange = { checkedState.value = it; changes++ },
-                )
+                    SettingsSwitchItem(
+                        headline = "系统动态取色",
+                        modifier = Modifier.testTag("switch-row"),
+                        checked = checkedState.value,
+                        onCheckedChange = { checkedState.value = it; changes++ },
+                    )
                 }
             }
         }
