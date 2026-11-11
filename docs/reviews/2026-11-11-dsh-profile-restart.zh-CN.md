@@ -57,3 +57,9 @@
 验证：`PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py oai-core/tests/test_dsh_installation.py -p no:cacheprovider --tb=short` 得到 **95 passed、0 failed**（6.76 秒）；`git diff --check` 通过。新增真实已安装 DSH 的隔离 `dump-config` 测试在禁用 Python YAML 导入时仍成功，并验证配置表达式不执行、合成密钥与完整配置不进入输出。正常环境文件自动重启、环境变化拒绝、清除规则、解释器展开均有保护回归。
 
 本轮没有重复全量 Fast/PR 门禁，没有停止或重启真实服务。前一提交的门禁环境限制与远端 CI 结果不能替代本轮审查和真实部署验收。
+
+## 第二轮审查后的最小修复
+
+第二轮独立审查发现 `PassEnvironment` 应在自动生成用户 `HOME/LOGNAME/SHELL` 之后覆盖，原顺序相反。新增纯函数双向回归：系统服务设置当前属主 `User`、传递 `HOME`、不显式设置 `DSH_HOME`；传入其他目录必须拒绝目标默认 `.dsh`，传入目标用户目录则保持接受。修复前为 **1 failed、1 passed**（0.10 秒），准确复现错误接受其他 Home。
+
+本次仅调整这两项环境来源的合并顺序，保留后续 `Environment/EnvironmentFiles/UnsetEnvironment` 行为。运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -p no:cacheprovider --tb=short`：**43 passed、0 failed**（6.61 秒）；`git diff --check` 通过。没有重复全量门禁或执行真实服务操作，最终独立复核及现场验收由主任务继续完成。

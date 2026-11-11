@@ -702,6 +702,25 @@ def test_system_pass_environment_uses_manager_process_and_not_old_dsh(tmp_path, 
         manager_environment={}, manager_process_environment={"DSH_HOME": "/other"}) is True
 
 
+@pytest.mark.parametrize("passed_home_matches", [False, True])
+def test_passed_home_overrides_automatic_user_home(tmp_path, monkeypatch, passed_home_matches):
+    import pwd
+    import shlex
+    user_home = tmp_path / "user"
+    target = user_home / ".dsh"
+    target.mkdir(parents=True)
+    uid, gid = target.stat().st_uid, target.stat().st_gid
+    monkeypatch.setattr(pwd, "getpwuid", lambda actual_uid: SimpleNamespace(
+        pw_dir=str(user_home), pw_name="synthetic-user", pw_shell="/bin/sh", pw_uid=actual_uid))
+    arguments = ("/usr/bin/dsh", "--profile", "worker")
+    process = configuration._DshProcess(41001, "100", arguments, {"HOME": str(user_home)}, tmp_path, uid, gid)
+    properties = {"User": str(uid), "PassEnvironment": "HOME", "WorkingDirectory": str(tmp_path),
+                  "ExecStart": f"{{ argv[]={shlex.join(arguments)} ; }}"}
+    passed_home = user_home if passed_home_matches else tmp_path / "other"
+    assert configuration._dsh_unit_matches(properties, process, target, "worker", user_service=False,
+        manager_environment={}, manager_process_environment={"HOME": str(passed_home)}) is passed_home_matches
+
+
 def test_environment_file_values_keep_systemd_quotes_and_continuations():
     actual = configuration._dsh_environment_assignments(
         "# 合成注释\nA = first\\\n second  \nB='literal\\path\nline'\nC=last\\ \nD=\"escaped\\$name\\\\path\"\n")
