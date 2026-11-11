@@ -34,6 +34,40 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class AssistantBridgeProtocolTest {
 
+    @Test fun 活跃回复终态超过三万二千字仍完整保留() {
+        val text = "完整正文👩🏽‍💻".repeat(5_000)
+        val entry = assistantEntry("active", text)
+        val (budgeted, _) = AssistantWireBudget.applyBudget(listOf(entry), protectedMessageId = entry.key)
+        assertEquals(text, budgeted.single().text)
+        assertEquals(text, decodeTimeline(requireNotNull(decodeState(encodeState(
+            AssistantStateDto(timeline = budgeted.map { it.toDto() }),
+        )))).single().text)
+    }
+
+    @Test fun 保护正文后面存在工具事实时仍不被字节预算丢弃() {
+        val active = assistantEntry("active", "字".repeat(300_000))
+        val trailing = assistantEntry("step", "工具事实").copy(executionFact = true)
+        val (budgeted, _) = AssistantWireBudget.applyBudget(listOf(active, trailing), protectedMessageId = "active")
+        assertEquals(listOf("active", "step"), budgeted.map { it.key })
+        assertEquals(active.text, budgeted.first().text)
+    }
+
+    @Test fun 呈现来源和触觉偏好经现有桥接往返而旧帧默认关闭() {
+        val entry = assistantEntry("active", "实时文字", streaming = true).copy(
+            presentation = com.openandroidintelligence.conversation.state.StreamPresentationMetadata(
+                com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE, 12L,
+            ),
+        )
+        val restored = requireNotNull(decodeState(encodeState(AssistantStateDto(
+            appearance = AssistantAppearanceDto(streamingHapticFeedback = true), timeline = listOf(entry.toDto()),
+        ))))
+        assertTrue(restored.appearance.streamingHapticFeedback)
+        assertEquals(entry.presentation, decodeTimeline(restored).single().presentation)
+        val legacy = requireNotNull(decodeState("""{"version":2,"timeline":[{"id":"old","text":"缓存","sender":"assistant"}]}"""))
+        assertFalse(legacy.appearance.streamingHapticFeedback)
+        assertNull(decodeTimeline(legacy).single().presentation)
+    }
+
     private fun assistantEntry(
         key: String,
         text: String,

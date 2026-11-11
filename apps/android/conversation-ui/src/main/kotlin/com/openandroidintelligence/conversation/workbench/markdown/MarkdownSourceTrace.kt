@@ -118,8 +118,14 @@ class StreamingMarkdownCache {
             (old.trace.blocks[block]?.source?.end ?: Int.MAX_VALUE) <= prefixEnd
         } else emptyList()
         prefix.forEach { block -> copyTrace(block, old!!.trace, trace) }
-        val tail = if (prefixEnd == text.length && prefix.isNotEmpty()) emptyList()
-        else MarkdownParser.parseTraced(text.substring(prefixEnd), trace, prefixEnd, narrative)
+        // 原解析器在围栏/执行块之后 trim 剩余原文；复用前置块时必须保留这个上下文，
+        // 否则完整解析会去掉的尾空格会在增量路径重新出现。
+        val suffix = MarkdownSourceText.original(text.substring(prefixEnd), prefixEnd)
+        val tailSource = if (prefix.any {
+            it is TimelineBlock.CodeBlock || it is TimelineBlock.ThoughtBlock || it is TimelineBlock.ToolCallBlock
+        }) suffix.trim() else suffix
+        val tail = if (tailSource.text.isEmpty() && prefix.isNotEmpty()) emptyList()
+        else MarkdownParser.parseTraced(tailSource.text, trace, tailSource.start, narrative, allowEmpty = prefix.isNotEmpty())
         val blocks = prefix + tail
         var closedThrough = prefixEnd
         for (block in blocks) {

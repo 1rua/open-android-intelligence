@@ -74,6 +74,14 @@ internal class StreamingDecorationState {
         val changedPolicy = next.active != presentation.active || next.reduceMotion != presentation.reduceMotion
         presentation = next
         if (changed) batchEnteredAt = SystemClock.uptimeMillis()
+        if (changed && next.sourceRevealEnd <= next.sourceRevealStart) {
+            // 权威改写的批次没有新增范围：旧透明度和坐标不可投射到更正后的正文。
+            batches.clear()
+            cursorPosition = null
+            previousTarget = null
+            cursorVelocity = Offset.Zero
+            trailOrigin = null
+        }
         if (changed && next.sourceRevealEnd > next.sourceRevealStart && !next.reduceMotion) {
             batches.add(StreamingFadeBatch(next.batchId, next.sourceRevealStart, next.sourceRevealEnd, batchEnteredAt))
             if (batches.size > MaximumFadeBatches) {
@@ -257,7 +265,10 @@ internal fun streamingAtomicModifier(
         if (!measured) return
         val width = position.size.width.toFloat()
         val height = position.size.height.toFloat()
-        val added = source.start in progress.sourceRevealStart until progress.sourceRevealEnd
+        // 公式内容后续增长仍是可见推进；只消费 LaTeX 正文映射，不因闭合定界符或测量回调补震。
+        val added = source.text.indices.any { index ->
+            !source.text[index].isWhitespace() && source.offsets[index] in progress.sourceRevealStart until progress.sourceRevealEnd
+        }
         state.register(key, StreamingTextLayout(
             source.end, position, Rect(width, 0f, width + 1f, height),
             if (added) listOf(Rect(0f, 0f, width, height)) else emptyList(), progress.batchId,

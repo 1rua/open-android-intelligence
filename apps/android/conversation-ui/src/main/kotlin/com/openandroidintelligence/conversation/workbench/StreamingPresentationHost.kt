@@ -212,7 +212,9 @@ fun rememberStreamingPresentations(
     val visible = enabled && foreground
     registry.prepare(entries, visible)
     LaunchedEffect(registry, entries, visible) {
-        registry.accept(entries, visible, System.nanoTime())
+        // 接收与消费共用 Compose 帧时间基准，避免测试时钟或宿主时钟的起点不同导致永不推进。
+        if (visible) withFrameNanos { registry.accept(entries, true, it) }
+        else registry.accept(entries, false, 0L)
     }
     // 只在有待显内容时请求帧。网络空闲、后台和终态排空后不留下循环。
     val pending = registry.hasPending

@@ -76,14 +76,15 @@ private const val MaxBlockquoteDepth = 8
         trace: MarkdownParseTrace,
         offset: Int = 0,
         narrative: Boolean = false,
+        allowEmpty: Boolean = false,
     ): List<TimelineBlock> {
         val source = MarkdownSourceText.original(text, offset)
         if (text.isEmpty()) return listOf(trace.record(TimelineBlock.Paragraph(""), source))
         return if (narrative) {
             parseContentWithCodeBlocks(text, recognizeToolCalls = false, trace = trace, source = source)
-                .ifEmpty { listOf(trace.record(TimelineBlock.Paragraph(text), source)) }
+                .ifEmpty { if (allowEmpty) emptyList() else listOf(trace.record(TimelineBlock.Paragraph(text), source)) }
         } else {
-            parseThoughtBlocks(text, trace, source)
+            parseThoughtBlocks(text, trace, source, allowEmpty)
         }
     }
 
@@ -91,9 +92,12 @@ private const val MaxBlockquoteDepth = 8
         text: String,
         trace: MarkdownParseTrace? = null,
         source: MarkdownSourceText? = null,
+        allowEmpty: Boolean = false,
     ): List<TimelineBlock> {
         if (!text.contains("<think", ignoreCase = true)) {
-            return parseContentWithXmlToolCalls(text, trace, source).ifEmpty { listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
+            return parseContentWithXmlToolCalls(text, trace, source).ifEmpty {
+                if (allowEmpty) emptyList() else listOf(record(trace, TimelineBlock.Paragraph(text), source))
+            }
         }
 
         val blocks = mutableListOf<TimelineBlock>()
@@ -132,7 +136,7 @@ private const val MaxBlockquoteDepth = 8
             }
         }
 
-        return blocks.ifEmpty { listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
+        return blocks.ifEmpty { if (allowEmpty) emptyList() else listOf(record(trace, TimelineBlock.Paragraph(text), source)) }
     }
 
     private fun parseContentWithXmlToolCalls(
