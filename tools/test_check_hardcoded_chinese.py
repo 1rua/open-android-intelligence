@@ -54,6 +54,39 @@ def test_level_2_suppress_annotation():
     assert exempt_map["函数外未豁免"] is False
 
 
+@pytest.mark.parametrize("declaration", [
+    '@Suppress("HardcodedChineseText") val diagnostic = "诊断"',
+    '@Suppress("HardcodedChineseText") fun diagnostic() = "诊断"',
+    '@Suppress("HardcodedChineseText")\nval diagnostic = "诊断"',
+    '@Suppress("HardcodedChineseText")\nfun diagnostic() =\n    "诊断"',
+    '@Suppress("HardcodedChineseText") fun diagnostic(\n    code: Int\n)\n{\n    report("诊断")\n}',
+])
+def test_declaration_suppression_does_not_reach_next_declaration(declaration):
+    """单行属性和表达式函数的抑制在声明结束时终止，不影响下一个界面声明。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(declaration + '\nfun ui() { Text("界面") }\n')
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    exempt_map = {finding.content: finding.is_exempt for finding in findings}
+    assert exempt_map == {"诊断": True, "界面": False}
+
+
+@pytest.mark.parametrize("declaration", [
+    '@Suppress("HardcodedChineseText") val diagnostic = "诊断"',
+    '@Suppress("HardcodedChineseText") fun diagnostic() = "诊断"',
+    '@Suppress("HardcodedChineseText") fun diagnostic() { report("诊断") }',
+])
+def test_suppression_stops_before_another_statement_on_the_same_line(declaration):
+    """即使下一声明写在同一行，声明注解也不能转成整行豁免。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(declaration + '; fun ui() { Text("界面") }\n')
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert {finding.content: finding.is_exempt for finding in findings} == {"诊断": True, "界面": False}
+
+
 def test_level_3_syntax_patterns():
     code = """
     package com.test
@@ -570,6 +603,48 @@ def test_completed_assertion_does_not_exempt_ui_expression(expression):
 
     assert findings
     assert all(not finding.is_exempt for finding in findings)
+
+
+@pytest.mark.parametrize("expression", [
+    'Text(if (Log.isLoggable("TAG", 1)) "已连接" else "离线")',
+    'render(Log.isLoggable("TAG", 1), "离线")',
+    'Text(if (Log.isLoggable(\n    "TAG", 1\n)) "已连接" else "离线")',
+])
+def test_completed_log_call_does_not_exempt_ui_text(expression):
+    """日志开关的返回值可以参与界面条件，调用结束后的文字不是日志消息。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(f"fun ui() {{ {expression} }}\n")
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert findings
+    assert all(not finding.is_exempt for finding in findings)
+
+
+@pytest.mark.parametrize("expression", [
+    'Text(if (checkNotNull(state) { "状态不能为空" }.ready) "已连接" else "未连接")',
+    'render(checkNotNull(state) { "状态不能为空" }, "未连接")',
+    'render(checkNotNull(state) { buildMessage { "状态不能为空" } }, "未连接")',
+    '''render(
+        checkNotNull(state) { "状态不能为空" },
+        "未连接"
+    )''',
+    '''Text(if (checkNotNull(state) {
+        "状态不能为空"
+    }.ready) "已连接" else "未连接")''',
+])
+def test_closed_assertion_message_lambda_does_not_exempt_outer_text(expression):
+    """消息 lambda 结束后，参数内、条件内和跨行的界面文字都恢复检查。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(f"fun ui() {{ {expression} }}\n")
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    exempt_map = {finding.content: finding.is_exempt for finding in findings}
+    assert exempt_map["状态不能为空"] is True
+    assert exempt_map["未连接"] is False
+    if "已连接" in exempt_map:
+        assert exempt_map["已连接"] is False
 
 
 @pytest.mark.parametrize("code", [

@@ -43,15 +43,6 @@ SYNTAX_CHECK_REQUIRE_PATTERN = re.compile(r"\b(?:check|require|checkNotNull|requ
 SYNTAX_THROW_PATTERN = re.compile(r"\bthrow\s+[A-Za-z0-9_.]*(?:\(|\s+|$)")
 SYNTAX_DEPRECATED_PATTERN = re.compile(r"@Deprecated\s*\(")
 
-CHECK_REQUIRE_FUNC_NAMES = {
-    "check",
-    "require",
-    "checkNotNull",
-    "requireNotNull",
-    "assert",
-    "error",
-}
-
 CONTINUATION_OPERATORS = (",", "=", "+", "-", "*", "/", "%", "&&", "||", "?:", "->", ".", "\\", "(")
 
 
@@ -147,261 +138,6 @@ def mask_kotlin_non_code(text: str) -> str:
     return "".join(masked)
 
 
-def strip_string_literals_and_comments(s: str) -> str:
-    """去除行内的双引号字符串字面量、三引号多行字符串、单引号字符字面量与注释，保留纯语法骨架。"""
-    out = []
-    i = 0
-    n = len(s)
-    block_comment = 0
-
-    while i < n:
-        if block_comment > 0:
-            if s[i : i + 2] == "*/":
-                block_comment -= 1
-                i += 2
-            elif s[i : i + 2] == "/*":
-                block_comment += 1
-                i += 2
-            else:
-                i += 1
-            continue
-
-        # 块注释起止 (支持嵌套)
-        if s[i : i + 2] == "/*":
-            block_comment += 1
-            i += 2
-            continue
-
-        # 单行注释起止 (仅在字符串及字符字面量外部有效)
-        if s[i : i + 2] == "//":
-            break
-
-        # 三引号原始字符串: """..."""
-        if s[i : i + 3] == '"""':
-            end_idx = s.find('"""', i + 3)
-            out.append('""')
-            if end_idx == -1:
-                break
-            i = end_idx + 3
-            continue
-
-        # 普通单行字符串: "..." (感知模板插值与内部嵌套字符串)
-        if s[i] == '"':
-            j = i + 1
-            expr_depth = 0
-            while j < n:
-                if s[j] == "\n":
-                    break
-                if s[j] == "\\":
-                    j += 2
-                    continue
-                if expr_depth == 0:
-                    if s[j] == '"':
-                        j += 1
-                        break
-                    elif s[j : j + 2] == "${":
-                        expr_depth = 1
-                        j += 2
-                        continue
-                    else:
-                        j += 1
-                        continue
-                else:
-                    # 处于 ${ ... } 模板表达式内部
-                    if s[j] == "{":
-                        expr_depth += 1
-                        j += 1
-                    elif s[j] == "}":
-                        expr_depth -= 1
-                        j += 1
-                    elif s[j] == '"':
-                        k = j + 1
-                        while k < n and s[k] != "\n":
-                            if s[k] == "\\":
-                                k += 2
-                            elif s[k] == '"':
-                                k += 1
-                                break
-                            else:
-                                k += 1
-                        j = k
-                    elif s[j] == "'":
-                        k = j + 1
-                        while k < n and s[k] != "\n":
-                            if s[k] == "\\":
-                                k += 2
-                            elif s[k] == "'":
-                                k += 1
-                                break
-                            else:
-                                k += 1
-                        j = k
-                    else:
-                        j += 1
-            out.append('""')
-            i = j
-            continue
-
-        # 字符字面量 (如 '\'' 或 '\"')
-        if s[i] == "'":
-            j = i + 1
-            escape = False
-            while j < n:
-                if s[j] == "\n":
-                    break
-                if escape:
-                    escape = False
-                    j += 1
-                elif s[j] == "\\":
-                    escape = True
-                    j += 1
-                elif s[j] == "'":
-                    j += 1
-                    break
-                else:
-                    j += 1
-            out.append("''")
-            i = j
-            continue
-
-        out.append(s[i])
-        i += 1
-
-    return "".join(out)
-
-
-def strip_outer_closed_blocks(prefix: str) -> str:
-    """若前缀在顶层（圆括号深度为 0）包含闭合花括号 '}'，截断丢弃最后一个闭合代码块之前的内容。"""
-    paren_depth = 0
-    last_block_close = -1
-    for i, ch in enumerate(prefix):
-        if ch == "(":
-            paren_depth += 1
-        elif ch == ")":
-            if paren_depth > 0:
-                paren_depth -= 1
-        elif ch == "}" and paren_depth == 0:
-            last_block_close = i
-    if last_block_close != -1:
-        return prefix[last_block_close + 1 :]
-    return prefix
-
-
-def is_brace_check_require_lambda(lines: list[str], brace_line_idx: int, prefix_before_brace: str) -> bool:
-    """判断给定 '{' 是否属于 check/require/checkNotNull/requireNotNull/assert/error 的尾随 lambda 或参数 lambda。
-    向上回溯匹配闭合的圆括号链与函数调用标识符，严格阻断 catch/try/if/while/for 等控制块。
-    """
-    chars_rev = list(reversed(prefix_before_brace))
-    line_idx = brace_line_idx
-
-    def get_next_char() -> str | None:
-        nonlocal line_idx, chars_rev
-        while True:
-            if chars_rev:
-                return chars_rev.pop(0)
-            line_idx -= 1
-            if line_idx >= 0 and line_idx >= max(-1, brace_line_idx - 15):
-                clean_line = strip_string_literals_and_comments(lines[line_idx])
-                chars_rev = list(reversed(clean_line))
-            else:
-                return None
-
-    ch = get_next_char()
-    while ch is not None and ch.isspace():
-        ch = get_next_char()
-
-    if ch is None:
-        return False
-
-    if ch == ")":
-        paren_depth = 1
-        brace_depth = 0
-        while True:
-            ch = get_next_char()
-            if ch is None:
-                return False
-            if ch == "}":
-                brace_depth += 1
-            elif ch == "{":
-                if brace_depth > 0:
-                    brace_depth -= 1
-            elif brace_depth == 0:
-                if ch == ")":
-                    paren_depth += 1
-                elif ch == "(":
-                    paren_depth -= 1
-                    if paren_depth == 0:
-                        break
-                elif ch in (";", "}"):
-                    return False
-
-        ch = get_next_char()
-        while ch is not None and ch.isspace():
-            ch = get_next_char()
-
-        ident_chars = []
-        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
-            ident_chars.append(ch)
-            ch = get_next_char()
-
-        func_name = "".join(reversed(ident_chars)).split(".")[-1]
-        if func_name not in CHECK_REQUIRE_FUNC_NAMES:
-            return False
-
-        # 检查标识符前是否有控制流关键字 (如 if (checkNotNull(x)) {)
-        while ch is not None and ch.isspace():
-            ch = get_next_char()
-        prefix_chars = []
-        while ch is not None and ch.isalnum():
-            prefix_chars.append(ch)
-            ch = get_next_char()
-        prefix_keyword = "".join(reversed(prefix_chars))
-        if prefix_keyword in ("if", "while", "for", "when", "catch"):
-            return False
-
-        return True
-
-    elif ch.isalnum() or ch == "_":
-        ident_chars = [ch]
-        ch = get_next_char()
-        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
-            ident_chars.append(ch)
-            ch = get_next_char()
-
-        func_name = "".join(reversed(ident_chars)).split(".")[-1]
-        return func_name in CHECK_REQUIRE_FUNC_NAMES
-
-    elif ch == ",":
-        paren_depth = 0
-        while True:
-            ch = get_next_char()
-            if ch is None:
-                return False
-            if ch == ")":
-                paren_depth += 1
-            elif ch == "(":
-                if paren_depth > 0:
-                    paren_depth -= 1
-                else:
-                    break
-            elif ch in (";", "}") and paren_depth == 0:
-                return False
-
-        ch = get_next_char()
-        while ch is not None and ch.isspace():
-            ch = get_next_char()
-
-        ident_chars = []
-        while ch is not None and (ch.isalnum() or ch in ("_", ".")):
-            ident_chars.append(ch)
-            ch = get_next_char()
-
-        func_name = "".join(reversed(ident_chars)).split(".")[-1]
-        return func_name in CHECK_REQUIRE_FUNC_NAMES
-
-    return False
-
-
 class HardcodedFinding:
     def __init__(
         self,
@@ -428,189 +164,117 @@ class HardcodedFinding:
         return f"[{self.relative_path}:{self.line_number}:{self.content}]"
 
 
-def compute_suppression_lines(lines: list[str]) -> set[int] | str:
-    """计算 Level 2 @Suppress 所覆盖的代码行号集合。若全文件抑制则返回 'ALL'。"""
-    code_lines = mask_kotlin_non_code("\n".join(lines)).split("\n")
-
-    def has_annotation(pattern: re.Pattern, index: int) -> bool:
-        return any(code_lines[index][match.start()] == "@" for match in pattern.finditer(lines[index]))
-
-    # 检查文件级 @file:Suppress
-    for index in range(min(50, len(lines))):
-        if has_annotation(FILE_SUPPRESS_PATTERN, index):
+def compute_suppression_spans(text: str) -> list[tuple[int, int]] | str:
+    """按声明的字符区间计算注解抑制，避免把同行或下一行的其他声明一并豁免。"""
+    code = mask_kotlin_non_code(text)
+    for match in FILE_SUPPRESS_PATTERN.finditer(text):
+        if code[match.start()] == "@":
             return "ALL"
 
-    suppressed_lines: set[int] = set()
-    for idx in range(len(lines)):
-        if has_annotation(BLOCK_SUPPRESS_PATTERN, idx):
-            brace_count = 0
-            found_first_brace = False
-            for j in range(idx, len(lines)):
-                code_part = strip_string_literals_and_comments(lines[j])
-                suppressed_lines.add(j + 1)
-                for ch in code_part:
-                    if ch == "{":
-                        brace_count += 1
-                        found_first_brace = True
-                    elif ch == "}":
-                        brace_count -= 1
-                if found_first_brace and brace_count == 0:
-                    break
-                # 单行或无花括号声明语句 (如 val x = "...")
-                if not found_first_brace and j > idx:
-                    stripped = code_part.strip()
-                    if not stripped.endswith(("=", "+", "-", "&&", "||", ",", "\\")):
-                        break
-    return suppressed_lines
-
-
-def count_unclosed_delimiters(syntax_str: str) -> tuple[int, int]:
-    """计算未闭合的圆括号 ( 与方括号 [ 数量。"""
-    parens = 0
-    brackets = 0
-    for ch in syntax_str:
-        if ch == "(":
-            parens += 1
-        elif ch == ")":
-            parens = max(0, parens - 1)
-        elif ch == "[":
-            brackets += 1
-        elif ch == "]":
-            brackets = max(0, brackets - 1)
-    return parens, brackets
-
-
-def check_syntax_patterns(stmt: str) -> tuple[bool, str | None]:
-    """检查语句是否匹配 4 类语法豁免正则。"""
-    if SYNTAX_LOG_PATTERN.search(stmt):
-        return True, "Log.*"
-    for match in SYNTAX_CHECK_REQUIRE_PATTERN.finditer(stmt):
-        # 断言的首个参数是普通业务值；只有消息参数、尾随 lambda 和 error 消息可豁免。
-        opening = stmt[match.end() - 1]
-        closing = ")" if opening == "(" else "}"
-        depth = 0
-        brackets = 0
-        braces = 0
-        argument_index = 0
-        for char in stmt[match.end() - 1 :]:
-            if char == opening:
-                depth += 1
-            elif char == closing:
-                depth -= 1
-                if depth == 0:
-                    break
-            elif char == "[":
-                brackets += 1
-            elif char == "]":
-                brackets -= 1
-            elif char == "{":
-                braces += 1
-            elif char == "}":
-                braces -= 1
-            elif char == "," and depth == 1 and brackets == 0 and braces == 0:
-                argument_index += 1
-        function_name = match.group(0).split("(", 1)[0].split("{", 1)[0].strip()
-        if depth > 0 and (opening == "{" or function_name == "error" or argument_index > 0):
-            return True, "check/require/assert/error"
-    if SYNTAX_THROW_PATTERN.search(stmt):
-        return True, "throw"
-    if SYNTAX_DEPRECATED_PATTERN.search(stmt):
-        return True, "@Deprecated"
-    return False, None
-
-
-def is_syntax_pattern_exempt(lines: list[str], line_idx: int, prefix_on_line: str | None = None) -> tuple[bool, str | None]:
-    """计算 Level 3 语法模式自动豁免 (严格阻断跨代码块与跨控制流语句的向上回溯)。"""
-    raw_prefix = prefix_on_line if prefix_on_line is not None else lines[line_idx]
-    clean_prefix = strip_string_literals_and_comments(raw_prefix).rstrip()
-
-    # 1. 顶层块闭合截断：丢弃顶层 '}' 之前的一切内容（保留参数内 lambda）
-    clean_prefix = strip_outer_closed_blocks(clean_prefix)
-
-    # 2. 块开启截断：当前行前缀若包含 '{'，需判断是否属于 check/require 等合法尾随 lambda
-    can_backtrack = True
-    if "{" in clean_prefix:
-        before_brace, after_brace = clean_prefix.rsplit("{", 1)
-        if is_brace_check_require_lambda(lines, line_idx, before_brace):
-            return True, "check/require/assert/error"
-        # 否则 '{' 属于控制块 (catch/try/if/lambda/函数体)，截断且严禁向上跨越该作用域边界
-        curr_prefix = after_brace
-        can_backtrack = False
-    else:
-        curr_prefix = clean_prefix
-
-    # 3. 同行分号隔离：若当前语句前存在分号 ';'，截断丢弃分号前的前序语句，并禁止向上回溯跨越语句边界
-    if ";" in curr_prefix:
-        curr_prefix = curr_prefix.rsplit(";", 1)[1]
-        can_backtrack = False
-
-    # 4. 控制流关键字边界：catch, finally, try 等关键字禁止向上穿透
-    if re.search(r"\b(?:catch|finally|try)\b", curr_prefix):
-        can_backtrack = False
-
-    # 5. 当前行局部检查
-    is_ex, reason = check_syntax_patterns(curr_prefix.strip())
-    if is_ex:
-        return True, reason
-
-    if not can_backtrack:
-        return False, None
-
-    # 6. 向上回溯当前语句的前缀 (多行语句场景)
-    stmt_parts = [curr_prefix.strip()]
-    curr_unclosed_parens, curr_unclosed_brackets = count_unclosed_delimiters(curr_prefix)
-
-    for i in range(line_idx - 1, max(-1, line_idx - 15), -1):
-        clean = strip_string_literals_and_comments(lines[i]).strip()
-        if not clean:
+    pairs = kotlin_delimiter_pairs(code)
+    lexical_spans = {start: (kind, end) for kind, start, end in kotlin_non_code_spans(text)}
+    declarations = re.compile(r"\b(?:val|var|fun|class|interface|object|typealias)\b")
+    suppressed: list[tuple[int, int]] = []
+    for annotation in BLOCK_SUPPRESS_PATTERN.finditer(text):
+        if code[annotation.start()] != "@":
             continue
-
-        # 前序行若包含闭合大括号 '}'（顶层代码块），严禁向上跨越代码块屏障
-        if strip_outer_closed_blocks(clean) != clean:
-            break
-
-        # 前序行分号截断
-        has_semicolon = ";" in clean
-        if has_semicolon:
-            clean = clean.rsplit(";", 1)[1].strip()
-            if not clean:
+        declaration = declarations.search(code, annotation.end())
+        if declaration is None or any(
+            kind in {"string", "char"} and annotation.end() <= start < declaration.start()
+            for start, (kind, _) in lexical_spans.items()
+        ):
+            continue
+        index = declaration.start()
+        tail = ""
+        while index < len(code):
+            if index in lexical_spans:
+                kind, end = lexical_spans[index]
+                if kind in {"string", "char"}:
+                    tail += "字面量"
+                index = end
+                continue
+            char = code[index]
+            if char in ";}":
                 break
-
-        # 遇到开启块 '{'
-        if "{" in clean:
-            b_before, b_after = clean.rsplit("{", 1)
-            if is_brace_check_require_lambda(lines, i, b_before):
-                return True, "check/require/assert/error"
-            break
-
-        # 遇到声明或控制流关键字，且非跨行表达式延续，终止向上回溯
-        if re.search(r"^\s*(?:val|var|fun|class|interface|object|return|if|for|while|when|catch|finally|try)\b", clean):
-            p_parens, p_brackets = count_unclosed_delimiters(clean)
-            if p_parens <= 0 and p_brackets <= 0 and not clean.endswith(CONTINUATION_OPERATORS):
+            if char in "([{":
+                if index not in pairs:
+                    break
+                end = pairs[index] + 1
+                # 块函数和类的声明在主体结束时终止；表达式函数仍继续处理表达式。
+                if char == "{" and declaration.group() in {"fun", "class", "interface", "object"} and "=" not in tail:
+                    index = end
+                    break
+                tail += code[end - 1]
+                index = end
+                continue
+            if char == "\n":
+                next_code = code[index + 1 :].lstrip()
+                if tail.rstrip().endswith(CONTINUATION_OPERATORS) or next_code.startswith(("{", ".", "?.")):
+                    index += 1
+                    continue
                 break
+            tail += char
+            index += 1
+        suppressed.append((annotation.start(), index))
+    return suppressed
 
-        p_parens, p_brackets = count_unclosed_delimiters(clean)
-        prev_is_continuation = (
-            p_parens > 0
-            or p_brackets > 0
-            or clean.endswith(CONTINUATION_OPERATORS)
-            or curr_prefix.strip().startswith((".", "->"))
-            or curr_unclosed_parens < 0
-        )
 
-        if not prev_is_continuation:
-            break
+def kotlin_delimiter_pairs(code: str) -> dict[int, int]:
+    """按词法视图匹配括号，记录真实调用和 lambda 的结束位置。"""
+    stack: list[tuple[str, int]] = []
+    pairs: dict[int, int] = {}
+    closing_to_opening = {")": "(", "]": "[", "}": "{"}
+    for index, char in enumerate(code):
+        if char in "([{":
+            stack.append((char, index))
+        elif char in closing_to_opening and stack and stack[-1][0] == closing_to_opening[char]:
+            _, opening = stack.pop()
+            pairs[opening] = index
+    return pairs
 
-        stmt_parts.append(clean)
-        combined = " ".join(reversed(stmt_parts))
-        is_ex, reason = check_syntax_patterns(combined)
-        if is_ex:
-            return True, reason
 
-        if has_semicolon:
-            break
+def syntax_exemption_spans(text: str) -> list[tuple[int, int, str]]:
+    """只豁免实际调用参数或消息 lambda 内的文字，闭合后恢复界面文案检查。"""
+    code = mask_kotlin_non_code(text)
+    pairs = kotlin_delimiter_pairs(code)
+    spans: list[tuple[int, int, str]] = []
 
-    return False, None
+    def add_span(opening: int, reason: str, content_start: int | None = None):
+        if opening in pairs:
+            spans.append((opening + 1 if content_start is None else content_start, pairs[opening], reason))
+
+    for match in SYNTAX_LOG_PATTERN.finditer(code):
+        add_span(match.end() - 1, "Log.*")
+
+    for match in SYNTAX_CHECK_REQUIRE_PATTERN.finditer(code):
+        opening = match.end() - 1
+        if opening not in pairs:
+            continue
+        closing = pairs[opening]
+        function_name = match.group(0).split("(", 1)[0].split("{", 1)[0].strip()
+        if code[opening] == "{" or function_name == "error":
+            add_span(opening, "check/require/assert/error")
+        else:
+            # 第一实参是业务值，只有之后的消息参数才属于自动豁免范围。
+            index = opening + 1
+            while index < closing:
+                if code[index] == ",":
+                    add_span(opening, "check/require/assert/error", index + 1)
+                    break
+                index = pairs[index] + 1 if index in pairs else index + 1
+
+            trailing = closing + 1
+            while trailing < len(code) and code[trailing].isspace():
+                trailing += 1
+            if trailing < len(code) and code[trailing] == "{":
+                add_span(trailing, "check/require/assert/error")
+
+    for pattern, reason in ((SYNTAX_THROW_PATTERN, "throw"), (SYNTAX_DEPRECATED_PATTERN, "@Deprecated")):
+        for match in pattern.finditer(code):
+            if code[match.end() - 1] == "(":
+                add_span(match.end() - 1, reason)
+    return spans
+
 
 def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
     """深度解析单个 Kotlin 文件的字符串字面量并标记豁免状态。"""
@@ -624,12 +288,20 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
     clean_lines = [l.rstrip("\r\n") for l in lines]
 
     # Level 2 作用域预计算
-    suppression = compute_suppression_lines(clean_lines)
+    suppression = compute_suppression_spans(text)
     if suppression == "ALL":
         return []
 
+    def is_suppressed_at(position: int) -> bool:
+        return any(start <= position < end for start, end in suppression)
+
     lexical_spans = kotlin_non_code_spans(text)
     char_ends = {start: end for kind, start, end in lexical_spans if kind == "char"}
+    syntax_spans = syntax_exemption_spans(text)
+
+    def syntax_exemption_at(position: int) -> tuple[bool, str | None]:
+        reason = next((reason for start, end, reason in syntax_spans if start <= position < end), None)
+        return reason is not None, reason
 
     # Level 1 只识别真实单行注释，URL 或示例字符串中的标记不构成豁免。
     line_level1_exempt: dict[int, bool] = {}
@@ -694,11 +366,9 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
             content = text[i + 3 : end_idx]
 
             if CHINESE_CHAR_PATTERN.search(content):
-                is_suppressed = str_start_line in suppression
+                is_suppressed = is_suppressed_at(i)
                 is_l1 = any(line_level1_exempt.get(l, False) for l in range(str_start_line, line + content.count("\n") + 1))
-                last_nl = text.rfind("\n", 0, i)
-                prefix_on_line = text[last_nl + 1 : i] if last_nl != -1 else text[:i]
-                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1, prefix_on_line)
+                is_l3, l3_reason = syntax_exemption_at(i)
 
                 is_exempt = is_suppressed or is_l1 or is_l3
                 reason = "suppress" if is_suppressed else ("inline_comment" if is_l1 else (f"syntax_{l3_reason}" if is_l3 else None))
@@ -767,7 +437,7 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
                             k += 1
                         nested_content = "".join(nested_chars)
                         if CHINESE_CHAR_PATTERN.search(nested_content):
-                            nested_strings.append((nested_start_line, nested_content))
+                            nested_strings.append((nested_start_line, nested_content, j))
                         j = k
                     elif text[j] == "'":
                         k = j + 1
@@ -788,23 +458,19 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
             outer_text_only = "".join(outer_chunks)
 
             # 1. 记录嵌套在模板内的中文字符串
-            for nest_line, nest_text in nested_strings:
-                is_suppressed = nest_line in suppression
+            for nest_line, nest_text, nest_position in nested_strings:
+                is_suppressed = is_suppressed_at(nest_position)
                 is_l1 = line_level1_exempt.get(nest_line, False)
-                last_nl = text.rfind("\n", 0, i)
-                prefix_on_line = text[last_nl + 1 : i] if last_nl != -1 else text[:i]
-                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, nest_line - 1, prefix_on_line)
+                is_l3, l3_reason = syntax_exemption_at(nest_position)
                 is_exempt = is_suppressed or is_l1 or is_l3
                 reason = "suppress" if is_suppressed else ("inline_comment" if is_l1 else (f"syntax_{l3_reason}" if is_l3 else None))
                 findings.append(HardcodedFinding(file_path, nest_line, nest_text, is_exempt, reason))
 
             # 2. 若外层字符串字面量自身包含中文，记录外层字符串
             if CHINESE_CHAR_PATTERN.search(outer_text_only):
-                is_suppressed = str_start_line in suppression
+                is_suppressed = is_suppressed_at(i)
                 is_l1 = line_level1_exempt.get(str_start_line, False)
-                last_nl = text.rfind("\n", 0, i)
-                prefix_on_line = text[last_nl + 1 : i] if last_nl != -1 else text[:i]
-                is_l3, l3_reason = is_syntax_pattern_exempt(clean_lines, str_start_line - 1, prefix_on_line)
+                is_l3, l3_reason = syntax_exemption_at(i)
                 is_exempt = is_suppressed or is_l1 or is_l3
                 reason = "suppress" if is_suppressed else ("inline_comment" if is_l1 else (f"syntax_{l3_reason}" if is_l3 else None))
                 findings.append(HardcodedFinding(file_path, str_start_line, full_outer, is_exempt, reason))

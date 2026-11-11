@@ -169,7 +169,13 @@ val wrongType = R.string.labels
     assert [violation.res_name for violation in violations] == ["string.labels"]
 
 
-def test_same_name_in_another_namespace_does_not_satisfy_a_reference(resource_values_dir):
+@pytest.mark.parametrize("reference", [
+    'val reference = R.string.only_in_other_module',
+    'import com.example.ui.R\nval reference = R.string.only_in_other_module',
+    'import com.example.ui.R as UiR\nval reference = UiR.string.only_in_other_module',
+    'val reference = com.example.ui.R.string.only_in_other_module',
+])
+def test_same_name_in_another_namespace_does_not_satisfy_a_reference(resource_values_dir, reference):
     other_module = Path(tempfile.mkdtemp(prefix="oai-other-resource-gate-"))
     (other_module / "build.gradle.kts").write_text('android { namespace = "com.example.other" }', encoding="utf-8")
     other_values = other_module / "src/main/res/values"
@@ -178,11 +184,27 @@ def test_same_name_in_another_namespace_does_not_satisfy_a_reference(resource_va
         '<resources><string name="only_in_other_module">其他模块文案</string></resources>', encoding="utf-8"
     )
     source = resource_values_dir.parent / "Namespace.kt"
-    source.write_text('import com.example.ui.R\nval reference = R.string.only_in_other_module', encoding="utf-8")
+    source.write_text(reference, encoding="utf-8")
 
     violations = validator.validate_resource_references([source], [resource_values_dir, other_values])
 
     assert [violation.res_name for violation in violations] == ["string.only_in_other_module"]
+
+
+@pytest.mark.parametrize("reference", [
+    'val title = R.string.app_title',
+    'import com.example.ui.R\nval title = R.string.app_title',
+    'val title = com.example.ui.R.string.app_title',
+])
+def test_module_own_resources_work_with_implicit_or_explicit_r(resource_values_dir, reference):
+    """App 自己的普通资源按本模块命名空间检查，显式和隐式 R 都应通过。"""
+    (resource_values_dir / "strings.xml").write_text(
+        '<resources><string name="app_title">应用标题</string></resources>', encoding="utf-8"
+    )
+    source = resource_values_dir.parent / "App.kt"
+    source.write_text(reference, encoding="utf-8")
+
+    assert validator.validate_resource_references([source], [resource_values_dir]) == []
 
 
 @pytest.mark.parametrize("resource_name, expected_exit", [("existing", 0), ("missing", 1)])

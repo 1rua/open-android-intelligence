@@ -270,15 +270,26 @@ def validate_directories(res_dirs: list[Path]) -> list[ResourceViolation]:
 
 def validate_resource_references(source_paths: list[Path], res_dirs: list[Path]) -> list[ResourceViolation]:
     """校对真实源码引用；复用中文扫描器的词法视图，忽略注释与字符串中的示例。"""
-    definitions: dict[str, set[str]] = defaultdict(set)
     namespace_definitions: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    namespace_cache: dict[Path, str | None] = {}
 
     def read_namespace(build_file: Path) -> str | None:
+        if build_file in namespace_cache:
+            return namespace_cache[build_file]
         content = build_file.read_text(encoding="utf-8")
         code = mask_kotlin_non_code(content)
         for match in re.finditer(r'\bnamespace\s*=\s*"([\w.]+)"', content):
             if code[match.start()] == "n":
+                namespace_cache[build_file] = match.group(1)
                 return match.group(1)
+        namespace_cache[build_file] = None
+        return None
+
+    def namespace_for_path(path: Path) -> str | None:
+        for parent in path.parents:
+            build_file = parent / "build.gradle.kts"
+            if build_file.is_file():
+                return read_namespace(build_file)
         return None
 
     # 即便某模块的 values/ 被全部移除，其 R 仍属于本工程，引用必须报缺项。
@@ -288,14 +299,9 @@ def validate_resource_references(source_paths: list[Path], res_dirs: list[Path])
             namespace_definitions.setdefault(namespace, defaultdict(set))
 
     for res_dir in res_dirs:
-        namespace = None
-        for parent in res_dir.parents:
-            build_file = parent / "build.gradle.kts"
-            if build_file.is_file():
-                namespace = read_namespace(build_file)
-                if namespace:
-                    namespace_definitions.setdefault(namespace, defaultdict(set))
-                break
+        namespace = namespace_for_path(res_dir)
+        if namespace:
+            namespace_definitions.setdefault(namespace, defaultdict(set))
         for xml_file in sorted(res_dir.glob("*.xml")):
             try:
                 root = ET.fromstring(xml_file.read_text(encoding="utf-8"))
@@ -308,7 +314,6 @@ def validate_resource_references(source_paths: list[Path], res_dirs: list[Path])
                     resource_type = "array"
                 name = element.get("name")
                 if resource_type in {"string", "plurals", "array"} and name:
-                    definitions[resource_type].add(name)
                     if namespace:
                         namespace_definitions[namespace][resource_type].add(name)
 
@@ -321,16 +326,28 @@ def validate_resource_references(source_paths: list[Path], res_dirs: list[Path])
             continue
         code = mask_kotlin_non_code(text)
         aliases = {match.group(2) or "R": match.group(1) for match in RESOURCE_IMPORT_PATTERN.finditer(code)}
+        source_namespace = namespace_for_path(source)
+        if source_namespace:
+            namespace_definitions.setdefault(source_namespace, defaultdict(set))
         for match in RESOURCE_REFERENCE_PATTERN.finditer(code):
             owner = re.sub(r"\s+", "", match.group(1))
             namespace = aliases.get(owner, owner[:-2] if owner.endswith(".R") else None)
+            if owner == "R" and namespace is None:
+                namespace = source_namespace
             if namespace is not None and namespace not in namespace_definitions:
                 # 第三方库与系统资源由其 AAR/Android SDK 提供，不属于本仓库 XML。
                 continue
             if namespace is None and owner != "R":
                 continue
             resource_type, name = match.group(2, 3)
-            available = namespace_definitions[namespace] if namespace else definitions
+            if namespace is None:
+                line = text.count("\n", 0, match.start()) + 1
+                violations.append(ResourceViolation(
+                    "RULE_5_RESOURCE_NAMESPACE_UNKNOWN", source, line, f"{resource_type}.{name}",
+                    "无法确认隐式 R 所属模块的 namespace，不能使用其他模块的资源作为兜底。",
+                ))
+                continue
+            available = namespace_definitions[namespace]
             if name not in available[resource_type]:
                 line = text.count("\n", 0, match.start()) + 1
                 violations.append(ResourceViolation(
