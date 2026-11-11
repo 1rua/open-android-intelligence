@@ -1,0 +1,410 @@
+[
+  {
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 1481.169,
+      "case_seconds_sum": 1478.328,
+      "first_method_seconds_sum": 744.671
+    },
+    "gradle_profile": {
+      "status": "measured",
+      "selection": "explicit_file",
+      "reports": [
+        {
+          "file": "profile-2026-11-11-07-14-02.html",
+          "summary_seconds": {
+            "Total Build Time": 735.09,
+            "Startup": 4.404,
+            "Settings and buildSrc": 0.636,
+            "Loading Projects": 0.175,
+            "Configuring Projects": 3.833,
+            "Artifact Transforms": 18.005,
+            "Task Execution": 985.67
+          },
+          "tasks": [
+            {
+              "task": ":app:testFullDebugUnitTest",
+              "seconds": 498.46,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugKotlin",
+              "seconds": 44.906,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugUnitTestKotlin",
+              "seconds": 41.469,
+              "result": ""
+            }
+          ]
+        }
+      ],
+      "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"
+    },
+    "host_metrics": {
+      "status": "measured",
+      "sample_count": 726,
+      "host_cpu_busy_percent_peak": 100.0,
+      "host_cpu_busy_percent_mean": 92.65431601665598,
+      "host_mem_available_bytes_min": 9334034432,
+      "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"
+    },
+    "executor_bootstrap": {
+      "status": "measured",
+      "meaning": "fork_and_worker_bootstrap",
+      "fork_requests": 166,
+      "workers_started_tests": 108,
+      "unmatched_requests": 58,
+      "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"
+    },
+    "robolectric": {
+      "status": "measured",
+      "report_count": 1345,
+      "reporter_created_count": 99,
+      "initialization": {
+        "status": "measured",
+        "elapsed_ns_sum": 672332745414,
+        "count": 1345
+      },
+      "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"
+    },
+    "gc": {
+      "status": "measured",
+      "pause_count": 2332,
+      "pause_seconds_sum": 40.408476,
+      "limits": "仅 JDK 日志记录的 GC 停顿；并发 GC 阶段不加入停顿合计，不能用它推算测试主体时间。"
+    },
+    "configuration": "default-4",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    }
+  },
+  {
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 1051.593,
+      "case_seconds_sum": 1050.087,
+      "first_method_seconds_sum": 513.119
+    },
+    "comparison": {
+      "status": "passed",
+      "missing": [],
+      "added": [],
+      "new_skips": [],
+      "unexpected_baseline_skips": [],
+      "expected_skip_changed": []
+    },
+    "gradle_profile": {
+      "status": "measured",
+      "selection": "explicit_file",
+      "reports": [
+        {
+          "file": "profile-2026-11-11-07-14-07.html",
+          "summary_seconds": {
+            "Total Build Time": 698.85,
+            "Startup": 5.198,
+            "Settings and buildSrc": 0.78,
+            "Loading Projects": 0.238,
+            "Configuring Projects": 5.174,
+            "Artifact Transforms": 21.894,
+            "Task Execution": 1008.4
+          },
+          "tasks": [
+            {
+              "task": ":app:testFullDebugUnitTest",
+              "seconds": 392.08,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugKotlin",
+              "seconds": 58.908,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugUnitTestKotlin",
+              "seconds": 57.858,
+              "result": ""
+            }
+          ]
+        }
+      ],
+      "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"
+    },
+    "host_metrics": {
+      "status": "measured",
+      "sample_count": 691,
+      "host_cpu_busy_percent_peak": 100.0,
+      "host_cpu_busy_percent_mean": 86.39809114641895,
+      "host_mem_available_bytes_min": 9198735360,
+      "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"
+    },
+    "executor_bootstrap": {
+      "status": "measured",
+      "meaning": "fork_and_worker_bootstrap",
+      "fork_requests": 166,
+      "workers_started_tests": 76,
+      "unmatched_requests": 90,
+      "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"
+    },
+    "robolectric": {
+      "status": "measured",
+      "report_count": 1345,
+      "reporter_created_count": 99,
+      "initialization": {
+        "status": "measured",
+        "elapsed_ns_sum": 473676205753,
+        "count": 1345
+      },
+      "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"
+    },
+    "gc": {
+      "status": "measured",
+      "pause_count": 2313,
+      "pause_seconds_sum": 30.786394,
+      "limits": "仅 JDK 日志记录的 GC 停顿；并发 GC 阶段不加入停顿合计，不能用它推算测试主体时间。"
+    },
+    "configuration": "startup-4",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    }
+  },
+  {
+    "xml_summary": {
+      "xml_files": 166,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 528.406,
+      "case_seconds_sum": 527.659,
+      "first_method_seconds_sum": 222.325
+    },
+    "comparison": {
+      "status": "passed",
+      "missing": [],
+      "added": [],
+      "new_skips": [],
+      "unexpected_baseline_skips": [],
+      "expected_skip_changed": []
+    },
+    "gradle_profile": {
+      "status": "measured",
+      "selection": "explicit_file",
+      "reports": [
+        {
+          "file": "profile-2026-11-11-07-18-42.html",
+          "summary_seconds": {
+            "Total Build Time": 507.95,
+            "Startup": 4.264,
+            "Settings and buildSrc": 0.513,
+            "Loading Projects": 0.139,
+            "Configuring Projects": 3.435,
+            "Artifact Transforms": 5.682,
+            "Task Execution": 650.0
+          },
+          "tasks": [
+            {
+              "task": ":app:testFullDebugUnitTest",
+              "seconds": 364.99,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugKotlin",
+              "seconds": 54.184,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugUnitTestKotlin",
+              "seconds": 35.404,
+              "result": ""
+            }
+          ]
+        }
+      ],
+      "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"
+    },
+    "host_metrics": {
+      "status": "measured",
+      "sample_count": 507,
+      "host_cpu_busy_percent_peak": 99.25742574257426,
+      "host_cpu_busy_percent_mean": 58.85710892627367,
+      "host_mem_available_bytes_min": 10621952000,
+      "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"
+    },
+    "executor_bootstrap": {
+      "status": "measured",
+      "meaning": "fork_and_worker_bootstrap",
+      "fork_requests": 166,
+      "workers_started_tests": 46,
+      "unmatched_requests": 120,
+      "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"
+    },
+    "robolectric": {
+      "status": "measured",
+      "report_count": 1345,
+      "reporter_created_count": 99,
+      "initialization": {
+        "status": "measured",
+        "elapsed_ns_sum": 205703183887,
+        "count": 1345
+      },
+      "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"
+    },
+    "gc": {
+      "status": "measured",
+      "pause_count": 2327,
+      "pause_seconds_sum": 12.495565,
+      "limits": "仅 JDK 日志记录的 GC 停顿；并发 GC 阶段不加入停顿合计，不能用它推算测试主体时间。"
+    },
+    "configuration": "startup-2",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    }
+  },
+  {
+    "xml_summary": {
+      "xml_files": 170,
+      "classes": 166,
+      "cases": 1840,
+      "skipped": 1,
+      "failures": 0,
+      "suite_seconds_sum": 990.232,
+      "case_seconds_sum": 988.607,
+      "first_method_seconds_sum": 473.735
+    },
+    "comparison": {
+      "status": "passed",
+      "missing": [],
+      "added": [],
+      "new_skips": [],
+      "unexpected_baseline_skips": [],
+      "expected_skip_changed": []
+    },
+    "gradle_profile": {
+      "status": "measured",
+      "selection": "explicit_file",
+      "reports": [
+        {
+          "file": "profile-2026-11-11-07-18-47.html",
+          "summary_seconds": {
+            "Total Build Time": 596.62,
+            "Startup": 5.08,
+            "Settings and buildSrc": 0.767,
+            "Loading Projects": 0.251,
+            "Configuring Projects": 5.011,
+            "Artifact Transforms": 10.102,
+            "Task Execution": 816.25
+          },
+          "tasks": [
+            {
+              "task": ":app:testFullDebugUnitTest",
+              "seconds": 376.35,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugKotlin",
+              "seconds": 82.36,
+              "result": ""
+            },
+            {
+              "task": ":app:compileFullDebugUnitTestKotlin",
+              "seconds": 60.86,
+              "result": ""
+            }
+          ]
+        }
+      ],
+      "limits": "时间精度以 Gradle HTML 的显示精度为限；并行任务累计时间不能当构建墙钟。"
+    },
+    "host_metrics": {
+      "status": "measured",
+      "sample_count": 590,
+      "host_cpu_busy_percent_peak": 100.0,
+      "host_cpu_busy_percent_mean": 83.087940001625,
+      "host_mem_available_bytes_min": 9716748288,
+      "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"
+    },
+    "executor_bootstrap": {
+      "status": "measured",
+      "meaning": "fork_and_worker_bootstrap",
+      "fork_requests": 124,
+      "workers_started_tests": 61,
+      "unmatched_requests": 63,
+      "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"
+    },
+    "robolectric": {
+      "status": "measured",
+      "report_count": 1345,
+      "reporter_created_count": 88,
+      "initialization": {
+        "status": "measured",
+        "elapsed_ns_sum": 426522521555,
+        "count": 1345
+      },
+      "limits": "指标可能嵌套，不可将各指标相加；公开 reporter 没有测试身份，不能与 XML 方法伪关联；initialization 是 Robolectric 初始化范围，测试主体和其它准备成本未知。"
+    },
+    "gc": {
+      "status": "measured",
+      "pause_count": 2117,
+      "pause_seconds_sum": 27.161971,
+      "limits": "仅 JDK 日志记录的 GC 停顿；并发 GC 阶段不加入停顿合计，不能用它推算测试主体时间。"
+    },
+    "configuration": "reuse-startup-4",
+    "test_manifest": {
+      "count": 1840,
+      "unique_count": 1840,
+      "sha256": "4d1efd5d441418e7833de614ff616d08f3f9f8968c8163ae4e79ec0cf51a8fe1",
+      "skipped": [
+        {
+          "classname": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+          "name": "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+          "status": "skipped"
+        }
+      ],
+      "failures": [],
+      "duplicates": []
+    }
+  }
+]

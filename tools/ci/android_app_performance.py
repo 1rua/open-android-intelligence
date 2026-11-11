@@ -204,7 +204,9 @@ def run_command(output: Path, command: list[str]) -> int:
     if any(output.iterdir()):
         raise ValueError("采集目录已有结果，请使用新的目录保存本次证据")
     memory = parse_meminfo(read_text(Path("/proc/meminfo")) or "")
-    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running", "command": command, "profile_reports": [], "git": checkout_metadata(), "host": {"logical_cpus": os.cpu_count(), "affinity_cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None, "mem_total_bytes": memory.get("MemTotal")}}
+    cpu_info = read_text(Path("/proc/cpuinfo")) or ""
+    cpu_models = sorted(set(re.findall(r"^model name\s*:\s*(.+)$", cpu_info, re.MULTILINE)))
+    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running", "command": command, "profile_reports": [], "git": checkout_metadata(), "host": {"logical_cpus": os.cpu_count(), "affinity_cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None, "mem_total_bytes": memory.get("MemTotal"), "cpu_models": cpu_models, "cpu_quota": read_text(Path("/sys/fs/cgroup/cpu.max"))}}
     write_json(output / "run.json", record)
     sampler = ResourceSampler(output / "metrics.jsonl", Path.cwd())
     thread = threading.Thread(target=sampler.collect, name="android-perf-sampler", daemon=True)

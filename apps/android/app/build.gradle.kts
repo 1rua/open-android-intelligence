@@ -82,6 +82,11 @@ tasks.withType<Test>().configureEach {
         "startup" -> jvmArgs("-XX:TieredStopAtLevel=1")
         else -> error("无效的测试 JIT 策略")
     }
+    when (providers.gradleProperty("oai.testGc").orElse("default").get()) {
+        "default" -> Unit
+        "serial" -> jvmArgs("-XX:+UseSerialGC")
+        else -> error("无效的测试垃圾回收策略")
+    }
     // 仅显式清单中的测试允许经 JUnit Suite 复用进程；其余测试仍逐类启动 JVM。
     // 默认关闭，完成同源码、重复、乱序、并行验收后由 CI 明确启用。
     val reuseClasses = providers.gradleProperty("oai.testReuseClasses").orElse("").get()

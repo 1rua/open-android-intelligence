@@ -58,6 +58,11 @@ on:
         description: 安全复用组的类与方法乱序种子
         type: string
         default: '135'
+      app-gc:
+        description: 测试 JVM 垃圾回收策略对照
+        type: choice
+        options: [default, serial]
+        default: default
 
 permissions:
   contents: read
@@ -557,6 +562,7 @@ jobs:
           app-jvm-mode: ${{ inputs.app-jvm-mode || 'isolated' }}
           app-test-seed: ${{ inputs.app-seed || '135' }}
           app-jit: ${{ inputs.app-jit || 'default' }}
+          app-gc: ${{ inputs.app-gc || 'default' }}
           app-performance: 'true'
           # 手动性能对照只读取同一份既有缓存，避免先结束的样本替后一个写热缓存。
           gradle-cache-read-only: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
