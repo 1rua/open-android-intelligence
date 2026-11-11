@@ -47,10 +47,12 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import org.junit.After
+import org.junit.Assume.assumeTrue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -63,6 +65,14 @@ class StreamingReplyInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val main = Handler(Looper.getMainLooper())
     private var scenario: ActivityScenario<StreamingReplyTestActivity>? = null
+
+    @Before
+    fun requireIsolatedInstallation() {
+        // Application 的进程前台通知会初始化连接运行时，因此必须使用独立安装身份。
+        // 普通仪表测试批次明确跳过此验收，避免打开用户已有账号的应用进程。
+        assumeTrue("流式验收要求独立 applicationId 后缀 .streamingacceptance",
+            instrumentation.targetContext.packageName.endsWith(".streamingacceptance"))
+    }
 
     @After
     fun releaseFixture() {
