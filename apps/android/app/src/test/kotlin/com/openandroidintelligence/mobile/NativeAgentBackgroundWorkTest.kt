@@ -13,6 +13,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.agents.AgentSessionClient
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.negotiation.NATIVE_AGENT_SESSIONS_HEADER
@@ -47,6 +48,130 @@ import kotlin.coroutines.CoroutineContext
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34, 36], application = Application::class)
 class NativeAgentBackgroundWorkTest {
+    @Test fun otherAgentAssistantPresenceMustNotSuppressTheCompletedReply() {
+        verifyCrossAgentCompletion(visible = true)
+    }
+
+    @Test fun otherAgentAssistantNotVisibleIsTheControl() {
+        verifyCrossAgentCompletion(visible = false)
+    }
+
+    private fun verifyCrossAgentCompletion(visible: Boolean) {
+        Fixture(concurrentGateway = true).use { fixture ->
+            val first = fixture.openWorkbench("dsh")
+            val release = fixture.startControlledReply(first, "dsh")
+            fixture.openWorkbench("codex", previous = first)
+            val token = "codex-assistant"
+            val assistant = requireNotNull(fixture.runtime.reattachAssistantSession(token))
+            assistant.openThread("native-session")
+            awaitState(assistant.state) { it.historyHydrated && it.activeThreadId == "native-session" }
+            fixture.runtime.setAssistantPresence("assistant-client", token, visible)
+
+            release.countDown()
+
+            awaitState(fixture.runtime.nativeConversationNotifications.sessions) { sessions ->
+                sessions.any { it.target.agentId == "dsh" && it.status == NativeConversationStatus.COMPLETED }
+            }
+            synchronized(fixture.runtime.nativeConversationNotifications) {
+                val completed = fixture.runtime.nativeConversationNotifications.sessions.value.single { it.target.agentId == "dsh" }
+                assertTrue(replyCompletionPreferences(fixture.context, completed.target.profileId, completed.target.accountId)
+                    .all.keys.any { it.startsWith("done.") })
+                val notifications = fixture.replyNotifications()
+                assertEquals("另一 Agent 的助手可见性不能丢掉完成通知", 1, notifications.size)
+                val notification = notifications.single()
+                assertEquals("正在查看另一 Agent 的同名会话不应抑制本轮通知", completed.target,
+                    ReplyNotificationTarget.from(shadowOf(notification.contentIntent).savedIntent))
+            }
+        }
+    }
+
+    @Test fun otherAgentRunningReplyMustNotBlockCurrentAgentArchive() {
+        verifyCrossAgentManagement(delete = false)
+    }
+
+    @Test fun otherAgentRunningReplyMustNotBlockCurrentAgentDelete() {
+        verifyCrossAgentManagement(delete = true)
+    }
+
+    private fun verifyCrossAgentManagement(delete: Boolean) {
+        Fixture(concurrentGateway = true).use { fixture ->
+            val first = fixture.openWorkbench("dsh")
+            fixture.startControlledReply(first, "dsh")
+            val second = fixture.openWorkbench("codex", previous = first)
+            assertFalse("当前 Agent 没有发送任务", second.hasActiveWork.value)
+
+            if (delete) second.deleteThread("native-session") else second.archiveThread("native-session")
+
+            assertFalse("另一 Agent 的同名运行会话不能阻止当前管理操作",
+                second.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
+            awaitState(second.state) { state ->
+                state.notice != null || !state.managingThreads &&
+                    (delete && state.threads is Loadable.Empty || (state.threads as? Loadable.Ready)?.value?.let { threads ->
+                        if (delete) threads.none { it.id.value == "native-session" }
+                        else threads.any { it.id.value == "native-session" && it.archived }
+                    } == true)
+            }
+            assertNull(second.state.value.notice)
+            assertTrue("管理请求必须实际发给当前 Agent", fixture.gateway.requests.any {
+                it.target == "${AgentSessionClient.ROOT}/codex/sessions/native-session" &&
+                    it.method == if (delete) "DELETE" else "PATCH"
+            })
+            assertTrue("另一 Agent 的任务仍在运行", fixture.runtime.nativeConversationNotifications.sessions.value
+                .any { it.target.agentId == "dsh" && it.isRunning })
+        }
+    }
+
+    @Test fun sameAgentRunningReplyStillBlocksArchiveAndDelete() {
+        Fixture(concurrentGateway = true).use { fixture ->
+            val controller = fixture.openWorkbench("dsh")
+            fixture.startControlledReply(controller, "dsh")
+            controller.archiveThread("native-session")
+            assertTrue(controller.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
+            controller.deleteThread("native-session")
+            assertTrue(controller.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
+            assertTrue(fixture.gateway.requests.none { it.method in setOf("PATCH", "DELETE") })
+        }
+    }
+
+    @Test fun assistantPresenceRetiresOnlyTheMatchingNativeNotification() {
+        Fixture(concurrentGateway = true).use { fixture ->
+            val first = fixture.openWorkbench("dsh")
+            fixture.startControlledReply(first, "dsh")
+            fixture.openWorkbench("codex", previous = first)
+            val codex = requireNotNull(fixture.runtime.reattachAssistantSession("codex-visible"))
+            codex.openThread("native-session")
+            awaitState(codex.state) { it.historyHydrated && it.activeThreadId == "native-session" }
+            fixture.runtime.setAssistantPresence("assistant-client", "codex-visible", true)
+            assertEquals("另一 Agent 的同名通知不能被撤回", 1, fixture.replyNotifications().size)
+
+            fixture.openWorkbench("dsh", previous = requireNotNull(fixture.runtime.controller.value))
+            val dsh = requireNotNull(fixture.runtime.reattachAssistantSession("dsh-visible"))
+            dsh.openThread("native-session")
+            awaitState(dsh.state) { it.historyHydrated && it.activeThreadId == "native-session" }
+            fixture.runtime.setAssistantPresence("assistant-client", "dsh-visible", true)
+
+            assertTrue("开始查看同一 Agent 的同一会话时，原有通知应立即撤回", fixture.replyNotifications().isEmpty())
+        }
+    }
+
+    @Test fun assistantVisibilityRequiresMatchingProfileAccountAndAgent() {
+        Fixture().use { fixture ->
+            fixture.openWorkbench("dsh")
+            val assistant = requireNotNull(fixture.runtime.reattachAssistantSession("identity-visible"))
+            assistant.openThread("native-session")
+            awaitState(assistant.state) { it.historyHydrated && it.activeThreadId == "native-session" }
+            fixture.runtime.setAssistantPresence("assistant-client", "identity-visible", true)
+            val target = ReplyNotificationTarget(fixture.runtime.savedProfiles.value.single().localProfileId,
+                "account-native", "native-session", "dsh")
+            assertTrue(fixture.runtime.isAssistantConversationVisible(target))
+            assertFalse(fixture.runtime.isAssistantConversationVisible(target.copy(profileId = "other-profile")))
+            assertFalse(fixture.runtime.isAssistantConversationVisible(target.copy(accountId = "other-account")))
+            assertFalse(fixture.runtime.isAssistantConversationVisible(target.copy(agentId = "codex")))
+            assertFalse(fixture.runtime.isAssistantConversationVisible(target.copy(agentId = null)))
+            assertFalse(fixture.runtime.isAssistantConversationVisible(target.copy(conversationId = "other-session")))
+        }
+    }
+
     @Test fun mainWorkbenchCompletionPublishesTheExistingReplyNotification() {
         Fixture().use { fixture ->
             fixture.selectSession("dsh")
@@ -250,11 +375,11 @@ class NativeAgentBackgroundWorkTest {
         }
     }
 
-    private class Fixture : AutoCloseable {
+    private class Fixture(concurrentGateway: Boolean = false) : AutoCloseable {
         val context = RecordingContext()
         val dispatcher = PausableDispatcher()
         private val scope = CoroutineScope(SupervisorJob() + dispatcher)
-        private val gateway = LoopbackGatewayStub()
+        val gateway = LoopbackGatewayStub(concurrent = concurrentGateway)
         private val releases = mutableListOf<CountDownLatch>()
         val recovery = AgentSessionRecoveryState(context)
         val runtime: GatewayRuntime
@@ -271,6 +396,12 @@ class NativeAgentBackgroundWorkTest {
             for (agentId in listOf("dsh", "codex")) {
                 gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions", """{"sessions":[{"id":"native-session"}]}""")
                 gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions/native-session/history", """{"messages":[]}""")
+                gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions/native-session") { request ->
+                    val sessions = if (request.method == "DELETE") """{"sessions":[]}"""
+                        else """{"sessions":[{"id":"native-session","archived":true}]}"""
+                    gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions", sessions)
+                    200 to "{}"
+                }
             }
             runtime = GatewayRuntime(context, scope,
                 PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink())),
@@ -292,6 +423,43 @@ class NativeAgentBackgroundWorkTest {
             native.selectSession("native-session")
             awaitState(native.state) { it.selectedSessionId == "native-session" && !it.loadingHistory }
             return native
+        }
+
+        fun openWorkbench(agentId: String, previous: WorkbenchController? = null): WorkbenchController {
+            selectSession(agentId)
+            val controller = awaitState(runtime.controller) { it != null && it !== previous && it.state.value.isOnline }!!
+            awaitState(controller.state) { state ->
+                (state.threads as? Loadable.Ready)?.value?.any { it.id.value == "native-session" } == true
+            }
+            controller.openThread("native-session")
+            awaitState(controller.state) { it.historyHydrated && it.activeThreadId == "native-session" }
+            return controller
+        }
+
+        fun replyNotifications(): List<Notification> = context.getSystemService(NotificationManager::class.java)
+            .activeNotifications.filter { it.notification.channelId == REPLY_CHANNEL_ID }.map { it.notification }
+
+        fun startControlledReply(controller: WorkbenchController, agentId: String): CountDownLatch {
+            val release = gateway.controlledStream("${AgentSessionClient.ROOT}/$agentId/sessions/native-session/messages", { request ->
+                val clientId = JsonFields.string(requireNotNull(JsonFields.obj(Json.parse(request.body))), "clientMessageId")
+                listOf(
+                    """{"type":"generation","generationId":"gen-cross-agent","clientMessageId":"$clientId","userMessageId":"user-cross-agent","state":"running","revision":1}""",
+                    """{"type":"delta","generationId":"gen-cross-agent","messageId":"reply-cross-agent","eventId":"cross-agent-delta","contentRevision":1,"text":"正在处理"}""",
+                ).joinToString("") { "event: message\ndata: $it\n\n" }
+            }, { request ->
+                val clientId = JsonFields.string(requireNotNull(JsonFields.obj(Json.parse(request.body))), "clientMessageId")
+                gateway.respond("${AgentSessionClient.ROOT}/$agentId/sessions/native-session/history",
+                    """{"messages":[{"id":"user-cross-agent","role":"user","text":"测试问题","clientMessageId":"$clientId","generationId":"gen-cross-agent"},{"id":"reply-cross-agent","role":"assistant","text":"最终回复","clientMessageId":"$clientId","generationId":"gen-cross-agent","contentRevision":2,"state":"CONFIRMED"}]}""")
+                "event: message\ndata: " +
+                    """{"type":"done","generationId":"gen-cross-agent","clientMessageId":"$clientId","userMessageId":"user-cross-agent","messageId":"reply-cross-agent","eventId":"cross-agent-done","contentRevision":2,"revision":2,"text":"最终回复","outcome":"completed"}""" + "\n\n"
+            })
+            controller.editDraft("验证跨 Agent 会话身份")
+            controller.sendDraft()
+            awaitState(controller.state) { state ->
+                (state.timeline as? Loadable.Ready)?.value?.any { it.text == "正在处理" && it.isStreaming } == true
+            }
+            awaitState(runtime.nativeConversationNotifications.sessions) { sessions -> sessions.any { it.target.agentId == agentId && it.isRunning } }
+            return release
         }
 
         fun holdSend(agentId: String): CountDownLatch {
@@ -376,6 +544,6 @@ class NativeAgentBackgroundWorkTest {
 
         val NEGOTIATION = """{"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},"features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1","conversationUi":[]},"limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},"gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}"""
         val SESSION = """{"data":{"accountId":"account-native","deviceId":"device-native","sessionId":"session-native","accessToken":"token","refreshCredential":"refresh"}}"""
-        val AGENTS = """{"agents":[{"id":"dsh","name":"DSH","kind":"dsh","online":true,"sessionScope":"deployment","capabilities":{"list":true,"history":true,"send":true,"stream":true}},{"id":"codex","name":"Codex","kind":"codex","online":true,"sessionScope":"deployment","capabilities":{"list":true,"history":true,"send":true,"stream":true}}]}"""
+        val AGENTS = """{"agents":[{"id":"dsh","name":"DSH","kind":"dsh","online":true,"sessionScope":"deployment","capabilities":{"list":true,"history":true,"send":true,"stream":true,"archive":true,"delete":true}},{"id":"codex","name":"Codex","kind":"codex","online":true,"sessionScope":"deployment","capabilities":{"list":true,"history":true,"send":true,"stream":true,"archive":true,"delete":true}}]}"""
     }
 }

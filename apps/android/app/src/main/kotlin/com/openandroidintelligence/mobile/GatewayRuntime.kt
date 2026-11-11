@@ -219,7 +219,7 @@ class GatewayRuntime(
     }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications,
-        suppress = { target -> isAssistantConversationVisible(target.conversationId) })
+        suppress = ::isAssistantConversationVisible)
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
     private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
@@ -421,11 +421,12 @@ class GatewayRuntime(
     private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
 
     /** 系统助理界面是否正展示这条会话；同会话的原生通知气泡因此不再打扰用户。 */
-    internal fun isAssistantConversationVisible(conversationId: String): Boolean {
+    internal fun isAssistantConversationVisible(target: ReplyNotificationTarget): Boolean {
         if (assistantPresence.isEmpty()) return false
         val workspace = assistantWorkspace ?: return false
+        if (!workspace.matches(target.profileId, target.accountId, target.agentId)) return false
         return assistantPresence.values.any { sessionToken ->
-            workspace.conversationFor(sessionToken) == conversationId
+            workspace.conversationFor(sessionToken) == target.conversationId
         }
     }
 
@@ -504,11 +505,13 @@ class GatewayRuntime(
     private fun publishAssistantPresence(clientToken: String, sessionToken: String?) {
         if (sessionToken == null) assistantPresence.remove(clientToken)
         else assistantPresence[clientToken] = sessionToken
-        val conversationId = sessionToken?.let { token -> assistantWorkspace?.conversationFor(token) }
+        val workspace = assistantWorkspace ?: return
+        val conversationId = sessionToken?.let(workspace::conversationFor)
         if (conversationId != null) replyPublisher.cancel(ReplyNotificationTarget(
-            profileId = connectedProfileId.orEmpty(),
-            accountId = connectedAccountId.orEmpty(),
+            profileId = workspace.profileId,
+            accountId = workspace.accountId,
             conversationId = conversationId,
+            agentId = workspace.agentId,
         ))
     }
 
@@ -2890,7 +2893,9 @@ class GatewayRuntime(
                 externalBusyThreadIds = {
                     bubbleBusyConversationIds() + assistantBusyThreadIds() +
                         nativeConversationNotifications.sessions.value
-                            .filter { it.isRunning }.map { it.target.conversationId }
+                            .filter { it.isRunning && it.target.profileId == profileId &&
+                                it.target.accountId == session.accountId && it.target.agentId == ownerAgentId }
+                            .map { it.target.conversationId }
                 },
                 onActiveThreadChanged = { threadId ->
                     if (!nativeAgentSessions || _nativeAgents.value?.state?.value?.selectedAgentId == ownerAgentId) {
