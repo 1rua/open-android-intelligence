@@ -386,6 +386,18 @@ def classify_android(
             # 新测试漏登清单必须被快速门禁发现；文件名提示不能代替真实所属组。
             lanes["fast"] = True
             sections.update(app_test_sections(path))
+        if rest.startswith("app/src/main/"):
+            # 这些源码的真实回归位于独立分组，额外补组而不替换原有任务选择。
+            if "/onboarding/" in rest or "/updates/" in rest:
+                sections.add("settings")
+            if "/screen/" in rest:
+                sections.add("push-notifications")
+                if rest.endswith("/AccessibilityServiceState.kt"):
+                    # 能力设置页面读取此状态，需覆盖该页面的授权恢复回归。
+                    sections.add("settings")
+                if rest.endswith("/TemporaryApprovalCopy.kt"):
+                    # ProductionPluginHost.approveRequest 调用这里生成授权摘要。
+                    sections.add("plugins")
         for section, lane, hints in APP_FEATURE_HINTS:
             if any(hint in rest for hint in hints):
                 lanes[lane] = True

@@ -210,6 +210,109 @@ def test_app_sections_narrow_to_the_touched_domain(impact):
     assert result["full_required"] is False
 
 
+@pytest.mark.parametrize("source, sections, regression_names, module_lanes", [
+    (
+        "onboarding/AssistantRole.kt",
+        {"core", "settings"},
+        ["AssistantRoleTest"],
+        {"android-device"},
+    ),
+    (
+        "onboarding/OnboardingState.kt",
+        {"core", "settings"},
+        ["OnboardingStateTest"],
+        {"android-device"},
+    ),
+    (
+        "onboarding/PermissionCatalog.kt",
+        {"core", "settings"},
+        ["PermissionCatalogTest"],
+        {"android-device"},
+    ),
+    (
+        "onboarding/data/GatewayTutorials.kt",
+        {"core", "settings"},
+        ["GatewayTutorialsTest"],
+        {"android-gateway"},
+    ),
+    (
+        "onboarding/motion/ButtonRevealTransition.kt",
+        {"core", "settings"},
+        ["ButtonRevealGeometryTest"],
+        {"android-device"},
+    ),
+    (
+        "updates/AppUpdateScreen.kt",
+        {"core", "settings"},
+        ["AppUpdateScreenTest"],
+        {"android-device"},
+    ),
+    (
+        "updates/AppUpdateViewModel.kt",
+        {"core", "settings"},
+        ["AppUpdateViewModelTest"],
+        set(),
+    ),
+    (
+        "updates/AppUpdateChecker.kt",
+        {"core", "settings"},
+        ["AppUpdateCheckerTest", "AppUpdateViewModelTest"],
+        set(),
+    ),
+    (
+        "screen/ScreenCapabilityController.kt",
+        {"core", "push-notifications"},
+        ["ScreenCapabilityPresentationTest"],
+        {"android-device"},
+    ),
+    (
+        "screen/ScreenCaptureSystemConsent.kt",
+        {"core", "push-notifications"},
+        ["ScreenCaptureSystemConsentTest"],
+        {"android-device"},
+    ),
+    (
+        "screen/DeviceAuthorizationCopy.kt",
+        {"core", "push-notifications"},
+        ["DeviceAuthorizationCopyTest"],
+        {"android-device"},
+    ),
+    (
+        "screen/AccessibilityServiceState.kt",
+        {"core", "push-notifications", "settings"},
+        ["AccessibilityServiceWiringTest", "NotificationScopeOwnershipTest"],
+        {"android-device"},
+    ),
+    (
+        "screen/TemporaryApprovalCopy.kt",
+        {"core", "push-notifications", "plugins"},
+        ["TemporaryApprovalCopyTest", "ProductionPluginHostTest", "ClientCapabilityAuthorizationTest"],
+        {"android-device"},
+    ),
+    (
+        "plugins/DeviceCapabilityPermissions.kt",
+        {"core", "plugins"},
+        ["ScreenCaptureGrantRoutingTest", "DeviceCapabilityPermissionsTest"],
+        {"android-device"},
+    ),
+])
+def test_production_source_selects_its_real_app_regressions(
+    impact, tasks, source, sections, regression_names, module_lanes
+):
+    """用真实源码和测试清单核对跨目录引用，同时保留旧提示选中的模块任务。"""
+    path = f"apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/{source}"
+    assert (REPO_ROOT / path).is_file(), path
+
+    result = impact.classify([("M", path)])
+    arguments = tasks.pr_args_for_sections(sorted(result["app_sections"]))
+
+    assert result["full_required"] is False
+    assert result["app_sections"] == sections
+    assert {"android-app", "android-play"} | module_lanes <= active_lanes(result)
+    for name in regression_names:
+        assert f"--tests=*{name}" in arguments, (path, name)
+
+
 @pytest.mark.parametrize("status", ["A", "M", "D"])
 def test_each_changed_app_test_selects_its_manifest_section(impact, tasks, status):
     """登记进清单还不够：单独修改任何测试文件都必须实际选中它。"""
