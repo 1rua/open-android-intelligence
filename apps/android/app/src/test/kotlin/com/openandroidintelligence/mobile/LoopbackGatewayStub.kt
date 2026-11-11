@@ -29,7 +29,7 @@ internal data class RecordedGatewayRequest(
  * 方法。它只做 HTTP 收发，不含任何协议判断——凡是需要被验证的协议语义，都由
  * 被测代码与真实 Gateway 契约共同决定。
  */
-internal class LoopbackGatewayStub(private val concurrent: Boolean = true) {
+internal class LoopbackGatewayStub {
 
     private val server = ServerSocket(0)
     private val routes = ConcurrentHashMap<String, StubResponse>()
@@ -47,9 +47,9 @@ internal class LoopbackGatewayStub(private val concurrent: Boolean = true) {
         thread(isDaemon = true, name = "loopback-gateway") {
             while (!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                if (concurrent) thread(isDaemon = true, name = "loopback-gateway-request") {
+                thread(isDaemon = true, name = "loopback-gateway-request") {
                     runCatching { handle(socket) }
-                } else runCatching { handle(socket) }
+                }
             }
         }
     }

@@ -57,7 +57,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     private fun verifyCrossAgentCompletion(visible: Boolean) {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val first = fixture.openWorkbench("dsh")
             val release = fixture.startControlledReply(first, "dsh")
             fixture.openWorkbench("codex", previous = first)
@@ -94,7 +94,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     @Test fun archiveWithoutOtherAgentWorkUsesTheSameJvmTransportBoundary() {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val first = fixture.openWorkbench("dsh")
             val controller = fixture.openWorkbench("codex", previous = first)
             controller.archiveThread("native-session")
@@ -105,7 +105,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     private fun verifyCrossAgentManagement(delete: Boolean) {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val first = fixture.openWorkbench("dsh")
             fixture.startControlledReply(first, "dsh")
             val second = fixture.openWorkbench("codex", previous = first)
@@ -137,7 +137,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     @Test fun sameAgentRunningReplyStillBlocksArchiveAndDelete() {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val controller = fixture.openWorkbench("dsh")
             fixture.startControlledReply(controller, "dsh")
             controller.archiveThread("native-session")
@@ -149,7 +149,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     @Test fun returningToTheSameAgentStillProtectsItsRunningConversation() {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val first = fixture.openWorkbench("dsh")
             fixture.startControlledReply(first, "dsh")
             val other = fixture.openWorkbench("codex", previous = first)
@@ -168,7 +168,7 @@ class NativeAgentBackgroundWorkTest {
     }
 
     @Test fun assistantPresenceRetiresOnlyTheMatchingNativeNotification() {
-        Fixture(concurrentGateway = true).use { fixture ->
+        Fixture().use { fixture ->
             val first = fixture.openWorkbench("dsh")
             fixture.startControlledReply(first, "dsh")
             fixture.openWorkbench("codex", previous = first)
@@ -409,11 +409,11 @@ class NativeAgentBackgroundWorkTest {
         }
     }
 
-    private class Fixture(concurrentGateway: Boolean = false) : AutoCloseable {
+    private class Fixture : AutoCloseable {
         val context = RecordingContext()
         val dispatcher = PausableDispatcher()
         private val scope = CoroutineScope(SupervisorJob() + dispatcher)
-        val gateway = LoopbackGatewayStub(concurrent = concurrentGateway)
+        val gateway = LoopbackGatewayStub()
         private val releases = mutableListOf<CountDownLatch>()
         val recovery = AgentSessionRecoveryState(context)
         val runtime: GatewayRuntime
