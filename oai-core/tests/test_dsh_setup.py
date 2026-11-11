@@ -403,12 +403,15 @@ def simulated_dsh_processes(tmp_path, monkeypatch):
     return add
 
 
-def simulated_systemd(monkeypatch, units):
+def simulated_systemd(monkeypatch, units, *, manager_environment=None):
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
-        if "list-units" in command:
+        if "show-environment" in command:
+            import shlex
+            output = "\n".join(f"{key}={shlex.quote(value)}" for key, value in (manager_environment or {}).items())
+        elif "list-units" in command:
             output = "\n".join(f"{name} loaded active running 测试服务" for name in units)
         elif "show" in command:
             unit = command[command.index("show") + 1]
@@ -418,6 +421,8 @@ def simulated_systemd(monkeypatch, units):
             if process is not None:
                 import shlex
                 output += f"WorkingDirectory={process.directory}\nExecStart={{ argv[]={shlex.join(process.arguments)} ; }}\n"
+                if "Environment" not in properties:
+                    output += f"Environment={shlex.quote('DSH_HOME=' + process.environment['DSH_HOME'])}\n"
         else:
             assert "restart" in command
             output = ""
@@ -501,15 +506,18 @@ def test_profile_entry_uses_runtime_patch_port_and_instance(tmp_path, monkeypatc
 
     def dump(command, **kwargs):
         calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout="- id: oai-session-adapter\n  name: oai-dsh-session-adapter\n  config:\n    port: 9127\n    instanceId: target-worker\n")
+        return SimpleNamespace(returncode=0, stdout='{"port":9127,"instanceId":"target-worker"}')
 
     monkeypatch.setattr("subprocess.run", dump)
     actual = configuration._dsh_profile_entry(home, "worker", {"id": "dsh", "secretFile": "bridge.secret"})
     assert actual["url"] == "http://127.0.0.1:9127"
     assert actual["instanceId"] == "target-worker"
     assert actual["secretFile"] == "bridge.secret"
-    assert calls[0][0] == [args[0], "--profile", "worker", "--patch", "custom patch.yml", "--dump-config"]
-    assert calls[0][1]["env"] == env
+    request = json.loads(calls[0][1]["input"])
+    assert request["prefix"] == [args[0]]
+    assert request["name"] == "worker"
+    assert request["patches"] == ["--patch", "custom patch.yml"]
+    assert request["environment"] == env
 
 
 def test_register_retries_only_selected_profile_endpoint(deployment, monkeypatch, tmp_path):
@@ -581,4 +589,151 @@ def test_upgraded_registration_uses_selected_instance_and_port(deployment, monke
     registered = AgentRegistration(operator["instanceId"], store, lambda _: False, lambda _: False).entries()
     assert registered[0]["instanceId"] == "selected-worker"
     assert registered[0]["url"] == selected_url
+
+
+def test_restart_environment_file_cannot_redirect_home(tmp_path, monkeypatch, simulated_dsh_processes):
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    environment_file = tmp_path / "service.env"
+    environment_file.write_text(f"DSH_HOME={tmp_path / 'other'}\nOAI_DSH_ADAPTER_TOKEN=合成密钥不输出\n")
+    calls = simulated_systemd(monkeypatch, {"dsh.service":
+        f"ActiveState=active\nMainPID=41001\nEnvironmentFiles={environment_file} (ignore_errors=no)\n"})
+    assert configuration.restart_dsh_service_if_active(home, "worker") is False
+    assert not any("restart" in command for command in calls)
+
+
+@pytest.mark.parametrize("explicit_node", [False, True])
+def test_official_shebang_service_keeps_automatic_restart(tmp_path, monkeypatch, simulated_dsh_processes, explicit_node):
+    package = tmp_path / "dsh-official"
+    launcher = package / "lib/bin.js"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/usr/bin/env node\n")
+    (package / "package.json").write_text('{"name":"@deepseek-ai/dsh"}')
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker", arguments=["node", str(launcher), "--profile", "worker"],
+                            environment={"PATH": os.environ["PATH"]})
+    process = configuration._read_dsh_process(41001)
+    execution = f"{launcher} --profile worker"
+    if explicit_node:
+        import shutil
+        execution = f"{shutil.which('node')} {execution}"
+    properties = {"WorkingDirectory": str(process.directory), "Environment": f"DSH_HOME={home}",
+                  "ExecStart": f"{{ path={launcher} ; argv[]={execution} ; }}"}
+    assert configuration._dsh_unit_matches(properties, process, home, "worker", user_service=True,
+                                           manager_environment={"PATH": os.environ["PATH"]}) is True
+
+
+def test_profile_identity_does_not_require_python_yaml(tmp_path, monkeypatch, simulated_dsh_processes):
+    import builtins
+    original_import = builtins.__import__
+
+    def without_yaml(name, *args, **kwargs):
+        if name == "yaml":
+            raise ModuleNotFoundError("最小 Core 安装不包含可选 PyYAML")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_yaml)
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    monkeypatch.setattr("subprocess.run", lambda command, **kwargs:
+                        SimpleNamespace(returncode=0, stdout='{"port":9127,"instanceId":"selected-worker"}'))
+    actual = configuration._dsh_profile_entry(home, "worker", {"id": "dsh", "secretFile": "bridge.secret"})
+    assert actual is not None
+    assert actual["url"] == "http://127.0.0.1:9127"
+    assert actual["instanceId"] == "selected-worker"
+
+
+def test_normal_environment_files_keep_automatic_restart(tmp_path, monkeypatch, simulated_dsh_processes):
+    home = tmp_path / "target with spaces"
+    simulated_dsh_processes(41001, home, "worker")
+    first = tmp_path / "first.env"
+    second = tmp_path / "second with spaces.env"
+    first.write_text("DSH_HOME=/different-home\n")
+    second.write_text(f'# 合成环境，只在内存解析\nDSH_HOME="{home}"\nOAI_DSH_ADAPTER_TOKEN=合成密钥\n')
+    calls = simulated_systemd(monkeypatch, {"dsh.service":
+        f"ActiveState=active\nMainPID=41001\nEnvironment=DSH_HOME=/different-home\n"
+        f"EnvironmentFiles={first} (ignore_errors=no)\nEnvironmentFiles={second} (ignore_errors=no)\n"})
+    assert configuration.restart_dsh_service_if_active(home, "worker") is True
+    assert len([command for command in calls if "restart" in command]) == 1
+
+
+def test_manager_environment_change_cannot_reuse_old_process_home(tmp_path, monkeypatch, simulated_dsh_processes):
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    calls = simulated_systemd(monkeypatch, {"dsh.service": "ActiveState=active\nMainPID=41001\nEnvironment=\n"},
+                              manager_environment={"DSH_HOME": str(tmp_path / "other")})
+    assert configuration.restart_dsh_service_if_active(home, "worker") is False
+    assert not any("restart" in command for command in calls)
+
+
+def test_manager_environment_is_refreshed_immediately_before_restart(tmp_path, monkeypatch, simulated_dsh_processes):
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    calls = simulated_systemd(monkeypatch, {"dsh.service": "ActiveState=active\nMainPID=41001\nEnvironment=\n"})
+    environments = iter([({"DSH_HOME": str(home)}, {}), ({"DSH_HOME": "/other"}, {})])
+    monkeypatch.setattr(configuration, "_dsh_manager_environment", lambda *_: next(environments))
+    assert configuration.restart_dsh_service_if_active(home, "worker") is False
+    assert not any("restart" in command for command in calls)
+
+
+@pytest.mark.parametrize("unset,expected", [("", True), ("DSH_HOME", False), ("DSH_HOME=/not-selected", True)])
+def test_unset_environment_is_applied_after_all_other_sources(tmp_path, monkeypatch, simulated_dsh_processes, unset, expected):
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    process = configuration._read_dsh_process(41001)
+    import shlex
+    properties = {"WorkingDirectory": str(process.directory), "UnsetEnvironment": unset,
+                  "ExecStart": f"{{ argv[]={shlex.join(process.arguments)} ; }}"}
+    assert configuration._dsh_unit_matches(properties, process, home, "worker", user_service=True,
+        manager_environment={"DSH_HOME": str(home), "HOME": str(tmp_path / "other")}) is expected
+
+
+def test_system_pass_environment_uses_manager_process_and_not_old_dsh(tmp_path, monkeypatch, simulated_dsh_processes):
+    home = tmp_path / "target"
+    simulated_dsh_processes(41001, home, "worker")
+    process = configuration._read_dsh_process(41001)
+    import shlex
+    properties = {"User": str(process.uid), "WorkingDirectory": str(process.directory),
+                  "PassEnvironment": "DSH_HOME", "ExecStart": f"{{ argv[]={shlex.join(process.arguments)} ; }}"}
+    assert configuration._dsh_unit_matches(properties, process, home, "worker", user_service=False,
+        manager_environment={"DSH_HOME": str(home)}, manager_process_environment={"DSH_HOME": "/other"}) is False
+    properties["Environment"] = f"DSH_HOME={home}"
+    assert configuration._dsh_unit_matches(properties, process, home, "worker", user_service=False,
+        manager_environment={}, manager_process_environment={"DSH_HOME": "/other"}) is True
+
+
+def test_environment_file_values_keep_systemd_quotes_and_continuations():
+    actual = configuration._dsh_environment_assignments(
+        "# 合成注释\nA = first\\\n second  \nB='literal\\path\nline'\nC=last\\ \nD=\"escaped\\$name\\\\path\"\n")
+    assert actual == {"A": "first second", "B": "literal\\path\nline", "C": "last ", "D": "escaped$name\\path"}
+
+
+def test_official_node_profile_probe_without_python_yaml(tmp_path, monkeypatch, capsys):
+    import builtins
+    import shutil
+    if shutil.which("dsh") is None:
+        pytest.skip("未安装可选真实 DSH，隔离契约用例另有覆盖")
+    home = tmp_path / "isolated-dsh"
+    directory = home / "profiles/worker"
+    directory.mkdir(parents=True)
+    (directory / "package.json").write_text('{"private":true,"dsh":{"profile":{"bundles":[]}}}')
+    (directory / "cordis.patch.yml").write_text(
+        "- insert:\n    - id: oai-session-adapter\n      name: isolated-adapter\n      config:\n"
+        "        port: 9631\n        instanceId: isolated-worker\n        private: synthetic-secret-only\n"
+        "    - id: expression-never-executed\n      name: isolated-expression\n      config:\n"
+        "        expression: !!js '(() => { throw new Error(\"不应执行\"); })()'\n")
+    original_import = builtins.__import__
+
+    def without_yaml(name, *args, **kwargs):
+        if name == "yaml":
+            raise ModuleNotFoundError("最小 Core 未安装 PyYAML")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_yaml)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(configuration, "_dsh_processes", lambda *_: [])
+    actual = configuration._dsh_profile_entry(home, "worker", {"id": "dsh", "secretFile": "bridge.secret"})
+    assert actual == {"id": "dsh", "secretFile": "bridge.secret", "instanceId": "isolated-worker",
+                      "url": "http://127.0.0.1:9631", "sessionScope": "deployment"}
+    assert capsys.readouterr().out == ""
 
