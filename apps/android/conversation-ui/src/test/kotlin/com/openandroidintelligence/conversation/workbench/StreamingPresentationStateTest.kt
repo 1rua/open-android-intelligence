@@ -141,6 +141,44 @@ class StreamingPresentationStateTest {
         assertTrue(throttle.shouldTrigger(2_000_000_002, 1))
     }
 
+    @Test fun 相同修订确认结束之后迟到流式状态不复活光标() {
+        val state = StreamingPresentationState()
+        state.update("正文".repeat(40), 1, LIVE, true, 0)
+        state.update(state.receivedText, 1, LIVE, false, 1_000_000)
+        state.update(state.receivedText, 1, LIVE, true, 2_000_000)
+        state.advance(300_000_000)
+        assertEquals(state.receivedText, state.displayedText)
+        assertFalse(state.isPresenting)
+        assertFalse(state.needsFrame)
+    }
+
+    @Test fun 不完整尾部没有可推进字素时不请求空帧() {
+        for (text in listOf("\uD83D", "👩‍")) {
+            val state = StreamingPresentationState()
+            state.update(text, 1, LIVE, true, 0)
+            assertFalse(state.needsFrame)
+            assertEquals("", state.displayedText)
+            val complete = if (text.length == 1) "😀" else "👩‍💻"
+            state.update(complete, 2, LIVE, true, 1)
+            assertTrue(state.needsFrame)
+            state.advance(34_000_000)
+            assertEquals(complete, state.displayedText)
+            assertFalse(state.needsFrame)
+        }
+    }
+
+    @Test fun 终态补齐最后连接符只结束原字素不触觉() {
+        val state = StreamingPresentationState()
+        state.update("👩", 1, LIVE, true, 0)
+        state.update("👩‍", 2, LIVE, true, 1)
+        state.update("👩‍", 2, LIVE, false, 2)
+        val final = state.advance(300_000_000)
+        assertEquals("👩‍", state.displayedText)
+        assertFalse(final.hapticEligible)
+        assertEquals(0, final.advancedGraphemes)
+        assertFalse(state.isPresenting)
+    }
+
     private fun assertValidSurrogates(text: String) {
         text.forEachIndexed { index, char ->
             if (char.isHighSurrogate()) assertTrue(index + 1 < text.length && text[index + 1].isLowSurrogate())

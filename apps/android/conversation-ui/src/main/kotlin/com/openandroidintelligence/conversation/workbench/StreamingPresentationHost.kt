@@ -27,101 +27,151 @@ internal data class StreamingPresentationFrame(
     val start: Int = 0,
     val end: Int = 0,
     val hapticEligible: Boolean = false,
+    val advancedGraphemes: Int = 0,
 )
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
-    // 首次挂载时，已有 LIVE 尾条仍可建立事实基线；SNAPSHOT 则保持静默完整展示。
-    private val observed = initial.associate {
-        it.key to if (it.presentation?.origin == StreamPresentationOrigin.SNAPSHOT) {
-            it.presentation.revision
-        } else {
-            -1L
-        }
-    }.toMutableMap()
-    private var currentKey: String? = null
+    private data class Observation(val revision: Long, val length: Int, val hash: Int) {
+        constructor(entry: TimelineEntry) : this(entry.presentation?.revision ?: -1L, entry.text.length, entry.text.hashCode())
+        fun isPrefixOf(entry: TimelineEntry): Boolean = entry.text.length > length &&
+            entry.text.substring(0, length).hashCode() == hash
+    }
+    private data class ReplyIdentity(
+        val key: String, val generation: String?, val client: String?, val placeholder: Boolean,
+    ) {
+        constructor(entry: TimelineEntry) : this(entry.key, entry.generationId, entry.clientMessageId?.value, entry.localPlaceholder)
+        fun isUpgrade(entry: TimelineEntry): Boolean = placeholder && !entry.localPlaceholder && key != entry.key &&
+            (generation != null && entry.generationId == generation || client != null && entry.clientMessageId?.value == client) &&
+            (generation == null || entry.generationId == null || entry.generationId == generation) &&
+            (client == null || entry.clientMessageId == null || entry.clientMessageId.value == client)
+    }
+    // 挂载时的所有正文都是基线，包括仍标作 LIVE 的缓存；只观察之后发生的增长。
+    private val observed = initial.associate { it.key to Observation(it) }.toMutableMap()
+    private var currentIdentity: ReplyIdentity? = null
     private var engine: StreamingPresentationState? = null
     private var nextBatch = 0L
+    private var consumedHapticBatch = 0L
     private var visible = true
+    private var surfaceVisible = true
+    private var prepared = false
+    private var preparedKey: String? = null
     internal var frame by mutableStateOf<StreamingPresentationFrame?>(null)
         private set
     internal var hasPending by mutableStateOf(false)
         private set
-    private var baseline = initial.lastOrNull { !it.isUser && it.isStreaming && !it.executionFact }
 
-    internal fun frameFor(entry: TimelineEntry): StreamingPresentationFrame? =
-        frame.takeIf { currentKey == entry.key }
+    /** 仅准备本次组合的投影，不写 Compose 状态或驱动动画。 */
+    internal fun prepare(entries: List<TimelineEntry>, pageVisible: Boolean) {
+        surfaceVisible = pageVisible
+        prepared = true
+        preparedKey = entries.lastOrNull(::canStart)?.key
+    }
+
+    /** 初次挂载和页面重开已有内容直接显示，不补播旧流或静态光标。 */
+    internal fun isBaseline(entry: TimelineEntry): Boolean = frameFor(entry) == null
+
+    internal fun frameFor(entry: TimelineEntry): StreamingPresentationFrame? {
+        if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
+        if (currentIdentity?.key == entry.key) return frame
+        if (currentIdentity?.isUpgrade(entry) == true) return frame
+        if (!canStart(entry)) return null
+        // accept 在组合提交后运行；先给新 LIVE 一个仅含旧前缀的投影，首帧不能闪现整段全文。
+        return StreamingPresentationFrame(baselineText(entry), active = true)
+    }
 
     internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long) {
-        if (!pageVisible) {
-            observed.clear()
-            entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
-            baseline = entries.lastOrNull { !it.isUser && it.isStreaming && !it.executionFact }
-            currentKey = null
-            engine = null
-            frame = null
-            hasPending = false
+        if (!pageVisible || !visible) {
+            clearActive()
+            rememberAll(entries)
             visible = pageVisible
             return
         }
-        if (!visible) {
-            // 页面重开只建立当前事实基线：显示已有全文，但不恢复旧吐字、渐入、拖尾或触觉。
-            val active = entries.lastOrNull { !it.isUser && it.isStreaming && !it.executionFact }
-            currentKey = active?.key
-            engine = active?.let {
-                StreamingPresentationState(it.text, it.presentation?.revision ?: -1L)
-            }
-            frame = active?.let { StreamingPresentationFrame(it.text, active = false) }
-            hasPending = false
-            observed.clear()
-            entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
-            baseline = null
-            visible = true
-            return
-        }
-        val current = entries.firstOrNull { it.key == currentKey }
-        val incoming = entries.lastOrNull { entry ->
-            !entry.isUser && !entry.executionFact && entry.presentation?.origin == StreamPresentationOrigin.LIVE &&
-                (entry.presentation.revision > (observed[entry.key] ?: -1L))
-        } ?: current
-        val retainedKeys = entries.mapTo(hashSetOf()) { it.key }
-        observed.keys.retainAll(retainedKeys)
-        if (incoming == null) {
-            if (currentKey != null) { currentKey = null; engine = null; frame = null; hasPending = false }
-            entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
+        val identity = currentIdentity
+        val current = entries.firstOrNull { it.key == identity?.key }
+        val upgrade = if (current == null) entries.lastOrNull { identity?.isUpgrade(it) == true && eligible(it) } else null
+        val incoming = entries.lastOrNull(::canStart) ?: current ?: upgrade
+        if (incoming == null || !eligible(incoming) || incoming.presentation == null) {
+            clearActive()
+            rememberAll(entries)
             return
         }
         val metadata = incoming.presentation
-        if (metadata == null) {
-            currentKey = null
-            engine = null
-            frame = null
-        } else {
-            if (currentKey != incoming.key) {
-                val initial = baseline?.takeIf { it.key == incoming.key }
-                engine = StreamingPresentationState(initial?.text.orEmpty(), initial?.presentation?.revision ?: -1L)
-                currentKey = incoming.key
-                baseline = null
+        if (identity?.key != incoming.key) {
+            if (identity?.isUpgrade(incoming) == true && engine != null) {
+                // 仅占位身份升级继承进度；两个真实消息 ID 即使正文相同也永不合并。
+                engine?.adoptRevision(metadata.revision)
+            } else {
+                engine = StreamingPresentationState(baselineText(incoming), observed[incoming.key]?.revision ?: -1L)
+                frame = null
             }
-            val state = requireNotNull(engine)
-            val advance = state.update(incoming.text, metadata.revision, metadata.origin, incoming.isStreaming, now)
-            publish(state, advance)
+            currentIdentity = ReplyIdentity(incoming)
+        } else {
+            currentIdentity = ReplyIdentity(incoming)
         }
-        entries.forEach { observed[it.key] = it.presentation?.revision ?: -1L }
+        val state = requireNotNull(engine)
+        val advance = state.update(incoming.text, metadata.revision, metadata.origin, incoming.isStreaming, now)
+        publish(state, advance)
+        rememberAll(entries)
     }
 
     internal fun advance(now: Long) {
-        engine?.let { publish(it, it.advance(now)) }
+        if (visible && surfaceVisible) engine?.let { publish(it, it.advance(now)) }
+    }
+
+    internal fun close() {
+        surfaceVisible = false
+        visible = false
+        clearActive()
+        observed.clear()
+    }
+
+    /** 一个可见批次最多消费一次；关闭设置后再打开也不会补震旧文字。 */
+    internal fun consumeHaptic(batchId: Long): Boolean {
+        val current = frame ?: return false
+        if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != currentIdentity?.key ||
+            current.batchId != batchId || batchId <= consumedHapticBatch) return false
+        consumedHapticBatch = batchId
+        return current.hapticEligible
+    }
+
+    private fun eligible(entry: TimelineEntry): Boolean = !entry.isUser && entry.sender == "assistant" &&
+        !entry.executionFact && entry.approval == null && entry.systemThreadId == null
+
+    private fun canStart(entry: TimelineEntry): Boolean {
+        if (!eligible(entry) || entry.presentation?.origin != StreamPresentationOrigin.LIVE) return false
+        val previous = observed[entry.key] ?: return entry.text.isNotEmpty()
+        return entry.presentation.revision >= previous.revision && previous.isPrefixOf(entry)
+    }
+
+    private fun baselineText(entry: TimelineEntry): String {
+        val previous = observed[entry.key] ?: return ""
+        if (entry.text.length < previous.length) return entry.text
+        val prefix = entry.text.substring(0, previous.length)
+        return if (prefix.hashCode() == previous.hash) prefix else entry.text
+    }
+
+    private fun rememberAll(entries: List<TimelineEntry>) {
+        observed.clear()
+        entries.forEach { observed[it.key] = Observation(it) }
+    }
+
+    private fun clearActive() {
+        currentIdentity = null
+        engine = null
+        frame = null
+        hasPending = false
     }
 
     private fun publish(state: StreamingPresentationState, advance: StreamingRevealAdvance) {
         hasPending = state.needsFrame
         val previous = frame
-        if (advance.changed || advance.corrected) {
+        if (advance.changed) {
             frame = StreamingPresentationFrame(
                 state.displayedText, state.isPresenting, ++nextBatch,
                 if (advance.corrected) state.revealOffset else advance.startOffset,
                 state.revealOffset, advance.hapticEligible && !advance.corrected,
+                advance.advancedGraphemes,
             )
         } else if (previous == null || previous.active != state.isPresenting || previous.text != state.displayedText) {
             frame = (previous ?: StreamingPresentationFrame(state.displayedText)).copy(
@@ -158,7 +208,9 @@ fun rememberStreamingPresentations(
         }
     }
     val registry = remember(owner) { StreamingPresentationRegistry(entries) }
+    DisposableEffect(registry) { onDispose { registry.close() } }
     val visible = enabled && foreground
+    registry.prepare(entries, visible)
     LaunchedEffect(registry, entries, visible) {
         registry.accept(entries, visible, System.nanoTime())
     }
@@ -185,10 +237,11 @@ internal fun rememberStreamingHapticAdvance(
     return remember(view, throttle, registry) {
         { batchId ->
             val value = current
-            if (enabled && registry.frame?.batchId == batchId && value.batchId == batchId && value.hapticEligible &&
+            val fresh = value.batchId == batchId && registry.consumeHaptic(batchId)
+            if (fresh && enabled && value.hapticEligible &&
                 view.isShown && view.hasWindowFocus() && view.isHapticFeedbackEnabled &&
                 view.findViewTreeLifecycleOwner()?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) != false &&
-                throttle.shouldTrigger(System.nanoTime(), (value.end - value.start).coerceAtLeast(1), true)
+                throttle.shouldTrigger(System.nanoTime(), value.advancedGraphemes.coerceAtLeast(1), true)
             ) {
                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             }

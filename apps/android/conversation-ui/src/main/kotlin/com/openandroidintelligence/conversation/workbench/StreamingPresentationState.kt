@@ -45,6 +45,9 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
 
     init { rebuildBoundaries(0) }
 
+    /** 本地占位升级为宿主真实身份时，修订域可以重新从宿主值开始。 */
+    internal fun adoptRevision(revision: Long) { this.revision = revision }
+
     fun update(
         text: String,
         revision: Long,
@@ -63,9 +66,10 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         val oldText = receivedText
         val oldOffset = revealOffset
         this.revision = revision
-        this.streaming = streaming
-        if (!streaming && enrolled && drainDeadlineNanos == null) drainDeadlineNanos = nowNanos + DrainNanos
-        if (streaming) drainDeadlineNanos = null
+        // 已确认终态之后迟到的 STREAMING 只能补正文，不能复活光标和无限排空时钟。
+        this.streaming = streaming && drainDeadlineNanos == null
+        if (!this.streaming && enrolled && drainDeadlineNanos == null) drainDeadlineNanos = nowNanos + DrainNanos
+        if (this.streaming) drainDeadlineNanos = null
         if (text == oldText) return unchanged
         val append = text.startsWith(oldText)
         receivedText = text
@@ -97,7 +101,7 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         }
         if (firstLive) {
             lastFrameNanos = nowNanos
-            if (!streaming) drainDeadlineNanos = nowNanos + DrainNanos
+            if (!this.streaming) drainDeadlineNanos = nowNanos + DrainNanos
             val next = boundaries.firstOrNull { it > revealOffset && it <= safeEnd() }
             if (next != null) return revealTo(next, extensionEnd)
         }
@@ -112,7 +116,8 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         if (elapsed < FrameNanos) return StreamingRevealAdvance(oldOffset, oldOffset)
         lastFrameNanos = nowNanos
         val safeEnd = safeEnd()
-        val remaining = boundaries.count { it > oldOffset && it <= safeEnd }
+        val startIndex = boundaryFloor(oldOffset)
+        val remaining = boundaryFloor(safeEnd) - startIndex
         if (remaining == 0) {
             credit = 0.0
             return StreamingRevealAdvance(oldOffset, oldOffset)
@@ -127,16 +132,24 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         val count = if (deadline != null && nowNanos >= deadline) remaining else floor(credit).toInt().coerceAtMost(remaining)
         if (count == 0) return StreamingRevealAdvance(oldOffset, oldOffset)
         credit = (credit - count).coerceAtLeast(0.0)
-        val end = boundaries.asSequence().filter { it > oldOffset && it <= safeEnd }.take(count).last()
+        val end = boundaries[startIndex + count]
         return revealTo(end, oldOffset)
     }
 
     private fun revealTo(end: Int, start: Int): StreamingRevealAdvance {
         val live = sources.any { it.live && it.end > start && it.start < end }
-        val count = boundaries.count { it > start && it <= end }
+        val startSearch = boundaries.binarySearch(start)
+        val completeStart = if (startSearch >= 0) startSearch else -startSearch - 1
+        // 续接已可见的末字素只补齐绘制范围，不能计作一个新的打字事件。
+        val count = (boundaryFloor(end) - completeStart).coerceAtLeast(0)
         revealOffset = end
         discardConsumedSources()
         return StreamingRevealAdvance(start, end, live && count > 0, advancedGraphemes = count)
+    }
+
+    private fun boundaryFloor(offset: Int): Int {
+        val found = boundaries.binarySearch(offset)
+        return if (found >= 0) found else (-found - 2).coerceAtLeast(0)
     }
 
     private fun appendSource(start: Int, end: Int, live: Boolean) {
