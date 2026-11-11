@@ -138,7 +138,7 @@
     <string name="conv_attachment_lib_pick_image_desc">从相册选择已有图片</string>
     <string name="conv_attachment_lib_pick_file_title">选择文件</string>
     <string name="conv_attachment_lib_pick_file_desc">通过系统文件选择器添加文档</string>
-    <string name="conv_attachment_lib_take_photo_title">拍摄照片</string>
+    
     <string name="conv_attachment_lib_take_photo_desc">使用系统相机拍摄照片</string>
     <string name="conv_attachment_lib_section_pending">当前待发送</string>
     <string name="conv_attachment_lib_item_count">%1$d 个</string>
@@ -384,7 +384,7 @@
     <string name="conv_state_stage_workbench">本机工作台</string>
     <string name="conv_state_stage_init_default">本机初始化</string>
     <string name="conv_state_init_failed">登录已成功，但 App 未能完成%1$s的初始化。账号资料和历史记录已保留，请更新 App 后重试；若持续发生，请查看手机上的连接诊断。</string>
-    <string name="conv_state_local_save_failed">会话记录保存失败，同步已暂停。请检查存储空间后重新进入会话重试；暂勿重复发送原消息。</string>
+    
     <string name="conv_state_sync_data_unprocessed">会话同步数据未能处理，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App 与 Core 的版本兼容性。</string>
     <string name="conv_state_device_key_upgrade">设备认证已修复，请重新登录一次以更新设备公钥。</string>
     <string name="conv_state_master_key_unavailable">网关暂时无法保存附件或发送消息（主密钥来源不可用）。请重启网关；若持续发生，请让网关部署者检查密钥文件的路径、所有者与权限。</string>

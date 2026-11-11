@@ -31,4 +31,6 @@
     <string name="settings_about_app_desc">开放式 Android 端智能体与设备能力平台</string>
     <string name="settings_about_version_format">版本 %1$s (%2$d)</string>
     <string name="settings_about_channel_format">更新渠道：%1$s</string>
+<string name="settings_state_local_save_failed">会话记录保存失败，同步已暂停。请检查存储空间后重新进入会话重试；暂勿重复发送原消息。</string>
+<string name="settings_attachment_lib_take_photo_title">拍摄照片</string>
 </resources>
