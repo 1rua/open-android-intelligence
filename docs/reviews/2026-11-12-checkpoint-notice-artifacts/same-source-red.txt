@@ -4,7 +4,7 @@ Calculating task graph as no cached configuration is available for tasks: :conve
 > Configure project :app
 Unable to initialize metrics, ensure /home/djbd/.android is writable, details: /home/djbd/.android/analytics.settings (Read-only file system)
 Warning: SDK processing. This version only understands SDK XML versions up to 3 but an SDK XML file of version 4 was encountered. This can happen if you use versions of Android Studio and the command-line tools that were released at different times.
-w: Detected multiple Kotlin daemon sessions at 
+w: Detected multiple Kotlin daemon sessions at
 
 > Task :gateway-client:checkKotlinGradlePluginConfigurationErrors SKIPPED
 > Task :ui-resources:checkKotlinGradlePluginConfigurationErrors SKIPPED
