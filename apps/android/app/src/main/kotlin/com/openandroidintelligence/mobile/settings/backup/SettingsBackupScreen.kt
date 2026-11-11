@@ -152,7 +152,7 @@ internal fun SettingsBackupContent(
             state.notice?.let { notice ->
                 SettingsSectionCard {
                     Text(
-                        notice.message,
+                        notice.displayMessage(LocalContext.current),
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (notice.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -239,7 +239,9 @@ private fun readBackupText(context: Context, uri: android.net.Uri): String? {
             if (read < 0) break
             buffer.write(chunk, 0, read)
             if (buffer.size() > MAX_BACKUP_BYTES) {
-                throw SettingsBackupFormatException("文件过大，不是本 App 导出的设置文件。")
+                throw SettingsBackupFormatException(
+                    "文件过大，不是本 App 导出的设置文件。", BackupFormatErrorCode.FILE_TOO_LARGE,
+                )
             }
         }
         buffer.toByteArray()

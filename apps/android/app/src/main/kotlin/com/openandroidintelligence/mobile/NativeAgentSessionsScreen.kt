@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.workbench.resolveDisplayConversationTitle
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 
 /** Native session UI shares only the authenticated Core transport with device plugins. */
@@ -133,7 +134,7 @@ internal fun NativeAgentSessionsScreen(
                     Card(onClick = { controller.selectSession(session.id) }, enabled = !state.busy,
                         modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
-                            Text(session.title?.takeIf(String::isNotBlank) ?: "新对话",
+                            Text(resolveDisplayConversationTitle(session.title),
                                 style = MaterialTheme.typography.titleMedium)
                             session.updatedAt?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                             if (session.archived) Text("已归档", style = MaterialTheme.typography.labelSmall)
@@ -151,7 +152,7 @@ internal fun NativeAgentSessionsScreen(
                 TextButton(onClick = { deleteVisible = true },
                     enabled = writable && capabilities?.delete == true) { Text("删除") }
             }
-            Text(state.session?.title?.takeIf(String::isNotBlank) ?: "新对话",
+            Text(resolveDisplayConversationTitle(state.session?.title),
                 style = MaterialTheme.typography.titleMedium)
             if (capabilities?.history != true) Text("此 Agent 未提供历史读取能力。")
             if (state.loadingHistory) CircularProgressIndicator()

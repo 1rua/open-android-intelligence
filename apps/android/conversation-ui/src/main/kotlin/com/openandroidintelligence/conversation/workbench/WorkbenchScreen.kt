@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +54,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -246,10 +248,11 @@ fun WorkbenchScreen(
     }
     // A dead reply channel is the one cause of "sent but nothing came back"
     // that the user cannot see from the timeline, so it says so out loud.
+    val streamDisconnectedMessage = stringResource(UiR.string.conv_state_stream_disconnected)
     LaunchedEffect(state.streamHealth) {
         if (state.streamHealth == StreamHealth.FAILED) {
             snackbar.showSnackbar(state.notice?.let(::noticeText)
-                ?: "实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务。")
+                ?: streamDisconnectedMessage)
         }
     }
 
@@ -860,13 +863,13 @@ fun WorkbenchScreen(
         if (showRenameDialog) {
             AlertDialog(
                 onDismissRequest = { showRenameDialog = false },
-                title = { Text("重命名对话") },
+                title = { Text(stringResource(UiR.string.conv_workbench_title_rename_dialog)) },
                 text = {
                     OutlinedTextField(
                         value = renameDraft,
                         onValueChange = { renameDraft = it },
                         singleLine = true,
-                        label = { Text("对话标题") },
+                        label = { Text(stringResource(UiR.string.conv_workbench_title_rename_label)) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 },
@@ -880,14 +883,14 @@ fun WorkbenchScreen(
                             showRenameDialog = false
                         },
                     ) {
-                        Text("确定")
+                        Text(stringResource(UiR.string.common_action_confirm))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showRenameDialog = false }) {
-                        Text("取消")
+                        Text(stringResource(UiR.string.common_action_cancel))
                     }
-                },
+                }
             )
         }
     }
@@ -930,7 +933,7 @@ private fun WorkbenchTopBar(
             ) {
                 Column(modifier = Modifier.weight(1f, fill = false)) {
                     Text(
-                        text = threadTitle.ifBlank { "新对话" },
+                        text = resolveDisplayConversationTitle(threadTitle),
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -948,7 +951,7 @@ private fun WorkbenchTopBar(
             // 展开宽度下抽屉常驻在左侧，再给一个开抽屉按钮只会重复。
             if (!expanded) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Default.Menu, contentDescription = "打开会话抽屉")
+                    Icon(Icons.Default.Menu, contentDescription = stringResource(UiR.string.conv_workbench_cd_open_drawer))
                 }
             }
         },
@@ -960,21 +963,21 @@ private fun WorkbenchTopBar(
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = "新建对话",
+                    contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
                     modifier = Modifier.size(Dimensions.Icon),
                 )
             }
             Spacer(Modifier.width(Dimensions.SpaceSmall))
             Box {
                 IconButton(onClick = { onOverflowExpandedChange(true) }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "更多操作")
+                    Icon(Icons.Default.MoreVert, contentDescription = stringResource(UiR.string.conv_workbench_cd_more_actions))
                 }
                 DropdownMenu(
                     expanded = overflowExpanded,
                     onDismissRequest = { onOverflowExpandedChange(false) },
                 ) {
                     DropdownMenuItem(
-                        text = { Text("重命名对话") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_rename)) },
                         enabled = canRename,
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                         onClick = {
@@ -983,7 +986,7 @@ private fun WorkbenchTopBar(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("附件库") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_attachment_lib)) },
                         leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
                         onClick = {
                             onOverflowExpandedChange(false)
@@ -992,7 +995,7 @@ private fun WorkbenchTopBar(
                     )
                     if (showAssistant) {
                         DropdownMenuItem(
-                            text = { Text("浮动助理") },
+                            text = { Text(stringResource(UiR.string.conv_workbench_menu_floating_assistant)) },
                             leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, contentDescription = null) },
                             onClick = {
                                 onOverflowExpandedChange(false)
@@ -1001,7 +1004,7 @@ private fun WorkbenchTopBar(
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("设置") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_settings)) },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                         onClick = {
                             onOverflowExpandedChange(false)
@@ -1073,9 +1076,9 @@ private fun ConversationWelcome(
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
         ) {
             SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
-            Text("有什么想聊的？", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(UiR.string.conv_workbench_empty_headline), style = MaterialTheme.typography.headlineMedium)
             Text(
-                "随时向 Agent 提问，或发送图片与文件。",
+                stringResource(UiR.string.conv_workbench_empty_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1087,7 +1090,7 @@ private fun ConversationWelcome(
                         modifier = Modifier.size(Dimensions.SmallIcon),
                     )
                     Spacer(Modifier.width(Dimensions.SpaceSmall))
-                    Text("新建对话")
+                    Text(stringResource(UiR.string.conv_workbench_cd_new_conversation))
                 }
             }
             if (commands.isNotEmpty()) {
@@ -1105,7 +1108,7 @@ private fun ConversationWelcome(
                 }
             } else if (onCreate == null) {
                 Text(
-                    "输入 / 可查看此 Gateway 提供的命令。",
+                    stringResource(UiR.string.conv_workbench_empty_command_hint),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1189,12 +1192,12 @@ private fun CreatingThreadRow(onCancel: () -> Unit, modifier: Modifier = Modifie
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "正在创建对话…",
+                text = stringResource(UiR.string.conv_workbench_creating_thread),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onCancel) { Text("取消") }
+            TextButton(onClick = onCancel) { Text(stringResource(UiR.string.common_action_cancel)) }
         }
     }
 }

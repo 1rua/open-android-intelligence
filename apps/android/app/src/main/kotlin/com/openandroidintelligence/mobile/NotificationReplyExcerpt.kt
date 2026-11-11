@@ -4,10 +4,9 @@ internal const val RUNNING_REPLY_EXCERPT_CODE_POINTS = 420
 // Android sanitizes notification fields at 1,024 UTF-16 units. Even an all-emoji
 // excerpt stays below that limit, so the final tail and full-reply hint survive.
 internal const val TERMINAL_REPLY_EXCERPT_CODE_POINTS = 480
-internal const val COMPLETE_REPLY_HINT = "点击查看完整回复"
 
 /** Bound system-facing text without changing the process-owned full reply snapshot. */
-internal fun notificationReplyExcerpt(text: String, isRunning: Boolean): String {
+internal fun notificationReplyExcerpt(text: String, isRunning: Boolean, completeHint: String = ""): String {
     val limit = if (isRunning) RUNNING_REPLY_EXCERPT_CODE_POINTS else TERMINAL_REPLY_EXCERPT_CODE_POINTS
     val count = text.codePointCount(0, text.length)
     if (count <= limit) return text
@@ -16,7 +15,7 @@ internal fun notificationReplyExcerpt(text: String, isRunning: Boolean): String 
         return "…" + text.substring(start)
     }
     val separator = "\n…\n"
-    val hint = "\n\n$COMPLETE_REPLY_HINT"
+    val hint = if (completeHint.isNotEmpty()) "\n\n$completeHint" else ""
     val bodyBudget = limit - separator.codePointCount(0, separator.length) - hint.codePointCount(0, hint.length)
     val headCount = bodyBudget / 2
     val tailCount = bodyBudget - headCount

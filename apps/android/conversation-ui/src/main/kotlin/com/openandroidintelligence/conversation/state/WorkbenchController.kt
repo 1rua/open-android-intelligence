@@ -19,6 +19,7 @@ import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
 import com.openandroidintelligence.conversation.model.OriginalImageState
 import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
+import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
 import com.openandroidintelligence.conversation.workbench.readOriginalBytes
 import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
@@ -3388,13 +3389,15 @@ class WorkbenchController(
                 }
 
                 val currentTitle = _state.value.activeThreadTitle
-                val needsAutoTitle = activeThreadId == target && (currentTitle.isBlank() || currentTitle == "新对话") && !userRenamedThreads.contains(target)
+                val needsAutoTitle = activeThreadId == target &&
+                    ConversationTitleResolver.isPlaceholderTitle(currentTitle) &&
+                    !userRenamedThreads.contains(target)
                 if (needsAutoTitle) {
                     val autoTitle = com.openandroidintelligence.conversation.title.ConversationTitlePolicy.generateTitle(
                         firstMessage = message,
                         attachmentNames = submittedAttachments.map { it.filename },
                     )
-                    if (autoTitle.isNotBlank() && autoTitle != "新对话" && !userRenamedThreads.contains(target)) {
+                    if (autoTitle.isNotBlank() && !ConversationTitleResolver.isPlaceholderTitle(autoTitle) && !userRenamedThreads.contains(target)) {
                         update { it.copy(activeThreadTitle = autoTitle) }
                         workScope.launch {
                             val saved = runCatching { repository.updateTitle(target, autoTitle) }.getOrDefault(false)
@@ -5873,7 +5876,7 @@ class WorkbenchController(
             ?.value
             ?.firstOrNull { it.id.value == threadId }
             ?.title
-            ?: "新对话"
+            ?: ""
 
     /**
      * True when this event has not been applied yet.

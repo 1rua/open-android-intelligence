@@ -2231,7 +2231,7 @@ class WorkbenchSendRegressionTest {
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
             creates++
             if (failCreate) error("CREATE_FAILED:offline")
-            return Conversation(ConversationId("conv_created"), "新对话", 0)
+            return Conversation(ConversationId("conv_created"), "", 0)
         }
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {

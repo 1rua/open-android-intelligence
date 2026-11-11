@@ -15,6 +15,7 @@ import argparse
 import os
 import subprocess
 import sys
+import site
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -133,6 +134,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
                 impact["affects_android_notifications"] = True
                 impact["affects_android_app"] = True
             if f.startswith("apps/android/assistant-holder/"):
+                impact["affects_android_app"] = True
+            if f.startswith("apps/android/ui-resources/"):
                 impact["affects_android_app"] = True
             if "screen" in f or "control" in f or "capability" in f or "device-primitives" in f:
                 impact["affects_android_control"] = True
@@ -262,6 +265,24 @@ def execute_strategy(
     if ret != 0:
         return ret
 
+    has_android_impact = any(k.startswith("affects_android_") for k, v in impact.items() if v) or (
+        impact.get("is_full_required") and not any(impact.get(k) for k in ("affects_plugins", "affects_hermes", "affects_configuration"))
+    )
+
+    if has_android_impact or level == "full":
+        # 1.1 源码级硬编码中文扫描 (fast / pr / full 均强制执行)
+        print("\n--- 阶段 1.1: 源码级硬编码中文扫描 (check_hardcoded_chinese) ---")
+        ret = run_command([sys.executable, "tools/check_hardcoded_chinese.py"])
+        if ret != 0:
+            return ret
+
+        # 1.2 XML 资源完整性与命名冲突校验 (PR 准入与全量回归强制执行)
+        if level in ("pr", "full"):
+            print("\n--- 阶段 1.2: XML 资源完整性校验 (test_string_resources_integrity) ---")
+            ret = run_command([sys.executable, "tools/test_string_resources_integrity.py"])
+            if ret != 0:
+                return ret
+
     # Plugin tooling tests cover plugin source, manifests, schemas, and packaging policy.
     if impact["affects_plugins"] or level == "full":
         print("\n--- 插件工具与清单回归 ---")
@@ -270,9 +291,9 @@ def execute_strategy(
             return ret
 
     # 2. Python Core 测试
-    if impact["is_full_required"] or impact["affects_oai_core"] or level == "full":
+    if (impact["is_full_required"] and level != "fast") or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
-        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
+        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{site.getusersitepackages()}:{os.environ.get('PYTHONPATH', '')}"
         extra_env = {"PYTHONPATH": pythonpath}
         if "PYTHONUSERBASE" in os.environ:
             extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
@@ -299,7 +320,7 @@ def execute_strategy(
 
     elif impact["affects_configuration"]:
         print("\n--- Core 配置保存、安装卸载与测试入口回归 ---")
-        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{os.environ.get('PYTHONPATH', '')}"
+        pythonpath = f"{REPO_ROOT / 'oai-core/src'}:{REPO_ROOT / 'integrations/hermes-session-adapter/src'}:{site.getusersitepackages()}:{os.environ.get('PYTHONPATH', '')}"
         extra_env = {"PYTHONPATH": pythonpath}
         if "PYTHONUSERBASE" in os.environ:
             extra_env["PYTHONUSERBASE"] = os.environ["PYTHONUSERBASE"]
@@ -311,7 +332,7 @@ def execute_strategy(
 
     # 可选 Hermes 适配器必须单独验证：独立 Core 环境不安装它，而
     # affects_hermes 不能只被识别却从不触发测试。SDK 用例需显式提供固定 SDK。
-    if impact["is_full_required"] or impact["affects_hermes"] or level == "full":
+    if (impact["is_full_required"] and level != "fast") or impact["affects_hermes"] or level == "full":
         print("\n--- Hermes 原生会话与工具回归 ---")
         hermes_env = os.environ.copy()
         sdk_candidates = [
@@ -355,7 +376,7 @@ def execute_strategy(
             return ret
 
     # 3. DSH 适配器
-    if impact["is_full_required"] or impact["affects_dsh"] or level == "full":
+    if (impact["is_full_required"] and level != "fast") or impact["affects_dsh"] or level == "full":
         print("\n--- 阶段 3: DSH Session Adapter 测试 ---")
         ret = run_command(["node", "--check", "integrations/dsh-session-adapter/index.js"])
         if ret != 0:
@@ -364,7 +385,7 @@ def execute_strategy(
         if ret != 0:
             return ret
 
-    if impact["is_full_required"] or impact["affects_measurements"] or level == "full":
+    if (impact["is_full_required"] and level != "fast") or impact["affects_measurements"] or level == "full":
         print("\n--- 通信测量器统计、来源与隐私回归 ---")
         ret = run_command([sys.executable, "-m", "pytest", "-q", "tools/test_measure_communication.py"])
         if ret != 0:

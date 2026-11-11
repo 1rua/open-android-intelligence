@@ -897,7 +897,7 @@ class CoreAgentConversationRepository(
         }
         val sessions = withContext(ioDispatcher) { client.sessions(agent) }
         val summaries = sessions.map { session ->
-            val displayTitle = session.title?.takeIf { it.isNotBlank() } ?: "新对话"
+            val displayTitle = session.title?.takeIf { it.isNotBlank() } ?: ""
             ConversationSummary(
                 id = ConversationId(session.id),
                 title = displayTitle,
@@ -970,7 +970,7 @@ class CoreAgentConversationRepository(
             currentCoroutineContext().ensureActive()
             if (currentAgent()?.id != agent.id) throw CancellationException("NATIVE_CREATE_OWNER_CHANGED")
             attempt.session = created
-            val conversation = Conversation(ConversationId(created.id), created.title?.takeIf(String::isNotBlank) ?: "新对话", parseDate(created.updatedAt))
+            val conversation = Conversation(ConversationId(created.id), created.title?.takeIf(String::isNotBlank) ?: "", parseDate(created.updatedAt))
             val receipt = saved ?: NativeCreationReceipt(created, "evt_${UUID.randomUUID()}", System.currentTimeMillis())
             // 回执、通知身份和列表增量同事务保存；UI 消费者不能拖住权威 ID 返回。
             withContext(ioDispatcher) { store?.commitCreation(clientId, receipt) }

@@ -236,7 +236,7 @@ class WorkbenchForegroundResumeTest {
         }
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-            Conversation(ConversationId("conv_created"), "新对话", 0L)
+            Conversation(ConversationId("conv_created"), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
             timelineCalls++

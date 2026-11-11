@@ -3,6 +3,7 @@ package com.openandroidintelligence.assistant
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.voice.RecordedVoice
 
 /**
@@ -45,11 +46,11 @@ internal fun sendRecordedVoice(
         // 与圈选附件一致：Binder 命令、提示与状态读写都在主线程发起，管道写入留在后台线程。
         handler.post {
             if (bytes == null || bytes.isEmpty()) {
-                client.showAdvisory("录音无法读取，请重新录制")
+                client.showAdvisory(client.context.getString(UiR.string.assistant_voice_read_failed))
                 return@post
             }
             val pipe = runCatching { ParcelFileDescriptor.createPipe() }.getOrElse {
-                client.showAdvisory("录音无法读取，请重新录制")
+                client.showAdvisory(client.context.getString(UiR.string.assistant_voice_read_failed))
                 return@post
             }
             val delivered = client.sendVoice(

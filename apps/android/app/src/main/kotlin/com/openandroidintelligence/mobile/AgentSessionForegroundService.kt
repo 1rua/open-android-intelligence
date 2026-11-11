@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import com.openandroidintelligence.ui.resources.R as UiR
 
 internal const val AGENT_SESSION_FOREGROUND_CHANNEL_ID = "agent-session-background"
 internal const val AGENT_SESSION_FOREGROUND_NOTIFICATION_ID = 2401
@@ -30,8 +31,8 @@ class AgentSessionForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(AGENT_SESSION_FOREGROUND_CHANNEL_ID, "Agent 后台会话", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "仅在 Agent 任务运行期间接收会话回复"
+            NotificationChannel(AGENT_SESSION_FOREGROUND_CHANNEL_ID, getString(UiR.string.notif_channel_agent_session_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = getString(UiR.string.notif_channel_agent_session_desc)
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
@@ -111,8 +112,8 @@ class AgentSessionForegroundService : Service() {
         )
         return Notification.Builder(this, AGENT_SESSION_FOREGROUND_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
-            .setContentTitle("Agent 任务处理中")
-            .setContentText("正在后台接收会话回复")
+            .setContentTitle(getString(UiR.string.notif_agent_session_title))
+            .setContentText(getString(UiR.string.notif_agent_session_content))
             .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

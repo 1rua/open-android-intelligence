@@ -29,6 +29,28 @@ import org.junit.Test
 class ConversationBrowserTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test
+    fun emptyTitlesRemainSearchableByTheirDisplayedNameWithoutChangingStoredTitles() {
+        val rows = listOf(thread("empty", "", 1), thread("named", "用户标题", 2))
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(360.dp, 800.dp)) {
+                    ConversationBrowser(
+                        threads = Loadable.Ready(rows),
+                        activeThreadId = null,
+                        onOpenThread = {}, onCreateThread = {}, onRefresh = {},
+                    )
+                }
+            }
+        }
+
+        compose.onNodeWithText("新对话").assertIsDisplayed()
+        compose.onNode(hasSetTextAction()).performTextInput("新对话")
+        compose.onNodeWithTag("conversation:empty").assertIsDisplayed()
+        compose.onNodeWithTag("conversation:named").assertDoesNotExist()
+        compose.runOnIdle { assertEquals("", rows.first().title) }
+    }
+
     @Test fun localFoldersAndSortRemainAvailableWithoutAgentDeleteCapability() {
         val deleted = mutableListOf<String>()
         compose.setContent {

@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile.assistant
 import android.app.Service
 import android.content.Intent
 import android.os.*
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.assistant.AssistantAccountDto
@@ -121,7 +122,7 @@ class AssistantBridgeService : Service() {
                 // 静默丢弃会让用户看到「选了文件、界面回来了、什么都没发生」——
                 // 圈选与 ＋ 附件都走这条路径，两者都会变成看起来坏掉的功能。
                 val controller = client.controller ?: run {
-                    publish(client, "尚未连接对话，附件与草稿未能加入；请先在 App 中连接并打开一条会话")
+                    publish(client, getString(UiR.string.assistant_bridge_not_connected_hint))
                     return@Handler true
                 }
                 publish(client, handleCommand(client, controller, command, b))
@@ -261,7 +262,7 @@ class AssistantBridgeService : Service() {
         // 按剩余槽位裁剪这一批：整批登记，整批释放，不留下永久挂起的计数。
         val accepted = uris.take(controller.availableAttachmentSlots)
         if (accepted.isEmpty()) {
-            publish(client, "每条消息最多添加 $MAX_COMPOSER_ATTACHMENTS 个附件，请先移除或发送后再添加")
+            publish(client, getString(UiR.string.assistant_bridge_attachment_limit_reached, MAX_COMPOSER_ATTACHMENTS))
             return
         }
         controller.beginAttachmentImport(accepted.size)
@@ -293,9 +294,9 @@ class AssistantBridgeService : Service() {
             }
             withContext(Dispatchers.Main) {
                 val reason = when {
-                    failures > 0 && dropped > 0 -> "有 $failures 个附件无法读取，$dropped 个超出数量上限，请重新选择"
-                    failures > 0 -> "有 $failures 个附件无法读取，请重新选择"
-                    dropped > 0 -> "附件已达上限，只加入了前 ${accepted.size} 个"
+                    failures > 0 && dropped > 0 -> getString(UiR.string.assistant_bridge_attachment_read_and_dropped_error, failures, dropped)
+                    failures > 0 -> getString(UiR.string.assistant_bridge_attachment_read_failed, failures)
+                    dropped > 0 -> getString(UiR.string.assistant_bridge_attachment_limit_partial_accepted, accepted.size)
                     else -> null
                 }
                 if (clients[client.reply.binder] !== client) return@withContext
@@ -390,11 +391,11 @@ class AssistantBridgeService : Service() {
             publish(client)
         }
         val token = client.sessionToken ?: run {
-            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED))
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.notConnected(this@AssistantBridgeService)))
             return
         }
         if (!client.scope.canShare(runtime.connectedAccountId)) {
-            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH))
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.accountMismatch(this@AssistantBridgeService)))
             return
         }
         handoffInFlight = true
@@ -402,7 +403,7 @@ class AssistantBridgeService : Service() {
             val result = try {
                 runtime.prepareAssistantHandoff(token)
             } catch (_: CancellationException) {
-                AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+                AssistantHandoffResult.Rejected(AssistantHandoffReasons.notConnected(this@AssistantBridgeService))
             } finally {
                 handoffInFlight = false
             }

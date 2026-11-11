@@ -345,7 +345,7 @@ class WorkbenchVoiceSendTest {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
             createGate?.await()
-            return Conversation(ConversationId("created"), "新对话", 0)
+            return Conversation(ConversationId("created"), "", 0)
         }
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = error("UNSCOPED_SEND")

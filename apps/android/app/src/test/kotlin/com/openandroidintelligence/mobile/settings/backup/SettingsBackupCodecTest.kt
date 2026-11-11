@@ -120,6 +120,32 @@ class SettingsBackupCodecTest {
         )
         val failure = assertThrows(SettingsBackupFormatException::class.java) { decode(text) }
         assertTrue(failure.message!!.contains("schemaVersion=99"))
+        assertEquals(BackupFormatErrorCode.SCHEMA_VERSION_NEWER, failure.errorCode)
+        assertEquals(listOf("99"), failure.detailArgs)
+    }
+
+    @Test
+    fun malformedJsonCarriesAStableCodeAndKeepsTheCompatibleMessage() {
+        val failure = assertThrows(SettingsBackupFormatException::class.java) { decode("{invalid") }
+        assertEquals(BackupFormatErrorCode.INVALID_JSON, failure.errorCode)
+        assertEquals("备份文件不是有效的 JSON。", failure.message)
+    }
+
+    @Test
+    fun fieldTypeFailureCarriesTheFieldNameWithoutLosingTheCompatibleMessage() {
+        val text = SettingsBackupCodec.encode(
+            sections = mapOf("messageProcessing" to Json.of(mapOf("delayMillis" to "2500"))
+                as com.openandroidintelligence.gateway.schema.JsonValue.JObject),
+            appVersionName = "1.0.0",
+            appVersionCode = 1,
+            exportedAt = "2026-11-08T10:00:00Z",
+        )
+        val failure = assertThrows(SettingsBackupFormatException::class.java) {
+            SettingsBackupSections.decode(decode(text))
+        }
+        assertEquals(BackupFormatErrorCode.FIELD_INTEGER_REQUIRED, failure.errorCode)
+        assertEquals(listOf("delayMillis"), failure.detailArgs)
+        assertEquals("字段 delayMillis 必须是整数。", failure.message)
     }
 
     @Test

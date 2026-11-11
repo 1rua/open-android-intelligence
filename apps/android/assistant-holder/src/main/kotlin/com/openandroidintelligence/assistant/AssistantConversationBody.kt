@@ -15,6 +15,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
@@ -59,7 +61,7 @@ internal fun AssistantNoticeBar(
             )
             if (onDismiss != null) {
                 IconButton(onClick = onDismiss) {
-                    Icon(imageVector = Icons.Outlined.Close, contentDescription = "关闭提示")
+                    Icon(imageVector = Icons.Outlined.Close, contentDescription = stringResource(UiR.string.assistant_notice_dismiss_desc))
                 }
             }
         }

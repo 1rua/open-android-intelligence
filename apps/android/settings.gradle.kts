@@ -53,4 +53,5 @@ include(
     ":plugin-package",
     ":plugin-runtime-wasm",
     ":plugin-ui",
+    ":ui-resources",
 )

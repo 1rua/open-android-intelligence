@@ -95,7 +95,7 @@ class WorkbenchMessageIdentityConflictTest {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"), "A", 1)), null,
         )
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_new"), "新对话", 1)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_new"), "", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         // 与 CoreAgentConversationRepository 现场行为一致：受理返回的 id 不是客户端 id。
         override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("server_side_id", message.clientMessageId.value)

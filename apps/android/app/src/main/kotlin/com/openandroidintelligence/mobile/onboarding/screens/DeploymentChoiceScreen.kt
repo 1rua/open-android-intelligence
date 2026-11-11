@@ -39,6 +39,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -55,6 +56,7 @@ import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHe
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import androidx.compose.foundation.clickable
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * Agent Gateway 部署状态选择页。
@@ -106,7 +108,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Text(
-                text = "OAI Core\n部署好了吗？",
+                text = stringResource(UiR.string.conn_onboarding_deploy_choice_title),
                 fontSize = 30.sp,
                 lineHeight = 34.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -115,7 +117,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             Text(
-                text = "手机只连接一个 OAI Core，由 Core 接入不同 Agent。若已完成部署，直接进入登录。",
+                text = stringResource(UiR.string.conn_onboarding_deploy_choice_desc),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -123,9 +125,9 @@ fun DeploymentChoiceScreen(
             Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
             ChoiceCard(
                 index = "A",
-                title = "我已部署",
-                description = "已启动 OAI Core 并创建 OAI 账号。使用同一个服务端地址登录。",
-                trailing = "进入登录",
+                title = stringResource(UiR.string.conn_onboarding_deploy_choice_already_deployed),
+                description = stringResource(UiR.string.conn_onboarding_deploy_choice_already_deployed_desc),
+                trailing = stringResource(UiR.string.conn_onboarding_deploy_choice_btn_login),
                 accent = true,
                 onReveal = onAlreadyDeployed,
                 testTag = "onboarding-deploy-done",
@@ -133,9 +135,9 @@ fun DeploymentChoiceScreen(
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             ChoiceCard(
                 index = "B",
-                title = "我还未部署",
-                description = "查看 OAI Core 安装、账号创建与 oai serve 启动步骤，也保留旧 OpenClaw 兼容指南。",
-                trailing = "查看教程",
+                title = stringResource(UiR.string.conn_onboarding_deploy_choice_not_deployed),
+                description = stringResource(UiR.string.conn_onboarding_deploy_choice_not_deployed_desc),
+                trailing = stringResource(UiR.string.conn_onboarding_deploy_choice_btn_tutorial),
                 accent = false,
                 onClick = onNotDeployed,
                 testTag = "onboarding-deploy-pending",
@@ -159,14 +161,14 @@ fun DeploymentChoiceScreen(
                 Spacer(modifier = Modifier.width(Dimensions.SpaceCompact))
                 Column {
                     Text(
-                        text = "说明",
+                        text = stringResource(UiR.string.conn_onboarding_deploy_choice_notice_label),
                         style = MaterialTheme.typography.labelSmall,
                         letterSpacing = 1.4.sp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                     Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                     Text(
-                        text = "暂不提供统一云端服务，需连接自托管服务器",
+                        text = stringResource(UiR.string.conn_onboarding_deploy_choice_notice_content),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

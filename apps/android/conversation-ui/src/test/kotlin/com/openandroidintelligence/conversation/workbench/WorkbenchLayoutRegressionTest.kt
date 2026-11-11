@@ -368,7 +368,7 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
             override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-                Conversation(ConversationId("conv_streaming"), "新对话", 0)
+                Conversation(ConversationId("conv_streaming"), "", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
@@ -463,7 +463,7 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
             override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-                Conversation(ConversationId("conv_stop"), "新对话", 0)
+                Conversation(ConversationId("conv_stop"), "", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
@@ -630,7 +630,7 @@ class WorkbenchLayoutRegressionTest {
     private class EmptyGateway : ConversationRepository {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_test"), "新对话", 0)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_test"), "", 0)
         override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("msg_test", message.clientMessageId.value)
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()

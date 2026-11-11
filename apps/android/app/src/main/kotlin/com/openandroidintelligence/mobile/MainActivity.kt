@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.ui.resources.R as UiR
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -44,6 +45,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -181,7 +183,7 @@ class MainActivity : ComponentActivity() {
                     uiScope.launch {
                         val result = snackbarHostState.showSnackbar(
                             message = message,
-                            actionLabel = "去设置",
+                            actionLabel = getString(UiR.string.common_action_go_to_settings),
                             withDismissAction = true,
                         )
                         if (result == SnackbarResult.ActionPerformed) {
@@ -251,7 +253,7 @@ class MainActivity : ComponentActivity() {
                             kotlinx.coroutines.delay(HANDOFF_NAVIGATION_RETRY_MILLIS)
                         }
                         if (pendingHandoff.value == sessionToken && phase is ConnectionPhase.Connected) {
-                            notify("暂时无法进入助手中的会话，请稍后重试")
+                            notify(getString(UiR.string.assistant_main_enter_session_failed))
                         }
                     }
                 }
@@ -319,7 +321,7 @@ class MainActivity : ComponentActivity() {
                                 rejection != VoiceRejection.RECORDING_FAILED ->
                                     voiceRejectionMessage(rejection)
                                 startFailure.getAndSet(false) ->
-                                    "无法开始录音，请检查麦克风权限及占用情况"
+                                    getString(UiR.string.perm_audio_error_start_failed)
                                 else -> "录音或发送失败，请重试"
                             }
                             uiScope.launch { notify(message) }
@@ -378,7 +380,7 @@ class MainActivity : ComponentActivity() {
                     if (granted && target != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
                         beginRecording(target)
                     } else if (!granted) {
-                        notifyWithSettingsAction("需要麦克风权限才能发送语音")
+                        notifyWithSettingsAction(getString(UiR.string.perm_audio_required))
                     }
                 }
                 val startVoiceInput: () -> Unit = {
@@ -462,8 +464,8 @@ class MainActivity : ComponentActivity() {
                                 MediaProjectionCaptureService.stop(this@MainActivity)
                             }
                             notify(
-                                if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
-                                else "屏幕采集会话建立失败，圈选暂不可用",
+                                if (granted) getString(UiR.string.perm_screen_capture_granted_hint)
+                                else getString(UiR.string.perm_screen_capture_session_failed),
                             )
                         }
                     } else {
@@ -472,8 +474,8 @@ class MainActivity : ComponentActivity() {
                         )
                         MediaProjectionCaptureService.stop(this@MainActivity)
                         notify(
-                            if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
-                            else "未获得屏幕采集授权，圈选暂不可用",
+                            if (granted) getString(UiR.string.perm_screen_capture_granted_hint)
+                            else getString(UiR.string.perm_screen_capture_denied),
                         )
                     }
                 }
@@ -509,7 +511,7 @@ class MainActivity : ComponentActivity() {
                 ) { result ->
                     val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
                     if (source == null) {
-                        notify("未开启屏幕截图功能")
+                        notify(getString(UiR.string.perm_screen_capture_disabled))
                         return@rememberLauncherForActivityResult
                     }
                     val accepted = result.resultCode == android.app.Activity.RESULT_OK
@@ -519,7 +521,7 @@ class MainActivity : ComponentActivity() {
                         source.release()
                         com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
                             .stopForeground(this@MainActivity)
-                        notify("未获得屏幕截图授权，截图暂时不可用")
+                        notify(getString(UiR.string.perm_screen_screenshot_denied))
                         return@rememberLauncherForActivityResult
                     }
                     val stillGranted = captureConsentCurrent()
@@ -528,7 +530,7 @@ class MainActivity : ComponentActivity() {
                         com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
                             .stopForeground(this@MainActivity)
                         remoteCaptureTicket = null
-                        notify("截图能力或本机设置已变化，请重新发起系统授权")
+                        notify(getString(UiR.string.perm_screen_screenshot_changed))
                         return@rememberLauncherForActivityResult
                     }
                     // 先等前台服务完成 startForeground，再转交授权结果：
@@ -539,7 +541,7 @@ class MainActivity : ComponentActivity() {
                                 source.release()
                                 com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(this@MainActivity)
                                 remoteCaptureTicket = null
-                                notify("截图能力已撤销，未使用系统授权结果")
+                                notify(getString(UiR.string.perm_screen_screenshot_revoked))
                                 return@startForeground
                             }
                             val granted = source.onAuthorizationResult(result.resultCode, result.data)
@@ -549,8 +551,8 @@ class MainActivity : ComponentActivity() {
                                     .stopForeground(this@MainActivity)
                             }
                             notify(
-                                if (granted) "已获得屏幕截图授权"
-                                else "屏幕截图会话建立失败，截图暂不可用"
+                                if (granted) getString(UiR.string.perm_screen_screenshot_granted)
+                                else getString(UiR.string.perm_screen_screenshot_session_failed)
                             )
                         }
                 }
@@ -558,15 +560,15 @@ class MainActivity : ComponentActivity() {
                     val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
                     val permitted = captureEnabled() && !app.kernel.isEmergencyStopped()
                     when {
-                        source == null -> notify("未开启屏幕截图功能")
-                        !permitted -> notify("请先启用截图插件并开启截图权限")
+                        source == null -> notify(getString(UiR.string.perm_screen_capture_disabled))
+                        !permitted -> notify(getString(UiR.string.perm_screen_screenshot_enable_plugin_hint))
                         // 截图来源已可用（无障碍按需截图已就绪，或投屏此前已授权）
                         // 时不需要再走一次系统授权，如实告知即可。
-                        source.isAvailable -> notify("截图已可用，不需要额外的系统授权")
+                        source.isAvailable -> notify(getString(UiR.string.perm_screen_screenshot_ready_no_auth))
                         else -> {
                             val intent = source.createAuthorizationIntent()
                             if (intent == null) {
-                                notify("系统未提供屏幕录制服务，截图暂不可用")
+                                notify(getString(UiR.string.perm_screen_record_service_unavailable))
                             } else {
                                 remoteCaptureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
                                     app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value,
@@ -823,11 +825,11 @@ class MainActivity : ComponentActivity() {
                                             // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
                                             // 不再把用户推进一次多余的投屏确认流程。
                                             if (screenCaptureSource.isAvailable) {
-                                                notify("现在可以直接圈选，无需额外授权")
+                                                notify(getString(UiR.string.perm_screen_capture_direct_hint))
                                             } else {
                                                 val intent = screenCaptureSource.createAuthorizationIntent()
                                                 if (intent == null) {
-                                                    notify("此设备不支持屏幕采集，圈选不可用")
+                                                    notify(getString(UiR.string.perm_screen_capture_unsupported))
                                                 } else {
                                                     screenCaptureAuthLauncher.launch(intent)
                                                 }
@@ -896,13 +898,13 @@ private fun OfflineMirrorBanner(onReconnect: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "离线模式：仅显示本地缓存，连接后可继续收发",
+                text = stringResource(UiR.string.conn_status_offline_mode_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = Dimensions.SpaceSmall),
             )
-            TextButton(onClick = onReconnect) { Text("重新连接") }
+            TextButton(onClick = onReconnect) { Text(stringResource(UiR.string.conn_action_reconnect)) }
         }
     }
 }

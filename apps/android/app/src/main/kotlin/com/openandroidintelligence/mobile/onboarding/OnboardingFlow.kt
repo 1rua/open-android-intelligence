@@ -38,9 +38,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.conversation.theme.ThemePalette
@@ -126,7 +128,7 @@ fun OnboardingFlow(
                 if (awaitingRoleSetup) {
                     awaitingRoleSetup = false
                     if (!AssistantRole.isAssistantRoleHeld(context)) {
-                        showRoleNotice("未检测到已设置。请在系统设置中选择 OAI 作为数字助理")
+                        showRoleNotice(context.getString(UiR.string.perm_role_assistant_not_set_hint))
                     }
                 }
             }
@@ -217,7 +219,7 @@ fun OnboardingFlow(
         pendingPermissionId = null
         val entry = entries.firstOrNull { it.systemRole == role }
         if (entry != null) statuses[entry.id] = PermissionStatus.UNSUPPORTED
-        showRoleNotice("系统未提供可用的数字助理设置页，可稍后在系统设置中手动选择")
+        showRoleNotice(context.getString(UiR.string.perm_role_assistant_settings_unavailable))
     }
 
     fun requestPermission(id: String) {
@@ -458,7 +460,7 @@ private fun RevealLandingMark() {
         )
         Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
         Text(
-            text = "连接你的 OAI Core",
+            text = stringResource(UiR.string.conn_onboarding_welcome_connect_title),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

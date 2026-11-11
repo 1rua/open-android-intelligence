@@ -86,11 +86,13 @@ object SettingsBackupCodec {
         val root = try {
             Json.parse(text)
         } catch (_: IllegalArgumentException) {
-            throw SettingsBackupFormatException("备份文件不是有效的 JSON。")
-        } as? JsonValue.JObject ?: throw SettingsBackupFormatException("备份文件顶层必须是 JSON 对象。")
+            throw SettingsBackupFormatException("备份文件不是有效的 JSON。", BackupFormatErrorCode.INVALID_JSON)
+        } as? JsonValue.JObject ?: throw SettingsBackupFormatException(
+            "备份文件顶层必须是 JSON 对象。", BackupFormatErrorCode.TOP_LEVEL_OBJECT_REQUIRED, // i18n-ignore: 保留兼容 message；展示由错误码读取资源
+        )
 
         val settings = JsonFields.obj(JsonFields.field(root, "settings"))
-            ?: throw SettingsBackupFormatException("备份文件缺少 settings。")
+            ?: throw SettingsBackupFormatException("备份文件缺少 settings。", BackupFormatErrorCode.SETTINGS_REQUIRED)
         val ignored = buildList {
             root.fields.map { it.first }.filter { it !in SettingsBackupSchema.TOP_LEVEL_FIELDS }.forEach(::add)
             settings.fields.forEach { (name, value) ->
@@ -105,29 +107,37 @@ object SettingsBackupCodec {
         }.distinct()
 
         var version = JsonFields.int(root, "schemaVersion")
-            ?: throw SettingsBackupFormatException("备份文件缺少 schemaVersion。")
+            ?: throw SettingsBackupFormatException("备份文件缺少 schemaVersion。", BackupFormatErrorCode.SCHEMA_VERSION_REQUIRED)
         if (version > SettingsBackupSchema.CURRENT_VERSION) {
-            throw SettingsBackupFormatException("备份文件来自更新版本的 App（schemaVersion=$version），请先升级 App。")
+            throw SettingsBackupFormatException(
+                "备份文件来自更新版本的 App（schemaVersion=$version），请先升级 App。",
+                BackupFormatErrorCode.SCHEMA_VERSION_NEWER, listOf(version.toString()),
+            )
         }
-        if (version < 0) throw SettingsBackupFormatException("备份文件 schemaVersion 非法。")
+        if (version < 0) throw SettingsBackupFormatException("备份文件 schemaVersion 非法。", BackupFormatErrorCode.SCHEMA_VERSION_INVALID)
         val exportedAt = JsonFields.string(root, "exportedAt")?.takeIf { it.isNotBlank() }
-            ?: throw SettingsBackupFormatException("备份文件缺少导出时间。")
+            ?: throw SettingsBackupFormatException("备份文件缺少导出时间。", BackupFormatErrorCode.EXPORTED_AT_REQUIRED)
         val appVersionName = JsonFields.string(root, "appVersionName")?.takeIf { it.isNotBlank() }
-            ?: throw SettingsBackupFormatException("备份文件缺少 App 版本。")
+            ?: throw SettingsBackupFormatException("备份文件缺少 App 版本。", BackupFormatErrorCode.APP_VERSION_NAME_REQUIRED)
         val appVersionCode = JsonFields.long(root, "appVersionCode")
-            ?: throw SettingsBackupFormatException("备份文件缺少 App versionCode。")
+            ?: throw SettingsBackupFormatException("备份文件缺少 App versionCode。", BackupFormatErrorCode.APP_VERSION_CODE_REQUIRED)
 
         var migrated = settings
         while (version < SettingsBackupSchema.CURRENT_VERSION) {
             val migrate = SettingsBackupSchema.MIGRATIONS[version]
-                ?: throw SettingsBackupFormatException("备份文件版本 $version 无法迁移到当前版本。")
+                ?: throw SettingsBackupFormatException(
+                    "备份文件版本 $version 无法迁移到当前版本。",
+                    BackupFormatErrorCode.MIGRATION_UNAVAILABLE, listOf(version.toString()),
+                )
             migrated = migrate(migrated)
             version++
         }
         val sections = migrated.fields.mapNotNull { (name, value) ->
             if (name !in knownSections) return@mapNotNull null
             val section = value as? JsonValue.JObject
-                ?: throw SettingsBackupFormatException("设置项 $name 必须是 JSON 对象。")
+                ?: throw SettingsBackupFormatException(
+                    "设置项 $name 必须是 JSON 对象。", BackupFormatErrorCode.SECTION_OBJECT_REQUIRED, listOf(name),
+                )
             name to section
         }.toMap()
         return SettingsBackupDocument(
@@ -145,38 +155,46 @@ object SettingsBackupCodec {
 internal object BackupFields {
     fun string(section: JsonValue.JObject, name: String): String? =
         field(section, name)?.let { (it as? JsonValue.JString)?.value
-            ?: throw SettingsBackupFormatException("字段 $name 必须是字符串。") }
+            ?: throw SettingsBackupFormatException("字段 $name 必须是字符串。", BackupFormatErrorCode.FIELD_STRING_REQUIRED, listOf(name)) }
 
     fun boolean(section: JsonValue.JObject, name: String): Boolean? =
         field(section, name)?.let { (it as? JsonValue.JBool)?.value
-            ?: throw SettingsBackupFormatException("字段 $name 必须是布尔值。") }
+            ?: throw SettingsBackupFormatException("字段 $name 必须是布尔值。", BackupFormatErrorCode.FIELD_BOOLEAN_REQUIRED, listOf(name)) }
 
     fun int(section: JsonValue.JObject, name: String): Int? =
         field(section, name)?.let { raw ->
             (raw as? JsonValue.JNumber)?.raw?.toIntOrNull()
-                ?: throw SettingsBackupFormatException("字段 $name 必须是整数。")
+                ?: throw SettingsBackupFormatException("字段 $name 必须是整数。", BackupFormatErrorCode.FIELD_INTEGER_REQUIRED, listOf(name))
         }
 
     fun strings(section: JsonValue.JObject, name: String): List<String>? =
         field(section, name)?.let { raw ->
-            val array = raw as? JsonValue.JArray ?: throw SettingsBackupFormatException("字段 $name 必须是数组。")
+            val array = raw as? JsonValue.JArray ?: throw SettingsBackupFormatException(
+                "字段 $name 必须是数组。", BackupFormatErrorCode.FIELD_ARRAY_REQUIRED, listOf(name),
+            )
             array.items.map { item ->
                 (item as? JsonValue.JString)?.value
-                    ?: throw SettingsBackupFormatException("字段 $name 只能包含字符串。")
+                    ?: throw SettingsBackupFormatException("字段 $name 只能包含字符串。", BackupFormatErrorCode.FIELD_STRINGS_REQUIRED, listOf(name))
             }
         }
 
     fun objects(section: JsonValue.JObject, name: String): List<JsonValue.JObject>? =
         field(section, name)?.let { raw ->
-            val array = raw as? JsonValue.JArray ?: throw SettingsBackupFormatException("字段 $name 必须是数组。")
+            val array = raw as? JsonValue.JArray ?: throw SettingsBackupFormatException(
+                "字段 $name 必须是数组。", BackupFormatErrorCode.FIELD_ARRAY_REQUIRED, listOf(name),
+            )
             array.items.map { item ->
-                item as? JsonValue.JObject ?: throw SettingsBackupFormatException("字段 $name 只能包含对象。")
+                item as? JsonValue.JObject ?: throw SettingsBackupFormatException(
+                    "字段 $name 只能包含对象。", BackupFormatErrorCode.FIELD_OBJECTS_REQUIRED, listOf(name),
+                )
             }
         }
 
     fun objectOrNull(section: JsonValue.JObject, name: String): JsonValue.JObject? =
         field(section, name)?.let { raw ->
-            raw as? JsonValue.JObject ?: throw SettingsBackupFormatException("字段 $name 必须是对象。")
+            raw as? JsonValue.JObject ?: throw SettingsBackupFormatException(
+                "字段 $name 必须是对象。", BackupFormatErrorCode.FIELD_OBJECT_REQUIRED, listOf(name),
+            )
         }
 
     private fun field(section: JsonValue.JObject, name: String): JsonValue? =

@@ -21,6 +21,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":ui-resources"))
     implementation(project(":conversation-domain"))
     implementation(project(":gateway-client"))
     // 圈选层的截图来自能力端口（ScreenCaptureSource），UI 只依赖接口，

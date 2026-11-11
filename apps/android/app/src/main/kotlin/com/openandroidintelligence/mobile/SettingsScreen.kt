@@ -8,6 +8,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.openandroidintelligence.mobile.settings.SettingsNavHost
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /** Stable route strings retained for existing entry points and saved navigation state. */
 object SettingsRoutes {
@@ -77,11 +79,11 @@ internal fun DevicePushSubScreen(
 ) {
     if (runtime == null) {
         androidx.compose.foundation.layout.Box(Modifier) {
-            androidx.compose.material3.Text("本机加密队列暂不可用，请检查设备存储和密钥状态。")
+            androidx.compose.material3.Text(stringResource(UiR.string.settings_push_unavailable))
         }
         return
     }
-    com.openandroidintelligence.mobile.settings.SettingsPageScaffold("主动推送", presentation, onBack) { padding ->
+    com.openandroidintelligence.mobile.settings.SettingsPageScaffold(stringResource(UiR.string.settings_push_title), presentation, onBack) { padding ->
         com.openandroidintelligence.mobile.push.PushSettingsScreen(
             runtime = runtime,
             endpoints = endpoints,

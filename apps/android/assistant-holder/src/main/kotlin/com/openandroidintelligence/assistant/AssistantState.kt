@@ -1,7 +1,10 @@
 package com.openandroidintelligence.assistant
 
 import androidx.compose.runtime.Immutable
+import android.content.Context
+import androidx.annotation.StringRes
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
 import com.openandroidintelligence.conversation.assistant.decodeState
 import com.openandroidintelligence.conversation.assistant.decodeTimeline
@@ -140,18 +143,26 @@ internal fun parseAssistantState(payload: String): AssistantState? {
  *
  * 每个分支都有明确的文字结论，不靠颜色或图形暗示连接状态（规格 §7）。
  */
-internal fun AssistantState.gatewayStatusLabel(): String = when {
-    !bridgeAvailable -> "助理服务未连接"
-    !connected -> "Gateway 未连接"
-    isStopping -> "Gateway 已连接 · 正在停止生成"
-    isGenerating -> "Gateway 已连接 · 正在生成"
-    else -> "Gateway 已连接"
+@StringRes
+internal fun AssistantState.gatewayStatusResId(): Int = when {
+    !bridgeAvailable -> UiR.string.assistant_gateway_status_disconnected_service
+    !connected -> UiR.string.assistant_gateway_status_disconnected_gateway
+    isStopping -> UiR.string.assistant_gateway_status_stopping
+    isGenerating -> UiR.string.assistant_gateway_status_generating
+    else -> UiR.string.assistant_gateway_status_connected
 }
 
+internal fun AssistantState.gatewayStatusLabel(context: Context): String =
+    context.getString(gatewayStatusResId())
+
 /** 输入坞禁用原因；null 表示当前可以发送。 */
-internal fun AssistantState.composerBlockReason(): String? = when {
-    !bridgeAvailable -> "助理服务无法连接，请打开 App 后重试"
-    !connected -> "请先在 App 中连接 Gateway"
-    hasUnknownOutcome -> "上一条消息结果未知，请先在 App 中确认"
+@StringRes
+internal fun AssistantState.composerBlockReasonResId(): Int? = when {
+    !bridgeAvailable -> UiR.string.assistant_composer_block_service_unavailable
+    !connected -> UiR.string.assistant_composer_block_gateway_disconnected
+    hasUnknownOutcome -> UiR.string.assistant_composer_block_outcome_unknown
     else -> null
 }
+
+internal fun AssistantState.composerBlockReason(context: Context): String? =
+    composerBlockReasonResId()?.let(context::getString)

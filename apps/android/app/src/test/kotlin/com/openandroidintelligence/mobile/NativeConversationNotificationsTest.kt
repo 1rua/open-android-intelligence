@@ -580,7 +580,8 @@ class NativeConversationNotificationsTest {
         assertTrue(text().endsWith("Later stream ending"))
         publisher.update(running.copy(status = NativeConversationStatus.COMPLETED, latestReply = "Opening line. " + prefix + "Final complete ending"), true)
         assertTrue(text().startsWith("Opening line. "))
-        assertTrue("Final excerpt tail: ${text().takeLast(120)}", text().contains("Final complete ending\n\n$COMPLETE_REPLY_HINT"))
+        val hint = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_excerpt_full_hint)
+        assertTrue("Final excerpt tail: ${text().takeLast(120)}", text().contains("Final complete ending\n\n$hint"))
         assertEquals(TERMINAL_REPLY_EXCERPT_CODE_POINTS, text().codePointCount(0, text().length))
     }
 

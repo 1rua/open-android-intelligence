@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
 import java.time.Instant
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /** App reply alerts are independent of notification collection and pairing grants. */
 class ReplyNotificationSettings(
@@ -173,8 +174,8 @@ internal class AndroidReplyNotificationPublisher(
 
     fun update(session: NativeConversationSession, alert: Boolean) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
-            .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
+        manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, context.getString(UiR.string.notif_channel_reply_name), NotificationManager.IMPORTANCE_DEFAULT)
+            .apply { description = context.getString(UiR.string.notif_channel_reply_desc); setAllowBubbles(true) })
         // 助理界面已展示这条会话：撤回已发布的通知，也不再以气泡重复打扰用户。
         if (suppress(session.target)) {
             cancel(session.target)
@@ -183,17 +184,19 @@ internal class AndroidReplyNotificationPublisher(
         val hasLiveUpdate = liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
+        // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
+        val title = session.title.ifBlank { context.getString(UiR.string.notif_conv_default_title) }
         val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
         val participantKey = replyDigest("${target.profileId}\u0000${target.accountId}")
-        val localUser = Person.Builder().setName("我").setKey("user-$participantKey").setBot(false).build()
+        val localUser = Person.Builder().setName(context.getString(UiR.string.notif_person_local_user)).setKey("user-$participantKey").setBot(false).build()
         val agent = Person.Builder().setName("Agent").setKey("agent-$participantKey")
             .setBot(true).setIcon(icon).build()
         val bubbleIntent = target.bubbleIntent(context)
         val shortcutManager = context.getSystemService(ShortcutManager::class.java)
         val accountGroup = replyAccountGroup(target.profileId, target.accountId)
-        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(session.title)
+        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(title)
             .setActivity(android.content.ComponentName(context, MainActivity::class.java))
             .setCategories(setOf("android.shortcut.conversation"))
             .setLongLived(true).setPersons(arrayOf(localUser, agent)).setIcon(icon)
@@ -202,10 +205,10 @@ internal class AndroidReplyNotificationPublisher(
         // A device may disable shortcuts/bubbles. The notification still works.
         val keepBubble = hasLiveUpdate && userSelectedBubble(manager, shortcutId, tag)
         val bubbleMetadata = try {
-            if (publishedShortcuts[shortcutId] != session.title) {
+            if (publishedShortcuts[shortcutId] != title) {
                 shortcutManager.enableShortcuts(listOf(shortcutId))
                 shortcutManager.pushDynamicShortcut(shortcut)
-                publishedShortcuts[shortcutId] = session.title
+                publishedShortcuts[shortcutId] = title
             }
             Notification.BubbleMetadata.Builder(shortcutId).setDesiredHeight(640)
                 .setSuppressNotification(keepBubble).build()
@@ -216,30 +219,30 @@ internal class AndroidReplyNotificationPublisher(
         }
         val pendingIntent = PendingIntent.getActivity(context, 0, target.intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val heading = if (session.isRunning && session.lastOutcome != null) when (session.lastOutcome) {
-            NativeConversationStatus.COMPLETED -> "Agent 已回复，仍有任务处理中"
-            NativeConversationStatus.FAILED -> "部分任务失败，仍有任务处理中"
-            NativeConversationStatus.CANCELLED -> "部分任务已取消，仍有任务处理中"
-            else -> "Agent 正在处理"
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_heading_replied_running)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_heading_partial_failed)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_heading_partial_cancelled)
+            else -> context.getString(UiR.string.notif_reply_heading_processing)
         } else when (session.status) {
-            NativeConversationStatus.QUEUED -> "Agent 任务排队中"
-            NativeConversationStatus.RUNNING -> "Agent 正在处理"
-            NativeConversationStatus.COMPLETED -> "Agent 任务已完成"
-            NativeConversationStatus.FAILED -> "Agent 任务失败"
-            NativeConversationStatus.CANCELLED -> "Agent 任务已取消"
-            NativeConversationStatus.ENDED -> "任务已结束"
-            NativeConversationStatus.DISCONNECTED -> "Gateway 已断开，任务状态待同步"
+            NativeConversationStatus.QUEUED -> context.getString(UiR.string.notif_reply_heading_queued)
+            NativeConversationStatus.RUNNING -> context.getString(UiR.string.notif_reply_heading_running)
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_heading_completed)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_heading_failed)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_heading_cancelled)
+            NativeConversationStatus.ENDED -> context.getString(UiR.string.notif_reply_heading_ended)
+            NativeConversationStatus.DISCONNECTED -> context.getString(UiR.string.notif_reply_heading_disconnected)
         }
-        val preview = notificationReplyExcerpt(session.latestReply, session.isRunning).ifBlank { when (session.status) {
-            NativeConversationStatus.QUEUED -> "等待 Agent 开始处理"
-            NativeConversationStatus.RUNNING -> "等待 Agent 回复"
-            NativeConversationStatus.COMPLETED -> "已收到回复，点击查看会话"
-            NativeConversationStatus.FAILED -> "任务未完成，请查看会话中的错误信息"
-            NativeConversationStatus.CANCELLED -> "任务已取消"
-            NativeConversationStatus.ENDED -> "任务已结束，点击查看会话"
-            NativeConversationStatus.DISCONNECTED -> "重新连接后同步任务状态"
+        val preview = notificationReplyExcerpt(session.latestReply, session.isRunning, context.getString(UiR.string.notif_reply_excerpt_full_hint)).ifBlank { when (session.status) {
+            NativeConversationStatus.QUEUED -> context.getString(UiR.string.notif_reply_preview_waiting_start)
+            NativeConversationStatus.RUNNING -> context.getString(UiR.string.notif_reply_preview_waiting_reply)
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_preview_received)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_preview_error)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_preview_cancelled)
+            NativeConversationStatus.ENDED -> context.getString(UiR.string.notif_reply_preview_ended)
+            NativeConversationStatus.DISCONNECTED -> context.getString(UiR.string.notif_reply_preview_reconnecting)
         } }
         val style = Notification.MessagingStyle(localUser)
-            .setConversationTitle(session.title).addMessage(preview, session.updatedAt, agent)
+            .setConversationTitle(title).addMessage(preview, session.updatedAt, agent)
         val notification = Notification.Builder(context, REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
             .setContentTitle(heading)
@@ -256,7 +259,7 @@ internal class AndroidReplyNotificationPublisher(
             .setAutoCancel(!session.isRunning)
             .setOnlyAlertOnce(hasLiveUpdate || !alert)
             .setContentIntent(pendingIntent)
-            .addAction(Notification.Action.Builder(null, "打开会话窗口",
+            .addAction(Notification.Action.Builder(null, context.getString(UiR.string.notif_action_open_conversation),
                 PendingIntent.getActivity(context, 0, bubbleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
             .build()
         // Permission may be revoked between checking it and the Binder call.

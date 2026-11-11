@@ -69,6 +69,7 @@ MODULE_TASKS = {
         ":capability-sync-runtime:testDebugUnitTest",
         ":artifact-ports:testDebugUnitTest",
         ":assistant-holder:testDebugUnitTest",
+        ":ui-resources:testDebugUnitTest",
     ],
 }
 

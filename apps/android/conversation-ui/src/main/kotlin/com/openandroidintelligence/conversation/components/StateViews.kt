@@ -9,12 +9,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 无论处于哪一状态都保留调用方的尺寸约束，避免列表把编辑器挤出窗口。
@@ -29,31 +31,31 @@ fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Uni
     Box(modifier, contentAlignment = Alignment.Center) {
         when (state) {
             Loadable.Idle -> Text(
-                "选择会话后显示内容",
+                stringResource(UiR.string.common_state_idle_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(Dimensions.SpaceMedium),
             )
             Loadable.Loading -> StatusColumn(
                 icon = null,
-                title = "正在加载",
-                body = "正在从 Gateway 读取内容…",
+                title = stringResource(UiR.string.common_status_loading_title),
+                body = stringResource(UiR.string.common_state_loading_reading),
                 failed = false,
                 action = null,
             )
             Loadable.Empty -> StatusColumn(
                 icon = Icons.Default.Forum,
-                title = "还没有内容",
+                title = stringResource(UiR.string.common_status_empty),
                 body = emptyHint,
                 failed = false,
-                action = "刷新" to onRetry,
+                action = stringResource(UiR.string.common_action_refresh) to onRetry,
             )
             is Loadable.Failed -> StatusColumn(
                 icon = Icons.Default.ErrorOutline,
-                title = "暂时无法加载",
+                title = stringResource(UiR.string.common_status_load_failed),
                 body = readableFailure(state.code),
                 failed = true,
-                action = if (state.retryable) "重试" to onRetry else null,
+                action = if (state.retryable) stringResource(UiR.string.common_action_retry) to onRetry else null,
             )
             is Loadable.Ready -> ready(state.value)
         }

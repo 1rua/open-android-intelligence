@@ -1,9 +1,15 @@
 package com.openandroidintelligence.mobile.onboarding
 
+import android.app.Application
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * 权限目录的可见性与排序测试。
@@ -13,7 +19,11 @@ import org.junit.Test
  * - 「拒绝权限不应阻断无关功能」→ 任何权限都不得被标记为登录前置条件；
  * - 布局稳定 → 分组顺序固定。
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class PermissionCatalogTest {
+
+    private val context: Context get() = ApplicationProvider.getApplicationContext<Application>()
 
     /** 引导展示完整的基础功能、可选增强以及设备能力项。 */
     @Test
@@ -144,8 +154,10 @@ class PermissionCatalogTest {
             androidSdk = 34,
             enabledPluginPrimitives = setOf(KERNEL_SMS_READ, KERNEL_CALL_LOG_READ, KERNEL_NOTIFICATIONS_READ),
         )
-        assertTrue(entries.all { it.purpose.isNotBlank() })
-        assertTrue(entries.all { it.displayName.isNotBlank() })
+        assertTrue(entries.all { it.purposeRes != 0 })
+        assertTrue(entries.all { it.displayNameRes != 0 })
+        assertTrue(entries.all { context.getString(it.purposeRes).isNotBlank() })
+        assertTrue(entries.all { context.getString(it.displayNameRes).isNotBlank() })
     }
 
     /**
@@ -181,11 +193,20 @@ class PermissionCatalogTest {
 
     @Test
     fun permissionGuidanceUsesAndroidLocalSettingsAndRetainsIndependentConsent() {
-        assertTrue(PERMISSION_INTRO_BODY.contains("设备能力由本机决定"))
-        assertFalse(PERMISSION_INTRO_BODY.contains("按账号单独授权"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("已关闭的设置会保留"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("旧设置需先在本机复核"))
-        assertTrue(PERMISSION_NOTICE_BODY.contains("敏感操作确认仍分别检查"))
-        assertFalse(PERMISSION_NOTICE_BODY.contains("设备能力与配对授权"))
+        assertTrue(PERMISSION_NOTICE_TITLE_RES != 0)
+        assertTrue(PERMISSION_INTRO_BODY_RES != 0)
+        assertTrue(PERMISSION_NOTICE_BODY_RES != 0)
+
+        val noticeTitle = context.getString(PERMISSION_NOTICE_TITLE_RES)
+        val introBody = context.getString(PERMISSION_INTRO_BODY_RES)
+        val noticeBody = context.getString(PERMISSION_NOTICE_BODY_RES)
+
+        assertEquals("权限 ≠ 授权", noticeTitle)
+        assertTrue(introBody.contains("设备能力由本机决定"))
+        assertFalse(introBody.contains("按账号单独授权"))
+        assertTrue(noticeBody.contains("已关闭的设置会保留"))
+        assertTrue(noticeBody.contains("旧设置需先在本机复核"))
+        assertTrue(noticeBody.contains("敏感操作确认仍分别检查"))
+        assertFalse(noticeBody.contains("设备能力与配对授权"))
     }
 }

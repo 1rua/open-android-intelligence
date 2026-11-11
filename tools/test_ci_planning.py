@@ -151,6 +151,7 @@ def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
     "apps/android/build.gradle.kts",
     "apps/android/app/build.gradle.kts",
     "apps/android/gradle/mvp-forbidden-surfaces.gradle.kts",
+    "apps/android/gradle/i18n-quality-gates.gradle.kts",
     "package-lock.json",
     "tools/smart-test.py",
 ])
@@ -439,6 +440,24 @@ def test_measurement_changes_run_the_hermes_lane(impact):
     assert lanes["hermes"] is True
 
 
+def test_ui_resources_change_runs_consumer_lanes_and_all_app_sections(impact):
+    """ui-resources changes must run platform, conversation, device, and the full app regression."""
+    result = impact.classify([
+        ("M", "apps/android/ui-resources/src/main/res/values/strings_common.xml"),
+    ])
+    lanes = result["lanes"]
+    assert lanes["android-platform"] is True
+    assert lanes["android-conversation"] is True
+    assert lanes["android-device"] is True
+    assert lanes["android-app"] is True
+    assert lanes["android-play"] is True
+    assert lanes["android-gateway"] is False
+    assert result["full_required"] is False
+    assert result["unknown"] is False
+    # ui-resources 对应用套件是横切的，必须覆盖所有 app sections
+    assert result["app_sections"] == set(impact.APP_SECTIONS)
+
+
 def test_every_module_with_tests_has_a_lane(tasks):
     """A module test suite with no lane never runs in CI."""
     android_root = REPO_ROOT / "apps/android"
@@ -634,6 +653,26 @@ def test_ci_gate_depends_on_every_android_prerequisite():
     assert "android-setup" in gate_needs
     assert "android-preflight" in gate_needs
     assert "changes" in gate_needs
+
+
+def test_android_preflight_executes_i18n_gates_and_fast_tests_the_checkers():
+    """PR 实际执行的预检须调用文案门禁，快速通道同时验证门禁自身的回归。"""
+    import yaml
+
+    jobs = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+    )["jobs"]
+    preflight_commands = [
+        shlex.split(line)
+        for step in jobs["android-preflight"]["steps"]
+        for line in step.get("run", "").splitlines()
+    ]
+    for script in ("tools/check_hardcoded_chinese.py", "tools/test_string_resources_integrity.py"):
+        assert ["python3", script] in preflight_commands
+
+    fast_arguments = shlex.split("\n".join(step.get("run", "") for step in jobs["fast"]["steps"]))
+    assert "tools/test_check_hardcoded_chinese.py" in fast_arguments
+    assert "tools/test_test_string_resources_integrity.py" in fast_arguments
 
 
 def test_artifact_consumers_cannot_outlive_their_producer():

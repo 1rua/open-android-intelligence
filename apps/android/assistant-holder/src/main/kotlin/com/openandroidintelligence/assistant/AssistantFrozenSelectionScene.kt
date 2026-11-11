@@ -23,6 +23,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -163,7 +165,7 @@ internal fun AssistantFrozenSelectionScene(
                 onRequestHandoff = onRequestHandoff,
                 onDragWindowExpanded = onDragWindowExpanded,
                 enabled = enabled,
-                stateDescription = "画圈选屏",
+                stateDescription = stringResource(UiR.string.assistant_selection_state_crop),
             )
             AssistantCompactBar(
                 editor = editor,

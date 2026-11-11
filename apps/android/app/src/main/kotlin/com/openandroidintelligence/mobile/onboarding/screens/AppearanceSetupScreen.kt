@@ -21,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -28,6 +29,7 @@ import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.mobile.AppearanceSettings
 import com.openandroidintelligence.mobile.ThemePreference
 import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.mobile.settings.appearance.AppearanceEditorContent
 
 @Composable
@@ -50,9 +52,9 @@ fun AppearanceSetupScreen(
         ) {
             Text("PERSONALIZATION", style = MaterialTheme.typography.labelSmall, letterSpacing = 2.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("外观选项", fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.ExtraBold,
+            Text(stringResource(UiR.string.common_onboarding_appearance_title), fontSize = 30.sp, lineHeight = 34.sp, fontWeight = FontWeight.ExtraBold,
                 letterSpacing = (-0.9).sp, color = MaterialTheme.colorScheme.onSurface)
-            Text("选择适合你的界面主题与色彩风格", style = MaterialTheme.typography.bodyMedium,
+            Text(stringResource(UiR.string.common_onboarding_appearance_desc), style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(Dimensions.SpaceSmall))
             AppearanceEditorContent(
@@ -77,7 +79,7 @@ fun AppearanceSetupScreen(
                     .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)
                     .testTag("onboarding-appearance-next"),
             ) {
-                Text("下一步", style = MaterialTheme.typography.labelLarge)
+                Text(stringResource(UiR.string.common_action_next), style = MaterialTheme.typography.labelLarge)
                 Spacer(Modifier.width(Dimensions.SpaceSmall))
                 Text("→", style = MaterialTheme.typography.labelLarge)
             }

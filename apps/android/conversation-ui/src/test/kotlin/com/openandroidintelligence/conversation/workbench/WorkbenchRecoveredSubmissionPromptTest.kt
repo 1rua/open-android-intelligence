@@ -117,7 +117,7 @@ class WorkbenchRecoveredSubmissionPromptTest {
             ConversationPage(listOf(thread), null)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-            Conversation(ConversationId("new-thread"), "新对话", 0L)
+            Conversation(ConversationId("new-thread"), "", 0L)
         override suspend fun submitMessage(message: OutgoingMessage) =
             MessageAcceptance("message", message.clientMessageId.value)
         override suspend fun submitBatch(batch: MessageBatch) = com.openandroidintelligence.conversation.ports.BatchAcceptance(batch.batchId)

@@ -50,6 +50,8 @@ import com.openandroidintelligence.mobile.ThemePreference
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CancellationException
 
 /** 设置与引导共用外观编辑器；实际状态及写入均仍由 AppearancePreferences 拥有。 */
@@ -64,7 +66,7 @@ internal fun AppearanceSettingsScreen(
     onSetPalette: (ThemePalette) -> Unit,
     onSetReduceMotion: (Boolean) -> Unit,
 ) {
-    SettingsPageScaffold(title = "外观与交互", presentation = presentation, onBack = onBack) { padding ->
+    SettingsPageScaffold(title = stringResource(UiR.string.settings_title_appearance), presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             AppearanceEditorContent(
                 settings = uiState.appearance,
@@ -105,17 +107,17 @@ internal fun AppearanceEditorContent(
         }
     }
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
-        SectionLabel("主题模式")
+        SectionLabel(stringResource(UiR.string.settings_section_theme_mode))
         SettingsSectionCard {
             ThemeSelector(settings.theme, onboarding = !showAdvanced) { theme -> save("theme") { onSetTheme(theme) } }
             if ("theme" in failures) AppearanceSaveFailure()
         }
-        SectionLabel("主题色")
+        SectionLabel(stringResource(UiR.string.settings_section_theme_color))
         SettingsSectionCard {
             // 引导以前只在支持动态色的设备上显示开关；设置页保留原有入口。
             if (showAdvanced || supportsDynamicColor()) {
                 AppearanceSwitch(
-                    headline = "系统动态取色",
+                    headline = stringResource(UiR.string.settings_color_dynamic),
                     // 引导页用短句，设置页给出完整规则，避免两处措辞不一致。
                     supporting = if (showAdvanced) "主题色由壁纸提取；关闭后使用预设色板" else "从当前壁纸提取配色",
                     checked = settings.dynamicColor,

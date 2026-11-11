@@ -191,7 +191,7 @@ class GatewayConversationRepository(
             conversations = result.conversations.map { thread ->
                 ConversationSummary(
                     id = ConversationId(thread.conversationId),
-                    title = thread.title?.takeIf { it.isNotBlank() } ?: "新对话",
+                    title = thread.title?.takeIf { it.isNotBlank() } ?: "",
                     updatedAt = parseMillis(thread.updatedAt ?: thread.lastMessageAt),
                     archived = thread.archived,
                 )
@@ -275,7 +275,7 @@ class GatewayConversationRepository(
         val detail = client.createConversation(clientConversationId)
         return Conversation(
             id = ConversationId(detail.conversationId),
-            title = detail.title ?: "新对话",
+            title = detail.title?.takeIf { it.isNotBlank() } ?: "",
             createdAt = parseMillis(detail.createdAt),
         )
     }
@@ -433,7 +433,7 @@ class GatewayConversationRepository(
         val detail = runCatching { client.readConversation(conversationId) }.getOrNull() ?: return null
         return Conversation(
             id = ConversationId(detail.conversationId),
-            title = detail.title?.takeIf { it.isNotBlank() } ?: "新对话",
+            title = detail.title?.takeIf { it.isNotBlank() } ?: "",
             createdAt = parseMillis(detail.createdAt),
         )
     }

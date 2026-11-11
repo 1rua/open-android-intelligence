@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
@@ -52,6 +53,8 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class GatewaySessionRefreshTest {
+
+    private val context: Context get() = ApplicationProvider.getApplicationContext<Application>()
 
     private lateinit var gateway: LoopbackGatewayStub
     private lateinit var credentialStore: InMemoryCredentialStore
@@ -1132,7 +1135,7 @@ class GatewaySessionRefreshTest {
         runtime.logout(revokeRefresh = false)
         // 本地优先退出完成，远端登出未获确认但本地已退出
         assertTrue(awaitCondition(AWAIT_MILLIS) {
-            runtime.operationNotice.value?.contains("未获 Gateway 确认") == true && runtime.phase.value is ConnectionPhase.Disconnected
+            runtime.operationNotice.value == context.getString(UiR.string.conn_toast_logout_unconfirmed) && runtime.phase.value is ConnectionPhase.Disconnected
         })
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
         assertNull(runtime.controller.value)
@@ -1158,7 +1161,7 @@ class GatewaySessionRefreshTest {
         awaitConnected(runtime)
         runtime.logout(revokeRefresh = true)
         assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
-        assertEquals("Gateway 已登出，但本机凭据清理失败，请检查设备存储。", runtime.operationNotice.value)
+        assertEquals(context.getString(UiR.string.conn_toast_logout_cleanup_failed), runtime.operationNotice.value)
         assertTrue(credentialStore.hasRefresh(profileId()))
         assertTrue(deviceKeys.hasKey(profileId()))
         assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
@@ -1272,10 +1275,10 @@ class GatewaySessionRefreshTest {
                 offline.phase.value is ConnectionPhase.Disconnected && offline.controller.value == null
             })
             assertNull(offline.controller.value)
-            assertTrue("离线退出不能伪造远端凭据已撤销", offline.operationNotice.value?.contains("未获 Gateway 确认") == true)
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            assertEquals("离线退出不能伪造远端凭据已撤销", context.getString(com.openandroidintelligence.ui.resources.R.string.conn_toast_offline_logout_locked), offline.operationNotice.value)
             assertTrue("未通知远端时保留被退出屏障锁定的刷新凭据", credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
-            val context = ApplicationProvider.getApplicationContext<Application>()
             val installId = requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE).getString("installation_id", null))
             val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(
                 context,

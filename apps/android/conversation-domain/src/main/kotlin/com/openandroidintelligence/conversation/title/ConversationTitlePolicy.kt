@@ -15,7 +15,7 @@ object ConversationTitlePolicy {
     ): String {
         val rawText = firstMessage.text.trim()
         if (rawText == "/new" || rawText.startsWith("/new ")) {
-            return "新对话"
+            return ""
         }
         if (rawText.isBlank()) {
             val firstAttachment = attachmentNames.firstOrNull { it.isNotBlank() }?.trim()
@@ -29,11 +29,11 @@ object ConversationTitlePolicy {
                     }
                 }
                 firstMessage.attachmentIds.isNotEmpty() -> "附件内容"
-                else -> "新对话"
+                else -> ""
             }
         }
 
-        val firstLine = rawText.lines().firstOrNull { it.isNotBlank() }?.trim() ?: "新对话"
+        val firstLine = rawText.lines().firstOrNull { it.isNotBlank() }?.trim() ?: ""
         return truncateGraphemes(firstLine, locale)
     }
 

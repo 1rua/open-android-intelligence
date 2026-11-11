@@ -24,6 +24,8 @@ import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 
 @Composable
 internal fun SecuritySettingsScreen(
@@ -34,12 +36,12 @@ internal fun SecuritySettingsScreen(
     onOpenAudit: () -> Unit,
     onRequestEmergencyStop: () -> Unit,
 ) {
-    SettingsPageScaffold("安全与隐私", presentation, onBack) { padding ->
+    SettingsPageScaffold(stringResource(UiR.string.settings_title_security), presentation, onBack) { padding ->
         SettingsPageColumn(padding) {
-            SectionLabel("插件运行安全")
+            SectionLabel(stringResource(UiR.string.settings_section_plugin_security))
             SettingsSectionCard {
                 SettingsSwitchItem(
-                    "开发者信任模式",
+                    stringResource(UiR.string.settings_dev_trust_mode),
                     checked = uiState.isTrustModeEnabled,
                     enabled = uiState.allowDeveloperTrustMode && !uiState.isEmergencyStopped,
                     supporting = when {

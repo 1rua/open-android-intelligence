@@ -42,6 +42,27 @@ class SettingsBackupScreenTest {
     }
 
     @Test
+    fun structuredFormatFailureUsesTheResourceMessageInTheVisibleNotice() {
+        show(SettingsBackupUiState(
+            isPreparing = false,
+            notice = BackupNotice(
+                id = 1,
+                message = "兼容调用方保留的原始提示",
+                isError = true,
+                formatFailure = SettingsBackupFormatException(
+                    "兼容异常消息保持原样",
+                    BackupFormatErrorCode.SCHEMA_VERSION_NEWER,
+                    listOf("99"),
+                ),
+                failureOperation = BackupFailureOperation.INSPECT,
+            ),
+        ))
+        compose.onNodeWithText("无法导入：备份文件来自更新版本的 App（schemaVersion=99），请先升级 App。")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("兼容调用方保留的原始提示").assertDoesNotExist()
+    }
+
+    @Test
     fun bothActionsAreReachableAndDescribeWhatIsAndIsNotRestored() {
         var exports = 0
         var imports = 0

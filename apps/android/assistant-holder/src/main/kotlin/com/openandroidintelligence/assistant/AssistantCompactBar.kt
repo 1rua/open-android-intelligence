@@ -1,6 +1,8 @@
 package com.openandroidintelligence.assistant
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.ExitTransition
@@ -308,6 +310,8 @@ private fun CompactInputRow(
     cardShape: Shape?,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val expandedDescription = stringResource(UiR.string.assistant_compact_bar_expanded_desc)
+    val inputDescription = stringResource(UiR.string.assistant_compact_input_desc)
     val currentOnDraftChange by rememberUpdatedState(onDraftChange)
     val reportEdits = remember(editor) {
         InputTransformation {
@@ -343,7 +347,7 @@ private fun CompactInputRow(
             .animateContentSize(sizeSpec)
             .semantics {
                 // 只给展开态一个简短状态说明，收起时不额外朗读。
-                if (expanded) stateDescription = "输入栏已展开"
+                if (expanded) stateDescription = expandedDescription
             },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -376,7 +380,7 @@ private fun CompactInputRow(
                 // 底部卡片在视觉与手势上都不一致，等于维护了两套附件入口。
                 CompactIconAction(
                     icon = Icons.Default.Add,
-                    contentDescription = "添加附件",
+                    contentDescription = stringResource(UiR.string.assistant_compact_action_add_attachment),
                     enabled = enabled,
                     onClick = { onAddAttachment(AssistantAttachmentKind.SHEET) },
                 )
@@ -399,14 +403,14 @@ private fun CompactInputRow(
                         .then(if (expanded) Modifier.align(Alignment.Top) else Modifier)
                         .testTag(AssistantCompactBarTags.INPUT)
                         .onFocusChanged { focused = it.isFocused }
-                        .semantics { contentDescription = "助理消息输入" },
+                        .semantics { contentDescription = inputDescription },
                     decorator = { innerTextField ->
                         Box(
                             modifier = Modifier.padding(vertical = Dimensions.SpaceCompact),
                         ) {
                             if (editor.text.isEmpty()) {
                                 Text(
-                                    text = if (enabled) "输入消息" else "助理尚不可用",
+                                    text = if (enabled) stringResource(UiR.string.assistant_compact_input_placeholder) else stringResource(UiR.string.assistant_compact_input_unavailable),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -418,7 +422,7 @@ private fun CompactInputRow(
 
                 CompactIconAction(
                     icon = Icons.Outlined.Mic,
-                    contentDescription = "语音输入",
+                    contentDescription = stringResource(UiR.string.assistant_compact_action_voice_input),
                     enabled = enabled,
                     onClick = onStartRecording,
                 )
@@ -427,7 +431,7 @@ private fun CompactInputRow(
                 if (onStartScreenSelection != null) {
                     CompactIconAction(
                         icon = Icons.Outlined.CropFree,
-                        contentDescription = "屏幕圈选",
+                        contentDescription = stringResource(UiR.string.assistant_compact_action_screen_crop),
                         enabled = enabled,
                         onClick = onStartScreenSelection,
                     )
@@ -436,9 +440,9 @@ private fun CompactInputRow(
                     stop = isGenerating,
                     enabled = if (isGenerating) !isStopping else sendEnabled,
                     contentDescription = when {
-                        isStopping -> "正在停止生成"
-                        isGenerating -> "停止生成"
-                        else -> "发送消息"
+                        isStopping -> stringResource(UiR.string.assistant_compact_action_stopping)
+                        isGenerating -> stringResource(UiR.string.assistant_compact_action_stop)
+                        else -> stringResource(UiR.string.assistant_compact_action_send)
                     },
                     onSend = onSend,
                     onStop = onStop,
@@ -475,6 +479,7 @@ private fun CompactAttachmentTile(
     attachment: AssistantCompactAttachment,
     onRemove: (String) -> Unit,
 ) {
+    val attachmentDescription = stringResource(UiR.string.assistant_compact_attachment_desc, attachment.filename)
     Surface(
         shape = RoundedCornerShape(AppRadius.Medium),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -482,7 +487,7 @@ private fun CompactAttachmentTile(
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier
             .testTag(AssistantCompactBarTags.attachment(attachment.id))
-            .semantics { contentDescription = "附件：${attachment.filename}" },
+            .semantics { contentDescription = attachmentDescription },
     ) {
         Row(
             modifier = Modifier
@@ -522,7 +527,7 @@ private fun CompactAttachmentTile(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Close,
-                    contentDescription = "移除附件：${attachment.filename}",
+                    contentDescription = stringResource(UiR.string.assistant_compact_attachment_remove_desc, attachment.filename),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(Dimensions.SmallIcon),
                 )

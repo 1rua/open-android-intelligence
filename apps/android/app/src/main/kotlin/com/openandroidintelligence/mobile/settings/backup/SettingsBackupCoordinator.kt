@@ -36,6 +36,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 导出文件名：`oai-settings-YYYYMMDD.json`。
@@ -136,7 +137,7 @@ class SettingsBackupCoordinator(
     }
 
     /** 导出前的摘要；与 [export] 使用同一个收集函数，不会出现「说的」和「写的」不一致。 */
-    fun exportSummary(): List<String> = collectSections().summaries()
+    fun exportSummary(): List<String> = collectSections().summaries(context)
 
     private fun collectSections(): SettingsBackupSections = SettingsBackupSections(
         appearance = currentAppearance(),
@@ -268,9 +269,11 @@ class SettingsBackupCoordinator(
     fun preview(text: String): Preview {
         val document = SettingsBackupCodec.decode(text)
         val sections = SettingsBackupSections.decode(document, ThemePalette.entries.map { it.name }.toSet())
-        if (sections.isEmpty) throw SettingsBackupFormatException("备份文件中没有可恢复的设置。")
+        if (sections.isEmpty) throw SettingsBackupFormatException(
+            "备份文件中没有可恢复的设置。", BackupFormatErrorCode.NO_RESTORABLE_SETTINGS,
+        )
         return Preview(
-            summaries = sections.summaries(),
+            summaries = sections.summaries(context),
             ignoredFields = document.ignoredFields,
             exportedAt = document.exportedAt,
             appVersionName = document.appVersionName,
@@ -296,7 +299,9 @@ class SettingsBackupCoordinator(
             return Result.failure(failure)
         }
         if (sections.isEmpty) {
-            return Result.failure(SettingsBackupFormatException("备份文件中没有可恢复的设置。"))
+            return Result.failure(SettingsBackupFormatException(
+                "备份文件中没有可恢复的设置。", BackupFormatErrorCode.NO_RESTORABLE_SETTINGS,
+            ))
         }
 
         val snapshot = captureSnapshot()
@@ -409,16 +414,16 @@ class SettingsBackupCoordinator(
             }
         }
         if (written > 0) {
-            applied += section.summary()
+            applied += section.summary(context)
             pendingRuntimeRefreshes += { runtimeRefresh?.reloadDebounceSettings() }
             deferred += "消息合并已保存；当前会话在下次发送时生效。"
         } else if (unchanged) {
-            applied += section.summary() + "（本机已是该值）"
+            applied += section.summary(context) + "（本机已是该值）"
         }
         // 旧文件的合并值无法区分「用户主动设置」与「版本默认值」，整节不迁移，如实说明。
         if (section.hasLegacyMergingSettings) {
-            skipped += "旧版本备份里的 ${section.legacyMergingSettings} 项消息合并设置未导入：" +
-                "旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。"
+            skipped += context.getString(UiR.string.settings_backup_legacy_section_dropped, section.legacyMergingSettings) +
+                context.getString(UiR.string.settings_backup_legacy_note)
         }
     }
 

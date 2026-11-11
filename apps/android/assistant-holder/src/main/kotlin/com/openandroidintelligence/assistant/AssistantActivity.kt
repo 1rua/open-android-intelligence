@@ -117,7 +117,7 @@ class AssistantActivity : Activity() {
                 initialText = seed,
                 onStartSelection = {
                     bridge.showAdvisory(
-                        "当前入口没有系统截图。把本 App 设为默认数字助理后，才能在其他 App 之上圈选屏幕。",
+                        getString(com.openandroidintelligence.ui.resources.R.string.assistant_activity_no_screenshot_hint),
                     )
                 },
                 onOpenApp = {

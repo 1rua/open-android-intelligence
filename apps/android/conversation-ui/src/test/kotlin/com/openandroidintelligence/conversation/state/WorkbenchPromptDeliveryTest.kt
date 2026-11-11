@@ -97,7 +97,7 @@ class WorkbenchPromptDeliveryTest {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(
             listOf(ConversationSummary(ConversationId("conv_a"), "A", 1)), null,
         )
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_new"), "新对话", 1)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_new"), "", 1)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("message", message.clientMessageId.value)
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(

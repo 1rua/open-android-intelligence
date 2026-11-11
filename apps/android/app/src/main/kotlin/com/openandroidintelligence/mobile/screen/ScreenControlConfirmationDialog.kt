@@ -22,10 +22,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.delay
 
 /** 展示可信请求上下文并提交用户选择；许可签发、范围校验和超时由执行层处理。 */
@@ -63,22 +65,39 @@ fun ScreenControlConfirmationDialog(
             tonalElevation = 6.dp,
         ) {
             Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                Text("确认设备请求", style = MaterialTheme.typography.headlineSmall)
+                Text(stringResource(UiR.string.perm_confirm_dialog_title), style = MaterialTheme.typography.headlineSmall)
                 Column(
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                     modifier = Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                 ) {
-                    Text("Agent：${agentName.ifBlank { "未提供" }}", modifier = Modifier.testTag("device-confirmation-agent"))
-                    Text("用途：${purpose.ifBlank { "未说明" }}", modifier = Modifier.testTag("device-confirmation-purpose"))
                     Text(
-                        "上述信息由请求方声明，仅供审计记录。",
+                        stringResource(
+                            UiR.string.perm_confirm_agent_format,
+                            agentName.ifBlank { stringResource(UiR.string.perm_auth_not_provided) },
+                        ),
+                        modifier = Modifier.testTag("device-confirmation-agent"),
+                    )
+                    Text(
+                        stringResource(
+                            UiR.string.perm_confirm_purpose_format,
+                            purpose.ifBlank { stringResource(UiR.string.perm_auth_unspecified) },
+                        ),
+                        modifier = Modifier.testTag("device-confirmation-purpose"),
+                    )
+                    Text(
+                        stringResource(UiR.string.perm_confirm_audit_note),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Text(action, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("screen-confirmation-action"))
-                    Text("操作类型：${operation.ifBlank { "未提供" }}")
-                    Text("本次参数与范围", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        stringResource(
+                            UiR.string.perm_confirm_operation_format,
+                            operation.ifBlank { stringResource(UiR.string.perm_auth_not_provided) },
+                        ),
+                    )
+                    Text(stringResource(UiR.string.perm_confirm_params_title), style = MaterialTheme.typography.titleSmall)
                     parameterLines.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     Text(
                         deviceRequestSensitiveNotice(capability),
@@ -86,22 +105,37 @@ fun ScreenControlConfirmationDialog(
                         modifier = Modifier.testTag("device-confirmation-sensitive"),
                     )
                     Text(
-                        "临时允许仅适用于当前操作与数据范围，系统权限仍需单独满足。",
+                        stringResource(UiR.string.perm_confirm_notice),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        if (expired) "请求已过期，不能继续允许。" else "剩余确认时间：${(expiresAtMillis - now + 999L) / 1_000L} 秒",
+                        if (expired) {
+                            stringResource(UiR.string.perm_confirm_expired)
+                        } else {
+                            stringResource(
+                                UiR.string.perm_confirm_remaining_seconds_format,
+                                (expiresAtMillis - now + 999L) / 1_000L,
+                            )
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         modifier = Modifier.testTag("device-confirmation-expiry"),
                     )
                     TextButton(
                         onClick = { showTechnical = !showTechnical },
                         modifier = Modifier.testTag("screen-confirmation-details-toggle"),
-                    ) { Text(if (showTechnical) "隐藏技术详情" else "查看技术详情") }
+                    ) {
+                        Text(
+                            if (showTechnical) {
+                                stringResource(UiR.string.perm_confirm_hide_details)
+                            } else {
+                                stringResource(UiR.string.perm_confirm_show_details)
+                            },
+                        )
+                    }
                     if (showTechnical) {
                         Text(
-                            "插件：$pluginId\n能力：$capability\n参数：$parameters",
+                            stringResource(UiR.string.perm_confirm_details_format, pluginId, capability, parameters),
                             style = AppTextStyles.MonoSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.fillMaxWidth().testTag("screen-confirmation-details"),
@@ -116,11 +150,21 @@ fun ScreenControlConfirmationDialog(
                             enabled = !expired,
                             modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
                                 .testTag("device-confirmation-allow:$duration"),
-                        ) { Text(if (duration == 0) "仅允许本次" else if (duration == 60) "允许 1 小时" else "允许 $duration 分钟") }
+                        ) {
+                            Text(
+                                if (duration == 0) {
+                                    stringResource(UiR.string.perm_action_allow_once)
+                                } else if (duration == 60) {
+                                    stringResource(UiR.string.perm_action_allow_one_hour)
+                                } else {
+                                    stringResource(UiR.string.perm_action_allow_duration_format, duration)
+                                },
+                            )
+                        }
                     }
                     TextButton(onClick = onDeny,
                         modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag("screen-confirmation-deny")) {
-                        Text("拒绝", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(UiR.string.perm_action_deny), color = MaterialTheme.colorScheme.error)
                     }
                 }
             }

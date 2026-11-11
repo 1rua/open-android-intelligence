@@ -173,6 +173,7 @@ jobs:
         run: >-
           python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
           tools/test_android_jvm_reuse.py tools/test_android_app_performance.py
+          tools/test_check_hardcoded_chinese.py tools/test_test_string_resources_integrity.py
 
   dependency-lock:
     name: Dependency Lock Evidence
@@ -415,6 +416,13 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # 各 Android 通道直接执行测试任务，不经过 Gradle check 生命周期。
+      # 在共同预检中显式检查，避免未登记文案或资源缺项被 PR 流水线漏放。
+      - name: Android 文案与资源门禁
+        run: |
+          python3 tools/check_hardcoded_chinese.py
+          python3 tools/test_string_resources_integrity.py
 
       - name: Set up JDK 21
         uses: actions/setup-java@v6

@@ -300,6 +300,11 @@ android {
         buildConfig = true
         compose = true
     }
+    androidResources {
+        generateLocaleConfig = true
+        // AAPT2 -c 参数要求资源限定符必须带区域前缀 'r' (即 zh-rCN)，而非纯短横线 zh-CN
+        localeFilters += listOf("zh-rCN")
+    }
     signingConfigs {
         create("release") {
             storeFile = releaseStoreFile
@@ -411,6 +416,7 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
 }
 
 dependencies {
+    implementation(project(":ui-resources"))
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))
     implementation(project(":capability-ports"))

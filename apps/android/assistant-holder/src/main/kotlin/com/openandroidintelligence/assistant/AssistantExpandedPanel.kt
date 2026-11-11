@@ -1,6 +1,8 @@
 package com.openandroidintelligence.assistant
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.tween
@@ -367,7 +369,7 @@ internal fun ScrollToLatestButton(
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Spacer(Modifier.width(Dimensions.SpaceSmall))
-            Text("回到最新")
+            Text(stringResource(UiR.string.assistant_expanded_scroll_to_bottom))
         }
     }
 }

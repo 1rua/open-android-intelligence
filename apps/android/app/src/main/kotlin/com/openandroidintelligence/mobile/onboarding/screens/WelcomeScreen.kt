@@ -27,7 +27,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -171,7 +173,7 @@ fun WelcomeScreen(
                 // ===== 主标题 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
                 Text(
-                    text = "连接一个\nOAI Core",
+                    text = stringResource(UiR.string.conn_onboarding_welcome_hero_title),
                     fontSize = 34.sp,
                     lineHeight = 38.sp,
                     fontWeight = FontWeight.ExtraBold,
@@ -182,8 +184,8 @@ fun WelcomeScreen(
                 // ===== 定位说明 =====
                 Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
                 Text(
-                    text = "一个手机连接入口，由 OAI Core 接入多个自托管 Agent。" +
-                        "Agent 会话与设备插件独立管理，设备能力始终需要你的授权。",
+                    text = stringResource(UiR.string.conn_onboarding_welcome_hero_desc_1) +
+                        stringResource(UiR.string.conn_onboarding_welcome_hero_desc_2),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -196,8 +198,8 @@ fun WelcomeScreen(
                         .height(Dimensions.StrokeHairline)
                         .background(MaterialTheme.colorScheme.outlineVariant),
                 )
-                TelemetryRow(key = "Storage", value = "凭据存于 Android Keystore · 自托管 Core")
-                TelemetryRow(key = "Device", value = "设备能力默认拒绝 · 逐项授权")
+                TelemetryRow(key = "Storage", value = stringResource(UiR.string.conn_onboarding_welcome_pill_keystore))
+                TelemetryRow(key = "Device", value = stringResource(UiR.string.conn_onboarding_welcome_pill_permissions))
 
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
             }
@@ -225,7 +227,7 @@ fun WelcomeScreen(
                     .testTag("onboarding-welcome-start"),
             ) {
                 Text(
-                    text = "开始使用",
+                    text = stringResource(UiR.string.common_action_start),
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
