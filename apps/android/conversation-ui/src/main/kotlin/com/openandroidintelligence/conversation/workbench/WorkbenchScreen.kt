@@ -94,7 +94,6 @@ fun WorkbenchScreen(
     recording: ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
-    onOpenAssistant: (() -> Unit)? = null,
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
     onLogout: () -> Unit,
@@ -433,7 +432,6 @@ fun WorkbenchScreen(
                             canRename = state.activeThreadId != null,
                             creatingThread = state.creatingThread,
                             overflowExpanded = overflowMenuExpanded,
-                            showAssistant = onOpenAssistant != null,
                             subtitleInBar = !stackedContext,
                             onOpenDrawer = { scope.launch { drawer.open() } },
                             onCreateThread = controller::createThread,
@@ -442,7 +440,6 @@ fun WorkbenchScreen(
                                 showRenameDialog = true
                             },
                             onOpenAttachments = { showAttachmentLibrary = true },
-                            onOpenAssistant = onOpenAssistant,
                             onOpenSettings = {
                                 settingsFromConversations = false
                                 onOpenSettings()
@@ -903,7 +900,7 @@ fun WorkbenchScreen(
  * 之前这里挂了 5 个动作图标并把标题挤成 170px，而 `windowInsets = WindowInsets(0,0,0,0)`
  * 让整条 bar 落在系统状态栏触摸区里 —— 两个问题都在这一个组件里修掉：
  * 1. 使用 [TopAppBarDefaults.windowInsets]，标题不再压状态栏、按钮点得到；
- * 2. 直接动作只有「新建对话」，其余（重命名、附件库、浮助理、设置）收进溢出菜单。
+ * 2. 直接动作只有「新建对话」，其余（重命名、附件库、设置）收进更多菜单。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -915,13 +912,11 @@ private fun WorkbenchTopBar(
     canRename: Boolean,
     creatingThread: Boolean,
     overflowExpanded: Boolean,
-    showAssistant: Boolean,
     subtitleInBar: Boolean,
     onOpenDrawer: () -> Unit,
     onCreateThread: () -> Unit,
     onRenameThread: () -> Unit,
     onOpenAttachments: () -> Unit,
-    onOpenAssistant: (() -> Unit)?,
     onOpenSettings: () -> Unit,
     onOverflowExpandedChange: (Boolean) -> Unit,
 ) {
@@ -994,16 +989,6 @@ private fun WorkbenchTopBar(
                             onOpenAttachments()
                         },
                     )
-                    if (showAssistant) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(UiR.string.conv_workbench_menu_floating_assistant)) },
-                            leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, contentDescription = null) },
-                            onClick = {
-                                onOverflowExpandedChange(false)
-                                onOpenAssistant?.invoke()
-                            },
-                        )
-                    }
                     DropdownMenuItem(
                         text = { Text(stringResource(UiR.string.conv_workbench_menu_settings)) },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },

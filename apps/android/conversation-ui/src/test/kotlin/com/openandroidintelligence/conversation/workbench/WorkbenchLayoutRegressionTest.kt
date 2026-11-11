@@ -571,6 +571,7 @@ class WorkbenchLayoutRegressionTest {
      */
     @Test
     fun renameEntryIsEnabledInOverflowOnlyWhenAnActiveThreadExists() {
+        var renamedTitle: String? = null
         val gateway = object : ConversationRepository {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
                 ConversationPage(emptyList(), null)
@@ -581,7 +582,10 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
             override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
             override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
-            override suspend fun updateTitle(conversationId: String, title: String): Boolean = true
+            override suspend fun updateTitle(conversationId: String, title: String): Boolean {
+                renamedTitle = title
+                return true
+            }
         }
         val controller = WorkbenchController(
             scope,
@@ -602,9 +606,10 @@ class WorkbenchLayoutRegressionTest {
         // 没有活动线程时菜单项存在但不可用：动作在，语义明确，不假装能改。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
         compose.onNodeWithContentDescription("更多操作").performClick()
 
-        // Open thread
+        // 打开会话。
         compose.runOnIdle {
             controller.openThread("conv_rename")
         }
@@ -612,6 +617,34 @@ class WorkbenchLayoutRegressionTest {
         // 有活动线程后同一个菜单项变为可用，点击即打开重命名对话框。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+        compose.onNodeWithText("重命名对话").performClick()
+        compose.onNodeWithText("对话标题").performTextReplacement("更新后的标题")
+        compose.onNodeWithText("确定").performClick()
+        compose.runOnIdle { assertEquals("更新后的标题", renamedTitle) }
+    }
+
+    @Test
+    fun overflowKeepsAttachmentLibraryAndSettingsActionsWithoutFloatingAssistant() {
+        val controller = sidebarController()
+        var settingsOpened = false
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", { settingsOpened = true }, {}, {}, {}, {}, onLogout = {})
+            }
+        }
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+        compose.onNodeWithText("设置").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("附件库").assertIsDisplayed().assertIsEnabled().performClick()
+        compose.onNodeWithText("还没有选择附件").assertIsDisplayed()
+        compose.onNodeWithContentDescription("关闭附件库").performClick()
+        compose.onNodeWithContentDescription("关闭附件库").assertDoesNotExist()
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("设置").performClick()
+        compose.runOnIdle { assertTrue(settingsOpened) }
     }
 
     private fun sidebarController(): WorkbenchController = WorkbenchController(

@@ -235,7 +235,7 @@
     <string name="conv_command_menu_catalog_retry">重试</string>
     <string name="conv_command_menu_no_match">Agent 目录中没有匹配命令，回车可原样发送</string>
 
-    <!-- 7. 工作台脚手架、抽屉与浮层 (WorkbenchScreen & ThreadDrawer & FloatingConversationPanel) -->
+    <!-- 7. 工作台脚手架与抽屉 (WorkbenchScreen & ThreadDrawer) -->
     <string name="conv_empty_welcome_title">你好，我是你的智能助手</string>
     <string name="conv_empty_welcome_desc">我可以协助你管理设备、处理通知与解答日常疑问</string>
     <string name="conv_workbench_start_chat_prompt">发送消息开始对话</string>
@@ -246,16 +246,12 @@
     <string name="conv_workbench_cd_more_actions">更多操作</string>
     <string name="conv_workbench_menu_rename">重命名对话</string>
     <string name="conv_workbench_menu_attachment_lib">附件库</string>
-    <string name="conv_workbench_menu_floating_assistant">浮动助理</string>
     <string name="conv_workbench_menu_settings">设置</string>
     <string name="conv_workbench_empty_headline">有什么想聊的？</string>
     <string name="conv_workbench_empty_subtitle">随时向 Agent 提问，或发送图片与文件。</string>
     <string name="conv_workbench_action_new_conversation">新建对话</string>
     <string name="conv_workbench_empty_command_hint">输入 / 可查看此 Gateway 提供的命令。</string>
     <string name="conv_workbench_creating_thread">正在创建对话…</string>
-    <string name="conv_floating_default_title">浮动对话</string>
-    <string name="conv_floating_app_only_hint">浮动对话仅在此 App 内显示</string>
-    <string name="conv_floating_continue_gateway">与当前 Gateway 继续对话</string>
     <string name="conv_drawer_nav_attachments">附件库</string>
     <string name="conv_drawer_nav_settings">设置</string>
     <string name="conv_drawer_nav_logout">退出登录</string>

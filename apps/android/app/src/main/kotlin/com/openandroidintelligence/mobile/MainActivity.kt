@@ -50,9 +50,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.openandroidintelligence.capability.MediaProjectionCaptureService
-import com.openandroidintelligence.capability.MediaProjectionRuntime
-import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -68,7 +65,6 @@ import com.openandroidintelligence.conversation.voice.VoiceRecorderState
 import com.openandroidintelligence.conversation.voice.VoiceRejection
 import com.openandroidintelligence.conversation.voice.activeRecording
 import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
-import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.conversation.workbench.PastedImageContent
 import com.openandroidintelligence.core.model.AssistantHandoffDecision
@@ -220,7 +216,6 @@ class MainActivity : ComponentActivity() {
                 val operationNotice by runtime.operationNotice.collectAsState()
                 var showSettings by rememberSaveable { mutableStateOf(false) }
                 val settingsEnvironment = remember(app) { app.platformSettingsEnvironment() }
-                var showAssistant by remember { mutableStateOf(false) }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                     runtime.replyNotifications.refreshPermission()
                     runtime.nativeConversationNotifications.refreshActive()
@@ -243,7 +238,6 @@ class MainActivity : ComponentActivity() {
                         while (attempts < HANDOFF_NAVIGATION_ATTEMPTS) {
                             if (runtime.consumeAssistantHandoff(sessionToken)) {
                                 showSettings = false
-                                showAssistant = false
                                 pendingHandoff.value = null
                                 intent.data = null
                                 break
@@ -261,7 +255,6 @@ class MainActivity : ComponentActivity() {
                     pendingReply.value?.let { target ->
                         if (runtime.openReplyNotification(target)) {
                             showSettings = false
-                            showAssistant = false
                             pendingReply.value = null
                             intent.data = null
                         } else if (phase is ConnectionPhase.Connected) {
@@ -434,65 +427,10 @@ class MainActivity : ComponentActivity() {
                 ReceivePendingConversationShares(sharedAttachments,
                     controller.takeIf { phase is ConnectionPhase.Connected }, attachmentPickers.receive) {
                     showSettings = false
-                    showAssistant = false
                 }
 
-                // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
-                // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
-                // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
-                // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
-                //
-                // 刻意**不**复用 RemoteScreenCaptureRegistry 的实例：圈选与远程
-                // 截图各自持有独立的系统票据与像素，一处授权不得扩大另一处的
-                // 权限范围（见下方远程截图段的同一约束）。
-                val screenCaptureSource = remember {
-                    MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
-                }
-                val screenCaptureAuthLauncher = rememberLauncherForActivityResult(
-                    contract = ActivityResultContracts.StartActivityForResult()
-                ) { result ->
-                    if (result.resultCode == android.app.Activity.RESULT_OK) {
-                        // getMediaProjection 要求 mediaProjection 型前台服务已经
-                        // 完成 startForeground：必须等服务就绪回调后再转交授权
-                        // 结果，否则 targetSdk 34+ 下确定性 SecurityException。
-                        MediaProjectionCaptureService.start(this@MainActivity) {
-                            val granted = screenCaptureSource.onAuthorizationResult(
-                                result.resultCode, result.data,
-                            )
-                            if (!granted) {
-                                // 会话建立失败也要撤掉前台状态，常驻通知不得悬挂。
-                                MediaProjectionCaptureService.stop(this@MainActivity)
-                            }
-                            notify(
-                                if (granted) getString(UiR.string.perm_screen_capture_granted_hint)
-                                else getString(UiR.string.perm_screen_capture_session_failed),
-                            )
-                        }
-                    } else {
-                        val granted = screenCaptureSource.onAuthorizationResult(
-                            result.resultCode, result.data,
-                        )
-                        MediaProjectionCaptureService.stop(this@MainActivity)
-                        notify(
-                            if (granted) getString(UiR.string.perm_screen_capture_granted_hint)
-                            else getString(UiR.string.perm_screen_capture_denied),
-                        )
-                    }
-                }
-                // 面板关闭即结束采集会话：常驻通知与投屏会话不得跨出使用场景存活。
-                LaunchedEffect(showAssistant) {
-                    if (!showAssistant) {
-                        screenCaptureSource.release()
-                        MediaProjectionCaptureService.stop(this@MainActivity)
-                    }
-                }
-
-                // ===== 远程屏幕截图：独立的系统投屏授权 =====
-                // 与上面的圈选来源是**两个不同实例**：附件圈选持有一份系统票据和像素，
-                // 远程截图不得借用，否则一处授权会悄悄扩大另一处的权限范围。
-                //
-                // System consent is installation-local and separate from the per-request global policy.
-                // The returned ticket must still match before and after the foreground service starts.
+                // 远程屏幕截图：系统投屏授权与每次请求的能力策略分别校验。
+                // 系统授权仅在本次安装内有效，前台服务启动前后都必须再次核对授权票据。
                 var remoteCaptureTicket by remember {
                     mutableStateOf<com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket?>(null)
                 }
@@ -782,15 +720,12 @@ class MainActivity : ComponentActivity() {
                                             onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
                                         )
                                     },
-                                    onOpenAssistant = { showAssistant = true },
                                     onPickCamera = attachmentPickers.camera,
                                     onPickGallery = attachmentPickers.gallery,
                                     onPickDocument = attachmentPickers.document,
                                     onPasteImages = attachmentPickers.paste,
                                     onVoiceInput = startVoiceInput,
-                                    // 录音态只由当前可见的输入坞呈现：助理面板展开时由面板显示，
-                                    // 面板收起后回到工作台，避免同一段录音在两处各画一份。
-                                    recording = activeRecording.takeUnless { showAssistant },
+                                    recording = activeRecording,
                                     onCancelRecording = cancelRecording,
                                     onFinishRecording = finishRecording,
                                     pluginCards = {
@@ -804,39 +739,6 @@ class MainActivity : ComponentActivity() {
                                     reduceMotion = reduceMotion,
                                     modifier = Modifier.fillMaxSize(),
                                 )
-                                AnimatedVisibility(
-                                    visible = showAssistant,
-                                    enter = AppTransitions.modalEnter(reduceMotion),
-                                    exit = AppTransitions.modalExit(reduceMotion),
-                                ) {
-                                    FloatingConversationPanel(
-                                        controller = activeController,
-                                        onClose = { showAssistant = false },
-                                        onPickCamera = attachmentPickers.camera,
-                                        onPickGallery = attachmentPickers.gallery,
-                                        onPickDocument = attachmentPickers.document,
-                                        onPasteImages = attachmentPickers.paste,
-                                        onVoiceInput = startVoiceInput,
-                                        recording = activeRecording,
-                                        onCancelRecording = cancelRecording,
-                                        onFinishRecording = finishRecording,
-                                        screenCaptureSource = screenCaptureSource,
-                                        onNeedScreenCaptureAuthorization = {
-                                            // 无障碍已可用时不需要任何系统授权：直接让用户重试圈选，
-                                            // 不再把用户推进一次多余的投屏确认流程。
-                                            if (screenCaptureSource.isAvailable) {
-                                                notify(getString(UiR.string.perm_screen_capture_direct_hint))
-                                            } else {
-                                                val intent = screenCaptureSource.createAuthorizationIntent()
-                                                if (intent == null) {
-                                                    notify(getString(UiR.string.perm_screen_capture_unsupported))
-                                                } else {
-                                                    screenCaptureAuthLauncher.launch(intent)
-                                                }
-                                            }
-                                        },
-                                    )
-                                }
                             }
                         }
 
@@ -924,7 +826,6 @@ internal fun GatewayWorkbenchScreen(
     recording: ActiveVoiceRecording? = null,
     onCancelRecording: () -> Unit = {},
     onFinishRecording: () -> Unit = {},
-    onOpenAssistant: (() -> Unit)? = null,
     pluginCards: @Composable () -> Unit = {},
     header: @Composable () -> Unit = {},
     offlineMirrorPhase: Boolean = false,
@@ -978,7 +879,6 @@ internal fun GatewayWorkbenchScreen(
                 onCancelRecording = onCancelRecording,
                 onFinishRecording = onFinishRecording,
                 modifier = Modifier.weight(1f),
-                onOpenAssistant = onOpenAssistant,
                 onLogout = { runtime.logout(revokeRefresh = true) },
                 pluginCards = pluginCards,
                 header = {
