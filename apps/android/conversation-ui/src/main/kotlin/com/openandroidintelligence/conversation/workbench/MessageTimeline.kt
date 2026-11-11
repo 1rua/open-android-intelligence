@@ -880,7 +880,10 @@ private fun ExecutionTurnRow(
             finalAnswerSlot = { blocks, streaming ->
                 MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
                     StreamingReplyBody(
-                        entry = run.finalEntry, registry = presentations, finalOnly = true,
+                        entry = run.finalEntry,
+                        registry = presentations,
+                        finalOnly = true,
+                        sourceBlocks = blocks,
                     ) { shownBlocks, presenting ->
                         MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
                     }

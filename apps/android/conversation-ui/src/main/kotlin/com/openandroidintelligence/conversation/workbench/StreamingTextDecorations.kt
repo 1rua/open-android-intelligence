@@ -31,7 +31,7 @@ data class StreamingTextPresentation(
 internal val LocalStreamingMarkdownDocument = staticCompositionLocalOf<StreamingMarkdownDocument?> { null }
 internal val LocalStreamingTextPresentation = staticCompositionLocalOf<StreamingTextPresentation?> { null }
 internal val LocalStreamingDecoration = staticCompositionLocalOf<StreamingDecorationState?> { null }
-internal val LocalMarkdownBlockSource = staticCompositionLocalOf<MarkdownBlockSource?> { null }
+internal val LocalMarkdownBlockSource = staticCompositionLocalOf<MarkdownSourceText?> { null }
 internal val LocalMarkdownLeafSource = staticCompositionLocalOf<MarkdownSourceText?> { null }
 
 private const val TextFadeMillis = 120L
