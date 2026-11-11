@@ -94,8 +94,9 @@ class NativeAgentBackgroundWorkTest {
     }
 
     @Test fun archiveWithoutOtherAgentWorkUsesTheSameJvmTransportBoundary() {
-        Fixture().use { fixture ->
-            val controller = fixture.openWorkbench("codex")
+        Fixture(concurrentGateway = true).use { fixture ->
+            val first = fixture.openWorkbench("dsh")
+            val controller = fixture.openWorkbench("codex", previous = first)
             controller.archiveThread("native-session")
             awaitState(controller.state) { !it.managingThreads && it.notice != null }
             assertEquals("本机 JVM 的 PATCH 限制与另一 Agent 是否运行无关",
