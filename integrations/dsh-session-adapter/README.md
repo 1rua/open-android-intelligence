@@ -14,9 +14,13 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 
 同时存在多个 DSH 主目录时不会自动批量升级。可通过 `DSH_HOME` 指定宿主目录，使用 `DSH_PROFILE` 指定其中的 profile；仍需在菜单确认安装目标。没有官方插件管理 API 的旧版 DSH 会显示 `DSH_PLUGIN_MANAGER_UNAVAILABLE`，应先更新 DSH。`setup.sh` 只调用本机已安装的 Core 管理程序；仅重新下载该入口不会更新 Core 源码或宿主插件。
 
-列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete、archive 与 cancel），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。
+列表覆盖目标宿主已配置 persistence backend 与 live sessions，所有已认证 OAI 账号共享该部署范围。能力依据实际宿主方法启用（当前不宣告 delete 与 archive），未接入的其他系统实例不在发现范围。请求严格受小于 1 MiB 的紧凑 UTF-8 JSON 预算约束。超长历史摘要使用迭代计算时间，避免事件数量超过 JavaScript 函数参数限制时拖垮整个列表。
 
-消息观察连接与宿主执行分开管理。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。当前集成的宿主 `sessionController.cancel` 只接受会话身份，不能保证在真实取消时校验执行轮次，因此不声明 `cancel` 能力；显式取消请求返回 `UNSUPPORTED_CAPABILITY`，不会调用会话级取消接口。只有宿主提供并核实按真实执行轮次原子取消的接口后，才可重新启用。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。这只建立关联，不表示宿主提供幂等提交或持久执行恢复，`generationRecovery`、`idempotentSend` 均为 `false`。
+消息观察连接与宿主执行分开管理。真实 DSH `0.2.2-rc.1` 的 `sessionController.prompt(request, signal)` 要求有效信号；桥为每次受理提供独立信号。关闭连接、受理回执超时或慢写端超过预算，只结束当前观察并清理监听与 busy；不会取消宿主已加入 inbox 的输入。收到 `clientMessageId` 时原样作为原生 `requestId`，用于关联 `source.rpcId`；没有该字段的旧调用仍使用一次性的随机 ID。历史优先读取完整原生日志，保留用户来源关联，仅将同轮次的最终助手回复与客户端身份关联，不把中间工具步骤当成重复回复。
+
+宿主提供 `sessionQuery.readSession` 与同步 `agents.get` 时启用 `generationRecovery` 和 `cancel`。`GET /sessions/:id/generation` 返回权威活动或排队记录；可通过 `clientMessageId`、`generationId` 精确读取原始受理记录及真实终态，也支持 `afterRevision` 和最长 25000 毫秒的 `waitMs`。代次 ID 基于宿主已接纳的原生用户消息 ID，排队、运行和终态不更换身份；修订号来自原生日志序号。没有 `turn/end` 且宿主未附着或重启时保持 `unknown`，不把连接中断或适配器内存清空解释为空闲。
+
+精确取消先从当前活动 Agent 的同步完整日志核对目标所属轮次，再在同一次 JavaScript 调用栈中执行 `agent.cancel({ kind: "user" }, { keepInbox: true })`；比较与副作用之间不插入异步等待，并复核 Agent 未被替换。迟到或已终态的目标不会取消后续任务，排队目标不会误取消其他活动轮次。取消回执的 `cancelled`、`already_completed` 必须有原生终态依据；仅发出取消但终态尚未来到时返回 `unknown`，随后可精确查询。`idempotentSend=false` 继续保留：原生 `rpcId` 去重的已知行为不等同于已证明跨重启精确执行一次。
 
 观察队列同时限制为 128 帧和 1 MiB。`res.write()` 返回 `false` 后等待 `drain`；无法在预算内恢复或队列超限时关闭当前响应，宿主执行继续。可选配置 `promptTimeoutMs`（默认 30000）、`observationTimeoutMs`（默认 1800000）、`drainTimeoutMs`（默认 5000）均为正整数毫秒，最大为 2147483647。没有原生终态证据的期限结束返回 `OUTCOME_UNKNOWN` / `state=unknown`；迟到的受理回执不会改写已经结束的观察。
 

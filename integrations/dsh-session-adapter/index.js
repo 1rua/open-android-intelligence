@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { diagnosticTrace } from "./diagnostics.js";
+import { cancelGeneration, cancellationOutcome, findGeneration, generationIdFor, projectGenerations, publicGeneration } from "./generation.js";
 
 export const name = "oai-session-adapter";
 export const inject = ["sessionQuery"];
@@ -31,6 +32,10 @@ const turnResult = (reason, text, identity = {}) => {
 // leaves, rather than retaining its response, transcript buffer and listeners.
 function observeAdmission(promise, observer) {
   promise.then((receipt) => observer.accept?.(receipt), () => observer.fail?.());
+}
+
+function observeLookup(promise, observer) {
+  promise.then((value) => observer.resolve?.(value), () => observer.reject?.());
 }
 
 export const Config = {
@@ -114,14 +119,14 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
   if (validated.issues) throw fail("SCHEMA_INVALID", 500);
   const budgets = validated.value;
   const busy = new Set();
-  const services = () => ({ query: ctx.get("sessionQuery"), controller: ctx.get("sessionController"), registry: ctx.get("workspaceRegistry") });
+  const services = () => ({ query: ctx.get("sessionQuery"), controller: ctx.get("sessionController"), registry: ctx.get("workspaceRegistry"), agents: ctx.get("agents") });
   const capabilities = () => {
-    const { query, controller, registry } = services();
+    const { query, controller, registry, agents } = services();
     const value = Object.fromEntries(methods.map((method) => [method, false]));
     // A stable native rpcId correlates input; it does not prove that the host
     // deduplicates prompts or persists queryable execution receipts.
     value.streamHeartbeat = true;
-    value.generationRecovery = false;
+    value.generationRecovery = typeof query?.readSession === "function" && typeof agents?.get === "function";
     value.idempotentSend = false;
     value.list = typeof query?.listSessions === "function";
     value.history = typeof query?.readSurface === "function";
@@ -130,10 +135,8 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
     value.stream = value.send;
     value.clientMessageIdentity = value.send;
     value.rename = value.list && typeof controller?.rename === "function";
-    // The integrated host cancel accepts only sessionId. It cannot atomically
-    // compare the target generation at the cancellation side effect, so neither
-    // an observed turn nor a client request ID makes this operation safe.
-    value.cancel = false;
+    // 仅原生完整日志与同步活动句柄都可用时，开放精确轮次取消。
+    value.cancel = value.generationRecovery;
     // The verified public query has no archive-state projection. Do not
     // advertise management whose result cannot be read back truthfully.
     return value;
@@ -147,11 +150,20 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
     if (!record) throw fail("SESSION_NOT_FOUND", 404);
     return record;
   };
+  const generationProjection = async (id) => {
+    if (!capabilities().generationRecovery) throw fail("UNSUPPORTED_CAPABILITY");
+    const { query, agents } = services();
+    const snapshot = await query.readSession(id);
+    const agent = agents.get(id);
+    return projectGenerations(id, typeof agent?.session?.snapshotEvents === "function" ? agent.session.snapshotEvents() : snapshot.events,
+      { liveRunning: agent?.status === "running" });
+  };
   const summary = async (record) => {
     const { query } = services();
     const title = typeof query.readTitle === "function" ? await query.readTitle(record.header.id) : undefined;
     const surface = typeof query.readSurface === "function" ? await query.readSurface(record.header.id) : undefined;
-    const updatedAt = Math.max(record.header.createdAt, title?.updatedAt ?? 0, ...(surface?.events ?? []).map((event) => event.time));
+    let updatedAt = Math.max(record.header.createdAt, title?.updatedAt ?? 0);
+    for (const event of surface?.events ?? []) updatedAt = Math.max(updatedAt, event.time);
     return { id: record.header.id, title: title?.title ?? record.header.id, updatedAt: iso(updatedAt), archived: false };
   };
   const json = (res, value, status = 200) => {
@@ -174,8 +186,9 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
     const queue = [];
     const ownAttempts = new Set();
     const admission = {};
+    const lookupObserver = {};
     const identity = {};
-    let currentTurn, ownTurn, finalText = "", ending = false, stopped = false, admitted = false;
+    let currentTurn, ownTurn, finalText = "", ending = false, stopped = false, admitted = false, generationAnnounced = false;
     let queuedBytes = 0, wake, stopDrain, admissionTimer, observationTimer;
     const notify = () => { const resolve = wake; wake = undefined; resolve?.(); };
     const stop = () => {
@@ -184,6 +197,7 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
       queuedBytes = 0;
       notify();
       stopDrain?.();
+      lookupObserver.resolve?.(undefined);
     };
     const overflow = () => {
       // Only the observation socket ends. The host inbox and turn are untouched.
@@ -205,6 +219,7 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
       clearTimeout(admissionTimer);
       clearTimeout(observationTimer);
       enqueue(value);
+      lookupObserver.resolve?.(undefined);
     };
     // rpcId belongs to the native user message. Other terminal turns in this
     // shared session cannot prematurely complete this App submission.
@@ -218,6 +233,15 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
         clearTimeout(admissionTimer);
         const message = messageOf(event);
         if (typeof message.id === "string" && message.id) identity.userMessageId = message.id;
+        if (identity.userMessageId && capabilities().generationRecovery) {
+          identity.generationId = generationIdFor(id, identity.userMessageId);
+          if (!generationAnnounced) {
+            generationAnnounced = true;
+            enqueue({ type: "generation", generationId: identity.generationId,
+              ...(Number.isSafeInteger(event.seq) && event.seq >= 0 ? { state: "running", revision: event.seq + 1 } : {}),
+              ...(body.clientMessageId === undefined ? {} : { clientMessageId: body.clientMessageId }) });
+          }
+        }
         trace("adapter.dsh.native_user_event", { conversationId: id, clientMessageId: body.clientMessageId,
           userMessageId: identity.userMessageId });
       }
@@ -272,8 +296,8 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
     observationTimer = setTimeout(unknown, budgets.observationTimeoutMs);
     try {
       res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
-      // Do not pass a socket-owned AbortSignal to an inbox mutation. Both
-      // resolution paths are consumed, including after this observer departs.
+      // 宿主要求有效的受理信号；该信号独立于观察连接，断线不取消已提交输入。
+      const admissionSignal = new AbortController().signal;
       admission.accept = (receipt) => {
         if (stopped || ending) return;
         clearTimeout(admissionTimer);
@@ -283,10 +307,36 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
         // Transport errors cannot establish whether the input reached inbox.
         if (!admitted) unknown();
       };
-      trace("adapter.dsh.host_submitted", { conversationId: id, clientMessageId: body.clientMessageId });
-      observeAdmission(Promise.resolve().then(() => services().controller.prompt({
-        requestId, sessionId: id, mode: "queue", content: [{ type: "text", text: body.text }],
-      })), admission);
+      const existing = body.clientMessageId !== undefined && capabilities().generationRecovery
+        ? await new Promise((resolve) => {
+          lookupObserver.resolve = resolve;
+          lookupObserver.reject = () => { unknown(); resolve(undefined); };
+          observeLookup(generationProjection(id).then((projection) => findGeneration(projection, { clientMessageId: body.clientMessageId })), lookupObserver);
+        }) : null;
+      lookupObserver.resolve = lookupObserver.reject = undefined;
+      if (existing) {
+        admitted = true;
+        ownTurn = existing.nativeTurn;
+        identity.generationId = existing.generationId;
+        identity.userMessageId = existing.userMessageId;
+        if (existing.messageId !== undefined) identity.messageId = existing.messageId;
+        finalText = existing.text;
+        clearTimeout(admissionTimer);
+        if (!generationAnnounced) {
+          generationAnnounced = true;
+          enqueue({ type: "generation", generationId: existing.generationId,
+            ...(["queued", "running", "unknown"].includes(existing.state) ? { state: existing.state, revision: existing.revision } : {}),
+            clientMessageId: body.clientMessageId });
+        }
+        if (existing.state === "completed") finish({ type: "done", text: finalText, ...identity });
+        else if (["failed", "cancelled"].includes(existing.state)) finish({ type: "error", code: existing.code ?? "AGENT_FAILED", ...identity });
+        else if (existing.state === "unknown") unknown();
+      } else if (!ending && !stopped) {
+        trace("adapter.dsh.host_submitted", { conversationId: id, clientMessageId: body.clientMessageId });
+        observeAdmission(Promise.resolve().then(() => services().controller.prompt({
+          requestId, sessionId: id, mode: "queue", content: [{ type: "text", text: body.text }],
+        }, admissionSignal)), admission);
+      }
       while (!stopped) {
         if (!queue.length) {
           if (ending) break;
@@ -313,6 +363,7 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
       res.off("close", stop);
       res.off("error", overflow);
       admission.accept = admission.fail = undefined;
+      lookupObserver.resolve = lookupObserver.reject = undefined;
       for (const dispose of disposers) dispose();
       ownAttempts.clear();
       busy.delete(id);
@@ -336,8 +387,8 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
       }
       if (!authenticated) throw fail("AUTHENTICATION_REQUIRED", 401);
       const url = new URL(req.url, "http://localhost");
-      if (url.search) throw fail("SCHEMA_INVALID", 400);
       const path = url.pathname;
+      if (url.search && !path.endsWith("/generation")) throw fail("SCHEMA_INVALID", 400);
       if (req.method === "POST" && path === PREFIX + "/handshake") {
         const body = await bodyOf(req);
         if (!budgets.instanceId || Object.keys(body).length !== 1 || typeof body.challenge !== "string"
@@ -375,20 +426,67 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
           return json(res, { session: await summary(await requireSession(created.sessionId)) });
         }
       }
-      const match = new RegExp(`^${PREFIX}/sessions/([^/]+)/(history|messages|rename|archive|delete|cancel)$`).exec(path);
+      const match = new RegExp(`^${PREFIX}/sessions/([^/]+)/(history|generation|messages|rename|archive|delete|cancel)$`).exec(path);
       if (!match) throw fail("NOT_FOUND", 404);
       let id;
       try { id = decodeURIComponent(match[1]); } catch { throw fail("SCHEMA_INVALID", 400); }
       const action = match[2];
       await requireSession(id);
+      if (req.method === "GET" && action === "generation") {
+        const query = url.searchParams;
+        const allowed = ["clientMessageId", "generationId", "afterRevision", "waitMs"];
+        if ([...query.keys()].some((key) => !allowed.includes(key) || query.getAll(key).length !== 1)) throw fail("INVALID_GENERATION_QUERY", 400);
+        const clientMessageId = query.get("clientMessageId") ?? undefined;
+        const generationId = query.get("generationId") ?? undefined;
+        const specific = clientMessageId !== undefined || generationId !== undefined;
+        if ((clientMessageId !== undefined && !/^[A-Za-z0-9._~-]{1,128}$/.test(clientMessageId))
+            || (generationId !== undefined && (!generationId || generationId.length > 1024))) throw fail("INVALID_GENERATION_QUERY", 400);
+        for (const key of ["afterRevision", "waitMs"]) if (query.has(key)
+            && (!specific || !/^(0|[1-9][0-9]*)$/.test(query.get(key)) || !Number.isSafeInteger(Number(query.get(key)))
+              || (key === "waitMs" && Number(query.get(key)) > 25_000))) throw fail("INVALID_GENERATION_QUERY", 400);
+        const waitMs = Number(query.get("waitMs") ?? 0);
+        if (waitMs && !query.has("afterRevision")) throw fail("INVALID_GENERATION_QUERY", 400);
+        let projection = await generationProjection(id);
+        if (waitMs && projection.revision <= Number(query.get("afterRevision"))) {
+          await new Promise((resolve, reject) => {
+            let timer, dispose, done = false;
+            const finish = () => { if (done) return; done = true; clearTimeout(timer); dispose?.(); res.off("close", finish); resolve(); };
+            dispose = ctx.on("session/event", (session) => { if (session?.id === id) finish(); });
+            timer = setTimeout(finish, waitMs);
+            res.once("close", finish);
+            // 订阅后重新读取，补上首次快照与注册监听之间发生的原生事件。
+            generationProjection(id).then((latest) => { if (latest.revision > Number(query.get("afterRevision"))) finish(); }, (error) => {
+              if (done) return;
+              done = true; clearTimeout(timer); dispose?.(); res.off("close", finish); reject(error);
+            });
+          });
+          projection = await generationProjection(id);
+        }
+        return json(res, { generation: publicGeneration(findGeneration(projection, { clientMessageId, generationId })) });
+      }
       if (req.method === "GET" && action === "history") {
         if (!capabilities().history) throw fail("UNSUPPORTED_CAPABILITY");
-        const snapshot = await services().query.readSurface(id);
+        const { query, agents } = services();
+        const raw = typeof query.readSession === "function";
+        const snapshot = await query[raw ? "readSession" : "readSurface"](id);
+        const projection = raw ? projectGenerations(id, snapshot.events, { liveRunning: agents?.get(id)?.status === "running" }) : undefined;
+        const byUser = new Map(), byReply = new Map();
+        for (const receipt of projection?.generations ?? []) {
+          byUser.set(receipt.userMessageId, receipt);
+          // 同轮次多个输入共用回复时，以最先被原生日志接纳的输入作为回复锚点。
+          if (receipt.messageId !== undefined && !byReply.has(receipt.messageId)) byReply.set(receipt.messageId, receipt);
+        }
         const messages = snapshot.events.filter((event) => ["user/message", "assistant/message"].includes(event.type))
           .map((event) => {
             const message = messageOf(event);
             if (typeof message?.id !== "string" || !["user", "assistant"].includes(message.role) || !Array.isArray(message.content)) throw fail("HOST_INCOMPATIBLE", 502);
-            return { id: message.id, role: message.role, text: textOf(message), createdAt: iso(event.time) };
+            const clientMessageId = message.role === "user" && typeof message.source?.rpcId === "string"
+              && /^[A-Za-z0-9._~-]{1,128}$/.test(message.source.rpcId) ? message.source.rpcId : undefined;
+            const receipt = (message.role === "user" ? byUser : byReply).get(message.id);
+            return { id: message.id, role: message.role, text: textOf(message), createdAt: iso(event.time),
+              ...(clientMessageId === undefined ? {} : { clientMessageId }),
+              ...(receipt === undefined ? {} : { generationId: receipt.generationId, state: receipt.state, contentRevision: receipt.revision,
+                ...(message.role === "assistant" && receipt.clientMessageId !== undefined ? { clientMessageId: receipt.clientMessageId } : {}) }) };
           });
         return json(res, { messages });
       }
@@ -400,6 +498,19 @@ export function createSessionHandler(ctx, config, token, { heartbeatIntervalMs =
       }
       if (Object.keys(body).some((key) => key !== "value")) throw fail("SCHEMA_INVALID", 400);
       if (!capabilities()[action]) throw fail("UNSUPPORTED_CAPABILITY");
+      if (action === "cancel") {
+        const value = body.value;
+        if (value !== undefined && (!value || typeof value !== "object" || Array.isArray(value)
+            || Object.keys(value).length !== 1 || typeof value.generationId !== "string" || !value.generationId || value.generationId.length > 1024)) throw fail("SCHEMA_INVALID", 400);
+        const projection = await generationProjection(id);
+        const generation = findGeneration(projection, { generationId: value?.generationId });
+        if (!generation) throw fail(value?.generationId ? "GENERATION_NOT_FOUND" : "NO_ACTIVE_TURN", value?.generationId ? 404 : 409);
+        const outcome = cancellationOutcome(generation);
+        if (outcome !== "unknown") return json(res, { id, action, generationId: generation.generationId, outcome });
+        // 从这次活动读取到取消副作用保持同步，异步历史快照不参与最终比较。
+        const { requested, ...result } = cancelGeneration(id, generation.generationId, (sessionId) => services().agents.get(sessionId));
+        return json(res, result);
+      }
       const { controller, registry } = services();
       if (action === "rename") {
         if (typeof body.value !== "string" || !body.value.trim()) throw fail("SCHEMA_INVALID", 400);
