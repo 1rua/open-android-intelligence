@@ -525,6 +525,18 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
     measurements = parse_metrics(metrics)
     result = {"schema_version": SCHEMA_VERSION, "generated_at": utc_now(), "test_manifest": manifest, "xml_summary": parsed["summary"], "rankings": parsed["rankings"], "gradle_profile": parse_gradle_profile(profile, measurements["run"]), **measurements, "unknown": {"pure_jvm_startup_seconds": None, "test_body_seconds": None, "unattributed_overhead_seconds": None}, "limits": ["XML 是 JUnit 类和方法累计时间，不能作为精确 Test task 墙钟。", "first_method_seconds 包含有效测试和准备成本，不能等同 JVM 或 Robolectric 初始化。"]}
     failed = bool(manifest["duplicates"] or manifest["failures"])
+    # 规划器使用精确简单类名；逐轮核对真实 XML，防止只少跑其中一类却仍然报绿。
+    selected = {
+        argument.removeprefix("--tests=") for argument in result["run"].get("command", [])
+        if re.fullmatch(r"--tests=[A-Z][A-Za-z0-9_]*Test", argument)
+    }
+    if selected:
+        actual = {row["classname"].rsplit(".", 1)[-1] for row in manifest["identities"]}
+        result["class_selection"] = {"status": "passed" if selected == actual else "failed",
+                                     "missing": sorted(selected - actual), "unexpected": sorted(actual - selected)}
+        failed |= selected != actual
+    else:
+        result["class_selection"] = {**UNKNOWN, "reason": "没有本次规划器的精确类过滤记录，仅核对 XML 与显式基线"}
     unexpected_skips = [row for row in manifest["skipped"] if (row["classname"], row["name"]) != EXPECTED_FULL_SKIP]
     if unexpected_skips:
         result["unexpected_skips"] = unexpected_skips

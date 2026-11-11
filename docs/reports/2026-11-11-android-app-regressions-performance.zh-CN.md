@@ -11,7 +11,7 @@
 - 开发基点：`f6421dda`，开始工作时最新的 `origin/dev`。
 - 已读取的完整运行：[42967680063](https://github.com/1rua/open-android-intelligence/actions/runs/42967680063)，源码 `657b108752449eb1f81c9b115f8a53662839b199`。
 - 该次 App Job 从 05:44:38 UTC 到 05:58:20 UTC，共 13 分 42 秒；整个工作流从 05:44:08 UTC 到 05:58:25 UTC，共 14 分 17 秒。
-- 第二个历史样本：[42962654289](https://github.com/1rua/open-android-intelligence/actions/runs/42962654289)，用于核对长尾波动。JUnit 报告正在读取。
+- 第二个历史样本：[42962654289](https://github.com/1rua/open-android-intelligence/actions/runs/42962654289)，用于核对长尾波动。JUnit 报告已读取，统计和缓存边界见下文。
 - 历史运行只能说明原有瓶颈；最终参数比较须使用同一源码、相同测试清单和明确的缓存条件。
 
 ## 测量方法
@@ -70,12 +70,12 @@
 
 固定源码 `60eedbfe4e436fd27ba8aa2c6e3e95c0c74d98c6`，以下四次 `workflow_dispatch` 在干净检出上运行。每次完整执行 **166 类、1840 个唯一用例，1839 通过、1 个相同预期跳过、0 失败**；使用严格比较器重新对照，各模式 0 个新增/遗漏/新增跳过，身份哈希一致。
 
-| 配置 | 运行 | App Job | Gradle 配置 | App / 单测 Kotlin 编译 | Test task | Fork | 初始化累计 | GC 停顿累计 |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| 逐类隔离 / 默认JIT / 4路 | [42977632677](https://github.com/1rua/open-android-intelligence/actions/runs/42977632677) | 776秒 | 3.833秒 | 44.91 / 41.47秒 | 498.46秒 | 166 | 672.33秒 | 40.41秒 |
-| 逐类隔离 / 一级JIT / 4路 | [42977634823](https://github.com/1rua/open-android-intelligence/actions/runs/42977634823) | 746秒 | 5.174秒 | 58.91 / 57.86秒 | 392.08秒 | 166 | 473.68秒 | 30.79秒 |
-| 逐类隔离 / 一级JIT / 2路 | [42978306801](https://github.com/1rua/open-android-intelligence/actions/runs/42978306801) | 551秒 | 3.435秒 | 54.18 / 35.40秒 | 364.99秒 | 166 | 205.70秒 | 12.50秒 |
-| 安全复用 / 一级JIT / 4路 | [42978304527](https://github.com/1rua/open-android-intelligence/actions/runs/42978304527) | 646秒 | 5.011秒 | 82.36 / 60.86秒 | 376.35秒 | 124 | 426.52秒 | 27.16秒 |
+| 配置 | 运行 | App Job | Gradle 配置 | App / 单测 Kotlin 编译 | Test task | Fork | 初始化累计 | GC 停顿累计 | 整个CI |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 逐类隔离 / 默认JIT / 4路 | [42977632677](https://github.com/1rua/open-android-intelligence/actions/runs/42977632677) | 776秒 | 3.833秒 | 44.91 / 41.47秒 | 498.46秒 | 166 | 672.33秒 | 40.41秒 | 916秒 |
+| 逐类隔离 / 一级JIT / 4路 | [42977634823](https://github.com/1rua/open-android-intelligence/actions/runs/42977634823) | 746秒 | 5.174秒 | 58.91 / 57.86秒 | 392.08秒 | 166 | 473.68秒 | 30.79秒 | 887秒 |
+| 逐类隔离 / 一级JIT / 2路 | [42978306801](https://github.com/1rua/open-android-intelligence/actions/runs/42978306801) | 551秒 | 3.435秒 | 54.18 / 35.40秒 | 364.99秒 | 166 | 205.70秒 | 12.50秒 | 638秒 |
+| 安全复用 / 一级JIT / 4路 | [42978304527](https://github.com/1rua/open-android-intelligence/actions/runs/42978304527) | 646秒 | 5.011秒 | 82.36 / 60.86秒 | 376.35秒 | 124 | 426.52秒 | 27.16秒 | 736秒 |
 
 全部 Runner 均为 4 逻辑核、约 16 GB 内存。默认四路主机 CPU 平均约 92.7%，一级 JIT 四路约 86.4%，一级 JIT 两路约 58.9%，安全复用四路约 83.1%。最低可用内存均高于 9 GB；这批样本未显示主机内存耗尽。采样不能还原未命中的瞬时峰值，GC 与初始化是多个进程累计，不能直接相减当作墙钟收益。
 
@@ -105,8 +105,44 @@
 
 第一轮真实缓存键及命中集合见 [缓存比较原始表](android-app-ci-performance/cache-comparison.json)。默认四路与一级JIT四路恢复同一份gateway缓存，均133个任务FROM-CACHE；两路隔离与四路复用恢复同一份plugins缓存，均166个任务FROM-CACHE。后一份额外命中33个模块编译任务，因此不能把跨组全部墙钟改善归因于JIT或Fork。
 
-手动对照现改为所有Android通道只读，并启用Gradle Actions正式支持的`gradle-home-cache-strict-match`，只恢复本通道缓存，避免其它模块通道刚写入的快照改变下一轮输入。PR及dev/main门禁的缓存写入策略保留。
+手动对照现改为所有Android通道只读，并启用Gradle Actions提供的实验输入`gradle-home-cache-strict-match`，只恢复本通道缓存，避免其它模块通道刚写入的快照改变下一轮输入。该输入仍需随上游版本核对，且最终仍以日志中真实恢复键与FROM-CACHE集合确认快照可比。PR及dev/main的非手动门禁保留原缓存写入策略。
 
 串行GC是下一轮显式对照选项，默认暂不采用。它只改变测试JVM垃圾回收策略，仍保留所有断言、SDK、超时和逐类隔离。下一轮将记录Runner CPU型号与可用CPU配额，补充首轮仅记录核数的环境限制。
 
 完整历史类与方法排名、机器统计见 [性能证据目录](android-app-ci-performance/)。原始日志/XML仍由各运行的Actions artifact提供，本目录不提交构建产物。
+
+## 测量口径与保留的不确定项
+
+`fork_and_worker_bootstrap` 是Gradle请求Fork到Worker开始测试的日志事件区间，包含调度和Worker引导，不是纯JVM启动。并行控制台会合并/缓冲事件，因此同时报告Fork请求数、已匹配引导事件和未匹配数；不对缺事件的进程伪造启动耗时。
+
+Robolectric公开指标`initialization`覆盖其初始化范围；JUnit类/方法时间同时包含有效断言、规则和部分准备/清理。嵌套指标不能相加，现有观测不能精确剥离“仅测试主体”以及纯JVM启动，汇总保留`unknown`。这也是后续进一步细分剖析的入口。
+
+原门禁没有生成行覆盖率/分支覆盖率报告，本专项没有将测试身份一致换算为覆盖率百分比。已验证的是类、方法及SDK展开后的真实执行集合一致，业务源码、既有断言及必要隔离保留；没有证据的覆盖率数值明确不提供。
+
+未采用跨Runner编译产物分发或额外App分片。现有历史分片记录显示重复编译曾抵消测试并行收益；本轮先以单Runner实测改进执行。没有本轮双Runner同缓存的性能证据，不能宣称分片一定更慢，后续若继续评估须把两份编译、排队和整个CI关键路径一并计入。
+
+## 第二轮固定源码与空远端缓存对照
+
+固定源码`7109adb9531356cb0ae6a652db1cbcf1516fcde6`。三次手动运行都明确只读、严格限定本通道，且日志均为远端Gradle Home未命中；编译缓存命中集合一致，同次构建内的少量资源生成命中有差异。记录见[第二轮缓存事实](android-app-ci-performance/second-cache-comparison.json)与[完整指标概要](android-app-ci-performance/second-comparison-7109adb9.json)。
+
+| 配置 | 运行 | App Job | Test task | 整个CI | 结果 |
+|---|---|---:|---:|---:|---|
+| 默认GC / 一级JIT / 2路 | [42983699710](https://github.com/1rua/open-android-intelligence/actions/runs/42983699710) | 14分29秒 | 489.41秒 | 16分52秒 | 通过 |
+| 串行GC / 一级JIT / 2路 | [42983703887](https://github.com/1rua/open-android-intelligence/actions/runs/42983703887) | 16分02秒 | 525.73秒 | 19分09秒 | 通过 |
+| 串行GC / 一级JIT / 4路 | [42983701444](https://github.com/1rua/open-android-intelligence/actions/runs/42983701444) | 14分01秒 | 391.05秒 | 16分40秒 | 通过 |
+
+三组仍为166类/1840用例，0错误遗漏、0新增跳过，真实类选择检查通过。Runner CPU型号不同（EPYC 9V74/7763），因此这轮可以排除明显有利的GC结论，不能声称参数收益精确到上述差值。普通PR运行[42983598051](https://github.com/1rua/open-android-intelligence/actions/runs/42983598051)恢复旧App缓存后App为11分36秒、整个CI12分11秒，所有门禁通过，ColdStart修复在真实Play通道通过。
+
+## 最终采用项与验收结果
+
+1. **采用精确类过滤器**：选测只为真正选择的类启动进程，保留全部实际测试和跨模块核心组。
+2. **采用CI App的一级JIT、维持原四路Fork和默认GC**：第一轮同源码、同恢复缓存的两次运行中Test task从498.46秒降到392.08秒，减少106.38秒（21.3%）；整个App Job从12分56秒降到12分26秒，整个CI从15分16秒降到14分47秒。只有各一份样本，不能据此承诺稳定幅度。
+3. **安全复用保持显式实验**：46候选已通过本地重复/乱序/并行288项集合核对，完整Actions复用模式1840项集合也一致；但整Job没有胜过最佳隔离样本，默认继续逐类隔离。
+4. **不采用串行GC、不继续盲目增加Fork、不新增App分片**：现有实测没有证明这些选择有稳定收益。
+5. **保留真实性能采集与逐轮类集合检查**：每轮报告真实类/方法、Fork、初始化、CPU/内存/GC、配置编译、整个CI；不完整运行失败，无法归属的数据保持未知。
+
+**8分钟稳定目标及5分钟目标均未达成。** 当前最佳完整App样本为9分11秒，但缓存快照和Runner存在波动，不能当作稳定承诺。冷缓存样本仍为14–16分钟。本次PR提供可独立合入的执行优化与精确选测、保持隔离的实验入口、稳定性修复和可复核证据，问题#135继续开放，不以PR合并自动关闭性能目标。
+
+主要剩余瓶颈：98个Robolectric类重复加载Android框架与原生运行时；每类独立JVM的发现/启动成本；App与单测Kotlin编译每轮约90–140秒；Runner CPU型号与缓存快照波动；Configuration Cache没有跨Runner稳定密钥所以每轮重新配置。通知及真实HTTP大类存在仅cancel未join、夹具请求线程未确认结束等清理缺口，后续须先补所有权/结束证据，再考虑扩大安全复用范围，不能直接放开进程。
+
+本地验收已执行：`npm run test:fast`通过（261项Python回归与越权面门禁）；`npm run test:pr`通过（同261项、越权面门禁与完整166类1840项App回归，0失败/1既有预期跳过）；规划、采集与复用边界专项测试通过；完整差异空白检查和文档本地链接检查通过。独立规范/需求评审三轮已收敛，记录见[评审回执](../reviews/2026-11-11-pr136-ci-performance-review.zh-CN.md)。最终头部的Actions结论单独补录，不使用旧提交成功替代。

@@ -93,7 +93,12 @@
       ],
       "failures": [],
       "duplicates": []
-    }
+    },
+    "run_id": "42977632677",
+    "head_sha": "60eedbfe4e436fd27ba8aa2c6e3e95c0c74d98c6",
+    "app_job_seconds": 776,
+    "workflow_seconds": 916,
+    "workflow_conclusion": "success"
   },
   {
     "xml_summary": {
@@ -197,7 +202,12 @@
       ],
       "failures": [],
       "duplicates": []
-    }
+    },
+    "run_id": "42977634823",
+    "head_sha": "60eedbfe4e436fd27ba8aa2c6e3e95c0c74d98c6",
+    "app_job_seconds": 746,
+    "workflow_seconds": 887,
+    "workflow_conclusion": "success"
   },
   {
     "xml_summary": {
@@ -301,7 +311,12 @@
       ],
       "failures": [],
       "duplicates": []
-    }
+    },
+    "run_id": "42978306801",
+    "head_sha": "60eedbfe4e436fd27ba8aa2c6e3e95c0c74d98c6",
+    "app_job_seconds": 551,
+    "workflow_seconds": 638,
+    "workflow_conclusion": "success"
   },
   {
     "xml_summary": {
@@ -405,6 +420,11 @@
       ],
       "failures": [],
       "duplicates": []
-    }
+    },
+    "run_id": "42978304527",
+    "head_sha": "60eedbfe4e436fd27ba8aa2c6e3e95c0c74d98c6",
+    "app_job_seconds": 646,
+    "workflow_seconds": 736,
+    "workflow_conclusion": "failure"
   }
 ]

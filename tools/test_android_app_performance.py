@@ -305,3 +305,21 @@ def test_same_profile_name_from_another_run_is_not_measured(tmp_path):
     result = perf.parse_gradle_profile(wrong.parent, run)
     assert result["status"] == "unknown"
     assert "内容摘要" in result["reason"]
+
+
+@pytest.mark.parametrize("classes,expected_status", [
+    (["ExpectedTest"], "passed"),
+    (["ExpectedTest", "MissingTest"], "failed"),
+])
+def test_actual_classes_must_match_gradle_selection(tmp_path, classes, expected_status):
+    results = xml_results(tmp_path / "xml", [("example.ExpectedTest", "first", "")])
+    metrics = tmp_path / "metrics"
+    perf.write_json(metrics / "run.json", {
+        "status": "completed", "exit_code": 0,
+        "command": ["./gradlew", ":app:testFullDebugUnitTest", *[f"--tests={name}" for name in classes]],
+    })
+    result, code = perf.build_summary(results, None, metrics)
+    assert result["class_selection"]["status"] == expected_status
+    assert code == (0 if expected_status == "passed" else 1)
+    if expected_status == "failed":
+        assert result["class_selection"]["missing"] == ["MissingTest"]

@@ -53,7 +53,7 @@ on:
         description: App 测试 JIT 编译策略对照
         type: choice
         options: [default, startup]
-        default: default
+        default: startup
       app-seed:
         description: 安全复用组的类与方法乱序种子
         type: string
@@ -430,7 +430,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+          cache-read-only: ${{ github.event_name == 'workflow_dispatch' || (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev') }}
 
       # 越权面扫描是每个 Android lane 的共同前提，且足够廉价：
       # 让它先失败，比让 8 个 lane 各花几分钟才发现同一问题更省时间。
@@ -548,11 +548,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      # 合并为一个 job 而不是两个分片 job，依据实测：
-      #   两个分片各自的 Gradle 墙钟是 15.6 与 9.2 分钟，其中测试阶段都只有
-      #   约 3 分钟，其余是编译同一份变体。拆成两个 job 等于把编译付两遍，
-      #   关键路径反而被最慢的那份编译拖住。单 job 编译一次、让测试 JVM 并行，
-      #   才是这个 lane 的真实最优解。
+      # 先保留一次编译：历史双分片曾因重复编译拖长关键路径。
+      # 本轮重点优化测试执行；是否再次分片须由包含排队、编译与测试的总时间决定。
       - uses: ./.github/actions/android-lane
         with:
           lane: app-pr
@@ -561,7 +558,8 @@ jobs:
           test-parallel-forks: ${{ inputs.app-forks || '4' }}
           app-jvm-mode: ${{ inputs.app-jvm-mode || 'isolated' }}
           app-test-seed: ${{ inputs.app-seed || '135' }}
-          app-jit: ${{ inputs.app-jit || 'default' }}
+          # 同源码、同恢复缓存实测：完整Test task 498.46→392.08秒，覆盖集合一致。
+          app-jit: ${{ inputs.app-jit || 'startup' }}
           app-gc: ${{ inputs.app-gc || 'default' }}
           app-performance: 'true'
           # 手动性能对照只读取同一份既有缓存，避免先结束的样本替后一个写热缓存。

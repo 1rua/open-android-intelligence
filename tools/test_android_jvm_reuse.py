@@ -76,3 +76,15 @@ def test_reuse_configuration_changes_run_full_safety_matrix():
         result = impact.classify([("M", name)])
         assert result["full_required"] is True, name
         assert all(result["lanes"].values()), name
+
+
+def test_default_ci_uses_only_measured_optimization():
+    import yaml
+
+    root = Path(__file__).resolve().parent.parent
+    workflow = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())
+    inputs = workflow["jobs"]["android-app"]["steps"][1]["with"]
+    assert inputs["test-parallel-forks"] == "${{ inputs.app-forks || '4' }}"
+    assert inputs["app-jit"] == "${{ inputs.app-jit || 'startup' }}"
+    assert inputs["app-jvm-mode"] == "${{ inputs.app-jvm-mode || 'isolated' }}"
+    assert inputs["app-gc"] == "${{ inputs.app-gc || 'default' }}"
