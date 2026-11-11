@@ -57,11 +57,15 @@ SECURITY_OR_CONTRACT_PATHS = {
     "tools/smart-test.py",
     "tools/ci/impact.py",
     "tools/ci/android_tasks.py",
+    "tools/ci/android_app_performance.py",
+    "tools/test_android_app_performance.py",
+    "tools/test_android_jvm_reuse.py",
     "tools/test_ci_planning.py",
     "tools/test_smart_test.py",
     ".github/workflows/oai-core.yml",
     ".github/workflows/release-gate.yml",
     "apps/android/ci/app-regression.txt",
+    "apps/android/ci/app-jvm-reuse.txt",
     "apps/android/ci/hermes-fixture-requirements.txt",
 }
 

@@ -310,7 +310,7 @@ def test_production_source_selects_its_real_app_regressions(
     assert result["app_sections"] == sections
     assert {"android-app", "android-play"} | module_lanes <= active_lanes(result)
     for name in regression_names:
-        assert f"--tests=*{name}" in arguments, (path, name)
+        assert f"--tests={name}" in arguments, (path, name)
 
 
 @pytest.mark.parametrize("status", ["A", "M", "D"])
@@ -481,7 +481,7 @@ def test_pr_app_invocation_puts_the_task_before_its_filters(tasks):
     # whole suite.
     arguments = tasks.pr_app_args()
     assert arguments[0] == ":app:testFullDebugUnitTest"
-    assert all(argument.startswith("--tests=*") for argument in arguments[1:])
+    assert all(argument.startswith("--tests=") for argument in arguments[1:])
     assert len(arguments) > 1
     # Exactly one Test task: compiling the app dominates, so the set must not be
     # split across jobs or tasks.
@@ -504,11 +504,11 @@ def test_section_filter_always_includes_core(tasks):
     assert len(narrow) < len(all_args)
     core_names = tasks.read_regression_sections()["core"]
     for name in core_names:
-        assert f"--tests=*{name}" in narrow
+        assert f"--tests={name}" in narrow
     for name in tasks.read_regression_sections()["settings"]:
-        assert f"--tests=*{name}" in narrow
+        assert f"--tests={name}" in narrow
     for name in tasks.read_regression_sections()["plugins"]:
-        assert f"--tests=*{name}" not in narrow
+        assert f"--tests={name}" not in narrow
 
 
 def test_unknown_section_is_rejected(tasks):
@@ -570,7 +570,7 @@ def test_unknown_lane_is_rejected(tasks, capsys):
 def test_play_lane_enables_parallel_forks(tasks):
     arguments = tasks.play_args()
     assert arguments[0] == ":app:testPlayDebugUnitTest"
-    assert len([a for a in arguments if a.startswith("--tests=*")]) >= 10
+    assert len([a for a in arguments if a.startswith("--tests=")]) >= 10
 
 
 # --- end-to-end wiring -----------------------------------------------------

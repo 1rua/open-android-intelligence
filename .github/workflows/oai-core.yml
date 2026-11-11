@@ -38,12 +38,32 @@ on:
   push:
     branches: [dev, main]
   workflow_dispatch:
+    inputs:
+      app-jvm-mode:
+        description: App 测试进程隔离对照；所有模式执行相同必要测试
+        type: choice
+        options: [isolated, reuse]
+        default: isolated
+      app-forks:
+        description: App 测试并发进程数的实测对照
+        type: choice
+        options: ['4', '2']
+        default: '4'
+      app-jit:
+        description: App 测试 JIT 编译策略对照
+        type: choice
+        options: [default, startup]
+        default: default
+      app-seed:
+        description: 安全复用组的类与方法乱序种子
+        type: string
+        default: '135'
 
 permissions:
   contents: read
 
 concurrency:
-  group: oai-core-${{ github.workflow }}-${{ github.ref }}
+  group: oai-core-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'gate' }}
   # 新提交取代旧提交时取消旧 CI；dev/main 上的发布前验证必须完整跑完。
   cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
 
@@ -145,7 +165,9 @@ jobs:
         run: python3 -m pip install --quiet --disable-pip-version-check pytest PyYAML==6.0.3
 
       - name: CI planning helpers
-        run: python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
+        run: >-
+          python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
+          tools/test_android_jvm_reuse.py tools/test_android_app_performance.py
 
   dependency-lock:
     name: Dependency Lock Evidence
@@ -531,7 +553,13 @@ jobs:
           lane: app-pr
           wasm-artifact: ${{ needs.android-setup.outputs.wasm }}
           app-sections: ${{ needs.changes.outputs.app_sections }}
-          test-parallel-forks: '4'
+          test-parallel-forks: ${{ inputs.app-forks || '4' }}
+          app-jvm-mode: ${{ inputs.app-jvm-mode || 'isolated' }}
+          app-test-seed: ${{ inputs.app-seed || '135' }}
+          app-jit: ${{ inputs.app-jit || 'default' }}
+          app-performance: 'true'
+          # 手动性能对照只读取同一份既有缓存，避免先结束的样本替后一个写热缓存。
+          gradle-cache-read-only: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
           # These app tests drive the real Python gateway fixture:
           # AndroidAttachmentContentTypeTest, HermesHistoryMediaHttpTest and
           # plugins/NotificationCapabilityHttpTest. They fail closed when the
