@@ -880,3 +880,15 @@ fun WorkbenchScreen(
                             showRenameDialog = false
                         },
                     ) {
+                        Text(stringResource(UiR.string.conv_workbench_title_rename_confirm))
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showRenameDialog = false }) {
+                        Text(stringResource(UiR.string.conv_workbench_title_rename_cancel))
+                    }
+                }
+            )
+        }
+    }
+}
