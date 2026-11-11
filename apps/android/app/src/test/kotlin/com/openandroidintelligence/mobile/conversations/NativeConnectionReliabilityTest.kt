@@ -62,6 +62,138 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
     }
 
+    @Test fun ordinaryLegacyRecoverySignalsKeepTheHealthyReadAndOriginalBackgroundWait() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { runningUntilRead = 2; holdGenerationRead = 2 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        repeat(5) { h.repository.connectionRestored(); runCurrent() }
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals(2, h.generationReads)
+        assertEquals(0, h.cancelledGenerations)
+        assertTrue(h.requests.last { it.target.contains("/generation?") }.target.contains("waitMs=25000"))
+    }
+
+    @Test fun aConfirmedLegacyRebuildAloneWakesItsCappedRetry() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { failedGenerations = 9 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        for (backoff in listOf(250L, 500L, 1000L, 2000L, 4000L, 8000L, 16000L, 32000L)) {
+            advanceTimeBy(backoff); runCurrent()
+        }
+        h.repository.connectionRestored(confirmedTransportRebuild = 1); runCurrent()
+        assertEquals(10, h.generationReads)
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+    }
+
+    @Test fun ordinaryLegacyWakeupsPreserveBackoffAndExplicitBurstsOnlyAdvanceItOnce() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { failedGenerations = Int.MAX_VALUE }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        for (backoff in listOf(250L, 500L, 1000L, 2000L, 4000L, 8000L, 16000L, 32000L)) {
+            advanceTimeBy(backoff); runCurrent()
+        }
+        repeat(5) { h.repository.connectionRestored(); runCurrent() }
+        assertEquals(9, h.generationReads)
+        repeat(5) { h.repository.connectionRestored(expediteRetry = true); runCurrent() }
+        assertEquals("相同恢复突发只允许提前尝试一次", 10, h.generationReads)
+        assertEquals(listOf(60_000L, 60_000L), h.retryBases.takeLast(2))
+        advanceTimeBy(4_999)
+        h.repository.connectionRestored(expediteRetry = true); runCurrent()
+        assertEquals(10, h.generationReads)
+        advanceTimeBy(1)
+        h.failedGenerations = 0
+        h.repository.connectionRestored(expediteRetry = true); runCurrent()
+        assertEquals(11, h.generationReads)
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+    }
+
+    @Test fun repeatedLegacyNetworkValidationAndOldRebuildEpochsKeepTheNewHealthyRead() = runTest {
+        for (confirmed in listOf(false, true)) {
+            val h = LegacyRecoveryHarness(this).apply { runningUntilRead = 3; holdGenerationRead = 2 }
+            h.repository.timeline("chat", PageRequest()); runCurrent()
+            h.holdGenerationRead = 3
+            if (confirmed) h.repository.connectionRestored(confirmedTransportRebuild = 7)
+            else h.repository.connectionRestored(revalidateNetwork = true)
+            runCurrent()
+            assertEquals(3, h.generationReads)
+            assertEquals(1, h.cancelledGenerations)
+            repeat(5) {
+                if (confirmed) {
+                    h.repository.connectionRestored(confirmedTransportRebuild = 7)
+                    h.repository.connectionRestored(confirmedTransportRebuild = 6)
+                } else h.repository.connectionRestored(revalidateNetwork = true)
+                runCurrent()
+            }
+            assertEquals("重复通知不能取消恢复后的健康请求", 1, h.cancelledGenerations)
+            assertEquals(3, h.generationReads)
+        }
+    }
+
+    @Test fun legacyRecoverySignalsCannotBypassAuthenticationTlsOrProtocolPauses() = runTest {
+        for (failure in listOf(AgentSessionException("AUTHENTICATION_REQUIRED", 401),
+            AgentSessionException("FORBIDDEN", 403), SSLHandshakeException("测试证书拒绝"),
+            AgentSessionException("AGENT_RESPONSE_INVALID"))) {
+            val h = LegacyRecoveryHarness(this).apply { failedGenerations = Int.MAX_VALUE; generationFailure = failure }
+            h.repository.timeline("chat", PageRequest()); runCurrent()
+            assertEquals(1, h.generationReads)
+            repeat(5) {
+                h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true,
+                    confirmedTransportRebuild = it + 1L); runCurrent()
+            }
+            advanceTimeBy(120_000); runCurrent()
+            assertEquals("授权或协议暂停不能因连接恢复被绕过", 1, h.generationReads)
+            assertTrue(h.requests.none { it.method == "POST" })
+        }
+    }
+
+    @Test fun legacyRecoverySignalsCannotRestartAClosedRepository() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { runningUntilRead = 2; holdGenerationRead = 2 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        h.repository.close(); runCurrent()
+        val before = h.requests.size
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true, confirmedTransportRebuild = 1)
+        advanceTimeBy(120_000); runCurrent()
+        assertEquals(before, h.requests.size)
+    }
+
+    @Test fun legacyRecoveryNeverCancelsHistoricalMessagePersistence() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val h = LegacyRecoveryHarness(this).apply {
+            runningUntilRead = 2; holdGenerationRead = 2; historyCommitGate = release
+        }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        assertEquals(1, h.blockedHistoryCommits)
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true, confirmedTransportRebuild = 1)
+        runCurrent()
+        assertEquals(0, h.cancelledHistoryCommits)
+        release.complete(Unit); runCurrent()
+        assertEquals("本地保存时的恢复信号不能遗留并取消后续健康网络", 0, h.cancelledGenerations)
+        assertEquals(2, h.generationReads)
+        assertTrue(h.storage.events.any { it is VerifiedConversationEvent.TimelineUpsert && it.message.id == "legacy-user" })
+        assertTrue(h.requests.none { it.method == "POST" })
+    }
+
+    @Test fun legacyRecoveryNeverCancelsSavedHistoricalEventsWaitingForASubscriber() = runTest {
+        val releaseHistory = CompletableDeferred<Unit>()
+        val releaseSubscriber = CompletableDeferred<Unit>()
+        val h = LegacyRecoveryHarness(this).apply { runningUntilRead = 2; holdGenerationRead = 2; recoveryHistoryGate = releaseHistory }
+        val seen = mutableListOf<String>()
+        val subscriber = backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            h.repository.observeEvents(ConversationScope("profile", "https://core.example", "account", "install")).collect {
+                releaseSubscriber.await()
+                if (it is VerifiedConversationEvent.TimelineUpsert) seen += it.message.id
+            }
+        }
+        try {
+            h.repository.timeline("chat", PageRequest()); runCurrent()
+            h.historyBody = """{"messages":[${(1..8).joinToString(",") { """{"id":"legacy-message-$it","role":"assistant","text":"测试$it","contentRevision":1}""" }}]}"""
+            releaseHistory.complete(Unit); runCurrent()
+            assertTrue(h.storage.events.any { it is VerifiedConversationEvent.TimelineUpsert && it.message.id == "legacy-message-5" })
+            h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true, confirmedTransportRebuild = 1); runCurrent()
+            releaseSubscriber.complete(Unit); runCurrent()
+            assertEquals((1..8).map { "legacy-message-$it" }, seen)
+            assertEquals(0, h.cancelledGenerations)
+            assertTrue(h.requests.none { it.method == "POST" })
+        } finally { subscriber.cancel() }
+    }
+
     @Test fun healthyActivityKeepsTheSameReadAndDoesNotReloadHistory() = runTest {
         val h = Harness(this)
         h.repository.activeConversationChanged(); runCurrent()
@@ -661,9 +793,25 @@ class NativeConnectionReliabilityTest {
         var cancelledGenerations = 0
         var generationFailure: Exception = IOException("测试旧宿主暂时离线")
         var foreground = false
+        var histories = 0
+        var historyBody = """{"messages":[{"id":"legacy-user","role":"user","text":"测试输入","clientMessageId":"legacy-client","generationId":"legacy-generation","contentRevision":1}]}"""
+        var recoveryHistoryGate: CompletableDeferred<Unit>? = null
+        var historyCommitGate: CompletableDeferred<Unit>? = null
+        var blockedHistoryCommits = 0
+        var cancelledHistoryCommits = 0
         val requests = mutableListOf<WireRequest>()
         val retryBases = mutableListOf<Long>()
         val storage = NativeEventSynchronizerTest.Storage()
+        private val store = object : NativeConversationStore by storage {
+            override suspend fun commitEvents(events: List<VerifiedConversationEvent>) {
+                if (historyCommitGate != null && events.any { it.eventId.startsWith("history:") }) {
+                    blockedHistoryCommits++
+                    try { historyCommitGate?.await() }
+                    catch (cancelled: CancellationException) { cancelledHistoryCommits++; throw cancelled }
+                }
+                storage.commitEvents(events)
+            }
+        }
         private val dispatcher = UnconfinedTestDispatcher(scope.testScheduler)
         private val heldGeneration = CompletableDeferred<Unit>()
         private val agent = CoreAgent("legacy", "旧宿主回归", "hermes", true, "account",
@@ -672,7 +820,7 @@ class NativeConnectionReliabilityTest {
             override suspend fun execute(request: WireRequest): WireResponse {
                 requests += request
                 val body = when {
-                    request.target.endsWith("/history") -> """{"messages":[{"id":"legacy-user","role":"user","text":"测试输入","clientMessageId":"legacy-client","generationId":"legacy-generation","contentRevision":1}]}"""
+                    request.target.endsWith("/history") -> { histories++; if (histories > 1) recoveryHistoryGate?.await(); historyBody }
                     request.target.contains("/generation?") -> {
                         generationReads++
                         if (failedGenerations > 0) { failedGenerations--; throw generationFailure }
@@ -690,7 +838,7 @@ class NativeConnectionReliabilityTest {
         val repository = CoreAgentConversationRepository(
             AgentSessionClient(GatewayHttpClient(GatewayProfile("account", "phone", "login", "https://core.example",
                 accessToken = "synthetic"), transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher)),
-            { agent }, { "chat" }, scope.backgroundScope, dispatcher, storeForAgent = { storage },
+            { agent }, { "chat" }, scope.backgroundScope, dispatcher, storeForAgent = { store },
             nativeRetryJitter = { retryBases += it; it }, nativeMonotonicMillis = { scope.testScheduler.currentTime },
             isForeground = { foreground },
         )
