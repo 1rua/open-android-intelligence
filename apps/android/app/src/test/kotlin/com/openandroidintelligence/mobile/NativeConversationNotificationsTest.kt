@@ -105,6 +105,29 @@ class NativeConversationNotificationsTest {
         assertEquals(1, publications.count { it.second })
     }
 
+    @Test fun anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal() {
+        val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
+        coordinator = NativeConversationNotifications(context, scope, { session, alert ->
+            publications += session to alert
+            publisher.update(session, alert)
+        }, now = { clock }, throttleMillis = 0)
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        accept(message("conversation.message.completed", "同轮最终回复", 1))
+        accept(status("completed", 2))
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val notification = manager.activeNotifications.single()
+        manager.cancel(notification.tag, notification.id)
+        val count = publications.size
+
+        // 发送流和重连事件页可用不同 eventId 转发同一份已完成正文。
+        accept(message("conversation.message.completed", "同轮最终回复", 1))
+
+        assertTrue("已处理的通知不能被另一读取者的相同终稿重新发布", manager.activeNotifications.isEmpty())
+        assertEquals(count, publications.size)
+        assertEquals(1, publications.count { it.second })
+    }
+
     @Test fun successfulTerminalStopsOngoingEvenWithoutBodyAndLaterBodyDoesNotReopenTask() = runBlocking {
         accept(status("delivered", 1))
         accept(status("completed", 2))
