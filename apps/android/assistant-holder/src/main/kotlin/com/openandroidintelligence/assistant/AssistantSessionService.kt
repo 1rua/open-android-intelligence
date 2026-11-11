@@ -46,8 +46,9 @@ class AssistantSessionService : VoiceInteractionSessionService() {
  * 生命周期与数据：
  * - `onShow` 建 Compose 宿主并绑定主进程桥接，`onHide` 立即释放桥接、销毁组合；
  * - 所有数据来自主进程桥接，没有连接就显示未连接引导；
- * - 返回键：有覆盖层（圈选）先退出覆盖层，否则结束会话（`hide()`）。返回键**不会**
- *   中断生成，也不会折叠对话。
+ * - 返回键：定格截图态直接结束会话（空草稿时）；已有圈选附件则先退回紧凑输入栏，
+ *   以便把刚圈的内容发出去。其余覆盖层先退出、再结束会话。返回键**不会**中断生成，
+ *   也不会折叠对话。
  */
 internal class AssistantSession(service: AssistantSessionService) : VoiceInteractionSession(service) {
     private var host: AssistantComposeHost? = null
@@ -329,15 +330,23 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
 
     override fun onBackPressed() {
         // 返回键先关最上层的临时界面，顺序与视觉层级一致：
-        // 附件来源卡片 → 圈选/定格覆盖层 → 收起整个会话。
+        // 附件来源卡片 → 圈选/录音覆盖层 → 收起整个会话。
         // 卡片必须在这里拦下：否则一次返回会直接结束会话，尚未交接的草稿与附件
         // 随之被释放（规格 §203、§338 要求取消选择不丢草稿）。
         if (attachmentSheetOpen.value) {
             setAttachmentSheetOpen(false)
             return
         }
-        // 覆盖层其次（圈选/定格），没有覆盖层就把整个会话收掉；
-        // 无论哪条路径都不碰生成：正在输出的回复由主进程继续，界面没有"就地中断"。
+        // 定格截图态默认按返回即结束会话（见状态机）。**但已经圈出附件时例外**：
+        // 直接结束会连同草稿与附件一起释放（规格 §338 要求取消不丢草稿），
+        // 因此先退回紧凑输入栏，让用户仍能把刚圈的内容发出去。
+        if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT && hasDraftContent()) {
+            exitFrozenSelection()
+            return
+        }
+        // 定格截图态由状态机直接判定结束：它背后的紧凑输入栏没有任何圈选入口，
+        // 只清覆盖层会让用户停在一个既不能画圈也不能输入的中间态（需要按两次返回）。
+        // 其余覆盖层退出后仍有完整界面，保持两段式。
         uiState.dispatch(AssistantUiEvent.BackPressed)
         val visible = uiState.visible()
         if (visible != null) {
@@ -350,6 +359,16 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 状态机判定会话结束：清理临时态后收窗口。
         // 结束回调可能与这里的路径重合，requestExit 自己保证只执行一次。
         requestExit()
+    }
+
+    /**
+     * 当前草稿里是否已经有用户内容（文字或附件）。
+     *
+     * 只有这时「返回 = 结束会话」才会丢东西；空草稿的定格态可以直接退出。
+     */
+    private fun hasDraftContent(): Boolean {
+        val state = client?.state?.value ?: return false
+        return state.draft.isNotBlank() || state.attachments.isNotEmpty()
     }
 
     /**
@@ -386,26 +405,21 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         // 已经在定格态时系统又投递了一张：旧帧上的轨迹与选区都失效。
         // 这里**重新进入定格**而不是退出后不管：系统只投递一次截图、界面上也没有第二个
         // 圈选入口，退出后用户就再也回不到可画圈的状态了。
+        //
+        // 换帧成功时不弹任何提示：定格态本身就是「直接画圈」的界面，轨迹由新的截图实例
+        // 自动清空，用户接着画就行。多弹一张说明卡会盖住内容，且需求从未要求过这条文案。
         if (uiState.visible()?.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
-            if (prepared.bitmap != null) {
-                // 截图已就位：轨迹清空由新的 source 实例驱动，保持定格即可。
-                client?.showAdvisory("屏幕已更新，请重新画圈")
-            } else {
+            if (prepared.bitmap == null) {
                 exitFrozenSelection()
                 client?.showAdvisory(prepared.failureMessage)
             }
             return
         }
         // 截图是异步到达的：只有会话仍在「刚唤起、未开始输入」的初态才进入定格，
-        // 用户已经在打字/发消息时强行全屏会打断他们正在做的事。
+        // 用户已经在打字/发消息时强行全屏会打断他们正在做的事。此时保持现状、不打断，
+        // 也不额外提示——用户正在输入，不需要一份「这次不进入圈选」的说明。
         if (prepared.bitmap != null) {
-            if (canFreezeForSelection()) {
-                enterFrozenSelection()
-            } else {
-                // 有截图但当前不适合全屏（已展开、已在输入、正在录音）：留一句说明，
-                // 否则用户会以为「系统没给截图」，而实际上截图是好的、只是这会儿不切。
-                client?.showAdvisory("已在对话中，暂不进入圈选；再次唤起助手即可在屏幕上画圈")
-            }
+            if (canFreezeForSelection()) enterFrozenSelection()
             return
         }
         uiState.dispatch(AssistantUiEvent.ScreenshotUnavailable)

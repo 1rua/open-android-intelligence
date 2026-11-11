@@ -236,19 +236,23 @@ class AssistantUiStateMachineTest {
         assertEquals(AssistantOverlay.NONE, visible(released).overlay)
     }
 
-    /** 定格态第一次按返回只退出定格，第二次才结束会话（系统边缘手势因此仍有效）。 */
+    /**
+     * 定格态按一次返回就结束会话。
+     *
+     * 与平台默认一致（AOSP `VoiceInteractionSession.onBackPressed()` 本身就是 `hide()`）。
+     * 旧的两段式会让用户停在一个「看得见下层 App、却既不能画圈也不能输入」的中间态，
+     * 必须再按一次才退出——那是实现自定的语义，没有任何规格依据。
+     */
     @Test
-    fun backExitsFrozenScreenshotBeforeEndingTheSession() {
+    fun backEndsTheFrozenScreenshotSessionInOneStep() {
         val frozen = reduced(
             AssistantUiState.Visible(),
             AssistantUiEvent.ScreenshotAvailable,
         )
 
-        val afterFirst = reduced(frozen, AssistantUiEvent.BackPressed)
-        assertEquals(AssistantOverlay.NONE, visible(afterFirst).overlay)
+        val afterBack = reduce(frozen, AssistantUiEvent.BackPressed)
 
-        val afterSecond = reduce(afterFirst, AssistantUiEvent.BackPressed)
-        assertTrue(afterSecond is AssistantUiState.Terminated)
+        assertTrue("定格态按返回应直接结束会话", afterBack is AssistantUiState.Terminated)
     }
 
     /** 定格态下发送被接收：进入对话形态并清掉定格覆盖层，不把全屏留在原地。 */
