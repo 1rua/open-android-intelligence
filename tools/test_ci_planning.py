@@ -8,6 +8,7 @@ to protect: filters must follow their Test task, one task per invocation.
 """
 
 import importlib.util
+import re
 import shlex
 import subprocess
 import sys
@@ -41,7 +42,87 @@ def active_lanes(result):
     return {lane for lane, enabled in result["lanes"].items() if enabled}
 
 
+@pytest.fixture
+def git_repository(tmp_path, monkeypatch, impact):
+    """用真实 Git 输出验证路径分隔，避免把转义规则写进桩数据。"""
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    def git(*arguments):
+        return subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    git("init", "--quiet")
+    git("config", "user.name", "CI 规划测试")
+    git("config", "user.email", "ci-planning@example.invalid")
+    git("commit", "--quiet", "--allow-empty", "-m", "测试: 建立路径解析基线")
+    monkeypatch.setattr(impact, "REPO_ROOT", root)
+    return root, git
+
+
 # --- impact.classify -------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", [
+    "docs/验证汇总.json",
+    "docs/带 空格.json",
+    "docs/带\t制表符.json",
+    "docs/带\n换行.json",
+    "docs/带\r回车.json",
+    "docs/ 前后空白 .json",
+])
+def test_git_diff_preserves_document_paths(impact, git_repository, path):
+    root, git = git_repository
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n", encoding="utf-8")
+    git("add", "--", path)
+    git("commit", "--quiet", "-m", "测试: 加入特殊名称文档")
+
+    pairs = impact.changed_paths("HEAD^", "HEAD")
+
+    assert pairs == [("A", path)]
+    assert active_lanes(impact.classify(pairs)) == set()
+
+
+@pytest.mark.parametrize("path", [
+    "docs/未跟踪 验证.json",
+    "docs/未跟踪\n验证.json",
+    "docs/未跟踪\r验证.json",
+    "docs/ 前后空白 .json",
+])
+def test_git_untracked_paths_are_preserved(impact, git_repository, path):
+    root, _git = git_repository
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n", encoding="utf-8")
+
+    assert impact.changed_paths(None, None) == [("A", path)]
+
+
+def test_git_rename_preserves_both_path_owners(impact, git_repository):
+    root, git = git_repository
+    old_path = "apps/android/gateway-client/src/main/旧 客户端\n实现.kt"
+    new_path = "docs/新 客户端\n实现.json"
+    source = root / old_path
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("class 客户端\n", encoding="utf-8")
+    git("add", "--", old_path)
+    git("commit", "--quiet", "-m", "测试: 建立重命名来源")
+    target = root / new_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(target)
+    git("add", "--all")
+    git("commit", "--quiet", "-m", "测试: 重命名特殊路径")
+
+    pairs = impact.changed_paths("HEAD^", "HEAD")
+
+    assert pairs == [("D", old_path), ("A", new_path)]
+    assert "android-gateway" in active_lanes(impact.classify(pairs))
 
 
 def test_docs_only_change_runs_nothing(impact):
@@ -127,6 +208,71 @@ def test_app_sections_narrow_to_the_touched_domain(impact):
     ])
     assert result["app_sections"] == {"core", "settings"}
     assert result["full_required"] is False
+
+
+@pytest.mark.parametrize("status", ["A", "M", "D"])
+def test_each_changed_app_test_selects_its_manifest_section(impact, tasks, status):
+    """登记进清单还不够：单独修改任何测试文件都必须实际选中它。"""
+    owners = {
+        name: section
+        for section, names in tasks.read_regression_sections().items()
+        for name in names
+    }
+    failures = []
+    test_root = REPO_ROOT / "apps/android/app/src/test/kotlin"
+    for path in test_root.rglob("*.kt"):
+        names = re.findall(
+            r"^\s*(?:(?:internal|abstract|open)\s+)*class\s+(\w+Test)\b",
+            path.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if not names:
+            continue
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        result = impact.classify([(status, relative)])
+        assert result["lanes"]["fast"] is True, relative
+        for name in names:
+            if owners[name] not in result["app_sections"]:
+                failures.append(f"{relative}: {name} 未选中 {owners[name]}")
+    assert not failures, "\n".join(failures)
+
+
+def test_app_test_with_multiple_classes_selects_every_owner(impact, tmp_path, monkeypatch):
+    path = "apps/android/app/src/test/kotlin/MultiFeatureTest.kt"
+    source = tmp_path / path
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "class AppUpdateViewModelTest {}\nclass PluginPackageInputTest {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(impact, "REPO_ROOT", tmp_path)
+
+    result = impact.classify([("M", path)])
+
+    assert result["app_sections"] == {"core", "settings", "plugins"}
+
+
+def test_missing_app_test_source_does_not_guess_its_only_class(impact, tmp_path, monkeypatch):
+    monkeypatch.setattr(impact, "REPO_ROOT", tmp_path)
+    path = "apps/android/app/src/test/kotlin/AppUpdateViewModelTest.kt"
+
+    result = impact.classify([("D", path)])
+
+    assert result["lanes"]["fast"] is True
+    assert result["app_sections"] == set(impact.APP_SECTIONS)
+
+
+@pytest.mark.parametrize("path", [
+    "apps/android/app/src/test/kotlin/NewUnlistedRegressionTest.kt",
+    "apps/android/app/src/test/kotlin/SharedTestFixture.kt",
+    "apps/android/app/src/test/resources/fixture.txt",
+])
+def test_unknown_app_tests_require_all_sections_and_manifest_check(impact, path):
+    result = impact.classify([("A", path)])
+
+    assert result["lanes"]["fast"] is True
+    assert {"android-app", "android-play"} <= active_lanes(result)
+    assert result["app_sections"] == set(impact.APP_SECTIONS)
 
 
 def test_unknown_scope_widens_app_sections(impact):
