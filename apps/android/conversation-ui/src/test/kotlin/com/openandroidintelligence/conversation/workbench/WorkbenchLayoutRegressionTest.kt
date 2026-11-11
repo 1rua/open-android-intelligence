@@ -41,6 +41,7 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Assert.*
@@ -82,6 +83,63 @@ class WorkbenchLayoutRegressionTest {
         compose.onNodeWithText("正在连接…", substring = true).assertIsDisplayed()
         compose.onNodeWithText("该网关不支持审批卡片，请用 /approve 文本命令回复。").assertDoesNotExist()
         compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+    }
+
+    @Test fun liveCorePreservesNativeConnectionFailuresAndNormalIdleInTheTopBar() {
+        verifyLiveCoreAndNativeDisplay(1f)
+    }
+
+    @Test fun largeFontUsesTheSameCoreAndNativeConnectionDisplay() {
+        verifyLiveCoreAndNativeDisplay(1.8f)
+    }
+
+    private fun verifyLiveCoreAndNativeDisplay(fontScale: Float) {
+        val nativeHealth = MutableStateFlow(StreamHealth.IDLE)
+        var coreHealth by mutableStateOf<StreamHealth?>(StreamHealth.LIVE)
+        val controller = WorkbenchController(scope, EmptyGateway(), object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        }, { ConversationScope("p", "g", "a", "i") }, streamHealthSource = object : StreamHealthSource {
+            override val streamHealth = nativeHealth
+        })
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
+                MaterialTheme {
+                    WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {},
+                        connectionHealth = coreHealth)
+                }
+            }
+        }
+        listOf(
+            StreamHealth.IDLE to "已连接",
+            StreamHealth.CONNECTING to "正在连接…",
+            StreamHealth.LIVE to "已连接",
+            StreamHealth.RECONNECTING to "重连中…",
+            StreamHealth.FAILED to "通道已断开",
+            StreamHealth.LIVE to "已连接",
+            StreamHealth.IDLE to "已连接",
+        ).forEach { (health, label) ->
+            compose.runOnIdle { nativeHealth.value = health }
+            compose.onNodeWithText("gateway · $label").assertIsDisplayed()
+        }
+        listOf(
+            StreamHealth.CONNECTING to "正在连接…",
+            StreamHealth.RECONNECTING to "重连中…",
+            StreamHealth.FAILED to "通道已断开",
+        ).forEach { (health, label) ->
+            compose.runOnIdle { coreHealth = health; nativeHealth.value = StreamHealth.LIVE }
+            compose.onNodeWithText("gateway · $label").assertIsDisplayed()
+        }
+        compose.runOnIdle { coreHealth = null; nativeHealth.value = StreamHealth.IDLE }
+        compose.onNodeWithText("gateway · 实时通道未建立").assertIsDisplayed()
+        compose.runOnIdle { coreHealth = StreamHealth.LIVE }
+        compose.onNodeWithText("gateway · 已连接").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("展示合成不能改变原生流真值", StreamHealth.IDLE, controller.state.value.streamHealth) }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNodeWithText("在线").assertIsDisplayed()
+        compose.runOnIdle { nativeHealth.value = StreamHealth.RECONNECTING }
+        compose.onNodeWithText("重连中…").assertIsDisplayed()
     }
 
     @Test fun searchFieldGrowsWithFontScaleInsteadOfClippingItsPlaceholder() {
