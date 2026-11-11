@@ -49,6 +49,19 @@ class NativeConnectionReliabilityTest {
         assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
     }
 
+    @Test fun aLegacyHostsForegroundHalfOpenReadRecoversWithoutAnyWakeSignal() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { foreground = true; runningUntilRead = 2; holdGenerationRead = 2 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        assertEquals(2, h.generationReads)
+
+        advanceTimeBy(8_251); runCurrent()
+
+        assertEquals("持续前台须在网络预算内替换旧宿主半开读取", 1, h.cancelledGenerations)
+        assertEquals(3, h.generationReads)
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+        assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
+    }
+
     @Test fun healthyActivityKeepsTheSameReadAndDoesNotReloadHistory() = runTest {
         val h = Harness(this)
         h.repository.activeConversationChanged(); runCurrent()

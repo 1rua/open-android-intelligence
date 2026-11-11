@@ -1132,7 +1132,7 @@ class CoreAgentConversationRepository(
                         if (request != null) requireRecoveryOwner()
                         turn.recoveryCurrentNetwork = request
                     }
-                })
+                }, requestTimeoutMillis = { if (isForeground()) 8_000 else null })
                 var failures = 0
                 var unchangedUnknown = 0
                 var drainAfterRecovery = false
@@ -1143,7 +1143,7 @@ class CoreAgentConversationRepository(
                             val previousRevision = turn.receiptRevision
                             val receipt = network.run { client.generation(turn.agent, turn.conversationId, clientId,
                                 turn.hostGenerationId, previousRevision.takeIf { it >= 0 },
-                                if (previousRevision >= 0) 25000 else 0) }
+                                if (previousRevision >= 0) { if (isForeground()) 5_000 else 25_000 } else 0) }
                             requireRecoveryOwner()
                             if (receipt.revision < previousRevision) throw AgentSessionException("AGENT_RESPONSE_INVALID")
                             if (turn.state in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
