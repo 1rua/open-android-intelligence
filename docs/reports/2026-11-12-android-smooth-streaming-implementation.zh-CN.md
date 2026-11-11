@@ -21,6 +21,7 @@
 - `:app:compileFullDebugKotlin`：通过。
 - `:app:compileFullDebugUnitTestKotlin`：通过。
 - `git diff --check`：通过。
+- `npm run test:fast`：锁文件门禁和硬编码中文扫描通过；进入 Android 增量门禁时因仓库 wrapper 尝试写入只读 `/home/djbd/.gradle/...gradle-8.12-bin.zip.lck` 退出。此前使用直接 Gradle 二进制和可写临时 Gradle 用户目录完成了上面的编译验证。
 
 尝试运行 `:conversation-ui:testDebugUnitTest` 的流式状态、Markdown 渲染和消息流式回归时，Robolectric 在测试启动前下载 `org.robolectric:android-all-instrumented:14-robolectric-10818077-i7` 被 Maven Central 返回 HTTP 429。22 个测试均停在 `MavenArtifactFetcher` 初始化阶段，没有进入业务断言；因此不能将这次运行记为通过或代码失败。
 
