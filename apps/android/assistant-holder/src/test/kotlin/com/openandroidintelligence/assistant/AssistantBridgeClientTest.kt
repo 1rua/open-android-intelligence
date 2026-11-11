@@ -11,8 +11,10 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.ParcelFileDescriptor
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_ALLOWED_KEYS
 import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import com.openandroidintelligence.conversation.model.ApprovalChoice
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -129,6 +131,13 @@ class AssistantBridgeClientTest {
         assertEquals("submission", sent[9].getString("target"))
     }
 
+    /**
+     * 每条命令的 Bundle 键都必须落在**两端共用的**白名单里。
+     *
+     * 守卫必须真正触发全部命令：早先的用例只发了旧命令，`handoff` 与 `attachment`
+     * 两条新命令的字段（`uris` / `count`）从没被这条断言覆盖过，等于新命令不受保护。
+     * 白名单直接取协议常量，不再在测试里手写第二份。
+     */
     @Test fun commandsOnlyContainFieldsTheServiceAccepts() {
         val target = connect()
         target.sessionNew()
@@ -137,12 +146,16 @@ class AssistantBridgeClientTest {
         target.removeAttachment("draft-1")
         target.decideApproval("apr-1", ApprovalChoice.DENY)
         target.retry(AssistantRetryTarget.TIMELINE)
+        target.requestHandoff("handoff-test-1")
+        target.attachFiles(listOf("content://media/picked/1"))
         shadowOf(Looper.getMainLooper()).idle()
 
-        val allowed = setOf(
-            "version", "token", "command", "text", "content", "size",
-            "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
-        )
+        // 覆盖检查本身要成立：新命令确实发出去了，白名单断言才有意义。
+        val commands = sent.map { it.getString("command") }
+        assertTrue("交接命令必须被触发：$commands", "handoff" in commands)
+        assertTrue("附件命令必须被触发：$commands", "attachment" in commands)
+
+        val allowed = ASSISTANT_BRIDGE_ALLOWED_KEYS
         assertTrue(sent.isNotEmpty())
         assertTrue(sent.all { allowed.containsAll(it.keySet()) })
     }
@@ -224,6 +237,60 @@ class AssistantBridgeClientTest {
 
         assertEquals("新会话", target.state.value.draft)
         assertEquals(1L, target.state.value.revision)
+    }
+
+    // ---- 交接与文件附件 ----
+
+    /**
+     * 交接命令**只**多带一个请求代次。
+     *
+     * 代次是回执与请求对应起来的唯一依据：没有它，上一轮留在状态帧里的终态会在新一轮
+     * 开始时被重放，本轮结果被误判。除此之外不新增字段——会话身份仍由主进程持有的
+     * token 决定。
+     */
+    @Test fun handoffCommandCarriesOnlyTheRequestId() {
+        val target = connect()
+
+        assertTrue(target.requestHandoff("handoff-1"))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val handoff = sent.single { it.getString("command") == "handoff" }
+        assertEquals(
+            setOf("version", "token", "command", "handoffId"),
+            handoff.keySet(),
+        )
+        assertEquals("handoff-1", handoff.getString("handoffId"))
+    }
+
+    /** 空白代次不发：主进程无法把回执对应回去，等于一次注定的假交接。 */
+    @Test fun aBlankHandoffIdIsNeverSent() {
+        val target = connect()
+
+        assertFalse(target.requestHandoff(""))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertEquals(listOf("connect"), sent.map { it.getString("command") })
+    }
+
+    @Test fun fileAttachmentsSendOnlyUriStringsInBoundedBatches() {
+        val target = connect()
+
+        assertTrue(target.attachFiles(listOf(" content://a/1 ", "content://a/2", "content://a/1")))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val attachment = sent.single { it.getString("command") == "attachment" }
+        // 去重后只剩两个；数组按插入顺序保留。
+        assertEquals(listOf("content://a/1", "content://a/2"), attachment.getStringArray("uris")?.toList())
+        assertEquals(2, attachment.getInt("count"))
+        // 只传 URI 与数量：不传字节、路径或 MIME。
+        assertEquals(
+            setOf("version", "token", "command", "uris", "count"),
+            attachment.keySet(),
+        )
+
+        // 空列表与超过上限的批次直接拒绝，不静默裁剪。
+        assertFalse(target.attachFiles(emptyList()))
+        assertFalse(target.attachFiles(List(MAX_COMPOSER_ATTACHMENTS + 1) { "content://a/$it" }))
     }
 
     @Test fun voiceCarriesBytesMetadataAndReleasesTheLocalDescriptor() {

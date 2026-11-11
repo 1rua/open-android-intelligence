@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
 import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.SmsScopeMode
+import com.openandroidintelligence.mobile.conversations.DebouncePreferences
 
 /**
  * 可迁移的客户端偏好数据模型。
@@ -119,75 +120,47 @@ data class NotificationsSection(val replyAlertsEnabled: Boolean) {
     }
 }
 
-data class DebounceValue(val delayMillis: Int, val extendWindow: Boolean) {
-    fun encodeFields(): List<Pair<String, JsonValue>> = listOf(
-        "delayMillis" to Json.of(delayMillis),
-        "extendWindow" to Json.of(extendWindow),
-    )
-
-    fun label(): String = if (delayMillis == 0) "立即发送" else "${delayMillis / 1000.0} 秒"
-
-    companion object {
-        const val MIN_DELAY = 0
-        const val MAX_DELAY = 10_000
-
-        fun decode(obj: JsonValue.JObject, path: String): DebounceValue {
-            val delay = BackupFields.int(obj, "delayMillis") ?: throw formatError("$path.delayMillis", "缺失。")
-            if (delay !in MIN_DELAY..MAX_DELAY) {
-                throw formatError("$path.delayMillis", "超出 0–10000 毫秒。")
-            }
-            return DebounceValue(delay, BackupFields.boolean(obj, "extendWindow") ?: true)
-        }
-    }
-}
-
 /**
- * 消息合并偏好。
+ * 客户端的消息合并时长；只描述本机发送时机，不代表任何 Core 配置。
  *
- * Core 覆盖按 **Gateway 地址的 SHA-256** 记录：这个键本身是跨设备稳定的
- * （同一地址在任何手机上都得到同一串十六进制），因此导出不需要额外保存原始地址，
- * 也不会把地址以外的内容带进文件。
+ * 旧版本导出的节形是 `{global: {delayMillis, extendWindow}, cores: [...]}`。旧版每次导出都会
+ * 无条件写 `global`（值为读取默认的 1.5 秒），文件里无法区分「用户主动设置」与「从未设置」，
+ * 因此整节旧值都按 [legacyMergingSettings] 计数跳过，不继承——否则升级后默认 0 秒的承诺
+ * 会对导入过旧备份的用户失效。
  */
 data class MessageProcessingSection(
-    val global: DebounceValue?,
-    val cores: Map<String, DebounceValue>,
+    val delayMillis: Int?,
+    val legacyMergingSettings: Int = 0,
 ) {
     fun encode(): JsonValue.JObject = JsonValue.JObject(
-        buildList {
-            global?.let { add("global" to it.encodeValue()) }
-            add(
-                "cores" to JsonValue.JArray(
-                    cores.entries.sortedBy { it.key }.map { (key, value) ->
-                        JsonValue.JObject(listOf("key" to Json.of(key)) + value.encodeFields())
-                    },
-                ),
-            )
-        },
+        listOfNotNull(delayMillis?.let { "delayMillis" to Json.of(it) }),
     )
 
-    fun summary(): String = buildString {
-        append("消息处理：全局 ")
-        append(global?.label() ?: "保持本机现值")
-        if (cores.isNotEmpty()) append("，${cores.size} 个 Core 单独覆盖")
+    fun summary(): String {
+        val value = when {
+            delayMillis == null -> "保持本机现值"
+            delayMillis == 0 -> "立即发送"
+            else -> "${delayMillis / 1000.0} 秒"
+        }
+        return "消息合并：$value"
     }
 
-    companion object {
-        private val KEY_PATTERN = Regex("[0-9a-f]{64}")
+    /** 旧文件里的合并值已不再适用，导入时需要如实告知。 */
+    val hasLegacyMergingSettings: Boolean get() = legacyMergingSettings > 0
 
+    companion object {
         fun decode(section: JsonValue.JObject): MessageProcessingSection {
-            val global = BackupFields.objectOrNull(section, "global")
-                ?.let { DebounceValue.decode(it, "messageProcessing.global") }
-            val cores = BackupFields.objects(section, "cores").orEmpty().associate { entry ->
-                val key = BackupFields.string(entry, "key") ?: throw formatError("messageProcessing.cores", "缺少 key。")
-                if (!KEY_PATTERN.matches(key)) throw formatError("messageProcessing.cores", "key 必须是 Gateway 地址的 SHA-256。")
-                key to DebounceValue.decode(entry, "messageProcessing.cores[$key]")
+            val direct = BackupFields.int(section, "delayMillis")
+            if (direct != null &&
+                direct !in DebouncePreferences.MIN_DELAY_MILLIS..DebouncePreferences.MAX_DELAY_MILLIS) {
+                throw formatError("messageProcessing.delayMillis", "超出 0–30000 毫秒。")
             }
-            return MessageProcessingSection(global, cores)
+            val legacy = (if (BackupFields.objectOrNull(section, "global") != null) 1 else 0) +
+                BackupFields.objects(section, "cores").orEmpty().size
+            return MessageProcessingSection(direct, legacyMergingSettings = legacy)
         }
     }
 }
-
-private fun DebounceValue.encodeValue(): JsonValue = JsonValue.JObject(encodeFields())
 
 data class ConversationFolderValue(val folderId: String, val name: String)
 
@@ -491,7 +464,9 @@ data class SettingsBackupSections(
 internal object BackupFieldSets {
     val APPEARANCE = setOf("theme", "dynamicColor", "dynamicIconColor", "palette", "reduceMotion")
     val NOTIFICATIONS = setOf("replyAlertsEnabled")
-    val MESSAGE_PROCESSING = setOf("global", "cores")
+    // 新文件只写 `delayMillis`；`global`/`cores` 属于旧版本导出的形状，读取时兼容，
+    // 因此不算「本版本不认识的字段」。
+    val MESSAGE_PROCESSING = setOf("delayMillis", "global", "cores")
     val CONVERSATION = setOf("organizations")
     val NOTIFICATION_COLLECTION = setOf("packageIds", "fieldAccess", "mode")
     val DEVICE_PUSH = setOf("scope", "retentionHours", "maxEvents", "maxQueueBytes")

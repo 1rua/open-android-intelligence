@@ -15,6 +15,18 @@ data class SavedSubmission(val text: String, val attachmentIds: List<String>, va
 data class SavedComposerDraft(val threadId: String?, val text: String, val revision: Long,
     val attachments: List<AttachmentDraft>, val explicit: Boolean = true)
 
+/**
+ * 交给主 App 的助手草稿快照（上滑交接）。
+ *
+ * 只含身份与元数据：文字、附件草稿（已有 `draftId`），不含字节与 provider 位置。
+ * 调用方在 [WorkbenchController.openThread] 之后再用它覆盖输入栏，那是用户刚在浮层里
+ * 编辑的那份内容。
+ */
+data class AssistantDraftSnapshot(
+    val text: String,
+    val attachments: List<AttachmentDraft>,
+)
+
 data class SavedCancellation(val conversationId: String, val generationId: String)
 data class SavedMessageGeneration(val conversationId: String, val messageId: String, val generationId: String, val revision: Long)
 data class SavedFolderAssignment(val conversationId: String, val folderId: String)

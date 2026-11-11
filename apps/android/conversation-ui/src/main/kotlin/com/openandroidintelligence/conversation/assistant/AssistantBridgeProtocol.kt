@@ -32,6 +32,40 @@ import org.json.JSONObject
  */
 const val ASSISTANT_BRIDGE_VERSION = 2
 
+/**
+ * 助手桥接命令允许出现的 Bundle 键（协议字段封闭）。
+ *
+ * 两端（助理进程的 `AssistantBridgeClient`、主进程的 `AssistantBridgeService`）都必须
+ * 引用这**同一份**集合：任何一侧新增字段而另一侧没同步，命令会被整条丢弃，表现为
+ * 「点了没反应」，很难在真机上定位。测试也直接断言这份集合，避免手写白名单漂移。
+ */
+val ASSISTANT_BRIDGE_ALLOWED_KEYS: Set<String> = setOf(
+    "version", "token", "command", "text", "content", "size",
+    "durationMs", "mediaType", "draftId", "approvalId", "choice", "target", "visible",
+    "uris", "count",
+    // 交接请求代次：回执必须能对应到「这一次」请求，否则上一轮的终态会被当成这一轮的结果。
+    "handoffId",
+    // 屏幕/拍照附件的展示文件名：主进程原先硬编码「assist-screen.png」，
+    // 拍照来源需要区分，否则相册里会同时出现多张同名不同内容的图。
+    "filename",
+)
+
+/**
+ * 交接时等待未就绪附件（上传/校验中）完成的上限。
+ *
+ * 规格 §3.4：交接只接管已 `VERIFIED` 的附件；仍有附件在传时必须等它完成（有上限），
+ * 超时按严格交接处理。3 秒足以覆盖正常大小的图片/文件，又不会让用户觉得上滑没反应。
+ */
+const val ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS = 3_000L
+
+/**
+ * 浮层等待主进程交接回执的上限。
+ *
+ * 必须**大于**服务端的 [ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS]，否则服务端还在等
+ * 附件时浮层就先把结果判成超时，用户看到的就不是真实原因。
+ */
+const val ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS = 5_000L
+
 /** 单条消息正文被预算截断时插入的固定标记；接收方据此显示"已截断"。 */
 const val TEXT_TRUNCATION_MARKER = "\n\n…[内容已截断]…\n\n"
 
@@ -162,6 +196,52 @@ data class AssistantAppearanceDto(
     val reduceMotion: Boolean = false,
 )
 
+/** 交接请求的三种状态，与 [AssistantHandoffDto.state] 的线上字面量一一对应。 */
+enum class AssistantHandoffState(val wireValue: String) {
+    /** 主进程正在接管；客户端应继续等待回执。 */
+    PENDING("PENDING"),
+
+    /** 主进程已经接管草稿与附件，可以打开主 App 并关闭浮层。 */
+    ACCEPTED("ACCEPTED"),
+
+    /** 主进程拒绝（未连接、账号/Agent 不一致等）；[AssistantHandoffDto.reason] 是原因原文。 */
+    REJECTED("REJECTED"),
+    ;
+
+    companion object {
+        fun of(value: String?): AssistantHandoffState? = entries.firstOrNull { it.wireValue == value }
+    }
+}
+
+/**
+ * 一次交接尝试的结果。
+ *
+ * 属于**状态**投影而不是命令字段：交接是主进程发起的动作，客户端只读结果。
+ * 没有这个字段的旧帧解码为 null（= 尚未请求过），不能用默认值伪造一次成功的交接。
+ */
+data class AssistantHandoffDto(
+    /**
+     * 本次回执对应的请求代次。
+     *
+     * 客户端每次上滑都会带一个新的 `handoffId`，回执原样带回。**没有代次就不能比较**：
+     * 上一轮的 REJECTED 会留在状态帧里，下一轮请求的 `collect` 会立刻重放它并把本轮
+     * 判成失败，随后真正的 ACCEPTED 被忽略——主进程已经接管草稿，浮层却停在失败状态。
+     * 空字符串表示旧主进程不认识这个字段，此时调用方退回「只看终态」的宽容策略。
+     */
+    val handoffId: String = "",
+    val state: String = AssistantHandoffState.PENDING.wireValue,
+    /** 已本地化的原因；ACCEPTED/PENDING 时为空。 */
+    val reason: String = "",
+    /** 主进程接管的会话身份；ACCEPTED 时才有值（尚未产生会话时为 null）。 */
+    val conversationId: String? = null,
+    /** 交接目标身份：助手据此构造打开主 App 的深链，不需要额外的命令字段。 */
+    val profileId: String = "",
+    val accountId: String = "",
+    val agentId: String? = null,
+    /** 未能随草稿迁移的附件数（仍在上传/校验或超出上限）；0 表示全部带过去了。 */
+    val skippedAttachments: Int = 0,
+)
+
 /**
  * 助理进程可见的完整状态。
  *
@@ -184,6 +264,8 @@ data class AssistantStateDto(
     val attachments: List<AssistantAttachmentDto> = emptyList(),
     val notice: AssistantNoticeDto? = null,
     val appearance: AssistantAppearanceDto = AssistantAppearanceDto(),
+    /** 最近一次交接尝试的结果；从未请求过时为 null（旧帧同样为 null）。 */
+    val handoff: AssistantHandoffDto? = null,
 )
 
 // ---------------------------------------------------------------------------
@@ -207,6 +289,7 @@ fun encodeState(state: AssistantStateDto): String = JSONObject().apply {
     put("attachments", state.attachments.toJsonArray { attachment -> attachment.toJson() })
     state.notice?.let { put("notice", it.toJson()) }
     put("appearance", state.appearance.toJson())
+    state.handoff?.let { put("handoff", it.toJson()) }
 }.toString()
 
 /**
@@ -237,6 +320,7 @@ private fun parseState(root: JSONObject): AssistantStateDto = AssistantStateDto(
     attachments = root.optJSONArray("attachments").objects().map { it.toAttachmentDto() },
     notice = root.optJSONObject("notice")?.toNoticeDto(),
     appearance = root.optJSONObject("appearance")?.toAppearanceDto() ?: AssistantAppearanceDto(),
+    handoff = root.optJSONObject("handoff")?.toHandoffDto(),
 )
 
 /** 把状态里的时间线投影还原为界面使用的 [TimelineEntry]。 */
@@ -491,6 +575,33 @@ private fun AssistantAccountDto.toJson(): JSONObject = JSONObject().apply {
 private fun AssistantNoticeDto.toJson(): JSONObject = JSONObject().apply {
     put("code", code)
     put("message", message)
+}
+
+private fun AssistantHandoffDto.toJson(): JSONObject = JSONObject().apply {
+    put("handoffId", handoffId)
+    put("state", state)
+    put("reason", reason)
+    conversationId?.let { put("conversationId", it) }
+    put("profileId", profileId)
+    put("accountId", accountId)
+    agentId?.let { put("agentId", it) }
+    put("skippedAttachments", skippedAttachments)
+}
+
+private fun JSONObject.toHandoffDto(): AssistantHandoffDto {
+    val parsed = AssistantHandoffState.of(stringOrNull("state")) ?: AssistantHandoffState.PENDING
+    return AssistantHandoffDto(
+        // 未知状态按 PENDING 处理：调用方会继续等待并在超时后失败关闭，
+        // 绝不把没读懂的字面量升格成一次成功的交接。
+        handoffId = stringOrEmpty("handoffId"),
+        state = parsed.wireValue,
+        reason = stringOrEmpty("reason"),
+        conversationId = stringOrNull("conversationId"),
+        profileId = stringOrEmpty("profileId"),
+        accountId = stringOrEmpty("accountId"),
+        agentId = stringOrNull("agentId"),
+        skippedAttachments = optInt("skippedAttachments", 0).coerceAtLeast(0),
+    )
 }
 
 private fun AssistantAppearanceDto.toJson(): JSONObject = JSONObject().apply {

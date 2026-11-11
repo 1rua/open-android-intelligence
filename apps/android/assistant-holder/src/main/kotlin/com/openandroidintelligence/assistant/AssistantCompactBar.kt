@@ -3,7 +3,6 @@ package com.openandroidintelligence.assistant
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
@@ -46,10 +45,13 @@ import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CropFree
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.GraphicEq
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -70,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
@@ -83,6 +86,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.components.bouncyClickable
@@ -97,18 +101,24 @@ import kotlin.math.roundToInt
 /**
  * 底部悬浮输入栏（Gemini 风格的单条胶囊）。
  *
- * 只做呈现与本地编辑：草稿状态由宿主持有（[editor]），发送、停止、录音、圈选
+ * 只做呈现与本地编辑：草稿状态由宿主持有（[editor]），发送、停止、录音与添加附件
  * 全部通过回调交回宿主，这里不连接 Gateway、不缓存第二份会话真相。
  *
  * 结构：
- * 1. 附件缩略条：已添加的图片/语音附件一行横滑，高度变化走 [MotionSpecs.morph]；
- * 2. 输入态：多行输入（最多 6 行，高度随行数自然增长）+ 麦克风 + 屏幕圈选 + 发送/停止；
+ * 1. 附件缩略条：已添加的图片/语音/文件附件一行横滑，高度变化走 [MotionSpecs.morph]；
+ * 2. 输入态：多行输入（最多 6 行，高度随行数自然增长）+ 最左「＋」+ 麦克风 + 发送/停止；
  * 3. 录音态：整条内容替换为「× 取消 / 波形 + 计时 / 发送」。
+ *
+ * 顶部拖动横条**不在**这里：整个助手只有 [AssistantDragHandle] 一个，由
+ * [AssistantSessionRoot] 在会话树最顶部渲染（需求 5.1「始终显示」）。屏幕圈选按钮也已
+ * 从系统助理的输入栏移除——唤起后直接在定格截图上画圈。ASSIST 兜底页没有系统截图，
+ * 仍需要一条「本入口无系统截图」的说明路径，因此 [onStartScreenSelection] 改成可空：
+ * 只有兜底页传入时才会渲染那个入口，系统会话不传，输入栏里就没有圈选按钮。
  *
  * 动效：
  * - **进场**：首次组合时整条输入栏从屏幕底部之下弹出，位移、缩放与透明度共用
  *   [MotionSpecs.EntranceSpring] 的非线性弹簧（只作用于 `graphicsLayer`，不参与测量）；
- * - **展开**：输入框获得焦点或已有草稿时，卡片长高约一倍并出现顶部拖动指示条，
+ * - **展开**：输入框获得焦点或已有草稿时，卡片长高约一倍，
  *   圆角从 [AppRadius.Bubble] 过渡到 [AppRadius.ExtraLarge]；收起更快，走
  *   [MotionSpecs.CollapseSpring]。
  *
@@ -125,7 +135,19 @@ internal fun AssistantCompactBar(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
-    onStartScreenSelection: () -> Unit,
+    /**
+     * 屏幕圈选入口：**只有 ASSIST 兜底页**传入（它没有系统截图，点它给出说明）。
+     *
+     * 系统助理会话传 null：唤起后直接在定格截图上画圈，输入栏里不该有第二个入口。
+     * 早先这个参数一直传空 lambda，兜底页的说明路径因此整体不可达。
+     */
+    onStartScreenSelection: (() -> Unit)? = null,
+    /**
+     * 点击「＋」菜单里的某一类附件入口。
+     *
+     * 参数区分照片/视频（Photo Picker）与文档（SAF）：规格 §3.5 要求两类都能选。
+     */
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     hasUnknownOutcome: Boolean = false,
@@ -141,6 +163,14 @@ internal fun AssistantCompactBar(
      * 带出，再播一次会形成两段重复位移，因此那里传 false。
      */
     animateEntrance: Boolean = true,
+    /**
+     * 输入栏自身卡片的圆角形状；null 表示按展开态在
+     * [AppRadius.Bubble] / [AppRadius.ExtraLarge] 之间过渡（紧凑态语义）。
+     *
+     * 展开会话里容器是一整张卡片：消息区在上、输入栏在下，输入栏只保留外缘底部两角，
+     * 由 [InputBarShape] 传入。这样不会再套第二层 Surface（双层卡片）。
+     */
+    cardShape: Shape? = null,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val sendEnabled = enabled && editor.text.isNotBlank() && !isGenerating && !hasUnknownOutcome
@@ -228,6 +258,8 @@ internal fun AssistantCompactBar(
                     onStop = onStop,
                     onStartRecording = onStartRecording,
                     onStartScreenSelection = onStartScreenSelection,
+                    onAddAttachment = onAddAttachment,
+                    cardShape = cardShape,
                 )
             }
         }
@@ -240,6 +272,8 @@ internal object AssistantCompactBarTags {
     const val HANDLE = "assistant_compact_handle"
     const val RECORDING = "assistant_compact_recording"
     const val ATTACHMENTS = "assistant_compact_attachments"
+    const val ATTACH_MEDIA = "assistant_compact_attach_media"
+    const val ATTACH_DOCUMENT = "assistant_compact_attach_document"
     fun attachment(id: String): String = "assistant_compact_attachment_$id"
 }
 
@@ -269,7 +303,9 @@ private fun CompactInputRow(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onStartRecording: () -> Unit,
-    onStartScreenSelection: () -> Unit,
+    onStartScreenSelection: (() -> Unit)?,
+    onAddAttachment: (AssistantAttachmentKind) -> Unit,
+    cardShape: Shape?,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val currentOnDraftChange by rememberUpdatedState(onDraftChange)
@@ -286,7 +322,7 @@ private fun CompactInputRow(
     } else {
         MotionSpecs.collapse<IntSize>(reduceMotion)
     }
-    val cornerRadius by animateDpAsState(
+    val animatedCorner by animateDpAsState(
         targetValue = if (expanded) AppRadius.ExtraLarge else AppRadius.Bubble,
         animationSpec = if (expanded) {
             MotionSpecs.expand(reduceMotion)
@@ -295,9 +331,10 @@ private fun CompactInputRow(
         },
         label = "assistant-compact-corner",
     )
+    val shape = cardShape ?: RoundedCornerShape(animatedCorner)
 
     Surface(
-        shape = RoundedCornerShape(cornerRadius),
+        shape = shape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
@@ -310,55 +347,17 @@ private fun CompactInputRow(
             },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            AnimatedVisibility(
-                visible = expanded,
-                // 减少动态：指示条直接出现/消失，不做高度与透明度过渡。
-                enter = if (reduceMotion) {
-                    EnterTransition.None
-                } else {
-                    fadeIn(MotionSpecs.fade(reduceMotion)) +
-                        expandVertically(
-                            animationSpec = MotionSpecs.expand(reduceMotion),
-                            expandFrom = Alignment.Top,
-                        )
-                },
-                exit = if (reduceMotion) {
-                    ExitTransition.None
-                } else {
-                    fadeOut(MotionSpecs.fade(reduceMotion)) +
-                        shrinkVertically(
-                            animationSpec = MotionSpecs.collapse(reduceMotion),
-                            shrinkTowards = Alignment.Top,
-                        )
-                },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = Dimensions.SpaceSmall)
-                        .testTag(AssistantCompactBarTags.HANDLE),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .width(CompactHandleWidth)
-                            .height(CompactHandleHeight)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                                    .copy(alpha = CompactHandleAlpha),
-                            ),
-                    )
-                }
-            }
-
             Row(
                 modifier = Modifier
+                    // 圆形按钮的视觉直径是 44dp、触摸目标 48dp。原先四边只用 4dp 内边距，
+                    // 按钮外圈几乎贴到卡片边框，紧凑态看起来拥挤、圆角也被压。改为 8dp：
+                    // 与 [Dimensions.SpaceSmall]（栅格基本单位）一致，按钮与容器边缘之间
+                    // 留出明确视觉间距，同时不缩小图标或触摸区域。
                     .padding(
-                        start = Dimensions.SpaceMedium,
-                        end = Dimensions.SpaceTiny,
-                        top = Dimensions.SpaceTiny,
-                        bottom = Dimensions.SpaceTiny,
+                        start = Dimensions.SpaceSmall,
+                        end = Dimensions.SpaceSmall,
+                        top = Dimensions.SpaceSmall,
+                        bottom = Dimensions.SpaceSmall,
                     )
                     .heightIn(
                         min = if (expanded) {
@@ -368,8 +367,19 @@ private fun CompactInputRow(
                         },
                     ),
                 verticalAlignment = Alignment.Bottom,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                // 控件之间同样用 8dp：先前 4dp 会让「＋ / 输入框 / 麦克风 / 发送」粘成一团。
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
             ) {
+                // 最左侧「＋」：需求要求的附件入口顺序是 ＋ / 输入框 / 麦克风 / 发送。
+                // 点击展开与主 App 完全一致的 MD3 底部附件卡片（ComposerAttachmentSheet），
+                // 不再使用自绘的 DropdownMenu —— 后者是直角矩形菜单，与主 App 的圆角
+                // 底部卡片在视觉与手势上都不一致，等于维护了两套附件入口。
+                CompactIconAction(
+                    icon = Icons.Default.Add,
+                    contentDescription = "添加附件",
+                    enabled = enabled,
+                    onClick = { onAddAttachment(AssistantAttachmentKind.SHEET) },
+                )
                 BasicTextField(
                     state = editor,
                     inputTransformation = reportEdits,
@@ -412,12 +422,16 @@ private fun CompactInputRow(
                     enabled = enabled,
                     onClick = onStartRecording,
                 )
-                CompactIconAction(
-                    icon = Icons.Outlined.CropFree,
-                    contentDescription = "屏幕圈选",
-                    enabled = enabled,
-                    onClick = onStartScreenSelection,
-                )
+                // 只有 ASSIST 兜底页会传这个回调：它没有系统截图，点这里给出说明。
+                // 系统会话不传，输入栏里因此没有第二个圈选入口。
+                if (onStartScreenSelection != null) {
+                    CompactIconAction(
+                        icon = Icons.Outlined.CropFree,
+                        contentDescription = "屏幕圈选",
+                        enabled = enabled,
+                        onClick = onStartScreenSelection,
+                    )
+                }
                 CompactPrimaryAction(
                     stop = isGenerating,
                     enabled = if (isGenerating) !isStopping else sendEnabled,
@@ -431,8 +445,10 @@ private fun CompactInputRow(
                 )
             }
         }
+
     }
 }
+
 
 /** 附件缩略条：图片、语音与普通文件共用同一行，横向滑动查看。 */
 @Composable
@@ -646,11 +662,6 @@ private const val CompactMaxInputLines = 6
 
 /** 展开态输入区的最小高度：紧凑横条的两倍，给输入留出更明显的空间。 */
 private val CompactExpandedMinHeight = Dimensions.ComposerMinHeight * 2
-
-/** 顶部拖动指示条的尺寸与透明度（`onSurfaceVariant` 40%）。 */
-private val CompactHandleWidth = 32.dp
-private val CompactHandleHeight = 4.dp
-private const val CompactHandleAlpha = 0.4f
 
 /** 进场起点：整条输入栏位于自身高度 + 32dp 的屏幕底部之下。 */
 private val CompactEntranceOvershoot = 32.dp

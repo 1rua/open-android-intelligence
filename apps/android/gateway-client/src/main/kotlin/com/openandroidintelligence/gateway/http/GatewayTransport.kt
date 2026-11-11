@@ -47,6 +47,9 @@ class GatewayTransport(
 
     private val endpoint: GatewayEndpoint = GatewayEndpoint.parse(profile.gatewayBaseUrl)
         ?: error("GATEWAY_ENDPOINT_INVALID: ${profile.gatewayBaseUrl}")
+    @Volatile private var advertisedEventHeartbeatMillis: Long? = null
+
+    override fun eventHeartbeatMillis(): Long? = advertisedEventHeartbeatMillis
 
     private fun phase(request: WireRequest, mode: String, stage: String) {
         GatewayLog.protocolEvidence("transport.$stage", mapOf("mode" to mode,
@@ -262,6 +265,7 @@ class GatewayTransport(
 
     @OptIn(kotlinx.coroutines.InternalCoroutinesApi::class)
     override fun eventStream(request: WireRequest): Flow<ByteArray> = flow {
+        advertisedEventHeartbeatMillis = null
         phase(request, "eventStream", "io_dequeued")
         GatewayLog.d(TAG, "sse open")
         val connection = try {
@@ -296,6 +300,10 @@ class GatewayTransport(
             if (!contentType.contains("text/event-stream")) {
                 throw IOException("EVENT_STREAM_FAILED:unexpected-content-type")
             }
+            // 节奏提示只影响失活检测；缺失、重复或越界时保持旧服务端的保守预算。
+            advertisedEventHeartbeatMillis = connection.headerFields.entries
+                .filter { it.key?.equals("X-Open-Android-Intelligence-Event-Heartbeat-Ms", ignoreCase = true) == true }
+                .flatMap { it.value.orEmpty() }.singleOrNull()?.toLongOrNull()?.takeIf { it in 1_000..15_000 }
             observedStream(request, "eventStream", connection.inputStream).use { stream ->
                 val buffer = ByteArray(EVENT_CHUNK_BYTES)
                 while (currentCoroutineContext().isActive) {

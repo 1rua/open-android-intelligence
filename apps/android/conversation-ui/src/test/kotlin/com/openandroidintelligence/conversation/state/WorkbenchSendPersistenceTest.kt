@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendPersistenceTest {
@@ -196,6 +198,42 @@ class WorkbenchSendPersistenceTest {
         assertEquals(LocalSubmissionState.ACCEPTED, persistence.loadSendAtoms("conv_a").single().submissionState)
         assertEquals(listOf("普通消息的回执丢失"), userTexts(second))
         second.close()
+    }
+
+    /**
+     * 失败后输入框自动回填的原始草稿仍是同一条消息：用户直接再点发送时，必须先按原身份查询，
+     * 不能因为「结果未知」就换一个新身份再发一次，否则远端其实已受理时会被执行两遍。
+     */
+    @Test fun resendingTheAutomaticallyRestoredDraftQueriesTheOriginalIdentity() = runTest {
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
+        val controller = controller(repository)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        controller.editDraft("未知结果的原消息"); controller.sendDraft(); runCurrent()
+        val originalId = repository.messages.single().clientMessageId
+        assertEquals("失败后正文回到输入框", "未知结果的原消息", controller.state.value.draft)
+
+        repository.loseMessageReceipt = false
+        controller.sendDraft(); runCurrent()
+
+        assertEquals("必须按原身份查询，而不是直接发第二条", 1, repository.queries)
+        assertEquals("同一草稿不能产生第二个客户端身份", listOf(originalId), repository.messages.map { it.clientMessageId })
+        controller.close()
+    }
+
+    @Test fun editingTheRestoredDraftBeforeResendingCreatesANewIdentity() = runTest {
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true }
+        val controller = controller(repository)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        controller.editDraft("会被用户改写的内容"); controller.sendDraft(); runCurrent()
+        val originalId = repository.messages.single().clientMessageId
+
+        repository.loseMessageReceipt = false
+        controller.editDraft("用户改写后的内容"); controller.sendDraft(); runCurrent()
+
+        assertEquals("改写后是新的用户操作", 2, repository.messages.size)
+        assertNotEquals(originalId, repository.messages.last().clientMessageId)
+        assertEquals(0, repository.queries)
+        controller.close()
     }
 
     @Test fun unknownOrdinarySubmissionDoesNotReuseItsIdentityForNewSends() = runTest {
@@ -409,6 +447,8 @@ class WorkbenchSendPersistenceTest {
         persistence = persistence,
         persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
         supportsMessageBatches = batched,
+        // 客户端默认不合并；批处理用例需要一个可推进的窗口，显式给 1.5 秒。
+        debouncePolicy = if (batched) DebouncePolicy(delay = 1_500.milliseconds) else DebouncePolicy(),
         replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
     )
 

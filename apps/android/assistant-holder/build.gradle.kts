@@ -45,6 +45,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime:2.8.7")
+    // 附件选择器 Activity 需要自己的 ActivityResultRegistry（会话没有）。
+    // conversation-ui 的 activity-compose 是 implementation，不会传递到本模块。
+    implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.savedstate:savedstate:1.2.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("junit:junit:4.13.2")

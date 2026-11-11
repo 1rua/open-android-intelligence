@@ -490,7 +490,12 @@ internal class NativeConversationNotifications(
                     if (message != null && unambiguous && isPublicAssistantPayload(payload)) {
                         val text = message.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
                             .ifBlank { if (message.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
-                        if (text.isNotBlank()) {
+                        // 发送流与事件页可用不同 eventId 转发同一终稿；终态正文没有
+                        // 变化时不能重发用户已经处理的通知，完成观察器仍接收原事实。
+                        val repeatedFinal = terminal != null && event.event == "conversation.message.completed" &&
+                            previousReply?.completed == true && previousReply.messageId == message.id &&
+                            previousReply.revision == (revision ?: 0L) && previousReply.text == text
+                        if (text.isNotBlank() && !repeatedFinal) {
                             replies[roundKey] = ReplySnapshot(message.id, text, revision ?: 0L, occurredAt, event.event == "conversation.message.completed")
                             if (terminal == null && round != null) activeRounds.getOrPut(target) { linkedMapOf() }[round] = NativeConversationStatus.RUNNING
                             next = next.copy(generationId = round, status = terminal ?: NativeConversationStatus.RUNNING, latestReply = text,

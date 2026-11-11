@@ -12,10 +12,14 @@ enum class AssistantSurfaceState { COMPACT_INPUT, EXPANDED_CONVERSATION }
 /**
  * 叠加在助理表面之上的临时模式。
  *
- * 同一时刻最多只有一个覆盖层：圈选屏幕与录音都要求用户把注意力交给全屏/麦克风，
- * 不能同时进行。[NONE] 表示没有覆盖层。
+ * 同一时刻最多只有一个覆盖层：圈选屏幕、定格截图与录音都要求用户把注意力交给
+ * 全屏/麦克风，不能同时进行。[NONE] 表示没有覆盖层。
+ *
+ * [FROZEN_SCREENSHOT] 是「唤起后直接画圈」的定格态：窗口铺满屏幕、系统截图作为底色，
+ * 界面层在此基础上直接画圈。它与 [SELECTING_SCREEN] 的区别只在界面呈现：后者是
+ * 独立的裁剪页（有「确认选区」步骤），只服务 ASSIST 兜底页与单次圈选路径。
  */
-enum class AssistantOverlay { NONE, SELECTING_SCREEN, RECORDING_VOICE }
+enum class AssistantOverlay { NONE, SELECTING_SCREEN, FROZEN_SCREENSHOT, RECORDING_VOICE }
 
 /**
  * 助理界面状态。
@@ -71,6 +75,25 @@ sealed interface AssistantUiEvent {
     /** 用户取消圈选。 */
     data object SelectionCancelled : AssistantUiEvent
 
+    /**
+     * 系统截图已经可用：界面可以进入「定格截图」直接画圈。
+     *
+     * 只描述「截图到了」这一事实，是否真的进入定格由 [reduce] 的既有形态决定：
+     * 会话已展开、已经有别的覆盖层时都不抢占。
+     */
+    data object ScreenshotAvailable : AssistantUiEvent
+
+    /** 截图不可用（系统没有提供，或本次唤起的截图已作废）：退出定格态。 */
+    data object ScreenshotUnavailable : AssistantUiEvent
+
+    /**
+     * 定格态下提交了一个选区（图片已作为附件加入）。
+     *
+     * 定格态**保持**：用户可以连续圈选多个区域。它不改变形态，只用于状态机的
+     * 可观察性（测试与宿主据此确认选区已被接收）；附件列表的权威在附件协调器。
+     */
+    data object ScreenSelectionCommitted : AssistantUiEvent
+
     /** 用户开始录音。 */
     data object RecordingStarted : AssistantUiEvent
 
@@ -123,7 +146,12 @@ private fun reduceVisible(
         is AssistantUiEvent.SendRequested ->
             if (event.accepted) {
                 // 只有真正接收的消息才值得展开；失败时保留紧凑形态与可重试的输入。
-                state.copy(surface = AssistantSurfaceState.EXPANDED_CONVERSATION)
+                // 定格截图是全屏临时模式：消息已进时间线就必须离开它，否则界面会停在
+                // 一张旧截图上、看不见刚发出的对话。
+                state.copy(
+                    surface = AssistantSurfaceState.EXPANDED_CONVERSATION,
+                    overlay = AssistantOverlay.NONE,
+                )
             } else {
                 state
             }
@@ -134,7 +162,36 @@ private fun reduceVisible(
         AssistantUiEvent.SelectionCropped,
         AssistantUiEvent.SelectionCancelled,
         AssistantUiEvent.RecordingCancelled ->
-            state.copy(overlay = AssistantOverlay.NONE)
+            state.copy(
+                // 这几个事件只结束「用户主动进入的裁剪页 / 录音」，不能顺手把定格截图
+                // 也关掉：定格只由 ScreenshotUnavailable、返回键或一次被接收的发送离开。
+                overlay = when (state.overlay) {
+                    AssistantOverlay.SELECTING_SCREEN,
+                    AssistantOverlay.RECORDING_VOICE -> AssistantOverlay.NONE
+                    else -> state.overlay
+                },
+            )
+
+        AssistantUiEvent.ScreenshotAvailable ->
+            // 会话刚唤起、还没开始输入、也没有别的覆盖层时才进入定格：用户已经展开对话
+            // 或在录音时强行全屏会打断他们正在做的事。
+            if (state.overlay == AssistantOverlay.NONE &&
+                state.surface == AssistantSurfaceState.COMPACT_INPUT
+            ) {
+                state.copy(overlay = AssistantOverlay.FROZEN_SCREENSHOT)
+            } else {
+                state
+            }
+
+        AssistantUiEvent.ScreenshotUnavailable ->
+            if (state.overlay == AssistantOverlay.FROZEN_SCREENSHOT) {
+                state.copy(overlay = AssistantOverlay.NONE)
+            } else {
+                state
+            }
+
+        // 定格态保持：用户可以在同一张截图上连续圈选多个区域。
+        AssistantUiEvent.ScreenSelectionCommitted -> state
 
         AssistantUiEvent.RecordingStarted ->
             state.copy(overlay = AssistantOverlay.RECORDING_VOICE)

@@ -11,7 +11,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.mobile.SettingsPresentation
-import com.openandroidintelligence.mobile.SettingsUiState
 import com.openandroidintelligence.mobile.updates.InstalledAppBuild
 import com.openandroidintelligence.mobile.updates.installedAppBuild
 import org.junit.Assert.assertEquals
@@ -40,7 +39,7 @@ class AdvancedSettingsScreenTest {
         compose.setContent {
             MaterialTheme {
                 AdvancedSettingsScreen(
-                    uiState = SettingsUiState(), runtime = null, presentation = SettingsPresentation.SIDEBAR,
+                    runtime = null, presentation = SettingsPresentation.SIDEBAR,
                     onBack = { back++ }, onOpenUpdates = { updates++ }, onOpenBuildDetails = { build++ },
                     onOpenLicenses = { licenses++ }, onOpenBackup = { backup++ }, onReplayOnboarding = { replay++ },
                 )

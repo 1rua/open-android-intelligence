@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
@@ -44,6 +45,9 @@ import com.openandroidintelligence.conversation.workbench.ThinkingIndicator
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import kotlin.math.roundToInt
+
+/** 横条拖满时整棵浮层的上移距离：足够表达「正在往上推」，又不至于把内容顶出屏幕。 */
+private val handoffLiftDistance = 72.dp
 
 /** Compose 测试钩子：按稳定标签断言根节点与提示条。 */
 internal object AssistantSessionRootTags {
@@ -76,10 +80,26 @@ internal class AssistantSessionUiController(
         onTerminated = callback
     }
 
+    /**
+     * 状态变化观察者：每次 [dispatch] 写入新状态后回调一次。
+     *
+     * 窗口几何必须由**状态观察单点驱动**：文字发送、语音发送、返回键、系统重新截图、
+     * 会话结束都可能把覆盖层从定格态清掉，逐个调用点补「退出全屏」一定会漏掉一条
+     * （语音发送就漏了，窗口留在全屏吞掉下方 App 的触摸）。观察者挂在状态转移点上，
+     * 任何路径都自动一致。
+     */
+    var onStateChanged: ((AssistantUiState) -> Unit)? = null
+        private set
+
+    fun bindOnStateChanged(callback: ((AssistantUiState) -> Unit)?) {
+        onStateChanged = callback
+    }
+
     fun dispatch(event: AssistantUiEvent) {
         val previous = state
         val next = reduce(previous, event)
         state = next
+        onStateChanged?.invoke(next)
         if (next is AssistantUiState.Terminated && previous !is AssistantUiState.Terminated) {
             onTerminated?.invoke()
         }
@@ -139,8 +159,18 @@ internal fun AssistantSessionRoot(
     onRemoveAttachment: (String) -> Unit = {},
     /** 审批决策：卡片把自身的 approvalId 绑定进回调，宿主负责提交。 */
     onDecide: (approvalId: String, choice: ApprovalChoice) -> Unit = { _, _ -> },
-    onStartScreenSelection: () -> Unit = {},
+    /**
+     * 屏幕圈选入口：**只有 ASSIST 兜底页**传入（它没有系统截图，点它给出说明）。
+     * 系统助理会话传 null，输入栏里没有第二个圈选入口。
+     */
+    onStartScreenSelection: (() -> Unit)? = null,
     onOpenApp: () -> Unit = {},
+    /** 横条上滑超过阈值：请求把当前会话交给主 App（严格交接，失败保留浮层）。 */
+    onRequestHandoff: () -> Unit = {},
+    /** 拖动横条期间窗口是否需要临时铺满（见 [AssistantDragHandle.onDragWindowExpanded]）。 */
+    onDragWindowExpanded: (Boolean) -> Unit = {},
+    /** 点击「＋」：打开系统文件/媒体选择器。 */
+    onAddAttachment: (AssistantAttachmentKind) -> Unit = {},
     onContentHeightChanged: (Int) -> Unit = {},
     /**
      * 进入组合时是否当作一次新的系统唤起（重置为紧凑输入）。
@@ -197,6 +227,10 @@ internal fun AssistantSessionRoot(
     // 宿主通常自己持有会话级预览存储；没有时给一个随会话身份的临时实例，
     // 保证时间线里"本进程圈选/录音"的缩略图与时长仍有统一来源。
     val activePreviews = previews ?: rememberAssistantLocalPreviews(threadId)
+    // 上滑交接的跟手位移：横条把进度（0..1）报上来，整棵浮层随手指上移并轻微淡化。
+    // 位移/透明度只作用于 graphicsLayer，不参与测量，因此窗口高度不会跟着抖。
+    var handoffProgress by remember { mutableStateOf(0f) }
+    val handoffShiftPx = with(density) { handoffLiftDistance.toPx() }
     // 根节点必须**离开窗口高度约束测量**：窗口高度正是本层上报的结果，若内容被当前
     // 窗口高度（EXACTLY 约束）卡住，内容就永远长不高，展开会话永远停在输入栏高度。
     // `wrapContentHeight(unbounded = true)` 让内容以无限最大高度测量，再把测量结果
@@ -208,6 +242,11 @@ internal fun AssistantSessionRoot(
                 .fillMaxWidth()
                 .wrapContentHeight(align = Alignment.Bottom, unbounded = true)
                 .onSizeChanged { onContentHeightChanged(it.height) }
+                .graphicsLayer {
+                    // 交接进度是纯绘制量：浮层跟手上移、并随距离轻微淡出（上限 0.35）。
+                    translationY = -handoffShiftPx * handoffProgress
+                    alpha = 1f - 0.35f * handoffProgress
+                }
                 // 会话窗口可能落在导航栏/挖孔之上；inset 为 0 时这一层是空操作。
                 // 导航栏、挖孔与键盘必须取**并集**：分别叠加会把同一段高度扣两次，
                 // 键盘弹出后输入栏被推得过高、面板被压扁。
@@ -225,6 +264,15 @@ internal fun AssistantSessionRoot(
                 .testTag(AssistantSessionRootTags.ROOT),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
+            // 整个助手只有一个横条：紧凑态在输入栏卡片上方，展开态在整个会话面板之上。
+            // 它放在 Column 最顶部，因此两种形态共用同一实例，且始终显示（需求 5.1）。
+            AssistantDragHandle(
+                onRequestHandoff = onRequestHandoff,
+                enabled = enabled,
+                stateDescription = if (expanded) "展开会话" else "紧凑输入",
+                onDragProgress = { handoffProgress = it },
+                onDragWindowExpanded = onDragWindowExpanded,
+            )
             if (!notice.isNullOrBlank()) {
                 AssistantNoticeBar(
                     text = notice,
@@ -242,6 +290,10 @@ internal fun AssistantSessionRoot(
                     onStop = onStop,
                     onStartRecording = onStartRecording,
                     onStartScreenSelection = onStartScreenSelection,
+                    onAddAttachment = onAddAttachment,
+                    // 展开态输入栏只保留外缘底部圆角，与消息区拼成同一张卡片；
+                    // 紧凑态没有消息区，保持完整的胶囊圆角。
+                    cardShape = if (animateEntrance) null else InputBarShape,
                     attachments = attachments,
                     onRemoveAttachment = onRemoveAttachment,
                     recording = recording,

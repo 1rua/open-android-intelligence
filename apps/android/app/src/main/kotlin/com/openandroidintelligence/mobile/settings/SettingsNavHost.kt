@@ -291,7 +291,7 @@ internal fun SettingsNavHost(
             }
             composable(SettingsRoutes.AUDIT_LOG) { AuditSettingsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.ADVANCED) {
-                AdvancedSettingsScreen(uiState, runtime, presentation, ::back,
+                AdvancedSettingsScreen(runtime, presentation, ::back,
                     onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
                     onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
                     onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() })

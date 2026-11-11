@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile.assistant
 
 import com.openandroidintelligence.conversation.model.AttachmentDraft
+import com.openandroidintelligence.conversation.model.MAX_COMPOSER_ATTACHMENTS
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
 import com.openandroidintelligence.conversation.model.AttachmentState
@@ -36,6 +37,38 @@ class AssistantBridgeServiceTest {
         assertEquals("webm", audioExtension("audio/webm"))
         // 未知类型不编造格式，回落到默认容器扩展名。
         assertEquals("m4a", audioExtension("audio/x-unknown"))
+    }
+
+    // ---- 文件附件批次（＋ 按钮的 IPC 入口） ----
+
+    @Test fun fileAttachmentUrisAreTrimmedDeduplicatedAndBounded() {
+        assertEquals(
+            listOf("content://a/1", "content://a/2"),
+            fileAttachmentUris(arrayOf(" content://a/1 ", "content://a/2", "content://a/1"), 2),
+        )
+        assertEquals(
+            listOf("content://a/1"),
+            fileAttachmentUris(arrayOf("", "content://a/1"), 1),
+        )
+    }
+
+    @Test fun anEmptyOrOversizedBatchIsRejectedOutright() {
+        assertNull(fileAttachmentUris(null, 0))
+        assertNull(fileAttachmentUris(emptyArray(), 0))
+        assertNull(fileAttachmentUris(arrayOf("  ", ""), 0))
+        assertNull(
+            fileAttachmentUris(
+                Array(MAX_COMPOSER_ATTACHMENTS + 1) { "content://a/$it" },
+                MAX_COMPOSER_ATTACHMENTS + 1,
+            ),
+        )
+    }
+
+    /** 计数与去重后的实际条数不一致时整批拒绝：不猜哪一半是对的。 */
+    @Test fun aCountThatDisagreesWithThePayloadIsRejected() {
+        assertNull(fileAttachmentUris(arrayOf("content://a/1", "content://a/2"), 3))
+        assertNull(fileAttachmentUris(arrayOf("content://a/1", "content://a/1"), 2))
+        assertNull(fileAttachmentUris(arrayOf("content://a/1"), -1))
     }
 
     @Test fun draftAttachmentsPublishMetadataOnlyAndMapFailures() {

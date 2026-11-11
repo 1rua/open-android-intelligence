@@ -4,6 +4,7 @@ import com.openandroidintelligence.ui.resources.R as UiR
 import android.content.Context
 import android.os.Build
 import com.openandroidintelligence.conversation.data.GatewayAttachmentDraftCoordinator
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS
 import com.openandroidintelligence.conversation.data.GatewayCommandCatalogRepository
 import com.openandroidintelligence.conversation.data.GatewayConversationRepository
 import com.openandroidintelligence.conversation.ports.completeTimeline
@@ -34,6 +35,7 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
+import com.openandroidintelligence.gateway.http.GatewayConnectionFactory
 import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
@@ -46,6 +48,10 @@ import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingSto
 import com.openandroidintelligence.kernel.PairingGrantBinding
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.mobile.assistant.AssistantAttachmentDraftCoordinator
+import com.openandroidintelligence.mobile.assistant.assistantAttachmentWrapperFor
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffReasons
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffResult
+import com.openandroidintelligence.mobile.assistant.AssistantHandoffTarget
 import com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspace
 import com.openandroidintelligence.mobile.assistant.AssistantSessionFactory
 import com.openandroidintelligence.mobile.assistant.createAssistantWorkbench
@@ -191,6 +197,7 @@ class GatewayRuntime(
     private val pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost? = null,
     private val localDocumentKeyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
     private val initialConnectionGraceMillis: Long = 8_000L,
+    private val connectionFactory: GatewayConnectionFactory = GatewayConnectionFactory(),
 ) {
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var selectedScreenBinding: com.openandroidintelligence.control.ScreenAuthorizationBinding? = null
@@ -213,7 +220,7 @@ class GatewayRuntime(
     }
     val replyNotifications = ReplyNotificationSettings(context)
     private val replyPublisher = AndroidReplyNotificationPublisher(context, replyNotifications,
-        suppress = { target -> isAssistantConversationVisible(target.conversationId) })
+        suppress = ::isAssistantConversationVisible)
     private val sessionKeepAlive = AgentSessionKeepAlive(context)
     private val sessionRecovery = AgentSessionRecoveryState(context)
     private val refreshJournal = GatewayRefreshJournal(context)
@@ -225,7 +232,8 @@ class GatewayRuntime(
     @Volatile private var backgroundRecoveryOnly = false
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
-    private var restartNativeReads: (() -> Unit)? = null
+    @Volatile private var activePlatformHttpClient: GatewayHttpClient? = null
+    private var restartNativeReads: ((Boolean) -> Unit)? = null
     private val pendingRotations = java.util.concurrent.ConcurrentHashMap<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
@@ -287,6 +295,24 @@ class GatewayRuntime(
     @Volatile private var assistantWorkspaceRetirePending = false
     /** 已声明「正在展示」的客户端 → 会话；只用于抑制同会话的原生通知。 */
     private val assistantPresence = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** 已接受、等待主 App 界面消费的交接目标（sessionToken → 目标）。 */
+    private val pendingHandoffTargets =
+        java.util.concurrent.ConcurrentHashMap<String, AssistantHandoffTarget>()
+
+    /** 每个助手会话的附件包装器：交接成功后据此把草稿移出助手所有权（见 `disown`）。 */
+    private val assistantAttachmentWrappers =
+        java.util.concurrent.ConcurrentHashMap<String, AssistantAttachmentDraftCoordinator>()
+
+    /**
+     * 主工作台与助手会话**共用**的附件协调器（按 Agent 分区）。
+     *
+     * 交接要求两侧拿到同一个包装器/协调器：不同实例按 draftId 交接会得到一个永不推进
+     * 的 `LOCAL_PREPARING` 流，发送时落到 `ATTACHMENT_NOT_VERIFIED`。原生会话模式下主
+     * 工作台与助手工厂都从这里取，保证附件所有权真正可转移。
+     */
+    private val nativeOwningAttachmentCoordinators =
+        java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator>()
     private val _assistantWorkspaceVersion = MutableStateFlow(0)
     /** 助手工作区的安装/退役代次；助理进程据此接回已登记的会话。 */
     internal val assistantWorkspaceVersion: StateFlow<Int> = _assistantWorkspaceVersion.asStateFlow()
@@ -396,11 +422,12 @@ class GatewayRuntime(
     private fun assistantBusyThreadIds(): Set<String> = assistantWorkspace?.busyThreadIds().orEmpty()
 
     /** 系统助理界面是否正展示这条会话；同会话的原生通知气泡因此不再打扰用户。 */
-    internal fun isAssistantConversationVisible(conversationId: String): Boolean {
+    internal fun isAssistantConversationVisible(target: ReplyNotificationTarget): Boolean {
         if (assistantPresence.isEmpty()) return false
         val workspace = assistantWorkspace ?: return false
+        if (!workspace.matches(target.profileId, target.accountId, target.agentId)) return false
         return assistantPresence.values.any { sessionToken ->
-            workspace.conversationFor(sessionToken) == conversationId
+            workspace.conversationFor(sessionToken) == target.conversationId
         }
     }
 
@@ -479,11 +506,13 @@ class GatewayRuntime(
     private fun publishAssistantPresence(clientToken: String, sessionToken: String?) {
         if (sessionToken == null) assistantPresence.remove(clientToken)
         else assistantPresence[clientToken] = sessionToken
-        val conversationId = sessionToken?.let { token -> assistantWorkspace?.conversationFor(token) }
+        val workspace = assistantWorkspace ?: return
+        val conversationId = sessionToken?.let(workspace::conversationFor)
         if (conversationId != null) replyPublisher.cancel(ReplyNotificationTarget(
-            profileId = connectedProfileId.orEmpty(),
-            accountId = connectedAccountId.orEmpty(),
+            profileId = workspace.profileId,
+            accountId = workspace.accountId,
             conversationId = conversationId,
+            agentId = workspace.agentId,
         ))
     }
 
@@ -586,6 +615,14 @@ class GatewayRuntime(
     private fun assistantAgentId(): String? =
         _nativeAgents.value?.state?.value?.agent?.id ?: _workbenchAgentId
 
+    /**
+     * 主工作台当前发布的 Agent。
+     *
+     * 由 IO 线程写入（工作台构建完成时）、主线程读取（交接前的身份校验与就绪判断），
+     * 因此必须是 `@Volatile`：否则主线程可能读到旧值，把「已切到同一 Agent」误判成
+     * 未就绪，交接被莫名拒绝。
+     */
+    @Volatile
     private var _workbenchAgentId: String? = null
 
     private fun clearBubbleWorkTracking() {
@@ -598,6 +635,133 @@ class GatewayRuntime(
             jobs
         }
         retired.forEach(Job::cancel)
+    }
+
+    /**
+     * 为一个助手会话创建附件包装器，并**同时**登记到 [assistantAttachmentWrappers]。
+     *
+     * 两件事必须在同一处：原生与旧版 Gateway 两条分支都走这里，任何一条忘了登记，
+     * `prepareAssistantHandoff` 的 `disown` 就永远不会执行——浮层关闭时工作区退役，
+     * 包装器会把刚迁给主 App 的草稿连同暂存文件一起 `discard`。把「创建」和「登记」
+     * 绑成一个不可拆分的动作，比让每个分支各自记得登记可靠。
+     */
+    private fun assistantAttachmentWrapper(
+        owning: com.openandroidintelligence.conversation.ports.AttachmentDraftCoordinator?,
+        sessionToken: String,
+    ): AssistantAttachmentDraftCoordinator? =
+        assistantAttachmentWrapperFor(assistantAttachmentWrappers, owning, sessionToken)
+
+    /**
+     * 把助手浮层的会话、草稿与附件交给主 App（「上滑进入主 App」）。
+     *
+     * 严格失败：身份不匹配、控制器未就绪、目标线程打不开都返回拒绝原因，由浮层保留
+     * 草稿与浮层并如实说明，绝不静默丢弃。成功时返回交接目标（含深链需要的身份）。
+     *
+     * 附件必须先全部就绪：规格 §3.4 要求「仍有附件在上传/校验中时，交接等待其完成
+     * （有上限）；超时或校验失败按严格交接处理」。这里先等
+     * [ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS]，超时直接拒绝，**不**做「先迁移已
+     * 就绪的、再跳过其余的」——后者会让未迁移的附件留在助手包装器里，浮层关闭时被
+     * 连同暂存文件一起丢弃，而用户几乎看不到那句提示。
+     *
+     * 调用顺序：先 `openThread`（它会在别处用主工作台自己的草稿快照覆盖输入栏），
+     * 再 `adoptAssistantDraft`。接管只覆盖非空内容：助手草稿/附件为空时保留主 App
+     * 输入栏里已有的东西（见 [WorkbenchController.adoptAssistantDraft]）。
+     */
+    internal suspend fun prepareAssistantHandoff(sessionToken: String): AssistantHandoffResult {
+        fun reject(reason: String): AssistantHandoffResult {
+            // 每个拒绝分支都留一条可追踪记录：交接失败时用户只看到一句提示，
+            // 没有日志就无法判断是账号、Agent、工作台还是附件卡住。
+            GatewayLog.d("OaiAssistant", "handoff.reject token=${sessionToken.take(8)} reason=$reason")
+            return AssistantHandoffResult.Rejected(reason)
+        }
+        val profileId = connectedProfileId
+        val accountId = connectedAccountId
+        if (profileId == null || accountId == null) {
+            return reject(AssistantHandoffReasons.NOT_CONNECTED)
+        }
+        val workspace = assistantWorkspace
+            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
+        val agentId = assistantAgentId()
+        if (!workspace.matches(profileId, accountId, agentId)) {
+            return reject(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+        }
+        // 主工作台必须已经切到同一个 Agent：否则会把助手草稿并入旧 Agent 的输入栏，
+        // 或把另一 Agent 的会话 ID 交给 openThread。原生会话下两者都由发布值证明。
+        if (_nativeAgents.value != null && agentId != null && _workbenchAgentId != agentId) {
+            return reject(AssistantHandoffReasons.AGENT_NOT_READY)
+        }
+        val receiver = _controller.value
+            ?: return reject(AssistantHandoffReasons.WORKBENCH_NOT_READY)
+        val assistantController = runCatching { workspace.open(sessionToken) }.getOrNull()
+            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
+        // 等待上传/校验中的附件变成 VERIFIED；超时或校验失败整次拒绝，浮层与草稿原样保留。
+        if (!assistantController.awaitHandoffAttachments(ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS)) {
+            return reject(AssistantHandoffReasons.ATTACHMENTS_NOT_READY)
+        }
+        val draft = assistantController.assistantDraftForHandoff()
+        val conversationId = assistantController.state.value.activeThreadId
+        // 尚未产生会话（首次唤起、还没发过消息）：不打开、也不新建线程，只并入输入栏。
+        if (conversationId != null) receiver.openThread(conversationId)
+        val skipped = receiver.adoptAssistantDraft(draft.text, draft.attachments)
+        // 附件所有权已随草稿转移到主工作台：先把它们移出助手包装器，
+        // 否则浮层随后关闭时会把主 App 刚接管的附件连同暂存文件一起丢弃。
+        assistantAttachmentWrappers.remove(sessionToken)?.let { wrapper ->
+            draft.attachments.forEach { migrated -> runCatching { wrapper.disown(migrated.id.value) } }
+        }
+        val target = AssistantHandoffTarget(profileId, accountId, agentId, conversationId)
+        pendingHandoffTargets[sessionToken] = target
+        GatewayLog.d(
+            "OaiAssistant",
+            "handoff.accept token=${sessionToken.take(8)} agent=$agentId conversation=$conversationId " +
+                "attachments=${draft.attachments.size} skipped=$skipped draft=${draft.text.length}chars",
+        )
+        return AssistantHandoffResult.Accepted(target, skippedAttachments = skipped)
+    }
+
+    /**
+     * 浮层命中交接目标：切到目标 Agent（若不同）、打开会话并关掉 App 内的助手浮层。
+     *
+     * 与 [prepareAssistantHandoff] 的区别是「数据已在主进程」：这里只负责把界面导航到
+     * 那条会话。`agentId` 变化时用 [nativeNavigationWaitsForWorkbench] 判断工作台是否
+     * 已经真的交接完，未就绪返回 false 交给调用方重试/提示，不把会话开在旧工作台上。
+     */
+    internal fun openAssistantHandoff(target: AssistantHandoffTarget): Boolean {
+        fun refuse(stage: String): Boolean {
+            GatewayLog.d("OaiAssistant", "handoff.navigate.refuse stage=$stage agent=${target.agentId}")
+            return false
+        }
+        val connected = _phase.value as? ConnectionPhase.Connected ?: return refuse("not-connected")
+        if (target.accountId != connectedAccountId ||
+            target.profileId != profileIdFor(connected.gatewayUrl, connected.username)) return refuse("identity")
+        target.agentId?.let { agentId ->
+            val agents = _nativeAgents.value ?: return@let
+            if (agents.state.value.selectedAgentId != agentId) agents.selectAgent(agentId)
+            if (nativeNavigationWaitsForWorkbench(
+                    agentId, agents.state.value.selectedAgentId, _workbenchAgentId)) return refuse("agent-not-ready")
+        }
+        val workbench = _controller.value ?: return refuse("controller-null")
+        target.conversationId?.let(workbench::openThread)
+        GatewayLog.d(
+            "OaiAssistant",
+            "handoff.navigate.ok agent=${target.agentId} conversation=${target.conversationId}",
+        )
+        return true
+    }
+
+    /**
+     * 主 App 界面消费一次交接：用 [sessionToken] 找回被接受的目标并导航到那条会话。
+     *
+     * 只认主进程刚刚接受过的那一次（表里没有就是失败）：通知栈重放或伪造的 token
+     * 都不能借这条路径打开一个会话。返回 false 时调用方如实提示，不清掉浮层状态。
+     */
+    internal fun consumeAssistantHandoff(sessionToken: String): Boolean {
+        val target = pendingHandoffTargets.remove(sessionToken) ?: return false
+        if (!openAssistantHandoff(target)) {
+            // 导航失败（Agent 尚未就绪等）保留目标，交给后续 frame/重试再消费一次。
+            pendingHandoffTargets[sessionToken] = target
+            return false
+        }
+        return true
     }
 
     /** A notification never borrows another account's currently open workbench. */
@@ -725,7 +889,7 @@ class GatewayRuntime(
                         rejected.copy(sessionId = rotated.sessionId, accessToken = rotated.accessToken)
                     }
                 }
-                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile),
+                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile, connectionFactory),
                     signer = { preimage -> deviceKeys.sign(id, preimage) },
                     cursorStore = AndroidEventCursorStore(context, "push:$id"), sessionRenewal = renew)
                     .also { pushHttpClients[id] = it }
@@ -835,14 +999,21 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
-        synchronized(backgroundOwnershipLock) {
+        val becameVisible = synchronized(backgroundOwnershipLock) {
+            val changed = !appVisible
             appVisible = true
             backgroundRecoveryOnly = false
+            changed
         }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(true)
+        GatewayLog.connectionEvent("lifecycle.foreground", platform?.currentEventGeneration() ?: 0,
+            reason = "process_foreground", result = "visible", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
-        wakeConnection(PlatformStreamWakeReason.FOREGROUND)
+        wakeConnection(PlatformStreamWakeReason.FOREGROUND, expediteNativeRetry = becameVisible)
+        if (becameVisible) platform?.requestEventHealthCheck("foreground")
     }
 
     /**
@@ -879,14 +1050,16 @@ class GatewayRuntime(
         // A network callback cannot publish a fabricated stream failure.
     }
 
-    private fun wakeConnection(reason: PlatformStreamWakeReason) {
+    private fun wakeConnection(reason: PlatformStreamWakeReason, expediteNativeRetry: Boolean = false) {
         recoveryWakeup.trySend(Unit)
         if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (_loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         if (_phase.value is ConnectionPhase.Disconnected) restoreSessionIfAvailable()
         else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
-            restartNativeReads?.invoke()
+            restartNativeReads?.invoke(expediteNativeRetry || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
+                reason == PlatformStreamWakeReason.USER_RETRY ||
+                reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && _connectionStatus.value != EventStreamStatus.LIVE)
             restartPlatformStream?.invoke(reason)
             if (_nativeAgents.value == null || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
                 reason == PlatformStreamWakeReason.USER_RETRY || _connectionStatus.value != EventStreamStatus.LIVE) {
@@ -985,6 +1158,10 @@ class GatewayRuntime(
         // restart. The service then keeps already submitted work receiving replies.
         refreshBackgroundWork()
         synchronized(backgroundOwnershipLock) { appVisible = false }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(false)
+        GatewayLog.connectionEvent("lifecycle.background", platform?.currentEventGeneration() ?: 0,
+            reason = "process_background", result = "background", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
     }
@@ -1748,15 +1925,16 @@ class GatewayRuntime(
         _operationNotice.value = context.getString(UiR.string.conn_toast_session_revoked)
     }
 
-    fun updateDebounceSettings(gateway:String?,delayMillis:Int,extend:Boolean) {
+    /**
+     * 保存客户端的合并时长并让当前会话立即采用。
+     *
+     * 只写本机偏好，不向 Core 发任何请求：合并是手机端的发送时机，Core 只接收
+     * 客户端最终提交的消息。
+     */
+    fun updateDebounceSettings(delayMillis:Int) {
         val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        preferences.write(gateway,delayMillis,extend)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
-    }
-    fun useGlobalDebounceSettings(gateway:String) {
-        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        preferences.useGlobal(gateway)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
+        preferences.write(delayMillis)
+        _controller.value?.updateDebouncePolicy(preferences.read())
     }
 
     /**
@@ -1765,6 +1943,11 @@ class GatewayRuntime(
      * 只刷新运行时持有的批处理策略，不写任何偏好：写入早已由导入事务完成，
      * 这里再做一次覆盖就会把「回滚后应恢复的值」重新改掉。
      */
+    fun reloadDebounceSettings() {
+        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
+        _controller.value?.updateDebouncePolicy(preferences.read())
+    }
+
     /**
      * 本机已知的最近一个 Core 地址（设置备份的回落来源）。
      *
@@ -1779,17 +1962,6 @@ class GatewayRuntime(
             ?.takeIf { it.isNotBlank() }?.let { return it }
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(KEY_LAST_GATEWAY, null)?.takeIf { it.isNotBlank() }
-    }
-
-    fun reloadDebounceSettings() {
-        val preferences=com.openandroidintelligence.mobile.conversations.DebouncePreferences(context)
-        _controller.value?.updateDebouncePolicy(preferences.read(currentDebounceGateway()))
-    }
-
-    private fun currentDebounceGateway(): String? = when (val phase = _phase.value) {
-        is ConnectionPhase.Connected -> phase.gatewayUrl
-        is ConnectionPhase.OfflineMirror -> phase.gatewayUrl
-        else -> (_localSessionState.value as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
     }
 
     private suspend fun showLocalWorkspace(endpoint:GatewayEndpoint,username:String,profileId:String,accountId:String,
@@ -2108,6 +2280,7 @@ class GatewayRuntime(
         _coreHttpHealth.value = CoreHttpHealth()
         val transport = GatewayTransport(
             profile,
+            factory = connectionFactory,
             onHttpResponse = { status ->
                 if (sessionRenewal === renewal) _coreHttpHealth.value = CoreHttpHealth(
                     reachability = CoreHttpReachability.REACHABLE,
@@ -2383,8 +2556,23 @@ class GatewayRuntime(
         ownedJob.invokeOnCompletion {
             nativeStores.values.forEach { store -> runCatching { store.close() } }
         }
+        /**
+         * 原生会话事件的提醒出口。
+         *
+         * 主工作台、助手与气泡各自读取事件，共用已有的持久完成围栏；同一轮次
+         * 即使从多个读取者到达也只提醒一次，历史合成事件仍由桥接层过滤。
+         */
+        fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
+            if (activeHttpClient !== http || sessionJob !== ownedJob) return
+            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
+                accountId = session.accountId, agentId = agentId, event = event,
+            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
+        }
+
         // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。
         val coreAgentRepositories = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        val nativeReadOwners = java.util.concurrent.ConcurrentHashMap.newKeySet<com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        ownedJob.invokeOnCompletion { nativeReadOwners.clear() }
         fun nativeRepository(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = coreAgentRepositories.computeIfAbsent(agent.id) {
             val discoveryOwner = checkNotNull(_nativeAgents.value)
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
@@ -2401,25 +2589,18 @@ class GatewayRuntime(
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
-            )
+                onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
-        fun restoreNativeReads() {
-            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored() }
+        fun restoreNativeReads(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
+            if (sessionJob === ownedJob) nativeReadOwners.forEach {
+                it.connectionRestored(expediteRetry, confirmedTransportRebuild,
+                    revalidateNetwork = expediteRetry && confirmedTransportRebuild == null)
+            }
         }
-        restartNativeReads = ::restoreNativeReads
-
-        /**
-         * 原生会话事件的提醒出口。
-         *
-         * 主界面、气泡和后台读取共用同一个 Agent 仓储，所以同一条回复只会经过这里
-         * 一次；提醒层再做一层持久围栏，进程重启后的重放也不会重复提醒。
-         */
-        fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
-            if (activeHttpClient !== http || sessionJob !== ownedJob) return
-            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
-                accountId = session.accountId, agentId = agentId, event = event,
-            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
-        }
+        restartNativeReads = { expediteRetry -> restoreNativeReads(expediteRetry) }
 
         /** 气泡自己的仓储：同一 Agent、同一份镜像，但拥有独立的读取者身份与事件订阅。 */
         fun bubbleRepository(
@@ -2443,7 +2624,9 @@ class GatewayRuntime(
                     com.openandroidintelligence.mobile.conversations.NativeConversationStoreView(nativeStore(current), observer)
                 },
                 onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
-            )
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
 
         /**
@@ -2498,7 +2681,7 @@ class GatewayRuntime(
                 organizationStoredLocally = true,
                 authoritativeMessageIds = true,
                 languageCode = java.util.Locale.getDefault().toLanguageTag(),
-                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                 externalBusyThreadIds = {
                     _controller.value?.ownedBusyThreadIds.orEmpty()
                 },
@@ -2562,8 +2745,16 @@ class GatewayRuntime(
                         organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                             context, conversationScope, localDocumentKeyProvider),
                         storeForAgent = { store },
-                    )
-                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                        onEventPublished = { publishedAgentId, event ->
+                            if (publishedAgentId == assistantAgent.id) publishNativeNotification(publishedAgentId, event)
+                        },
+                        isForeground = { appVisible },
+                        onClosed = { nativeReadOwners.remove(it) },
+                    ).also(nativeReadOwners::add)
+                    // 与主工作台共用同一个按 Agent 分区的附件协调器：交接按 draftId 跟踪
+                    // 的必须是同一份暂存/上传状态，否则交过去的是永不推进的引用。
+                    val owning = nativeOwningAttachmentCoordinators[assistantAgent.id] ?: attachmentCoordinator
+                    val attachments = assistantAttachmentWrapper(owning, sessionToken)
                     val controller = createNativeAssistantWorkbench(
                         scope = sessionScope,
                         conversationScope = conversationScope,
@@ -2574,7 +2765,7 @@ class GatewayRuntime(
                             negotiated = "agent-command-catalog-v1" in conversationUi,
                         ),
                         capabilities = conversationUi.toSet(),
-                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                         supportsApprovalCards = approvalClient != null && assistantAgent.capabilities.approvals,
                         onActiveThreadChanged = { active.set(it) },
                         media = mediaCache,
@@ -2582,7 +2773,10 @@ class GatewayRuntime(
                         attachmentCoordinator = attachments,
                         externalBusyThreadIds = { assistantWorkspace?.busyThreadIds().orEmpty() },
                     )
-                    assistantResources[sessionToken] = { runCatching { store.close() } }
+                    assistantResources[sessionToken] = {
+                        repository.close()
+                        runCatching { store.close() }
+                    }
                     controller
                 } else {
                     val assistantStatus = EventStreamStatusSink()
@@ -2595,7 +2789,7 @@ class GatewayRuntime(
                         handlePlatformEvent = { event -> event.event in PLATFORM_EVENTS },
                         sessionRenewal = renewal,
                     )
-                    val attachments = attachmentCoordinator?.let { AssistantAttachmentDraftCoordinator(it) }
+                    val attachments = assistantAttachmentWrapper(attachmentCoordinator, sessionToken)
                     createAssistantWorkbench(
                         scope = sessionScope,
                         conversationScope = conversationScope,
@@ -2604,7 +2798,7 @@ class GatewayRuntime(
                         approvals = approvalClient,
                         generationCancel = generationCancelCapability,
                         capabilities = conversationUi.toSet(),
-                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                        debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                         media = mediaCache,
                         downloads = downloads,
                         attachmentCoordinator = attachments,
@@ -2688,6 +2882,12 @@ class GatewayRuntime(
                     recoverDownloads(ownerDownloads)?.let { _operationNotice.value = it }
                 else _operationNotice.value = mediaRecoveryNotice
             }
+            // 原生会话模式下主工作台与助手工厂共用同一个附件协调器（按 Agent 分区）：
+            // 交接要求两侧按 draftId 跟踪的是同一份暂存/上传状态，不同实例会让交过去的
+            // 附件成为永不推进的 LOCAL_PREPARING。
+            if (nativeAgentSessions && ownerAgentId != null) {
+                nativeOwningAttachmentCoordinators[ownerAgentId] = ownerAttachments
+            }
             return WorkbenchController(
                 scope = sessionScope,
                 repository = activeRepo,
@@ -2699,7 +2899,7 @@ class GatewayRuntime(
                 scopeFactory = { ownerScope },
                 attachmentCoordinator = ownerAttachments,
                 supportsMessageBatches = !nativeAgentSessions && setOf("message-batches-v1", "newline-v1").all { it in conversationUi },
-                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                debouncePolicy = com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                 supportsAgentCommandNew = "agent-command-new-v1" in conversationUi,
                 supportsApprovalCards = approvalClient != null && (!nativeAgentSessions ||
                     _nativeAgents.value?.state?.value?.agent?.capabilities?.approvals == true),
@@ -2716,7 +2916,9 @@ class GatewayRuntime(
                 externalBusyThreadIds = {
                     bubbleBusyConversationIds() + assistantBusyThreadIds() +
                         nativeConversationNotifications.sessions.value
-                            .filter { it.isRunning }.map { it.target.conversationId }
+                            .filter { it.isRunning && it.target.profileId == profileId &&
+                                it.target.accountId == session.accountId && it.target.agentId == ownerAgentId }
+                            .map { it.target.conversationId }
                 },
                 onActiveThreadChanged = { threadId ->
                     if (!nativeAgentSessions || _nativeAgents.value?.state?.value?.selectedAgentId == ownerAgentId) {
@@ -2848,9 +3050,9 @@ class GatewayRuntime(
                     approvals = approvalClient != null && available?.capabilities?.approvals == true,
                 )
             }
-            restartNativeReads = {
+            restartNativeReads = { expediteRetry ->
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
-                    restoreNativeReads()
+                    restoreNativeReads(expediteRetry)
                     if (canRetryWorkbenchInitialization) {
                         nativeController.refresh()
                         sessionScope.launch { updateNativeWorkbench(nativeController.state.value) }
@@ -2881,7 +3083,7 @@ class GatewayRuntime(
                 )
                 createBubbleWorkbench(sessionScope, conversationScope, target.conversationId, bubbleHttp, bubbleStatus,
                     approvalClient, generationCancelCapability, conversationUi.toSet(),
-                    com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(endpoint.baseUrl),
+                    com.openandroidintelligence.mobile.conversations.DebouncePreferences(context).read(),
                     mediaCache, downloads,
                     managementOperations = mirror,
                     attachmentCoordinator = BubbleAttachmentDraftCoordinator(attachmentCoordinator),
@@ -3010,6 +3212,14 @@ class GatewayRuntime(
             if (sessionJob === ownedJob) com.openandroidintelligence.control.ScreenHostRegistry.current?.connectionChanged(live)
         }
         sessionScope.launch {
+            platformHttp.eventRecoveryEpoch.collect { epoch ->
+                if (epoch > 0 && sessionJob === ownedJob) {
+                    restoreNativeReads(expediteRetry = true,
+                        confirmedTransportRebuild = NATIVE_TRANSPORT_RECOVERY_EPOCH.incrementAndGet())
+                }
+            }
+        }
+        sessionScope.launch {
             platformStatus.status.collect { status ->
                 if (sessionJob !== ownedJob) return@collect
                 val projected = if (platformHasBeenLive && status == EventStreamStatus.CONNECTING)
@@ -3037,7 +3247,13 @@ class GatewayRuntime(
                 val previous = platformJob
                 val replace = reason in setOf(PlatformStreamWakeReason.NETWORK_CHANGED,
                     PlatformStreamWakeReason.CREDENTIAL_CHANGED, PlatformStreamWakeReason.USER_RETRY)
-                if (previous?.isActive == true && !replace) return@start
+                if (previous?.isActive == true && !replace) {
+                    // 任务存活只证明仍持有所有者；由传输层验证实际活动并合并恢复唤醒。
+                    if (reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && platformStatus.status.value != EventStreamStatus.LIVE) {
+                        platformHttp.requestEventHealthCheck(reason.name.lowercase())
+                    }
+                    return@start
+                }
                 previous?.cancel()
                 val owner = ++ownerSequence
                 val next = sessionScope.launchAfterPlatformStream(previous) {
@@ -3081,6 +3297,8 @@ class GatewayRuntime(
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
+            platformHttp.setAppForeground(appVisible)
+            activePlatformHttpClient = platformHttp
             restartPlatformStream = startPlatform
             startPlatform(PlatformStreamWakeReason.INITIAL)
         }
@@ -3152,6 +3370,7 @@ class GatewayRuntime(
         _nativeAgents.value?.close()
         _nativeAgents.value = null
         restartPlatformStream = null
+        activePlatformHttpClient = null
         restartNativeReads = null
         sessionRenewal?.close()
         sessionRenewal = null
@@ -3244,6 +3463,7 @@ class GatewayRuntime(
                 gatewayBaseUrl = gatewayUrl,
                 pinnedSpkiSha256 = pinnedSpkiSha256,
             ),
+            factory = connectionFactory,
             beforeConnect = beforeConnect,
         ),
         installationId = installationId(),
@@ -3389,6 +3609,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        val NATIVE_TRANSPORT_RECOVERY_EPOCH = java.util.concurrent.atomic.AtomicLong()
         val PLATFORM_EVENTS = setOf("session.revoked", "pairing.grant.changed", "device.requested", "device.request.cancel.requested")
         const val PREFS_NAME = "open_android_intelligence_runtime"
         const val KEY_INSTALL = "installation_id"

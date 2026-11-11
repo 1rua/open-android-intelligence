@@ -31,6 +31,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
@@ -370,6 +371,43 @@ class WorkbenchController(
     var attachmentTargetRevision: Long = 0
         private set
     private var attachmentPreparations = 0
+
+    /**
+     * 已登记但**尚未进入草稿**的附件数量（正在解析 URI、读元数据的整批文件）。
+     *
+     * 从「用户选完文件」到「附件出现在 `attachments` 里」之间存在一段异步窗口：
+     * 主进程要按 URI 查询 provider、读 MIME 与文件名。交接若只看当前附件列表，
+     * 这段时间里会看到「没有附件」而判定就绪，主进程接受交接、浮层关闭后解析结果
+     * 才会回来，于是刚选的文件既没迁移也没有提示。
+     *
+     * 因此导入方必须在开始异步读取**之前**登记整批，结束时释放；交接等待它归零。
+     */
+    private val pendingAttachmentImports = MutableStateFlow(0)
+
+    /** 当前仍在导入中的附件数量；交接与槽位计算都要把它算进去。 */
+    val pendingAttachmentImportCount: Int get() = pendingAttachmentImports.value
+
+    /**
+     * 登记一批即将导入的附件。
+     *
+     * 必须在启动异步解析之前调用：登记之后 `awaitHandoffAttachments` 会一直等到
+     * 整批结束，而不是在列表还空着的时候误判为「没有附件要交接」。
+     */
+    fun beginAttachmentImport(count: Int = 1) {
+        if (count > 0) pendingAttachmentImports.update { it + count }
+    }
+
+    /** 释放登记。必须放在 `finally` 里：解析失败或被取消同样要结束，否则交接会一直等到超时。 */
+    fun finishAttachmentImport(count: Int = 1) {
+        if (count > 0) pendingAttachmentImports.update { (it - count).coerceAtLeast(0) }
+    }
+
+    /**
+     * 槽位只按「已入草稿 + 正在 prepare」计算，**不**扣导入登记。
+     *
+     * 导入登记是整批一次性登记的：若把它也算进剩余槽位，一批 3 个文件会因为自己
+     * 的登记把槽位减到 0 而互相挤掉。导入方自己按批次裁剪数量即可。
+     */
     val availableAttachmentSlots: Int get() =
         (MAX_COMPOSER_ATTACHMENTS - _state.value.attachments.size - attachmentPreparations).coerceAtLeast(0)
 
@@ -2679,9 +2717,107 @@ class WorkbenchController(
         }
     }
 
+    /**
+     * 交接前等待草稿附件全部就绪（`VERIFIED`），最多等 [timeoutMillis]。
+     *
+     * 规格 §3.4：交接只接管已校验的附件；仍有附件在暂存/上传/校验时必须等它完成
+     * （有上限），超时或校验失败按严格交接处理。若不等待就直接迁移，未就绪的附件会留在
+     * 助手包装器的所有权里，浮层关闭时被连同暂存文件一起丢弃——用户看到的是「附件在
+     * 浮层里好好的，上滑进 App 就没了」。
+     *
+     * 只看**会被迁移的那批附件**：`inFlightAttachmentIds` 属于已经提交给 Agent 的发送，
+     * 它们不在草稿里，也不该拖住交接。
+     *
+     * 还必须等**尚未进草稿的那批导入**结束（[pendingAttachmentImports]）：照片选择器
+     * 返回后立刻上滑时，URI 解析还在 IO 线程上，草稿列表此刻是空的。只看列表会把这
+     * 一刻判成「没有附件要交接」，主进程接受后浮层关闭，解析结果回来时客户端已被移除，
+     * 刚选的文件既没迁移也没有提示。
+     *
+     * @return true 表示草稿附件现在全部可以迁移（空列表且无导入中同样为 true）。
+     */
+    suspend fun awaitHandoffAttachments(timeoutMillis: Long): Boolean {
+        if (timeoutMillis <= 0L) return false
+        return withTimeoutOrNull(timeoutMillis) {
+            val settled = combine(_state, pendingAttachmentImports) { state, imports -> state to imports }
+                .first { (state, imports) ->
+                    val handoff = state.attachments.filterNot { it.id.value in state.inFlightAttachmentIds }
+                    // 导入未结束就不能下结论：列表此刻的空是「还没到」而不是「没有」。
+                    imports == 0 && (
+                        handoff.all { it.state == AttachmentState.VERIFIED } ||
+                            handoff.any { it.state in UNSETTLED_ATTACHMENT_STATES }
+                        )
+                }
+            settled.second == 0 && settled.first.attachments
+                .filterNot { it.id.value in settled.first.inFlightAttachmentIds }
+                .all { it.state == AttachmentState.VERIFIED }
+        } ?: false
+    }
+
+    /**
+     * 接管助手浮层里的草稿与附件（「上滑进入主 App」的交接）。
+     *
+     * 只搬运状态，不发送、不新建会话：调用方必须在 [openThread] 之后再调用本方法，
+     * 并以助手草稿为准覆盖输入栏（那是用户刚在浮层里编辑的那一份）。三条禁忌：
+     * - **不写 `composerDrafts`**：它在 `openThread` 时被当成权威快照，会把接管结果盖掉；
+     * - **不建 `waitingAttachmentSubmissions`**：否则校验一完成就会替用户自动发送；
+     * - **不放进 `inFlightAttachmentIds`**：那会让附件在输入栏不可见、也无法提交。
+     *
+     * 合并规则：**助手侧非空才覆盖**。
+     * - 文字：助手草稿为空时保留主 App 输入栏里已有的内容。用户在 App 里写了一半
+     *   「hello」、又从浮层上滑过来时，覆盖会把那段字直接抹掉，而浮层里本来就没有
+     *   任何东西要交接——这不是「以助手为准」，而是凭空删除用户输入。
+     * - 附件：同理，助手侧没有草稿附件时保留主 App 现有附件列表；助手侧有附件时以
+     *   助手侧为准（它才是本次交接要搬运的内容），主 App 原有附件由用户自行取舍，
+     *   不在这里悄悄合并两份来源，避免同一批文件出现两次。
+     *
+     * 未 VERIFIED 的附件不迁移：上传/校验仍在浮层所属进程手里，带过来只会是一条
+     * 永不推进的引用。调用方必须先等它们就绪（[awaitHandoffAttachments]），这里保留
+     * 兜底计数，返回未能迁移的附件数。
+     *
+     * @param attachments 助手侧草稿附件（按时间顺序）。
+     * @return 未能迁移的附件数量。
+     */
+    fun adoptAssistantDraft(
+        draftText: String,
+        attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft>,
+    ): Int {
+        if (closed) return attachments.size
+        val verified = attachments.filter { it.state == AttachmentState.VERIFIED }
+        val skipped = attachments.size - verified.size
+        val kept = verified
+            .fold(emptyList<com.openandroidintelligence.conversation.model.AttachmentDraft>()) { accepted, next ->
+                // 槽位按主 App 自己的上限收口：多出来的部分同样算「未迁移」，不能静默丢弃。
+                if (accepted.size >= MAX_COMPOSER_ATTACHMENTS) accepted else accepted + next
+            }
+        val keptIds = kept.map { it.id.value }.toSet()
+        val coordinator = attachmentCoordinator
+        update { state ->
+            state.copy(
+                // 助手草稿为空 = 没有要交接的文字：保留用户在主 App 里已经写下的内容。
+                draft = if (draftText.isBlank()) state.draft else draftText,
+                // 助手侧没有附件 = 没有要交接的附件：保留主 App 现有附件列表。
+                attachments = if (kept.isEmpty()) state.attachments else kept,
+            )
+        }
+        if (coordinator != null) kept.forEach { observeAttachment(coordinator, it.id.value) }
+        return skipped + (verified.size - keptIds.size)
+    }
+
+    /**
+     * 交给主 App 的草稿快照：文字 + 尚未发送的附件。
+     *
+     * 只读，不改任何状态；`inFlightAttachmentIds` 属于已在发送的提交，不在草稿里。
+     */
+    fun assistantDraftForHandoff(): AssistantDraftSnapshot {
+        val state = _state.value
+        return AssistantDraftSnapshot(
+            text = state.draft,
+            attachments = state.attachments.filterNot { it.id.value in state.inFlightAttachmentIds },
+        )
+    }
+
     /** The same live gate is used before recording and before submitting its attachment. */
-    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =
-        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
+    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
             !_state.value.managingThreads && !_state.value.activeThreadArchived &&
             (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
@@ -3060,8 +3196,16 @@ class WorkbenchController(
             it.delivery == effectiveDelivery && it.text == current.draft && it.attachmentIds == attachmentIds && it.conversationId == activeThreadId &&
                 it.conversationId?.let { id ->
                     val atom = atomsFor(id)[it.clientMessageId]
-                    atom?.isDeleted == true || atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN ||
-                        steeringWasNotForwarded(atom)
+                    // 普通发送失败后自动回填、用户没再改动的草稿仍是同一条消息：再次点击必须沿用原身份先查询，
+                    // 否则远端其实已受理时会被当成第二条执行。用户改过草稿（修订号前移）才视为新发送。
+                    // 引导（STEER）不适用：每次点击都是一次独立的纠偏操作。
+                    val untouchedHandBack = effectiveDelivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
+                        it.delivery == effectiveDelivery &&
+                        atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                        draftRevision == it.revision
+                    !untouchedHandBack && (atom?.isDeleted == true ||
+                        atom?.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN ||
+                        steeringWasNotForwarded(atom))
                 } != true
         }?.copy(revision = draftRevision) ?: recoverable.singleOrNull()?.let { atom ->
             DraftSubmission(current.draft, attachmentIds, draftRevision, activeThreadId, atom.clientMessageId.value,
@@ -3267,7 +3411,7 @@ class WorkbenchController(
                         }
                     }
                 }
-                if (supportsMessageBatches && submission.delivery ==
+                if (supportsMessageBatches && batcher.merges && submission.delivery ==
                     com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL &&
                     !submission.text.trimStart().startsWith("/") && remoteIds.isEmpty()
                 ) {
@@ -5884,6 +6028,19 @@ class WorkbenchController(
 
     private companion object {
         const val MAX_ORGANIZATION_UPDATE_ATTEMPTS = 3
+
+        /**
+         * 已经不可能再变成 `VERIFIED` 的附件状态。
+         *
+         * 交接等待只在这几种状态出现时提前结束：继续等到上限没有意义，结果一定是拒绝。
+         * `OUTCOME_UNKNOWN` 也算：它表示上传结果不可确认，不能当作「还在路上」。
+         */
+        val UNSETTLED_ATTACHMENT_STATES = setOf(
+            AttachmentState.RETRYABLE_FAILURE,
+            AttachmentState.TERMINAL_FAILURE,
+            AttachmentState.CANCELLED,
+            AttachmentState.OUTCOME_UNKNOWN,
+        )
 
         /** 沿用最多 30 条媒体显示记录，每项至多 256 KiB 缩略图，总预览字节至多 7.5 MiB。 */
         const val MAX_HISTORY_ATTACHMENT_PREVIEWS = 30

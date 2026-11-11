@@ -14,11 +14,54 @@ import java.util.concurrent.TimeUnit
 class GatewayWebSocketReliabilityTest {
     private val profile = GatewayProfile("account", "device", "session", "http://127.0.0.1:1234", accessToken = "test")
 
+    @Test fun foregroundChecksUseMatchingPongsWithoutReplacingAHealthySocket() = runBlocking<Unit> {
+        java.net.ServerSocket(0).use { server ->
+            val checked = CountDownLatch(2)
+            val peer = java.util.concurrent.CompletableFuture.runAsync {
+                server.accept().use { socket ->
+                    socket.soTimeout = 2_000
+                    val input = java.io.DataInputStream(socket.getInputStream())
+                    val headers = ByteArrayOutputStream()
+                    while (!headers.toString("US-ASCII").endsWith("\r\n\r\n")) headers.write(input.readUnsignedByte())
+                    val key = Regex("Sec-WebSocket-Key: ([^\r\n]+)").find(headers.toString("US-ASCII"))!!.groupValues[1]
+                    val output = socket.getOutputStream()
+                    output.write(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+                        "Sec-WebSocket-Accept: ${GatewayWebSocketTransport.computeSecWebSocketAccept(key)}\r\n\r\n").toByteArray())
+                    output.flush()
+                    while (true) {
+                        val opcode = input.read()
+                        if (opcode == -1) break
+                        assertEquals("前台健康检查使用控制Ping，不发送业务消息", 0x89, opcode)
+                        val length = input.readUnsignedByte()
+                        assertEquals(0x80 or 32, length)
+                        val mask = ByteArray(4).also(input::readFully)
+                        val nonce = ByteArray(32).also(input::readFully)
+                        nonce.indices.forEach { nonce[it] = (nonce[it].toInt() xor mask[it % 4].toInt()).toByte() }
+                        output.write(byteArrayOf(0x8A.toByte(), 32) + nonce)
+                        output.flush()
+                        checked.countDown()
+                    }
+                }
+            }
+            val ws = GatewayWebSocketTransport(profile.copy(gatewayBaseUrl = "http://127.0.0.1:${server.localPort}"),
+                { ByteArray(64) }, foregroundPingIntervalMillis = 100, healthCheckTimeoutMillis = 500)
+            ws.setAppForeground(true)
+            var ready = 0
+            val job = launch { ws.events(null, {}, null) { if (it is GatewayWebSocketSignal.Ready) ready++ }.collect() }
+            try {
+                assertTrue("健康连接必须持续回应两次主动检测", withContext(Dispatchers.IO) { checked.await(2, TimeUnit.SECONDS) })
+                assertEquals("健康检查不得新建订阅", 1, ready)
+            } finally { job.cancelAndJoin() }
+            peer.get(2, TimeUnit.SECONDS)
+        }
+    }
+
     private class ScriptedSocket(
         private val frames: ByteArray = byteArrayOf(),
         private val after: () -> Int = { -1 },
         private val frameByte: () -> Unit = {},
         private val headerByte: () -> Unit = {},
+        private val onClose: () -> Unit = {},
     ) : Socket() {
         val output = ByteArrayOutputStream()
         var closed = false
@@ -39,7 +82,36 @@ class GatewayWebSocketReliabilityTest {
                 return after()
             }
         }
-        override fun close() { closed = true }
+        override fun close() { closed = true; onClose() }
+    }
+
+    @Test fun aForegroundProbeTimeoutCannotBecomeASuccessfulEndOfStream() = runBlocking {
+        val closed = CountDownLatch(1)
+        val socket = ScriptedSocket(after = {
+            check(closed.await(2, TimeUnit.SECONDS))
+            -1
+        }, onClose = { closed.countDown() })
+        val ws = GatewayWebSocketTransport(profile, { ByteArray(64) }, socketFactory = { _, _, _ -> socket },
+            healthCheckTimeoutMillis = 100)
+        ws.setAppForeground(true)
+        val failure = runCatching { ws.events().toList() }.exceptionOrNull()
+        assertTrue("主动心跳超时即使以EOF结束也必须上报失活，供上层自动重连", failure is GatewayWebSocketTimeoutException)
+        assertEquals(GatewayWebSocketTimeoutStage.IDLE, (failure as GatewayWebSocketTimeoutException).stage)
+        assertTrue(socket.closed)
+    }
+
+    @Test fun aDecodedRevocationRemainsTerminalWhenTheHealthDeadlineRaces() = runBlocking {
+        val closed = CountDownLatch(1)
+        val socket = ScriptedSocket(byteArrayOf(0x88.toByte(), 2, 3, 0xF0.toByte()), onClose = { closed.countDown() })
+        val ws = GatewayWebSocketTransport(profile, { ByteArray(64) }, socketFactory = { _, _, _ -> socket },
+            healthCheckTimeoutMillis = 100)
+        ws.setAppForeground(true)
+        val failure = runCatching {
+            ws.events(null, {}, null) { signal ->
+                if (signal is GatewayWebSocketSignal.Closed) assertTrue(closed.await(2, TimeUnit.SECONDS))
+            }.toList()
+        }.exceptionOrNull()
+        assertTrue("已解码的策略撤销不得被并发心跳超时降级为可重试网络错误", failure is EventStreamForbiddenException)
     }
 
     @Test fun authenticatedUpgradeAndHeartbeatReportHealthWithoutBusinessEvents() = runBlocking {

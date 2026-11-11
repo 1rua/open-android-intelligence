@@ -181,6 +181,103 @@ class AssistantUiStateMachineTest {
         assertTrue(terminated is AssistantUiState.Terminated)
     }
 
+    // ---- 定格截图（唤起即画圈） ----
+
+    /**
+     * 系统截图到达且会话仍在紧凑输入、没有别的覆盖层时，界面进入「定格截图」。
+     *
+     * 定格是覆盖层而不是第三种表面：展开/紧凑的形态判断不受影响，窗口几何由
+     * 会话自己按 `immersiveLayout()` 决定。
+     */
+    @Test
+    fun screenshotAvailableEntersFrozenOverlayFromCompactInput() {
+        val state = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+
+        val resolved = visible(state)
+        assertEquals(AssistantOverlay.FROZEN_SCREENSHOT, resolved.overlay)
+        assertEquals(AssistantSurfaceState.COMPACT_INPUT, resolved.surface)
+    }
+
+    /** 已经在对话形态（发送已被接收）时截图晚到，不强行切全屏，避免打断用户。 */
+    @Test
+    fun screenshotAvailableDoesNotFreezeAnExpandedConversation() {
+        val state = reduced(
+            expandedState(),
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+
+        assertEquals(AssistantOverlay.NONE, visible(state).overlay)
+        assertEquals(AssistantSurfaceState.EXPANDED_CONVERSATION, visible(state).surface)
+    }
+
+    /** 录音等别的覆盖层正在用时，截图不抢占注意力。 */
+    @Test
+    fun screenshotAvailableDoesNotStealAnotherOverlay() {
+        val state = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.RecordingStarted,
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+
+        assertEquals(AssistantOverlay.RECORDING_VOICE, visible(state).overlay)
+    }
+
+    @Test
+    fun screenshotUnavailableLeavesTheFrozenOverlay() {
+        val frozen = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+        val released = reduced(frozen, AssistantUiEvent.ScreenshotUnavailable)
+
+        assertEquals(AssistantOverlay.NONE, visible(released).overlay)
+    }
+
+    /** 定格态第一次按返回只退出定格，第二次才结束会话（系统边缘手势因此仍有效）。 */
+    @Test
+    fun backExitsFrozenScreenshotBeforeEndingTheSession() {
+        val frozen = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+
+        val afterFirst = reduced(frozen, AssistantUiEvent.BackPressed)
+        assertEquals(AssistantOverlay.NONE, visible(afterFirst).overlay)
+
+        val afterSecond = reduce(afterFirst, AssistantUiEvent.BackPressed)
+        assertTrue(afterSecond is AssistantUiState.Terminated)
+    }
+
+    /** 定格态下发送被接收：进入对话形态并清掉定格覆盖层，不把全屏留在原地。 */
+    @Test
+    fun acceptedSendLeavesFrozenScreenshot() {
+        val frozen = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.ScreenshotAvailable,
+        )
+
+        val sent = reduced(frozen, AssistantUiEvent.SendRequested(accepted = true))
+
+        val resolved = visible(sent)
+        assertEquals(AssistantOverlay.NONE, resolved.overlay)
+        assertEquals(AssistantSurfaceState.EXPANDED_CONVERSATION, resolved.surface)
+    }
+
+    /** 连续圈选：提交一张选区后仍停在定格截图，可以继续画。 */
+    @Test
+    fun aCommittedSelectionKeepsTheFrozenOverlayForContinuousSelection() {
+        val frozen = reduced(
+            AssistantUiState.Visible(),
+            AssistantUiEvent.ScreenshotAvailable,
+            AssistantUiEvent.ScreenSelectionCommitted,
+        )
+
+        assertEquals(AssistantOverlay.FROZEN_SCREENSHOT, visible(frozen).overlay)
+    }
+
     @Test
     fun backPriorityIsSelectionThenRecordingThenExit() {
         val selecting = reduced(AssistantUiState.Visible(), AssistantUiEvent.SelectionRequested)

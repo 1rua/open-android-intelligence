@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import kotlinx.coroutines.CompletableDeferred
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchSendRegressionTest {
@@ -2201,6 +2203,8 @@ class WorkbenchSendRegressionTest {
         },
         { ConversationScope("profile", "gateway", "account", "install") },
         supportsMessageBatches = true,
+        // 客户端默认不合并；这些用例验证窗口内的聚合，因此显式给一个短窗口。
+        debouncePolicy = DebouncePolicy(delay = 1_500.milliseconds),
         replyTimeouts = replyTimeouts,
     )
 

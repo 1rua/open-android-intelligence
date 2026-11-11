@@ -37,7 +37,7 @@ def _record(path, event, **fields):
         journal.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
 
 
-async def _host(root, conversation):
+async def _host(root, conversation, device_history=False):
     settings = {"storageRoot": "host-data", "masterKeyFile": "host-master",
                 "contractRoot": os.path.relpath(CONTRACT, root)}
     seed = create_core(settings)
@@ -48,12 +48,33 @@ async def _host(root, conversation):
             account.agent_sessions.attach(conversation, "native-session", "native-key-test-only")
     backend = SessionBackend(seed.storage_root, [OWNER], secret_store=seed.secret_store)
     backend.acquire_accounts()
-    backend.history_reader = lambda owner, session: []
+    native_history = {}
+    backend.history_reader = lambda owner, session: [dict(row) for row in native_history.get((owner, session), [])]
     journal = root / "observations.jsonl"
 
     class ObservedExecution(ControlledExecution):
+        def emit_text(self, owner, conversation, generation_id, text):
+            if device_history:
+                rows = native_history.setdefault((owner, conversation), [])
+                message_id = "reply_" + generation_id
+                row = next((item for item in rows if item["messageId"] == message_id), None)
+                if row is None:
+                    row = {"messageId": message_id, "sender": "assistant", "generationId": generation_id,
+                           "clientMessageId": rows[-1]["clientMessageId"], "contentRevision": 0,
+                           "state": "STREAMING", "createdAt": rows[-1]["createdAt"]}
+                    rows.append(row)
+                row["text"] = text
+            super().emit_text(owner, conversation, generation_id, text)
+
         async def _notify_agent_inbound(self, path, body, response, owner):
             accepted = response["data"]
+            if device_history:
+                from datetime import datetime, timezone
+                native_history.setdefault((owner, conversation), []).append({
+                    "messageId": accepted["messageId"], "sender": "user", "text": json.loads(body)["text"],
+                    "clientMessageId": json.loads(body)["clientMessageId"], "generationId": accepted["generationId"],
+                    "state": "CONFIRMED", "createdAt": datetime.now(timezone.utc).isoformat(),
+                })
             identity = {"generationId": accepted["generationId"],
                         "clientMessageId": json.loads(body)["clientMessageId"]}
             _record(journal, "task.started", **identity)
@@ -63,9 +84,28 @@ async def _host(root, conversation):
                 _record(journal, "task.cancelled", **identity)
                 raise
             else:
+                if device_history:
+                    with closing(backend.open_gateway_account(owner)) as account:
+                        generation = account.conversations.workflow.for_message(accepted["messageId"])
+                        assert generation["state"] == "completed"
+                        for row in native_history.get((owner, conversation), []):
+                            if row.get("generationId") == accepted["generationId"]:
+                                row["state"] = "CONFIRMED"
+                                if row["sender"] != "assistant":
+                                    continue
+                                # 与真实宿主相同，正文完成事实独立于用户消息成功状态。
+                                account.events.append("conversation.message.completed", row["messageId"], {
+                                    "conversationId": conversation, "messageId": row["messageId"],
+                                    "sender": "assistant", "parts": [{"type": "text", "text": row["text"]}],
+                                    "text": row["text"], "timestamp": 1000,
+                                    "revision": row["contentRevision"], "generationId": accepted["generationId"],
+                                })
+                        # 与真实宿主相同，由投递状态入口产生单独递增的状态修订与事件。
+                        account.conversations.update_dispatch_status(accepted["messageId"], "completed", None,
+                            f"agent-complete-{accepted['messageId']}")
                 _record(journal, "task.finished", **identity)
 
-    runtime = ObservedExecution(backend, {OWNER: conversation})
+    runtime = ObservedExecution(backend, {OWNER: conversation}, publish_delivery_events=device_history)
     detached = asyncio.Event()
     unregister = backend.unregister_event_sink
     loop = asyncio.get_running_loop()
@@ -133,14 +173,14 @@ async def _core(root, host_url):
     }, None, None
 
 
-async def _serve(role, directory, connection, host_url, port, conversation):
+async def _serve(role, directory, connection, host_url, port, conversation, device_history=False):
     root = Path(directory).resolve()
     os.chdir(root)
     # The controlled host does not import the Hermes model runtime. These paths
     # additionally isolate any optional Hermes helper imported by the bridge.
     os.environ["HERMES_HOME"] = str(root / "hermes-home")
     os.environ["HERMES_TEST_ISOLATION"] = str(root / "hermes-home")
-    app, metadata, control, cleanup = (await _host(root, conversation) if role == "adapter"
+    app, metadata, control, cleanup = (await _host(root, conversation, device_history) if role == "adapter"
                                        else await _core(root, host_url))
     runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -166,9 +206,9 @@ async def _serve(role, directory, connection, host_url, port, conversation):
         listener.close()
 
 
-def _entry(role, directory, connection, host_url, port, conversation):
+def _entry(role, directory, connection, host_url, port, conversation, device_history=False):
     try:
-        asyncio.run(_serve(role, directory, connection, host_url, port, conversation))
+        asyncio.run(_serve(role, directory, connection, host_url, port, conversation, device_history))
     except BaseException:
         with suppress(BrokenPipeError, EOFError, OSError):
             connection.send({"kind": "error", "traceback": traceback.format_exc()})
@@ -180,7 +220,7 @@ def _entry(role, directory, connection, host_url, port, conversation):
 class CommunicationProcess:
     """One spawned interpreter, a bounded readiness handshake, and owned cleanup."""
 
-    def __init__(self, role, directory, *, host_url=None, port=0, conversation=None):
+    def __init__(self, role, directory, *, host_url=None, port=0, conversation=None, device_history=False):
         assert role in {"adapter", "core"}
         self.directory = directory.resolve()
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -188,7 +228,7 @@ class CommunicationProcess:
         self.connection, child = context.Pipe()
         self._child_connection = child
         self.process = context.Process(target=_entry,
-            args=(role, str(self.directory), child, host_url, port, conversation),
+            args=(role, str(self.directory), child, host_url, port, conversation, device_history),
             name=f"communication-test-{role}", daemon=True)
         self.ready = None
         self._closed = False

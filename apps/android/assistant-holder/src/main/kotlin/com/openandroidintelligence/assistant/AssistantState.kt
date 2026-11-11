@@ -2,6 +2,7 @@ package com.openandroidintelligence.assistant
 
 import androidx.compose.runtime.Immutable
 import com.openandroidintelligence.conversation.assistant.AssistantAttachmentDto
+import com.openandroidintelligence.conversation.assistant.AssistantHandoffDto
 import com.openandroidintelligence.conversation.assistant.decodeState
 import com.openandroidintelligence.conversation.assistant.decodeTimeline
 import com.openandroidintelligence.conversation.model.GenerationState
@@ -47,6 +48,8 @@ internal data class AssistantState(
      */
     val attachments: List<AssistantAttachmentDto> = emptyList(),
     val notice: String = "",
+    /** 最近一次交接尝试的结果；从未请求过（或旧帧）时为 null。 */
+    val handoff: AssistantHandoffDto? = null,
     val advisory: String? = null,
     /** 主进程下发的已保存外观；首帧到达前为 null，由调用方回落到本地偏好。 */
     val appearance: AssistantAppearance? = null,
@@ -121,6 +124,7 @@ internal fun parseAssistantState(payload: String): AssistantState? {
         timelineTruncated = dto.timelineTruncated,
         attachments = dto.attachments,
         notice = dto.notice?.message.orEmpty(),
+        handoff = dto.handoff,
         // v2 服务端每帧都带 appearance；协议缺省值只在异常生产方下出现。
         appearance = AssistantAppearance(
             theme = dto.appearance.theme,
