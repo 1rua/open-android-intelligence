@@ -63,3 +63,11 @@
 第二轮独立审查发现 `PassEnvironment` 应在自动生成用户 `HOME/LOGNAME/SHELL` 之后覆盖，原顺序相反。新增纯函数双向回归：系统服务设置当前属主 `User`、传递 `HOME`、不显式设置 `DSH_HOME`；传入其他目录必须拒绝目标默认 `.dsh`，传入目标用户目录则保持接受。修复前为 **1 failed、1 passed**（0.10 秒），准确复现错误接受其他 Home。
 
 本次仅调整这两项环境来源的合并顺序，保留后续 `Environment/EnvironmentFiles/UnsetEnvironment` 行为。运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -p no:cacheprovider --tb=short`：**43 passed、0 failed**（6.61 秒）；`git diff --check` 通过。没有重复全量门禁或执行真实服务操作，最终独立复核及现场验收由主任务继续完成。
+
+## CI 单元测试环境隔离修复
+
+`db224429` 的远端 Core Python 3.11/3.12 出现两个真实失败。原因是两个单元测试仅模拟 `subprocess.run`，没有控制 Node 发现：合成进程环境省略 `PATH`，生产函数按系统默认路径找 Node；本机偶然可找到，CI 在进入模拟子进程之前就返回空结果。此处不是本地符号链接环境失败，也不是第二次 Node 调用未被模拟。
+
+先给两个用例设置不含 DSH/Node 的隔离工具路径，运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -k 'profile_entry_uses_runtime_patch_port_and_instance or profile_identity_does_not_require_python_yaml' -p no:cacheprovider --tb=short`，得到 **2 failed、41 deselected**（0.12 秒），重现远端相同断言。随后加入受控假 Node 可执行入口和结构化子进程返回值，核验真实探测命令、请求身份、环境和唯一调用次数。同一命令得到 **2 passed、41 deselected**（0.07 秒）；生产代码与既有断言要求保持不变。
+
+真实已安装 DSH 的配置探测仍为独立测试，缺少可选 DSH 时明确跳过。本次仅修单元测试的工具发现隔离，不要求 CI 安装整套 DSH，不重复全量门禁；新提交由远端 CI 继续验证。
