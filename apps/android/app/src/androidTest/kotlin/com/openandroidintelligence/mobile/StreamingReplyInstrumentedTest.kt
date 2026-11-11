@@ -52,6 +52,7 @@ import com.openandroidintelligence.conversation.workbench.MessageTimeline
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.MotionPolicy
 import java.util.Collections
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
@@ -64,7 +65,10 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TestWatcher
+import org.junit.runner.Description
 import org.junit.runner.RunWith
 
 /**
@@ -76,6 +80,23 @@ class StreamingReplyInstrumentedTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val main = Handler(Looper.getMainLooper())
     private var scenario: ActivityScenario<StreamingReplyTestActivity>? = null
+    private var activeFixture: Fixture? = null
+    private var currentTest = "fixture"
+    private var lastWindow: File? = null
+    private val evidenceRun = SystemClock.elapsedRealtimeNanos().toString()
+    private var captureSequence = 0
+
+    @get:Rule
+    val windowEvidence = object : TestWatcher() {
+        override fun starting(description: Description) { currentTest = description.methodName }
+        override fun failed(error: Throwable, description: Description) {
+            // @After 关闭窗口前已保存最后一帧；失败后仅复制它，不拍摄返回前台的其他应用。
+            lastWindow?.let { source -> runCatching {
+                val destination = evidenceFile("failure/window.png")
+                source.copyTo(destination, overwrite = true)
+            }.onFailure { Log.w("OaiStreamingAcceptance", "保存失败窗口副本失败", it) } }
+        }
+    }
 
     @Before
     fun requireIsolatedInstallation() {
@@ -88,8 +109,10 @@ class StreamingReplyInstrumentedTest {
     @After
     fun releaseFixture() {
         main.removeCallbacksAndMessages(null)
+        if (scenario != null) runCatching { saveWindow("test-end") }
         scenario?.close()
         scenario = null
+        activeFixture = null
         StreamingReplyTestActivity.installContent = null
     }
 
@@ -122,7 +145,7 @@ class StreamingReplyInstrumentedTest {
         val fixture = openFixture(execution = true)
         val text = "聚合最终回答首段。" + shortReply() + "聚合最终回答结束"
         update(fixture, text, streaming = true)
-        awaitText("聚合最终回答结束")
+        awaitTailVisible(fixture, "聚合最终回答结束")
         await("执行步骤没有聚合进共享容器") {
             nodes().any { it.description.contains("执行过程") && it.description.contains("2 步") }
         }
@@ -130,7 +153,7 @@ class StreamingReplyInstrumentedTest {
         assertCursorAtBodyEnd("聚合最终回答结束")
         assertEquals("最终回答动画不能改写事实正文", text, fixture.entry.text)
         update(fixture, text, streaming = false)
-        await("聚合回答完成后不能留下光标") { !hasCursorStripe() }
+        await("聚合回答完成后不能留下光标") { hasNoCursorStripe("聚合最终回答结束") }
     }
 
     @Test
@@ -138,13 +161,13 @@ class StreamingReplyInstrumentedTest {
         val fixture = openFixture(hapticProbe = true)
         val first = "触觉关闭期间新增正文。".repeat(12) + "第一阶段结束"
         update(fixture, first, streaming = true)
-        awaitText("第一阶段结束")
+        awaitTailVisible(fixture, "第一阶段结束")
         assertEquals("默认关闭时不应请求触觉", 0, fixture.hapticCalls.get())
 
         onMain { fixture.hapticEnabled = true }
         val enabled = first + "\n\n实时打开触觉后的新正文。".repeat(10) + "第二阶段结束"
         update(fixture, enabled, streaming = true)
-        awaitText("第二阶段结束")
+        awaitTailVisible(fixture, "第二阶段结束")
         await("开启偏好后新显示正文没有请求触觉") { fixture.hapticCalls.get() > 0 }
 
         onMain { fixture.hapticEnabled = false; fixture.reduceMotion = true }
@@ -152,7 +175,7 @@ class StreamingReplyInstrumentedTest {
         val disabledCount = fixture.hapticCalls.get()
         val reduced = enabled + "\n\n减少动态仍保留实时正文和静态排版光标。".repeat(10) + "第三阶段结束"
         update(fixture, reduced, streaming = true)
-        awaitText("第三阶段结束")
+        awaitTailVisible(fixture, "第三阶段结束")
         SystemClock.sleep(220)
         assertEquals("实时关闭偏好后不能继续请求触觉", disabledCount, fixture.hapticCalls.get())
         assertCursorAtBodyEnd("第三阶段结束")
@@ -162,7 +185,7 @@ class StreamingReplyInstrumentedTest {
         emitEvidence(mapOf("scenario" to "实时偏好与减少动态", "hapticCalls" to disabledCount,
             "hapticSink" to "simulated_view_callback", "physicalHaptic" to "not_measured"))
         update(fixture, reduced, streaming = false)
-        await("减少动态终态后不能保留光标") { !hasCursorStripe() }
+        await("减少动态终态后不能保留光标") { hasNoCursorStripe("第三阶段结束") }
     }
 
     @Test
@@ -170,8 +193,7 @@ class StreamingReplyInstrumentedTest {
         val fixture = openFixture()
         val text = ("真实排版光标应贴在文字末尾，滚动时跟随正文，旋转后重新测量。".repeat(28)) + "排版验收终点"
         update(fixture, text, streaming = true)
-        awaitText("排版验收终点")
-        await("流式正文没有滚动到可见尾部") { fixture.scroll?.let { it.value == it.maxValue && it.maxValue > 0 } == true }
+        awaitTailVisible(fixture, "排版验收终点")
         SystemClock.sleep(220)
         assertCursorAtBodyEnd("排版验收终点")
 
@@ -180,45 +202,47 @@ class StreamingReplyInstrumentedTest {
         await("真实手势没有向上浏览正文") { fixture.scroll?.let { it.value < it.maxValue - 100 } == true }
         assertFalse("正文被移出窗口时不能留下悬浮光标", hasCursorStripe())
         onMain { fixture.followTail = true }
-        await("回到尾部后正文位置没有恢复") { fixture.scroll?.let { it.value == it.maxValue } == true }
-        awaitText("排版验收终点")
+        awaitTailVisible(fixture, "排版验收终点")
         assertCursorAtBodyEnd("排版验收终点")
 
         requireNotNull(scenario).onActivity { it.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE }
         await("Activity 没有完成横屏重建") { fixture.activity?.resources?.configuration?.orientation == Configuration.ORIENTATION_LANDSCAPE }
-        awaitText("排版验收终点")
-        assertFalse("旋转恢复已有正文不能重播旧光标", hasCursorStripe())
+        awaitTailVisible(fixture, "排版验收终点")
+        saveWindow("rotation-baseline")
+        assertTrue("旋转恢复已有正文不能重播旧光标", hasNoCursorStripe("排版验收终点"))
         update(fixture, "$text\n\n旋转后的实时追加终点", streaming = true)
-        awaitText("旋转后的实时追加终点")
+        awaitTailVisible(fixture, "旋转后的实时追加终点")
         SystemClock.sleep(220)
         assertCursorAtBodyEnd("旋转后的实时追加终点")
         update(fixture, fixture.entry.text, streaming = false)
-        await("终态排空后光标没有消失") { !hasCursorStripe() }
+        await("终态排空后光标没有消失") { hasNoCursorStripe("旋转后的实时追加终点") }
     }
 
     @Test
     fun stoppedAndRecreatedHostRestoresFactsWithoutReplayingOldTyping() {
         val fixture = openFixture()
         update(fixture, shortReply(), streaming = true)
-        awaitText("本地短回复结束")
+        awaitTailVisible(fixture, "本地短回复结束")
         requireNotNull(scenario).moveToState(Lifecycle.State.CREATED)
         val hiddenText = longReply() + "\n\n后台接收快照终点"
         update(fixture, hiddenText, streaming = true)
         SystemClock.sleep(320)
         requireNotNull(scenario).moveToState(Lifecycle.State.RESUMED)
-        awaitText("后台接收快照终点")
-        assertFalse("恢复页面不能补播后台旧内容的光标", hasCursorStripe())
+        awaitTailVisible(fixture, "后台接收快照终点")
+        saveWindow("foreground-snapshot")
+        assertTrue("恢复页面不能补播后台旧内容的光标", hasNoCursorStripe("后台接收快照终点"))
         assertEquals("显示动画不能改写接收全文", hiddenText, fixture.entry.text)
 
         requireNotNull(scenario).recreate()
-        awaitText("后台接收快照终点")
-        assertFalse("Activity 重建不能重播历史流式内容", hasCursorStripe())
+        awaitTailVisible(fixture, "后台接收快照终点")
+        saveWindow("recreated-snapshot")
+        assertTrue("Activity 重建不能重播历史流式内容", hasNoCursorStripe("后台接收快照终点"))
         update(fixture, "$hiddenText\n\n前台新增内容终点", streaming = true)
-        awaitText("前台新增内容终点")
+        awaitTailVisible(fixture, "前台新增内容终点")
         SystemClock.sleep(220)
         assertCursorAtBodyEnd("前台新增内容终点")
         update(fixture, fixture.entry.text, streaming = false)
-        await("结束后不能保留活动光标") { !hasCursorStripe() }
+        await("结束后不能保留活动光标") { hasNoCursorStripe("前台新增内容终点") }
     }
 
     private fun measureSample(sample: StreamSample, round: Int, smooth: Boolean): ObservedTiming {
@@ -255,12 +279,13 @@ class StreamingReplyInstrumentedTest {
         }
         val firstObserved = SystemClock.elapsedRealtimeNanos()
         onMain { fixture.followTail = true }
-        awaitText(sample.endMarker)
+        awaitTailVisible(fixture, sample.endMarker)
         val completeObserved = SystemClock.elapsedRealtimeNanos()
         await("没有收到本地终态") { terminal.get() > 0L }
         requireNotNull(scenario).onActivity { frames.detach(it.window) }
         val memoryAfter = MemorySnapshot.capture()
-        await("完成后仍有流式光标") { !hasCursorStripe() }
+        await("完成后仍有流式光标") { hasNoCursorStripe(sample.endMarker) }
+        saveWindow("${sample.name}-$round-${if (smooth) "smooth" else "direct"}-completed")
         assertEquals("动画不能丢失或改写接收事实", text, fixture.entry.text)
         assertFalse("终态必须提交给时间线", fixture.entry.isStreaming)
 
@@ -282,6 +307,8 @@ class StreamingReplyInstrumentedTest {
             "observation" to "accessibility_upper_bound",
             "frameClock" to "system",
             "scrollPolicy" to "hold_first_prefix_then_follow_tail",
+            "tailLayoutStableMillis" to TailStableMillis,
+            "drainObservation" to "visible_tail_after_stable_scroll",
             "device" to android.os.Build.MODEL,
             "sdk" to android.os.Build.VERSION.SDK_INT,
             "sourceParseCount" to "not_measured",
@@ -289,6 +316,7 @@ class StreamingReplyInstrumentedTest {
         emitEvidence(evidence)
         requireNotNull(scenario).close()
         scenario = null
+        activeFixture = null
         return timing
     }
 
@@ -301,6 +329,7 @@ class StreamingReplyInstrumentedTest {
     private fun openFixture(smooth: Boolean = true, execution: Boolean = false, hapticProbe: Boolean = false): Fixture {
         scenario?.close()
         val fixture = Fixture(smooth, execution, hapticProbe)
+        activeFixture = fixture
         StreamingReplyTestActivity.installContent = { activity ->
             fixture.activity = activity
             activity.setContent {
@@ -335,6 +364,7 @@ class StreamingReplyInstrumentedTest {
         }
         scenario = ActivityScenario.launch(StreamingReplyTestActivity::class.java)
         await("测试宿主没有进入真实窗口") { nodes().any { it.description == fixture.description } }
+        saveWindow("fixture-open")
         return fixture
     }
 
@@ -344,14 +374,37 @@ class StreamingReplyInstrumentedTest {
 
     private fun onMain(action: () -> Unit) = instrumentation.runOnMainSync(action)
 
-    private fun awaitText(text: String) = await("共享正文未显示：${text.takeLast(24)}") {
-        nodes().any { it.text.contains(text) }
+    /** 最后一个字的语义存在还不够：滚动范围和位置必须在真实布局中连续稳定。 */
+    private fun awaitTailVisible(fixture: Fixture, marker: String) {
+        var previous: Pair<Int, Int>? = null
+        var stableSince = 0L
+        await("正文尾部没有稳定进入窗口：$marker") {
+            val scroll = fixture.scroll
+            val current = scroll?.let { it.value to it.maxValue }
+            val now = SystemClock.elapsedRealtime()
+            if (current == null || current.first != current.second || current != previous) {
+                previous = current
+                stableSince = now
+                false
+            } else if (now - stableSince < TailStableMillis) {
+                false
+            } else {
+                val visible = nodes()
+                val viewport = visible.firstOrNull { it.description == fixture.description }?.bounds
+                val tail = visible.lastOrNull { it.text.contains(marker) }?.bounds
+                viewport != null && tail != null && tail.bottom <= viewport.bottom + 2 &&
+                    tail.bottom > viewport.top && tail.right > viewport.left && tail.left < viewport.right
+            }
+        }
     }
 
     private fun await(message: String, timeout: Long = 8_000, condition: () -> Boolean) {
         val deadline = SystemClock.elapsedRealtime() + timeout
         while (!condition()) {
-            if (SystemClock.elapsedRealtime() >= deadline) throw AssertionError(message)
+            if (SystemClock.elapsedRealtime() >= deadline) {
+                runCatching { saveWindow("timeout") }
+                throw AssertionError(message)
+            }
             SystemClock.sleep(16)
         }
     }
@@ -372,17 +425,19 @@ class StreamingReplyInstrumentedTest {
         return result
     }
 
-    /** 独特测试主色仅用于识别真实绘制的光标；状态点高度不足以通过竖线筛选。 */
-    private fun cursorStripe(bitmap: Bitmap): Rect? {
+    /** 只在末段最后一行的局部区域找竖线，避免把上方主色标题或链接误认作光标。 */
+    private fun cursorStripe(bitmap: Bitmap, requestedRegion: Rect): Rect? {
+        val region = Rect(requestedRegion)
+        if (!region.intersect(0, 0, bitmap.width, bitmap.height)) return null
         var best: Rect? = null
-        val pixels = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-        for (x in 0 until bitmap.width) {
+        val pixels = IntArray(region.width() * region.height())
+        bitmap.getPixels(pixels, 0, region.width(), region.left, region.top, region.width(), region.height())
+        for (x in region.left until region.right) {
             var top = -1
             var bottom = -1
             var count = 0
-            for (y in 0 until bitmap.height) {
-                val color = pixels[y * bitmap.width + x]
+            for (y in region.top until region.bottom) {
+                val color = pixels[(y - region.top) * region.width() + x - region.left]
                 if (abs(AndroidColor.red(color) - 16) <= 6 && abs(AndroidColor.green(color) - 208) <= 6 &&
                     abs(AndroidColor.blue(color) - 144) <= 6) {
                     if (top == -1) top = y
@@ -399,17 +454,37 @@ class StreamingReplyInstrumentedTest {
         return best
     }
 
-    private fun hasCursorStripe(): Boolean {
-        val screenshot = instrumentation.uiAutomation.takeScreenshot() ?: return false
-        return try { cursorStripe(screenshot) != null } finally { screenshot.recycle() }
+    private fun bodyEndRegion(marker: String, bitmap: Bitmap): Rect? {
+        val body = nodes().lastOrNull { it.text.contains(marker) }?.bounds ?: return null
+        val lastLineHeight = (36 * instrumentation.targetContext.resources.displayMetrics.scaledDensity).roundToInt()
+        val region = Rect(body.left - 8, body.bottom - lastLineHeight, body.right + 8, body.bottom + 8)
+        return region.takeIf { it.intersect(0, 0, bitmap.width, bitmap.height) }
     }
 
+    private fun cursorStatus(marker: String? = null): Boolean? {
+        val screenshot = instrumentation.uiAutomation.takeScreenshot() ?: return null
+        return try {
+            val region = if (marker == null) Rect(0, 0, screenshot.width, screenshot.height)
+                else bodyEndRegion(marker, screenshot) ?: return null
+            cursorStripe(screenshot, region) != null
+        } finally { screenshot.recycle() }
+    }
+
+    private fun hasCursorStripe(marker: String? = null): Boolean = cursorStatus(marker) == true
+
+    // 正文坐标或截图缺失属于未知，绝不能把未知当作「终态光标已消失」。
+    private fun hasNoCursorStripe(marker: String): Boolean = cursorStatus(marker) == false
+
     private fun assertCursorAtBodyEnd(marker: String) {
+        // 滚动与旋转完成后，等待真正的后续绘制帧；不把单次截图的瞬时缺帧当作正确性结论。
+        await("末段实际绘制帧没有出现流式光标：$marker") { hasCursorStripe(marker) }
         val body = nodes().lastOrNull { it.text.contains(marker) }
         assertNotNull("正文末段必须具有真实无障碍坐标", body)
         val screenshot = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
         try {
-            val cursor = cursorStripe(screenshot)
+            saveWindow("cursor-$marker", screenshot)
+            val region = requireNotNull(bodyEndRegion(marker, screenshot))
+            val cursor = cursorStripe(screenshot, region)
             assertNotNull("实际绘制帧中没有检测到流式竖线光标", cursor)
             val bounds = requireNotNull(body).bounds
             val stripe = requireNotNull(cursor)
@@ -418,6 +493,34 @@ class StreamingReplyInstrumentedTest {
             assertTrue("光标不能拉成横贯气泡的拖尾", stripe.width() <= 10)
         } finally {
             screenshot.recycle()
+        }
+    }
+
+    /** 所有产物仅写独立验收包的外部文件目录，不混入源码或现有应用的数据。 */
+    private fun evidenceFile(relative: String): File {
+        val root = File(requireNotNull(instrumentation.targetContext.getExternalFilesDir(null)),
+            "streaming-evidence/$evidenceRun/$currentTest")
+        return File(root, relative).also { requireNotNull(it.parentFile).mkdirs() }
+    }
+
+    private fun saveWindow(stage: String, existing: Bitmap? = null) {
+        val fixture = activeFixture ?: return
+        val visible = nodes()
+        if (visible.none { it.description == fixture.description }) return
+        val bitmap = existing ?: instrumentation.uiAutomation.takeScreenshot() ?: return
+        val safeStage = stage.replace(Regex("[^A-Za-z0-9\\u4e00-\\u9fff_-]"), "_")
+        val directory = "${++captureSequence}-$safeStage"
+        val image = evidenceFile("$directory/window.png")
+        try {
+            image.outputStream().use { output -> check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) }
+            evidenceFile("$directory/window-tree.txt").writeText(buildString {
+                append("scroll=${fixture.scroll?.value}/${fixture.scroll?.maxValue}\n")
+                visible.forEach { append("${it.bounds} description=${it.description} text=${it.text}\n") }
+            })
+            lastWindow = image
+            Log.i("OaiStreamingAcceptance", "窗口证据=${image.path}")
+        } finally {
+            if (existing == null) bitmap.recycle()
         }
     }
 
@@ -544,6 +647,7 @@ class StreamingReplyInstrumentedTest {
 
     companion object {
         private const val FixtureDescription = "StreamingReplyInstrumentedFixture"
+        private const val TailStableMillis = 80L
         private val FixtureSequence = AtomicInteger()
         private const val CursorColor = 0xFF10D090
         private fun millis(nanos: Long): Double = (nanos / 10_000.0).roundToInt() / 100.0
