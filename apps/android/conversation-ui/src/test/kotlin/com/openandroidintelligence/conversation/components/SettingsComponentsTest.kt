@@ -3,9 +3,20 @@ package com.openandroidintelligence.conversation.components
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -25,12 +36,14 @@ class SettingsComponentsTest {
         var clicked = false
         compose.setContent {
             MaterialTheme {
+                SettingsSectionCard(contentPadding = PaddingValues()) {
                 SettingsNavigationItem(
                     headline = "外观与动效",
                     supporting = "主题模式、动态取色与动画微调",
                     icon = Icons.Default.Palette,
                     onClick = { clicked = true },
                 )
+                }
             }
         }
         compose.onNodeWithText("外观与动效").performClick()
@@ -39,18 +52,45 @@ class SettingsComponentsTest {
 
     @Test
     fun settingsSwitchItemRendersAndToggles() {
-        var checkedState = false
+        val checkedState = mutableStateOf(false)
+        var changes = 0
         compose.setContent {
             MaterialTheme {
+                SettingsSectionCard(contentPadding = PaddingValues()) {
                 SettingsSwitchItem(
                     headline = "系统动态取色",
-                    checked = checkedState,
-                    onCheckedChange = { checkedState = it },
+                    modifier = Modifier.testTag("switch-row"),
+                    checked = checkedState.value,
+                    onCheckedChange = { checkedState.value = it; changes++ },
                 )
+                }
             }
         }
-        compose.onNodeWithText("系统动态取色").performClick()
-        assertTrue("点击整行必须反转开关状态", checkedState)
+        val row = compose.onNodeWithTag("switch-row")
+        row.assertIsOff().performTouchInput { click(centerLeft + androidx.compose.ui.geometry.Offset(24f, 0f)) }
+        row.assertIsOn()
+        assertEquals("点击文字一侧只切换一次", 1, changes)
+        row.performTouchInput { click(centerRight - androidx.compose.ui.geometry.Offset(24f, 0f)) }
+        row.assertIsOff()
+        assertEquals("点击开关一侧也只切换一次", 2, changes)
+    }
+
+    @Test
+    fun disabledSettingsItemsDoNotInvokeCallbacks() {
+        var clicks = 0
+        var changes = 0
+        compose.setContent {
+            MaterialTheme {
+                SettingsSectionCard {
+                    SettingsNavigationItem("不可用的导航", enabled = false, onClick = { clicks++ })
+                    SettingsSwitchItem("不可用的开关", checked = false, enabled = false, onCheckedChange = { changes++ })
+                }
+            }
+        }
+        compose.onNodeWithText("不可用的导航").performTouchInput { click() }
+        compose.onNodeWithText("不可用的开关").assertIsNotEnabled().performTouchInput { click() }
+        assertEquals("禁用导航不得调用回调", 0, clicks)
+        assertEquals("禁用开关不得调用回调", 0, changes)
     }
 
     @Test
