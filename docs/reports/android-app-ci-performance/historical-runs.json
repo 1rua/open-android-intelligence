@@ -1,0 +1,1273 @@
+{
+  "runs": [
+    {
+      "run_id": "42962654289",
+      "head_sha": "2e1626f5d655b9a4785517817eb4b9b3ca18b10c",
+      "run_started_at": "2026-11-11T04:58:28Z",
+      "app_job_id": 130332758968,
+      "app_job_seconds": 1251.0,
+      "android_lane_step_seconds": 1236.0,
+      "workflow_created_to_updated_seconds": 1290.0,
+      "classes": 165,
+      "cases": 1806,
+      "skipped": 1,
+      "failures": 0,
+      "errors": 0,
+      "suite_seconds_sum": 1833.727,
+      "case_seconds_sum": 1829.941,
+      "suite_minus_case_seconds_sum": 3.786000000000025,
+      "first_seconds_sum": 988.064,
+      "first_share_of_total_cases": 0.5399430910614058,
+      "suffix_group_first_seconds_sum": 1238.717,
+      "suffix_group_first_share_of_total_cases": 0.6769163595984788,
+      "multicase_classes_first_share_ge_half": 110,
+      "multicase_classes": 152,
+      "xml_timeline_first_suite_start": "2026-11-11T05:09:45",
+      "xml_timeline_last_suite_end": "2026-11-11T05:19:36.047000",
+      "xml_timeline_span_seconds": 591.047,
+      "suite_distribution_seconds": {
+        "count": 165,
+        "sum": 1833.727,
+        "min": 0.005,
+        "median": 7.593,
+        "p90": 29.169599999999992,
+        "p95": 38.53039999999996,
+        "max": 76.924
+      },
+      "case_distribution_seconds": {
+        "count": 1806,
+        "sum": 1829.941,
+        "min": 0.0,
+        "median": 0.139,
+        "p90": 2.9485,
+        "p95": 6.872249999999999,
+        "max": 21.729
+      },
+      "first_case_distribution_seconds": {
+        "count": 165,
+        "sum": 988.064,
+        "min": 0.003,
+        "median": 6.469,
+        "p90": 14.029799999999998,
+        "p95": 15.306199999999999,
+        "max": 21.729
+      },
+      "categories": {
+        "compose_robolectric": {
+          "classes": 25,
+          "cases": 176,
+          "skipped": 0,
+          "suite_seconds_sum": 501.21,
+          "case_seconds_sum": 500.885,
+          "suite_minus_case_seconds_sum": 0.3250000000000153,
+          "first_seconds_sum": 350.564,
+          "first_share_of_total_cases": 0.6998891961228626,
+          "first_share_median_multicase": 0.7762574571725686,
+          "suite_distribution_seconds": {
+            "count": 25,
+            "sum": 501.21,
+            "min": 5.047,
+            "median": 20.09,
+            "p90": 30.311,
+            "p95": 31.782199999999996,
+            "max": 39.381
+          },
+          "case_distribution_seconds": {
+            "count": 176,
+            "sum": 500.885,
+            "min": 0.085,
+            "median": 0.7095,
+            "p90": 13.147,
+            "p95": 15.13625,
+            "max": 21.729
+          }
+        },
+        "plain_junit": {
+          "classes": 67,
+          "cases": 495,
+          "skipped": 0,
+          "suite_seconds_sum": 48.847,
+          "case_seconds_sum": 48.214,
+          "suite_minus_case_seconds_sum": 0.6330000000000006,
+          "first_seconds_sum": 26.841,
+          "first_share_of_total_cases": 0.5567055212179035,
+          "first_share_median_multicase": 0.6475059113140933,
+          "suite_distribution_seconds": {
+            "count": 67,
+            "sum": 48.847,
+            "min": 0.005,
+            "median": 0.295,
+            "p90": 1.6107999999999991,
+            "p95": 2.3860999999999994,
+            "max": 6.469
+          },
+          "case_distribution_seconds": {
+            "count": 495,
+            "sum": 48.214,
+            "min": 0.0,
+            "median": 0.021,
+            "p90": 0.163,
+            "p95": 0.41809999999999786,
+            "max": 6.469
+          }
+        },
+        "robolectric_non_compose": {
+          "classes": 73,
+          "cases": 1135,
+          "skipped": 1,
+          "suite_seconds_sum": 1283.67,
+          "case_seconds_sum": 1280.842,
+          "suite_minus_case_seconds_sum": 2.828000000000009,
+          "first_seconds_sum": 610.659,
+          "first_share_of_total_cases": 0.47676372261371813,
+          "first_share_median_multicase": 0.7529629928243167,
+          "suite_distribution_seconds": {
+            "count": 73,
+            "sum": 1283.67,
+            "min": 3.387,
+            "median": 11.528,
+            "p90": 38.53039999999999,
+            "p95": 49.38779999999995,
+            "max": 76.924
+          },
+          "case_distribution_seconds": {
+            "count": 1135,
+            "sum": 1280.842,
+            "min": 0.03,
+            "median": 0.168,
+            "p90": 4.8206,
+            "p95": 7.073999999999998,
+            "max": 17.238
+          }
+        }
+      },
+      "plain_junit_reuse_candidate_bound": {
+        "candidate_classes": 67,
+        "candidate_source_files": 65,
+        "candidate_cases": 495,
+        "first_recorded_case_seconds_sum": 26.841,
+        "whole_suite_seconds_sum": 48.847,
+        "current_class_isolated_processes_if_one_per_reported_class": 67,
+        "at_most_reused_workers_assumed": 4,
+        "potential_process_launch_reduction_at_four_reused_workers": 63,
+        "recorded_first_case_removal_ideal_four_way_seconds": 6.71025,
+        "recorded_whole_suite_removal_ideal_four_way_seconds": 12.21175,
+        "reuse_safety_verified": false,
+        "limits": "没有 Robolectric 运行器只是候选筛选，无法单独证明进程复用安全。首方法包含有效断言和各种准备工作，不可全部删除；以上只有将全部已记录时间都消除时的数字上界和理想均摊换算，既不是可兑现收益，也不覆盖 XML 计时以外的进程成本。"
+      },
+      "gradle_user_home_restore": {
+        "status": "miss",
+        "line": 298
+      },
+      "gradle_task_outcomes": {
+        "actionable": 380,
+        "executed": 257,
+        "from_cache": 123
+      },
+      "configuration_cache": {
+        "status": "stored",
+        "line": 1543
+      },
+      "gradle_log_events": {
+        "gradle_command": {
+          "line": 820,
+          "timestamp": "2026-11-11T04:59:32.7823758Z",
+          "log": "42962654289-app.log"
+        },
+        "app_compile_kotlin": {
+          "line": 1496,
+          "timestamp": "2026-11-11T05:04:16.3204090Z",
+          "log": "42962654289-app.log"
+        },
+        "app_unit_test_compile_kotlin": {
+          "line": 1510,
+          "timestamp": "2026-11-11T05:06:10.9204099Z",
+          "log": "42962654289-app.log"
+        },
+        "app_test_task_visible": {
+          "line": 1538,
+          "timestamp": "2026-11-11T05:10:06.2209647Z",
+          "log": "42962654289-app.log"
+        },
+        "build_success": {
+          "line": 1541,
+          "timestamp": "2026-11-11T05:19:37.7245506Z",
+          "log": "42962654289-app.log"
+        }
+      },
+      "visible_log_intervals_seconds": {
+        "gradle_command_to_build_success": 1204.942175,
+        "gradle_command_to_test_marker": 633.438589,
+        "test_marker_to_build_success": 571.503586,
+        "unit_test_compile_marker_to_test_marker": 235.300555
+      },
+      "precise_test_task_wall_seconds": null,
+      "historical_timing_limit": "历史样本没有Gradle --profile报告，plain控制台任务日志可能延迟或分组；日志标记间隔和XML时间轴跨度都不是精确Test task墙钟。两次运行来自不同SHA且缓存状态不同。"
+    },
+    {
+      "run_id": "42967680063",
+      "head_sha": "657b108752449eb1f81c9b115f8a53662839b199",
+      "run_started_at": "2026-11-11T05:44:08Z",
+      "app_job_id": 130348748532,
+      "app_job_seconds": 822.0,
+      "android_lane_step_seconds": 804.0,
+      "workflow_created_to_updated_seconds": 857.0,
+      "classes": 165,
+      "cases": 1836,
+      "skipped": 1,
+      "failures": 0,
+      "errors": 0,
+      "suite_seconds_sum": 1928.203,
+      "case_seconds_sum": 1924.136,
+      "suite_minus_case_seconds_sum": 4.066999999999971,
+      "first_seconds_sum": 1029.541,
+      "first_share_of_total_cases": 0.5350666480955608,
+      "suffix_group_first_seconds_sum": 1290.496,
+      "suffix_group_first_share_of_total_cases": 0.6706885583971196,
+      "multicase_classes_first_share_ge_half": 108,
+      "multicase_classes": 152,
+      "xml_timeline_first_suite_start": "2026-11-11T05:47:43",
+      "xml_timeline_last_suite_end": "2026-11-11T05:58:02.684000",
+      "xml_timeline_span_seconds": 619.684,
+      "suite_distribution_seconds": {
+        "count": 165,
+        "sum": 1928.203,
+        "min": 0.009,
+        "median": 8.292,
+        "p90": 30.397399999999994,
+        "p95": 38.59259999999999,
+        "max": 82.046
+      },
+      "case_distribution_seconds": {
+        "count": 1836,
+        "sum": 1924.136,
+        "min": 0.0,
+        "median": 0.153,
+        "p90": 2.6955,
+        "p95": 7.2204999999999995,
+        "max": 25.697
+      },
+      "first_case_distribution_seconds": {
+        "count": 165,
+        "sum": 1029.541,
+        "min": 0.004,
+        "median": 6.686,
+        "p90": 13.7706,
+        "p95": 16.67819999999999,
+        "max": 25.697
+      },
+      "categories": {
+        "compose_robolectric": {
+          "classes": 25,
+          "cases": 176,
+          "skipped": 0,
+          "suite_seconds_sum": 516.784,
+          "case_seconds_sum": 516.504,
+          "suite_minus_case_seconds_sum": 0.2799999999999887,
+          "first_seconds_sum": 367.611,
+          "first_share_of_total_cases": 0.7117292412062636,
+          "first_share_median_multicase": 0.7715195004053201,
+          "suite_distribution_seconds": {
+            "count": 25,
+            "sum": 516.784,
+            "min": 5.684,
+            "median": 19.951,
+            "p90": 32.6952,
+            "p95": 33.366,
+            "max": 39.16
+          },
+          "case_distribution_seconds": {
+            "count": 176,
+            "sum": 516.504,
+            "min": 0.104,
+            "median": 0.739,
+            "p90": 12.8835,
+            "p95": 15.9115,
+            "max": 25.697
+          }
+        },
+        "plain_junit": {
+          "classes": 67,
+          "cases": 495,
+          "skipped": 0,
+          "suite_seconds_sum": 49.316,
+          "case_seconds_sum": 48.653,
+          "suite_minus_case_seconds_sum": 0.6629999999999994,
+          "first_seconds_sum": 27.982,
+          "first_share_of_total_cases": 0.5751341130043368,
+          "first_share_median_multicase": 0.6574876704068228,
+          "suite_distribution_seconds": {
+            "count": 67,
+            "sum": 49.316,
+            "min": 0.009,
+            "median": 0.338,
+            "p90": 1.6953999999999998,
+            "p95": 2.191199999999998,
+            "max": 7.136
+          },
+          "case_distribution_seconds": {
+            "count": 495,
+            "sum": 48.653,
+            "min": 0.0,
+            "median": 0.019,
+            "p90": 0.18740000000000043,
+            "p95": 0.4258999999999994,
+            "max": 7.136
+          }
+        },
+        "robolectric_non_compose": {
+          "classes": 73,
+          "cases": 1165,
+          "skipped": 1,
+          "suite_seconds_sum": 1362.103,
+          "case_seconds_sum": 1358.979,
+          "suite_minus_case_seconds_sum": 3.1239999999999832,
+          "first_seconds_sum": 633.948,
+          "first_share_of_total_cases": 0.46648844463380224,
+          "first_share_median_multicase": 0.7494864612511671,
+          "suite_distribution_seconds": {
+            "count": 73,
+            "sum": 1362.103,
+            "min": 3.514,
+            "median": 12.468,
+            "p90": 38.5926,
+            "p95": 53.36319999999999,
+            "max": 82.046
+          },
+          "case_distribution_seconds": {
+            "count": 1165,
+            "sum": 1358.979,
+            "min": 0.028,
+            "median": 0.183,
+            "p90": 4.699600000000003,
+            "p95": 7.522599999999997,
+            "max": 16.781
+          }
+        }
+      },
+      "plain_junit_reuse_candidate_bound": {
+        "candidate_classes": 67,
+        "candidate_source_files": 65,
+        "candidate_cases": 495,
+        "first_recorded_case_seconds_sum": 27.982,
+        "whole_suite_seconds_sum": 49.316,
+        "current_class_isolated_processes_if_one_per_reported_class": 67,
+        "at_most_reused_workers_assumed": 4,
+        "potential_process_launch_reduction_at_four_reused_workers": 63,
+        "recorded_first_case_removal_ideal_four_way_seconds": 6.9955,
+        "recorded_whole_suite_removal_ideal_four_way_seconds": 12.329,
+        "reuse_safety_verified": false,
+        "limits": "没有 Robolectric 运行器只是候选筛选，无法单独证明进程复用安全。首方法包含有效断言和各种准备工作，不可全部删除；以上只有将全部已记录时间都消除时的数字上界和理想均摊换算，既不是可兑现收益，也不覆盖 XML 计时以外的进程成本。"
+      },
+      "gradle_user_home_restore": {
+        "status": "restore_key_hit",
+        "line": 298,
+        "restore_key": "gradle-home-v2|Linux-X64|android-app[c8c53b847d8da29aa3d3e106d2198e59]-2e1626f5d655b9a4785517817eb4b9b3ca18b10c"
+      },
+      "gradle_task_outcomes": {
+        "actionable": 380,
+        "executed": 148,
+        "from_cache": 232
+      },
+      "configuration_cache": {
+        "status": "stored",
+        "line": 1694
+      },
+      "gradle_log_events": {
+        "gradle_command": {
+          "line": 893,
+          "timestamp": "2026-11-11T05:45:18.2827000Z",
+          "log": "oai-ci-baseline-42967680063.log"
+        },
+        "app_compile_kotlin": {
+          "line": 1406,
+          "timestamp": "2026-11-11T05:46:09.9875021Z",
+          "log": "oai-ci-baseline-42967680063.log"
+        },
+        "app_unit_test_compile_kotlin": {
+          "line": 1420,
+          "timestamp": "2026-11-11T05:47:12.9836112Z",
+          "log": "oai-ci-baseline-42967680063.log"
+        },
+        "app_test_task_visible": {
+          "line": 1448,
+          "timestamp": "2026-11-11T05:48:08.6904456Z",
+          "log": "oai-ci-baseline-42967680063.log"
+        },
+        "build_success": {
+          "line": 1692,
+          "timestamp": "2026-11-11T05:58:03.8839719Z",
+          "log": "oai-ci-baseline-42967680063.log"
+        }
+      },
+      "visible_log_intervals_seconds": {
+        "gradle_command_to_build_success": 765.601271,
+        "gradle_command_to_test_marker": 170.407745,
+        "test_marker_to_build_success": 595.193526,
+        "unit_test_compile_marker_to_test_marker": 55.706834
+      },
+      "precise_test_task_wall_seconds": null,
+      "historical_timing_limit": "历史样本没有Gradle --profile报告，plain控制台任务日志可能延迟或分组；日志标记间隔和XML时间轴跨度都不是精确Test task墙钟。两次运行来自不同SHA且缓存状态不同。"
+    }
+  ],
+  "comparison": {
+    "common_classes": 165,
+    "only_a": [],
+    "only_b": [],
+    "largest_reductions": [
+      {
+        "class_name": "com.openandroidintelligence.mobile.updates.AppUpdateScreenTest",
+        "category": "compose_robolectric",
+        "a_seconds": 18.271,
+        "b_seconds": 10.12,
+        "b_minus_a_seconds": -8.151000000000002,
+        "b_to_a_ratio": 0.5538832028898253,
+        "a_first_seconds": 14.183,
+        "b_first_seconds": 7.544,
+        "a_first_name": "missingMetadataIsNotShownAsUpToDate",
+        "b_first_name": "missingMetadataIsNotShownAsUpToDate",
+        "first_name_same": true,
+        "a_first_share": 0.7762574571725686,
+        "b_first_share": 0.7456755955322725,
+        "a_tests": 9,
+        "b_tests": 9
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.settings.capabilities.CapabilitySettingsTest",
+        "category": "compose_robolectric",
+        "a_seconds": 20.09,
+        "b_seconds": 17.585,
+        "b_minus_a_seconds": -2.504999999999999,
+        "b_to_a_ratio": 0.8753111000497761,
+        "a_first_seconds": 15.687,
+        "b_first_seconds": 14.073,
+        "a_first_name": "revokingOneCapabilityApprovalLeavesAnotherCapabilityUntouched",
+        "b_first_name": "revokingOneCapabilityApprovalLeavesAnotherCapabilityUntouched",
+        "first_name_same": true,
+        "a_first_share": 0.7816532961283572,
+        "b_first_share": 0.8005574833608282,
+        "a_tests": 6,
+        "b_tests": 6
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.AgentSessionForegroundServiceTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 39.011,
+        "b_seconds": 36.913,
+        "b_minus_a_seconds": -2.098000000000006,
+        "b_to_a_ratio": 0.9462202968393528,
+        "a_first_seconds": 6.501,
+        "b_first_seconds": 6.227,
+        "a_first_name": "system_recreation_without_pending_user_work_stops_without_posting_a_notification[31]",
+        "b_first_name": "system_recreation_without_pending_user_work_stops_without_posting_a_notification[31]",
+        "first_name_same": true,
+        "a_first_share": 0.16728854121098274,
+        "b_first_share": 0.16935922541340295,
+        "a_tests": 56,
+        "b_tests": 56
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.conversations.NativeConversationMirrorTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 18.323,
+        "b_seconds": 16.377,
+        "b_minus_a_seconds": -1.9460000000000015,
+        "b_to_a_ratio": 0.8937946842765921,
+        "a_first_seconds": 13.674,
+        "b_first_seconds": 12.028,
+        "a_first_name": "nativeListAndAckUseTheSameLockOrder",
+        "b_first_name": "nativeListAndAckUseTheSameLockOrder",
+        "first_name_same": true,
+        "a_first_share": 0.7479078925778044,
+        "b_first_share": 0.7359275575134606,
+        "a_tests": 14,
+        "b_tests": 14
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.MirrorStreamingPersistenceTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 11.978,
+        "b_seconds": 10.371,
+        "b_minus_a_seconds": -1.6069999999999993,
+        "b_to_a_ratio": 0.8658373685089331,
+        "a_first_seconds": 11.978,
+        "b_first_seconds": 10.371,
+        "a_first_name": "intermediateStreamingSnapshotsAreCoalescedAndTerminalIsPersisted",
+        "b_first_name": "intermediateStreamingSnapshotsAreCoalescedAndTerminalIsPersisted",
+        "first_name_same": true,
+        "a_first_share": 1.0,
+        "b_first_share": 1.0,
+        "a_tests": 1,
+        "b_tests": 1
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.push.NotificationPushScopeSettingsTest",
+        "category": "compose_robolectric",
+        "a_seconds": 25.469,
+        "b_seconds": 24.252,
+        "b_minus_a_seconds": -1.2170000000000023,
+        "b_to_a_ratio": 0.9522164199615217,
+        "a_first_seconds": 15.215,
+        "b_first_seconds": 15.574,
+        "a_first_name": "moreThan256ApplicationsCanBeSelectedSavedSearchedAndReopenedWithoutTruncation",
+        "b_first_name": "moreThan256ApplicationsCanBeSelectedSavedSearchedAndReopenedWithoutTruncation",
+        "first_name_same": true,
+        "a_first_share": 0.5975102104932454,
+        "b_first_share": 0.6425977884139297,
+        "a_tests": 10,
+        "b_tests": 10
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.EncryptedHistoryMediaCacheTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 7.815,
+        "b_seconds": 6.606,
+        "b_minus_a_seconds": -1.2090000000000005,
+        "b_to_a_ratio": 0.8452975047984644,
+        "a_first_seconds": 7.582,
+        "b_first_seconds": 6.42,
+        "a_first_name": "explicitRetentionSurvivesOfflineRestartAndNeverCrossesGatewayOrAccount",
+        "b_first_name": "explicitRetentionSurvivesOfflineRestartAndNeverCrossesGatewayOrAccount",
+        "first_name_same": true,
+        "a_first_share": 0.9706823710152349,
+        "b_first_share": 0.971843778383288,
+        "a_tests": 2,
+        "b_tests": 2
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.SmsPassiveScopeSettingsTest",
+        "category": "compose_robolectric",
+        "a_seconds": 20.253,
+        "b_seconds": 19.063,
+        "b_minus_a_seconds": -1.1900000000000013,
+        "b_to_a_ratio": 0.9412432726015898,
+        "a_first_seconds": 15.329,
+        "b_first_seconds": 12.809,
+        "a_first_name": "clearingThePhoneListRequiresAnExplicitAllSelectionWithoutReEnablingBodyContent",
+        "b_first_name": "clearingThePhoneListRequiresAnExplicitAllSelectionWithoutReEnablingBodyContent",
+        "first_name_same": true,
+        "a_first_share": 0.7570624259186093,
+        "b_first_share": 0.6722120178430858,
+        "a_tests": 11,
+        "b_tests": 11
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.PluginManagementScreenTest",
+        "category": "compose_robolectric",
+        "a_seconds": 27.938,
+        "b_seconds": 26.794,
+        "b_minus_a_seconds": -1.1439999999999984,
+        "b_to_a_ratio": 0.9590521869854679,
+        "a_first_seconds": 14.826,
+        "b_first_seconds": 14.196,
+        "a_first_name": "aLeftoverOfficialCopyIsNotOfferedForUninstall",
+        "b_first_name": "aLeftoverOfficialCopyIsNotOfferedForUninstall",
+        "first_name_same": true,
+        "a_first_share": 0.5317218376788725,
+        "b_first_share": 0.5302158810786584,
+        "a_tests": 18,
+        "b_tests": 18
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.EncryptedSendAtomRecoveryTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 17.093,
+        "b_seconds": 15.998,
+        "b_minus_a_seconds": -1.0950000000000006,
+        "b_to_a_ratio": 0.9359386883519569,
+        "a_first_seconds": 10.588,
+        "b_first_seconds": 10.203,
+        "a_first_name": "controllerKeepsBothSendsAcrossThreadSwitchAndEncryptedMirrorReopenWithEmptyHostHistory",
+        "b_first_name": "controllerKeepsBothSendsAcrossThreadSwitchAndEncryptedMirrorReopenWithEmptyHostHistory",
+        "first_name_same": true,
+        "a_first_share": 0.620414859955467,
+        "b_first_share": 0.638605495399637,
+        "a_tests": 21,
+        "b_tests": 21
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.push.DevicePushRuntimeTest",
+        "category": "plain_junit",
+        "a_seconds": 6.404,
+        "b_seconds": 5.348,
+        "b_minus_a_seconds": -1.056,
+        "b_to_a_ratio": 0.835103060587133,
+        "a_first_seconds": 0.543,
+        "b_first_seconds": 0.526,
+        "a_first_name": "httpAcceptanceIsNotReceiverAckAndMismatchedAckNeverCleansTheQueue",
+        "b_first_name": "httpAcceptanceIsNotReceiverAckAndMismatchedAckNeverCleansTheQueue",
+        "first_name_same": true,
+        "a_first_share": 0.08545797922568461,
+        "b_first_share": 0.09853877856875234,
+        "a_tests": 21,
+        "b_tests": 21
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.LegacyOfficialCopyIsNeverLoadedTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 8.734,
+        "b_seconds": 7.682,
+        "b_minus_a_seconds": -1.0519999999999996,
+        "b_to_a_ratio": 0.8795511792992902,
+        "a_first_seconds": 8.167,
+        "b_first_seconds": 7.202,
+        "a_first_name": "aStaleOfficialCopyStaysOutOfTheKernelEvenWhenTheBundledAssetIsMissing",
+        "b_first_name": "aStaleOfficialCopyStaysOutOfTheKernelEvenWhenTheBundledAssetIsMissing",
+        "first_name_same": true,
+        "a_first_share": 0.935295464956482,
+        "b_first_share": 0.9375162718042176,
+        "a_tests": 2,
+        "b_tests": 2
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.AgentSessionKeepAliveTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 39.014,
+        "b_seconds": 38.051,
+        "b_minus_a_seconds": -0.963000000000001,
+        "b_to_a_ratio": 0.9753165530322448,
+        "a_first_seconds": 5.873,
+        "b_first_seconds": 5.388,
+        "a_first_name": "active_service_is_retained_in_background_without_repeated_start_requests[31]",
+        "b_first_name": "active_service_is_retained_in_background_without_repeated_start_requests[31]",
+        "first_name_same": true,
+        "a_first_share": 0.1512840988124984,
+        "b_first_share": 0.14213358657803102,
+        "a_tests": 72,
+        "b_tests": 72
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.SqliteConversationMigrationTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 21.348,
+        "b_seconds": 20.396,
+        "b_minus_a_seconds": -0.9519999999999982,
+        "b_to_a_ratio": 0.9554056586097059,
+        "a_first_seconds": 11.359,
+        "b_first_seconds": 11.339,
+        "a_first_name": "eventMessageRevisionAndCursorRollBackTogetherAndCanBeReplayed",
+        "b_first_name": "eventMessageRevisionAndCursorRollBackTogetherAndCanBeReplayed",
+        "first_name_same": true,
+        "a_first_share": 0.5326362187001782,
+        "b_first_share": 0.5564061043230777,
+        "a_tests": 9,
+        "b_tests": 9
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.ClientCapabilityAuthorizationTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 12.415,
+        "b_seconds": 11.564,
+        "b_minus_a_seconds": -0.8509999999999991,
+        "b_to_a_ratio": 0.9314538864277084,
+        "a_first_seconds": 9.339,
+        "b_first_seconds": 8.281,
+        "a_first_name": "readOnlySmsQueryRunsWithItsOwnSessionAndCannotCallSchedulerPrimitives",
+        "b_first_name": "readOnlySmsQueryRunsWithItsOwnSessionAndCannotCallSchedulerPrimitives",
+        "first_name_same": true,
+        "a_first_share": 0.7529629928243167,
+        "b_first_share": 0.7165354330708662,
+        "a_tests": 13,
+        "b_tests": 13
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.AndroidAttachmentContentTypeTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 25.516,
+        "b_seconds": 24.689,
+        "b_minus_a_seconds": -0.8269999999999982,
+        "b_to_a_ratio": 0.9675889637874275,
+        "a_first_seconds": 17.238,
+        "b_first_seconds": 16.781,
+        "a_first_name": "selectedPdfUploadsThroughAndroidWithItsDeclaredMediaType",
+        "b_first_name": "selectedPdfUploadsThroughAndroidWithItsDeclaredMediaType",
+        "first_name_same": true,
+        "a_first_share": 0.6756820319849483,
+        "b_first_share": 0.6799708253981117,
+        "a_tests": 4,
+        "b_tests": 4
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.PluginInstallStoreTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 10.11,
+        "b_seconds": 9.308,
+        "b_minus_a_seconds": -0.8019999999999996,
+        "b_to_a_ratio": 0.9206726013847676,
+        "a_first_seconds": 7.843,
+        "b_first_seconds": 6.589,
+        "a_first_name": "bundledPluginInstallationCannotInstallAnotherPlugin",
+        "b_first_name": "bundledPluginInstallationCannotInstallAnotherPlugin",
+        "first_name_same": true,
+        "a_first_share": 0.7768423137876387,
+        "b_first_share": 0.7091809277795716,
+        "a_tests": 14,
+        "b_tests": 14
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.HermesHistoryMediaHttpTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 13.181,
+        "b_seconds": 12.468,
+        "b_minus_a_seconds": -0.7129999999999992,
+        "b_to_a_ratio": 0.9459069873302481,
+        "a_first_seconds": 13.181,
+        "b_first_seconds": 12.468,
+        "a_first_name": "signedNativeHistoryMediaIsRetainedFromTheRawStreamAndReopensOffline",
+        "b_first_name": "signedNativeHistoryMediaIsRetainedFromTheRawStreamAndReopensOffline",
+        "first_name_same": true,
+        "a_first_share": 1.0,
+        "b_first_share": 1.0,
+        "a_tests": 1,
+        "b_tests": 1
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.NotificationAccessSettingsTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 7.223,
+        "b_seconds": 6.537,
+        "b_minus_a_seconds": -0.6859999999999999,
+        "b_to_a_ratio": 0.9050256126263325,
+        "a_first_seconds": 7.062,
+        "b_first_seconds": 6.429,
+        "a_first_name": "notificationAccessUsesThePlatformSettingsAction",
+        "b_first_name": "notificationAccessUsesThePlatformSettingsAction",
+        "first_name_same": true,
+        "a_first_share": 0.9781163434903046,
+        "b_first_share": 0.9834786599357503,
+        "a_tests": 2,
+        "b_tests": 2
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.SettingsNavigationTest",
+        "category": "compose_robolectric",
+        "a_seconds": 20.882,
+        "b_seconds": 20.255,
+        "b_minus_a_seconds": -0.6270000000000024,
+        "b_to_a_ratio": 0.9699741404080068,
+        "a_first_seconds": 20.362,
+        "b_first_seconds": 19.59,
+        "a_first_name": "eachCategoryReturnsBeforeClosingTheSettingsRoot",
+        "b_first_name": "eachCategoryReturnsBeforeClosingTheSettingsRoot",
+        "first_name_same": true,
+        "a_first_share": 0.9750981706733072,
+        "b_first_share": 0.9675029632556301,
+        "a_tests": 2,
+        "b_tests": 2
+      }
+    ],
+    "largest_increases": [
+      {
+        "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 28.371,
+        "b_seconds": 52.633,
+        "b_minus_a_seconds": 24.262000000000004,
+        "b_to_a_ratio": 1.8551690106094254,
+        "a_first_seconds": 13.216,
+        "b_first_seconds": 13.175,
+        "a_first_name": "synchronousNativeSendKeepsItsLeaseWhenBackgroundingPrecedesTheObserver[34]",
+        "b_first_name": "synchronousNativeSendKeepsItsLeaseWhenBackgroundingPrecedesTheObserver[34]",
+        "first_name_same": true,
+        "a_first_share": 0.46689747756659367,
+        "b_first_share": 0.25131139723414403,
+        "a_tests": 10,
+        "b_tests": 34
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 65.108,
+        "b_seconds": 72.109,
+        "b_minus_a_seconds": 7.000999999999991,
+        "b_to_a_ratio": 1.1075290286907906,
+        "a_first_seconds": 7.214,
+        "b_first_seconds": 6.745,
+        "a_first_name": "terminalStatusFlushesThrottledPreviewAndAnEarlierTimestampedFinalBodyStillArrives[31]",
+        "b_first_name": "terminalStatusFlushesThrottledPreviewAndAnEarlierTimestampedFinalBodyStillArrives[31]",
+        "first_name_same": true,
+        "a_first_share": 0.11135981229064076,
+        "b_first_share": 0.09407646066083658,
+        "a_tests": 150,
+        "b_tests": 156
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.ProductionPluginHostTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 46.977,
+        "b_seconds": 53.638,
+        "b_minus_a_seconds": 6.661000000000001,
+        "b_to_a_ratio": 1.1417927922174682,
+        "a_first_seconds": 8.022,
+        "b_first_seconds": 8.283,
+        "a_first_name": "storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets[31]",
+        "b_first_name": "storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets[31]",
+        "first_name_same": true,
+        "a_first_share": 0.17152754019842628,
+        "b_first_share": 0.15492378191340128,
+        "a_tests": 20,
+        "b_tests": 20
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.push.PushSettingsScreenTest",
+        "category": "compose_robolectric",
+        "a_seconds": 20.968,
+        "b_seconds": 26.52,
+        "b_minus_a_seconds": 5.552,
+        "b_to_a_ratio": 1.264784433422358,
+        "a_first_seconds": 13.121,
+        "b_first_seconds": 15.142,
+        "a_first_name": "productionScreenRejectsAConcurrentRuntimeConfigurationAndPreservesThePickerDraft",
+        "b_first_name": "productionScreenRejectsAConcurrentRuntimeConfigurationAndPreservesThePickerDraft",
+        "first_name_same": true,
+        "a_first_share": 0.6261512765449773,
+        "b_first_share": 0.5710945161046994,
+        "a_tests": 13,
+        "b_tests": 13
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.ReplyNotificationsTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 76.924,
+        "b_seconds": 82.046,
+        "b_minus_a_seconds": 5.122,
+        "b_to_a_ratio": 1.0665852009775882,
+        "a_first_seconds": 7.529,
+        "b_first_seconds": 8.579,
+        "a_first_name": "finalStatusBeforeBodyWaitsAndPendingBodySurvivesProcessRecreation[31]",
+        "b_first_name": "finalStatusBeforeBodyWaitsAndPendingBodySurvivesProcessRecreation[31]",
+        "first_name_same": true,
+        "a_first_share": 0.09818086979200626,
+        "b_first_share": 0.10481240302500887,
+        "a_tests": 99,
+        "b_tests": 99
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.SettingsTextLayoutSignalTest",
+        "category": "compose_robolectric",
+        "a_seconds": 16.958,
+        "b_seconds": 21.221,
+        "b_minus_a_seconds": 4.263000000000002,
+        "b_to_a_ratio": 1.2513857766246022,
+        "a_first_seconds": 16.958,
+        "b_first_seconds": 21.221,
+        "a_first_name": "layoutSignalChecksVisibleGlyphBoundsWithoutChangingTheProductionText",
+        "b_first_name": "layoutSignalChecksVisibleGlyphBoundsWithoutChangingTheProductionText",
+        "first_name_same": true,
+        "a_first_share": 1.0,
+        "b_first_share": 1.0,
+        "a_tests": 1,
+        "b_tests": 1
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.settings.advanced.AdvancedSettingsScreenTest",
+        "category": "compose_robolectric",
+        "a_seconds": 5.25,
+        "b_seconds": 8.901,
+        "b_minus_a_seconds": 3.651,
+        "b_to_a_ratio": 1.6954285714285713,
+        "a_first_seconds": 4.929,
+        "b_first_seconds": 8.584,
+        "a_first_name": "fourGroupsExposeRealNavigationWithoutStartingUpdateCheck",
+        "b_first_name": "fourGroupsExposeRealNavigationWithoutStartingUpdateCheck",
+        "first_name_same": true,
+        "a_first_share": 0.938857142857143,
+        "b_first_share": 0.9643860240422424,
+        "a_tests": 3,
+        "b_tests": 3
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.SettingsViewModelTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 14.658,
+        "b_seconds": 17.826,
+        "b_minus_a_seconds": 3.168000000000001,
+        "b_to_a_ratio": 1.2161277118297176,
+        "a_first_seconds": 6.882,
+        "b_first_seconds": 8.025,
+        "a_first_name": "localAccountControlsRequireAWorkspaceRatherThanAnOldConnectionPhase",
+        "b_first_name": "localAccountControlsRequireAWorkspaceRatherThanAnOldConnectionPhase",
+        "first_name_same": true,
+        "a_first_share": 0.4702747027470275,
+        "b_first_share": 0.4507920458375464,
+        "a_tests": 19,
+        "b_tests": 19
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.SettingsResponsiveHostRegressionTest",
+        "category": "compose_robolectric",
+        "a_seconds": 30.173,
+        "b_seconds": 33.31,
+        "b_minus_a_seconds": 3.137000000000004,
+        "b_to_a_ratio": 1.103967122924469,
+        "a_first_seconds": 21.729,
+        "b_first_seconds": 25.697,
+        "a_first_name": "loginSettingsMovesTheSameUnsavedPushDraftFromWideToCompactAndBack",
+        "b_first_name": "loginSettingsMovesTheSameUnsavedPushDraftFromWideToCompactAndBack",
+        "first_name_same": true,
+        "a_first_share": 0.7201471514267723,
+        "b_first_share": 0.7715195004053201,
+        "a_tests": 5,
+        "b_tests": 5
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.settings.capabilities.PushConfigurationSerializationTest",
+        "category": "compose_robolectric",
+        "a_seconds": 9.64,
+        "b_seconds": 12.654,
+        "b_minus_a_seconds": 3.0139999999999993,
+        "b_to_a_ratio": 1.312655601659751,
+        "a_first_seconds": 8.943,
+        "b_first_seconds": 11.636,
+        "a_first_name": "theSmsSectionAlsoDisablesFurtherEditsWhileSaving",
+        "b_first_name": "theSmsSectionAlsoDisablesFurtherEditsWhileSaving",
+        "first_name_same": true,
+        "a_first_share": 0.9277933395580454,
+        "b_first_share": 0.9198418972332016,
+        "a_tests": 4,
+        "b_tests": 4
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.settings.backup.SettingsBackupScreenTest",
+        "category": "compose_robolectric",
+        "a_seconds": 17.073,
+        "b_seconds": 19.951,
+        "b_minus_a_seconds": 2.878,
+        "b_to_a_ratio": 1.1685702571311427,
+        "a_first_seconds": 13.833,
+        "b_first_seconds": 16.267,
+        "a_first_name": "workInProgressDisablesBothActionsInsteadOfSilentlyIgnoringTaps",
+        "b_first_name": "workInProgressDisablesBothActionsInsteadOfSilentlyIgnoringTaps",
+        "first_name_same": true,
+        "a_first_share": 0.8106540084388185,
+        "b_first_share": 0.815879225599358,
+        "a_tests": 5,
+        "b_tests": 5
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.conversations.NativeMediaIsolationTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 21.293,
+        "b_seconds": 24.087,
+        "b_minus_a_seconds": 2.7940000000000005,
+        "b_to_a_ratio": 1.1312168318226647,
+        "a_first_seconds": 6.81,
+        "b_first_seconds": 7.536,
+        "a_first_name": "deletingTheAuthenticatedLegacyOriginalPreventsItFromBeingCopiedIntoAnAgent",
+        "b_first_name": "deletingTheAuthenticatedLegacyOriginalPreventsItFromBeingCopiedIntoAnAgent",
+        "first_name_same": true,
+        "a_first_share": 0.32028971874706047,
+        "b_first_share": 0.31306081754735793,
+        "a_tests": 10,
+        "b_tests": 10
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.updates.AppUpdateViewModelTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 7.573,
+        "b_seconds": 10.297,
+        "b_minus_a_seconds": 2.724,
+        "b_to_a_ratio": 1.3596989304106695,
+        "a_first_seconds": 6.921,
+        "b_first_seconds": 9.698,
+        "a_first_name": "checkIfNeededDoesNotRepeatACompletedRequestButManualRetryDoes",
+        "b_first_name": "checkIfNeededDoesNotRepeatACompletedRequestButManualRetryDoes",
+        "first_name_same": true,
+        "a_first_share": 0.9147501982553529,
+        "b_first_share": 0.9422852701127089,
+        "a_tests": 5,
+        "b_tests": 5
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.CapabilityPublisherTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 7.418,
+        "b_seconds": 10.142,
+        "b_minus_a_seconds": 2.7239999999999993,
+        "b_to_a_ratio": 1.3672148827177135,
+        "a_first_seconds": 5.009,
+        "b_first_seconds": 7.068,
+        "a_first_name": "anUnnegotiatedAuthorizationModelCannotPublishOrReadPairingState",
+        "b_first_name": "anUnnegotiatedAuthorizationModelCannotPublishOrReadPairingState",
+        "first_name_same": true,
+        "a_first_share": 0.6762521938706629,
+        "b_first_share": 0.6983499654184369,
+        "a_tests": 19,
+        "b_tests": 19
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 10.439,
+        "b_seconds": 12.767,
+        "b_minus_a_seconds": 2.3279999999999994,
+        "b_to_a_ratio": 1.2230098668454832,
+        "a_first_seconds": 7.22,
+        "b_first_seconds": 9.563,
+        "a_first_name": "aMissingPackageFailsOnlyItsOwnCapability",
+        "b_first_name": "aMissingPackageFailsOnlyItsOwnCapability",
+        "first_name_same": true,
+        "a_first_share": 0.6925659472422063,
+        "b_first_share": 0.7495101496982522,
+        "a_tests": 13,
+        "b_tests": 13
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.settings.capabilities.NotificationScopeOwnershipTest",
+        "category": "compose_robolectric",
+        "a_seconds": 15.897,
+        "b_seconds": 18.215,
+        "b_minus_a_seconds": 2.3179999999999996,
+        "b_to_a_ratio": 1.1458136755362647,
+        "a_first_seconds": 15.11,
+        "b_first_seconds": 17.181,
+        "a_first_name": "aThirdPartyNotificationProviderKeepsItsCollectionScopeControls",
+        "b_first_name": "aThirdPartyNotificationProviderKeepsItsCollectionScopeControls",
+        "first_name_same": true,
+        "a_first_share": 0.9508526839091309,
+        "b_first_share": 0.9436998791607163,
+        "a_tests": 2,
+        "b_tests": 2
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.AndroidAccountProfileStoreTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 8.217,
+        "b_seconds": 10.479,
+        "b_minus_a_seconds": 2.2619999999999987,
+        "b_to_a_ratio": 1.275282949981745,
+        "a_first_seconds": 7.338,
+        "b_first_seconds": 9.477,
+        "a_first_name": "aNewProfileContainsItsWholeBindingInTheCreationBundle",
+        "b_first_name": "aNewProfileContainsItsWholeBindingInTheCreationBundle",
+        "first_name_same": true,
+        "a_first_share": 0.8949871935601903,
+        "b_first_share": 0.907063552833078,
+        "a_tests": 8,
+        "b_tests": 8
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.ConversationAttachmentPickersTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 36.608,
+        "b_seconds": 38.728,
+        "b_minus_a_seconds": 2.1200000000000045,
+        "b_to_a_ratio": 1.0579108391608394,
+        "a_first_seconds": 5.531,
+        "b_first_seconds": 5.601,
+        "a_first_name": "accountChangesAndOverlappingLaunchesCannotReplaceAPendingPickerDestination[31]",
+        "b_first_name": "accountChangesAndOverlappingLaunchesCannotReplaceAPendingPickerDestination[31]",
+        "first_name_same": true,
+        "a_first_share": 0.15278583464545178,
+        "b_first_share": 0.14608763693270735,
+        "a_tests": 54,
+        "b_tests": 54
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.MirrorSnapshotOrderingTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 11.447,
+        "b_seconds": 13.511,
+        "b_minus_a_seconds": 2.064,
+        "b_to_a_ratio": 1.1803092513322269,
+        "a_first_seconds": 9.237,
+        "b_first_seconds": 10.626,
+        "a_first_name": "aStaleBaselineCannotAlterThreadsTimelineDeletionReceiptsOrCursor",
+        "b_first_name": "aStaleBaselineCannotAlterThreadsTimelineDeletionReceiptsOrCursor",
+        "first_name_same": true,
+        "a_first_share": 0.8073594965475045,
+        "b_first_share": 0.7871694199570339,
+        "a_tests": 11,
+        "b_tests": 11
+      },
+      {
+        "class_name": "com.openandroidintelligence.mobile.AdditionalDeviceConnectionsTest",
+        "category": "robolectric_non_compose",
+        "a_seconds": 16.229,
+        "b_seconds": 18.251,
+        "b_minus_a_seconds": 2.022000000000002,
+        "b_to_a_ratio": 1.1245917801466512,
+        "a_first_seconds": 7.2,
+        "b_first_seconds": 8.211,
+        "a_first_name": "aLatePendingLookupAfterCloseCannotReviveADeviceConnection",
+        "b_first_name": "aLatePendingLookupAfterCloseCannotReviveADeviceConnection",
+        "first_name_same": true,
+        "a_first_share": 0.4437869822485207,
+        "b_first_share": 0.4502879078694818,
+        "a_tests": 14,
+        "b_tests": 14
+      }
+    ],
+    "common_methods": 1806,
+    "only_a_methods": 0,
+    "only_b_methods": 30,
+    "test_manifest_identity_diff": {
+      "added_count": 30,
+      "removed_count": 0,
+      "added_by_class": {
+        "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest": 24,
+        "com.openandroidintelligence.mobile.NativeConversationNotificationsTest": 6
+      },
+      "added": [
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "archiveWithoutOtherAgentWorkUsesTheSameJvmTransportBoundary",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "archiveWithoutOtherAgentWorkUsesTheSameJvmTransportBoundary[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantPresenceRetiresOnlyTheMatchingNativeNotification",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantPresenceRetiresOnlyTheMatchingNativeNotification[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantReplyAlreadyVisibleKeepsTheExistingNotificationSuppression",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantReplyAlreadyVisibleKeepsTheExistingNotificationSuppression[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantReplyCompletingAfterItsSurfaceClosesStillNotifies",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantReplyCompletingAfterItsSurfaceClosesStillNotifies[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantVisibilityRequiresMatchingProfileAccountAndAgent",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "assistantVisibilityRequiresMatchingProfileAccountAndAgent[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "mainWorkbenchCompletionPublishesTheExistingReplyNotification",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "mainWorkbenchCompletionPublishesTheExistingReplyNotification[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentAssistantNotVisibleIsTheControl",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentAssistantNotVisibleIsTheControl[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentAssistantPresenceMustNotSuppressTheCompletedReply",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentAssistantPresenceMustNotSuppressTheCompletedReply[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentRunningReplyMustNotBlockCurrentAgentArchive",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentRunningReplyMustNotBlockCurrentAgentArchive[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentRunningReplyMustNotBlockCurrentAgentDelete",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "otherAgentRunningReplyMustNotBlockCurrentAgentDelete[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "returningToTheSameAgentStillProtectsItsRunningConversation",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "returningToTheSameAgentStillProtectsItsRunningConversation[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "sameAgentRunningReplyStillBlocksArchiveAndDelete",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeAgentBackgroundWorkTest",
+          "method_name": "sameAgentRunningReplyStillBlocksArchiveAndDelete[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal[31]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal[32]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal[33]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal[34]",
+          "skipped": false
+        },
+        {
+          "class_name": "com.openandroidintelligence.mobile.NativeConversationNotificationsTest",
+          "method_name": "anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal[35]",
+          "skipped": false
+        }
+      ],
+      "removed": []
+    }
+  },
+  "limits": [
+    "XML 只有测试类与方法的累计时间，未提供 JVM 启动、Robolectric sandbox 创建、Android Application 初始化、Compose 首次加载、规则和测试主体、清理阶段的独立时间。",
+    "首方法按每份 XML 中首个 testcase 定义，不代表固定业务方法或 JVM 启动。",
+    "后缀组首方法按 testcase 名字中的 [数字] 后缀分组，无后缀独立一组，不据此断言实际 SDK。",
+    "两次历史运行来自不同 SHA，除非另行核对输入一致，不作为同 SHA 重复性证据。",
+    "分类依据各运行精确 SHA 的测试源码是否显式声明 RobolectricTestRunner 与 createComposeRule/createAndroidComposeRule；plain_junit 表示未声明该运行器。"
+  ]
+}

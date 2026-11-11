@@ -208,3 +208,12 @@ APK，重复构建会产生不同 `versionCode` 的两份产物。
   缺失时**直接失败而不跳过**，这是刻意设计。
 - 真机能力（如实际通知监听授权、屏幕捕获）在云 runner 上不可验证；相关置信度
   仍来自本地真机验证，CI 只覆盖可模拟的部分。
+
+
+## App 回归性能对照
+
+App 默认仍逐类进程隔离，四路并行；CI只采用已完成同源码对照的一级JIT，GC保持JDK默认策略。测试过滤器使用大写简单类名（例如`--tests=SettingsViewModelTest`），不加前导通配符，避免为未选中的类启动JVM。
+
+手动运行`OAI Core and Session Adapters`可显式选择`app-jvm-mode`、`app-forks`、`app-jit`、`app-gc`与固定`app-seed`。复用仅覆盖`apps/android/ci/app-jvm-reuse.txt`的明确审计类，其他类依旧`forkEvery=1`。实验必须固定SHA并核对真实缓存恢复键、Runner与实际用例集合，不以Job数量或XML累计时间替代墙钟。
+
+App artifact同时保留JUnit XML、Gradle Profile、带时间日志、每秒资源样本、GC与Robolectric公开指标。`tools/ci/android_app_performance.py summary --compare`严格拒绝新增/遗漏/重复用例与新增跳过；每轮还把规划器的精确类过滤器与XML真实类逐项核对。缺数据明确未知，未完成或失败运行不能作为成功证据。性能目标与真实限制见[专项报告](../reports/2026-11-11-android-app-regressions-performance.zh-CN.md)。
