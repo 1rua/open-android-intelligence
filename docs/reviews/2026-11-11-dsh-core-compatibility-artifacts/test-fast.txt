@@ -43,7 +43,7 @@ tmp_path = PosixPath('/mnt/data/projects/open-android-intelligence/.worktrees/ds
         """Real Hermes lives at ../hermes relative to Core root; .. in sys.executable must not trip _PROBE."""
         import venv
         from oai_core.hermes_installation import _PROBE
-    
+
         root = tmp_path / "core"
         manifest = root / "integrations/hermes-session-adapter/plugin.yaml"
         manifest.parent.mkdir(parents=True, mode=0o700)
@@ -54,12 +54,12 @@ tmp_path = PosixPath('/mnt/data/projects/open-android-intelligence/.worktrees/ds
         environment = hermes_home / "hermes-agent/venv"
 >       venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
 
-oai-core/tests/test_hermes_installation.py:651: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+oai-core/tests/test_hermes_installation.py:651:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 /usr/lib/python3.14/venv/__init__.py:72: in create
     context = self.ensure_directories(env_dir)
               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 self = <venv.EnvBuilder object at 0x7f0da0ee8ad0>
 env_dir = '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility/.worktrees/hermes-installation-tests/dbc1a08111a1bbf566c80f66/hermes/hermes-agent/venv'
@@ -67,17 +67,17 @@ env_dir = '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-comp
     def ensure_directories(self, env_dir):
         """
         Create the directories for the environment.
-    
+
         Returns a context object which holds paths in the environment,
         for use by subsequent logic.
         """
-    
+
         def create_if_needed(d):
             if not os.path.exists(d):
                 os.makedirs(d)
             elif os.path.islink(d) or os.path.isfile(d):
                 raise ValueError('Unable to create directory %r' % d)
-    
+
         if os.pathsep in os.fspath(env_dir):
             raise ValueError(f'Refusing to create a venv in {env_dir} because '
                              f'it contains the PATH separator {os.pathsep}.')
@@ -105,7 +105,7 @@ env_dir = '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-comp
         context.python_exe = exename
         binpath = self._venv_path(env_dir, 'scripts')
         libpath = self._venv_path(env_dir, 'purelib')
-    
+
         # PEP 405 says venvs should create a local include directory.
         # See https://peps.python.org/pep-0405/#include-files
         # XXX: This directory is not exposed in sysconfig or anywhere else, and
@@ -117,7 +117,7 @@ env_dir = '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-comp
         #      and providing some sort of API to get the include directories.
         #      Example: https://numpy.org/doc/2.1/reference/generated/numpy.get_include.html
         incpath = os.path.join(env_dir, 'Include' if os.name == 'nt' else 'include')
-    
+
         context.inc_path = incpath
         create_if_needed(incpath)
         context.lib_path = libpath
