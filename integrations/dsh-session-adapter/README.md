@@ -20,7 +20,9 @@ Agent 如需设备能力，应使用 Core CLI/MCP/API 的已认证且绑定目�
 
 宿主提供 `sessionQuery.readSession` 与同步 `agents.get` 时启用 `generationRecovery` 和 `cancel`。`GET /sessions/:id/generation` 返回权威活动或排队记录；可通过 `clientMessageId`、`generationId` 精确读取原始受理记录及真实终态，也支持 `afterRevision` 和最长 25000 毫秒的 `waitMs`。代次 ID 基于宿主已接纳的原生用户消息 ID，排队、运行和终态不更换身份；修订号来自原生日志序号。没有 `turn/end` 且宿主未附着或重启时保持 `unknown`，不把连接中断或适配器内存清空解释为空闲。
 
-精确取消先从当前活动 Agent 的同步完整日志核对目标所属轮次，再在同一次 JavaScript 调用栈中执行 `agent.cancel({ kind: "user" }, { keepInbox: true })`；比较与副作用之间不插入异步等待，并复核 Agent 未被替换。迟到或已终态的目标不会取消后续任务，排队目标不会误取消其他活动轮次。取消回执的 `cancelled`、`already_completed` 必须有原生终态依据；仅发出取消但终态尚未来到时返回 `unknown`，随后可精确查询。`idempotentSend=false` 继续保留：原生 `rpcId` 去重的已知行为不等同于已证明跨重启精确执行一次。
+精确取消先订阅原生终态，再从当前活动 Agent 的同步完整日志核对目标所属轮次，在同一次 JavaScript 调用栈中执行 `agent.cancel({ kind: "user" }, { keepInbox: true })`；比较与副作用之间不插入异步等待，并复核 Agent 未被替换。迟到或已终态的目标不会取消后续任务，排队目标不会误取消其他活动轮次。取消请求随后等待同一目标的原生终态，最长为 `promptTimeoutMs` 与 5000 毫秒中的较小值；有证据时返回 `cancelled` 或 `already_completed`，到期仍无终态才返回 `outcome_unknown`。取消观察断开不重复取消，也不影响后续任务。`idempotentSend=false` 继续保留：原生 `rpcId` 去重的已知行为不等同于已证明跨重启精确执行一次。
+
+同一客户端身份重新附着活动记录时，先用原生日志绑定已消费输入的轮次，再通过宿主官方 `follow` 开场快照恢复既有模型尝试和正文前缀。随后从同一有序通路消费正文分片与持久事件，避免完成通知抢先丢弃最后分片。完整人类历史以官方 `append` 来源为准；模型压缩产生的 `replace` 副本不显示，也不创建重复受理身份。宿主重启补写的 `interrupted` 继续作为原身份的未知屏障，不能被当前活动查询隐藏成空闲。
 
 观察队列同时限制为 128 帧和 1 MiB。`res.write()` 返回 `false` 后等待 `drain`；无法在预算内恢复或队列超限时关闭当前响应，宿主执行继续。可选配置 `promptTimeoutMs`（默认 30000）、`observationTimeoutMs`（默认 1800000）、`drainTimeoutMs`（默认 5000）均为正整数毫秒，最大为 2147483647。没有原生终态证据的期限结束返回 `OUTCOME_UNKNOWN` / `state=unknown`；迟到的受理回执不会改写已经结束的观察。
 

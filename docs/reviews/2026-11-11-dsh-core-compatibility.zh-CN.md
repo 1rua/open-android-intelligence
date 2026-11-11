@@ -42,3 +42,14 @@ git diff --check
 ```
 
 提交主 Agent 集成后执行 `test:pr` 和独立 code-review，分别记录跨仓库同步、使用专用模型配置的成功回复、取消后的真实终态、断线/宿主重启恢复与 Android 模拟器结果。当前没有新增全宿主能力字段，DSH 已实现既有 `send` 门禁会调用的权威 generation 路由，避免借本项改变其他宿主行为。
+
+## 独立评审后的第二轮修复
+
+独立评审固定 `8e077193` 后确认四项 P2。已实际运行其探针复现重附迟到用户事件丢绑定、预查窗口丢完成、旧 attempt 分片缺失、重启未知 current 为空、raw 历史误显模型副本及取消只读即时未知，随后补回归修复：
+
+1. 保留已恢复的原生轮次，预查后同步重读当前原生日志。重新附着使用真实宿主 `SessionController.follow` 的 `assistantStream` 开场 baseline，恢复正在执行的 attempt、已有正文及后续分片；正文帧与持久事件都走官方同一有序通路，避免同步终态抢先关闭观察。
+2. 原生 `interruptedTurnClosers()` 补写的 `interrupted` 只证明结果未知，特定身份与 current 查询均保留同一未知屏障，不解锁后续队列。
+3. 修正评审原先把模型 surface 当成人类历史的预期。实际发行包 `dsh-session/lib/types/surface.d.ts:50-58` 明确规定人类 transcript 使用 append-origin，replacement 副本只用于模型；`dsh-api-session-controller/lib/index.js:1209` 同样使用 `isAppendSurfaceEvent`。因此保留完整 raw 日志里的原始可见消息，排除模型 replace 副本；元数据投影也跳过替换副本，避免同 rpcId 多命中。真实 `Session.create` 及 `isAppendSurfaceEvent` 回归通过。
+4. 同步匹配和取消保持原子性，之后先订阅、再核对、有界等待同目标真实终态。异步 `aborted` 返回 `cancelled`，已完成返回 `already_completed`，期限到后才返回协议 `outcome_unknown`；关闭取消观察不重复中止其他任务。
+
+修复版评审探针及输出：[脚本](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-fixed-probe.mjs)、[结果](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-fixed-probe.txt)。该脚本为真实 Session/恢复原语加官方 follow 形状的受控夹具，未冒充真实模型验证。当前六份 Node 测试 **116 项通过**，Core 专用契约仍为 **6 项通过**；本轮不重复全量 Fast。原 Fast 输出只规范化尾随空白，原失败与通过数量保留。
