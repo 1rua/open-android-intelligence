@@ -40,6 +40,8 @@
 
 `npm run test:fast` 通过：包含静态与契约门禁、内置 DSH 120 项通过与 3 项可选宿主契约跳过、Android 越权面门禁。首次 `npm run test:pr` 因独立工作树未设置历史 Hermes 夹具路径，五项互通测试报 `HERMES_FIXTURE_MISSING`；保留该次失败记录，随后按现有 CI 配置显式复用主仓固定夹具与 SDK 后重跑。
 
-补齐夹具后，PR 门禁模块阶段通过：会话领域 47 项、会话界面 855 项、会话数据 61 项，共 **963 项通过**，包括全部 5 项真实 Hermes HTTP/SSE 互通。App 广覆盖阶段在本机 JDK 17 和现有离线 SDK 依赖环境中出现未就绪错误，保留完整失败分类，不降低测试 SDK 或修改无关断言；最终结果将在候选提交与远端 CI 中核对。
+补齐夹具后，PR 门禁模块阶段通过：会话领域 47 项、会话界面 855 项、会话数据 61 项，共 **963 项通过**，包括全部 5 项真实 Hermes HTTP/SSE 互通。App 首次广覆盖阶段为 710 项、25 项失败，XML 已确认环境原因：`Android SDK 36 requires Java 21 (have Java 17)`，以及独立工作树缺少编译后的 `notifications.wasm`。没有降低 SDK、修改断言或记作成功。
+
+随后复用已有 JDK 21.0.10，以及主任务已核验的 CI `43055128442` 六个真实签名包中的 WASM。插件源码与该 CI 提交逐字比较无差异，载荷只放入忽略的构建目录；无需安装依赖或改变生产源码。使用 CI 同款固定 Hermes 夹具与 SDK、原 Gradle 和 Robolectric 缓存重跑 `npm run test:pr`，最终退出 **0**：App **1258 项全部通过**，上述模块 **963 项全部通过**，静态/契约/越权面门禁及内置 DSH 测试也通过。最终证据见 [结果摘要](../reviews/2026-11-12-history-placeholder-artifacts/results.json) 与 [PR 门禁摘要](../reviews/2026-11-12-history-placeholder-artifacts/pr-jdk21-green.txt)。
 
 独立审查与原隔离模拟器数据回读仍待主任务完成，不能用上述受控测试代替真实 APK 验收。

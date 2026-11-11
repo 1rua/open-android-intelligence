@@ -34,5 +34,41 @@
     "failed": 0,
     "skipped": 0
   },
-  "prGate": "App广覆盖仍在运行，本机SDK/JDK环境失败保持，不记全绿"
+  "prGate": {
+    "passed": true,
+    "counts": {
+      "conversation-domain": {
+        "tests": 47,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 9
+      },
+      "conversation-ui": {
+        "tests": 855,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 93
+      },
+      "conversation-data": {
+        "tests": 61,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 8
+      },
+      "app": {
+        "tests": 1258,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 104
+      }
+    },
+    "nodePassed": 120,
+    "nodeOptionalSkipped": 3,
+    "jdk": "21.0.10",
+    "wasmCiRun": 43055128442
+  }
 }
