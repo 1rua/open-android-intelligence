@@ -239,9 +239,9 @@ def syntax_exemption_spans(text: str) -> list[tuple[int, int, str]]:
     pairs = kotlin_delimiter_pairs(code)
     spans: list[tuple[int, int, str]] = []
 
-    def add_span(opening: int, reason: str, content_start: int | None = None):
+    def add_span(opening: int, reason: str):
         if opening in pairs:
-            spans.append((opening + 1 if content_start is None else content_start, pairs[opening], reason))
+            spans.append((opening + 1, pairs[opening], reason))
 
     for match in SYNTAX_LOG_PATTERN.finditer(code):
         add_span(match.end() - 1, "Log.*")
@@ -252,21 +252,32 @@ def syntax_exemption_spans(text: str) -> list[tuple[int, int, str]]:
             continue
         closing = pairs[opening]
         function_name = match.group(0).split("(", 1)[0].split("{", 1)[0].strip()
-        if code[opening] == "{" or function_name == "error":
+        if code[opening] == "{":
             add_span(opening, "check/require/assert/error")
         else:
-            # 第一实参是业务值，只有之后的消息参数才属于自动豁免范围。
+            # 参数可按名称换序；逐个参数确定归属，不能把首个逗号之后全部视为消息。
+            message_name = "message" if function_name == "error" else "lazyMessage"
+            message_position = 0 if function_name == "error" else 1
+            argument_start = opening + 1
+            argument_index = 0
             index = opening + 1
-            while index < closing:
-                if code[index] == ",":
-                    add_span(opening, "check/require/assert/error", index + 1)
-                    break
+            while index <= closing:
+                if index == closing or code[index] == ",":
+                    named_argument = re.match(r"\s*([A-Za-z_]\w*)\s*=(?!=)", code[argument_start:index])
+                    is_message = (
+                        named_argument.group(1) == message_name
+                        if named_argument else argument_index == message_position
+                    )
+                    if is_message:
+                        spans.append((argument_start, index, "check/require/assert/error"))
+                    argument_start = index + 1
+                    argument_index += 1
                 index = pairs[index] + 1 if index in pairs else index + 1
 
             trailing = closing + 1
             while trailing < len(code) and code[trailing].isspace():
                 trailing += 1
-            if trailing < len(code) and code[trailing] == "{":
+            if function_name != "error" and trailing < len(code) and code[trailing] == "{":
                 add_span(trailing, "check/require/assert/error")
 
     for pattern, reason in ((SYNTAX_THROW_PATTERN, "throw"), (SYNTAX_DEPRECATED_PATTERN, "@Deprecated")):

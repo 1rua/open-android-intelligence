@@ -647,6 +647,34 @@ def test_closed_assertion_message_lambda_does_not_exempt_outer_text(expression):
         assert exempt_map["已连接"] is False
 
 
+@pytest.mark.parametrize("function_name", ["check", "require", "checkNotNull", "requireNotNull", "assert"])
+@pytest.mark.parametrize("arguments", [
+    'lazyMessage = { "诊断" }, value = showDialog("界面")',
+    'value = showDialog("界面"), lazyMessage = { "诊断" }',
+    'showDialog("界面"), lazyMessage = { "诊断" }',
+    'value = showDialog("界面"), { "诊断" }',
+])
+def test_assertion_named_arguments_exempt_only_the_message(function_name, arguments):
+    """消息参数按名称识别，任意命名顺序或合法混用都不能豁免业务值中的界面文字。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(f"fun validate() {{ {function_name}({arguments}) }}\n")
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert {finding.content: finding.is_exempt for finding in findings} == {"诊断": True, "界面": False}
+
+
+@pytest.mark.parametrize("argument", ['"诊断"', 'message = "诊断"'])
+def test_error_positional_and_named_message_do_not_exempt_outer_text(argument):
+    """error 的位置或命名消息均可豁免，但相邻普通文字仍须资源化。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(f'fun validate() {{ render(error({argument}), "界面") }}\n')
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert {finding.content: finding.is_exempt for finding in findings} == {"诊断": True, "界面": False}
+
+
 @pytest.mark.parametrize("code", [
     '''fun ui() { val quote = '\"'; Text("未迁移的提示") }''',
     '// @file:Suppress("HardcodedChineseText")\nfun ui() { Text("未迁移的提示") }',
