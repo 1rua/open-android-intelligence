@@ -297,8 +297,13 @@ open class GatewayWebSocketTransport(
                 healthJob = launch(Dispatchers.IO) {
                     while (isActive) {
                         val requested = if (appForeground) {
-                            withTimeoutOrNull(foregroundPingIntervalMillis) { ready.checks.receive(); true } == true
-                        } else { ready.checks.receive(); true }
+                            val signal = withTimeoutOrNull(foregroundPingIntervalMillis) { ready.checks.receiveCatching() }
+                            if (signal?.isClosed == true) break
+                            signal != null
+                        } else {
+                            if (ready.checks.receiveCatching().isClosed) break
+                            true
+                        }
                         if (!requested && !appForeground) continue
                         if (ready.delivering) continue
                         val nonce = ByteArray(32).also(secureRandom::nextBytes)
@@ -314,7 +319,10 @@ open class GatewayWebSocketTransport(
                         try {
                             sendFrame(output, OPCODE_PING, nonce)
                             val proved = withTimeoutOrNull(healthCheckTimeoutMillis) {
-                                while (!MessageDigest.isEqual(nonce, ready.pongs.receive())) Unit
+                                while (true) {
+                                    val pong = ready.pongs.receiveCatching().getOrNull() ?: return@withTimeoutOrNull false
+                                    if (MessageDigest.isEqual(nonce, pong)) break
+                                }
                                 true
                             } == true
                             if (!proved) {

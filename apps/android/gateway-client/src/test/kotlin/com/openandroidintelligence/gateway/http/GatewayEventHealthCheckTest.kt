@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.Flow
@@ -14,11 +15,26 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class GatewayEventHealthCheckTest {
+    @Test
+    fun aRetryDelayPreservesItsOriginalCancellationReason(): Unit = runBlocking {
+        val stopped = kotlinx.coroutines.CancellationException("受控重试等待取消")
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("本场景不发送业务请求")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = flow { throw java.io.IOException("受控断线") }
+        }
+        val client = GatewayHttpClient(
+            GatewayProfile("account", "device", "session", "https://gateway.example", accessToken = "test"),
+            transport, { ByteArray(64) }, InMemoryEventCursorStore(), delayFn = { throw stopped },
+        )
+        assertSame("退避可被唤醒，但取消原因必须保持原样传播", stopped,
+            runCatching { client.events().take(1).toList() }.exceptionOrNull())
+    }
     @Test
     fun aForegroundStreamWithAnAdvertisedHeartbeatRecoversWithoutAnyWakeup() = runTest {
         var attempts = 0

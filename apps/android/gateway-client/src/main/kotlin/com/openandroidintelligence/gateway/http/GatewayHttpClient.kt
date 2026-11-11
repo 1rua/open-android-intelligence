@@ -18,7 +18,6 @@ import com.openandroidintelligence.gateway.ws.GatewayWebSocketClosedException
 import com.openandroidintelligence.gateway.ws.GatewayWebSocketTimeoutException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.async
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancelAndJoin
@@ -588,15 +587,25 @@ class GatewayHttpClient(
                     GatewayLog.connectionEvent("connection.reconnect_scheduled", owner.id, reason = "transport_retry",
                         attempt = attempt, result = "scheduled", fields = mapOf("delayMs" to nextDelay))
                     logEventFailure(owner, attempt, transportKind, failure, health, nextDelay, "retry")
-                    coroutineScope {
-                        val waiting = async { delayFn(nextDelay) }
-                        try {
-                            kotlinx.coroutines.selects.select<Unit> {
-                                waiting.onAwait { }
-                                owner.healthChecks.onReceive { }
+                    val delayFailure = coroutineScope {
+                        val completed = Channel<Throwable?>(Channel.RENDEZVOUS)
+                        val waiting = launch {
+                            val delayFailure = try { delayFn(nextDelay); null }
+                            catch (failure: Throwable) {
+                                // 父任务取消继续传播；回调自身的取消原因按原对象交还调用者。
+                                currentCoroutineContext().ensureActive()
+                                failure
                             }
-                        } finally { waiting.cancelAndJoin() }
+                            completed.send(delayFailure)
+                        }
+                        try {
+                            kotlinx.coroutines.selects.select<Throwable?> {
+                                completed.onReceive { it }
+                                owner.healthChecks.onReceive { null }
+                            }
+                        } finally { waiting.cancelAndJoin(); completed.close() }
                     }
+                    delayFailure?.let { throw it }
                 }
             }
         } finally {
