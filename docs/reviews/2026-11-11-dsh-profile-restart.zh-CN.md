@@ -37,6 +37,8 @@
 1. 修复前运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -k 'restart_rejects or restart_requires or selected_upgrade_target' -p no:cacheprovider --tb=line`：**4 failed**。分别复现错误服务重启、PID 文件不足以证明身份、无目标仍选择服务以及升级后丢失所选 Profile；全部服务操作和信号均被模拟。
 2. 修复后运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py oai-core/tests/test_dsh_installation.py -p no:cacheprovider --tb=short`：**82 passed，0 failed**（6.71 秒）。覆盖两个 Home/Profile、自定义服务、配置不一致、归属不明、PID 重启参数与环境保留、监听端口归属及自定义 instanceId/端口真实握手注册。
 3. 运行 `PYTHONPATH=oai-core/src python -m pytest -q tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py oai-core/tests/test_agent_handshake_errors.py -p no:cacheprovider --tb=short`：**30 passed，0 failed**（3.39 秒）。
-4. `git diff --check` 通过；项目 `test:fast` 和 `test:pr` 状态后续补充。
+4. `npm run test:fast`：依赖锁门禁通过；Core 阶段 **1222 passed，13 skipped，6 subtests passed，1 failed**（166.46 秒）。唯一失败 `test_hermes_installation.py::test_probe_succeeds_when_invoked_via_parent_relative_venv_python` 在 Python 虚拟环境创建阶段尝试建立 `lib64 -> lib` 符号链接时收到 `FileNotFoundError`；当前工作区文件系统也拒绝其他符号链接，此失败没有进入本次 DSH 修复函数。没有通过改变测试或跳过用例掩盖该环境限制。
+5. 补齐 systemd 默认工作目录处理后，重新运行 `PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py -p no:cacheprovider --tb=short`：**28 passed，0 failed**（6.53 秒）。
+6. `git diff --check` 通过；`npm run test:pr` 已后台启动，结果由主任务继续收集。
 
 以上为隔离单元与 Core 握手集成证据，没有执行真实服务停止、重启、部署或 Android 验收。真实双实例升级与活跃任务不中断仍须单独验收。
