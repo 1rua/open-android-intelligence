@@ -6,12 +6,15 @@ import android.graphics.Bitmap
 import android.graphics.Color as AndroidColor
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.Debug
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.FrameMetrics
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.activity.compose.setContent
@@ -25,24 +28,32 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.setViewTreeLifecycleOwner
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.state.StreamPresentationMetadata
 import com.openandroidintelligence.conversation.state.TimelineEntry
+import com.openandroidintelligence.conversation.theme.LocalStreamingHapticFeedbackEnabled
 import com.openandroidintelligence.conversation.workbench.MessageTimeline
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.MotionPolicy
 import java.util.Collections
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.roundToInt
@@ -90,8 +101,68 @@ class StreamingReplyInstrumentedTest {
             StreamSample("网络突发分块", shortReply(), listOf(1, 2, 3, 5, 8, 13, 21, Int.MAX_VALUE), listOf(0, 8, 16, 24, 180, 188, 196, 204)),
         )
         repeat(3) { round ->
-            samples.forEach { sample -> measureSample(sample, round + 1) }
+            samples.forEach { sample ->
+                val direct = measureSample(sample, round + 1, smooth = false)
+                val smooth = measureSample(sample, round + 1, smooth = true)
+                emitEvidence(mapOf(
+                    "scenario" to sample.name,
+                    "round" to round + 1,
+                    "baseline" to "direct_render_control",
+                    "comparisonScope" to "same_commit_direct_render",
+                    "smoothTtftMinusDirectMs" to smooth.ttftMs - direct.ttftMs,
+                    "smoothDrainMinusDirectMs" to smooth.drainMs - direct.drainMs,
+                    "sourceParseCount" to "not_measured",
+                ))
+            }
         }
+    }
+
+    @Test
+    fun aggregatedExecutionFinalAnswerUsesSharedStreamingBody() {
+        val fixture = openFixture(execution = true)
+        val text = "聚合最终回答首段。" + shortReply() + "聚合最终回答结束"
+        update(fixture, text, streaming = true)
+        awaitText("聚合最终回答结束")
+        await("执行步骤没有聚合进共享容器") {
+            nodes().any { it.description.contains("执行过程") && it.description.contains("2 步") }
+        }
+        SystemClock.sleep(220)
+        assertCursorAtBodyEnd("聚合最终回答结束")
+        assertEquals("最终回答动画不能改写事实正文", text, fixture.entry.text)
+        update(fixture, text, streaming = false)
+        await("聚合回答完成后不能留下光标") { !hasCursorStripe() }
+    }
+
+    @Test
+    fun liveHapticPreferenceAndReducedMotionUseSimulatedHapticSink() {
+        val fixture = openFixture(hapticProbe = true)
+        val first = "触觉关闭期间新增正文。".repeat(12) + "第一阶段结束"
+        update(fixture, first, streaming = true)
+        awaitText("第一阶段结束")
+        assertEquals("默认关闭时不应请求触觉", 0, fixture.hapticCalls.get())
+
+        onMain { fixture.hapticEnabled = true }
+        val enabled = first + "\n\n实时打开触觉后的新正文。".repeat(10) + "第二阶段结束"
+        update(fixture, enabled, streaming = true)
+        awaitText("第二阶段结束")
+        await("开启偏好后新显示正文没有请求触觉") { fixture.hapticCalls.get() > 0 }
+
+        onMain { fixture.hapticEnabled = false; fixture.reduceMotion = true }
+        SystemClock.sleep(220)
+        val disabledCount = fixture.hapticCalls.get()
+        val reduced = enabled + "\n\n减少动态仍保留实时正文和静态排版光标。".repeat(10) + "第三阶段结束"
+        update(fixture, reduced, streaming = true)
+        awaitText("第三阶段结束")
+        SystemClock.sleep(220)
+        assertEquals("实时关闭偏好后不能继续请求触觉", disabledCount, fixture.hapticCalls.get())
+        assertCursorAtBodyEnd("第三阶段结束")
+        onMain { fixture.hapticEnabled = true }
+        SystemClock.sleep(220)
+        assertEquals("重新打开偏好不能补震旧文字", disabledCount, fixture.hapticCalls.get())
+        emitEvidence(mapOf("scenario" to "实时偏好与减少动态", "hapticCalls" to disabledCount,
+            "hapticSink" to "simulated_view_callback", "physicalHaptic" to "not_measured"))
+        update(fixture, reduced, streaming = false)
+        await("减少动态终态后不能保留光标") { !hasCursorStripe() }
     }
 
     @Test
@@ -150,59 +221,86 @@ class StreamingReplyInstrumentedTest {
         await("结束后不能保留活动光标") { !hasCursorStripe() }
     }
 
-    private fun measureSample(sample: StreamSample, round: Int) {
-        val fixture = openFixture()
+    private fun measureSample(sample: StreamSample, round: Int, smooth: Boolean): ObservedTiming {
+        val fixture = openFixture(smooth = smooth)
+        // 首段被观察前固定在顶部，避免长文自动跟随尾部后把首段移出系统无障碍树。
+        onMain { fixture.followTail = false }
+        val marker = "首段对照〔${sample.name}·$round〕"
+        val prefixMarker = "$marker\n\n"
+        // 以等长前段替换保留 150 字样本的实际总字数，同时留下唯一的正文观察标记。
+        val text = prefixMarker + sample.text.drop(prefixMarker.length)
+        val memoryBefore = MemorySnapshot.capture()
         val frames = WindowFrames()
         requireNotNull(scenario).onActivity { frames.attach(it.window) }
         val started = AtomicLong()
         val terminal = AtomicLong()
         var end = 0
         sample.sizes.forEachIndexed { index, size ->
-            end = (end.toLong() + size).coerceAtMost(sample.text.length.toLong()).toInt()
-            val prefix = sample.text.substring(0, end)
+            end = (end.toLong() + size).coerceAtMost(text.length.toLong()).toInt()
+            val prefix = text.substring(0, end)
             main.postDelayed({
                 if (started.get() == 0L) started.set(SystemClock.elapsedRealtimeNanos())
                 fixture.receive(prefix, streaming = true)
             }, sample.delays[index])
         }
-        assertEquals("分块必须覆盖完整消息", sample.text.length, end)
+        assertEquals("分块必须覆盖完整消息", text.length, end)
         main.postDelayed({
             terminal.set(SystemClock.elapsedRealtimeNanos())
-            fixture.receive(sample.text, streaming = false)
+            fixture.receive(text, streaming = false)
         }, sample.delays.last() + 24)
 
-        awaitText(sample.firstMarker)
+        // 前段标记只存在于当前夹具正文；匹配其真实已显示前缀，不会把元数据当作首字。
+        await("当前正文首个可见字素没有出现") {
+            nodes().any { it.text.isNotEmpty() && (marker.startsWith(it.text) || it.text.startsWith(marker)) }
+        }
         val firstObserved = SystemClock.elapsedRealtimeNanos()
+        onMain { fixture.followTail = true }
         awaitText(sample.endMarker)
         val completeObserved = SystemClock.elapsedRealtimeNanos()
         await("没有收到本地终态") { terminal.get() > 0L }
         requireNotNull(scenario).onActivity { frames.detach(it.window) }
+        val memoryAfter = MemorySnapshot.capture()
         await("完成后仍有流式光标") { !hasCursorStripe() }
-        assertEquals("动画不能丢失或改写接收事实", sample.text, fixture.entry.text)
+        assertEquals("动画不能丢失或改写接收事实", text, fixture.entry.text)
         assertFalse("终态必须提交给时间线", fixture.entry.isStreaming)
 
-        val evidence = frames.describe() + mapOf(
+        val timing = ObservedTiming(millis(firstObserved - started.get()),
+            millis((completeObserved - terminal.get()).coerceAtLeast(0)))
+        val evidence = frames.describe() + memoryBefore.describe("before") + memoryAfter.describe("after") + mapOf(
             "scenario" to sample.name,
             "round" to round,
-            "characters" to sample.text.length,
+            "characters" to text.length,
+            "payloadCharacters" to sample.text.length,
             "networkChunks" to sample.sizes.size,
-            "ttftObservedMs" to millis(firstObserved - started.get()),
-            "drainObservedMs" to millis((completeObserved - terminal.get()).coerceAtLeast(0)),
+            "renderMode" to if (smooth) "smooth" else "direct",
+            "baseline" to "direct_render_control",
+            "ttftObservedMs" to timing.ttftMs,
+            "drainObservedMs" to timing.drainMs,
+            "firstPrefixMarker" to marker,
+            "javaHeapDeltaBytes" to memoryAfter.javaHeapBytes - memoryBefore.javaHeapBytes,
+            "nativeHeapDeltaBytes" to memoryAfter.nativeHeapBytes - memoryBefore.nativeHeapBytes,
             "observation" to "accessibility_upper_bound",
             "frameClock" to "system",
+            "scrollPolicy" to "hold_first_prefix_then_follow_tail",
             "device" to android.os.Build.MODEL,
             "sdk" to android.os.Build.VERSION.SDK_INT,
+            "sourceParseCount" to "not_measured",
         )
+        emitEvidence(evidence)
+        requireNotNull(scenario).close()
+        scenario = null
+        return timing
+    }
+
+    private fun emitEvidence(evidence: Map<String, Any>) {
         val message = org.json.JSONObject(evidence).toString()
         Log.i("OaiStreamingAcceptance", message)
         instrumentation.sendStatus(0, Bundle().apply { putString("stream", "流式验收 $message\n") })
-        requireNotNull(scenario).close()
-        scenario = null
     }
 
-    private fun openFixture(): Fixture {
+    private fun openFixture(smooth: Boolean = true, execution: Boolean = false, hapticProbe: Boolean = false): Fixture {
         scenario?.close()
-        val fixture = Fixture()
+        val fixture = Fixture(smooth, execution, hapticProbe)
         StreamingReplyTestActivity.installContent = { activity ->
             fixture.activity = activity
             activity.setContent {
@@ -213,20 +311,30 @@ class StreamingReplyInstrumentedTest {
                     surfaceContainerHigh = Color.White,
                 )) {
                     val scroll = rememberScrollState()
+                    val actualView = LocalView.current
+                    val feedbackView = remember(actualView) { HapticProbeView(actualView, fixture.hapticCalls).apply {
+                        setViewTreeLifecycleOwner(activity)
+                    } }
                     fixture.scroll = scroll
                     LaunchedEffect(scroll.maxValue, fixture.followTail) {
                         if (fixture.followTail) scroll.scrollTo(scroll.maxValue)
                     }
                     Box(Modifier.fillMaxSize().background(Color.White).padding(16.dp)
-                        .semantics { contentDescription = FixtureDescription }
+                        .semantics { contentDescription = fixture.description }
                         .verticalScroll(scroll)) {
-                        MessageTimeline(listOf(fixture.entry))
+                        CompositionLocalProvider(
+                            LocalView provides if (fixture.hapticProbe) feedbackView else actualView,
+                            LocalStreamingHapticFeedbackEnabled provides fixture.hapticEnabled,
+                            LocalMotionPolicy provides MotionPolicy(reduceMotion = fixture.reduceMotion),
+                        ) {
+                            MessageTimeline(fixture.prefixEntries + fixture.entry)
+                        }
                     }
                 }
             }
         }
         scenario = ActivityScenario.launch(StreamingReplyTestActivity::class.java)
-        await("测试宿主没有进入真实窗口") { nodes().any { it.description == FixtureDescription } }
+        await("测试宿主没有进入真实窗口") { nodes().any { it.description == fixture.description } }
         return fixture
     }
 
@@ -332,7 +440,19 @@ class StreamingReplyInstrumentedTest {
         }
     }
 
-    private class Fixture {
+    private class Fixture(val smooth: Boolean, execution: Boolean, val hapticProbe: Boolean) {
+        val description = "$FixtureDescription:${FixtureSequence.incrementAndGet()}"
+        val hapticCalls = AtomicInteger()
+        var hapticEnabled by mutableStateOf(false)
+        var reduceMotion by mutableStateOf(false)
+        private var revision = 0L
+        val prefixEntries = if (!execution) emptyList() else listOf(
+            TimelineEntry("fixture-user", "user", "执行本地验收", true, 1, false, null),
+            TimelineEntry("fixture-thought", "assistant", "<think>本地执行过程夹具</think>", false, 2, false, null),
+            TimelineEntry("fixture-tool", "assistant",
+                "<tool_call name=\"local_fixture\"><command>fixture</command><result status=\"success\">本地结果</result></tool_call>",
+                false, 3, false, null),
+        )
         var entry by mutableStateOf(TimelineEntry(
             key = "instrumented-stream",
             sender = "assistant",
@@ -342,15 +462,44 @@ class StreamingReplyInstrumentedTest {
             pendingAcceptance = false,
             batchGroupId = null,
             isStreaming = true,
-            presentation = StreamPresentationMetadata(StreamPresentationOrigin.LIVE, 0),
+            presentation = if (smooth) StreamPresentationMetadata(StreamPresentationOrigin.LIVE, 0) else null,
         ))
         var followTail by mutableStateOf(true)
         @Volatile var scroll: ScrollState? = null
         @Volatile var activity: StreamingReplyTestActivity? = null
 
         fun receive(text: String, streaming: Boolean) {
+            revision++
             entry = entry.copy(text = text, isStreaming = streaming,
-                presentation = StreamPresentationMetadata(StreamPresentationOrigin.LIVE, requireNotNull(entry.presentation).revision + 1))
+                presentation = if (smooth) StreamPresentationMetadata(StreamPresentationOrigin.LIVE, revision) else null)
+        }
+    }
+
+    /** 只记录共享实现发起的触觉请求，不调用真实硬件。窗口与生命周期仍来自真实宿主。 */
+    private class HapticProbeView(private val actual: View, private val calls: AtomicInteger) : View(actual.context) {
+        init { isHapticFeedbackEnabled = true }
+        override fun isShown(): Boolean = actual.isShown
+        override fun hasWindowFocus(): Boolean = actual.hasWindowFocus()
+        override fun getWindowVisibility(): Int = actual.windowVisibility
+        override fun getViewTreeObserver(): ViewTreeObserver = actual.viewTreeObserver
+        override fun performHapticFeedback(feedbackConstant: Int): Boolean {
+            calls.incrementAndGet()
+            return true
+        }
+    }
+
+    private data class MemorySnapshot(val javaHeapBytes: Long, val nativeHeapBytes: Long, val totalPssKb: Int) {
+        fun describe(prefix: String): Map<String, Any> = mapOf(
+            "${prefix}JavaHeapBytes" to javaHeapBytes,
+            "${prefix}NativeHeapBytes" to nativeHeapBytes,
+            "${prefix}TotalPssKb" to totalPssKb,
+        )
+        companion object {
+            fun capture(): MemorySnapshot {
+                val runtime = Runtime.getRuntime()
+                val memory = Debug.MemoryInfo().also(Debug::getMemoryInfo)
+                return MemorySnapshot(runtime.totalMemory() - runtime.freeMemory(), Debug.getNativeHeapAllocatedSize(), memory.totalPss)
+            }
         }
     }
 
@@ -388,13 +537,14 @@ class StreamingReplyInstrumentedTest {
     }
 
     private data class StreamSample(val name: String, val text: String, val sizes: List<Int>, val delays: List<Long>) {
-        val firstMarker: String get() = text.first { it.isLetter() }.toString()
         val endMarker: String get() = if (text.endsWith("长文结束标记")) "长文结束标记" else "本地短回复结束"
     }
+    private data class ObservedTiming(val ttftMs: Double, val drainMs: Double)
     private data class VisibleNode(val text: String, val description: String, val bounds: Rect)
 
     companion object {
         private const val FixtureDescription = "StreamingReplyInstrumentedFixture"
+        private val FixtureSequence = AtomicInteger()
         private const val CursorColor = 0xFF10D090
         private fun millis(nanos: Long): Double = (nanos / 10_000.0).roundToInt() / 100.0
         private fun shortReply(): String {
