@@ -36,7 +36,7 @@ class ReusableAppTestGroup3
  * 本入口由实验开关显式选择，默认测试发现必须排除四个入口，避免重复执行。
  *
  * 配置缺失、重复、清单外选择和空组均直接报错，不能把漏测当成成功。
- * Gradle 的类过滤器还须保留实际子类名称，否则其标准过滤会移除 Suite 子树。
+ * 规划器同时保留实际子类名称，便于核对本次选择与最终执行的真实测试集合。
  */
 class ReusableAppSuite private constructor(
     suiteClass: Class<*>,
