@@ -38,6 +38,33 @@ class WorkbenchRenderReuseTest {
         controller.close()
     }
 
+    @Test
+    fun 实时正文后的相同修订历史确认保留来源且重新进入会话为快照() = runTest {
+        val repository = Repository()
+        val controller = controller(repository)
+        runCurrent()
+        val live = stream("m", "gen_a", "实时内容").copy(
+            revision = 7, presentationOrigin = StreamPresentationOrigin.LIVE,
+        )
+        repository.events.emit(live)
+        runCurrent()
+        assertEquals(StreamPresentationMetadata(StreamPresentationOrigin.LIVE, 7), rows(controller).single().presentation)
+        repository.events.emit(live.copy(eventId = "history_confirm", presentationOrigin = StreamPresentationOrigin.SNAPSHOT))
+        runCurrent()
+        assertEquals(StreamPresentationMetadata(StreamPresentationOrigin.LIVE, 7), rows(controller).single().presentation)
+        repository.events.emit(live.copy(eventId = "history_append", revision = 8,
+            message = live.message.copy(parts = listOf(MessagePart.Text("实时内容同步增加"))),
+            presentationOrigin = StreamPresentationOrigin.SNAPSHOT))
+        runCurrent()
+        assertEquals(StreamPresentationMetadata(StreamPresentationOrigin.SNAPSHOT, 8), rows(controller).single().presentation)
+        controller.openThread("conv_other")
+        runCurrent()
+        controller.openThread("conv_a")
+        runCurrent()
+        assertEquals(StreamPresentationOrigin.SNAPSHOT, rows(controller).single().presentation?.origin)
+        controller.close()
+    }
+
     private fun rows(controller: WorkbenchController) = (controller.state.value.timeline as Loadable.Ready).value
 
     private var eventNumber = 0

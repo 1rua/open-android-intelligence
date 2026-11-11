@@ -135,7 +135,9 @@ internal class NativeEventSynchronizer(
         // 权威历史已经覆盖了同一修订，落盘只写一次；正文帧只额外多发布一次，
         // 让提醒层看到宿主自己发出的事件。
         val facts = snapshotFacts + lifecycle
-        val published = facts + liveBodies
+        // 实时正文先进入呈现层，后到的同修订历史只校验事实，不能抢先展示全文。
+        // 持久化仍使用上面的 facts 原顺序，事件身份与 ACK 机制保持原样。
+        val published = liveBodies + facts
         localStore { store.commitPage(conversationId, facts, approvals, page.cursor) }
         pendingPage = null
         if (snapshot || page.events.isNotEmpty()) {

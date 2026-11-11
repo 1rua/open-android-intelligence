@@ -364,6 +364,8 @@ sealed interface VerifiedConversationEvent {
         override val occurredAt: Long,
         val revision: Long,
         val message: TimelineMessage,
+        /** 仅供临时呈现区分实时正文与历史同步，不进入消息持久化。 */
+        val presentationOrigin: StreamPresentationOrigin = StreamPresentationOrigin.SNAPSHOT,
     ) : VerifiedConversationEvent
 
     /** Native execution facts have their own revision domain, separate from message content. */

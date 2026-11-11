@@ -11,6 +11,7 @@ import com.openandroidintelligence.conversation.model.AttachmentDraftId
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.CommandOutcome
@@ -294,6 +295,7 @@ object GatewayEventDecoder {
             eventId = eventId,
             occurredAt = occurredAt,
             revision = JsonFields.long(payload, "revision") ?: 0L,
+            presentationOrigin = StreamPresentationOrigin.LIVE,
             message = TimelineMessage(
                 id = messageId,
                 sender = JsonFields.string(payload, "sender") ?: "assistant",
