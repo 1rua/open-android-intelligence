@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -38,7 +39,6 @@ private const val TextFadeMillis = 120L
 private const val CursorTrailMillis = 160L
 private const val MaximumFadeBatches = 8
 
-internal data class StreamingFadeRange(val start: Int, val end: Int, val enteredAt: Long)
 internal data class StreamingFadeBatch(val id: Long, val sourceStart: Int, val sourceEnd: Int, val enteredAt: Long)
 internal data class StreamingTextLayout(
     val sourceEnd: Int,
@@ -66,20 +66,24 @@ internal class StreamingDecorationState {
     var previousTarget: Offset? = null
     var previousBatch = Long.MIN_VALUE
     private var notifiedBatch = Long.MIN_VALUE
+    private var batchEnteredAt = 0L
 
     fun update(document: StreamingMarkdownDocument, next: StreamingTextPresentation) {
         this.document = document
         val changed = next.batchId != presentation.batchId
         val changedPolicy = next.active != presentation.active || next.reduceMotion != presentation.reduceMotion
         presentation = next
-        if (changed && next.active && next.sourceRevealEnd > next.sourceRevealStart && !next.reduceMotion) {
-            batches.add(StreamingFadeBatch(next.batchId, next.sourceRevealStart, next.sourceRevealEnd, SystemClock.uptimeMillis()))
-            while (batches.size > MaximumFadeBatches) batches.removeAt(0)
+        if (changed) batchEnteredAt = SystemClock.uptimeMillis()
+        if (changed && next.sourceRevealEnd > next.sourceRevealStart && !next.reduceMotion) {
+            batches.add(StreamingFadeBatch(next.batchId, next.sourceRevealStart, next.sourceRevealEnd, batchEnteredAt))
+            if (batches.size > MaximumFadeBatches) {
+                val first = batches.removeAt(0)
+                val second = batches.removeAt(0)
+                batches.add(0, second.copy(sourceStart = minOf(first.sourceStart, second.sourceStart),
+                    enteredAt = minOf(first.enteredAt, second.enteredAt)))
+            }
         }
-        if (!next.active) {
-            batches.clear()
-            trailOrigin = null
-        }
+        if (!next.active) trailOrigin = null
         if (next.reduceMotion) {
             batches.clear()
             trailOrigin = null
@@ -105,7 +109,9 @@ internal class StreamingDecorationState {
 
     fun notifyVisible(layout: StreamingTextLayout) {
         val current = presentation
-        if (!current.active || layout.batchId != current.batchId || current.batchId == notifiedBatch) return
+        if (layout.batchId != current.batchId || current.batchId == notifiedBatch ||
+            current.sourceRevealEnd <= current.sourceRevealStart ||
+            SystemClock.uptimeMillis() - batchEnteredAt > 200L) return
         val host = container?.takeIf { it.isAttached } ?: return
         if (!layout.coordinates.isAttached) return
         val window = host.boundsInWindow()
@@ -124,14 +130,13 @@ internal class StreamingDecorationState {
 
     fun target(): Pair<Offset, Float>? {
         val host = container?.takeIf { it.isAttached } ?: return null
-        // Compose 注册顺序就是文档绘制顺序；不能比较局部 sourceEnd，
-        // 因为每个 Markdown 叶节点的来源偏移都以自身片段为基准。
-        val last = layouts.values.lastOrNull { it.coordinates.isAttached } ?: return null
+        // 叶节点上报完整消息的原文位置，按来源顺序选尾端；表格和双向文本都不能按屏幕坐标排序。
+        val last = layouts.values.filter { it.coordinates.isAttached }.maxByOrNull { it.sourceEnd } ?: return null
         val origin = host.localPositionOf(last.coordinates, last.cursor.topLeft)
         return origin to last.cursor.height.coerceAtLeast(1f)
     }
 
-    fun hasAnimation(now: Long): Boolean = presentation.active && !presentation.reduceMotion &&
+    fun hasAnimation(now: Long): Boolean = !presentation.reduceMotion &&
         (batches.any { now - it.enteredAt < TextFadeMillis } ||
             trailOrigin != null && now - trailStarted < CursorTrailMillis ||
             previousTarget?.let { cursorPosition?.let { position -> (it - position).getDistance() > 0.15f } } == true)
@@ -158,7 +163,7 @@ fun StreamingMarkdownContainer(
     val lineWidth = with(androidx.compose.ui.platform.LocalDensity.current) { 1.5.dp.toPx() }
     val epoch = state.invalidation
     LaunchedEffect(state, epoch, presentation.active, presentation.reduceMotion) {
-        if (!presentation.active) return@LaunchedEffect
+        if (!presentation.active && state.batches.isEmpty()) return@LaunchedEffect
         var previousTime = 0L
         do {
             withFrameNanos { frame ->
@@ -229,9 +234,46 @@ fun StreamingMarkdownContainer(
 
 internal fun sourceOffsetsFor(result: MarkdownInlineResult, source: MarkdownSourceText?): IntArray =
     IntArray(result.annotated.length) { index ->
+        // 内联公式由自身真实组件边界参与渐入和触觉；父 Text 不能重复处理占位替代文本。
+        if (result.inlineMath.any { index in it.start until it.end }) return@IntArray -1
         val local = result.sourceOffsets.getOrNull(index) ?: index
         source?.offsets?.getOrNull(local) ?: -1
     }
+
+/** 公式作为一个实际测量的绘制对象，测量变化只更新坐标，不生成新的文字推进。 */
+@Composable
+internal fun streamingAtomicModifier(
+    source: MarkdownSourceText?,
+    modifier: Modifier,
+    measured: Boolean = true,
+): Modifier {
+    val state = LocalStreamingDecoration.current ?: return modifier
+    if (source == null) return modifier
+    val key = remember { Any() }
+    val progress = LocalStreamingTextPresentation.current ?: state.presentation
+    var coordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
+    fun publish() {
+        val position = coordinates?.takeIf { it.isAttached } ?: return
+        if (!measured) return
+        val width = position.size.width.toFloat()
+        val height = position.size.height.toFloat()
+        val added = source.start in progress.sourceRevealStart until progress.sourceRevealEnd
+        state.register(key, StreamingTextLayout(
+            source.end, position, Rect(width, 0f, width + 1f, height),
+            if (added) listOf(Rect(0f, 0f, width, height)) else emptyList(), progress.batchId,
+        ))
+    }
+    SideEffect { publish() }
+    DisposableEffect(state, key) { onDispose { state.unregister(key) } }
+    return modifier.onGloballyPositioned { coordinates = it; publish() }.graphicsLayer {
+        state.frameMillis
+        val batch = state.batches.lastOrNull { source.start in it.sourceStart until it.sourceEnd }
+        alpha = if (state.presentation.reduceMotion || batch == null) 1f else {
+            val age = ((SystemClock.uptimeMillis() - batch.enteredAt).toFloat() / TextFadeMillis).coerceIn(0f, 1f)
+            0.45f + 0.55f * age
+        }
+    }
+}
 
 /** 已排版 Text 的唯一范围绘制器：保留原 Text 的选择、链接和无障碍节点。 */
 @Composable
@@ -253,29 +295,34 @@ internal fun streamingTextModifier(
         val measured = layout ?: return
         val position = coordinates ?: return
         if (!position.isAttached) return
+        if (measured.layoutInput.text.text != text) return
         val cursor = measured.getCursorRect(text.length.coerceAtMost(measured.layoutInput.text.length))
         state.register(key, StreamingTextLayout(sourceOffsets.maxOrNull() ?: -1, position, cursor,
             activeRanges.map { measured.getPathForRange(it.first, it.last + 1).getBounds() }, current.batchId))
     }
     SideEffect { publish() }
     DisposableEffect(state, key) { onDispose { state.unregister(key) } }
-    val fadingRanges = remember(text, sourceOffsets, current.batchId) {
-        state.batches.map { batch -> batch to visibleSourceRanges(text, sourceOffsets, batch.sourceStart, batch.sourceEnd) }
-    }
+    // 路径只在文字布局或批次变化时生成；动画帧只读取透明度，不重扫全文或重建 AnnotatedString。
+    val fadingPaths = remember(text, sourceOffsets, layout) { mutableMapOf<StreamingFadeBatch, List<Path>>() }
     val decorated = modifier
         .onGloballyPositioned { coordinates = it; publish() }
         .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
         .drawWithContent {
             drawContent()
             state.frameMillis
-            if (!state.presentation.active || state.presentation.reduceMotion) return@drawWithContent
+            if (state.presentation.reduceMotion) return@drawWithContent
             val measured = layout ?: return@drawWithContent
             val now = SystemClock.uptimeMillis()
-            fadingRanges.forEach { (batch, ranges) ->
+            fadingPaths.keys.retainAll(state.batches.toSet())
+            state.batches.forEach { batch ->
                 val age = ((now - batch.enteredAt).toFloat() / TextFadeMillis).coerceIn(0f, 1f)
                 if (age < 1f) {
-                    ranges.forEach { range ->
-                        val path = measured.getPathForRange(range.first, range.last + 1)
+                    val paths = fadingPaths.getOrPut(batch) {
+                        visibleSourceRanges(text, sourceOffsets, batch.sourceStart, batch.sourceEnd).map {
+                            measured.getPathForRange(it.first, it.last + 1)
+                        }
+                    }
+                    paths.forEach { path ->
                         drawPath(path, Color.Black.copy(alpha = 0.55f * (1f - age)), blendMode = BlendMode.DstOut)
                     }
                 }

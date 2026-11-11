@@ -329,7 +329,7 @@ fun MarkdownMathBlock(
     }
 
     Box(
-        modifier = modifier
+        modifier = streamingAtomicModifier(LocalMarkdownLeafSource.current, modifier, measured = rendered || unavailable)
             .fillMaxWidth()
             .testTag(MARKDOWN_MATH_BLOCK_TAG)
             .then(

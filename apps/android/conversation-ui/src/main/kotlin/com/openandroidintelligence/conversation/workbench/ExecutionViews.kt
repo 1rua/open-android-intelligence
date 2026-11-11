@@ -79,6 +79,13 @@ fun AssistantMessageContent(
         return
     }
 
+    if (!mayContainExecutionMarkup(text)) {
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
+        return
+    }
+
     val blocks = remember(text) {
         runCatching { MarkdownParser.parse(text) }
             .getOrElse { listOf(TimelineBlock.Paragraph(text)) }

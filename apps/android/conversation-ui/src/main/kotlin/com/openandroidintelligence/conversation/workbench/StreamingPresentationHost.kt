@@ -206,44 +206,35 @@ internal fun StreamingReplyBody(
     registry: StreamingPresentationRegistry?,
     modifier: androidx.compose.ui.Modifier = androidx.compose.ui.Modifier,
     finalOnly: Boolean = false,
-    sourceBlocks: List<TimelineBlock>? = null,
     content: @Composable (List<TimelineBlock>, Boolean) -> Unit,
 ) {
     val frame = registry?.frameFor(entry)
-    val waitingForFirstLiveFrame = frame == null &&
-        entry.isStreaming && entry.presentation?.origin == com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE
-    val displayed = frame?.text ?: if (waitingForFirstLiveFrame) "" else entry.text
-    val active = frame?.active == true || waitingForFirstLiveFrame
-    val haptic = if (frame != null && registry != null) {
-        rememberStreamingHapticAdvance(frame, registry)
+    val displayed = frame?.text ?: entry.text
+    val active = frame?.active == true
+    val haptic = if (frame != null) {
+        rememberStreamingHapticAdvance(frame, requireNotNull(registry))
     } else {
         null
     }
-    val presentation = if (frame != null) {
-        StreamingTextPresentation(
-            batchId = frame.batchId,
-            sourceRevealStart = frame.start,
-            sourceRevealEnd = frame.end,
-            active = active,
-            reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
-            onVisibleAdvance = { id -> haptic?.invoke(id) },
-        )
-    } else {
-        StreamingTextPresentation(0L, 0, 0, false, false)
+    val presentation = StreamingTextPresentation(
+        batchId = frame?.batchId ?: 0L,
+        sourceRevealStart = frame?.start ?: 0,
+        sourceRevealEnd = frame?.end ?: 0,
+        active = active,
+        reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
+        onVisibleAdvance = { id -> haptic?.invoke(id) },
+    )
+    val document = rememberStreamingMarkdownDocument(displayed)
+    // 执行事实仍按完整消息分组；最终正文仅使用同一次解析中最后一个执行块之后的节点，
+    // 不能把整条 entry 重新当 narrative 解析，也不能按字符串相似度寻找正文。
+    val blocks = remember(document, finalOnly) {
+        if (finalOnly) document.blocks.drop(document.blocks.indexOfLast(::isExecutionBlock) + 1)
+        else document.blocks
     }
-    val document = rememberStreamingMarkdownDocument(displayed, narrative = finalOnly)
-    val renderedDocument = if (displayed == entry.text && sourceBlocks != null) {
-        document.rebindBlocks(sourceBlocks)
-    } else {
-        document
-    }
-    val blocks = renderedDocument.blocks
     StreamingMarkdownContainer(
         sourceText = displayed,
         presentation = presentation,
         modifier = modifier,
-        document = renderedDocument,
-    ) {
-        content(blocks, active)
-    }
+        document = document,
+    ) { content(blocks, active) }
 }

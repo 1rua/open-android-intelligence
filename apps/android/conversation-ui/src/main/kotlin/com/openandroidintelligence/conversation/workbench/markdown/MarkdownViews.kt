@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -523,7 +522,8 @@ fun MarkdownTableView(
                                 rowIdx == block.rows.lastIndex &&
                                 colIdx == block.headers.lastIndex
                             val cellSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
-                                ?.get(block)?.leaves?.getOrNull(block.headers.size + rowIdx * block.headers.size + colIdx)
+                                ?.get(block)?.leaves?.getOrNull(block.headers.size + block.rows.take(rowIdx).sumOf { it.size } + colIdx)
+                                ?.takeIf { colIdx < rowCells.size }
                             Box(
                                 modifier = Modifier
                                     .width(colWidth)

@@ -366,9 +366,9 @@ private class InlineRenderer(
         val id = "md_math_${mathSpans.size}"
         val start = builder.length
         builder.appendInlineContent(id, latex)
-        // AnnotatedString 中公式只占一个 InlineContent 占位；来源数组必须与输出 UTF-16
-        // 单元一一对应，不能把 LaTeX 源码长度直接写进数组，否则公式后的正文整体错位。
-        sourceOffsets.add(sourceStart)
+        // appendInlineContent 会把无障碍替代文本实际写入 AnnotatedString，再把整个范围
+        // 标记为一个内联组件；来源数组长度必须与本次实际追加的 UTF-16 长度一致。
+        repeat(builder.length - start) { sourceOffsets.add(sourceStart + it) }
         mathSpans.add(MarkdownInlineMathSpan(id, latex, start, builder.length))
     }
 

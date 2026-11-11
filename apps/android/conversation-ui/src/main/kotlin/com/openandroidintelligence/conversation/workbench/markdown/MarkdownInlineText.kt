@@ -3,7 +3,6 @@ package com.openandroidintelligence.conversation.workbench
 import android.widget.Toast
 import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -14,7 +13,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -25,9 +23,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.unit.isSpecified
-
-/** 流式输出光标在 AnnotatedString 中的固定占位 id。 */
-internal const val StreamingCursorInlineId = "streaming_cursor"
 
 /**
  * 行内 Markdown 文本：AnnotatedString 负责样式、链接与公式占位，
@@ -82,10 +77,8 @@ fun MarkdownInlineText(
 
     // 光标由正文容器的独立 Overlay 绘制，不把占位字符加入 AnnotatedString，避免改变换行、选择和复制。
     val annotated = result.annotated
-    val cursorPlaceholders = emptyMap<String, InlineTextContent>()
 
     val inlineContent = buildMap {
-        putAll(cursorPlaceholders)
         result.inlineMath.forEach { span ->
             val key = MarkdownMathKey(
                 latex = span.latex,
@@ -104,9 +97,16 @@ fun MarkdownInlineText(
                         placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
                     ),
                 ) {
+                    val leaf = LocalMarkdownLeafSource.current ?: LocalMarkdownBlockSource.current
+                    val mathSource = leaf?.let { original ->
+                        val start = result.sourceOffsets.getOrNull(span.start) ?: 0
+                        original.slice(start.coerceAtMost(original.text.length),
+                            (start + span.latex.length).coerceAtMost(original.text.length))
+                    }
                     MarkdownMathInline(
                         latex = span.latex,
                         fontSize = effectiveFontSize,
+                        modifier = streamingAtomicModifier(mathSource, Modifier),
                         onMeasured = { size -> measuredMathSizes[span.latex] = size },
                     )
                 },
@@ -142,29 +142,3 @@ fun MarkdownInlineText(
     }
 }
 
-/**
- * 流式光标的 InlineTextContent。宽度按字高比例取 0.14（约等于 14sp 字号下的 2dp），
- * 高度跟随当前字号。非流式状态返回空表，避免无谓的占位与重排。
- *
- * 刻意保持非 @Composable：思考卡片在 remember 块里构造它，光标宽度又与密度无关
- * （直接按 sp 比例给出），这样调用方不需要额外提升状态。
- */
-internal fun streamingCursorInlineContent(
-    isStreaming: Boolean,
-    cursorInlineId: String = StreamingCursorInlineId,
-    cursorHeight: TextUnit = 14.sp,
-): Map<String, InlineTextContent> {
-    if (!isStreaming) return emptyMap()
-    val cursorWidth = cursorHeight * 0.14f
-    return mapOf(
-        cursorInlineId to InlineTextContent(
-            Placeholder(
-                width = if (cursorWidth.value > 0f) cursorWidth else 2.sp,
-                height = cursorHeight,
-                placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
-            ),
-        ) {
-            StreamingCursor()
-        },
-    )
-}

@@ -513,7 +513,8 @@ object AssistantWireBudget {
         }
 
         // 先按条数封顶；保留最新条目，因此流式尾条必然留下。
-        var start = (adjusted.size - MAX_ENTRIES).coerceAtLeast(0)
+        val protectedIndex = adjusted.indexOfFirst { it.key == protectedMessageId }.takeIf { it >= 0 } ?: lastIndex
+        var start = minOf((adjusted.size - MAX_ENTRIES).coerceAtLeast(0), protectedIndex)
         var dropped = start > 0
 
         // 后缀字节和：每条的投影都是独立 JSON 对象，数组开销是分离符 + 方括号。
@@ -531,7 +532,7 @@ object AssistantWireBudget {
         }
 
         // 至少留下最后一条：即使预算仍不够，也宁可超限也不返回空时间线。
-        while (start < lastIndex && timelineBytes(start) > MAX_PAYLOAD_BYTES) {
+        while (start < protectedIndex && timelineBytes(start) > MAX_PAYLOAD_BYTES) {
             start += 1
             dropped = true
         }

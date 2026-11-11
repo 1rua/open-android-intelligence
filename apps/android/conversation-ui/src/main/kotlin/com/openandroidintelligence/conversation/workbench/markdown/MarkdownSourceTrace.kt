@@ -1,7 +1,16 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.withContext
 import java.util.IdentityHashMap
 
 private val ClosedBlockSeparatorRegex = Regex("^[ \\t]*(?:\\r?\\n)[ \\t]*(?:\\r?\\n)")
@@ -87,22 +96,7 @@ class StreamingMarkdownDocument internal constructor(
     val blocks: List<TimelineBlock>,
     internal val trace: MarkdownParseTrace,
     internal val closedThroughOffset: Int,
-) {
-    /** 把同一正文路径产生的展示块绑定到本次解析的来源图，保留真实原文偏移。 */
-    internal fun rebindBlocks(replacement: List<TimelineBlock>): StreamingMarkdownDocument {
-        if (replacement === blocks) return this
-        val rebound = MarkdownParseTrace()
-        fun copy(from: TimelineBlock?, to: TimelineBlock?) {
-            if (from == null || to == null) return
-            trace.blocks[from]?.let { source -> rebound.blocks[to] = source }
-            if (from is TimelineBlock.Blockquote && to is TimelineBlock.Blockquote) {
-                from.blocks.zip(to.blocks).forEach { (left, right) -> copy(left, right) }
-            }
-        }
-        blocks.zip(replacement).forEach { (left, right) -> copy(left, right) }
-        return StreamingMarkdownDocument(sourceText, replacement, rebound, closedThroughOffset)
-    }
-}
+)
 
 /**
  * 只缓存有顶层分隔空行且语法已经关闭的前置块；尾部列表、表格、段落和未闭合围栏始终重算。
@@ -112,6 +106,7 @@ class StreamingMarkdownCache {
     private var previous: StreamingMarkdownDocument? = null
     private var previousNarrative = false
 
+    @Synchronized
     fun parse(text: String, narrative: Boolean = false): StreamingMarkdownDocument {
         val old = previous
         if (old != null && old.sourceText == text && previousNarrative == narrative) return old
@@ -151,5 +146,16 @@ class StreamingMarkdownCache {
 @Composable
 fun rememberStreamingMarkdownDocument(sourceText: String, narrative: Boolean = false): StreamingMarkdownDocument {
     val cache = remember(narrative) { StreamingMarkdownCache() }
-    return remember(sourceText, cache) { cache.parse(sourceText, narrative) }
+    // 首个小片段立即解析，不给首字增加异步等待；后续可变尾段由唯一的可取消收集器处理。
+    var document by remember(cache) { mutableStateOf(cache.parse(sourceText, narrative)) }
+    val latestText by rememberUpdatedState(sourceText)
+    LaunchedEffect(cache) {
+        snapshotFlow { latestText }.collectLatest { text ->
+            if (document.sourceText != text) {
+                val next = withContext(Dispatchers.Default) { cache.parse(text, narrative) }
+                document = next
+            }
+        }
+    }
+    return document
 }

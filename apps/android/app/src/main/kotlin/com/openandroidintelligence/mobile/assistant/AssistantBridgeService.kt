@@ -490,7 +490,9 @@ class AssistantBridgeService : Service() {
             client.protectedThreadId = state?.activeThreadId
             client.protectedReplyId = null
         }
-        entries.lastOrNull { !it.isUser && it.isStreaming }?.let { client.protectedReplyId = it.key }
+        entries.lastOrNull { !it.isUser && !it.executionFact &&
+            (it.isStreaming || it.presentation?.origin == com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE)
+        }?.let { client.protectedReplyId = it.key }
         val (budgeted, truncated) = AssistantWireBudget.applyBudget(trimmed, client.protectedReplyId)
         val dropped = truncated || trimmed.size < entries.size
         val appearance = (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.value

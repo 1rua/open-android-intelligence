@@ -877,13 +877,12 @@ private fun ExecutionTurnRow(
 
         AssistantExecutionTurnBody(
             run = run,
-            finalAnswerSlot = { blocks, streaming ->
+            finalAnswerSlot = { _, _ ->
                 MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
                     StreamingReplyBody(
                         entry = run.finalEntry,
                         registry = presentations,
                         finalOnly = true,
-                        sourceBlocks = blocks,
                     ) { shownBlocks, presenting ->
                         MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
                     }
