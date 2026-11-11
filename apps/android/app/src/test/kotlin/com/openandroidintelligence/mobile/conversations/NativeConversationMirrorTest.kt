@@ -3,10 +3,18 @@ package com.openandroidintelligence.mobile.conversations
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.ClientMessageId
+import com.openandroidintelligence.conversation.model.LocalSendAtom
+import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.gateway.agents.NativeEventApproval
+import com.openandroidintelligence.gateway.agents.AgentCapabilities
+import com.openandroidintelligence.gateway.agents.AgentSessionClient
+import com.openandroidintelligence.gateway.agents.CoreAgent
+import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
+import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.conversation.ports.*
@@ -22,6 +30,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.cancel
 import org.junit.Assert.*
 import org.junit.Test
@@ -32,6 +41,143 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
 class NativeConversationMirrorTest {
+    @Test fun workbenchReopensCancelledPlaceholderAndReadsNativeHistoryWithoutPostingAgain() = runBlocking {
+        val account=scope("workbench-cancelled-${UUID.randomUUID()}")
+        val clientId=ClientMessageId("stopped-before-identity")
+        val seed=NativeConversationMirror(context,account,{"dsh"},key)
+        seed.saveSendAtomsDurably("chat",listOf(LocalSendAtom(ConversationId("chat"),clientId,
+            listOf(MessagePart.Text("停止前输入")),1000,messageId=clientId.value,
+            submissionState=LocalSubmissionState.ACCEPTED,status=AgentMessageStatus.FAILED,statusRevision=30)))
+        seed.closeStore()
+        val reopened=NativeConversationMirror(context,account,{"dsh"},key)
+        val requests=java.util.concurrent.CopyOnWriteArrayList<WireRequest>()
+        val transport=object:GatewayByteTransport {
+            override suspend fun execute(request:WireRequest):WireResponse {
+                requests+=request
+                val body=when {
+                    request.target.endsWith("/sessions") -> """{"sessions":[{"id":"chat","title":"测试会话","updatedAt":"1970-01-01T00:00:01Z","archived":false}]}"""
+                    request.target.endsWith("/history") -> """{"messages":[{"id":"native-stopped-user","role":"user","text":"停止前输入","createdAt":"1970-01-01T00:00:01Z","clientMessageId":"stopped-before-identity","generationId":"native-cancelled-generation","state":"cancelled","contentRevision":25}]}"""
+                    else -> error("非预期请求")
+                }
+                return WireResponse(200,listOf(RawHeader("Content-Type","application/json")),body.toByteArray())
+            }
+            override fun eventStream(request:WireRequest)=emptyFlow<ByteArray>()
+        }
+        val owner=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()+Dispatchers.Unconfined)
+        val agent=CoreAgent("dsh","测试DSH","dsh",true,"deployment",AgentCapabilities(list=true,history=true))
+        val http=GatewayHttpClient(GatewayProfile("profile","device","session","https://synthetic.example",accessToken="synthetic"),
+            transport,{ByteArray(64)},InMemoryEventCursorStore(),ioDispatcher=Dispatchers.IO)
+        val repository=CoreAgentConversationRepository(AgentSessionClient(http),{agent},{"chat"},owner,
+            Dispatchers.IO,storeForAgent={reopened})
+        val controller=com.openandroidintelligence.conversation.state.WorkbenchController(owner,repository,
+            object:AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(
+                    com.openandroidintelligence.conversation.model.CatalogVersion("test"),emptyList())
+            },{account},persistence=reopened,authoritativeMessageIds=true,
+            replyTimeouts=com.openandroidintelligence.conversation.state.WorkbenchController.ReplyTimeouts(enabled=false))
+        try {
+            controller.openThread("chat")
+            val state=withTimeout(5_000) { controller.state.first { state ->
+                (state.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value
+                    ?.any { it.key=="native-stopped-user" }==true || state.notice?.startsWith("HISTORY_SYNC_FAILED:")==true
+            } }
+            assertFalse("合法原生历史不能被镜像身份合并拒绝",state.notice?.startsWith("HISTORY_SYNC_FAILED:")==true)
+            val rows=(state.timeline as com.openandroidintelligence.conversation.state.Loadable.Ready).value
+            assertEquals(listOf("native-stopped-user"),rows.filter { it.isUser }.map { it.key })
+            assertEquals("native-stopped-user",reopened.loadSendAtoms("chat").single().messageId)
+            assertTrue(requests.any { it.target.endsWith("/history") })
+            assertTrue(requests.none { it.method=="POST" })
+        } finally { controller.closeAndAwait();repository.close();owner.cancel();reopened.closeStore() }
+    }
+
+    @Test fun cancelledClientPlaceholderAdoptsNativeHistoryAfterReopenWithoutLosingTerminalFacts() = runBlocking {
+        val account=scope("cancelled-placeholder-${UUID.randomUUID()}")
+        val clientId=ClientMessageId("cancelled-client")
+        val original=LocalSendAtom(ConversationId("chat"),clientId,listOf(MessagePart.Text("停止前输入")),1000,
+            messageId=clientId.value,submissionState=LocalSubmissionState.ACCEPTED,
+            status=AgentMessageStatus.FAILED,statusRevision=30,errorCode=AgentMessageErrorCode.AGENT_REQUEST_FAILED)
+        val first=NativeConversationMirror(context,account,{"dsh"},key)
+        first.saveSendAtomsDurably("chat",listOf(original))
+        first.closeStore()
+        val restored=NativeConversationMirror(context,account,{"dsh"},key)
+        val history=TimelineMessage("native-cancelled-user","user",original.parts,1000,"cancelled",
+            conversationId=ConversationId("chat"),clientMessageId=clientId,generationId="native-generation",contentRevision=25)
+        val event=VerifiedConversationEvent.TimelineUpsert("cancelled-history",1000,25,history)
+        try {
+            restored.commitEvents(listOf(event))
+            restored.commitEvents(listOf(event))
+            assertEquals("native-cancelled-user",restored.loadSendAtoms("chat").single().messageId)
+        } finally { restored.closeStore() }
+        val reopened=NativeConversationMirror(context,account,{"dsh"},key)
+        try {
+            val atom=reopened.loadSendAtoms("chat").single()
+            assertEquals("native-cancelled-user",atom.messageId)
+            assertEquals(AgentMessageStatus.FAILED,atom.status)
+            assertEquals(30L,atom.statusRevision)
+            assertEquals(AgentMessageErrorCode.AGENT_REQUEST_FAILED,atom.errorCode)
+            val rows=com.openandroidintelligence.conversation.model.mergeLocalSendAtoms(
+                reopened.loadTimeline("chat")!!.messages,listOf(atom))
+            assertEquals(listOf("native-cancelled-user"),rows.map { it.id })
+            assertFalse(rows.single().localPlaceholder)
+            assertEquals(original.parts,rows.single().parts)
+        } finally { reopened.closeStore() }
+    }
+
+    @Test fun acceptedIdentityUpgradeAndStalePlaceholderWritePreserveNativeIdentityAndNewerFacts() = runBlocking {
+        val mirror=NativeConversationMirror(context,scope("accept-placeholder-${UUID.randomUUID()}"),{"dsh"},key)
+        val clientId=ClientMessageId("accepted-client")
+        val placeholder=LocalSendAtom(ConversationId("chat"),clientId,listOf(MessagePart.Text("原输入")),1000,
+            messageId=clientId.value)
+        try {
+            mirror.saveSendAtomsDurably("chat",listOf(placeholder))
+            val accepted=placeholder.identified("native-user").copy(parts=listOf(MessagePart.Text("已修订输入")),
+                contentRevision=5,status=AgentMessageStatus.COMPLETED,statusRevision=8)
+            mirror.saveSendAtomsDurably("chat",listOf(accepted))
+            mirror.saveSendAtomsDurably("chat",listOf(placeholder))
+            val saved=mirror.loadSendAtoms("chat").single()
+            assertEquals("native-user",saved.messageId)
+            assertEquals(accepted.parts,saved.parts)
+            assertEquals(5L,saved.contentRevision)
+            assertEquals(AgentMessageStatus.COMPLETED,saved.status)
+            assertEquals(8L,saved.statusRevision)
+            assertEquals(LocalSubmissionState.ACCEPTED,saved.submissionState)
+            mirror.saveSendAtomsDurably("chat",listOf(saved.copy(parts=emptyList(),contentRevision=9,tombstoneRevision=9)))
+            mirror.saveSendAtomsDurably("chat",listOf(placeholder))
+            val deleted=mirror.loadSendAtoms("chat").single()
+            assertEquals("native-user",deleted.messageId)
+            assertEquals(9L,deleted.tombstoneRevision)
+            assertTrue(deleted.parts.isEmpty())
+        } finally { mirror.closeStore() }
+    }
+
+    @Test fun historySnapshotCanUpgradePlaceholderWhileRealIdentityConflictsStillRollback() = runBlocking {
+        val mirror=NativeConversationMirror(context,scope("snapshot-placeholder-${UUID.randomUUID()}"),{"dsh"},key)
+        val clientId=ClientMessageId("snapshot-client")
+        val placeholder=LocalSendAtom(ConversationId("chat"),clientId,listOf(MessagePart.Text("原输入")),1000,
+            messageId=clientId.value)
+        try {
+            mirror.saveSendAtomsDurably("chat",listOf(placeholder))
+            val row=TimelineMessage("native-user","user",placeholder.parts,1000,
+                conversationId=ConversationId("chat"),clientMessageId=clientId,contentRevision=5)
+            mirror.offlineMirror().saveTimeline("chat",TimelinePage(listOf(row),null))
+            assertEquals("native-user",mirror.loadSendAtoms("chat").single().messageId)
+            val original=mirror.loadSendAtoms("chat").single()
+            val nativeConflict=runCatching {
+                mirror.saveSendAtomsDurably("chat",listOf(original.copy(messageId="another-native-user")))
+            }.exceptionOrNull()
+            assertEquals("MESSAGE_ID_CONFLICT",nativeConflict?.message)
+            val sharedServerId=runCatching {
+                mirror.saveSendAtomsDurably("chat",listOf(original.copy(clientMessageId=ClientMessageId("other-client"))))
+            }.exceptionOrNull()
+            assertEquals("MESSAGE_ID_CONFLICT",sharedServerId?.message)
+            val foreignConversation=runCatching {
+                mirror.saveSendAtomsDurably("chat",listOf(original.copy(conversationId=ConversationId("other-chat"))))
+            }.exceptionOrNull()
+            assertEquals("MESSAGE_CONVERSATION_CONFLICT",foreignConversation?.message)
+            assertEquals(listOf(original),mirror.loadSendAtoms("chat"))
+        } finally { mirror.closeStore() }
+    }
+
     @Test fun provisionalAssistantIdentitySurvivesCheckpointAndTimelineReopen() = runBlocking {
         val account=scope("provisional-${UUID.randomUUID()}")
         val provisional=TimelineMessage("stream_local", "assistant", listOf(MessagePart.Text("尚待真实身份的回复")),
