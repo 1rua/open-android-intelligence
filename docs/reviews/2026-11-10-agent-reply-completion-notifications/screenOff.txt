@@ -22,5 +22,3 @@ OAI通知验收：重连同步未重复通知，场景 screenOff 通过
 Time: 12.658
 
 OK (1 test)
-
-
