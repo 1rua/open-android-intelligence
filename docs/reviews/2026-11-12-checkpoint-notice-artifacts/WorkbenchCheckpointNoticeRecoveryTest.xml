@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-11-11T23:39:04" hostname="djbd-cachyos" time="0.258">
+  <properties/>
+  <testcase name="aLaterCheckpointFailureIsStillVisibleUntilItsOwnRetrySucceeds" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.202"/>
+  <testcase name="aStaleComposerVersionCannotPretendToRecoverPersistence" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.005"/>
+  <testcase name="anEarlierSuccessfulWriteCannotClearALaterQueuedFailure" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.006"/>
+  <testcase name="anActiveWriterKeepsOneWriterAndCommitsTheLatestQueuedSnapshotOnce" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.007"/>
+  <testcase name="successfulRetryClearsOnlyTheCheckpointFailureAndCanBeLoaded" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.005"/>
+  <testcase name="accountSnapshotAfterThreadSwitchRecoversThePreviousThreadsDraft" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.007"/>
+  <testcase name="checkpointRecoveryPreservesANewerDifferentNotice" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.006"/>
+  <testcase name="persistenceDiagnosticsUseOnlyBoundedWhitelistFields" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.005"/>
+  <testcase name="sameValueEventFailureSurvivesAnUnrelatedCheckpointRecovery" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.008"/>
+  <testcase name="cancelledRecoveryCannotClearTheFailureOrClaimASuccessfulWrite" classname="com.openandroidintelligence.conversation.state.WorkbenchCheckpointNoticeRecoveryTest" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

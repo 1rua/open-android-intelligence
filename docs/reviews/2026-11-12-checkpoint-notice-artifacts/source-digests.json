@@ -1,0 +1,14 @@
+{
+  "baseSha": "02ad53e09049c2b06c21cacd9d009c2f14e6d5bd",
+  "controllerTests": 10,
+  "existingEventTests": 4,
+  "sqliteTests": 1,
+  "failed": 0,
+  "skipped": 0,
+  "fastExitCode": 0,
+  "sourceSha256": {
+    "apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/state/WorkbenchController.kt": "361371ffd1a83668c2507414848f7133e14c4ee1b29e87d3f8d8a8498282827e",
+    "apps/android/conversation-ui/src/test/kotlin/com/openandroidintelligence/conversation/state/WorkbenchCheckpointNoticeRecoveryTest.kt": "007a7aa5c947ed7f723266f3d3385d060ae4d541ecec3791743f9fdbcf29a580",
+    "apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/conversations/NativeConversationMirrorTest.kt": "ad75bf54bd30e224570f5ce70f57c7f841b01ef71f91824265e09cc42558caea"
+  }
+}

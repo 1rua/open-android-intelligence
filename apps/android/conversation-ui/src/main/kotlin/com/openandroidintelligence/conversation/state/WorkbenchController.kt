@@ -944,13 +944,32 @@ class WorkbenchController(
     private var pendingCheckpoint: WorkbenchCheckpoint? = null
     private var savedCheckpoint: WorkbenchCheckpoint? = null
     private var checkpointFailure: Throwable? = null
-    /** 只清理同一会话和修订成功恢复后仍未被其他状态覆盖的通知。 */
-    private data class CheckpointFailureNotice(
-        val value: String,
-        val threadId: String?,
-        val draftVersion: Long,
-    )
+    /** 每次真实 checkpoint 写入都有独立代次，不能用草稿版本代替事件/队列快照身份。 */
+    private var checkpointAttempt = 0L
+    private data class CheckpointFailureNotice(val value: String, val attempt: Long, val draftVersion: Long)
     private var checkpointFailureNotice: CheckpointFailureNotice? = null
+    private enum class PersistenceFailurePhase { CHECKPOINT_WRITE, CREATION_FLUSH, ATTACHMENT_ARCHIVE, EVENT_COMMIT }
+    private val persistenceFailureDiagnostics = mutableMapOf<PersistenceFailurePhase, String>()
+
+    /** 只记录白名单阶段和异常类型；异常 message 可能含正文或凭据，不能写进日志。 */
+    private fun recordPersistenceFailure(phase: PersistenceFailurePhase, failure: Exception) {
+        val kind = when (failure) {
+            is java.io.IOException -> "IO"
+            is SecurityException -> "SECURITY"
+            is IllegalStateException -> "STATE"
+            else -> "OTHER"
+        }
+        if (persistenceFailureDiagnostics.put(phase, kind) != kind) {
+            GatewayLog.w("OaiPersistence", "phase=${phase.name} result=failed kind=$kind code=LOCAL_PERSISTENCE_FAILED")
+        }
+    }
+
+    /** 其他持久化阶段拥有独立错误；相同文案不能借用 checkpoint 的恢复令牌。 */
+    private fun reportOtherPersistenceFailure(phase: PersistenceFailurePhase, failure: Exception) {
+        checkpointFailureNotice = null
+        recordPersistenceFailure(phase, failure)
+    }
+
     private var closingJobs: List<Job> = emptyList()
     private val persistenceLifecycleMutex = Mutex()
     private var persistenceRetired = false
@@ -1104,7 +1123,10 @@ class WorkbenchController(
                 ConversationSummary(conversation.id, conversation.title, conversation.createdAt)))) }
         try { flushPendingPersistence() }
         catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { update { it.copy(notice="LOCAL_SAVE_FAILED:${errorCodeOf(failure)}") } }
+        catch (failure: Exception) {
+            reportOtherPersistenceFailure(PersistenceFailurePhase.CREATION_FLUSH, failure)
+            update { it.copy(notice="LOCAL_SAVE_FAILED:${errorCodeOf(failure)}") }
+        }
         retryFolderAssignments()
         return conversation
     }
@@ -3041,6 +3063,7 @@ class WorkbenchController(
                 archiveKey?.let { key ->
                     mediaPresentation[key]=(mediaPresentation[key] ?: MediaPresentation()).copy(
                         localState=com.openandroidintelligence.conversation.model.AttachmentLocalState.FAILED,localError=errorCodeOf(cause)) }
+                reportOtherPersistenceFailure(PersistenceFailurePhase.ATTACHMENT_ARCHIVE, cause)
                 update { it.copy(notice = "LOCAL_SAVE_FAILED:${errorCodeOf(cause)}") }
             }
         }
@@ -4625,6 +4648,7 @@ class WorkbenchController(
                         } catch (failure: Exception) {
                             storageFailures++
                             val retryable = failure is java.io.IOException && storageFailures < 4
+                            if (failure is java.io.IOException) reportOtherPersistenceFailure(PersistenceFailurePhase.EVENT_COMMIT, failure)
                             _state.update { it.copy(
                                 notice = if (failure is java.io.IOException) "LOCAL_SAVE_FAILED:${errorCodeOf(failure)}" else "EVENT_APPLY_FAILED:${errorCodeOf(failure)}",
                                 streamHealth = if (retryable) com.openandroidintelligence.conversation.model.StreamHealth.RECONNECTING
@@ -5934,17 +5958,19 @@ class WorkbenchController(
             composerDrafts=composerDrafts.values.toList(),
             pendingSubmissions=(waitingAttachmentSubmissions.values.map { it.submission } + recoveredAttachmentSubmissions.values)
                 .distinctBy { it.clientMessageId }.map { SavedSubmission(it.text,it.attachmentIds,it.revision,it.conversationId,it.clientMessageId,it.delivery,it.expectedGenerationId) })
-        if (checkpoint == pendingCheckpoint || checkpoint == savedCheckpoint && checkpointFailure == null &&
-            checkpointJob?.isActive != true) return
+        if (checkpoint == pendingCheckpoint && checkpointJob?.isActive == true ||
+            checkpoint == savedCheckpoint && checkpointFailure == null && checkpointJob?.isActive != true) return
         pendingCheckpoint = checkpoint
         if (checkpointJob?.isActive == true) return
         checkpointJob = workScope.launch(start=kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
             var writingCheckpoint: WorkbenchCheckpoint? = null
+            var writingAttempt = checkpointAttempt
             try {
                 while (true) {
                     val next = pendingCheckpoint ?: break
                     pendingCheckpoint = null
                     writingCheckpoint = next
+                    writingAttempt = ++checkpointAttempt
                     withContext(persistenceDispatcher) {
                         val durable=store as? AwaitableWorkbenchPersistence
                         if (durable!=null) durable.saveCheckpoint(next) else store.save(next)
@@ -5953,10 +5979,13 @@ class WorkbenchController(
                     writingCheckpoint = null
                 }
                 checkpointFailure = null
+                if (persistenceFailureDiagnostics.remove(PersistenceFailurePhase.CHECKPOINT_WRITE) != null) {
+                    GatewayLog.d("OaiPersistence", "phase=CHECKPOINT_WRITE result=recovered code=LOCAL_PERSISTENCE_RECOVERED")
+                }
                 checkpointFailureNotice?.let { failedNotice ->
-                    val recovered = savedCheckpoint?.let { checkpoint ->
-                        checkpoint.threadId == failedNotice.threadId && checkpoint.draftVersion >= failedNotice.draftVersion
-                    } == true
+                    // checkpoint 包含所有会话草稿；切换后的新快照也能恢复旧会话，不能只比较当前 threadId。
+                    val recovered = writingAttempt > failedNotice.attempt &&
+                        savedCheckpoint?.let { it.draftVersion >= failedNotice.draftVersion } == true
                     if (recovered) {
                         _state.update { current ->
                             if (current.notice == failedNotice.value) current.copy(notice = null) else current
@@ -5967,13 +5996,10 @@ class WorkbenchController(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 checkpointFailure = failure
+                recordPersistenceFailure(PersistenceFailurePhase.CHECKPOINT_WRITE, failure)
                 val notice = "LOCAL_SAVE_FAILED:${errorCodeOf(failure)}"
-                val failedCheckpoint = writingCheckpoint ?: pendingCheckpoint
-                checkpointFailureNotice = CheckpointFailureNotice(
-                    notice,
-                    failedCheckpoint?.threadId,
-                    failedCheckpoint?.draftVersion ?: 0L,
-                )
+                checkpointFailureNotice = CheckpointFailureNotice(notice, writingAttempt,
+                    writingCheckpoint?.draftVersion ?: 0L)
                 _state.update { it.copy(notice=notice) }
             }
         }
