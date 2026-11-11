@@ -115,8 +115,8 @@ class NativeAgentBackgroundWorkTest {
             assertFalse("另一 Agent 的同名运行会话不能阻止当前管理操作",
                 second.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
             awaitState(second.state) { state ->
-                state.notice != null || !state.managingThreads &&
-                    (delete && state.threads is Loadable.Empty || (state.threads as? Loadable.Ready)?.value?.let { threads ->
+                !state.managingThreads && (state.notice != null ||
+                    delete && state.threads is Loadable.Empty || (state.threads as? Loadable.Ready)?.value?.let { threads ->
                         if (delete) threads.none { it.id.value == "native-session" }
                         else threads.any { it.id.value == "native-session" && it.archived }
                     } == true)
@@ -154,6 +154,10 @@ class NativeAgentBackgroundWorkTest {
             val other = fixture.openWorkbench("codex", previous = first)
             val restored = fixture.openWorkbench("dsh", previous = other)
             assertTrue(restored !== first)
+            fixture.gateway.respond("${AgentSessionClient.ROOT}/dsh/sessions/idle-session/history", """{"messages":[]}""")
+            restored.openThread("idle-session")
+            awaitState(restored.state) { it.activeThreadId == "idle-session" && it.historyHydrated && it.generation == GenerationState.IDLE }
+            assertFalse("原会话不属于新控制器自身的在途集合", "native-session" in restored.ownedBusyThreadIds)
             restored.archiveThread("native-session")
             assertTrue(restored.state.value.notice?.startsWith("CONVERSATION_BUSY") == true)
             restored.deleteThread("native-session")
@@ -455,8 +459,11 @@ class NativeAgentBackgroundWorkTest {
         }
 
         fun openWorkbench(agentId: String, previous: WorkbenchController? = null): WorkbenchController {
+            val retiring = previous ?: runtime.controller.value.takeIf {
+                runtime.nativeAgents.value?.state?.value?.selectedAgentId != agentId
+            }
             selectSession(agentId)
-            val controller = awaitState(runtime.controller) { it != null && it !== previous && it.state.value.isOnline }!!
+            val controller = awaitState(runtime.controller) { it != null && it !== retiring && it.state.value.isOnline }!!
             awaitState(controller.state) { state ->
                 (state.threads as? Loadable.Ready)?.value?.any { it.id.value == "native-session" } == true
             }
