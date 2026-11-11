@@ -52,11 +52,12 @@ internal data class StreamingTextLayout(
 /** 绘制帧只更新本状态，不读取或重新解析 Markdown。 */
 @Stable
 internal class StreamingDecorationState {
-    var presentation: StreamingTextPresentation = StreamingTextPresentation(0, 0, 0, false, false)
+    var presentation by mutableStateOf(StreamingTextPresentation(0, 0, 0, false, false))
     var document: StreamingMarkdownDocument? = null
     var container: LayoutCoordinates? = null
     val batches = ArrayList<StreamingFadeBatch>(MaximumFadeBatches)
     private val layouts = LinkedHashMap<Any, StreamingTextLayout>()
+    private val placements = mutableMapOf<Any, Offset>()
     var invalidation by mutableIntStateOf(0)
         private set
     var frameMillis by mutableLongStateOf(0L)
@@ -101,9 +102,15 @@ internal class StreamingDecorationState {
     }
 
     fun register(key: Any, layout: StreamingTextLayout) {
+        val host = container?.takeIf { it.isAttached }
+        val origin = if (host != null && layout.coordinates.isAttached) {
+            host.localPositionOf(layout.coordinates, Offset.Zero)
+        } else Offset.Zero
+        val oldOrigin = placements.put(key, origin)
         val old = layouts.put(key, layout)
         if (old == null || old.sourceEnd != layout.sourceEnd || old.coordinates !== layout.coordinates ||
-            old.cursor != layout.cursor || old.visibleRanges != layout.visibleRanges || old.batchId != layout.batchId) invalidation++
+            old.cursor != layout.cursor || old.visibleRanges != layout.visibleRanges || old.batchId != layout.batchId ||
+            oldOrigin != origin) invalidation++
         notifyVisible(layout)
     }
 
@@ -113,6 +120,7 @@ internal class StreamingDecorationState {
     }
 
     fun unregister(key: Any) {
+        placements.remove(key)
         if (layouts.remove(key) != null) invalidation++
     }
 
