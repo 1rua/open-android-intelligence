@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 /**
@@ -156,8 +157,8 @@ class AssistantStateJsonTest {
         assertNull(state.account)
         assertNull(state.sessionId)
         assertFalse(state.timelineTruncated)
-        assertEquals("Gateway 未连接", state.gatewayStatusLabel())
-        assertEquals("请先在 App 中连接 Gateway", state.composerBlockReason())
+        assertEquals("Gateway 未连接", state.gatewayStatusLabel(RuntimeEnvironment.getApplication()))
+        assertEquals("请先在 App 中连接 Gateway", state.composerBlockReason(RuntimeEnvironment.getApplication()))
     }
 
     @Test fun connectedWithoutAccountStillAllowsInteractionAndPublishesNoAccount() {
@@ -165,8 +166,8 @@ class AssistantStateJsonTest {
 
         assertTrue(state.canInteract)
         assertNull(state.account)
-        assertEquals("Gateway 已连接", state.gatewayStatusLabel())
-        assertNull(state.composerBlockReason())
+        assertEquals("Gateway 已连接", state.gatewayStatusLabel(RuntimeEnvironment.getApplication()))
+        assertNull(state.composerBlockReason(RuntimeEnvironment.getApplication()))
     }
 
     @Test fun jsonNullStringsAreFoldedIntoEmptyText() {
@@ -187,7 +188,7 @@ class AssistantStateJsonTest {
 
         assertTrue(state.hasUnknownOutcome)
         assertFalse(state.isGenerating)
-        assertEquals("上一条消息结果未知，请先在 App 中确认", state.composerBlockReason())
+        assertEquals("上一条消息结果未知，请先在 App 中确认", state.composerBlockReason(RuntimeEnvironment.getApplication()))
     }
 
     /**
@@ -223,7 +224,7 @@ class AssistantStateJsonTest {
         val failed = base.copy(bridgeAvailable = false)
 
         assertFalse(failed.canInteract)
-        assertEquals("助理服务未连接", failed.gatewayStatusLabel())
-        assertEquals("助理服务无法连接，请打开 App 后重试", failed.composerBlockReason())
+        assertEquals("助理服务未连接", failed.gatewayStatusLabel(RuntimeEnvironment.getApplication()))
+        assertEquals("助理服务无法连接，请打开 App 后重试", failed.composerBlockReason(RuntimeEnvironment.getApplication()))
     }
 }

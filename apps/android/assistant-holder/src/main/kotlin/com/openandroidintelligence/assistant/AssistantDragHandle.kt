@@ -74,6 +74,7 @@ internal fun AssistantDragHandle(
      */
     onDragWindowExpanded: (Boolean) -> Unit = {},
 ) {
+    val handleDescription = stringResource(UiR.string.assistant_handle_content_desc)
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
@@ -137,7 +138,7 @@ internal fun AssistantDragHandle(
             .height(Dimensions.MinimumTouchTarget)
             .testTag(AssistantCompactBarTags.HANDLE)
             .semantics {
-                contentDescription = stringResource(UiR.string.assistant_handle_content_desc)
+                contentDescription = handleDescription
                 this.stateDescription = stateDescription
             }
             .graphicsLayer {

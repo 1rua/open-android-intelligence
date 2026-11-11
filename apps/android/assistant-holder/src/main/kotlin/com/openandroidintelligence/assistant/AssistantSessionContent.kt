@@ -29,7 +29,6 @@ import com.openandroidintelligence.conversation.voice.VoiceRecorderState
 import com.openandroidintelligence.conversation.voice.VoiceRejection
 import com.openandroidintelligence.conversation.voice.activeRecording
 import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
-import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 圈选期间由会话持有的系统截图。

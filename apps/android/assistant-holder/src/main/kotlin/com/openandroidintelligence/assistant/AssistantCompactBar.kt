@@ -310,6 +310,8 @@ private fun CompactInputRow(
     cardShape: Shape?,
 ) {
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val expandedDescription = stringResource(UiR.string.assistant_compact_bar_expanded_desc)
+    val inputDescription = stringResource(UiR.string.assistant_compact_input_desc)
     val currentOnDraftChange by rememberUpdatedState(onDraftChange)
     val reportEdits = remember(editor) {
         InputTransformation {
@@ -345,7 +347,7 @@ private fun CompactInputRow(
             .animateContentSize(sizeSpec)
             .semantics {
                 // 只给展开态一个简短状态说明，收起时不额外朗读。
-                if (expanded) stateDescription = stringResource(UiR.string.assistant_compact_bar_expanded_desc)
+                if (expanded) stateDescription = expandedDescription
             },
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -401,7 +403,7 @@ private fun CompactInputRow(
                         .then(if (expanded) Modifier.align(Alignment.Top) else Modifier)
                         .testTag(AssistantCompactBarTags.INPUT)
                         .onFocusChanged { focused = it.isFocused }
-                        .semantics { contentDescription = stringResource(UiR.string.assistant_compact_input_desc) },
+                        .semantics { contentDescription = inputDescription },
                     decorator = { innerTextField ->
                         Box(
                             modifier = Modifier.padding(vertical = Dimensions.SpaceCompact),
@@ -477,6 +479,7 @@ private fun CompactAttachmentTile(
     attachment: AssistantCompactAttachment,
     onRemove: (String) -> Unit,
 ) {
+    val attachmentDescription = stringResource(UiR.string.assistant_compact_attachment_desc, attachment.filename)
     Surface(
         shape = RoundedCornerShape(AppRadius.Medium),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -484,7 +487,7 @@ private fun CompactAttachmentTile(
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier
             .testTag(AssistantCompactBarTags.attachment(attachment.id))
-            .semantics { contentDescription = stringResource(UiR.string.assistant_compact_attachment_desc, attachment.filename) },
+            .semantics { contentDescription = attachmentDescription },
     ) {
         Row(
             modifier = Modifier

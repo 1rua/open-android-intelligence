@@ -100,6 +100,7 @@ internal fun AssistantLiveSelectionSurface(
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val primary = MaterialTheme.colorScheme.primary
+    val selectionDescription = stringResource(UiR.string.assistant_selection_surface_desc)
 
     // 画布尺寸只来自本层的测量（与 overlay 同一来源）；裁剪时按它做坐标换算。
     var canvasSize by remember(source) { mutableStateOf(IntSize.Zero) }
@@ -193,7 +194,7 @@ internal fun AssistantLiveSelectionSurface(
         modifier = modifier
             .fillMaxSize()
             .onSizeChanged { canvasSize = it }
-            .semantics { contentDescription = stringResource(UiR.string.assistant_selection_surface_desc) },
+            .semantics { contentDescription = selectionDescription },
     ) {
         // 底层：定格截图（系统截图，不重新截图），铺满画布。
         Image(

@@ -957,3 +957,73 @@ internal class AssistantSession(service: AssistantSessionService) : VoiceInterac
         const val MAX_SCREENSHOT_PIXELS = 4_000_000L
 
         /** 等待主进程交接回执的上限：必须大于服务端等待附件就绪的上限（3 秒），
+         *  否则浮层会先判超时，用户看到的就不是真实原因。 */
+        const val HANDOFF_TIMEOUT_MILLIS = ASSISTANT_HANDOFF_RESULT_TIMEOUT_MILLIS
+    }
+}
+
+/**
+ * 卡片里选中的来源 → 选择器 Activity 的类别。
+ *
+ * 「拍照」走系统相机（返回位图，经既有屏幕附件通道交给主进程）；相册走 Photo Picker
+ * 多选；文档走 SAF。三者与主 App 的附件入口一一对应，不做任何静默降级。
+ */
+private fun com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.toPickerKind(): AssistantAttachmentKind =
+    when (this) {
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.CAMERA ->
+            AssistantAttachmentKind.CAPTURE
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.GALLERY ->
+            AssistantAttachmentKind.MEDIA
+        com.openandroidintelligence.conversation.workbench.ComposerAttachmentSource.DOCUMENT ->
+            AssistantAttachmentKind.DOCUMENT
+    }
+
+/**
+ * 把拍照位图编码成缩略条用的预览字节。
+ *
+ * 桥接在编码后会回收位图，主进程又只回传附件元数据、不传字节——所以预览必须在
+ * 交给桥接**之前**留下。先按最长边缩到 [CAPTURE_PREVIEW_MAX_EDGE]，再以 JPEG 压缩：
+ * 预览只用于缩略条，几百像素足够，也避免被 `AssistantLocalPreviews` 的 4MB 总预算拒掉。
+ *
+ * @return 可直接写入 `AssistantLocalPreviews` 的字节；已回收或编码失败时返回 null
+ *   （界面按媒体类型显示图标，不伪造预览）。
+ */
+internal fun encodeCapturePreview(
+    source: android.graphics.Bitmap,
+    maxEdge: Int = CAPTURE_PREVIEW_MAX_EDGE,
+    quality: Int = CAPTURE_PREVIEW_QUALITY,
+): ByteArray? {
+    if (source.isRecycled || source.width <= 0 || source.height <= 0) return null
+    val longest = maxOf(source.width, source.height)
+    val scaled = if (longest <= maxEdge) {
+        source
+    } else {
+        val ratio = maxEdge.toFloat() / longest
+        runCatching {
+            android.graphics.Bitmap.createScaledBitmap(
+                source,
+                (source.width * ratio).toInt().coerceAtLeast(1),
+                (source.height * ratio).toInt().coerceAtLeast(1),
+                true,
+            )
+        }.getOrNull() ?: return null
+    }
+    return try {
+        val output = java.io.ByteArrayOutputStream()
+        if (scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, quality, output)) {
+            output.toByteArray()
+        } else {
+            null
+        }
+    } finally {
+        // 只在缩放产生了新位图时释放，调用方的原图仍要交给桥接。
+        if (scaled !== source && !scaled.isRecycled) scaled.recycle()
+    }
+}
+
+/** 拍照预览在本进程的临时键；主进程回传权威附件 ID 后由此改挂。 */
+internal const val CAPTURE_PREVIEW_KEY = "assistant-capture-preview"
+
+/** 拍照预览的 JPEG 质量与最长边。 */
+internal const val CAPTURE_PREVIEW_QUALITY = 85
+internal const val CAPTURE_PREVIEW_MAX_EDGE = 720

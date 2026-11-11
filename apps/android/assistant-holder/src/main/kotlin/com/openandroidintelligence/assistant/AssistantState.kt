@@ -152,14 +152,8 @@ internal fun AssistantState.gatewayStatusResId(): Int = when {
     else -> UiR.string.assistant_gateway_status_connected
 }
 
-internal fun AssistantState.gatewayStatusLabel(context: Context? = null): String =
-    context?.getString(gatewayStatusResId()) ?: when {
-        !bridgeAvailable -> "助理服务未连接" // i18n-ignore: fallback text
-        !connected -> "Gateway 未连接" // i18n-ignore: fallback text
-        isStopping -> "Gateway 已连接 · 正在停止生成" // i18n-ignore: fallback text
-        isGenerating -> "Gateway 已连接 · 正在生成" // i18n-ignore: fallback text
-        else -> "Gateway 已连接" // i18n-ignore: fallback text
-    }
+internal fun AssistantState.gatewayStatusLabel(context: Context): String =
+    context.getString(gatewayStatusResId())
 
 /** 输入坞禁用原因；null 表示当前可以发送。 */
 @StringRes
@@ -170,10 +164,5 @@ internal fun AssistantState.composerBlockReasonResId(): Int? = when {
     else -> null
 }
 
-internal fun AssistantState.composerBlockReason(context: Context? = null): String? =
-    context?.let { ctx -> composerBlockReasonResId()?.let(ctx::getString) } ?: when {
-        !bridgeAvailable -> "助理服务无法连接，请打开 App 后重试" // i18n-ignore: fallback text
-        !connected -> "请先在 App 中连接 Gateway" // i18n-ignore: fallback text
-        hasUnknownOutcome -> "上一条消息结果未知，请先在 App 中确认" // i18n-ignore: fallback text
-        else -> null
-    }
+internal fun AssistantState.composerBlockReason(context: Context): String? =
+    composerBlockReasonResId()?.let(context::getString)
