@@ -268,6 +268,7 @@ internal fun streamingAtomicModifier(
     source: MarkdownSourceText?,
     modifier: Modifier,
     measured: Boolean = true,
+    contentBounds: Rect? = null,
 ): Modifier {
     val state = LocalStreamingDecoration.current ?: return modifier
     if (source == null) return modifier
@@ -279,14 +280,15 @@ internal fun streamingAtomicModifier(
         if (!measured) return
         val width = position.size.width.toFloat()
         val height = position.size.height.toFloat()
+        val bounds = contentBounds ?: Rect(0f, 0f, width, height)
         // 公式内容后续增长仍是可见推进；只消费 LaTeX 正文映射，不因闭合定界符或测量回调补震。
         val liveRanges = progress.hapticSourceRanges ?: listOf(progress.sourceRevealStart until progress.sourceRevealEnd)
         val added = source.text.indices.any { index ->
             !source.text[index].isWhitespace() && liveRanges.any { source.offsets[index] in it }
         }
         state.register(key, StreamingTextLayout(
-            source.end, position, Rect(width, 0f, width + 1f, height),
-            if (added) listOf(Rect(0f, 0f, width, height)) else emptyList(), progress.batchId,
+            source.end, position, Rect(bounds.right, bounds.top, bounds.right + 1f, bounds.bottom),
+            if (added) listOf(bounds) else emptyList(), progress.batchId,
         ))
     }
     SideEffect { publish() }

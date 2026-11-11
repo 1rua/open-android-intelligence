@@ -98,6 +98,20 @@ class StreamingMarkdownDocument internal constructor(
     internal val closedThroughOffset: Int,
 )
 
+/** 解析器可忽略尾部空行，但活跃光标仍需由真正包含显式换行的 Text 布局定位。 */
+internal fun streamingInlineSource(
+    text: String,
+    source: MarkdownSourceText,
+    document: StreamingMarkdownDocument?,
+    active: Boolean,
+): MarkdownSourceText {
+    if (!active || document == null || source.text != text) return source
+    val suffix = document.sourceText.substring(source.end.coerceIn(0, document.sourceText.length))
+    if (suffix.none { it == '\n' || it == '\r' } || suffix.any { !it.isWhitespace() }) return source
+    return MarkdownSourceText(source.text + suffix,
+        source.offsets + IntArray(suffix.length) { source.end + it }, source.start)
+}
+
 /**
  * 只缓存有顶层分隔空行且语法已经关闭的前置块；尾部列表、表格、段落和未闭合围栏始终重算。
  * 非追加快照自动使缓存失效，不用第二套语法扫描器猜测块类型。

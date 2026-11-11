@@ -8,6 +8,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -35,6 +38,7 @@ import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /** The system embeds this Activity inside a native conversation bubble. */
 class BubbleConversationActivity : ComponentActivity() {
@@ -226,10 +230,21 @@ private fun BubbleChat(
     val downloadAction: ((String) -> Unit)? =
         if (controller.downloadsSupported) controller::downloadAttachment else null
     val list = rememberLazyListState()
-    val followLatest by remember { derivedStateOf {
+    val scope = rememberCoroutineScope()
+    var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
+    val nearLatest by remember { derivedStateOf {
         val lastVisible = list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: Int.MAX_VALUE
         lastVisible >= list.layoutInfo.totalItemsCount - 2
     } }
+    val dragging by list.interactionSource.collectIsDraggedAsState()
+    LaunchedEffect(dragging) { if (dragging) followLatest = false }
+    LaunchedEffect(list, state.activeThreadId) {
+        snapshotFlow { list.isScrollInProgress to nearLatest }.collect { (scrolling, latest) ->
+            if (!scrolling) followLatest = latest
+        }
+    }
+    var tailHeight by remember(state.activeThreadId) { mutableIntStateOf(0) }
+    var tailKey by remember(state.activeThreadId) { mutableStateOf<String?>(null) }
     LaunchedEffect(displayItems.lastOrNull()?.key, entries.lastOrNull()?.text) {
         if (displayItems.isNotEmpty() && followLatest && !list.isScrollInProgress) {
             list.animateScrollToItem(displayItems.lastIndex)
@@ -260,7 +275,16 @@ private fun BubbleChat(
                             onDownloadAttachment = downloadAction,
                             onRequestOriginalAttachment = controller::requestOriginalImage,
                             onOpenAttachmentPreview = openPreview,
-                            modifier = Modifier.animateItem(
+                            modifier = Modifier.onSizeChanged { measured ->
+                                if (item.key == displayItems.lastOrNull()?.key) {
+                                    val previous = if (tailKey == item.key) tailHeight else measured.height
+                                    tailKey = item.key
+                                    tailHeight = measured.height
+                                    val growth = measured.height - previous
+                                    // 后续吐字只改变真实行高，不改变 receivedText；贴底跟随必须消费布局增长。
+                                    if (growth > 0 && followLatest && !dragging) scope.launch { list.scrollBy(growth.toFloat()) }
+                                }
+                            }.animateItem(
                                 fadeInSpec = null,
                                 placementSpec = MotionSpecs.morph(reduceMotion),
                             ),

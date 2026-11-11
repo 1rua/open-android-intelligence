@@ -9,6 +9,17 @@ import org.junit.Test
 class StreamingMarkdownTraceTest {
     private val colors = MarkdownColors(Color.Black, Color.Black, Color.Black, Color.Black, Color.White, Color.Blue)
 
+    @Test fun 末尾显式换行只进入活跃文字布局而不改最终Markdown语义() {
+        val document = StreamingMarkdownCache().parse("甲\n\n")
+        val block = document.blocks.single()
+        val source = requireNotNull(document.trace.blocks[block]).leaves.single()
+        val laidOut = streamingInlineSource("甲", source, document, true)
+        assertEquals("甲\n\n", laidOut.text)
+        assertEquals(listOf(0, 1, 2), laidOut.offsets.toList())
+        assertEquals("甲", streamingInlineSource("甲", source, document, false).text)
+        assertEquals(MarkdownParser.parse("甲\n\n"), document.blocks)
+    }
+
     @Test fun 每个流式前缀和非追加纠正均与完整解析相同() {
         val text = """
             # 标题

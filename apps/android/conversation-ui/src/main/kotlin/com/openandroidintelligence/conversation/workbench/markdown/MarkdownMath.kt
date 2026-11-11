@@ -30,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -219,7 +220,7 @@ fun buildKaTeXHtml(
         append("<div id=\"math\"></div><div id=\"fallback\"></div>")
         append("<script src=\"katex.min.js\"></script>")
         append("<script>(function(){")
-        append("var state={nw:0,nh:0,sw:0,sh:0,failed:false};")
+        append("var state={nw:0,nh:0,sw:0,sh:0,cx:0,cy:0,cw:0,ch:0,failed:false};")
         append("window.__oaiMath=state;")
         append("var target=document.getElementById('math');")
         append("var fallback=document.getElementById('fallback');")
@@ -233,6 +234,10 @@ fun buildKaTeXHtml(
         append("var doc=document.documentElement;")
         append("var body=document.body;")
         append("var rect=target.getBoundingClientRect();")
+        // .katex-html 是实际公式字形盒；满宽 #math 只负责居中，不能作为光标末端。
+        append("var glyph=target.querySelector('.katex-html')||target;")
+        append("var content=glyph.getBoundingClientRect();")
+        append("state.cx=content.left;state.cy=content.top;state.cw=content.width;state.ch=content.height;")
         append("var nw=Math.ceil(rect.width);")
         append("var nh=Math.ceil(rect.height);")
         append("var sw=Math.max(doc?doc.scrollWidth:0,body?body.scrollWidth:0,target.scrollWidth);")
@@ -244,7 +249,7 @@ fun buildKaTeXHtml(
         append("}")
         append("window.__oaiMathMeasure=function(){")
         append("measure();")
-        append("return state.nw+','+state.nh+','+state.sw+','+state.sh+','+(state.failed?1:0);")
+        append("return state.nw+','+state.nh+','+state.sw+','+state.sh+','+(state.failed?1:0)+','+state.cx+','+state.cy+','+state.cw+','+state.ch;")
         append("};")
         append("try{")
         append("if(typeof katex==='undefined'){fail();}else{")
@@ -292,12 +297,17 @@ fun MarkdownMathBlock(
     }
 
     var measured by remember(key) { mutableStateOf(MarkdownMathSizeCache.size(key)) }
+    var contentBounds by remember(key) { mutableStateOf<Rect?>(null) }
     var failed by remember(html) { mutableStateOf(false) }
     var rendered by remember(html) { mutableStateOf(false) }
 
     val host = rememberKaTeXWebViewSession(
         html = html,
         onMeasurement = { measurement ->
+            contentBounds = measurement.contentBounds?.let { bounds ->
+                Rect(bounds.left * density.density, bounds.top * density.density,
+                    bounds.right * density.density, bounds.bottom * density.density)
+            }
             val physical = measurement.toPhysicalSize(density.density)
             if (physical.width > 0 && physical.height > 0) {
                 rendered = true
@@ -329,7 +339,8 @@ fun MarkdownMathBlock(
     }
 
     Box(
-        modifier = streamingAtomicModifier(LocalMarkdownLeafSource.current, modifier, measured = rendered || unavailable)
+        modifier = streamingAtomicModifier(LocalMarkdownLeafSource.current, modifier,
+            measured = rendered || unavailable, contentBounds = contentBounds)
             .fillMaxWidth()
             .testTag(MARKDOWN_MATH_BLOCK_TAG)
             .then(
@@ -493,6 +504,7 @@ internal data class MathMeasurement(
     val natural: IntSize,
     val document: IntSize,
     val failed: Boolean,
+    val contentBounds: Rect? = null,
 )
 
 /**
@@ -520,6 +532,12 @@ internal fun parseMathMeasurement(raw: String?): MathMeasurement? {
         natural = IntSize(naturalWidth, naturalHeight),
         document = IntSize(documentWidth, documentHeight),
         failed = parts[4].trim() == "1",
+        contentBounds = if (parts.size >= 9) {
+            val values = parts.subList(5, 9).map { it.trim().toFloatOrNull() }
+            if (values.all { it != null && it.isFinite() } && values[2]!! > 0f && values[3]!! > 0f) {
+                Rect(values[0]!!, values[1]!!, values[0]!! + values[2]!!, values[1]!! + values[3]!!)
+            } else null
+        } else null,
     )
 }
 
@@ -549,6 +567,14 @@ private class KaTeXWebViewHost(context: Context) {
     private var disposed = false
     private var lastLoadedHtml: String? = null
     private val measureRunnable = Runnable { measureOnce() }
+
+    init {
+        // WebView 内的横向滚动不经过 Compose 坐标回调；滚动后重新读取实际字形在视口内的位置。
+        webView.setOnScrollChangeListener { _, _, _, _, _ -> measureOnce() }
+        webView.addOnLayoutChangeListener { _, left, _, right, _, oldLeft, _, oldRight, _ ->
+            if (right - left != oldRight - oldLeft) measureOnce()
+        }
+    }
 
     fun loadDataWithBaseURL(html: String) {
         if (disposed || html == lastLoadedHtml) return

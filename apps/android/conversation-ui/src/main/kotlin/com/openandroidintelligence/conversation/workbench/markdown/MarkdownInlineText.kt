@@ -50,6 +50,11 @@ fun MarkdownInlineText(
     val density = LocalDensity.current
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    val source = LocalMarkdownLeafSource.current
+        ?: LocalMarkdownBlockSource.current
+        ?: remember(text) { MarkdownSourceText.original(text) }
+    val laidOutSource = streamingInlineSource(text, source, LocalStreamingMarkdownDocument.current,
+        isStreaming && LocalStreamingTextPresentation.current?.active == true)
 
     // 默认行为：交给系统处理（浏览器 / 邮件 / 电话），失败时给用户一个明确提示而不是静默无响应。
     val linkHandler: (String) -> Unit = remember(uriHandler, onLinkClick, context) {
@@ -61,8 +66,8 @@ fun MarkdownInlineText(
         }
     }
 
-    val result = remember(text, colors, linkHandler) {
-        buildMarkdownInline(text, colors, linkHandler)
+    val result = remember(laidOutSource.text, colors, linkHandler) {
+        buildMarkdownInline(laidOutSource.text, colors, linkHandler)
     }
 
     val effectiveFontSize = when {
@@ -97,7 +102,7 @@ fun MarkdownInlineText(
                         placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter,
                     ),
                 ) {
-                    val leaf = LocalMarkdownLeafSource.current ?: LocalMarkdownBlockSource.current
+                    val leaf = laidOutSource
                     val mathSource = leaf?.let { original ->
                         val start = result.sourceOffsets.getOrNull(span.start) ?: 0
                         original.slice(start.coerceAtMost(original.text.length),
@@ -114,10 +119,7 @@ fun MarkdownInlineText(
         }
     }
 
-    val source = LocalMarkdownLeafSource.current
-        ?: LocalMarkdownBlockSource.current
-        ?: remember(text) { MarkdownSourceText.original(text) }
-    val sourceOffsets = remember(result, source) { sourceOffsetsFor(result, source) }
+    val sourceOffsets = remember(result, laidOutSource) { sourceOffsetsFor(result, laidOutSource) }
     val (decoratedModifier, onTextLayout) = streamingTextModifier(
         text = annotated.text,
         sourceOffsets = sourceOffsets,
