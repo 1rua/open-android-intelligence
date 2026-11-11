@@ -8,6 +8,8 @@ Platform 事件、Native Agent 会话和 HTTP 请求分别管理健康状态。�
 
 WS 只有在 TLS、完整签名认证和 Upgrade 校验完成后才进入 LIVE。握手成功只证明连接已认证，不重置认证恢复次数；只有同一凭据下有效活动才可解除既有续签恢复栅栏。有效 Ping/Pong 和完整数据帧记录单调活动时间。握手保持短预算，已建立连接采用六十秒失活检测。解析失败、关闭码、认证拒绝和网络失败分别记录，不生成虚假业务事件或靠隐藏错误改变健康事实。
 
+2026-11-10 起，后台仍保留上述六十秒预算；实际前台切入会独立请求健康检查。WS 前台在同一正式 socket 上每五秒发控制 Ping，三秒内匹配随机 nonce 的 Pong；SSE 显式检查等待三秒新完整帧。Core 以 `X-Open-Android-Intelligence-Event-Heartbeat-Ms` 声明当前实现原有的一秒空闲节奏，客户端持续前台按三倍节奏、至少三秒检查，未知节奏仍用原保守预算。该头不更改身份验证或事件契约，也不提高 Core 原有心跳频率。后台不新增该主动 Ping。慢本地事件提交不计作网络失活，安全拒绝优先于并发探活超时。
+
 普通失败由 GatewayHttpClient 的现有事件循环恢复，退避按 1、2、5、10、20、40、60 秒并加入有界抖动。WS 升级后连续两次未收到完整有效活动就关闭或失活时，改用 SSE；完整业务帧或有效 Ping/Pong 清除该计数，单纯 Upgrade 不清除。由 SSE 探测升级后的首次正式 WS 若没有有效活动便失败，立即恢复原 SSE 路径，并从已提交游标续传。稳定运行六十秒后恢复初始退避。Runtime 持有一个正式事件流所有者；网络变化、凭据变化或明确重试交接时先取消并等待旧任务结束。
 
 健康 SSE 期间允许 `GET /open-android-intelligence/v2/events/ws/probe` 探测。此入口采用相同认证和 TLS，客户端以控制 Ping/Pong 验证双向可达；无事件订阅、事件游标、在线计数或设备操作。单次预算十秒，失败按 1、2、5、10、15 分钟冷却并加抖动。SSE 不因探测失败中断。成功后先关闭探测、停止并等待 SSE，再从最后成功保存的游标建立正式 WS；失败回到 SSE。控制探测成功不重置探测冷却，只有正式 WS 稳定后才重置，避免反复探测成功而正式连接失败造成频繁交接。
@@ -16,9 +18,11 @@ WS 只有在 TLS、完整签名认证和 Upgrade 校验完成后才进入 LIVE�
 
 ## Native 与 HTTP
 
-Native eventSync 继续使用各 Agent 的既有 Core 会话协议、分页、ACK 和不透明游标。正常长轮询 waitMs 为 25000，JSON HTTP 读取预算为 30000 毫秒，和 Platform SSE 空闲预算独立。
+Native eventSync 继续使用各 Agent 的既有 Core 会话协议、分页、ACK 和不透明游标。后台正常长轮询 waitMs 为 25000，JSON HTTP 读取预算为 30000 毫秒；前台事件等待为 5000，每次真实网络操作另有 8000 毫秒绝对预算，和 Platform SSE 空闲预算独立。本地提交与发布不受网络预算取消。前台每个活动读取者最多约十二次事件 GET/分钟，空页同游标不重复保存或 ACK，真机功耗仍需测量。单请求预算不等于整页多阶段同步在十秒内完成。
 
 可恢复读/ACK 失败超过六次仍保持同步所有者、pending ACK 和持续退避；只有 Native 自身成功同步才报告恢复。connectionRestored 是合并唤醒，健康或正在恢复的读取不取消，不重建 synchronizer，不为每个 Platform 心跳刷新完整历史。认证、TLS、协议与本地保存错误分别处理。所有事件和回执核对账号、Agent、会话和 generation 归属。
+
+普通活动仍遵守上述不取消语义。明确网络恢复或实际前台切入可提前结束一次退避等待并独立重校验旧网络请求，失败次数不重置，重复信号有五秒冷却。正式 Platform 已确认重新建立的独立恢复代次，也可以替换 Native 当次失效网络请求；外层所有者、同一个 synchronizer、pendingPage、pending ACK 和游标继续保留，本地保存、状态提交及发布不取消。不能从 UI 会话加载或普通心跳猜测重建，不能重新 POST 消息。
 
 HTTP Claim、结果上传和普通查询保留现有 API。HTTP 响应证明接口可达，但不能证明 Platform 或 Native 同步正常；401/403、网络不可达和 TLS 拒绝也不能混为同一事实。Core ↔ Session Adapter 继续原架构，手机观察连接关闭不代表 Agent 执行取消或结束。
 
@@ -33,6 +37,8 @@ HTTP Claim、结果上传和普通查询保留现有 API。HTTP 响应证明接�
 ## 诊断与验收
 
 使用 GatewayWs、GatewaySse、GatewayEvents、OaiConnection、OaiNativeEvents、OaiDeviceRequest 关联通道、连接所有者、重建原因、关闭码、活动时间、失败次数、退避、游标摘要、revision 和 requestId 阶段。禁止记录凭据、签名原文、原始游标、用户消息、短信/通知正文或能力结果。
+
+连接状态、心跳超时、重连各阶段、订阅恢复、Core 持久补发及进程前后台另通过既有日志出口记录结构化 JSON；实际修复、复现命令、各提交与真实 Android 证据见[后台恢复排查](../reviews/2026-11-10-background-connection-recovery.zh-CN.md)及[隔离模拟器验收](../reviews/2026-11-10-background-connection-emulator.zh-CN.md)。分项通过不代表真实手机、两小时/六小时息屏或功耗验收已经完成。
 
 先按 requestId 确认 Agent 创建、Core 持久化、事件接收、查询、Claim、执行、上传和确认阶段，再判断故障源。测试结果分别记录自动化、本地模拟、CI、真实部署及 ADB 证据。Android 进程被杀或系统暂停网络期间不能保证实时投递，恢复后仍须按既有保留期限和授权补齐。
 

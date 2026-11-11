@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.state.WorkbenchUiState
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.http.GatewayConnectionFactory
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
@@ -45,6 +46,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.net.HttpURLConnection
+import java.net.URL
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -57,6 +60,7 @@ class ColdStartConnectionTest {
     private val runtimes = mutableListOf<GatewayRuntime>()
     private val closedControllers = mutableSetOf<WorkbenchController>()
     private var handshakeRelease: CountDownLatch? = null
+    private val connectionImplementationReported = AtomicBoolean(false)
 
     @Before
     fun setUp() {
@@ -139,6 +143,33 @@ class ColdStartConnectionTest {
                 requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"))
             assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, current.connectionStatus.value)
         } finally { release.countDown() }
+    }
+
+    @Test
+    fun returningToForegroundReplacesASilentPlatformConnectionWithoutChangingTheConversation() {
+        val current = connectedRuntimeWithHistory(native = true).runtime
+        val controller = requireNotNull(current.controller.value)
+        val stream = gateway.controllableEventStream("$API/events")
+        current.onNetworkAvailable(routeChanged = true)
+        assertTrue("必须先用真实 SSE 连续心跳建立健康平台连接", awaitCondition {
+            stream.heartbeatCount.get() >= 2 &&
+                current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
+        })
+        val connectedStreams = stream.connectionCount
+        current.onAppBackgrounded()
+        stream.pauseCurrentConnections()
+        val resumedAt = System.nanoTime()
+        current.onAppForegrounded()
+
+        assertTrue("返回前台后，静默但仍未关闭的真实 SSE 必须在十秒内被替换，且无须切换会话", awaitCondition(10_000) {
+            stream.connectionCount > connectedStreams &&
+                current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
+        })
+        assertTrue("恢复可用连接必须满足十秒预算", elapsedMillis(resumedAt) <= 10_000)
+        println("连接恢复实测：recoveryMillis=${elapsedMillis(resumedAt)}")
+        assertSame("自动恢复必须保留当前工作台", controller, current.controller.value)
+        assertEquals(OLD_THREAD, controller.state.value.activeThreadId)
+        assertEquals(OLD_DRAFT, controller.state.value.draft)
     }
 
     @Test
@@ -923,7 +954,21 @@ class ColdStartConnectionTest {
         deviceKeys = deviceKeys,
         localDocumentKeyProvider = keyProvider,
         initialConnectionGraceMillis = initialConnectionGraceMillis,
+        connectionFactory = GatewayConnectionFactory(::androidConnection),
     ).also(runtimes::add)
+
+    /** 使用真正 Android HTTP 实现，避免把 JVM 的阻塞取消行为当作手机连接行为。 */
+    private fun androidConnection(url: URL): HttpURLConnection {
+        val clientClass = Class.forName("com.android.okhttp.OkHttpClient")
+        val client = clientClass.getConstructor().newInstance()
+        val ready = clientClass.getDeclaredMethod("copyWithDefaults").apply { isAccessible = true }.invoke(client)
+        val connection = Class.forName("com.android.okhttp.internal.huc.HttpURLConnectionImpl")
+            .getConstructor(URL::class.java, clientClass).newInstance(url, ready) as HttpURLConnection
+        if (connectionImplementationReported.compareAndSet(false, true)) {
+            println("连接测试 HTTP 实现：${connection.javaClass.name}")
+        }
+        return connection
+    }
 
     private fun settingsFor(runtime: GatewayRuntime, scope: CoroutineScope): SettingsViewModel {
         val trust = DeveloperTrustMode()

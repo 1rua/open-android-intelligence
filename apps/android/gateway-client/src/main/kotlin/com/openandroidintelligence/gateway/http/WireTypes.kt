@@ -44,4 +44,7 @@ interface GatewayByteTransport {
     }
 
     fun eventStream(request: WireRequest): Flow<ByteArray>
+
+    /** 已认证事件响应声明的心跳节奏；缺省未知，沿用保守空闲预算。 */
+    fun eventHeartbeatMillis(): Long? = null
 }

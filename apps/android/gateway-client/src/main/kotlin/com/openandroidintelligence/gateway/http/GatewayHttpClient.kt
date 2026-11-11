@@ -26,12 +26,17 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
@@ -125,20 +130,55 @@ class GatewayHttpClient(
     private val localEventRecoveryMarker = java.util.concurrent.atomic.AtomicReference<Any?>(null)
     private val failedEventSession = java.util.concurrent.atomic.AtomicReference<Pair<GatewayProfile, Throwable>?>(null)
 
-    private class EventOwner(val id: Long)
+    private data class HealthRequest(val reason: String)
+    private class EventOwner(val id: Long) {
+        var status: EventStreamStatus? = null
+        val healthChecks = Channel<HealthRequest>(Channel.CONFLATED)
+        val policyChanges = Channel<Unit>(Channel.CONFLATED)
+        var lastWakeAt: Long? = null
+    }
     private class CursorRecoveryAttempt(val client: GatewayHttpClient, val owner: EventOwner) :
         kotlin.coroutines.AbstractCoroutineContextElement(Key) {
         companion object Key : kotlin.coroutines.CoroutineContext.Key<CursorRecoveryAttempt>
     }
     private val eventOwnerLock = Any()
     private val activeEventOwner = java.util.concurrent.atomic.AtomicReference<EventOwner?>(null)
+    @Volatile private var appForeground = false
+    private val _eventRecoveryEpoch = MutableStateFlow(0L)
+    val eventRecoveryEpoch: StateFlow<Long> = _eventRecoveryEpoch.asStateFlow()
+    private var hasReadyEventTransport = false
+
+    /** 生命周期只更新连接策略，不取消会话或创建新的订阅。 */
+    fun setAppForeground(visible: Boolean) {
+        appForeground = visible
+        webSocketTransport?.setAppForeground(visible)
+        activeEventOwner.get()?.policyChanges?.trySend(Unit)
+    }
+
+    fun currentEventGeneration(): Long? = activeEventOwner.get()?.id
+
+    /** 合并显式恢复信号；健康流先验证活动，退避中的流可提前恢复一次。 */
+    fun requestEventHealthCheck(reason: String) = synchronized(eventOwnerLock) {
+        val owner = activeEventOwner.get() ?: return@synchronized
+        val now = monotonicMillis()
+        if (owner.lastWakeAt?.let { now - it < HEALTH_WAKE_COOLDOWN_MILLIS } == true) return@synchronized
+        owner.lastWakeAt = now
+        if (webSocketTransport?.requestHealthCheck() != true)
+            owner.healthChecks.trySend(HealthRequest(reason.take(64)))
+    }
 
     private fun requireEventOwner(owner: EventOwner) {
         if (activeEventOwner.get() !== owner) throw CancellationException("EVENT_STREAM_OWNER_REPLACED")
     }
 
     private fun reportEventStatus(owner: EventOwner, status: EventStreamStatus) = synchronized(eventOwnerLock) {
-        if (activeEventOwner.get() === owner) statusSink?.report(status)
+        if (activeEventOwner.get() === owner) {
+            if (owner.status != status) GatewayLog.connectionEvent("connection.state_changed", owner.id,
+                reason = "platform_events", result = status.name,
+                fields = mapOf("previous" to owner.status?.name))
+            owner.status = status
+            statusSink?.report(status)
+        }
     }
 
     private fun rememberEventFailure(owner: EventOwner, snapshot: GatewayProfile, failure: Throwable) = synchronized(eventOwnerLock) {
@@ -407,7 +447,7 @@ class GatewayHttpClient(
             while (currentCoroutineContext().isActive) {
                 requireEventOwner(owner)
                 val snapshot = sessionProfile()
-                val health = AttemptHealth(owner, snapshot)
+                val health = AttemptHealth(owner, snapshot, attempt + 1)
                 val usingWebSocket = preferWebSocket && webSocketTransport != null
                 val recoveringSession = rejectedSession
                 val rebuildingCursor = recoveringSession == null && cursorRecoveryPending
@@ -418,6 +458,8 @@ class GatewayHttpClient(
                     else -> "SSE"
                 }
                 attempt++
+                if (attempt > 1) GatewayLog.connectionEvent("connection.reconnect_started", owner.id,
+                    reason = "transport_retry", attempt = attempt, result = "started", fields = mapOf("transport" to transportKind))
                 GatewayLog.d(TAG, "event attempt ownerID=${owner.id} attempt=$attempt transport=$transportKind monotonicAt=${monotonicMillis()}")
                 try {
                     if (recoveringSession != null) {
@@ -542,12 +584,34 @@ class GatewayHttpClient(
                         if (consecutiveFailures == maxConsecutiveFailures) GatewayLog.w(TAG, "event retry threshold ownerID=${owner.id} count=$consecutiveFailures")
                     }
                     val nextDelay = reconnect.nextDelayMillis()
+                    GatewayLog.connectionEvent("connection.reconnect_scheduled", owner.id, reason = "transport_retry",
+                        attempt = attempt, result = "scheduled", fields = mapOf("delayMs" to nextDelay))
                     logEventFailure(owner, attempt, transportKind, failure, health, nextDelay, "retry")
-                    delayFn(nextDelay)
+                    val delayFailure = coroutineScope {
+                        val completed = Channel<Throwable?>(Channel.RENDEZVOUS)
+                        val waiting = launch {
+                            val delayFailure = try { delayFn(nextDelay); null }
+                            catch (failure: Throwable) {
+                                // 父任务取消继续传播；回调自身的取消原因按原对象交还调用者。
+                                currentCoroutineContext().ensureActive()
+                                failure
+                            }
+                            completed.send(delayFailure)
+                        }
+                        try {
+                            kotlinx.coroutines.selects.select<Throwable?> {
+                                completed.onReceive { it }
+                                owner.healthChecks.onReceive { null }
+                            }
+                        } finally { waiting.cancelAndJoin(); completed.close() }
+                    }
+                    delayFailure?.let { throw it }
                 }
             }
         } finally {
             synchronized(eventOwnerLock) { activeEventOwner.compareAndSet(owner, null) }
+            owner.healthChecks.close()
+            owner.policyChanges.close()
         }
     }
 
@@ -606,6 +670,12 @@ class GatewayHttpClient(
             else -> null
         }
         val lastHeartbeat = health.lastHeartbeatAt.get().takeIf { it >= 0 }
+        GatewayLog.connectionEvent("connection.reconnect_failed", owner.id, reason = action, attempt = attempt,
+            result = failure.javaClass.simpleName, fields = mapOf("transport" to transport, "status" to status,
+                "closeCode" to close, "delayMs" to nextDelay))
+        if (failure is GatewayWebSocketTimeoutException || failure is EventStreamTimeoutException)
+            GatewayLog.connectionEvent("connection.heartbeat_timeout", owner.id, reason = stage, attempt = attempt,
+                result = "timeout", fields = mapOf("transport" to transport, "idleMs" to now - health.lastCompleteAt.get()))
         GatewayLog.w(TAG, "event failure action=$action transport=$transport ownerID=${owner.id} attempt=$attempt " +
             "stage=$stage failure=${failure.javaClass.simpleName} status=$status closeCode=$close nextDelayMillis=$nextDelay " +
             "monotonicAt=$now activityElapsedMillis=${now - health.lastCompleteAt.get()} heartbeatElapsedMillis=${lastHeartbeat?.let { now - it }}")
@@ -619,10 +689,12 @@ class GatewayHttpClient(
         throw EventDeliveryFailed(failure)
     }
 
-    private inner class AttemptHealth(private val owner: EventOwner, private val snapshot: GatewayProfile) {
+    private inner class AttemptHealth(private val owner: EventOwner, private val snapshot: GatewayProfile, private val attempt: Long) {
         private val liveSince = java.util.concurrent.atomic.AtomicLong(-1)
         val lastCompleteAt = java.util.concurrent.atomic.AtomicLong(monotonicMillis())
         val lastHeartbeatAt = java.util.concurrent.atomic.AtomicLong(-1)
+        val activityVersion = MutableStateFlow(0L)
+        val delivering = MutableStateFlow(false)
         @Volatile var isReady = false
             private set
         @Volatile var hadActivity = false
@@ -636,6 +708,18 @@ class GatewayHttpClient(
 
         fun ready() {
             if (activeEventOwner.get() !== owner) return
+            synchronized(eventOwnerLock) {
+                if (!isReady && activeEventOwner.get() === owner && snapshot == sessionProfile()) {
+                    if (hasReadyEventTransport) _eventRecoveryEpoch.value += 1
+                    hasReadyEventTransport = true
+                }
+            }
+            if (!isReady && attempt > 1) {
+                GatewayLog.connectionEvent("connection.reconnect_succeeded", owner.id, reason = "authenticated_stream",
+                    attempt = attempt, result = "live")
+                GatewayLog.connectionEvent("connection.subscription_restored", owner.id, reason = "committed_cursor",
+                    attempt = attempt, result = "subscribed")
+            }
             isReady = true
             liveSince.compareAndSet(-1, monotonicMillis())
             if (snapshot == sessionProfile()) reportEventStatus(owner, EventStreamStatus.LIVE)
@@ -646,6 +730,8 @@ class GatewayHttpClient(
             val now = monotonicMillis()
             hadActivity = true
             lastCompleteAt.set(now)
+            activityVersion.value += 1
+            owner.policyChanges.trySend(Unit)
             ready()
             if (now - liveSince.get() >= STABLE_CONNECTION_MILLIS) wasStable = true
             if (authentication) {
@@ -690,8 +776,14 @@ class GatewayHttpClient(
                     if (events.isNotEmpty()) activity()
                     for (event in events) {
                         val committed = CompletableDeferred<Unit>()
-                        items.send(SseItem.Event(event, committed))
-                        committed.await()
+                        health.delivering.value = true
+                        try {
+                            items.send(SseItem.Event(event, committed))
+                            committed.await()
+                        } finally {
+                            health.lastCompleteAt.set(monotonicMillis())
+                            health.delivering.value = false
+                        }
                     }
                 }
                 items.send(SseItem.Finished(null))
@@ -703,12 +795,32 @@ class GatewayHttpClient(
         }
         val watchdog = launch {
             while (isActive) {
-                val remaining = SSE_COMPLETE_FRAME_TIMEOUT_MILLIS - (monotonicMillis() - health.lastCompleteAt.get())
+                if (health.delivering.value) health.delivering.first { !it }
+                val idleBudget = if (appForeground) transport.eventHeartbeatMillis()
+                    ?.times(3)?.coerceIn(EVENT_HEALTH_CHECK_MILLIS, SSE_COMPLETE_FRAME_TIMEOUT_MILLIS)
+                    ?: SSE_COMPLETE_FRAME_TIMEOUT_MILLIS else SSE_COMPLETE_FRAME_TIMEOUT_MILLIS
+                val remaining = idleBudget - (monotonicMillis() - health.lastCompleteAt.get())
                 if (remaining <= 0) {
                     items.send(SseItem.Finished(EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)))
                     break
                 }
-                kotlinx.coroutines.delay(remaining)
+                withTimeoutOrNull(remaining) { owner.policyChanges.receive() }
+            }
+        }
+        val validation = launch {
+            for (request in owner.healthChecks) {
+                if (health.delivering.value) continue
+                val observed = health.activityVersion.value
+                val active = withTimeoutOrNull(EVENT_HEALTH_CHECK_MILLIS) {
+                    health.activityVersion.first { it != observed }
+                    true
+                } == true
+                if (!active && !health.delivering.value) {
+                    GatewayLog.connectionEvent("connection.heartbeat_timeout", owner.id,
+                        reason = request.reason, result = "validation_timeout", fields = mapOf("scope" to "transport", "foreground" to appForeground))
+                    items.send(SseItem.Finished(EventStreamTimeoutException(EventStreamTimeoutStage.IDLE)))
+                    break
+                }
             }
         }
         val probe = if (autoReconnect && webSocketTransport != null) launch {
@@ -778,10 +890,12 @@ class GatewayHttpClient(
         } finally {
             sse.cancel()
             watchdog.cancel()
+            validation.cancel()
             probe?.cancel()
             withContext(NonCancellable) {
                 sse.join()
                 watchdog.join()
+                validation.join()
                 probe?.join()
             }
             items.close()
@@ -806,6 +920,8 @@ class GatewayHttpClient(
     ): List<RawHeader> = authenticationHeaders(sessionProfile(), input, signatureBase64Url, method)
 
     companion object {
+        private const val EVENT_HEALTH_CHECK_MILLIS = 3_000L
+        private const val HEALTH_WAKE_COOLDOWN_MILLIS = 5_000L
         const val PROTOCOL_HEADER = "2.1"
         const val EVENTS_TARGET = "/open-android-intelligence/v2/events"
         private const val SNAPSHOT_TARGET = "/open-android-intelligence/v2/sync/snapshot"

@@ -75,6 +75,10 @@ val testOnlyLoopbackFixtures = setOf(
  * 生产源码仍由网络 owner 管理，VPN、路由、代理及通用监听/拨号禁令仍检查。
  */
 val testOnlyOutboundAssertions = setOf(
+    // 连接恢复验收仅访问显式传入的本机隔离 Core；不授予生产 App 新网络入口。
+    "app/src/androidTest/kotlin/com/openandroidintelligence/mobile/ApplicationConnectionLifecycleInstrumentedTest.kt",
+    "app/src/androidTest/kotlin/com/openandroidintelligence/mobile/BackgroundConnectionRecoveryInstrumentedTest.kt",
+    "app/src/test/kotlin/com/openandroidintelligence/mobile/ColdStartConnectionTest.kt",
     "app/src/test/kotlin/com/openandroidintelligence/mobile/AndroidAttachmentContentTypeTest.kt",
     "app/src/test/kotlin/com/openandroidintelligence/mobile/AppUpdateCheckerTest.kt",
     "app/src/test/kotlin/com/openandroidintelligence/mobile/plugins/NotificationCapabilityHttpTest.kt",

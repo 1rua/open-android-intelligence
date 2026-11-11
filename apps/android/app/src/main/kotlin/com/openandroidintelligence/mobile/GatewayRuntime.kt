@@ -34,6 +34,7 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
 import com.openandroidintelligence.gateway.http.GatewayConnectionSecurity
+import com.openandroidintelligence.gateway.http.GatewayConnectionFactory
 import com.openandroidintelligence.gateway.http.requireData
 import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.GatewayProfile
@@ -195,6 +196,7 @@ class GatewayRuntime(
     private val pluginHost: com.openandroidintelligence.mobile.plugins.ProductionPluginHost? = null,
     private val localDocumentKeyProvider: com.openandroidintelligence.encrypted.store.AesGcmKeyProvider? = null,
     private val initialConnectionGraceMillis: Long = 8_000L,
+    private val connectionFactory: GatewayConnectionFactory = GatewayConnectionFactory(),
 ) {
     private var executionDriver: com.openandroidintelligence.mobile.plugins.DeviceExecutionDriver? = null
     private var selectedScreenBinding: com.openandroidintelligence.control.ScreenAuthorizationBinding? = null
@@ -229,7 +231,8 @@ class GatewayRuntime(
     @Volatile private var backgroundRecoveryOnly = false
     @Volatile private var backgroundRestoreJob: Job? = null
     private var restartPlatformStream: ((PlatformStreamWakeReason) -> Unit)? = null
-    private var restartNativeReads: (() -> Unit)? = null
+    @Volatile private var activePlatformHttpClient: GatewayHttpClient? = null
+    private var restartNativeReads: ((Boolean) -> Unit)? = null
     private val pendingRotations = java.util.concurrent.ConcurrentHashMap<String, Pair<SessionCredentials, NegotiationResult>>()
     private val _loginStatus = MutableStateFlow(GatewayLoginStatus.SIGNED_OUT)
     val loginStatus: StateFlow<GatewayLoginStatus> = _loginStatus.asStateFlow()
@@ -863,7 +866,7 @@ class GatewayRuntime(
                         rejected.copy(sessionId = rotated.sessionId, accessToken = rotated.accessToken)
                     }
                 }
-                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile),
+                GatewayHttpClient(profile = profile, transport = GatewayTransport(profile, connectionFactory),
                     signer = { preimage -> deviceKeys.sign(id, preimage) },
                     cursorStore = AndroidEventCursorStore(context, "push:$id"), sessionRenewal = renew)
                     .also { pushHttpClients[id] = it }
@@ -970,14 +973,21 @@ class GatewayRuntime(
      * missing workbench is a no-op rather than something to invent.
      */
     fun onAppForegrounded() {
-        synchronized(backgroundOwnershipLock) {
+        val becameVisible = synchronized(backgroundOwnershipLock) {
+            val changed = !appVisible
             appVisible = true
             backgroundRecoveryOnly = false
+            changed
         }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(true)
+        GatewayLog.connectionEvent("lifecycle.foreground", platform?.currentEventGeneration() ?: 0,
+            reason = "process_foreground", result = "visible", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
-        wakeConnection(PlatformStreamWakeReason.FOREGROUND)
+        wakeConnection(PlatformStreamWakeReason.FOREGROUND, expediteNativeRetry = becameVisible)
+        if (becameVisible) platform?.requestEventHealthCheck("foreground")
     }
 
     /**
@@ -1014,14 +1024,16 @@ class GatewayRuntime(
         // A network callback cannot publish a fabricated stream failure.
     }
 
-    private fun wakeConnection(reason: PlatformStreamWakeReason) {
+    private fun wakeConnection(reason: PlatformStreamWakeReason, expediteNativeRetry: Boolean = false) {
         recoveryWakeup.trySend(Unit)
         if (backgroundRecoveryOnly && !appVisible && !sessionRecovery.hasRecoveryLease) return
         if (_loginStatus.value == GatewayLoginStatus.REAUTHENTICATION_REQUIRED) return
         if (_phase.value is ConnectionPhase.Disconnected) restoreSessionIfAvailable()
         else if (!restoringSession && _phase.value is ConnectionPhase.OfflineMirror) reconnectOfflineMirror()
         else if (!restoringSession && _phase.value is ConnectionPhase.Connected) {
-            restartNativeReads?.invoke()
+            restartNativeReads?.invoke(expediteNativeRetry || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
+                reason == PlatformStreamWakeReason.USER_RETRY ||
+                reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && _connectionStatus.value != EventStreamStatus.LIVE)
             restartPlatformStream?.invoke(reason)
             if (_nativeAgents.value == null || reason == PlatformStreamWakeReason.NETWORK_CHANGED ||
                 reason == PlatformStreamWakeReason.USER_RETRY || _connectionStatus.value != EventStreamStatus.LIVE) {
@@ -1120,6 +1132,10 @@ class GatewayRuntime(
         // restart. The service then keeps already submitted work receiving replies.
         refreshBackgroundWork()
         synchronized(backgroundOwnershipLock) { appVisible = false }
+        val platform = activePlatformHttpClient
+        platform?.setAppForeground(false)
+        GatewayLog.connectionEvent("lifecycle.background", platform?.currentEventGeneration() ?: 0,
+            reason = "process_background", result = "background", fields = mapOf("scope" to "runtime"))
         replyNotifications.refreshPermission()
         nativeConversationNotifications.refreshActive()
     }
@@ -2238,6 +2254,7 @@ class GatewayRuntime(
         _coreHttpHealth.value = CoreHttpHealth()
         val transport = GatewayTransport(
             profile,
+            factory = connectionFactory,
             onHttpResponse = { status ->
                 if (sessionRenewal === renewal) _coreHttpHealth.value = CoreHttpHealth(
                     reachability = CoreHttpReachability.REACHABLE,
@@ -2515,6 +2532,8 @@ class GatewayRuntime(
         }
         // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。
         val coreAgentRepositories = java.util.concurrent.ConcurrentHashMap<String, com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        val nativeReadOwners = java.util.concurrent.ConcurrentHashMap.newKeySet<com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository>()
+        ownedJob.invokeOnCompletion { nativeReadOwners.clear() }
         fun nativeRepository(agent: com.openandroidintelligence.gateway.agents.CoreAgent) = coreAgentRepositories.computeIfAbsent(agent.id) {
             val discoveryOwner = checkNotNull(_nativeAgents.value)
             com.openandroidintelligence.mobile.conversations.CoreAgentConversationRepository(
@@ -2531,12 +2550,17 @@ class GatewayRuntime(
                 organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                     context, conversationScope, localDocumentKeyProvider),
                 storeForAgent = ::nativeStore,
-            )
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
-        fun restoreNativeReads() {
-            if (sessionJob === ownedJob) coreAgentRepositories.values.forEach { it.connectionRestored() }
+        fun restoreNativeReads(expediteRetry: Boolean = false, confirmedTransportRebuild: Long? = null) {
+            if (sessionJob === ownedJob) nativeReadOwners.forEach {
+                it.connectionRestored(expediteRetry, confirmedTransportRebuild,
+                    revalidateNetwork = expediteRetry && confirmedTransportRebuild == null)
+            }
         }
-        restartNativeReads = ::restoreNativeReads
+        restartNativeReads = { expediteRetry -> restoreNativeReads(expediteRetry) }
 
         /**
          * 原生会话事件的提醒出口。
@@ -2573,7 +2597,9 @@ class GatewayRuntime(
                     com.openandroidintelligence.mobile.conversations.NativeConversationStoreView(nativeStore(current), observer)
                 },
                 onEventPublished = { agentId, event -> if (agentId == agent.id) publishNativeNotification(agentId, event) },
-            )
+                isForeground = { appVisible },
+                onClosed = { nativeReadOwners.remove(it) },
+            ).also(nativeReadOwners::add)
         }
 
         /**
@@ -2692,7 +2718,9 @@ class GatewayRuntime(
                         organizationStore = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(
                             context, conversationScope, localDocumentKeyProvider),
                         storeForAgent = { store },
-                    )
+                        isForeground = { appVisible },
+                        onClosed = { nativeReadOwners.remove(it) },
+                    ).also(nativeReadOwners::add)
                     // 与主工作台共用同一个按 Agent 分区的附件协调器：交接按 draftId 跟踪
                     // 的必须是同一份暂存/上传状态，否则交过去的是永不推进的引用。
                     val owning = nativeOwningAttachmentCoordinators[assistantAgent.id] ?: attachmentCoordinator
@@ -2715,7 +2743,10 @@ class GatewayRuntime(
                         attachmentCoordinator = attachments,
                         externalBusyThreadIds = { assistantWorkspace?.busyThreadIds().orEmpty() },
                     )
-                    assistantResources[sessionToken] = { runCatching { store.close() } }
+                    assistantResources[sessionToken] = {
+                        repository.close()
+                        runCatching { store.close() }
+                    }
                     controller
                 } else {
                     val assistantStatus = EventStreamStatusSink()
@@ -2987,9 +3018,9 @@ class GatewayRuntime(
                     approvals = approvalClient != null && available?.capabilities?.approvals == true,
                 )
             }
-            restartNativeReads = {
+            restartNativeReads = { expediteRetry ->
                 if (sessionJob === ownedJob && _nativeAgents.value === nativeController) {
-                    restoreNativeReads()
+                    restoreNativeReads(expediteRetry)
                     if (canRetryWorkbenchInitialization) {
                         nativeController.refresh()
                         sessionScope.launch { updateNativeWorkbench(nativeController.state.value) }
@@ -3149,6 +3180,14 @@ class GatewayRuntime(
             if (sessionJob === ownedJob) com.openandroidintelligence.control.ScreenHostRegistry.current?.connectionChanged(live)
         }
         sessionScope.launch {
+            platformHttp.eventRecoveryEpoch.collect { epoch ->
+                if (epoch > 0 && sessionJob === ownedJob) {
+                    restoreNativeReads(expediteRetry = true,
+                        confirmedTransportRebuild = NATIVE_TRANSPORT_RECOVERY_EPOCH.incrementAndGet())
+                }
+            }
+        }
+        sessionScope.launch {
             platformStatus.status.collect { status ->
                 if (sessionJob !== ownedJob) return@collect
                 val projected = if (platformHasBeenLive && status == EventStreamStatus.CONNECTING)
@@ -3176,7 +3215,13 @@ class GatewayRuntime(
                 val previous = platformJob
                 val replace = reason in setOf(PlatformStreamWakeReason.NETWORK_CHANGED,
                     PlatformStreamWakeReason.CREDENTIAL_CHANGED, PlatformStreamWakeReason.USER_RETRY)
-                if (previous?.isActive == true && !replace) return@start
+                if (previous?.isActive == true && !replace) {
+                    // 任务存活只证明仍持有所有者；由传输层验证实际活动并合并恢复唤醒。
+                    if (reason == PlatformStreamWakeReason.RECOVERY_SIGNAL && platformStatus.status.value != EventStreamStatus.LIVE) {
+                        platformHttp.requestEventHealthCheck(reason.name.lowercase())
+                    }
+                    return@start
+                }
                 previous?.cancel()
                 val owner = ++ownerSequence
                 val next = sessionScope.launchAfterPlatformStream(previous) {
@@ -3220,6 +3265,8 @@ class GatewayRuntime(
         }
         synchronized(backgroundOwnershipLock) {
             checkOwner()
+            platformHttp.setAppForeground(appVisible)
+            activePlatformHttpClient = platformHttp
             restartPlatformStream = startPlatform
             startPlatform(PlatformStreamWakeReason.INITIAL)
         }
@@ -3291,6 +3338,7 @@ class GatewayRuntime(
         _nativeAgents.value?.close()
         _nativeAgents.value = null
         restartPlatformStream = null
+        activePlatformHttpClient = null
         restartNativeReads = null
         sessionRenewal?.close()
         sessionRenewal = null
@@ -3383,6 +3431,7 @@ class GatewayRuntime(
                 gatewayBaseUrl = gatewayUrl,
                 pinnedSpkiSha256 = pinnedSpkiSha256,
             ),
+            factory = connectionFactory,
             beforeConnect = beforeConnect,
         ),
         installationId = installationId(),
@@ -3528,6 +3577,7 @@ class GatewayRuntime(
     }
 
     private companion object {
+        val NATIVE_TRANSPORT_RECOVERY_EPOCH = java.util.concurrent.atomic.AtomicLong()
         const val WORKBENCH_RECOVERY_NOTICE = "读取本地会话失败，历史记录已保留，请重新连接后重试。"
         const val OFFLINE_MIRROR_NOTICE = "离线镜像：可阅读历史并编辑草稿，重新连接后可发送。"
         const val MEDIA_RECOVERY_NOTICE = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
