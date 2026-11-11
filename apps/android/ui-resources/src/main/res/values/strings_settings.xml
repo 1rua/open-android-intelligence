@@ -33,4 +33,54 @@
     <string name="settings_about_channel_format">更新渠道：%1$s</string>
 <string name="settings_state_local_save_failed">会话记录保存失败，同步已暂停。请检查存储空间后重新进入会话重试；暂勿重复发送原消息。</string>
 <string name="settings_attachment_lib_take_photo_title">拍摄照片</string>
+    <!-- 沿用迁移前的设置页面文案，资源化不改变页面含义。 -->
+    <string name="settings_title_advanced">高级设置与关于</string>
+    <string name="settings_section_message_processing">消息处理</string>
+    <string name="settings_section_app_maintenance">应用维护</string>
+    <string name="settings_update_app">应用更新</string>
+    <string name="settings_update_app_desc">检查正式版和预览版更新</string>
+    <string name="settings_backup_restore">备份与恢复</string>
+    <string name="settings_backup_restore_desc">导出或导入本机设置，换机与重装后无需逐项重配</string>
+    <string name="settings_help_feedback">帮助与反馈</string>
+    <string name="settings_tutorial">新手引导与部署教程</string>
+    <string name="settings_tutorial_desc">查看 Gateway 部署教程与权限说明</string>
+    <string name="settings_docs">项目文档</string>
+    <string name="settings_issues">问题与反馈</string>
+    <string name="settings_about_oai">关于 OAI</string>
+    <string name="settings_version">版本</string>
+    <string name="settings_unknown">未知</string>
+    <string name="settings_build_channel">构建渠道</string>
+    <string name="settings_commit">Git Commit</string>
+    <string name="settings_build_details">构建详情</string>
+    <string name="settings_licenses">开源许可证</string>
+    <string name="settings_project_url">项目地址</string>
+    <string name="settings_err_open_link">无法打开链接，请检查系统浏览器后重试。</string>
+
+    <string name="settings_msg_proc_unavailable">消息处理暂不可编辑：运行时未连接。</string>
+    <string name="settings_msg_proc_merge_title">合并连续消息</string>
+    <string name="settings_msg_proc_delay_zero">设置为 0 秒时立即发送；大于 0 秒时合并短时间内连续发送的消息。</string>
+    <string name="settings_msg_proc_current_immediate">当前设置：立即发送（不合并）</string>
+    <string name="settings_msg_proc_current_delay">当前设置：等待 %1$s 秒合并</string>
+    <string name="settings_msg_proc_delay_label">合并等待时间</string>
+    <string name="settings_msg_proc_save_failed">消息处理设置未能保存，重启后可能恢复原设置，请重试。</string>
+
+    <string name="settings_title_appearance">外观与交互</string>
+    <string name="settings_section_theme_mode">主题模式</string>
+    <string name="settings_section_theme_color">主题色</string>
+    <string name="settings_color_dynamic">系统动态取色</string>
+    <string name="settings_title_security">安全与隐私</string>
+    <string name="settings_section_plugin_security">插件运行安全</string>
+    <string name="settings_dev_trust_mode">开发者信任模式</string>
+
+    <string name="settings_backup_msg_merge_val">消息合并：%1$s</string>
+    <string name="settings_backup_msg_merge_unchanged">保持本机现值</string>
+    <string name="settings_backup_msg_merge_immediate">立即发送</string>
+    <string name="settings_backup_msg_merge_seconds">%1$s 秒</string>
+    <string name="settings_backup_legacy_section_dropped">旧版本备份里的 %1$d 项消息合并设置未导入：</string>
+    <string name="settings_backup_legacy_note">旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。</string>
+    <string name="settings_backup_inspect_failed">无法导入：%1$s</string>
+    <string name="settings_backup_import_failed">导入失败：%1$s</string>
+
+    <string name="settings_push_title">主动推送</string>
+    <string name="settings_push_unavailable">本机加密队列暂不可用，请检查设备存储和密钥状态。</string>
 </resources>

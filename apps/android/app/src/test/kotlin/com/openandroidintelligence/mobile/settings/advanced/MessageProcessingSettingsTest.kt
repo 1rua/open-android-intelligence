@@ -51,6 +51,8 @@ class MessageProcessingSettingsTest {
         show()
         compose.onNodeWithText("合并连续消息").performScrollTo().assertExists()
         compose.onNodeWithText("当前设置：立即发送（不合并）").performScrollTo().assertExists()
+        compose.onNodeWithText("设置为 0 秒时立即发送；大于 0 秒时合并短时间内连续发送的消息。")
+            .performScrollTo().assertExists()
         assertFalse("不得提供覆盖 Core 配置的入口", screenContains("覆盖当前 Core 的设置"))
         assertFalse(screenContains("当前 Core 使用全局默认。"))
         compose.runOnIdle { assertEquals(0L, preferences.read().delay.inWholeMilliseconds) }

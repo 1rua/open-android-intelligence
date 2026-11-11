@@ -475,6 +475,22 @@ class SettingsBackupCoordinatorTest {
     }
 
     @Test
+    fun exportAndImportPreviewDescribeTheActualMessageMergingDelay() {
+        val preferences = DebouncePreferences(context)
+        val owner = coordinator()
+        assertTrue(owner.exportSummary().contains("消息合并：立即发送"))
+
+        preferences.write(2_500)
+        val exported = owner.export()
+        assertTrue(owner.exportSummary().contains("消息合并：2.5 秒"))
+        assertTrue(owner.preview(exported.json).summaries.contains("消息合并：2.5 秒"))
+
+        preferences.write(0)
+        assertTrue(owner.preview(exported.json).summaries.contains("消息合并：2.5 秒"))
+        assertEquals("读取预览不能写入本机偏好", 0L, preferences.read().delay.inWholeMilliseconds)
+    }
+
+    @Test
     fun messageProcessingDelayRoundTripsAndLegacyMergingValuesAreReportedNotImported() {
         val preferences = DebouncePreferences(context)
         preferences.write(3_000)
@@ -495,9 +511,14 @@ class SettingsBackupCoordinatorTest {
             ),
         )
         preferences.write(4_000)
+        assertTrue(coordinator().preview(text).summaries.contains("消息合并：保持本机现值"))
         val outcome = coordinator().import(text).getOrThrow()
         assertEquals("旧文件的合并值不覆盖本机现值", 4_000L, preferences.read().delay.inWholeMilliseconds)
         assertTrue(outcome.skipped.any { it.contains("消息合并设置未导入") })
+        assertTrue(outcome.skipped.contains(
+            "旧版本备份里的 2 项消息合并设置未导入：" +
+                "旧版导出会固定写入默认值且不再按 Core 区分，消息合并现由客户端统一设置；请按需重新调整。",
+        ))
         val all = context.getSharedPreferences("conversation-debounce-v1", 0).all
         assertTrue(all.keys.none { it.startsWith("gateway:$unknownKey") })
     }

@@ -36,7 +36,7 @@ enum class BackupSection(val wireName: String) {
 }
 
 internal fun formatError(path: String, detail: String) =
-    SettingsBackupFormatException("$path：$detail")
+    SettingsBackupFormatException("$path：$detail", BackupFormatErrorCode.FIELD_VALUE_INVALID, listOf(path, detail))
 
 internal fun requireOneOf(value: String, allowed: Collection<String>, path: String): String {
     if (value !in allowed) throw formatError(path, "取值「$value」不受支持。")
@@ -135,15 +135,6 @@ data class MessageProcessingSection(
     fun encode(): JsonValue.JObject = JsonValue.JObject(
         listOfNotNull(delayMillis?.let { "delayMillis" to Json.of(it) }),
     )
-
-    fun summary(): String {
-        val value = when {
-            delayMillis == null -> "保持本机现值"
-            delayMillis == 0 -> "立即发送"
-            else -> "${delayMillis / 1000.0} 秒"
-        }
-        return "stringResource(UiR.string.settings_backup_msg_merge_val, value)"
-    }
 
     /** 旧文件里的合并值已不再适用，导入时需要如实告知。 */
     val hasLegacyMergingSettings: Boolean get() = legacyMergingSettings > 0
@@ -418,19 +409,6 @@ data class SettingsBackupSections(
         updates?.let { put(BackupSection.UPDATES.wireName, it.encode()) }
         notificationCollection?.let { put(BackupSection.NOTIFICATION_COLLECTION.wireName, it.encode()) }
         devicePush?.let { put(BackupSection.DEVICE_PUSH.wireName, it.encode()) }
-    }
-
-    fun summaries(): List<String> = buildList {
-        appearance?.let { add(it.summary()) }
-        notifications?.let { add(it.summary()) }
-        messageProcessing?.let { add(it.summary()) }
-        conversation?.let { add(it.summary()) }
-        connection?.let { add(it.summary()) }
-        agents?.let { add(it.summary()) }
-        capabilities?.let { add(it.summary()) }
-        updates?.let { add(it.summary()) }
-        notificationCollection?.let { add(it.summary()) }
-        devicePush?.let { add(it.summary()) }
     }
 
     val isEmpty: Boolean get() = encode().isEmpty()

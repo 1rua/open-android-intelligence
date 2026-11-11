@@ -11,7 +11,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** 一次性结果提示；[id] 让同一段文字重复出现时也能被消费两次。 */
-data class BackupNotice(val id: Long, val message: String, val isError: Boolean)
+data class BackupNotice(
+    val id: Long,
+    val message: String,
+    val isError: Boolean,
+    val formatFailure: SettingsBackupFormatException? = null,
+    val failureOperation: BackupFailureOperation? = null,
+)
+
+enum class BackupFailureOperation { INSPECT, IMPORT }
 
 /** 通过校验、等待用户确认的导入。 */
 data class PendingImport(
@@ -118,7 +126,10 @@ class SettingsBackupViewModel(
                 busy = false,
                 pendingImport = result.getOrNull(),
                 notice = result.exceptionOrNull()?.let {
-                    notice("无法导入：${it.message ?: "文件格式不正确。"}", isError = true)
+                    notice(
+                        "无法导入：${it.message ?: "文件格式不正确。"}", isError = true,
+                        failure = it, operation = BackupFailureOperation.INSPECT,
+                    )
                 } ?: _state.value.notice,
             )
         }
@@ -160,7 +171,10 @@ class SettingsBackupViewModel(
             _state.value = _state.value.copy(
                 busy = false,
                 exportSummary = refreshed,
-                notice = notice(message, isError = result.isFailure),
+                notice = notice(
+                    message, isError = result.isFailure,
+                    failure = result.exceptionOrNull(), operation = BackupFailureOperation.IMPORT,
+                ),
             )
         }
     }
@@ -169,5 +183,10 @@ class SettingsBackupViewModel(
         _state.value = _state.value.copy(notice = null)
     }
 
-    private fun notice(message: String, isError: Boolean = false) = BackupNotice(++noticeSeq, message, isError)
+    private fun notice(
+        message: String,
+        isError: Boolean = false,
+        failure: Throwable? = null,
+        operation: BackupFailureOperation? = null,
+    ) = BackupNotice(++noticeSeq, message, isError, failure as? SettingsBackupFormatException, operation)
 }

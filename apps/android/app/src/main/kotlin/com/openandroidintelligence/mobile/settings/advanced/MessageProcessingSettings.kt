@@ -12,9 +12,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import com.openandroidintelligence.ui.resources.R as UiR
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -24,6 +23,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.GatewayRuntime
 import com.openandroidintelligence.mobile.conversations.DebouncePreferences
 import kotlinx.coroutines.CancellationException
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 「消息处理」里唯一的合并设置：客户端本地的合并时长。
@@ -73,7 +73,7 @@ internal fun MessageProcessingEditor(
     SettingsSectionCard {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
             if (!editable) {
-                Text("消息处理暂不可编辑：运行时未连接。", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(UiR.string.settings_msg_proc_unavailable), style = MaterialTheme.typography.bodyMedium)
             }
             DebounceDelayEditor(
                 storedDelay = storedDelay,
@@ -83,7 +83,7 @@ internal fun MessageProcessingEditor(
             )
             if (failed) DebounceSaveFailure()
             Text(
-                "stringResource(UiR.string.settings_msg_proc_delay_zero)",
+                stringResource(UiR.string.settings_msg_proc_delay_zero),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -94,7 +94,7 @@ internal fun MessageProcessingEditor(
 @Composable
 private fun DebounceSaveFailure() {
     Text(
-        "消息处理设置未能保存，重启后可能恢复原设置，请重试。",
+        stringResource(UiR.string.settings_msg_proc_save_failed),
         color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodyMedium,
         modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -109,10 +109,12 @@ private fun DebounceDelayEditor(
     onSave: (Int) -> Unit,
 ) {
     var draftDelay by remember(storedDelay, revision) { mutableFloatStateOf(storedDelay.toFloat()) }
+    val delayLabel = stringResource(UiR.string.settings_msg_proc_delay_label)
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny)) {
-        Text("合并连续消息", style = MaterialTheme.typography.bodyLarge)
+        Text(stringResource(UiR.string.settings_msg_proc_merge_title), style = MaterialTheme.typography.bodyLarge)
         Text(
-            if (draftDelay.toInt() == 0) "stringResource(UiR.string.settings_msg_proc_current_immediate)" else "stringResource(UiR.string.settings_msg_proc_current_delay, draftDelay.toInt() / 1000.0)",
+            if (draftDelay.toInt() == 0) stringResource(UiR.string.settings_msg_proc_current_immediate)
+            else stringResource(UiR.string.settings_msg_proc_current_delay, draftDelay.toInt() / 1000.0),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -124,7 +126,7 @@ private fun DebounceDelayEditor(
             enabled = enabled,
             onValueChange = { draftDelay = it },
             onValueChangeFinished = { onSave(draftDelay.toInt()) },
-            modifier = Modifier.semantics { contentDescription = "stringResource(UiR.string.settings_msg_proc_delay_label)" },
+            modifier = Modifier.semantics { contentDescription = delayLabel },
         )
     }
 }

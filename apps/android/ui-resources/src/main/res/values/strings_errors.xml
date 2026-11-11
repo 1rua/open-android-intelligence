@@ -25,4 +25,26 @@
     <string name="err_backup_version_unsupported">不支持的备份文件版本：%1$s</string>
     <string name="err_backup_read_failed">读取备份文件失败，请确认文件完整性</string>
     <string name="err_backup_write_failed">写入备份文件失败，请检查存储空间</string>
+    <!-- 保留既有中文 message 的默认表现，界面通过结构化错误码读取这些资源。 -->
+    <string name="err_backup_invalid_json">备份文件不是有效的 JSON。</string>
+    <string name="err_backup_top_level_object_required">备份文件顶层必须是 JSON 对象。</string>
+    <string name="err_backup_settings_required">备份文件缺少 settings。</string>
+    <string name="err_backup_schema_version_required">备份文件缺少 schemaVersion。</string>
+    <string name="err_backup_schema_version_newer">备份文件来自更新版本的 App（schemaVersion=%1$s），请先升级 App。</string>
+    <string name="err_backup_schema_version_invalid">备份文件 schemaVersion 非法。</string>
+    <string name="err_backup_exported_at_required">备份文件缺少导出时间。</string>
+    <string name="err_backup_app_version_name_required">备份文件缺少 App 版本。</string>
+    <string name="err_backup_app_version_code_required">备份文件缺少 App versionCode。</string>
+    <string name="err_backup_migration_unavailable">备份文件版本 %1$s 无法迁移到当前版本。</string>
+    <string name="err_backup_section_object_required">设置项 %1$s 必须是 JSON 对象。</string>
+    <string name="err_backup_field_string_required">字段 %1$s 必须是字符串。</string>
+    <string name="err_backup_field_boolean_required">字段 %1$s 必须是布尔值。</string>
+    <string name="err_backup_field_integer_required">字段 %1$s 必须是整数。</string>
+    <string name="err_backup_field_array_required">字段 %1$s 必须是数组。</string>
+    <string name="err_backup_field_strings_required">字段 %1$s 只能包含字符串。</string>
+    <string name="err_backup_field_objects_required">字段 %1$s 只能包含对象。</string>
+    <string name="err_backup_field_object_required">字段 %1$s 必须是对象。</string>
+    <string name="err_backup_field_value_invalid">%1$s：%2$s</string>
+    <string name="err_backup_no_restorable_settings">备份文件中没有可恢复的设置。</string>
+    <string name="err_backup_file_too_large">文件过大，不是本 App 导出的设置文件。</string>
 </resources>

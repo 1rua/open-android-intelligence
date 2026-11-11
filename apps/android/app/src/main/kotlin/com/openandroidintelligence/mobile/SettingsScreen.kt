@@ -79,11 +79,11 @@ internal fun DevicePushSubScreen(
 ) {
     if (runtime == null) {
         androidx.compose.foundation.layout.Box(Modifier) {
-            androidx.compose.material3.Text(stringResource(UiR.string.settings_state_local_save_failed))
+            androidx.compose.material3.Text(stringResource(UiR.string.settings_push_unavailable))
         }
         return
     }
-    com.openandroidintelligence.mobile.settings.SettingsPageScaffold(stringResource(UiR.string.settings_attachment_lib_take_photo_title), presentation, onBack) { padding ->
+    com.openandroidintelligence.mobile.settings.SettingsPageScaffold(stringResource(UiR.string.settings_push_title), presentation, onBack) { padding ->
         com.openandroidintelligence.mobile.push.PushSettingsScreen(
             runtime = runtime,
             endpoints = endpoints,
