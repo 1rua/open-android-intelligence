@@ -118,7 +118,8 @@ describe("DSH execution and observer lifetimes", () => {
     res.destroy();
     await until(() => h.count() === 0);
     await task;
-    expect(signal?.aborted ?? false).toBe(false);
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
     admission.resolve({ accepted: true });
     await tick();
     expect(res.frames).toEqual([]);

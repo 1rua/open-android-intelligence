@@ -70,6 +70,44 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
 }
 
 describe("DSH native Session Adapter", () => {
+  it("向宿主传入有效受理信号并保留原生完成结果", async () => {
+    const h = await host();
+    const nativePrompt = h.controller.prompt;
+    let admissionSignal;
+    h.controller.prompt = (input, signal) => {
+      admissionSignal = signal;
+      signal.throwIfAborted();
+      return nativePrompt(input);
+    };
+    const events = (await (await h.request("/sessions/terminal/messages", "POST", { text: "hello" })).text()).trim().split("\n").map(JSON.parse);
+    expect(admissionSignal).toBeInstanceOf(AbortSignal);
+    expect(admissionSignal.aborted).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "done", userMessageId: "submitted" });
+  });
+  it("以迭代摘要保留十五万条事件的长会话与普通会话", async () => {
+    const h = await host();
+    h.records.push({ header: { id: "long-history", createdAt: 1000 } });
+    const nativeSurface = h.query.readSurface;
+    h.query.readSurface = async (id) => id === "long-history"
+      ? { events: Array.from({ length: 150_000 }, (_, index) => ({ time: 4000 + index })) }
+      : nativeSurface(id);
+    const response = await h.request("/sessions");
+    expect(response.status).toBe(200);
+    expect((await response.json()).sessions).toEqual([
+      { id: "terminal", title: "Native terminal", updatedAt: new Date(3000).toISOString(), archived: false },
+      { id: "long-history", title: "Native long-history", updatedAt: new Date(153_999).toISOString(), archived: false },
+    ]);
+  });
+  it.each([false, true])("从历史原生来源恢复客户端身份，兼容旧包装=%s", async (legacyUserWrapper) => {
+    const h = await host({ legacyUserWrapper });
+    await (await h.request("/sessions/terminal/messages", "POST", { text: "hello", clientMessageId: "stable-client" })).text();
+    const messages = (await (await h.request("/sessions/terminal/history")).json()).messages;
+    expect(messages.find((message) => message.id === "submitted")).toMatchObject({
+      id: "submitted", role: "user", clientMessageId: "stable-client",
+    });
+    expect(messages.find((message) => message.id === "native-reply")).not.toHaveProperty("clientMessageId");
+    expect(messages.find((message) => message.id === "message")).not.toHaveProperty("clientMessageId");
+  });
   it("signs a fresh challenge with the stable instance and actual host capabilities", async () => {
     const h = await host({ instanceId: "dsh-instance" });
     const challenge = "a".repeat(64);
