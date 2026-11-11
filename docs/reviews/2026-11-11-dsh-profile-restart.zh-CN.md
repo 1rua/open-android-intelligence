@@ -42,3 +42,18 @@
 6. `git diff --check` 通过；`npm run test:pr` 已后台启动，结果由主任务继续收集。
 
 以上为隔离单元与 Core 握手集成证据，没有执行真实服务停止、重启、部署或 Android 验收。真实双实例升级与活跃任务不中断仍须单独验收。
+
+## 独立审查后的第二轮修复
+
+独立审查固定在 `064889e1`，发现三项有效问题：环境文件等来源未参与下次启动核验、官方脚本的 Node 解释器展开导致正常服务误拒绝、新身份读取无意要求可选 PyYAML。三项对应回归先运行，得到 **3 failed**（0.13 秒），确认均能捕获真实函数中的缺口。
+
+本轮改动：
+
+- 从对应 systemd 管理器当前环境开始，按 `PassEnvironment`、服务 `Environment`、按序 `EnvironmentFiles` 与最终 `UnsetEnvironment` 重建下次环境；系统管理器的继承仅取显式传递项，不以旧 DSH 进程的环境补齐。管理器环境只捕获在内存中，环境文件经属主、类型、大小及非符号链接检查后读取，包含密钥也不输出。
+- 重启前重新读取管理器环境及服务配置，防止核验期间发生变化。官方 `EnvironmentFiles` 的多行重复输出保持原顺序；支持正常环境文件、路径含空格、文件通配符、引号和续行。仅在 PAM 环境、未解析的路径占位符或无法安全读取等确实不能核验的情况停止自动操作。
+- 仅对已核验 `@deepseek-ai/dsh` 包内的官方 `bin.js` 和 `#!/usr/bin/env node` 规范化解释器、入口及全部参数，兼容脚本直接启动与显式 Node 启动，保留原启动方式。
+- 移除新路径中的 Python YAML 依赖。使用已经安装的 DSH 所属 Node 与其 `js-yaml` 依赖解析官方配置输出，只向 Core 返回端口和实例标识两个字段；表达式标签只作为数据保留，不执行表达式，不输出完整配置。
+
+验证：`PYTHONPATH=oai-core/src python -m pytest -q oai-core/tests/test_dsh_setup.py oai-core/tests/test_dsh_installation.py -p no:cacheprovider --tb=short` 得到 **95 passed、0 failed**（6.76 秒）；`git diff --check` 通过。新增真实已安装 DSH 的隔离 `dump-config` 测试在禁用 Python YAML 导入时仍成功，并验证配置表达式不执行、合成密钥与完整配置不进入输出。正常环境文件自动重启、环境变化拒绝、清除规则、解释器展开均有保护回归。
+
+本轮没有重复全量 Fast/PR 门禁，没有停止或重启真实服务。前一提交的门禁环境限制与远端 CI 结果不能替代本轮审查和真实部署验收。

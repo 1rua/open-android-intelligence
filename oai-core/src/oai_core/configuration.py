@@ -1573,22 +1573,20 @@ def _dsh_process_matches(process: _DshProcess | None, home: Path, name: str) -> 
     try:
         if process.uid != home.stat().st_uid:
             return False
+        user_home = process.environment.get("HOME")
+        if user_home is None:
+            import pwd
+            user_home = pwd.getpwuid(process.uid).pw_dir
         value = process.environment.get("DSH_HOME", "")
         if not value.strip():
-            user_home = process.environment.get("HOME")
-            if not user_home:
-                return False
             value = str(Path(user_home) / ".dsh")
         elif value == "~" or value.startswith("~/"):
-            user_home = process.environment.get("HOME")
-            if not user_home:
-                return False
             value = str(Path(user_home) / value[2:])
         actual = Path(value)
         if not actual.is_absolute():
             actual = process.directory / actual
         return actual.resolve() == home.resolve()
-    except OSError:
+    except (OSError, KeyError):
         return False
 
 
@@ -1601,22 +1599,256 @@ def _dsh_processes(home: Path, name: str) -> list[_DshProcess]:
         return []
 
 
-def _dsh_unit_matches(properties: dict, process: _DshProcess, home: Path, name: str, *, user_service: bool) -> bool:
+def _dsh_environment_assignments(text: str) -> dict[str, str]:
+    """解析 systemd 环境文件的引号和续行规则，不执行 shell 展开。"""
+    if "\0" in text or text.startswith("\ufeff"):
+        raise ValueError("invalid environment file")
+    values = {}
+    index = 0
+    while index < len(text):
+        end = text.find("\n", index)
+        end = len(text) if end < 0 else end
+        line = text[index:end]
+        if line.lstrip().startswith(("#", ";")) and line.rstrip().endswith("\\"):
+            raise ValueError("version-dependent comment continuation")
+        if not line.strip() or line.lstrip().startswith(("#", ";")) or "=" not in line:
+            index = end + 1
+            continue
+        key, _ = line.split("=", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            index = end + 1
+            continue
+        index += line.index("=") + 1
+        while index < len(text) and text[index] in " \t\r":
+            index += 1
+        quote = text[index] if index < len(text) and text[index] in "\"'" else ""
+        if quote:
+            index += 1
+        value = []
+        trailing = None
+        closed = not quote
+        while index < len(text):
+            character = text[index]
+            index += 1
+            if quote and character == quote:
+                closed = True
+                end = text.find("\n", index)
+                tail = text[index:len(text) if end < 0 else end]
+                if tail.strip(" \t\r"):
+                    raise ValueError("invalid quoted environment value")
+                index = len(text) if end < 0 else end + 1
+                break
+            if not quote and character == "\n":
+                break
+            if character == "\\" and quote != "'" and index < len(text):
+                trailing = None
+                escaped = text[index]
+                index += 1
+                if escaped == "\n":
+                    continue
+                if quote == '"' and escaped not in '\\"$`':
+                    value.append("\\")
+                value.append(escaped)
+            else:
+                if not quote:
+                    if character in " \t\r":
+                        if trailing is None:
+                            trailing = len(value)
+                    else:
+                        trailing = None
+                value.append(character)
+        if not closed:
+            raise ValueError("unclosed environment quote")
+        values[key] = "".join(value[:trailing] if trailing is not None else value)
+    return values
+
+
+def _dsh_unit_environment(properties: dict, process: _DshProcess, *, user_service: bool,
+                          manager_environment: dict[str, str], manager_process_environment: dict[str, str]) -> dict[str, str]:
+    """按下一次执行的来源合成环境，绝不以旧 DSH 进程环境补齐。"""
+    import pwd
+    import glob
+
+    if properties.get("PAMName"):
+        raise ValueError("PAM environment cannot be predicted")
+    environment = dict(manager_environment)
+    if not user_service:
+        for key in shlex.split(properties.get("PassEnvironment", "")):
+            if key in manager_process_environment:
+                environment[key] = manager_process_environment[key]
+    configured_user = properties.get("User", "")
+    if configured_user:
+        expected_uid = int(configured_user) if configured_user.isdecimal() else pwd.getpwnam(configured_user).pw_uid
+        if expected_uid != process.uid:
+            raise ValueError("service user changed")
+    elif not user_service and process.uid != 0:
+        raise ValueError("service user changed")
+    if properties.get("SetLoginEnvironment", "") != "no" and configured_user:
+        identity = pwd.getpwuid(process.uid)
+        environment.update(HOME=identity.pw_dir, LOGNAME=identity.pw_name, SHELL=identity.pw_shell)
+    environment.update(item.split("=", 1) for item in shlex.split(properties.get("Environment", "")) if "=" in item)
+    files = properties.get("EnvironmentFiles", "")
+    position = 0
+    while position < len(files):
+        match = re.match(r"\s*(.*?) \(ignore_errors=(yes|no)\)(?:\s+|$)", files[position:])
+        if match is None:
+            raise ValueError("unknown environment file property")
+        raw_path = match[1]
+        position += match.end()
+        if len(raw_path) >= 2 and raw_path[0] == raw_path[-1] == '"':
+            raw_path = raw_path[1:-1]
+        raw_path = re.sub(r"\\x([0-9A-Fa-f]{2})", lambda value: chr(int(value[1], 16)), raw_path)
+        if not Path(raw_path).is_absolute() or "%" in raw_path:
+            raise ValueError("unresolved environment file path")
+        paths = sorted(glob.glob(raw_path)) if glob.has_magic(raw_path) else [raw_path]
+        if len(paths) > 256 or (not paths and match[2] != "yes"):
+            raise ValueError("unresolved environment file pattern")
+        for path in paths:
+            descriptor = None
+            try:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                metadata = os.fstat(descriptor)
+                if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in {0, process.uid}
+                        or metadata.st_size > 1024 * 1024):
+                    raise ValueError("unsafe environment file")
+                with os.fdopen(descriptor, "rb") as source:
+                    descriptor = None
+                    content = source.read(1024 * 1024 + 1)
+                if len(content) > 1024 * 1024:
+                    raise ValueError("environment file too large")
+                environment.update(_dsh_environment_assignments(content.decode("utf-8")))
+            except FileNotFoundError:
+                if match[2] != "yes":
+                    raise
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+    for assignment in shlex.split(properties.get("UnsetEnvironment", "")):
+        key, separator, value = assignment.partition("=")
+        if not separator or environment.get(key) == value:
+            environment.pop(key, None)
+    return environment
+
+
+def _dsh_normalized_arguments(arguments: tuple[str, ...], environment: dict[str, str], directory: Path) -> tuple[str, ...] | None:
+    """只对核验过的官方脚本展开 Node 解释器，保留每一个启动参数。"""
+    import shutil
+    try:
+        command = _dsh_command(arguments)
+        if command is None:
+            return None
+        prefix = command[0]
+        script = Path(prefix[-1])
+        if not script.is_absolute():
+            script = directory / script
+        script = script.resolve(strict=True)
+        package = json.loads((script.parent.parent / "package.json").read_text())
+        if script.name != "bin.js" or script.parent.name != "lib" or package.get("name") != "@deepseek-ai/dsh":
+            return None
+        with script.open("rb") as source:
+            shebang = source.readline(256).decode().strip()
+        if shebang != "#!/usr/bin/env node":
+            return None
+        path = environment.get("PATH", os.defpath)
+        search = os.pathsep.join(str(directory / part) if part and not Path(part).is_absolute() else part for part in path.split(os.pathsep))
+        if len(prefix) == 1:
+            interpreter = shutil.which("node", path=search)
+        else:
+            if Path(prefix[0]).name != "node":
+                return None
+            interpreter = shutil.which(prefix[0], path=search)
+        if not interpreter:
+            return None
+        return (str(Path(interpreter).resolve(strict=True)), str(script), *arguments[len(prefix):])
+    except (OSError, ValueError, UnicodeError):
+        return None
+
+
+def _dsh_manager_environment(prefix: list[str], environment: dict[str, str]) -> tuple[dict, dict | None] | None:
+    """只在内存中读取管理器当前环境，不把旧服务环境视为下一次启动事实。"""
+    try:
+        result = subprocess.run([*prefix, "show-environment"], capture_output=True, text=True,
+                                timeout=5, check=False, env=environment)
+        if result.returncode:
+            return None
+        manager = {}
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+                return None
+            if value.startswith("$'") and value.endswith("'"):
+                escaped = value[2:-1]
+                escapes = {"a": "\a", "b": "\b", "e": "\x1b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"'}
+
+                def decode(match):
+                    token = match[1]
+                    if token in escapes:
+                        return escapes[token]
+                    if token[0] in {"x", "u", "U"}:
+                        return chr(int(token[1:], 16))
+                    raise ValueError("unknown manager environment escape")
+
+                value = re.sub(r"\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|.)", decode, escaped)
+            else:
+                words = shlex.split(value)
+                if len(words) > 1:
+                    return None
+                value = words[0] if words else ""
+            manager[key] = value
+        manager_process = {}
+        if "--user" not in prefix:
+            try:
+                manager_process = dict(os.fsdecode(part).split("=", 1)
+                    for part in (_DSH_PROC_ROOT / "1/environ").read_bytes().split(b"\0") if b"=" in part)
+            except OSError:
+                manager_process = None
+        return manager, manager_process
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _dsh_unit_matches(properties: dict, process: _DshProcess, home: Path, name: str, *, user_service: bool,
+                      manager_environment: dict[str, str] | None = None,
+                      manager_process_environment: dict[str, str] | None = None) -> bool:
     """同时检查当前进程与服务的下一次启动配置，避免重启到另一个实例。"""
     try:
-        directory = properties.get("WorkingDirectory") or (process.environment.get("HOME", "") if user_service else "/")
+        import pwd
+        environment = _dsh_unit_environment(properties, process, user_service=user_service,
+                                            manager_environment=manager_environment or {},
+                                            manager_process_environment=manager_process_environment or {})
+        directory = properties.get("WorkingDirectory") or (pwd.getpwuid(process.uid).pw_dir if user_service else "/")
+        if directory == "~":
+            directory = pwd.getpwuid(process.uid).pw_dir
         execution = re.search(r"argv\[\]=(.*?)\s+;", properties.get("ExecStart", ""))
         if not directory or not execution:
             return False
         arguments = tuple(shlex.split(execution[1]))
-        if arguments != process.arguments or Path(directory).resolve() != process.directory.resolve():
+        if Path(directory).resolve() != process.directory.resolve():
             return False
-        environment = dict(process.environment)
-        environment.update(item.split("=", 1) for item in shlex.split(properties.get("Environment", "")) if "=" in item)
+        if arguments != process.arguments:
+            configured_arguments = _dsh_normalized_arguments(arguments, environment, Path(directory))
+            actual_arguments = _dsh_normalized_arguments(process.arguments, process.environment, process.directory)
+            if configured_arguments is None or configured_arguments != actual_arguments:
+                return False
         configured = _DshProcess(process.pid, process.start, arguments, environment, Path(directory), process.uid, process.gid)
         return _dsh_process_matches(configured, home, name)
-    except (OSError, ValueError):
+    except (OSError, ValueError, KeyError):
         return False
+
+
+def _dsh_shown_properties(text: str) -> dict[str, str]:
+    """EnvironmentFiles 按官方输出逐项重复，必须保留全部文件和原顺序。"""
+    properties = {}
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "EnvironmentFiles" and properties.get(key):
+            properties[key] += " " + value
+        else:
+            properties[key] = value
+    return properties
 
 
 def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name: str | None = None) -> bool:
@@ -1656,22 +1888,29 @@ def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name
     managed_pids = set()
     for prefix in prefixes:
         try:
+            current_environment = _dsh_manager_environment(prefix, environment)
+            if current_environment is None:
+                continue
+            manager_environment, manager_process_environment = current_environment
             listed = subprocess.run([*prefix, "list-units", "--type=service", "--all", "--no-legend", "--plain", "--no-pager"],
                                     capture_output=True, text=True, timeout=5, check=False, env=environment)
             units = {line.split()[0] for line in listed.stdout.splitlines()
                      if line.split() and line.split()[0].endswith(".service")}
             units.update({"dsh.service", "dsh-web.service", "dsh@web.service", "deepseek-harness.service"})
             for unit in sorted(units):
-                shown = subprocess.run([*prefix, "show", unit, "--property=ActiveState,MainPID,WorkingDirectory,ExecStart,Environment"],
+                shown = subprocess.run([*prefix, "show", unit, "--property=ActiveState,MainPID,WorkingDirectory,ExecStart,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,User,SetLoginEnvironment,PAMName"],
                                        capture_output=True, text=True, timeout=5, check=False, env=environment)
-                properties = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
+                properties = _dsh_shown_properties(shown.stdout)
                 if shown.returncode or properties.get("ActiveState") not in {"active", "activating", "reloading"}:
                     continue
                 pid = int(properties.get("MainPID", "0"))
                 managed_pids.add(pid)
                 process = _read_dsh_process(pid)
                 if (_dsh_process_matches(process, home, profile_name)
-                        and _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix)):
+                        and (not properties.get("PassEnvironment") or manager_process_environment is not None)
+                        and _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix,
+                                              manager_environment=manager_environment,
+                                              manager_process_environment=manager_process_environment)):
                     matches.append((prefix, unit, process))
         except (OSError, ValueError, subprocess.SubprocessError):
             continue
@@ -1684,12 +1923,18 @@ def restart_dsh_service_if_active(profile_home: Path | None = None, profile_name
         if _read_dsh_process(process.pid) != process:
             return False
         try:
-            shown = subprocess.run([*prefix, "show", unit, "--property=ActiveState,MainPID,WorkingDirectory,ExecStart,Environment"],
+            current_environment = _dsh_manager_environment(prefix, environment)
+            if current_environment is None:
+                return False
+            shown = subprocess.run([*prefix, "show", unit, "--property=ActiveState,MainPID,WorkingDirectory,ExecStart,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment,User,SetLoginEnvironment,PAMName"],
                                    capture_output=True, text=True, timeout=5, check=False, env=environment)
-            properties = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
+            properties = _dsh_shown_properties(shown.stdout)
             if (shown.returncode or properties.get("MainPID") != str(process.pid)
                     or properties.get("ActiveState") not in {"active", "activating", "reloading"}
-                    or not _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix)):
+                    or (properties.get("PassEnvironment") and current_environment[1] is None)
+                    or not _dsh_unit_matches(properties, process, home, profile_name, user_service="--user" in prefix,
+                                              manager_environment=current_environment[0],
+                                              manager_process_environment=current_environment[1])):
                 return False
             subprocess.run([*prefix, "restart", unit], capture_output=True, text=True, timeout=15,
                            check=True, env=environment)
@@ -1912,13 +2157,54 @@ def _dsh_target_owns_endpoint(target: _DshBridgeUpgrade) -> bool:
         return False
 
 
+_DSH_PROFILE_PROBE = r"""
+import { readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, basename, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+try {
+    const request = JSON.parse(readFileSync(0, "utf8"));
+    const launcher = realpathSync(resolve(request.directory, request.prefix.at(-1)));
+    const anchor = resolve(dirname(launcher), "../package.json");
+    if (basename(launcher) !== "bin.js" || basename(dirname(launcher)) !== "lib"
+        || JSON.parse(readFileSync(anchor, "utf8")).name !== "@deepseek-ai/dsh") throw Error();
+    const require = createRequire(launcher);
+    const yaml = require("js-yaml");
+    // 与宿主保持相同的表达式标签语法，但只保留标记，绝不求值。
+    const expression = new yaml.Type("tag:yaml.org,2002:js", {
+        kind: "scalar", construct: () => ({ expression: true }),
+    });
+    const dumped = spawnSync(request.prefix[0], [...request.prefix.slice(1), "--profile", request.name,
+        ...request.patches, "--dump-config"], { cwd: request.directory, env: request.environment,
+        encoding: "utf8", timeout: 12000, maxBuffer: 8 * 1024 * 1024 });
+    if (dumped.status !== 0 || dumped.error) throw Error();
+    const tree = yaml.load(dumped.stdout, { schema: yaml.JSON_SCHEMA.extend(expression) });
+    const found = [];
+    const seen = new Set();
+    function visit(value) {
+        if (value === null || typeof value !== "object" || seen.has(value)) return;
+        seen.add(value);
+        if (!Array.isArray(value) && value.id === "oai-session-adapter" && value.disabled !== true)
+            found.push(value.config ?? {});
+        for (const child of Object.values(value)) visit(child);
+    }
+    visit(tree);
+    if (found.length !== 1) throw Error();
+    const config = found[0];
+    const port = config.port ?? 8791;
+    const instanceId = config.instanceId ?? request.environment.OAI_DSH_INSTANCE_ID ?? "dsh";
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || typeof instanceId !== "string"
+        || !/^[A-Za-z0-9._~-]{1,128}$/.test(instanceId)) throw Error();
+    process.stdout.write(JSON.stringify({ port, instanceId }));
+} catch {
+    process.exitCode = 1;
+}
+"""
+
+
 def _dsh_profile_entry(home: Path, name: str, entry: dict) -> dict | None:
-    """通过宿主官方配置合成入口读取所选实例，不把任意在线端口当成目标。"""
+    """通过宿主现有 Node/YAML 能力读取身份，Core 无需安装 Python YAML。"""
     import shutil
-    try:
-        import yaml
-    except ImportError:
-        return None
     try:
         from .dsh_installation import _child_environment
 
@@ -1942,40 +2228,28 @@ def _dsh_profile_entry(home: Path, name: str, entry: dict) -> dict | None:
             directory = home
             metadata = home.stat()
             uid, gid = metadata.st_uid, metadata.st_gid
-        options = {"cwd": directory, "env": environment, "capture_output": True,
-                   "text": True, "timeout": 15, "check": False}
+        node = prefix[0] if len(prefix) > 1 else shutil.which("node", path=environment.get("PATH", os.defpath))
+        if not node:
+            return None
+        request = {"prefix": prefix, "patches": patches, "name": name,
+                   "directory": str(directory), "environment": environment}
+        options = {"cwd": directory, "env": _child_environment(), "capture_output": True,
+                   "text": True, "timeout": 15, "check": False, "input": json.dumps(request)}
         if os.geteuid() == 0 and uid != 0:
             options.update(user=uid, group=gid)
-        # dump-config 不启动服务或执行配置中的 JavaScript；BaseLoader 也不执行 YAML 标签。
-        dumped = subprocess.run([*prefix, "--profile", name, *patches, "--dump-config"], **options)
-        if dumped.returncode:
+        # 完整宿主配置只在 Node 子进程内解析，返回值仅含端口与实例标识。
+        probe = subprocess.run([node, "--input-type=module", "-e", _DSH_PROFILE_PROBE], **options)
+        if probe.returncode:
             return None
-        tree = yaml.load(dumped.stdout, Loader=yaml.BaseLoader)
-        found = []
-
-        def visit(value):
-            if isinstance(value, list):
-                for child in value:
-                    visit(child)
-            elif isinstance(value, dict):
-                if value.get("id") == "oai-session-adapter" and value.get("disabled", "false") != "true":
-                    found.append(value.get("config", {}))
-                for child in value.values():
-                    if isinstance(child, (dict, list)):
-                        visit(child)
-
-        visit(tree)
-        if len(found) != 1 or not isinstance(found[0], dict):
-            return None
-        config = found[0]
-        port = int(config.get("port", 8791))
-        instance = config.get("instanceId", environment.get("OAI_DSH_INSTANCE_ID", "dsh"))
-        if not 1 <= port <= 65535 or not isinstance(instance, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", instance):
+        selected = json.loads(probe.stdout)
+        port, instance = selected["port"], selected["instanceId"]
+        if (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+                or not isinstance(instance, str) or not re.fullmatch(r"[A-Za-z0-9._~-]{1,128}", instance)):
             return None
         result = dict(entry)
         result.update(instanceId=instance, url=f"http://127.0.0.1:{port}", sessionScope="deployment")
         return result
-    except (OSError, ValueError, TypeError, yaml.YAMLError, subprocess.SubprocessError):
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
         return None
 
 
