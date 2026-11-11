@@ -15,6 +15,26 @@ import javax.net.ssl.SSLHandshakeException
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NativeConnectionReliabilityTest {
+    @Test fun anExplicitRecoveryResumesALegacyHostsCappedGenerationRetry() = runTest {
+        val h = LegacyRecoveryHarness(this).apply { failedGenerations = 9 }
+        h.repository.timeline("chat", PageRequest()); runCurrent()
+        for (backoff in listOf(250L, 500L, 1000L, 2000L, 4000L, 8000L, 16000L, 32000L)) {
+            advanceTimeBy(backoff); runCurrent()
+        }
+        assertEquals("旧宿主必须已进入六十秒退避", 9, h.generationReads)
+        assertEquals(60_000L, h.retryBases.last())
+
+        h.repository.connectionRestored(expediteRetry = true, revalidateNetwork = true)
+        runCurrent()
+
+        assertEquals("明确恢复信号须唤醒旧宿主回执读取，不能继续睡满六十秒", 10, h.generationReads)
+        assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
+        assertTrue(h.requests.filter { it.target.contains("/generation?") }.all {
+            it.target.contains("clientMessageId=legacy-client") && it.target.contains("generationId=legacy-generation")
+        })
+        assertTrue(h.requests.none { it.method == "POST" || it.target.contains("/events") })
+    }
+
     @Test fun healthyActivityKeepsTheSameReadAndDoesNotReloadHistory() = runTest {
         val h = Harness(this)
         h.repository.activeConversationChanged(); runCurrent()
@@ -604,6 +624,42 @@ class NativeConnectionReliabilityTest {
         assertEquals(GenerationState.COMPLETED, h.repository.generationState.value)
         assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
         assertEquals(failure, h.repository.streamFailure.first())
+    }
+
+    private class LegacyRecoveryHarness(scope: TestScope) {
+        var failedGenerations = 0
+        var generationReads = 0
+        var generationFailure: Exception = IOException("测试旧宿主暂时离线")
+        var foreground = false
+        val requests = mutableListOf<WireRequest>()
+        val retryBases = mutableListOf<Long>()
+        val storage = NativeEventSynchronizerTest.Storage()
+        private val dispatcher = UnconfinedTestDispatcher(scope.testScheduler)
+        private val agent = CoreAgent("legacy", "旧宿主回归", "hermes", true, "account",
+            AgentCapabilities(history = true, generationRecovery = true, eventSync = false))
+        private val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                val body = when {
+                    request.target.endsWith("/history") -> """{"messages":[{"id":"legacy-user","role":"user","text":"测试输入","clientMessageId":"legacy-client","generationId":"legacy-generation","contentRevision":1}]}"""
+                    request.target.contains("/generation?") -> {
+                        generationReads++
+                        if (failedGenerations > 0) { failedGenerations--; throw generationFailure }
+                        """{"generation":{"generationId":"legacy-generation","conversationId":"chat","clientMessageId":"legacy-client","userMessageId":"legacy-user","state":"completed","revision":2}}"""
+                    }
+                    else -> error("旧宿主恢复只能读取历史与原执行回执")
+                }
+                return WireResponse(200, listOf(RawHeader("Content-Type", "application/json")), body.toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repository = CoreAgentConversationRepository(
+            AgentSessionClient(GatewayHttpClient(GatewayProfile("account", "phone", "login", "https://core.example",
+                accessToken = "synthetic"), transport, { ByteArray(64) }, InMemoryEventCursorStore(), ioDispatcher = dispatcher)),
+            { agent }, { "chat" }, scope.backgroundScope, dispatcher, storeForAgent = { storage },
+            nativeRetryJitter = { retryBases += it; it }, nativeMonotonicMillis = { scope.testScheduler.currentTime },
+            isForeground = { foreground },
+        )
     }
 
     private class Harness(scope: TestScope, jitter: (Long) -> Long = { it },

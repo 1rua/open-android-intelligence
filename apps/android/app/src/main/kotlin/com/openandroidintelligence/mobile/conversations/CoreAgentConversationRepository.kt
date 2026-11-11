@@ -179,6 +179,9 @@ class CoreAgentConversationRepository(
         @Volatile var streamFailure: String? = null
         @Volatile var recoveryBlocked: NativeReadFailureKind? = null
         @Volatile var rejectedCredentialVersion: String? = null
+        var recoveryWaitingForRetry = false
+        var recoveryLastExpeditedAt: Long? = null
+        val recoveryRetryWakeup = Channel<Unit>(Channel.CONFLATED)
     }
     private data class ApprovalRoute(val agent: CoreAgent, val conversationId: String, val choices: Set<String>)
     private val turns = ConcurrentHashMap<Pair<String, String>, NativeTurn>()
@@ -324,7 +327,7 @@ class CoreAgentConversationRepository(
                 NativeReadFailureKind.SECURITY, NativeReadFailureKind.PROTOCOL -> true
                 else -> false
             }
-        }.forEach(::startRecovery)
+        }.forEach { startRecovery(it, expediteRetry = expediteRetry) }
         restartEventSync(wakeup = true, expediteRetry = expediteRetry, confirmedTransportRebuild = confirmedTransportRebuild,
             revalidateNetwork = revalidateNetwork)
     }
@@ -1068,7 +1071,7 @@ class CoreAgentConversationRepository(
         }
     }
 
-    private fun startRecovery(turn: NativeTurn) {
+    private fun startRecovery(turn: NativeTurn, expediteRetry: Boolean = false) {
         if (turn.recoveryBlocked == NativeReadFailureKind.AUTHENTICATION &&
             (turn.rejectedCredentialVersion == null || turn.rejectedCredentialVersion == client.credentialVersion())) return
         val clientId = turn.clientMessageId ?: return
@@ -1084,17 +1087,33 @@ class CoreAgentConversationRepository(
             return
         }
         val job = synchronized(recoveryJobs) {
+            if (closed) return
             // 历史查询不能抢占当前轮次；已经跟踪的旧轮次可以继续独立恢复。
             if (!ownsTurn(turn) && (turns.containsKey(key) || recoveringTurns.containsKey(key)) ||
                 isSettled(key, clientId)) return
-            if (recoveryJobs[turn]?.isActive == true || recoveryJobs[turn]?.isCompleted == false) return
+            if (recoveryJobs[turn]?.isActive == true || recoveryJobs[turn]?.isCompleted == false) {
+                if (expediteRetry && turn.recoveryWaitingForRetry) {
+                    val now = nativeMonotonicMillis()
+                    if (turn.recoveryLastExpeditedAt?.let { now - it >= 5_000 } != false) {
+                        turn.recoveryLastExpeditedAt = now
+                        turn.recoveryRetryWakeup.trySend(Unit)
+                    }
+                }
+                return
+            }
             observeRecoveryTurn(turn)
             parentScope.launch(ioDispatcher, start = CoroutineStart.LAZY) {
+                val ownedRecovery = currentCoroutineContext()[Job]
+                fun requireRecoveryOwner() = synchronized(recoveryJobs) {
+                    if (closed || !parentScope.isActive || recoveryJobs[turn] !== ownedRecovery)
+                        throw CancellationException("NATIVE_RECOVERY_OWNER_CHANGED")
+                }
                 var failures = 0
                 var unchangedUnknown = 0
                 var drainAfterRecovery = false
                 try {
                     while (isActive) {
+                        requireRecoveryOwner()
                         try {
                             val previousRevision = turn.receiptRevision
                             val receipt = client.generation(turn.agent, turn.conversationId, clientId,
@@ -1172,6 +1191,9 @@ class CoreAgentConversationRepository(
                             if (turn.state !in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED))
                                 turn.state = GenerationState.OUTCOME_UNKNOWN
                             withSelectedTurn(turn) { set(_generationState, turn.state) }
+                            val retryable = classified.kind == NativeReadFailureKind.TRANSIENT ||
+                                classified.kind == NativeReadFailureKind.STORAGE && failures < 6
+                            if (retryable) synchronized(recoveryJobs) { turn.recoveryWaitingForRetry = true }
                             updateTurnHealth(turn, StreamHealth.RECONNECTING, classified.notice)
                             if (classified.kind != NativeReadFailureKind.TRANSIENT &&
                                 (classified.kind != NativeReadFailureKind.STORAGE || failures >= 6)) {
@@ -1181,7 +1203,14 @@ class CoreAgentConversationRepository(
                                 updateTurnHealth(turn, StreamHealth.FAILED, classified.notice)
                                 return@launch
                             }
-                            delay(nativeRetryDelay(failures))
+                            try {
+                                withTimeoutOrNull(nativeRetryDelay(failures)) { turn.recoveryRetryWakeup.receive() }
+                            } finally {
+                                synchronized(recoveryJobs) {
+                                    turn.recoveryWaitingForRetry = false
+                                    while (turn.recoveryRetryWakeup.tryReceive().isSuccess) Unit
+                                }
+                            }
                         }
                     }
                 } finally {
