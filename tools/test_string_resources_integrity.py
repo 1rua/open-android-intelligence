@@ -3,11 +3,12 @@
 XML 字符串资源完整性与命名冲突校验器 (XML String Resources Integrity Validator)
 
 功能:
-  深入解析 values/*.xml 资源文件，严格强制执行 4 大国际化合规规则:
+  深入解析 values/*.xml 资源文件，严格强制执行国际化合规规则:
     Rule 1: 占位符数量 >= 2 时强制使用 %1$s, %2$s 显式位置索引
     Rule 2: 孤立未转义的 % 报错；单引号、双引号、& 特殊字符转义检查
     Rule 3: 模块内资源 ID 全局唯一性检查 (跨文件重复 ID 报错阻断)
     Rule 4: 单复数 <plurals> 必须包含必要修饰词 (必须包含 'other' 且修饰词合法唯一)
+    Rule 5: Kotlin 中真实的字符串、复数和数组资源引用必须有默认 XML 定义
 
 退出码:
   0: 校验通过 (所有资源 100% 合规)
@@ -17,24 +18,28 @@ XML 字符串资源完整性与命名冲突校验器 (XML String Resources Integ
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
+from check_hardcoded_chinese import DEFAULT_SCAN_DIR, kotlin_source_files, mask_kotlin_non_code
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RES_DIRS = [
-    REPO_ROOT / "apps/android/ui-resources/src/main/res/values",
-    REPO_ROOT / "apps/android/app/src/main/res/values",
-]
+DEFAULT_RES_DIRS = sorted(DEFAULT_SCAN_DIR.glob("*/src/main/res/values"))
 
 # Java/Android 格式化占位符正则
 FORMAT_SPEC_PATTERN = re.compile(r"%(?:(\d+)\$)?[-#+ 0,(]*\d*(?:\.\d+)?[a-zA-Z%]")
 
 # Android Plurals 合法修饰词集合
 VALID_PLURAL_QUANTITIES = {"zero", "one", "two", "few", "many", "other"}
+
+RESOURCE_IMPORT_PATTERN = re.compile(r"^\s*import\s+([\w.]+)\.R(?:\s+as\s+(\w+))?\s*;?\s*$", re.MULTILINE)
+RESOURCE_REFERENCE_PATTERN = re.compile(
+    r"(?<![\w.])((?:[A-Za-z_]\w*\s*\.\s*)*[A-Za-z_]\w*)\s*\.\s*"
+    r"(string|plurals|array)\s*\.\s*([A-Za-z_]\w*)"
+)
 
 
 class ResourceViolation:
@@ -263,13 +268,89 @@ def validate_directories(res_dirs: list[Path]) -> list[ResourceViolation]:
     return all_violations
 
 
+def validate_resource_references(source_paths: list[Path], res_dirs: list[Path]) -> list[ResourceViolation]:
+    """校对真实源码引用；复用中文扫描器的词法视图，忽略注释与字符串中的示例。"""
+    definitions: dict[str, set[str]] = defaultdict(set)
+    namespace_definitions: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+
+    def read_namespace(build_file: Path) -> str | None:
+        content = build_file.read_text(encoding="utf-8")
+        code = mask_kotlin_non_code(content)
+        for match in re.finditer(r'\bnamespace\s*=\s*"([\w.]+)"', content):
+            if code[match.start()] == "n":
+                return match.group(1)
+        return None
+
+    # 即便某模块的 values/ 被全部移除，其 R 仍属于本工程，引用必须报缺项。
+    for build_file in DEFAULT_SCAN_DIR.glob("*/build.gradle.kts"):
+        namespace = read_namespace(build_file)
+        if namespace:
+            namespace_definitions.setdefault(namespace, defaultdict(set))
+
+    for res_dir in res_dirs:
+        namespace = None
+        for parent in res_dir.parents:
+            build_file = parent / "build.gradle.kts"
+            if build_file.is_file():
+                namespace = read_namespace(build_file)
+                if namespace:
+                    namespace_definitions.setdefault(namespace, defaultdict(set))
+                break
+        for xml_file in sorted(res_dir.glob("*.xml")):
+            try:
+                root = ET.fromstring(xml_file.read_text(encoding="utf-8"))
+            except (OSError, ET.ParseError):
+                # XML 读取或语法问题由同一入口的 validate_directories 报告。
+                continue
+            for element in root:
+                resource_type = element.get("type") if element.tag == "item" else element.tag
+                if resource_type in {"string-array", "integer-array"}:
+                    resource_type = "array"
+                name = element.get("name")
+                if resource_type in {"string", "plurals", "array"} and name:
+                    definitions[resource_type].add(name)
+                    if namespace:
+                        namespace_definitions[namespace][resource_type].add(name)
+
+    violations: list[ResourceViolation] = []
+    for source in kotlin_source_files(source_paths):
+        try:
+            text = source.read_text(encoding="utf-8")
+        except OSError as error:
+            violations.append(ResourceViolation("KOTLIN_FILE_READ_ERROR", source, 1, source.name, f"源码读取失败: {error}"))
+            continue
+        code = mask_kotlin_non_code(text)
+        aliases = {match.group(2) or "R": match.group(1) for match in RESOURCE_IMPORT_PATTERN.finditer(code)}
+        for match in RESOURCE_REFERENCE_PATTERN.finditer(code):
+            owner = re.sub(r"\s+", "", match.group(1))
+            namespace = aliases.get(owner, owner[:-2] if owner.endswith(".R") else None)
+            if namespace is not None and namespace not in namespace_definitions:
+                # 第三方库与系统资源由其 AAR/Android SDK 提供，不属于本仓库 XML。
+                continue
+            if namespace is None and owner != "R":
+                continue
+            resource_type, name = match.group(2, 3)
+            available = namespace_definitions[namespace] if namespace else definitions
+            if name not in available[resource_type]:
+                line = text.count("\n", 0, match.start()) + 1
+                violations.append(ResourceViolation(
+                    "RULE_5_MISSING_RESOURCE", source, line, f"{resource_type}.{name}",
+                    f"源码引用 {owner}.{resource_type}.{name}，但默认 values/ 中没有对应 XML 定义。",
+                ))
+    return violations
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="XML 字符串资源完整性与命名冲突校验器")
-    parser.add_argument("dirs", nargs="*", help="指定校验的 res/values 目录 (默认: ui-resources 与 app)")
+    parser.add_argument("dirs", nargs="*", help="指定校验的 res/values 目录 (默认: 所有 Android 模块的主资源目录)")
+    parser.add_argument("--sources", nargs="+", help="同时校验这些 Kotlin 文件或目录中的资源引用；默认校验 Android 生产源码")
     args = parser.parse_args()
 
     dirs = [Path(d).resolve() for d in args.dirs] if args.dirs else DEFAULT_RES_DIRS
     violations = validate_directories(dirs)
+    sources = [Path(path).resolve() for path in args.sources] if args.sources else ([] if args.dirs else [DEFAULT_SCAN_DIR])
+    if sources:
+        violations.extend(validate_resource_references(sources, dirs))
 
     if violations:
         print(f"\n❌ [资源完整性门禁阻断] 检出 {len(violations)} 项资源规范违规:\n", file=sys.stderr)
@@ -277,7 +358,7 @@ def main() -> int:
             print(f"[{v.rule}] {v.relative_path}:{v.line_number} ({v.res_name}): {v.message}", file=sys.stderr)
         return 1
 
-    print("✅ XML 字符串资源完整性与命名冲突校验通过! (Rule 1~4 均已满足)")
+    print("✅ XML 字符串资源完整性、命名冲突与源码引用校验通过!")
     return 0
 
 

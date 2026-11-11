@@ -655,6 +655,26 @@ def test_ci_gate_depends_on_every_android_prerequisite():
     assert "changes" in gate_needs
 
 
+def test_android_preflight_executes_i18n_gates_and_fast_tests_the_checkers():
+    """PR 实际执行的预检须调用文案门禁，快速通道同时验证门禁自身的回归。"""
+    import yaml
+
+    jobs = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+    )["jobs"]
+    preflight_commands = [
+        shlex.split(line)
+        for step in jobs["android-preflight"]["steps"]
+        for line in step.get("run", "").splitlines()
+    ]
+    for script in ("tools/check_hardcoded_chinese.py", "tools/test_string_resources_integrity.py"):
+        assert ["python3", script] in preflight_commands
+
+    fast_arguments = shlex.split("\n".join(step.get("run", "") for step in jobs["fast"]["steps"]))
+    assert "tools/test_check_hardcoded_chinese.py" in fast_arguments
+    assert "tools/test_test_string_resources_integrity.py" in fast_arguments
+
+
 def test_artifact_consumers_cannot_outlive_their_producer():
     """A lane that downloads android-setup's artifact must never run without it.
 

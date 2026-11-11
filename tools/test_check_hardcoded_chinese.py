@@ -554,6 +554,42 @@ def test_control_flow_with_assertion_condition_not_exempt():
     assert exempt_map["循环提示"] == (False, None)
 
 
+@pytest.mark.parametrize("expression", [
+    'Text(if (checkNotNull(state).ready) "已连接" else "未连接")',
+    'Text(checkNotNull(state).label ?: "未连接")',
+    'render(checkNotNull(state), "未连接")',
+    'Text(checkNotNull("未连接"))',
+    'check(showDialog("未连接"))',
+])
+def test_completed_assertion_does_not_exempt_ui_expression(expression):
+    """断言返回值参与界面表达式时，错误消息范围外的文字仍须资源化。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(f"fun ui() {{ {expression} }}\n")
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert findings
+    assert all(not finding.is_exempt for finding in findings)
+
+
+@pytest.mark.parametrize("code", [
+    '''fun ui() { val quote = '\"'; Text("未迁移的提示") }''',
+    '// @file:Suppress("HardcodedChineseText")\nfun ui() { Text("未迁移的提示") }',
+    '/* @Suppress("HardcodedChineseText") */\nfun ui() { Text("未迁移的提示") }',
+    'val example = """@file:Suppress("HardcodedChineseText")"""\nfun ui() { Text("未迁移的提示") }',
+    'fun ui() { Text("未迁移的提示 https://example.com/i18n-ignore") }',
+])
+def test_non_code_tokens_do_not_hide_ui_text(code):
+    """字符字面量和注释、示例中的抑制标记不得吞掉真实界面文字。"""
+    with tempfile.NamedTemporaryFile("w", suffix=".kt", encoding="utf-8", delete=False) as source:
+        source.write(code)
+        source.flush()
+        findings = extract_strings_from_kotlin_file(Path(source.name))
+
+    assert len(findings) == 1
+    assert not findings[0].is_exempt
+
+
 def test_assertion_with_inline_lambda_condition_exempt():
     """用例组 4: check/require 条件内含有 lambda (如 any { it.isActive }) 时，必须判定为 is_exempt == True。"""
     code = """

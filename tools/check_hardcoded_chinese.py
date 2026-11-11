@@ -55,6 +55,98 @@ CHECK_REQUIRE_FUNC_NAMES = {
 CONTINUATION_OPERATORS = (",", "=", "+", "-", "*", "/", "%", "&&", "||", "?:", "->", ".", "\\", "(")
 
 
+def kotlin_non_code_spans(text: str) -> list[tuple[str, int, int]]:
+    """记录注释和字面量区间，保留字符串模板中的真实 Kotlin 表达式。"""
+    spans: list[tuple[str, int, int]] = []
+    size = len(text)
+
+    def scan_string(start: int) -> int:
+        raw = text.startswith('"""', start)
+        delimiter = '"""' if raw else '"'
+        index = start + len(delimiter)
+        chunk_start = start
+        while index < size:
+            if text.startswith(delimiter, index):
+                end = index + len(delimiter)
+                spans.append(("string", chunk_start, end))
+                return end
+            if not raw and text[index] == "\\":
+                index += 2
+            elif text.startswith("${", index):
+                spans.append(("string", chunk_start, index + 2))
+                index = scan_code(index + 2, in_template=True)
+                if index > 0 and text[index - 1] == "}":
+                    spans.append(("string", index - 1, index))
+                chunk_start = index
+            elif not raw and text[index] == "\n":
+                break
+            else:
+                index += 1
+        spans.append(("string", chunk_start, min(index, size)))
+        return min(index, size)
+
+    def scan_code(index: int, in_template: bool = False) -> int:
+        brace_depth = 0
+        while index < size:
+            if text.startswith("//", index):
+                end = text.find("\n", index)
+                if end == -1:
+                    end = size
+                spans.append(("line_comment", index, end))
+                index = end
+            elif text.startswith("/*", index):
+                start = index
+                depth = 1
+                index += 2
+                while index < size and depth:
+                    if text.startswith("/*", index):
+                        depth += 1
+                        index += 2
+                    elif text.startswith("*/", index):
+                        depth -= 1
+                        index += 2
+                    else:
+                        index += 1
+                spans.append(("block_comment", start, index))
+            elif text[index] == '"':
+                index = scan_string(index)
+            elif text[index] == "'":
+                start = index
+                index += 1
+                while index < size and text[index] != "\n":
+                    if text[index] == "\\":
+                        index += 2
+                    elif text[index] == "'":
+                        index += 1
+                        break
+                    else:
+                        index += 1
+                spans.append(("char", start, min(index, size)))
+            elif in_template and text[index] == "}":
+                index += 1
+                if brace_depth == 0:
+                    return index
+                brace_depth -= 1
+            else:
+                if in_template and text[index] == "{":
+                    brace_depth += 1
+                index += 1
+        return index
+
+    scan_code(0)
+    return spans
+
+
+def mask_kotlin_non_code(text: str) -> str:
+    """将非代码字符替换为空格，保留字符偏移和换行供其他源码门禁复用。"""
+    masked = list(text)
+    for _, start, end in kotlin_non_code_spans(text):
+        for index in range(start, end):
+            if masked[index] not in "\r\n":
+                masked[index] = " "
+    return "".join(masked)
+
+
 def strip_string_literals_and_comments(s: str) -> str:
     """去除行内的双引号字符串字面量、三引号多行字符串、单引号字符字面量与注释，保留纯语法骨架。"""
     out = []
@@ -338,14 +430,19 @@ class HardcodedFinding:
 
 def compute_suppression_lines(lines: list[str]) -> set[int] | str:
     """计算 Level 2 @Suppress 所覆盖的代码行号集合。若全文件抑制则返回 'ALL'。"""
+    code_lines = mask_kotlin_non_code("\n".join(lines)).split("\n")
+
+    def has_annotation(pattern: re.Pattern, index: int) -> bool:
+        return any(code_lines[index][match.start()] == "@" for match in pattern.finditer(lines[index]))
+
     # 检查文件级 @file:Suppress
-    for line in lines[:50]:
-        if FILE_SUPPRESS_PATTERN.search(line):
+    for index in range(min(50, len(lines))):
+        if has_annotation(FILE_SUPPRESS_PATTERN, index):
             return "ALL"
 
     suppressed_lines: set[int] = set()
-    for idx, line in enumerate(lines):
-        if BLOCK_SUPPRESS_PATTERN.search(line):
+    for idx in range(len(lines)):
+        if has_annotation(BLOCK_SUPPRESS_PATTERN, idx):
             brace_count = 0
             found_first_brace = False
             for j in range(idx, len(lines)):
@@ -387,8 +484,34 @@ def check_syntax_patterns(stmt: str) -> tuple[bool, str | None]:
     """检查语句是否匹配 4 类语法豁免正则。"""
     if SYNTAX_LOG_PATTERN.search(stmt):
         return True, "Log.*"
-    if SYNTAX_CHECK_REQUIRE_PATTERN.search(stmt):
-        return True, "check/require/assert/error"
+    for match in SYNTAX_CHECK_REQUIRE_PATTERN.finditer(stmt):
+        # 断言的首个参数是普通业务值；只有消息参数、尾随 lambda 和 error 消息可豁免。
+        opening = stmt[match.end() - 1]
+        closing = ")" if opening == "(" else "}"
+        depth = 0
+        brackets = 0
+        braces = 0
+        argument_index = 0
+        for char in stmt[match.end() - 1 :]:
+            if char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    break
+            elif char == "[":
+                brackets += 1
+            elif char == "]":
+                brackets -= 1
+            elif char == "{":
+                braces += 1
+            elif char == "}":
+                braces -= 1
+            elif char == "," and depth == 1 and brackets == 0 and braces == 0:
+                argument_index += 1
+        function_name = match.group(0).split("(", 1)[0].split("{", 1)[0].strip()
+        if depth > 0 and (opening == "{" or function_name == "error" or argument_index > 0):
+            return True, "check/require/assert/error"
     if SYNTAX_THROW_PATTERN.search(stmt):
         return True, "throw"
     if SYNTAX_DEPRECATED_PATTERN.search(stmt):
@@ -505,13 +628,17 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
     if suppression == "ALL":
         return []
 
-    # Level 1 行内/前置注释预计算
+    lexical_spans = kotlin_non_code_spans(text)
+    char_ends = {start: end for kind, start, end in lexical_spans if kind == "char"}
+
+    # Level 1 只识别真实单行注释，URL 或示例字符串中的标记不构成豁免。
     line_level1_exempt: dict[int, bool] = {}
-    for idx, line in enumerate(clean_lines, 1):
-        if INLINE_EXEMPT_PATTERN.search(line):
+    for kind, start, end in lexical_spans:
+        if kind == "line_comment" and INLINE_EXEMPT_PATTERN.search(text[start:end]):
+            idx = text.count("\n", 0, start) + 1
             line_level1_exempt[idx] = True
             # 若整行均为注释，同时豁免下一行
-            if line.strip().startswith("//"):
+            if clean_lines[idx - 1].strip().startswith("//"):
                 line_level1_exempt[idx + 1] = True
 
     findings: list[HardcodedFinding] = []
@@ -552,6 +679,10 @@ def extract_strings_from_kotlin_file(file_path: Path) -> list[HardcodedFinding]:
                 i += 2
             else:
                 i += 1
+            continue
+
+        if i in char_ends:
+            i = char_ends[i]
             continue
 
         # 多行原始字符串: """..."""
@@ -738,31 +869,27 @@ def generate_baseline_file(findings: list[HardcodedFinding], target_file: Path):
     print(f"✅ 已成功生成/更新基线文件: {target_file} (收录 {len(entries)} 条存量硬编码)")
 
 
+def kotlin_source_files(paths: list[Path]) -> list[Path]:
+    """枚举生产源码，并在进入目录前排除测试与派生产物。"""
+    excluded = {"test", "androidTest", "build", ".gradle", "node_modules", "dist", ".git"}
+    files: set[Path] = set()
+    for path in paths:
+        if path.is_file() and path.suffix == ".kt":
+            files.add(path)
+        elif path.is_dir():
+            for directory, names, filenames in os.walk(path):
+                names[:] = sorted(name for name in names if name not in excluded)
+                files.update(Path(directory) / name for name in filenames if name.endswith(".kt"))
+    return sorted(files)
+
+
 def scan_codebase(
     target_paths: list[Path] | None = None,
     baseline_file: Path = DEFAULT_BASELINE_PATH,
     verbose: bool = False,
 ) -> tuple[list[HardcodedFinding], list[HardcodedFinding]]:
     """扫描指定路径或默认源码树，返回 (未豁免违规列表, 已豁免列表)。"""
-    if target_paths:
-        kt_files = []
-        for p in target_paths:
-            if p.is_file() and p.suffix == ".kt":
-                kt_files.append(p)
-            elif p.is_dir():
-                kt_files.extend(
-                    [
-                        f
-                        for f in p.glob("**/*.kt")
-                        if not any(x in f.parts for x in ("test", "androidTest", "build", ".gradle"))
-                    ]
-                )
-    else:
-        kt_files = [
-            f
-            for f in DEFAULT_SCAN_DIR.glob("**/*.kt")
-            if not any(x in f.parts for x in ("test", "androidTest", "build", ".gradle"))
-        ]
+    kt_files = kotlin_source_files(target_paths or [DEFAULT_SCAN_DIR])
 
     baseline_pool = load_baseline(baseline_file)
     violations: list[HardcodedFinding] = []
