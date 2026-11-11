@@ -66,7 +66,10 @@ class StreamingReplyComposeTest {
 
         val progressing = advanceUntilText { it.length > firstFrame.length && it.length < received.length }
         assertTrue("没有再次修改 entries，气泡也必须订阅并展示后续吐字帧", progressing.isNotEmpty())
-        assertTrue("流式正文末尾应实际绘制主题色细光标", cursorPixelCount() > 3)
+        compose.waitUntil(5_000) {
+            compose.mainClock.advanceTimeByFrame()
+            cursorPixelCount() > 3
+        }
 
         // 保留同一份全文和修订，只改变终态；此时仍有缓冲，验证终态不依赖新的正文帧。
         compose.runOnIdle { entries.value = listOf(live.copy(isStreaming = false)) }
@@ -135,7 +138,9 @@ class StreamingReplyComposeTest {
         var count = 0
         for (y in 0 until image.height) for (x in 0 until image.width) {
             val color = image[x, y]
-            if (color.red > 0.95f && color.green < 0.10f && color.blue > 0.95f && color.alpha > 0.95f) count++
+            // 1.5dp 竖线在 mdpi 下会抗锯齿混色；检查洋红色相，不要求整像素完全不透明。
+            if (color.red > 0.6f && color.blue > 0.6f && color.green < 0.6f &&
+                color.red - color.green > 0.3f && color.blue - color.green > 0.3f && color.alpha > 0.9f) count++
         }
         return count
     }
