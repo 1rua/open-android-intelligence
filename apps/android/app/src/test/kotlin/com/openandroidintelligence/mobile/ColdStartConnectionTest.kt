@@ -134,10 +134,15 @@ class ColdStartConnectionTest {
             assertTrue("必须从真实 SSE 心跳建立健康连接", awaitCondition {
                 current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
             })
+            // 采样前必须在途请求已静默：前面的连接/快照重试跑在 IO 线程上，
+            // idle() 只推进主线程，晚到的一次 history 请求会被算成「重复补历史」。
+            assertTrue("采样前在途请求必须已静默", awaitRequestQuiescence())
             val streamCount = requestCount("GET", "$API/events")
             val historyCount = requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history")
             repeat(5) { current.onNetworkAvailable(); current.onAppForegrounded() }
             org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+            // 同理：重复通知触发的读取也必须在断言前落地，否则计数会飘。
+            assertTrue("重复通知后在途请求必须已静默", awaitRequestQuiescence())
             assertEquals("重复通知不能重建健康平台订阅", streamCount, requestCount("GET", "$API/events"))
             assertEquals("健康 Native 不能因 Platform 活动重复补历史", historyCount,
                 requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"))
@@ -996,6 +1001,24 @@ class ColdStartConnectionTest {
     }
 
     private fun elapsedMillis(startedAt: Long) = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+
+    /**
+     * 等回环桩上的请求数稳定下来（一段时间内没有新增）。
+     *
+     * 断言「重复通知不能新增请求」之前必须确认测量端点已经静止：连接建立、快照重试
+     * 都跑在 IO 线程上，`Looper.idle()` 不会等它们落地，晚到的请求会被误计成
+     * 「重复通知导致的新请求」。只等待、不放宽断言——稳态语义仍被严格验证。
+     */
+    private fun awaitRequestQuiescence(quietMillis: Long = 300, timeoutMillis: Long = AWAIT_MILLIS): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        while (System.nanoTime() < deadline) {
+            val before = gateway.requests.size
+            Thread.sleep(quietMillis)
+            ShadowLooper.idleMainLooper(POLL_MILLIS, TimeUnit.MILLISECONDS)
+            if (gateway.requests.size == before) return true
+        }
+        return false
+    }
 
     private fun awaitCondition(timeoutMillis: Long = AWAIT_MILLIS, condition: () -> Boolean): Boolean {
         val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)

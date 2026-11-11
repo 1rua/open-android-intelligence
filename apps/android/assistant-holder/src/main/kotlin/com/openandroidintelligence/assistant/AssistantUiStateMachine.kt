@@ -117,7 +117,8 @@ sealed interface AssistantUiEvent {
  * - 每次唤起都重置为紧凑输入，不继承上一次会话的展开态与覆盖层；
  * - 只有被真正接收的发送才会展开对话；发送失败保持原形态，草稿与重试入口不动；
  * - 消息接收、草稿编辑、附件增加，以及回复走完终态，都不会把已展开的对话折叠回去；
- * - 返回键先消费覆盖层（圈选 → 录音 → 退出），没有覆盖层时才结束会话。
+ * - 返回键：定格截图态直接结束会话（与平台默认一致，也避免停在没有圈选入口的
+ *   中间态）；单次裁剪页与录音这两个覆盖层先退出、再结束会话。
  *
  * 这是一个纯函数：不读时钟、不读写全局状态，同样的 [state] + [event] 永远得到
  * 同样的结果。
@@ -204,11 +205,19 @@ private fun reduceVisible(
             )
 
         AssistantUiEvent.BackPressed ->
-            if (state.overlay != AssistantOverlay.NONE) {
-                // 返回键的最高优先级是退出当前临时模式，而不是收起或结束助理。
-                state.copy(overlay = AssistantOverlay.NONE)
-            } else {
-                AssistantUiState.Terminated
+            when (state.overlay) {
+                // 定格截图态按返回 = 结束会话，与平台默认一致（AOSP
+                // `VoiceInteractionSession.onBackPressed()` 的实现就是直接 hide()）。
+                // 不能只清覆盖层：定格态背后的紧凑输入栏没有任何圈选入口
+                // （系统本次唤起的截图已经用掉，界面也不再有圈选按钮），
+                // 用户会停在一个「看得见下层 App、却既不能画圈也不能输入」的中间态，
+                // 必须再按一次返回才退出。
+                AssistantOverlay.FROZEN_SCREENSHOT -> AssistantUiState.Terminated
+                // 其余覆盖层（单次裁剪页、录音）退出后仍有完整可用的界面，保持两段式。
+                AssistantOverlay.SELECTING_SCREEN,
+                AssistantOverlay.RECORDING_VOICE,
+                -> state.copy(overlay = AssistantOverlay.NONE)
+                AssistantOverlay.NONE -> AssistantUiState.Terminated
             }
 
         // 会话被系统隐藏或结束：界面不再渲染，重新出现要等下一次 SessionShown。
