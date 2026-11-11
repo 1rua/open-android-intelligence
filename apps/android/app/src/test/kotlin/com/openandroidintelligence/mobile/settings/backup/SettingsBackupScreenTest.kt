@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile.settings.backup
 
+import android.content.Context
+import android.content.res.Configuration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertHasNoClickAction
@@ -7,19 +9,70 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.settings.backup.ImportConfirmationDialogForTest
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.openandroidintelligence.ui.resources.R as UiR
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class SettingsBackupScreenTest {
     @get:Rule val compose = createComposeRule()
+
+    private val locales = listOf(Locale.SIMPLIFIED_CHINESE, Locale.US, Locale.GERMANY)
+
+    private fun contextFor(locale: Locale): Context {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        val configuration = Configuration(base.resources.configuration).apply { setLocale(locale) }
+        return base.createConfigurationContext(configuration)
+    }
+
+    @Test
+    fun missingDelayKeepsTheExistingSummaryInEveryLocale() {
+        locales.forEach { locale ->
+            assertEquals("消息合并：保持本机现值", MessageProcessingSection(null).summary(contextFor(locale)))
+        }
+    }
+
+    @Test
+    fun zeroDelayKeepsTheImmediateSummaryInEveryLocale() {
+        locales.forEach { locale ->
+            assertEquals("消息合并：立即发送", MessageProcessingSection(0).summary(contextFor(locale)))
+        }
+    }
+
+    @Test
+    fun secondsKeepTheOriginalDecimalTextAndResourceFormattingInEveryLocale() {
+        val cases = listOf(
+            1 to "0.001",
+            500 to "0.5",
+            1000 to "1.0",
+            1500 to "1.5",
+            12345 to "12.345",
+            30000 to "30.0",
+        )
+        locales.forEach { locale ->
+            val context = contextFor(locale)
+            cases.forEach { (delayMillis, seconds) ->
+                val actual = MessageProcessingSection(delayMillis).summary(context)
+                assertEquals("$locale / $delayMillis", "消息合并：$seconds 秒", actual)
+                // 对照修复前由 %s 格式化 Double 的实际资源路径，防止改变小数及语言行为。
+                val originalSeconds = String.format(
+                    locale,
+                    context.getString(UiR.string.settings_backup_msg_merge_seconds),
+                    delayMillis / 1000.0,
+                )
+                assertEquals(context.getString(UiR.string.settings_backup_msg_merge_val, originalSeconds), actual)
+            }
+        }
+    }
 
     private fun show(
         state: SettingsBackupUiState,

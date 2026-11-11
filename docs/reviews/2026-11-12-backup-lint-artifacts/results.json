@@ -1,0 +1,18 @@
+{
+  "fixedCommit": "8d3ccf77f1ea3426abc5fa76ffbb391ce5ceb928",
+  "finalSettingsBackupScreenTest": {
+    "tests": 9,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "newTests": 3,
+  "priorTests": 6,
+  "lintFullDebugSucceeded": true,
+  "lintErrors": 0,
+  "lintWarnings": 77,
+  "localPrAttempt": "原46922已无句柄和进程，日志无终态；不记为通过",
+  "focusedCorrectFinalClassRerun": "独立9项全部成功",
+  "independentReview": "Standards0/Spec0，150020格式比较无差异",
+  "fastSucceeded": true
+}

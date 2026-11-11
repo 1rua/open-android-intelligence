@@ -8,7 +8,7 @@ internal fun MessageProcessingSection.summary(context: Context): String {
     val value = when (delayMillis) {
         null -> context.getString(UiR.string.settings_backup_msg_merge_unchanged)
         0 -> context.getString(UiR.string.settings_backup_msg_merge_immediate)
-        else -> context.getString(UiR.string.settings_backup_msg_merge_seconds, delayMillis / 1000.0)
+        else -> context.getString(UiR.string.settings_backup_msg_merge_seconds, (delayMillis / 1000.0).toString())
     }
     return context.getString(UiR.string.settings_backup_msg_merge_val, value)
 }
