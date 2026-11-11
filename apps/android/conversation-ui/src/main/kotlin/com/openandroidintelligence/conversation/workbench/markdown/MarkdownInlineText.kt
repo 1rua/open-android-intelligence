@@ -80,22 +80,9 @@ fun MarkdownInlineText(
     // 同一段文本内相同 LaTeX 复用同一测量结果；WebView 异步上报后触发重新排版。
     val measuredMathSizes = remember(text) { mutableStateMapOf<String, IntSize>() }
 
-    val annotated = remember(result, isStreaming) {
-        if (!isStreaming) {
-            result.annotated
-        } else {
-            AnnotatedString.Builder(result.annotated).apply {
-                append(" ")
-                appendInlineContent(StreamingCursorInlineId, "[cursor]")
-            }.toAnnotatedString()
-        }
-    }
-
-    val cursorHeight = (effectiveFontSize.value * 1.05f).sp
-    val cursorPlaceholders = streamingCursorInlineContent(
-        isStreaming = isStreaming,
-        cursorHeight = cursorHeight,
-    )
+    // 光标由正文容器的独立 Overlay 绘制，不把占位字符加入 AnnotatedString，避免改变换行、选择和复制。
+    val annotated = result.annotated
+    val cursorPlaceholders = emptyMap<String, InlineTextContent>()
 
     val inlineContent = buildMap {
         putAll(cursorPlaceholders)
@@ -127,11 +114,22 @@ fun MarkdownInlineText(
         }
     }
 
+    val source = LocalMarkdownLeafSource.current
+        ?: LocalMarkdownBlockSource.current
+        ?: remember(text) { MarkdownSourceText.original(text) }
+    val sourceOffsets = remember(result, source) { sourceOffsetsFor(result, source) }
+    val (decoratedModifier, onTextLayout) = streamingTextModifier(
+        text = annotated.text,
+        sourceOffsets = sourceOffsets,
+        modifier = modifier,
+    )
+
     SelectionContainer {
         Text(
             text = annotated,
             inlineContent = inlineContent,
-            modifier = modifier,
+            modifier = decoratedModifier,
+            onTextLayout = onTextLayout,
             color = color,
             fontSize = fontSize,
             lineHeight = lineHeight,

@@ -88,6 +88,7 @@ fun MessageTimeline(
 ) {
     val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
+    val presentations = rememberStreamingPresentations(entries, owner = null)
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },
         onDownload = onDownloadAttachment,
@@ -103,6 +104,7 @@ fun MessageTimeline(
                     item = item,
                     onDecide = onDecide,
                     timing = timing,
+                    presentations = presentations,
                     onDownloadAttachment = onDownloadAttachment,
                     onRequestOriginalAttachment = onRequestOriginalAttachment,
                     onOpenAttachmentPreview = openPreview,
@@ -122,6 +124,7 @@ fun MessageTimeline(
 fun TimelineRow(
     entry: TimelineEntry,
     onDecide: (String, ApprovalChoice) -> Unit,
+    presentations: StreamingPresentationRegistry? = null,
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
@@ -147,6 +150,7 @@ fun TimelineRow(
     } else {
         AssistantMessageRow(
             entry = entry,
+            presentations = presentations,
             onDownloadAttachment = onDownloadAttachment,
             onRequestOriginalAttachment = onRequestOriginalAttachment,
             onOpenAttachmentPreview = onOpenAttachmentPreview,
@@ -707,6 +711,7 @@ private fun FileAttachmentCard(
 @Composable
 private fun AssistantMessageRow(
     entry: TimelineEntry,
+    presentations: StreamingPresentationRegistry? = null,
     modifier: Modifier = Modifier,
     onDownloadAttachment: ((String) -> Unit)? = null,
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
@@ -726,7 +731,9 @@ private fun AssistantMessageRow(
         // 文本内容（含实时执行卡片/最终回答）统一交给执行过程渲染层；
         // 附件、元数据与复制仍由这一层负责，保持四个宿主一致。
         if (entry.text.isNotBlank() || entry.attachments.isEmpty() || entry.isStreaming) {
-            MessageBubble(isUser = false, messageKey = entry.key) { AssistantMessageContent(entry = entry) }
+            MessageBubble(isUser = false, messageKey = entry.key) {
+                AssistantMessageContent(entry = entry, presentations = presentations)
+            }
         }
 
         if (!fileMetadataVisible) MessageMetadata(entry = entry, failed = failed)
@@ -753,6 +760,7 @@ fun TimelineDisplayRow(
     onRequestOriginalAttachment: ((String) -> Unit)? = null,
     onOpenAttachmentPreview: ((String) -> Unit)? = null,
     evidenceOwner: Any? = null,
+    presentations: StreamingPresentationRegistry? = null,
 ) {
     val inheritedPreviewScope = LocalImagePreviewScope.current
     if (GatewayLog.protocolEvidenceEnabled) {
@@ -817,6 +825,7 @@ fun TimelineDisplayRow(
             when (item) {
                 is TimelineDisplayItem.Single -> TimelineRow(
                     entry = item.entry,
+                    presentations = presentations,
                     onDecide = onDecide,
                     modifier = modifier,
                     onDownloadAttachment = onDownloadAttachment,
@@ -826,6 +835,7 @@ fun TimelineDisplayRow(
 
                 is TimelineDisplayItem.Execution -> ExecutionTurnRow(
                     run = item.run,
+                    presentations = presentations,
                     modifier = modifier,
                     onDownloadAttachment = onDownloadAttachment,
                     onRequestOriginalAttachment = onRequestOriginalAttachment,
@@ -845,6 +855,7 @@ fun TimelineDisplayRow(
 @Composable
 private fun ExecutionTurnRow(
     run: AssistantExecutionRun,
+    presentations: StreamingPresentationRegistry?,
     modifier: Modifier,
     onDownloadAttachment: ((String) -> Unit)?,
     onRequestOriginalAttachment: ((String) -> Unit)?,
@@ -868,7 +879,11 @@ private fun ExecutionTurnRow(
             run = run,
             finalAnswerSlot = { blocks, streaming ->
                 MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
-                    MarkdownDocumentView(blocks = blocks, isStreaming = streaming)
+                    StreamingReplyBody(
+                        entry = run.finalEntry, registry = presentations, finalOnly = true,
+                    ) { shownBlocks, presenting ->
+                        MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+                    }
                 }
             },
             processAttachmentsSlot = { processEntry ->

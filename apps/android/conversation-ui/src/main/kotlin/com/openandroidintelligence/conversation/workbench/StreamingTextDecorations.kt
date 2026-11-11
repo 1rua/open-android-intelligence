@@ -124,7 +124,9 @@ internal class StreamingDecorationState {
 
     fun target(): Pair<Offset, Float>? {
         val host = container?.takeIf { it.isAttached } ?: return null
-        val last = layouts.values.filter { it.coordinates.isAttached }.maxByOrNull { it.sourceEnd } ?: return null
+        // Compose 注册顺序就是文档绘制顺序；不能比较局部 sourceEnd，
+        // 因为每个 Markdown 叶节点的来源偏移都以自身片段为基准。
+        val last = layouts.values.lastOrNull { it.coordinates.isAttached } ?: return null
         val origin = host.localPositionOf(last.coordinates, last.cursor.topLeft)
         return origin to last.cursor.height.coerceAtLeast(1f)
     }

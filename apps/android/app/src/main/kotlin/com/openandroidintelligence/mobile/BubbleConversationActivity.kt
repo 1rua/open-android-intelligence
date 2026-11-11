@@ -30,6 +30,7 @@ import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
+import com.openandroidintelligence.conversation.workbench.rememberStreamingPresentations
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -61,6 +62,7 @@ class BubbleConversationActivity : ComponentActivity() {
                 dynamicColor = appearance.dynamicColor,
                 palette = appearance.palette,
                 reduceMotion = appearance.reduceMotion,
+                streamingHapticFeedback = appearance.streamingHapticFeedback,
             ) {
                 Surface(Modifier.fillMaxSize()) {
                     if (runtime == null) BubbleUnavailable("Gateway 运行环境不可用", ::finish)
@@ -218,6 +220,7 @@ private fun BubbleChat(
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
+    val presentations = rememberStreamingPresentations(entries, controller to state.activeThreadId)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val downloadAction: ((String) -> Unit)? =
@@ -251,6 +254,7 @@ private fun BubbleChat(
                     items(displayItems, key = { it.key }) { item ->
                         TimelineDisplayRow(
                             item = item,
+                            presentations = presentations,
                             onDecide = controller::decideApproval,
                             timing = executionTiming,
                             onDownloadAttachment = downloadAction,

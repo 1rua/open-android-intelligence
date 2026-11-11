@@ -55,7 +55,11 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
  *   逐块渲染实时思维链卡 / 工具卡与紧凑叙述，末尾保留流式光标。
  */
 @Composable
-fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier) {
+fun AssistantMessageContent(
+    entry: TimelineEntry,
+    modifier: Modifier = Modifier,
+    presentations: StreamingPresentationRegistry? = null,
+) {
     val text = entry.text
     if (text.isBlank()) {
         when {
@@ -81,7 +85,9 @@ fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier)
     }
 
     if (blocks.none { isExecutionBlock(it) }) {
-        MarkdownDocumentView(blocks = blocks, isStreaming = entry.isStreaming, modifier = modifier)
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
         return
     }
 

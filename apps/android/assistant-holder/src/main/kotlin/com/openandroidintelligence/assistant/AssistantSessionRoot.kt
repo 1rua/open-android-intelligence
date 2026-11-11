@@ -44,6 +44,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.ThinkingIndicator
+import com.openandroidintelligence.conversation.workbench.rememberStreamingPresentations
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import kotlin.math.roundToInt
@@ -355,6 +356,7 @@ private fun ExpandedConversation(
         generation = generation,
     )
     val timing = rememberExecutionTimingStore(threadId = threadId)
+    val presentations = rememberStreamingPresentations(content.entries, threadId)
     // 还没有流式正文时用真实的生成状态说明"在等什么"，而不是显示空态。
     val isThinking = isGenerating && content.entries.none { !it.isUser && it.isStreaming }
 
@@ -379,6 +381,7 @@ private fun ExpandedConversation(
             itemContent = { item ->
                 TimelineDisplayRow(
                     item = item,
+                    presentations = presentations,
                     // 审批决策走桥接层的 `approval` 命令；卡片已把自身的 approvalId
                     // 绑定进回调，这里只做转发，不伪造一次已提交的裁决。
                     onDecide = onDecide,

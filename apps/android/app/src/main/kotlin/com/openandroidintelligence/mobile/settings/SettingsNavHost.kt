@@ -232,7 +232,8 @@ internal fun SettingsNavHost(
             }
             composable(SettingsRoutes.APPEARANCE) {
                 AppearanceSettingsScreen(uiState, presentation, ::back, viewModel::setTheme, viewModel::setDynamicColor,
-                    viewModel::setDynamicIconColor, viewModel::setPalette, viewModel::setReduceMotion)
+                    viewModel::setDynamicIconColor, viewModel::setPalette, viewModel::setReduceMotion,
+                    onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
             }
             composable(SettingsRoutes.GATEWAY) {
                 ConnectionSettingsScreen(uiState, presentation, ::back,

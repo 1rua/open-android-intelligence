@@ -149,6 +149,9 @@ fun WorkbenchScreen(
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
+    val presentations = rememberStreamingPresentations(
+        entries, controller to state.activeThreadId, enabled = !settingsOpen,
+    )
     LaunchedEffect(state.activeThreadId, displayItems, listState) {
         if (!com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled) return@LaunchedEffect
         val userRows = displayItems.filterIsInstance<TimelineDisplayItem.Single>()
@@ -581,6 +584,7 @@ fun WorkbenchScreen(
                                                     } else {
                                                         TimelineDisplayRow(
                                                             item = item,
+                                                            presentations = presentations,
                                                             evidenceOwner = controller to state.activeThreadId,
                                                             onDecide = controller::decideApproval,
                                                             timing = executionTiming,

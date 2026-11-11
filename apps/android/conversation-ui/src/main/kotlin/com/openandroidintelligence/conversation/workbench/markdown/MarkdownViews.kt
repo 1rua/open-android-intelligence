@@ -90,17 +90,23 @@ internal fun MarkdownBlockView(
     isStreaming: Boolean,
     colors: MarkdownColors,
 ) {
-    when (block) {
-        is TimelineBlock.Heading -> MarkdownHeadingView(block, isStreaming, colors)
-        is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isStreaming, colors)
-        is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isStreaming)
-        is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isStreaming, colors)
-        is TimelineBlock.ListBlock -> MarkdownListView(block, isStreaming, colors)
-        is TimelineBlock.Table -> MarkdownTableView(block, isStreaming, colors)
-        is TimelineBlock.MathBlock -> MarkdownMathBlockView(block)
-        is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
-        is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isStreaming)
-        is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
+    val trace = LocalStreamingMarkdownDocument.current?.trace?.blocks?.get(block)
+    CompositionLocalProvider(
+        LocalMarkdownBlockSource provides trace?.source,
+        LocalMarkdownLeafSource provides trace?.leaves?.lastOrNull(),
+    ) {
+        when (block) {
+            is TimelineBlock.Heading -> MarkdownHeadingView(block, isStreaming, colors)
+            is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isStreaming, colors)
+            is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isStreaming)
+            is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isStreaming, colors)
+            is TimelineBlock.ListBlock -> MarkdownListView(block, isStreaming, colors)
+            is TimelineBlock.Table -> MarkdownTableView(block, isStreaming, colors)
+            is TimelineBlock.MathBlock -> MarkdownMathBlockView(block)
+            is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
+            is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isStreaming)
+            is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
+        }
     }
 }
 
@@ -634,21 +640,22 @@ fun MarkdownCodeBlock(
                     .horizontalScroll(rememberScrollState())
                     .padding(if (compact) Dimensions.SpaceSmall else 12.dp),
             ) {
-                val cursorInlineId = "streaming_code_cursor"
-                val annotatedCode = remember(block.code, isStreaming) {
-                    AnnotatedString.Builder().apply {
-                        append(block.code)
-                        if (isStreaming) {
-                            append(" ")
-                            appendInlineContent(cursorInlineId, "[cursor]")
-                        }
-                    }.toAnnotatedString()
-                }
-                val inlineContent = streamingCursorInlineContent(isStreaming, cursorInlineId, 14.sp)
+                // 流式光标由正文容器的独立 Overlay 绘制；代码文本不能追加占位字符，
+                // 否则会改变横向滚动范围、复制内容和真实末端布局。
+                val annotatedCode = remember(block.code) { AnnotatedString(block.code) }
+                val codeSource = LocalMarkdownLeafSource.current
+                val codeOffsets = codeSource?.offsets?.takeIf { it.size == block.code.length }
+                    ?: IntArray(block.code.length) { it }
+                val (codeModifier, onCodeLayout) = streamingTextModifier(
+                    text = block.code,
+                    sourceOffsets = codeOffsets,
+                    modifier = Modifier,
+                )
                 SelectionContainer {
                     Text(
                         text = annotatedCode,
-                        inlineContent = inlineContent,
+                        modifier = codeModifier,
+                        onTextLayout = onCodeLayout,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                         fontSize = if (compact) 11.5.sp else 12.sp,
