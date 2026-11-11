@@ -128,21 +128,49 @@ class ColdStartConnectionTest {
     @Test
     fun repeatedAvailabilityAndForegroundKeepTheHealthyPlatformEventOwner() {
         val current = connectedRuntimeWithHistory(native = true).runtime
+        val controller = requireNotNull(current.controller.value)
+        val historyPath = "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"
+        val synchronizedMessageId = "$OLD_MESSAGE-route-synchronized"
+        val synchronizedText = "初始路由同步完成后的历史消息"
+        val initialHistoryEntered = CountDownLatch(1)
+        val initialHistoryRelease = CountDownLatch(1)
+        gateway.respond(historyPath) {
+            initialHistoryEntered.countDown()
+            check(initialHistoryRelease.await(AWAIT_MILLIS, TimeUnit.MILLISECONDS)) { "初始路由历史响应必须被释放" }
+            200 to """{"messages":[
+                {"id":"$OLD_MESSAGE","role":"assistant","text":"$OLD_TEXT","timestamp":1},
+                {"id":"$synchronizedMessageId","role":"assistant","text":"$synchronizedText","timestamp":2}
+            ]}""".trimIndent()
+        }
+        val streamRequestsBeforeRouteChange = requestCount("GET", "$API/events")
         val release = gateway.openEventStream("$API/events")
         try {
             current.onNetworkAvailable(routeChanged = true)
-            assertTrue("必须从真实 SSE 心跳建立健康连接", awaitCondition {
-                current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE
+            assertTrue("必须从新路由的真实 SSE 心跳建立健康连接，并实际开始历史同步", awaitCondition {
+                requestCount("GET", "$API/events") > streamRequestsBeforeRouteChange &&
+                    current.connectionStatus.value == com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE &&
+                    initialHistoryEntered.count == 0L
+            })
+            assertEquals("平台流健康时，受控的初始历史响应仍未释放", 1L, initialHistoryRelease.count)
+            // 平台 LIVE 不代表工作台历史已同步；用响应中的唯一消息确认这次初始读取完成。
+            initialHistoryRelease.countDown()
+            assertTrue("记录基线前，初始路由的历史必须真实进入当前工作台", awaitCondition {
+                (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().any {
+                    it.key == synchronizedMessageId && it.text == synchronizedText
+                }
             })
             val streamCount = requestCount("GET", "$API/events")
-            val historyCount = requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history")
+            val historyCount = requestCount("GET", historyPath)
             repeat(5) { current.onNetworkAvailable(); current.onAppForegrounded() }
             org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
             assertEquals("重复通知不能重建健康平台订阅", streamCount, requestCount("GET", "$API/events"))
             assertEquals("健康 Native 不能因 Platform 活动重复补历史", historyCount,
-                requestCount("GET", "$NATIVE_SESSIONS_PATH/$OLD_THREAD/history"))
+                requestCount("GET", historyPath))
             assertEquals(com.openandroidintelligence.gateway.events.EventStreamStatus.LIVE, current.connectionStatus.value)
-        } finally { release.countDown() }
+        } finally {
+            initialHistoryRelease.countDown()
+            release.countDown()
+        }
     }
 
     @Test
