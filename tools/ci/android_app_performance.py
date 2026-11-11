@@ -171,13 +171,24 @@ class ResourceSampler:
             self.errors.append(f"{type(error).__name__}: {error}")
 
 
+def checkout_metadata() -> dict:
+    """只记录版本和脏状态，不记录凭据、环境或无关进程参数。"""
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=normal"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return {"status": "unknown", "source_hash": None}
+    return {"status": "measured", "commit_sha": commit, "working_tree_dirty": bool(status), "source_hash": None, "limits": "记录提交和脏状态；尚未计算全部工作区源码内容哈希，脏工作区不能按提交相同认定输入相同。"}
+
+
 def run_command(output: Path, command: list[str]) -> int:
     if not command:
         raise ValueError("-- 后必须提供 Gradle 命令")
     output.mkdir(parents=True, exist_ok=True)
     if any((output / name).exists() for name in ("run.json", "metrics.jsonl", "gradle.log")):
         raise ValueError("采集目录已有结果，请使用新的目录保存本次证据")
-    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running"}
+    memory = parse_meminfo(read_text(Path("/proc/meminfo")) or "")
+    record = {"schema_version": SCHEMA_VERSION, "started_at": utc_now(), "status": "running", "command": command, "git": checkout_metadata(), "host": {"logical_cpus": os.cpu_count(), "affinity_cpus": len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None, "mem_total_bytes": memory.get("MemTotal")}}
     write_json(output / "run.json", record)
     sampler = ResourceSampler(output / "metrics.jsonl", Path.cwd())
     thread = threading.Thread(target=sampler.collect, name="android-perf-sampler", daemon=True)
@@ -439,7 +450,7 @@ def compare_manifests(current: dict, baseline: dict) -> dict:
     previous_skips = sorted(key for key, status in old.items() if status == "skipped")
     unexpected_prior_skips = [key for key in previous_skips if key != EXPECTED_FULL_SKIP]
     skip_state_changed = [key for key in previous_skips if new.get(key) != "skipped"]
-    passed = not (missing or new_skips or unexpected_prior_skips or skip_state_changed or current["duplicates"] or current["failures"])
+    passed = not (missing or added or new_skips or unexpected_prior_skips or skip_state_changed or current["duplicates"] or current["failures"])
     return {"status": "passed" if passed else "failed", "missing": missing, "added": added, "new_skips": new_skips, "unexpected_baseline_skips": unexpected_prior_skips, "expected_skip_changed": skip_state_changed}
 
 

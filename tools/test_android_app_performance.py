@@ -90,6 +90,10 @@ def test_command_exit_and_timestamp_log_are_preserved(tmp_path):
     record = json.loads((output / "run.json").read_text())
     assert record["exit_code"] == 7
     assert record["sample_count"] >= 1
+    assert record["command"][-1] == "print('全部日志'); raise SystemExit(7)"
+    assert record["git"]["commit_sha"]
+    assert record["host"]["logical_cpus"] >= 1
+    assert "environment" not in record
     assert "全部日志" in (output / "gradle.log").read_text()
     assert "全部日志" not in result.stdout
     again = subprocess.run([sys.executable, str(SCRIPT), "run", "--output", str(output), "--", sys.executable, "-c", "pass"], capture_output=True)
@@ -158,3 +162,15 @@ def test_run_allows_preexisting_reporter_artifacts(tmp_path):
     (tmp_path / "gc-1.log").write_text("Using G1\n")
     assert perf.run_command(tmp_path, [sys.executable, "-c", "pass"]) == 0
     assert (tmp_path / "gc-1.log").read_text() == "Using G1\n"
+
+
+def test_additional_test_identity_fails_strict_same_source_comparison(tmp_path):
+    old = xml_results(tmp_path / "old", [("a", "first", "")])
+    baseline, _ = perf.build_summary(old, None, None)
+    baseline_path = tmp_path / "baseline.json"
+    perf.write_json(baseline_path, baseline)
+    new = xml_results(tmp_path / "new", [("a", "first", ""), ("a", "unexpected", "")])
+    result, code = perf.build_summary(new, None, None, baseline_path)
+    assert code == 1
+    assert result["comparison"]["added"] == [("a", "unexpected")]
+    assert result["comparison"]["status"] == "failed"
