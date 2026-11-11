@@ -34,7 +34,7 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
     prompt: async (value) => {
       calls.push(["prompt", value]);
       const session = { id: value.sessionId };
-      // A concurrent terminal turn must not complete this App request.
+      // 其他终端轮次不能完成本次 App 提交。
       emit("session/event", session, { type: "turn/start", data: { turn: 3 } });
       emit("session/event", session, { type: "turn/end", data: { turn: 3, reason: { kind: "completed" } } });
       emit("session/event", session, { type: "turn/start", data: { turn: 4 } });
@@ -43,7 +43,7 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
       persisted.push(userEvent);
       emit("session/event", session, userEvent);
       emit("agent/assistant-stream", { agent: { session }, frame: { type: "start", attemptId: "attempt", turn: 4, step: 0, revision: 0 } });
-      // Native chunks carry attemptId, not turn; the start binds its turn.
+      // 原生增量只有 attemptId，开始帧负责绑定轮次。
       emit("agent/assistant-stream", { agent: { session }, frame: { type: "chunk", attemptId: "attempt", index: 0, revision: 0, chunk: { type: "text-delta", index: 0, text: "native reply" } } });
       const reply = { ...(omitMessageIdentity ? {} : { id: "native-reply", role: "assistant" }), content: [{ type: "text", text: "native reply" }] };
       const replyEvent = { type: "assistant/message", time: 5000, data: { turn: 4, message: reply } };
@@ -70,6 +70,28 @@ async function host({ legacyUserWrapper = false, terminalReason = "completed", o
 }
 
 describe("DSH native Session Adapter", () => {
+  it.each(["blocked", "max-tokens"])("确定失败的原生终态诊断不伪装未知：%s", async (terminalReason) => {
+    const h = await host({ terminalReason });
+    const previous = process.env.OAI_DSH_ADAPTER_DIAGNOSTICS;
+    process.env.OAI_DSH_ADAPTER_DIAGNOSTICS = "1";
+    const originalWrite = process.stderr.write;
+    const diagnostics = [];
+    process.stderr.write = function (chunk, ...args) {
+      if (String(chunk).startsWith("oai_native ")) diagnostics.push(JSON.parse(String(chunk).slice(11)));
+      else return originalWrite.call(this, chunk, ...args);
+      return true;
+    };
+    try {
+      const response = await h.request("/sessions/terminal/messages", "POST", { text: "合成终态诊断" });
+      await response.text();
+      expect(diagnostics.find((item) => item.stage === "adapter.dsh.native_terminal").state).toBe("failed");
+    } finally {
+      process.stderr.write = originalWrite;
+      if (previous === undefined) delete process.env.OAI_DSH_ADAPTER_DIAGNOSTICS;
+      else process.env.OAI_DSH_ADAPTER_DIAGNOSTICS = previous;
+    }
+  });
+
   it("向宿主传入有效受理信号并保留原生完成结果", async () => {
     const h = await host();
     const nativePrompt = h.controller.prompt;
@@ -223,7 +245,7 @@ describe("DSH native Session Adapter", () => {
   });
   it("cannot let delayed or repeated cancel requests interrupt a newer host turn", async () => {
     const h = await host();
-    // The native controller's session-only cancel would always affect the current turn.
+    // 旧版仅按会话取消会影响当前轮次。
     for (const generationId of ["old-turn", "current-turn", "current-turn"]) {
       const response = await h.request("/sessions/terminal/cancel", "POST", { value: { generationId } });
       expect(response.status).toBe(409);
