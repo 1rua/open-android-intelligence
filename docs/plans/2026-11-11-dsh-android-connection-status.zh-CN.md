@@ -57,6 +57,8 @@ Android 已连接 Core，且 Core 全局实时通道为 LIVE 时，DSH 单次回
 
 界面测试直接经过真实控制器与 `WorkbenchScreen`，覆盖原生 IDLE → CONNECTING → LIVE → RECONNECTING → FAILED → LIVE → IDLE、Core 连接/重连/失败优先级、无 Core 状态时的旧回退、普通/大字号副标题及抽屉。额外断言确认展示“已连接”时，原生流真值仍为 IDLE。`git diff --check` 通过。
 
+首次 CI 的 Fast Gate 检出新 App 测试类尚未登记 PR 回归清单；已将 `WorkbenchConnectionHealthTest` 加入 `apps/android/ci/app-regression.txt` 的 core 分节，确保 PR 门禁实际执行本回归。补充执行 `python3 -m pytest -q tools/test_ci_planning.py`，78 项通过；Android 源码没有因此再次变化，无需重复已通过的 20 项 Android 回归。
+
 执行中曾因组合 Gradle 命令的过滤范围意外扩大 App 测试，发现后立即中断；该次运行不作为回归结果。上述 20 项来自随后分开执行、明确过滤且任务成功的结果。
 
 ## 证据边界

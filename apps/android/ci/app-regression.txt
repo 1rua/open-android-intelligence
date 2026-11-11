@@ -91,6 +91,7 @@ SqliteConversationMigrationTest
 SubmittedOriginalRecoveryTest
 TemporaryApprovalCopyTest
 TrustModePersistenceTest
+WorkbenchConnectionHealthTest
 WorkbenchNavigationTest
 
 [settings]
