@@ -105,11 +105,13 @@ def test_profile_uses_reported_task_and_configuration_durations(tmp_path):
     profile = tmp_path / "profile-test.html"
     profile.write_text('''<h2>Summary</h2><table><tr><td>Total Build Time</td><td>1m2.500s</td></tr></table>
     <h2>Configuration</h2><table><tr><td>All projects</td><td>0.200s</td></tr></table>
-    <h2>Task Execution</h2><table><tr><td>:app</td><td>1m0.0s</td></tr><tr><td>:app:testFullDebugUnitTest</td><td>59.500s</td><td></td></tr></table>''')
+    <h2>Task Execution</h2><table><tr><td>:app</td><td>1m0.0s</td><td>(total)</td></tr><tr><td>:app:testFullDebugUnitTest</td><td>59.500s</td><td></td></tr></table>''')
     result = perf.parse_gradle_profile(profile)
     report = result["reports"][0]
     assert report["summary_seconds"]["Total Build Time"] == 62.5
     assert report["configuration"][0]["seconds"] == .2
+    assert len(report["tasks"]) == 1
+    assert report["tasks"][0]["task"] == ":app:testFullDebugUnitTest"
     assert report["tasks"][0]["seconds"] == 59.5
 
 
@@ -129,3 +131,30 @@ def test_robolectric_nested_metrics_and_gc_are_kept_separate(tmp_path):
     assert result["robolectric"]["metrics_by_name"]["nested"]["elapsed_ns_sum"] == 50
     assert result["robolectric"]["gc"]["by_pid"][20]["gc_ms"] == 8
     assert result["host_metrics"]["status"] == "unknown"
+
+
+def test_failed_baseline_and_missing_measurements_are_explicit(tmp_path):
+    results = xml_results(tmp_path / "current", [("a", "first", "")])
+    result, code = perf.build_summary(results, None, None)
+    assert code == 0
+    assert result["measurement_status"] == "unknown"
+    baseline = {"test_manifest": {"identities": [{"classname": "a", "name": "first", "status": "failed"}]}}
+    baseline_path = tmp_path / "bad-baseline.json"
+    perf.write_json(baseline_path, baseline)
+    with pytest.raises(ValueError, match="失败测试"):
+        perf.build_summary(results, None, None, baseline_path)
+
+
+def test_gc_pauses_are_not_added_to_concurrent_cycle_duration(tmp_path):
+    (tmp_path / "gc-12.log").write_text("[0.007s] Using G1\n[0.638s] GC(0) Pause Young (Normal) 33M->16M(503M) 4.648ms\n[1.000s] GC(1) Concurrent Mark Cycle 20.0ms\n[1.001s] GC(1) Pause Remark 16M->16M(503M) 1.000ms\n")
+    result = perf.parse_gc_logs(tmp_path)
+    assert result["status"] == "measured"
+    assert result["pause_count"] == 2
+    assert result["pause_seconds_sum"] == pytest.approx(.005648)
+    assert result["pause_seconds_max"] == pytest.approx(.004648)
+
+
+def test_run_allows_preexisting_reporter_artifacts(tmp_path):
+    (tmp_path / "gc-1.log").write_text("Using G1\n")
+    assert perf.run_command(tmp_path, [sys.executable, "-c", "pass"]) == 0
+    assert (tmp_path / "gc-1.log").read_text() == "Using G1\n"

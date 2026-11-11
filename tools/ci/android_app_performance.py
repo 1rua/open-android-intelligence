@@ -333,7 +333,9 @@ def parse_gradle_profile(profile: Path | None) -> dict:
             elif section == "Configuration":
                 configuration.append({"project": label, "seconds": seconds})
             elif section == "Task Execution":
-                if label.startswith(":"):
+                if len(cells) > 2 and cells[2] == "(total)":
+                    project = label
+                elif label.startswith(":"):
                     task = label
                     if len(cells) > 2:
                         tasks.append({"task": task, "seconds": seconds, "result": cells[2]})
@@ -355,6 +357,7 @@ def parse_executor_bootstrap(log: Path) -> dict:
     if not text:
         return {**UNKNOWN, "reason": "没有 --info 进程事件日志"}
     starts, events = {}, []
+    fork_requests = 0
     for line in text.splitlines():
         stamp, _, body = line.partition(" ")
         try:
@@ -364,12 +367,30 @@ def parse_executor_bootstrap(log: Path) -> dict:
         start = re.search(r"Starting process 'Gradle Test Executor (\d+)'", body)
         finish = re.search(r"Gradle Test Executor (\d+) started executing tests", body)
         if start:
+            fork_requests += 1
             starts[start[1]] = timestamp
         if finish and finish[1] in starts:
             seconds = (timestamp - starts.pop(finish[1])).total_seconds()
             if seconds >= 0:
                 events.append({"executor": int(finish[1]), "seconds": seconds})
-    return {"status": "measured" if events else "unknown", "meaning": "fork_and_worker_bootstrap", "events": events, "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"}
+    return {"status": "measured" if events else "unknown", "meaning": "fork_and_worker_bootstrap", "fork_requests": fork_requests, "workers_started_tests": len(events), "unmatched_requests": len(starts), "events": events, "limits": "这是 fork 请求到 worker 开始执行测试的时间，包含 worker 引导与调度，不能称为纯 JVM 启动。"}
+
+
+def parse_gc_logs(metrics: Path) -> dict:
+    """只汇总 JDK GC 日志明确标为 Pause 的停顿，不把并发阶段重复相加。"""
+    paths = sorted(metrics.glob("gc-*.log"))
+    if not paths:
+        return {**UNKNOWN, "files": []}
+    pauses = []
+    recognized = False
+    for path in paths:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "Using " in line or "GC(" in line:
+                recognized = True
+            match = re.search(r"GC\((\d+)\) (Pause.*?) ([\d.]+)(ms|s)\s*$", line)
+            if match:
+                pauses.append({"file": path.name, "gc_id": int(match[1]), "kind": match[2], "seconds": float(match[3]) / (1000 if match[4] == "ms" else 1)})
+    return {"status": "measured" if recognized else "unknown", "files": [path.name for path in paths], "pause_count": len(pauses), "pause_seconds_sum": sum(row["seconds"] for row in pauses), "pause_seconds_max": max((row["seconds"] for row in pauses), default=None), "pauses": pauses, "limits": "仅 JDK 日志记录的 GC 停顿；并发 GC 阶段不加入停顿合计，不能用它推算测试主体时间。"}
 
 
 def parse_metrics(metrics: Path | None) -> dict:
@@ -396,8 +417,7 @@ def parse_metrics(metrics: Path | None) -> dict:
             for key in ("gc_count", "gc_ms"):
                 current[key] = max(current[key], row[key])
         robo["gc"] = {"status": "measured", "meaning": "JVM 累计 GC 计数和耗时，每 PID 取最大报告值", "by_pid": by_pid}
-    gc_files = sorted(path.name for path in metrics.glob("gc-*.log"))
-    return {"run": run, "host_metrics": {"status": "measured" if samples and any(sample.get("host") for sample in samples) else "unknown", "sample_count": len(samples), "host_cpu_busy_percent_peak": max(cpu) if cpu else None, "host_cpu_busy_percent_mean": sum(cpu) / len(cpu) if cpu else None, "host_mem_available_bytes_min": min(available) if available else None, "test_process_peaks": run.get("test_process_peaks", []), "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"}, "executor_bootstrap": parse_executor_bootstrap(metrics / "gradle.log"), "robolectric": robo, "gc": {"status": "raw_only" if gc_files else "unknown", "files": gc_files}}
+    return {"run": run, "host_metrics": {"status": "measured" if samples and any(sample.get("host") for sample in samples) else "unknown", "sample_count": len(samples), "host_cpu_busy_percent_peak": max(cpu) if cpu else None, "host_cpu_busy_percent_mean": sum(cpu) / len(cpu) if cpu else None, "host_mem_available_bytes_min": min(available) if available else None, "test_process_peaks": run.get("test_process_peaks", []), "limits": "每秒采样可能遗漏短进程和峰值；压力原值保存在 metrics.jsonl；CPU 百分比均值按采样点计算。"}, "executor_bootstrap": parse_executor_bootstrap(metrics / "gradle.log"), "robolectric": robo, "gc": parse_gc_logs(metrics)}
 
 
 def compare_manifests(current: dict, baseline: dict) -> dict:
@@ -409,6 +429,8 @@ def compare_manifests(current: dict, baseline: dict) -> dict:
     old_keys = [(row["classname"], row["name"]) for row in old_rows]
     if len(old_keys) != len(set(old_keys)) or old_manifest.get("duplicates"):
         raise ValueError("基线包含重复测试事件，不能作为验收依据")
+    if old_manifest.get("failures") or any(row["status"] in ("failed", "error") for row in old_rows):
+        raise ValueError("基线包含失败测试，不能作为验收依据")
     old = {key: row["status"] for key, row in zip(old_keys, old_rows)}
     new = {(row["classname"], row["name"]): row["status"] for row in new_rows}
     missing = sorted(set(old) - set(new))
@@ -436,6 +458,10 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
     if result["run"].get("exit_code", 0) != 0:
         failed = True
     result["status"] = "failed" if failed else "passed"
+    measured_fields = ("gradle_profile", "host_metrics", "executor_bootstrap", "robolectric")
+    measured_count = sum(result[key].get("status") == "measured" for key in measured_fields)
+    result["measurement_status"] = "measured" if measured_count == len(measured_fields) else "partial" if measured_count else "unknown"
+    result["validation_scope"] = "status 只判断命令与用例完整性，不代表缺失的性能观测已通过；性能观测状态单列于 measurement_status。"
     return result, 1 if failed else 0
 
 
