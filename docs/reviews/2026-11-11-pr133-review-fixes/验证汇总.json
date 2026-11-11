@@ -40,5 +40,58 @@
     "归档解除跨Agent忙碌误拦截并到达与空闲对照相同的JVM PATCH限制，未证明归档HTTP成功",
     "删除经过真实Codex DELETE并验证列表删除",
     "未把旧提交的CI成功计入新提交"
-  ]
+  ],
+  "冲突整合": {
+    "基线提交": "2e1626f5d655b9a4785517817eb4b9b3ca18b10c",
+    "整合前提交": "61ed40611cf312b63da8908884c644bbd256a975",
+    "验证源码提交": "e0086f7953783c0755324c235f5b38307f0a3ae5",
+    "增量基准": "ad7e8396",
+    "JDK": "21",
+    "Fast": "通过",
+    "PR": {
+      "classes": 165,
+      "tests": 1836,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "重点测试": {
+      "NativeConnectionReliabilityTest": {
+        "tests": 41,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "NativeEventSynchronizerTest": {
+        "tests": 21,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "NativeAgentBackgroundWorkTest": {
+        "tests": 34,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "NativeConversationNotificationsTest": {
+        "tests": 156,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "ColdStartConnectionTest": {
+        "tests": 19,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "跳过原因": "Full 变体下既有 BuiltInCapabilitiesTest 的 Play 专用前提不满足，测试未修改。",
+    "首次环境失败": "默认 JDK17 下部分 Robolectric 初始化失败，中断并保留日志；未记为通过。",
+    "规范轴": "0 项硬性违规，0 项需修复的判断性代码气味",
+    "需求轴": "无阻塞问题，文档说明已修正",
+    "设备验证": "本轮未重跑",
+    "远端CI": "推送新提交后独立跟进，未借用旧提交成功状态"
+  }
 }

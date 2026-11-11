@@ -20,7 +20,7 @@
 
 本轮在未修改生产代码的 `20081a9a` 上复跑审核者的实际 Runtime / TCP SSE 探针：3 项中两项在预期行为断言处失败，助手不可见的对照用例通过，0 错误、0 跳过。探针没有直接向通知模块注入事件。
 
-已有未提交审查文档和审核探针保留原状。本轮将必要场景纳入原有 `NativeAgentBackgroundWorkTest`，复用现有回环 Gateway；仅在新场景显式允许并发连接，以便一个 Agent 流式生成时仍可读取另一个 Agent。
+已有未提交审查文档和审核探针保留原状。原审核修复将必要场景纳入既有 `NativeAgentBackgroundWorkTest`，当时仅在新场景显式允许并发连接。后续与最新 `dev` 整合时，测试服务器统一继承上游默认并发处理，保留心跳控制和显式终稿释放两套能力，以便流式连接存续时仍可读取其他会话。
 
 ## 验证记录
 
@@ -51,3 +51,24 @@
 - 两个原审核线程均已标记解决，并回读确认。
 - `a1fdd693` 远端检查已触发：[Core、App 与门禁](https://github.com/1rua/open-android-intelligence/actions/runs/42960283260)、[APK](https://github.com/1rua/open-android-intelligence/actions/runs/42960276284)。本轮归档时仍在运行，由后台只读任务跟进；不记为最终 CI 已通过。
 - Codex 自动审核另有用量限制提示；该提示不属于源码缺陷。本轮两个有效行内意见均由独立规范轴与需求轴复核，不请求用户为此升级账号。
+
+## 与最新 dev 的冲突整合
+
+用户追加要求解决 PR #133 的合并冲突。本次以最新 `dev@2e1626f5d655b9a4785517817eb4b9b3ca18b10c` 为固定基线，将整合前 `61ed40611cf312b63da8908884c644bbd256a975` 的 16 个任务提交顺序重放，保留原 PR、原 issue 和线性历史。旧提交另外保存在本地备份分支，未修改主工作区的 `dev` 或其他会话资料。
+
+冲突处理：
+
+- `GatewayRuntime.kt` 的主工作台与助手仓库同时保留完成事件通知回调，以及上游前后台判断、关闭时移除、独立读取者登记和恢复参数。气泡仍进入同一读取者恢复集合，助手资源关闭仍关闭对应仓库。
+- `LoopbackGatewayStub.kt` 同时保留上游可控心跳流和通知测试的初始／终态受控流。服务器统一沿用上游默认并发处理，删除通知测试中重复的并发开关，避免长连接阻塞其他请求。
+- 现有完整身份过滤、重复终稿通知保护继续保留；`CoreAgentConversationRepository.kt` 与 `NativeEventSynchronizer.kt` 相对新基线完全一致。没有新增业务行为、UI 或文案。
+
+验证源码固定在 `e0086f7953783c0755324c235f5b38307f0a3ae5`。增量基准 `ad7e8396` 对应原审核提交 `20081a9a` 在本次重放后的提交；测试根据完整整合后源码执行，公共测试夹具使计划覆盖全部 App 回归分组。
+
+- `npm run test:fast -- --since ad7e8396`：通过。
+- `npm run test:pr -- --since ad7e8396`：通过。165 类、1836 项，1835 项通过，0 失败、0 错误、1 跳过。跳过项为 `BuiltInCapabilitiesTest.aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason`，沿用 Full 变体下的原有前提判断；本次没有更改该测试。
+- 重点用例：`NativeAgentBackgroundWorkTest` 34 项、`NativeConnectionReliabilityTest` 41 项、`NativeEventSynchronizerTest` 21 项、`NativeConversationNotificationsTest` 156 项、`ColdStartConnectionTest` 19 项，均无失败、错误或跳过。这些已包含在上述 PR 套件内，不重复计数。
+- 首次验证使用本机默认 JDK 17，部分 Robolectric 环境初始化失败后中断，原日志保留。最终使用与仓库 CI 相同的 JDK 21 完整重跑并取得上述结果，没有放宽断言或屏蔽失败用例。
+- 独立规范轴复核：0 项硬性违规、0 项需要修复的判断性代码气味。独立需求轴复核：无阻塞问题；指出的测试服务器说明过时已修正。
+- `git diff --check` 及固定范围检查通过；本次未重跑模拟器或真机，既有设备回执仍只归属原记录提交。新提交的远端 CI 由后台只读任务跟进，不能借用旧提交的成功结论。
+
+上文原审核阶段的提交与测试数保留为历史证据；本次整合后的本地源码验证以本节及结构化回执的“冲突整合”字段为准。
