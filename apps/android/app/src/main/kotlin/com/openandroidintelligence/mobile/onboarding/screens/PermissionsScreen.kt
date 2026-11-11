@@ -342,6 +342,7 @@ private fun PermissionCard(
         }
     }
 
+    val entryPurpose = stringResource(entry.purposeRes)
     val entryDisplayName = stringResource(entry.displayNameRes)
 
     Column(
@@ -392,7 +393,7 @@ private fun PermissionCard(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = stringResource(entry.displayNameRes),
+                        text = entryDisplayName,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -402,7 +403,7 @@ private fun PermissionCard(
                 }
                 Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                 Text(
-                    text = stringResource(entry.purposeRes),
+                    text = entryPurpose,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
