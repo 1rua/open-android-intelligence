@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,6 +54,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -246,10 +248,11 @@ fun WorkbenchScreen(
     }
     // A dead reply channel is the one cause of "sent but nothing came back"
     // that the user cannot see from the timeline, so it says so out loud.
+    val streamDisconnectedMessage = stringResource(UiR.string.conv_state_stream_disconnected)
     LaunchedEffect(state.streamHealth) {
         if (state.streamHealth == StreamHealth.FAILED) {
             snackbar.showSnackbar(state.notice?.let(::noticeText)
-                ?: stringResource(UiR.string.conv_state_stream_disconnected))
+                ?: streamDisconnectedMessage)
         }
     }
 
@@ -880,15 +883,321 @@ fun WorkbenchScreen(
                             showRenameDialog = false
                         },
                     ) {
-                        Text(stringResource(UiR.string.conv_workbench_title_rename_confirm))
+                        Text(stringResource(UiR.string.common_action_confirm))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showRenameDialog = false }) {
-                        Text(stringResource(UiR.string.conv_workbench_title_rename_cancel))
+                        Text(stringResource(UiR.string.common_action_cancel))
                     }
                 }
             )
+        }
+    }
+}
+
+/**
+ * 顶栏：品牌缝线 + 两行标题 + 收敛后的动作。
+ *
+ * 之前这里挂了 5 个动作图标并把标题挤成 170px，而 `windowInsets = WindowInsets(0,0,0,0)`
+ * 让整条 bar 落在系统状态栏触摸区里 —— 两个问题都在这一个组件里修掉：
+ * 1. 使用 [TopAppBarDefaults.windowInsets]，标题不再压状态栏、按钮点得到；
+ * 2. 直接动作只有「新建对话」，其余（重命名、附件库、浮助理、设置）收进溢出菜单。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun WorkbenchTopBar(
+    threadTitle: String,
+    gatewayLabel: String,
+    streamHealth: StreamHealth,
+    expanded: Boolean,
+    canRename: Boolean,
+    creatingThread: Boolean,
+    overflowExpanded: Boolean,
+    showAssistant: Boolean,
+    subtitleInBar: Boolean,
+    onOpenDrawer: () -> Unit,
+    onCreateThread: () -> Unit,
+    onRenameThread: () -> Unit,
+    onOpenAttachments: () -> Unit,
+    onOpenAssistant: (() -> Unit)?,
+    onOpenSettings: () -> Unit,
+    onOverflowExpandedChange: (Boolean) -> Unit,
+) {
+    TopAppBar(
+        windowInsets = TopAppBarDefaults.windowInsets,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+            ) {
+                Column(modifier = Modifier.weight(1f, fill = false)) {
+                    Text(
+                        text = resolveDisplayConversationTitle(threadTitle),
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (subtitleInBar) {
+                        WorkbenchContextLine(
+                            gatewayLabel = gatewayLabel,
+                            streamHealth = streamHealth,
+                        )
+                    }
+                }
+            }
+        },
+        navigationIcon = {
+            // 展开宽度下抽屉常驻在左侧，再给一个开抽屉按钮只会重复。
+            if (!expanded) {
+                IconButton(onClick = onOpenDrawer) {
+                    Icon(Icons.Default.Menu, contentDescription = stringResource(UiR.string.conv_workbench_cd_open_drawer))
+                }
+            }
+        },
+        actions = {
+            FilledIconButton(
+                onClick = onCreateThread,
+                enabled = !creatingThread,
+                modifier = Modifier.size(Dimensions.MinimumTouchTarget),
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
+                    modifier = Modifier.size(Dimensions.Icon),
+                )
+            }
+            Spacer(Modifier.width(Dimensions.SpaceSmall))
+            Box {
+                IconButton(onClick = { onOverflowExpandedChange(true) }) {
+                    Icon(Icons.Default.MoreVert, contentDescription = stringResource(UiR.string.conv_workbench_cd_more_actions))
+                }
+                DropdownMenu(
+                    expanded = overflowExpanded,
+                    onDismissRequest = { onOverflowExpandedChange(false) },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_rename)) },
+                        enabled = canRename,
+                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        onClick = {
+                            onOverflowExpandedChange(false)
+                            onRenameThread()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_attachment_lib)) },
+                        leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
+                        onClick = {
+                            onOverflowExpandedChange(false)
+                            onOpenAttachments()
+                        },
+                    )
+                    if (showAssistant) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(UiR.string.conv_workbench_menu_floating_assistant)) },
+                            leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, contentDescription = null) },
+                            onClick = {
+                                onOverflowExpandedChange(false)
+                                onOpenAssistant?.invoke()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_settings)) },
+                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                        onClick = {
+                            onOverflowExpandedChange(false)
+                            onOpenSettings()
+                        },
+                    )
+                }
+            }
+        },
+    )
+}
+
+/**
+ * 顶栏第二行：`Gateway 主机名 · 连接状态`。
+ *
+ * 主机名是技术元数据，用等宽字面承载（去掉了 `https://` 前缀，只留可读主机名）；
+ * 连接状态用中文短语，颜色只在通道断开时变为 error —— 文字本身已经说明了状态，
+ * 颜色不是唯一信号。
+ */
+@Composable
+private fun WorkbenchContextLine(
+    gatewayLabel: String,
+    streamHealth: StreamHealth,
+    modifier: Modifier = Modifier,
+) {
+    val host = gatewayLabel.removePrefix("https://").removePrefix("http://").trimEnd('/')
+    Text(
+        text = buildAnnotatedString {
+            if (host.isNotEmpty()) {
+                withStyle(SpanStyle(fontFamily = AppTextStyles.MonoSmall.fontFamily)) {
+                    append(host)
+                }
+                append(" · ")
+            }
+            append(connectionLabel(streamHealth))
+        },
+        style = MaterialTheme.typography.labelMedium,
+        fontSize = 11.sp,
+        color = if (streamHealth == StreamHealth.FAILED) {
+            MaterialTheme.colorScheme.error
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        },
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier,
+    )
+}
+
+/**
+ * 空态 / 欢迎页：品牌缝线 + 一句标题 + 一句说明，垂直居中。
+ *
+ * 建议项只在 Gateway 真的返回了命令目录时出现（[AgentCommandCatalog]），
+ * 不编造「推荐提问」这类并不存在的数据。
+ */
+@Composable
+private fun ConversationWelcome(
+    onCreate: (() -> Unit)?,
+    catalog: Loadable<AgentCommandCatalog>,
+    onSelectCommand: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val commands: List<AgentCommand> = (catalog as? Loadable.Ready)?.value?.commands.orEmpty()
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            Modifier
+                .widthIn(max = Dimensions.FormWidth)
+                .padding(Dimensions.SpaceXLarge),
+            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+        ) {
+            SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
+            Text(stringResource(UiR.string.conv_workbench_empty_headline), style = MaterialTheme.typography.headlineMedium)
+            Text(
+                stringResource(UiR.string.conv_workbench_empty_subtitle),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (onCreate != null) {
+                Button(onClick = onCreate) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Spacer(Modifier.width(Dimensions.SpaceSmall))
+                    Text(stringResource(UiR.string.conv_workbench_cd_new_conversation))
+                }
+            }
+            if (commands.isNotEmpty()) {
+                // 真实命令目录：点击只是把命令填进输入框，不代替用户发送。
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    commands.take(3).forEach { command ->
+                        AssistChip(
+                            onClick = { onSelectCommand(command.command) },
+                            label = { Text("/${command.command}") },
+                        )
+                    }
+                }
+            } else if (onCreate == null) {
+                Text(
+                    stringResource(UiR.string.conv_workbench_empty_command_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 来源线程里的「已创建新对话」跳转项。
+ *
+ * 这是本机导航的收据，不是 Gateway 正文：`/new` 之后用户随时能回到 Agent 真正
+ * 创建的那个会话，即使指令返回时他已经离开了来源线程。
+ */
+@Composable
+private fun CreatedThreadJumpRow(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(AppRadius.Medium),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = Dimensions.SpaceMedium,
+                vertical = Dimensions.SpaceMedium,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+        }
+    }
+}
+
+/**
+ * 等待 Agent 创建新会话时的可见状态。
+ *
+ * 等待本身必须看得见，也必须能退出：静默的等待正是「点了按钮没反应」的来源。
+ * 取消只停止等待，不伪造会话、也不把用户挪出原会话。
+ */
+@Composable
+private fun CreatingThreadRow(onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Surface(
+        shape = RoundedCornerShape(AppRadius.Medium),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(
+                horizontal = Dimensions.SpaceMedium,
+                vertical = Dimensions.SpaceCompact,
+            ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
+        ) {
+            CircularProgressIndicator(
+                strokeWidth = Dimensions.StrokeStitch,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(Dimensions.SmallIcon),
+            )
+            Text(
+                text = stringResource(UiR.string.conv_workbench_creating_thread),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onCancel) { Text(stringResource(UiR.string.common_action_cancel)) }
         }
     }
 }

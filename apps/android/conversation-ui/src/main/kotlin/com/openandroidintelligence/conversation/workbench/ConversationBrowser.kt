@@ -20,6 +20,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -171,8 +173,9 @@ fun ConversationBrowser(
             actions.selectFolder(null)
         }
     }
+    val defaultTitle = stringResource(UiR.string.conv_title_new_default)
     val filtered = ordered.filter { thread ->
-        thread.title.contains(query, ignoreCase = true) && when (filter) {
+        ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) && when (filter) {
             ARCHIVED_THREADS -> thread.archived
             UNFILED_THREADS -> !thread.archived && organization.assignments[thread.id.value] == null
             ALL_THREADS -> !thread.archived
@@ -475,7 +478,7 @@ fun ConversationBrowser(
         )
     }
     deleteThread?.let { thread ->
-        ConfirmDeleteDialog("删除对话", "确定删除“${thread.title.ifBlank { "未命名对话" }}”？对话记录将从 Gateway 删除。",
+        ConfirmDeleteDialog("删除对话", stringResource(UiR.string.conv_browser_dialog_delete_thread_message, resolveDisplayConversationTitle(thread.title)),
             onDismiss = { deleteThread = null }, onConfirm = { actions.delete(thread.id.value); deleteThread = null })
     }
     // Keep one folder dialog visible so the active editor owns window and keyboard focus.
@@ -568,7 +571,7 @@ private fun ConversationBrowserRow(
     ListItem(
         headlineContent = {
             Text(
-                text = thread.title.ifBlank { "未命名对话" },
+                text = resolveDisplayConversationTitle(thread.title),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
@@ -606,7 +609,7 @@ private fun ConversationBrowserRow(
                     IconButton(onClick = { menu = true }) {
                         Icon(
                             Icons.Default.MoreVert,
-                            "管理会话 ${thread.title.ifBlank { "未命名对话" }}",
+                            stringResource(UiR.string.conv_browser_item_manage_cd, resolveDisplayConversationTitle(thread.title)),
                             modifier = Modifier.size(Dimensions.SmallIcon),
                         )
                     }

@@ -677,26 +677,26 @@ class GatewayRuntime(
         val profileId = connectedProfileId
         val accountId = connectedAccountId
         if (profileId == null || accountId == null) {
-            return reject(AssistantHandoffReasons.NOT_CONNECTED)
+            return reject(AssistantHandoffReasons.notConnected(context))
         }
         val workspace = assistantWorkspace
-            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
+            ?: return reject(AssistantHandoffReasons.notConnected(context))
         val agentId = assistantAgentId()
         if (!workspace.matches(profileId, accountId, agentId)) {
-            return reject(AssistantHandoffReasons.ACCOUNT_MISMATCH)
+            return reject(AssistantHandoffReasons.accountMismatch(context))
         }
         // 主工作台必须已经切到同一个 Agent：否则会把助手草稿并入旧 Agent 的输入栏，
         // 或把另一 Agent 的会话 ID 交给 openThread。原生会话下两者都由发布值证明。
         if (_nativeAgents.value != null && agentId != null && _workbenchAgentId != agentId) {
-            return reject(AssistantHandoffReasons.AGENT_NOT_READY)
+            return reject(AssistantHandoffReasons.agentNotReady(context))
         }
         val receiver = _controller.value
-            ?: return reject(AssistantHandoffReasons.WORKBENCH_NOT_READY)
+            ?: return reject(AssistantHandoffReasons.workbenchNotReady(context))
         val assistantController = runCatching { workspace.open(sessionToken) }.getOrNull()
-            ?: return reject(AssistantHandoffReasons.NOT_CONNECTED)
+            ?: return reject(AssistantHandoffReasons.notConnected(context))
         // 等待上传/校验中的附件变成 VERIFIED；超时或校验失败整次拒绝，浮层与草稿原样保留。
         if (!assistantController.awaitHandoffAttachments(ASSISTANT_HANDOFF_ATTACHMENT_WAIT_MILLIS)) {
-            return reject(AssistantHandoffReasons.ATTACHMENTS_NOT_READY)
+            return reject(AssistantHandoffReasons.attachmentsNotReady(context))
         }
         val draft = assistantController.assistantDraftForHandoff()
         val conversationId = assistantController.state.value.activeThreadId

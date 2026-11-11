@@ -391,11 +391,11 @@ class AssistantBridgeService : Service() {
             publish(client)
         }
         val token = client.sessionToken ?: run {
-            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED))
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.notConnected(this)))
             return
         }
         if (!client.scope.canShare(runtime.connectedAccountId)) {
-            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.ACCOUNT_MISMATCH))
+            settle(AssistantHandoffResult.Rejected(AssistantHandoffReasons.accountMismatch(this)))
             return
         }
         handoffInFlight = true
@@ -403,7 +403,7 @@ class AssistantBridgeService : Service() {
             val result = try {
                 runtime.prepareAssistantHandoff(token)
             } catch (_: CancellationException) {
-                AssistantHandoffResult.Rejected(AssistantHandoffReasons.NOT_CONNECTED)
+                AssistantHandoffResult.Rejected(AssistantHandoffReasons.notConnected(this))
             } finally {
                 handoffInFlight = false
             }

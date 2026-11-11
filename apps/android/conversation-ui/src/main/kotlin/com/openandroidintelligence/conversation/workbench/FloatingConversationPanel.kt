@@ -123,7 +123,7 @@ fun FloatingConversationPanel(
                     if (requestAuthorization != null) requestAuthorization() else explainSelection = true
                 }
             },
-            title = state.activeThreadTitle.ifBlank { "浮动对话" },
+            title = resolveDisplayConversationTitle(state.activeThreadTitle),
             footer = {
                 ComposerBar(
                     editorKey = controller to state.activeThreadId,

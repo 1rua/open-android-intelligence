@@ -109,6 +109,24 @@ class WorkbenchTitleRegressionTest {
         controller.cancel()
     }
 
+    @Test
+    fun aNonEmptyServerTitleMatchingTheOldDefaultIsNotOverwrittenOnSend() = runTest {
+        val repository = TitleRecordingRepository().apply { storedTitle = "新对话" }
+        val controller = createController(repository)
+        runCurrent()
+        controller.openThread("conv_test")
+        advanceUntilIdle()
+
+        controller.editDraft("这条消息不能覆盖已有标题")
+        controller.sendDraft()
+        advanceUntilIdle()
+
+        assertEquals("新对话", controller.state.value.activeThreadTitle)
+        assertEquals("新对话", repository.storedTitle)
+        assertEquals(0, repository.titleUpdates)
+        controller.cancel()
+    }
+
     /**
      * A rename the Gateway refused must not stay on screen: otherwise the phone
      * shows a title the Gateway never stored, which is exactly how the PATCH
