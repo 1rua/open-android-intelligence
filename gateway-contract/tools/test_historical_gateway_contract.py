@@ -10,6 +10,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).with_name('verify-historical-gateway-contract.py')
+VECTOR_FILES = (
+    'request-signatures.json',
+    'protocol-negotiation.json',
+    'auth-sessions.json',
+    'attachments.json',
+    'sse-events.json',
+    'device-requests.json',
+)
+VECTOR_IDS = (
+    'request-signatures-minimal',
+    'protocol-negotiation-minimal',
+    'auth-sessions-minimal',
+    'attachments-minimal',
+    'sse-events-minimal',
+    'device-requests-minimal',
+)
 
 @pytest.fixture
 def gate():
@@ -48,6 +64,9 @@ def contract(root):
         p = root / 'gateway-contract' / relative
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text('{}\n')
+    for filename, vector_id in zip(VECTOR_FILES, VECTOR_IDS):
+        path = root / 'gateway-contract' / 'vectors' / filename
+        path.write_text(json.dumps({'cases': [{'id': vector_id}]}))
     return commit(root)
 
 
@@ -160,4 +179,66 @@ def test_runtime_vector_failure_rejects_complete_command(gate, retained_path, mo
     monkeypatch.setattr(gate.subprocess, 'run', run)
     assert gate.main() == 1
     assert len(invoked) == 1
+    assert not (output / 'historical-contract-result.json').exists()
+
+
+def run_complete_command(gate, retained_path, monkeypatch, rows, output):
+    repo = repository(retained_path / 'repo')
+    revision = contract(repo)
+    plugin = retained_path / 'plugin'
+    head = plugin_fixture(plugin, revision)
+    spec_path = retained_path / 'fixture.json'
+    spec_path.write_text(json.dumps({
+        'revision': head,
+        'repository': 'https://github.com/1rua/hermes-android-gateway.git',
+        'contractRepository': 'https://github.com/1rua/open-android-intelligence.git',
+        'contractRevision': revision,
+    }))
+    monkeypatch.setattr(gate, 'REPO_ROOT', repo)
+    monkeypatch.setattr(gate, 'FIXTURE_SPEC', spec_path)
+    monkeypatch.setenv('HERMES_PLUGIN_ROOT', str(plugin))
+    actual = subprocess.run
+
+    def run(command, **kwargs):
+        if len(command) >= 3 and command[1] == '-c' and command[2] == gate.RUNTIME_PROBE:
+            return subprocess.CompletedProcess(command, 0, json.dumps(rows), '')
+        return actual(command, **kwargs)
+
+    monkeypatch.setattr(gate.subprocess, 'run', run)
+    monkeypatch.setattr(sys, 'argv', [str(SCRIPT), '--output', str(output)])
+    return gate.main()
+
+
+def test_complete_command_all_pass_produces_success_receipt(gate, retained_path, monkeypatch):
+    output = retained_path / 'all-pass'
+    rows = [{'vectorId': vector_id, 'status': 'pass'} for vector_id in VECTOR_IDS]
+    assert run_complete_command(gate, retained_path, monkeypatch, rows, output) == 0
+    report = json.loads((output / 'historical-contract-result.json').read_text())
+    assert report['passed'] == len(VECTOR_IDS)
+    assert report['failed'] == 0
+
+
+def test_complete_command_failed_vector_reports_id(gate, retained_path, monkeypatch, capsys):
+    output = retained_path / 'failed'
+    rows = [{'vectorId': 'protocol-negotiation-minimal', 'status': 'fail'}]
+    assert run_complete_command(gate, retained_path, monkeypatch, rows, output) == 1
+    assert 'protocol-negotiation-minimal' in capsys.readouterr().err
+    assert not (output / 'historical-contract-result.json').exists()
+
+
+def test_complete_command_missing_vector_reports_missing_id(gate, retained_path, monkeypatch, capsys):
+    output = retained_path / 'missing'
+    rows = [{'vectorId': vector_id, 'status': 'pass'} for vector_id in VECTOR_IDS[:-1]]
+    assert run_complete_command(gate, retained_path, monkeypatch, rows, output) == 1
+    error = capsys.readouterr().err
+    assert '缺少 device-requests-minimal' in error
+    assert not (output / 'historical-contract-result.json').exists()
+
+
+def test_complete_command_duplicate_vector_reports_id(gate, retained_path, monkeypatch, capsys):
+    output = retained_path / 'duplicate'
+    rows = [{'vectorId': vector_id, 'status': 'pass'} for vector_id in VECTOR_IDS]
+    rows[-1] = rows[0]
+    assert run_complete_command(gate, retained_path, monkeypatch, rows, output) == 1
+    assert '出现重复：request-signatures-minimal' in capsys.readouterr().err
     assert not (output / 'historical-contract-result.json').exists()

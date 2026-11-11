@@ -120,13 +120,28 @@ def verify_export(repo: Path, revision: str, output: Path, hashes: dict[str, str
 
 
 def validate_results(results: list[dict], expected_ids: set[str] | None = None) -> int:
-    if (not isinstance(results, list) or not results
-            or any(not isinstance(row, dict) or row.get("status") != "pass"
-                   or not isinstance(row.get("vectorId"), str) for row in results)):
+    if not isinstance(results, list) or not results:
         raise GateError("历史共享 vectors 执行失败或没有执行")
+    malformed = [row for row in results if not isinstance(row, dict)
+                 or not isinstance(row.get("vectorId"), str)]
+    if malformed:
+        raise GateError("历史共享 vectors 执行结果缺少有效 vectorId")
+    failed = [row["vectorId"] for row in results if row.get("status") != "pass"]
+    if failed:
+        raise GateError("历史共享 vectors 执行失败：" + ", ".join(failed))
     ids = [row["vectorId"] for row in results]
-    if len(ids) != len(set(ids)) or expected_ids is not None and set(ids) != expected_ids:
-        raise GateError("历史共享 vectors 未完整执行或出现重复")
+    duplicates = sorted({vector_id for vector_id in ids if ids.count(vector_id) > 1})
+    if duplicates:
+        raise GateError("历史共享 vectors 出现重复：" + ", ".join(duplicates))
+    if expected_ids is not None and set(ids) != expected_ids:
+        missing = sorted(expected_ids - set(ids))
+        extra = sorted(set(ids) - expected_ids)
+        details = []
+        if missing:
+            details.append("缺少 " + ", ".join(missing))
+        if extra:
+            details.append("额外 " + ", ".join(extra))
+        raise GateError("历史共享 vectors 未完整执行：" + "；".join(details))
     return len(results)
 
 
