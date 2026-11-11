@@ -53,3 +53,5 @@ git diff --check
 4. 同步匹配和取消保持原子性，之后先订阅、再核对、有界等待同目标真实终态。异步 `aborted` 返回 `cancelled`，已完成返回 `already_completed`，期限到后才返回协议 `outcome_unknown`；关闭取消观察不重复中止其他任务。
 
 修复版评审探针及输出：[脚本](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-fixed-probe.mjs)、[结果](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-fixed-probe.txt)。该脚本为真实 Session/恢复原语加官方 follow 形状的受控夹具，未冒充真实模型验证。当前六份 Node 测试 **116 项通过**，Core 专用契约仍为 **6 项通过**；本轮不重复全量 Fast。原 Fast 输出只规范化尾随空白，原失败与通过数量保留。
+
+第二轮独立复查进一步发现同一开场 snapshot 的两个接纳窗口：已有持久助手正文尚未终态时漏复制正文/消息 ID，以及预查排队、开场已运行时先过滤尝试后更新轮次。两个新增回归先稳定失败，再将开场接纳顺序最小调整为“同步最新原生轮次、正文、消息 ID → 恢复 activeAttempt 和前缀 → 处理后续帧”，没有扩展其他模块。修复后六份 Node **118 项通过**，异步泄漏检查无报告，Core 专用契约 **6 项通过**。独立探针确认完整 `done.text/messageId` 与前缀、后续 delta 均恢复，监听器清理为 0；[修复探针](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-round2-fixed-probe.mjs)和[输出](2026-11-11-dsh-core-compatibility-artifacts/builtin-review-round2-fixed-probe.txt)已入库，待最终独立复核。
