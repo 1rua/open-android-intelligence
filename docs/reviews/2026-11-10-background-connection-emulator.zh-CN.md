@@ -117,7 +117,7 @@ adb -s emulator-5562 shell am instrument -w -r \
 - 仪器测试于总时长 788.13 秒结束，错误是测试控制器 `checkpoint` HTTP 请求的 `getResponseCode()` 读取超时。Core 已追加第十三个测试事件，但在保留现场的布尔检查中，该事件尚未进入此测试 profile 的 Android 持久游标；不能简单视为测试预算过短的假失败。
 - 宿主到测试控制器的三秒只读状态查询正常，夹具日志没有报错，Core 重启次数为 0。故障后采样为屏幕 Awake、原仪器进程已结束、存在其他 App 进程；这是故障后的状态，不能替代故障瞬间的系统约束证据。
 
-**三十分钟没有完成，不能宣称息屏三十分钟通过。** 当前证据不足以归因 Android 电源管理、单纯测试控制预算、宿主负载或其他设备活动；也未获得此轮长测结束后的前台恢复断言。两小时、六小时息屏和真实手机电量均未验证。
+**本轮三十分钟没有完成，不能据此宣称息屏三十分钟通过。** 当前证据不足以归因 Android 电源管理、单纯测试控制预算、宿主负载或其他设备活动；也未获得此轮长测结束后的前台恢复断言。用户随后明确确认没有其他任务操作原设备，因此非本任务映射与故障后进程变化的来源仍未闭合，不能归咎外部干扰。后续私有环境的合法恢复样本也不能替代本轮控制超时的根因。两小时、六小时息屏和真实手机电量均未验证。
 
 保留证据位于 `.toolchains/background-connection-e2e/`：`application-screen-30m.txt`、`checkpoints-screen-30m.log`、`system-screen-30m.jsonl`、`system-control-timeout.json`、`connection-failure-screen-30m.log`、`cursor-checkpoint13-boolean.json`、脱敏 `status-screen-30m.json`。只对本任务夹具发送正常停止并撤销本任务 34491/50181 两个映射；其他映射与未知进程、AVD 均不操作。
 
@@ -130,3 +130,37 @@ adb -s emulator-5562 shell am instrument -w -r \
 2026 年 11 月 10 日 23:56:45（上海时间）实测：私有设备 `boot_completed=1`，Android 15 / API 35，两个网络具备 VALIDATED，screenOn 为 true，深浅 idle 均为 ACTIVE。`adb -P 5037 devices -l` 没有出现 5680/5681 新设备，私有服务能显式连接 `127.0.0.1:5681`。私有服务也会自动扫描标准端口的其他设备，因此所有后续命令必须明确使用 `-P 5039 -s 127.0.0.1:5681`，不能依靠设备列表唯一性。环境记录为 `.toolchains/background-connection-private-avd/environment.json`；此时尚未安装测试 APK。
 
 所有 instrumentation 后台测试均由活动仪器进程驱动，其系统优先级与普通用户将 App 留在后台不同。它可以验证生命周期调用链、真实 socket、持久游标和恢复逻辑，但不能替代无仪器进程的长期存活、进程被杀后的恢复、实体手机省电策略或真实耗电测试。
+
+## 私有环境长测的断言修正
+
+私有设备首轮采用业务 `ee4f0e83`，在约八分钟时因测试要求“总订阅永远等于一次”而失败。已确认 PID 5321 在后台第 431 秒收到 `NETWORK_CHANGED`，generation 2 在约 71 毫秒后进入 LIVE；第八个分段事件已持久提交（单独布尔核对 true），登录仍为 1。屏幕保持 Asleep、系统允许联网，夹具没有主动关闭 socket。这是后台路由变化后自动恢复的正例，不能把合法重连当作功能失败。
+
+测试提交 `3200868b` 因此仅调整长时断言：默认十秒短窗口仍严格要求销毁 UI 不重建健康订阅；长时运行允许有实际 `NETWORK_CHANGED` 或 `connection.reconnect_started` 诊断的订阅替换，每段继续要求唯一活连接、登录一次、游标按分段持续提交。故障注入前记录当前订阅基线，前台恢复只允许新增一次正式订阅。修正后默认短样本恢复 4023 毫秒、`OK (1 test)`，再使用新隔离目录完整重跑，未把前八分钟合并进新样本。
+
+## 完整三十分钟后台投递段
+
+固定业务 APK 为 `ee4f0e837745bef218275c7ef621953c49ef706d`，测试为 `3200868b`。2026 年 11 月 11 日 00:31:45（上海时间）在私有设备开始息屏，仪器 PID 5914，唯一 Activity 已销毁。第 1～30 个分钟分段事件全部真实接收并持久提交，末次 elapsed 为 **1800035 毫秒**，逐项解析确认 checkpoint 序列精确为 1～30、所有 `cursorCommitted=true`。
+
+后台第十五、三十分钟总订阅分别从 1 增加到 2、3，对应日志均为 WS 关闭码 4001 的正常会话到期与既有凭据续签；续签后自动恢复原游标，登录没有重复，分段检查时始终只有一个正式活连接。采样屏幕 Asleep、`mScreenOn=false`、系统深浅 idle ACTIVE、联网允许，进程一直可执行。故可独立确认：**在本受控 instrumentation/模拟器条件下，完整三十分钟后台事件投递与自然凭据续签恢复通过。**
+
+整条仪器方法仍显示失败：后台 1800043 毫秒后已产生 `foreground_ready`，随后代理工具服务发生长时间 503 空档，未在三十秒内发送外部唤醒键，最终总时长 1833.664 秒在“等待外部屏幕点亮”处超时。不是后台投递断言失败，也没有证据表明测试进程因系统回收而提前停止；**此轮前台终段未完成，不能把整条方法写为 OK**。后来单独 Doze/前台短样本验证了该恢复路径，不能倒填此轮结果。
+
+证据位于 `.toolchains/background-connection-private-e2e/`：`run-30m2.json`、`screen-30m2.txt`、`checkpoints-30m2-final.log`、`connection-30m2-final.log`、`summary-30m2.json`、`system-30m2.jsonl`、脱敏 `status-30m2-final.json`。夹具及其两条私有映射已正常停止/撤销。该结果不代表普通无仪器后台存活、强停恢复、真实功耗、两小时或六小时验收。
+
+## 真实 Android 原生会话独立半开
+
+`NativeConnectionRecoveryInstrumentedTest` 通过真实签名 Core 接口发现 Hermes、读取原会话，再由公开 `CoreAgentConversationRepository.activeConversationChanged()` 启动 Native 同步。使用生产 `NativeConversationMirror`、Android Keystore、本地落盘、原事件游标与 ACK；同时保持单独 Platform WS 健康。测试夹具复用真实 Hermes HTTP 桥、SessionBackend、NativeEventSync 与 ACK 库，只把受控宿主任务和消息来源作为测试输入，不使用手写伪 Adapter。
+
+第一次仪器在故障注入前正确拒绝了测试宿主“追加事件但 history_reader 仍恒空”的不一致事实，报 `NATIVE_HISTORY_BEHIND`；没有修改生产覆盖检查或伪造 ACK。测试宿主修正为先提交可查询消息历史，再追加相同 messageId/revision 的真实事件后，同一方法通过。
+
+APK 业务含关闭保护 `66c85da7`，仪器源码 `4597d8f0`、夹具一致修正 `b0f7a766`。实际结果 `OK (1 test)`、9.626 秒：仅 Native/events 旧 HTTP 连接由代理保持开放并丢弃流量，Platform 正式订阅一直为 1 且 LIVE；不调用 `connectionRestored()`、不切换会话，持续前台独立预算在 **8409 毫秒**恢复新消息并完成镜像保存和 ACK。三消息按序各一次、重复 0、pending ACK 为空、`POST /messages` 次数为 0。Core 观察 Native read 5、ACK 4，代理实际丢弃 884 字节。
+
+证据为 `.toolchains/background-connection-private-e2e/` 的 `native-android2.txt`、`result-native.log`、`status-native.json`；宿主真实半开烟测 `native-host-half-open.json` 只作夹具边界证据。仪器包编译及 `noVpnSurfaceCheck` 均通过，控制 HTTP helper 复用已有精确登记测试文件，没有扩大全目录网络许可。夹具与私有端口映射已正常清理。
+
+## 强制 Doze 状态与解除后恢复
+
+在私有设备使用同一真实 Application/Activity 方法、二十秒后台阶段，按标准测试命令 `dumpsys battery unplug`、息屏键 223、`dumpsys deviceidle force-idle`，实测返回 deep IDLE、light OVERRIDE。期间三个分段事件仍成功提交，因此活动 instrumentation 可能被系统豁免，不能声称已经证明应用经受真实网络冻结。
+
+在 `foreground_ready` 后执行 `deviceidle unforce`、`battery reset`、唤醒键 224，真实 Activity 自动检查并恢复半开连接；从 launch 前到原离线游标实际恢复 **2837 毫秒**，`OK (1 test)`，总 48.511 秒，Application Runtime 身份保持、总订阅 2。没有切换会话、手动 Runtime 生命周期调用或修改产品权限。
+
+收尾实测 `mForceIdle=false`、深浅 idle ACTIVE、屏幕 Awake、AC 供电恢复，夹具与专用映射已停止。证据 `doze-lifecycle.txt`、`result-doze.log`、`doze-state.json`、`doze-restored.json`、脱敏 `status-doze.json`。这验证了强制状态/解除后的调用链，不替代真实机型对 Doze 网络限制及恢复窗口的验收。
