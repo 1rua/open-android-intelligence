@@ -244,6 +244,11 @@ def run_command(output: Path, command: list[str]) -> int:
         thread.join(timeout=5)
         for sig, handler in old_handlers.items():
             signal.signal(sig, handler)
+        # 内容摘要允许报告随 artifact 搬迁，同时拒绝别处同名的旧报告。
+        record["profile_sha256"] = {
+            report: hashlib.sha256(Path(report).read_bytes()).hexdigest()
+            for report in record["profile_reports"] if Path(report).is_file()
+        }
         record.update({"finished_at": utc_now(), "wall_seconds": time.monotonic() - started, "status": "completed", "sample_count": sampler.samples, "sampling_errors": sampler.errors, "test_process_peaks": list(sampler.peaks.values())})
         write_json(output / "run.json", record)
     return record["exit_code"]
@@ -351,6 +356,9 @@ def parse_gradle_profile(profile: Path | None, run: dict | None = None) -> dict:
         path = profile / Path(recorded[0]).name
         if not path.is_file():
             return {**UNKNOWN, "reason": "本次记录的 profile 文件不在指定目录中", "recorded_relative_path": recorded[0]}
+        expected_hash = run.get("profile_sha256", {}).get(recorded[0])
+        if not expected_hash or hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            return {**UNKNOWN, "reason": "profile 内容摘要不匹配本次运行，禁止使用同名历史报告"}
         paths = [path]
         selection = "run_stdout"
     else:

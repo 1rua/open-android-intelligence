@@ -259,6 +259,7 @@ def test_run_records_decoded_profile_relative_to_gradle_cwd(tmp_path, monkeypatc
     assert perf.run_command(output, command) == 0
     record = json.loads((output / "run.json").read_text())
     assert record["profile_reports"] == ["build/reports/profile/profile-本次 报告.html"]
+    assert record["profile_sha256"][record["profile_reports"][0]] == perf.hashlib.sha256(profile.read_bytes()).hexdigest()
 
 
 def test_profile_directory_requires_unique_current_run_reference(tmp_path):
@@ -266,7 +267,11 @@ def test_profile_directory_requires_unique_current_run_reference(tmp_path):
     make_profile(profiles / "profile-old.html", 999)
     make_profile(profiles / "profile-current.html", 5)
     metrics = tmp_path / "metrics"
-    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0, "profile_reports": ["build/reports/profile/profile-current.html"]})
+    perf.write_json(metrics / "run.json", {
+        "status": "completed", "exit_code": 0,
+        "profile_reports": ["build/reports/profile/profile-current.html"],
+        "profile_sha256": {"build/reports/profile/profile-current.html": perf.hashlib.sha256((profiles / "profile-current.html").read_bytes()).hexdigest()},
+    })
     results = xml_results(tmp_path / "xml", [("a", "first", "")])
     result, _ = perf.build_summary(results, profiles, metrics)
     assert result["gradle_profile"]["status"] == "measured"
@@ -285,3 +290,18 @@ def test_unassociated_or_ambiguous_profile_directory_is_unknown(tmp_path, record
     results = xml_results(tmp_path / "xml", [("a", "first", "")])
     result, _ = perf.build_summary(results, profiles, metrics)
     assert result["gradle_profile"]["status"] == "unknown"
+
+
+def test_same_profile_name_from_another_run_is_not_measured(tmp_path):
+    original = tmp_path / "current" / "profile-same.html"
+    wrong = tmp_path / "history" / "profile-same.html"
+    make_profile(original, 5)
+    make_profile(wrong, 999)
+    recorded = "other-project/build/reports/profile/profile-same.html"
+    run = {
+        "profile_reports": [recorded],
+        "profile_sha256": {recorded: perf.hashlib.sha256(original.read_bytes()).hexdigest()},
+    }
+    result = perf.parse_gradle_profile(wrong.parent, run)
+    assert result["status"] == "unknown"
+    assert "内容摘要" in result["reason"]
