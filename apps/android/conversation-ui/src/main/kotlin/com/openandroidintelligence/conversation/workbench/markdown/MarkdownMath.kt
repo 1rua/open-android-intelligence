@@ -234,9 +234,20 @@ fun buildKaTeXHtml(
         append("var doc=document.documentElement;")
         append("var body=document.body;")
         append("var rect=target.getBoundingClientRect();")
-        // .katex-html 是实际公式字形盒；满宽 #math 只负责居中，不能作为光标末端。
-        append("var glyph=target.querySelector('.katex-html')||target;")
-        append("var content=glyph.getBoundingClientRect();")
+        // 块公式的 .katex-html 也是满宽容器；直属 .base 才是公式排版块。
+        // 多段或显式换行取最后一个有效正文块，不能把整行换行盒与右侧编号当作末端。
+        append("var glyph=target.querySelector('.katex-html');")
+        append("var content=null;")
+        append("if(glyph){for(var i=0;i<glyph.children.length;i++){")
+        append("var child=glyph.children[i];")
+        append("if(child.classList.contains('base')){")
+        append("var base=child.getBoundingClientRect();")
+        append("if(base.width>0&&base.height>0){content=base;}")
+        append("}}}")
+        // 无正文块的错误文本仍测量实际内容，不退回满宽外壳。
+        append("if(!content){var range=document.createRange();")
+        append("range.selectNodeContents(glyph||target);")
+        append("content=range.getBoundingClientRect();range.detach();}")
         append("state.cx=content.left;state.cy=content.top;state.cw=content.width;state.ch=content.height;")
         append("var nw=Math.ceil(rect.width);")
         append("var nh=Math.ceil(rect.height);")

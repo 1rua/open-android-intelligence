@@ -37,7 +37,10 @@ class MarkdownMathTest {
         assertNull(requireNotNull(parseMathMeasurement("\"320,32,320,32,0,NaN,0,20,25\"" )).contentBounds)
         val html = buildKaTeXHtml("x", true, 16f, 0xFF000000.toInt(), 0xFFFF0000.toInt())
         assertTrue(html.contains("querySelector('.katex-html')"))
-        assertTrue(html.contains("getBoundingClientRect()"))
+        assertTrue("正文排版块从满宽外壳的直属子节点中选取", html.contains("glyph.children"))
+        assertTrue("仅正文 base 参与末端测量，换行和编号不属于正文", html.contains("child.classList.contains('base')"))
+        assertFalse("满宽外壳的右缘不能再作为公式末端", html.contains("content=glyph.getBoundingClientRect()"))
+        assertTrue("无正文块时测量实际内容范围而非外壳", html.contains("range.selectNodeContents(glyph||target)"))
     }
 
     @Before
