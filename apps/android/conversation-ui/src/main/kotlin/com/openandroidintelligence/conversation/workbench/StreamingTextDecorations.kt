@@ -18,6 +18,7 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.collectLatest
 
 /** 一个可见推进批次。文字进度由宿主负责，绘制与触觉副作用在此解耦。 */
 data class StreamingTextPresentation(
@@ -69,6 +70,8 @@ internal class StreamingDecorationState {
     var trailStarted = 0L
     var previousTarget: Offset? = null
     var previousBatch = Long.MIN_VALUE
+    var pendingHapticBatch by mutableLongStateOf(Long.MIN_VALUE)
+        private set
     private var notifiedBatch = Long.MIN_VALUE
     private var batchEnteredAt = 0L
 
@@ -77,7 +80,10 @@ internal class StreamingDecorationState {
         val changed = next.batchId != presentation.batchId
         val changedPolicy = next.active != presentation.active || next.reduceMotion != presentation.reduceMotion
         presentation = next
-        if (changed) batchEnteredAt = SystemClock.uptimeMillis()
+        if (changed) {
+            batchEnteredAt = SystemClock.uptimeMillis()
+            pendingHapticBatch = next.batchId
+        }
         if (changed && next.sourceRevealEnd <= next.sourceRevealStart) {
             // 权威改写的批次没有新增范围：旧透明度和坐标不可投射到更正后的正文。
             batches.clear()
@@ -113,12 +119,10 @@ internal class StreamingDecorationState {
         if (old == null || old.sourceEnd != layout.sourceEnd || old.coordinates !== layout.coordinates ||
             old.cursor != layout.cursor || old.visibleRanges != layout.visibleRanges || old.batchId != layout.batchId ||
             oldOrigin != origin) invalidation++
-        notifyVisible(layout)
     }
 
     fun positionContainer(coordinates: LayoutCoordinates) {
         container = coordinates
-        layouts.values.forEach(::notifyVisible)
     }
 
     fun unregister(key: Any) {
@@ -128,25 +132,25 @@ internal class StreamingDecorationState {
 
     fun expireFades() { invalidation++ }
 
-    fun notifyVisible(layout: StreamingTextLayout) {
+    /** 推进批次仅判定一次可见性；首帧不可见就丢弃，之后滚动或重排不能补震。 */
+    fun consumeVisibleBatch(batchId: Long) {
         val current = presentation
-        if (layout.batchId != current.batchId || current.batchId == notifiedBatch ||
-            current.sourceRevealEnd <= current.sourceRevealStart ||
+        if (batchId != current.batchId || batchId == notifiedBatch) return
+        notifiedBatch = batchId
+        if (current.sourceRevealEnd <= current.sourceRevealStart ||
             SystemClock.uptimeMillis() - batchEnteredAt > 200L) return
         val host = container?.takeIf { it.isAttached } ?: return
-        if (!layout.coordinates.isAttached) return
         val window = host.boundsInWindow()
         if (window.width <= 0f || window.height <= 0f) return
-        val visible = layout.visibleRanges.any { rect ->
-            val topLeft = layout.coordinates.localToWindow(rect.topLeft)
-            val bottomRight = layout.coordinates.localToWindow(rect.bottomRight)
-            val actual = Rect(topLeft, bottomRight)
-            actual.overlaps(window) && actual.width > 0f && actual.height > 0f
+        val visible = layouts.values.any { layout ->
+            layout.batchId == batchId && layout.coordinates.isAttached && layout.visibleRanges.any { rect ->
+                val topLeft = layout.coordinates.localToWindow(rect.topLeft)
+                val bottomRight = layout.coordinates.localToWindow(rect.bottomRight)
+                val actual = Rect(topLeft, bottomRight)
+                actual.overlaps(window) && actual.width > 0f && actual.height > 0f
+            }
         }
-        if (visible) {
-            notifiedBatch = current.batchId
-            current.onVisibleAdvance(current.batchId)
-        }
+        if (visible) current.onVisibleAdvance(batchId)
     }
 
     fun target(): Pair<Offset, Float>? {
@@ -182,6 +186,13 @@ fun StreamingMarkdownContainer(
     SideEffect { state.update(resolved, next) }
     val primary = MaterialTheme.colorScheme.primary
     val lineWidth = with(androidx.compose.ui.platform.LocalDensity.current) { 1.5.dp.toPx() }
+    // 一个可取消收集器在下一帧使用已经提交的真实布局判定本批次，完全离屏也会消费丢弃。
+    // register/positionContainer 仅更新布局，不积压等待滚入视口的触觉事件。
+    LaunchedEffect(state) {
+        snapshotFlow { state.pendingHapticBatch }.collectLatest { batch ->
+            if (batch != Long.MIN_VALUE) withFrameNanos { state.consumeVisibleBatch(batch) }
+        }
+    }
     val epoch = state.invalidation
     LaunchedEffect(state, epoch, presentation.active, presentation.reduceMotion) {
         if (!presentation.active && state.batches.isEmpty()) return@LaunchedEffect
