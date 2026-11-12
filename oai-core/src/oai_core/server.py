@@ -392,11 +392,9 @@ def create_app(config: dict[str, Any], registry: Any = None, core: GatewayCore |
         return web.json_response(devices.acknowledge(await auth.authenticate(request), request.match_info["requestId"], body.get("resultDigest")))
 
     def is_active(principal: Principal) -> bool:
-        try:
-            auth.assert_current(principal)
-            return True
-        except GatewayError:
-            return False
+        # 原生观察者需要准确错误码；认证存储不可用并不证明凭据已撤销。
+        auth.assert_current(principal)
+        return True
 
     app.add_routes(routes)
     if core.identity_store is not None:
