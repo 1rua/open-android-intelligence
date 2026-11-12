@@ -173,7 +173,7 @@ class StreamingReplyInstrumentedTest {
                 webView(activity.window.decorView)?.let { web ->
                     val origin = IntArray(2).also(web::getLocationOnScreen)
                     val density = activity.resources.displayMetrics.density
-                    web.evaluateJavascript("(function(){var e=document.querySelector('.katex-html');if(!e)return '';var r=e.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom].join(',');})()") { raw ->
+                    web.evaluateJavascript("(function(){var e=document.querySelector('.katex-html');if(!e)return '';var range=document.createRange();range.selectNodeContents(e);var r=range.getBoundingClientRect();return [r.left,r.top,r.right,r.bottom].join(',');})()") { raw ->
                         val value = runCatching { org.json.JSONArray("[$raw]").getString(0) }.getOrNull()
                         val coordinates = value?.split(',')?.mapNotNull { it.toFloatOrNull() }
                         if (coordinates?.size == 4 && coordinates[2] > coordinates[0]) {
@@ -189,6 +189,7 @@ class StreamingReplyInstrumentedTest {
         }
         await("块公式光标没有贴合实际居中字形右缘") {
             val bounds = requireNotNull(measured.get())
+            assertTrue("短公式测量必须是实际字形而非整行容器", bounds.width() < instrumentation.targetContext.resources.displayMetrics.widthPixels / 4)
             val screenshot = instrumentation.uiAutomation.takeScreenshot() ?: return@await false
             try {
                 val region = Rect(bounds.left - 16, bounds.top - 16, bounds.right + 16, bounds.bottom + 16)
