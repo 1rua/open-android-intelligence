@@ -109,7 +109,8 @@ internal class LoopbackGatewayStub {
         fun write(socket: Socket) {
             val connection = opened.incrementAndGet()
             val output = socket.getOutputStream()
-            output.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n".toByteArray())
+            // 与当前 Core 的 SSE 心跳声明一致，保留测试流的快速心跳。
+            output.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\nX-Open-Android-Intelligence-Event-Heartbeat-Ms: 1000\r\n\r\n".toByteArray())
             output.flush()
             while (release.count != 0L) {
                 if (connection > silencedThrough.get()) {
