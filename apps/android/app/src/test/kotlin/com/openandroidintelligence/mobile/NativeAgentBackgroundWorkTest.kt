@@ -412,7 +412,8 @@ class NativeAgentBackgroundWorkTest {
     private class Fixture : AutoCloseable {
         val context = RecordingContext()
         val dispatcher = PausableDispatcher()
-        private val scope = CoroutineScope(SupervisorJob() + dispatcher)
+        private val owner = SupervisorJob()
+        private val scope = CoroutineScope(owner + dispatcher)
         val gateway = LoopbackGatewayStub()
         private val releases = mutableListOf<CountDownLatch>()
         val recovery = AgentSessionRecoveryState(context)
@@ -530,6 +531,10 @@ class NativeAgentBackgroundWorkTest {
             dispatcher.resume()
             scope.cancel()
             gateway.closed()
+            // 等待已取消任务退出，避免其同步回调晚于测试环境重置。
+            val completed = MutableStateFlow(owner.isCompleted)
+            owner.invokeOnCompletion { completed.value = true }
+            awaitState(completed) { it }
         }
     }
 
