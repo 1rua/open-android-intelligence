@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.openandroidintelligence.mobile.conversations.RawSqliteLockRedTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-11-12T03:47:08" hostname="djbd-cachyos" time="2.779">
+  <properties/>
+  <testcase name="baselineTwoDatabaseHandlesReallyHitSqliteLock" classname="com.openandroidintelligence.mobile.conversations.RawSqliteLockRedTest" time="2.779"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

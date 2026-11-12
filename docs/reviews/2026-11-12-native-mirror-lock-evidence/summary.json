@@ -1,0 +1,26 @@
+{
+  "baseline": "83fbef075a494f0d4899cc22c08b4864c9edb3cd",
+  "fixHead": "7991ba8843763b9273e3e77edd0c6734ff3a09c7",
+  "planning": {
+    "passed": 78,
+    "failed": 0
+  },
+  "candidateNative": {
+    "tests": 19,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "candidateScope": {
+    "tests": 6,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "baselineRawSqliteLockProbe": {
+    "tests": 1,
+    "failures": 0,
+    "observedExpectedSQLiteDatabaseLockedException": true
+  },
+  "crossProcessNotClaimed": true
+}

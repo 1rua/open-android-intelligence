@@ -1,0 +1,7 @@
+DSHAUD142_JDI event=armed line=961 suspend=EVENT_THREAD method=recordPersistenceFailure class=com.openandroidintelligence.conversation.state.WorkbenchController
+DSHAUD142_JDI event=armed_exception suspend=EVENT_THREAD classFilter=com.openandroidintelligence.mobile.conversations.SqliteConversationRecords* type=java.io.IOException
+DSHAUD142_JDI event=attached timeoutSeconds=300 invokesTargetMethods=false readsDetailMessage=false
+DSHAUD142_JDI event=capture_exception line=116 type=java.io.IOException method=transaction class=com.openandroidintelligence.mobile.conversations.SqliteConversationRecords
+DSHAUD142_JDI event=cause depth=0 type=java.io.IOException frames=UNMATERIALIZED_OR_NO_APP_FRAMES
+DSHAUD142_JDI event=cause depth=1 type=android.database.sqlite.SQLiteDatabaseLockedException frames=UNMATERIALIZED_OR_NO_APP_FRAMES
+DSHAUD142_JDI event=disposed captured=true
