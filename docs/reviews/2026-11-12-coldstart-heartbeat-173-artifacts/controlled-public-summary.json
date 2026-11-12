@@ -1,0 +1,65 @@
+{
+  "historicalBaseline": "83fbef075a494f0d4899cc22c08b4864c9edb3cd",
+  "implementationBaseline": "4e7aeef85dbe824223ce3a23eeb0a4fe125a04a4",
+  "scope": "仅修当前Core回环测试桩响应头，生产源码零变更",
+  "transport": "真实Android HttpURLConnectionImpl与回环TCP；另有真实GatewayHttpClient的合成传输虚拟时间对照",
+  "controlledLateFrame": "在真实socket read已得到心跳字节后、返回SSE解析器前持有；实际前台请求之后释放；未输出原始字节",
+  "ciFailedRunFrameWasCaptured": false,
+  "singleVariableFix": "仅ControlledEventStream声明当前Core已有1000ms心跳节奏头",
+  "originalTenSecondBudgetPreserved": true,
+  "originalControllerConversationDraftAssertionsPreserved": true,
+  "temporaryLatchWrapperReflectionCommitted": false,
+  "networkDevicesServicesOrModelOperations": "仅本机隔离回环测试；没有设备、生产服务或模型操作",
+  "runs": [
+    {
+      "name": "gateway-client-three-way.xml",
+      "sha256": "8d1c182e93a0080e990bbfb2cf9e246590417f124a8f12ff147b9cdb71281ace",
+      "tests": 3,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "0.186",
+      "signal": [
+        "COLDSTART173_PROBE cadence=false late=true elapsed=10000 connections=1 state=LIVE",
+        "COLDSTART173_PROBE cadence=true late=true elapsed=10000 connections=3 state=LIVE",
+        "COLDSTART173_PROBE cadence=false late=false elapsed=10000 connections=2 state=LIVE"
+      ]
+    },
+    {
+      "name": "controlled-real-tcp-red.xml",
+      "sha256": "02a781a3c29978faddd7b3e411b256fd526f077a7a117c39a465934624840df7",
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "14.832",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "COLDSTART173_TCP_PROBE 已放行前台检查后的在途帧 initialConnections=1 heartbeatWrites=3"
+      ]
+    },
+    {
+      "name": "controlled-real-tcp-green.xml",
+      "sha256": "601942ad144d5d7656c8d854aaa0e82ffe341a059acaf507bf9e71963fbc72e1",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "seconds": "7.976",
+      "signal": [
+        "连接测试 HTTP 实现：com.android.okhttp.internal.huc.HttpURLConnectionImpl",
+        "COLDSTART173_TCP_PROBE 已放行前台检查后的在途帧 initialConnections=1 heartbeatWrites=3",
+        "连接恢复实测：recoveryMillis=4000"
+      ]
+    }
+  ],
+  "realCoreContract": {
+    "relativePath": "oai-core/src/oai_core/gateway/transport.py",
+    "header": "X-Open-Android-Intelligence-Event-Heartbeat-Ms",
+    "headerValue": "1000",
+    "firstHeartbeat": "响应prepare并通过授权检查后立即写出SSE注释ping；头在prepare前已声明",
+    "idleHeartbeat": "queue.get在1秒无事件超时时写出相同注释心跳",
+    "commentTextDifferenceRelevant": false
+  },
+  "closure": "原CI当次是否由该路径触发未采集；固定最终提交的原类/双变体及Full仍需按各自证据闭合。"
+}
