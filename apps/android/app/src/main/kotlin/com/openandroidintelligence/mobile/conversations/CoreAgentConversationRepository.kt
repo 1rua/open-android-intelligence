@@ -1591,7 +1591,7 @@ class CoreAgentConversationRepository(
                 else if (failure is AgentSessionException && (failure.code in setOf(
                         "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
                         "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT", "CURSOR_EXPIRED",
-                        "AUTHENTICATION_STORAGE_UNAVAILABLE",
+                        "AUTHENTICATION_STORAGE_UNAVAILABLE", "AUTHENTICATION_STORAGE_FAILED",
                     ) || failure.code in setOf("AGENT_FAILED", "CANCELLED") &&
                         agent.capabilities.generationRecovery && turn.userMessageId != null)) {
                     queueUnknownBarriers.add(key)

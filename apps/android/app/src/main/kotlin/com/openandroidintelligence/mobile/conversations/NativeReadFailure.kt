@@ -57,6 +57,8 @@ internal fun classifyNativeReadFailure(failure: Exception, defaultStage: String 
         return NativeReadFailure(NativeReadFailureKind.SECURITY, stage, securityCode, status)
     }
     val kind = when {
+        // 确定的认证存储失败沿用六次有界读取预算，不误报凭据拒绝或无限网络重试。
+        code == "AUTHENTICATION_STORAGE_FAILED" -> NativeReadFailureKind.STORAGE
         status in setOf(401, 403) || negotiation?.credentialRefused == true || causes.any { it is SessionRecoveryPausedException } ||
             code in setOf("AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED", "UNAUTHORIZED", "FORBIDDEN",
                 "SESSION_EXPIRED", "SESSION_REVOKED", "SESSION_REJECTED", "REFRESH_REUSED") -> NativeReadFailureKind.AUTHENTICATION
