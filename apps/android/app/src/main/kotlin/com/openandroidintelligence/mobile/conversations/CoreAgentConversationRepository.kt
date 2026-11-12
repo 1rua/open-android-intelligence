@@ -1566,10 +1566,12 @@ class CoreAgentConversationRepository(
                         updateTurnHealth(turn, StreamHealth.RECONNECTING, "NATIVE_EVENT_SYNC_FAILED:LOCAL_SAVE_FAILED")
                     }
                 }
+                // 宿主取消也可通过错误终帧到达；终态仍须按原受理身份查询确认。
                 else if (failure is AgentSessionException && (failure.code in setOf(
                         "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
                         "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT", "CURSOR_EXPIRED",
-                    ) || failure.code == "AGENT_FAILED" && agent.capabilities.generationRecovery && turn.userMessageId != null)) {
+                    ) || failure.code in setOf("AGENT_FAILED", "CANCELLED") &&
+                        agent.capabilities.generationRecovery && turn.userMessageId != null)) {
                     queueUnknownBarriers.add(key)
                     turn.state = GenerationState.OUTCOME_UNKNOWN
                     recoverAfterTurn = true
