@@ -50,11 +50,14 @@ fun MarkdownInlineText(
     val density = LocalDensity.current
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
-    val source = LocalMarkdownLeafSource.current
-        ?: LocalMarkdownBlockSource.current
-        ?: remember(text) { MarkdownSourceText.original(text) }
-    val laidOutSource = streamingInlineSource(text, source, LocalStreamingMarkdownDocument.current,
-        isStreaming && LocalStreamingTextPresentation.current?.active == true)
+    // 正文以当前叶节点为准；来源图只能定位相同文字，不能把补齐的空单元格替换成整块原文。
+    // 无匹配来源时保留空映射，避免从消息开头伪造光标、渐入和触觉范围。
+    val source = LocalMarkdownLeafSource.current?.takeIf { it.text == text }
+        ?: LocalMarkdownBlockSource.current?.takeIf { it.text == text }
+    val document = LocalStreamingMarkdownDocument.current
+    val active = isStreaming && LocalStreamingTextPresentation.current?.active == true
+    val laidOutSource = source?.let { streamingInlineSource(text, it, document, active) }
+    val laidOutText = laidOutSource?.text ?: text
 
     // 默认行为：交给系统处理（浏览器 / 邮件 / 电话），失败时给用户一个明确提示而不是静默无响应。
     val linkHandler: (String) -> Unit = remember(uriHandler, onLinkClick, context) {
@@ -66,8 +69,8 @@ fun MarkdownInlineText(
         }
     }
 
-    val result = remember(laidOutSource.text, colors, linkHandler) {
-        buildMarkdownInline(laidOutSource.text, colors, linkHandler)
+    val result = remember(laidOutText, colors, linkHandler) {
+        buildMarkdownInline(laidOutText, colors, linkHandler)
     }
 
     val effectiveFontSize = when {
