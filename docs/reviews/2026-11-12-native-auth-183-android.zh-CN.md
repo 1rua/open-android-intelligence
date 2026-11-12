@@ -18,7 +18,7 @@
 
 ## 正式验证
 
-新正式 `NativeAuthenticationStreamRecoveryTest` 覆盖12项：同旧凭据零重复读取/提交；错误后合法轮换；错误前合法轮换；HTTP401刷新后的实际代次；认证存储暂不可用；unknown不重投；相同会话跨Agent隔离；缺接纳帧时仅按原client读取；旧权威GET晚到403与新代次竞态；跨账号隔离；关闭释放；未协商不伪造权威完成。新类已登记 `apps/android/ci/app-regression.txt`。
+首轮正式 `NativeAuthenticationStreamRecoveryTest` 覆盖12项：同旧凭据零重复读取/提交；错误后合法轮换；错误前合法轮换；HTTP401刷新后的实际代次；认证存储暂不可用；unknown不重投；相同会话跨Agent隔离；缺接纳帧时仅按原client读取；旧权威GET晚到403与新代次竞态；跨账号隔离；关闭释放；未协商不伪造权威完成。新类已登记 `apps/android/ci/app-regression.txt`。
 
 同一正式新类在固定未修复7c599实际编译模块上为 **12项、9失败、3通过**；候选真实仓储/客户端源码为 **12项通过**。初版10项7失败的红环和最终12项红环分别留在隔离证据目录，不把工具探针当真实模型验收。
 
@@ -37,6 +37,14 @@
 ```
 
 实际 `BUILD SUCCESSFUL in 2m 5s`，448任务中185执行、263缓存。Gateway两类36/29，App四类12/5/41/4，**合计127项通过、0失败、0错误、0跳过**，原始XML摘要与分项计数见[白名单结果](2026-11-12-native-auth-183-android-artifacts/formal-red-green-public-summary.json)。Gateway新增行为断言同时验证签名代次/错误正文不泄漏/本地围栏未执行时不报告假请求。
+
+## 独立评审后的存储失败补充
+
+Spec评审发现prepared SSE的 `AUTHENTICATION_STORAGE_FAILED` 没有HTTP状态时落PROTOCOL，初始发送会丢失owner；HTTP500又会落通用TRANSIENT，绕开存储读取预算。已用同一正式测试固定3401源码重现：最终17项中新增5项失败，原12项仍通过。
+
+最小修复仅将该码优先归为STORAGE，并纳入初始发送的原身份恢复入口。保留既有最多六次读取预算；耗尽后owner和未知屏障仍在，不再后台循环。存储可用后的显式connectionRestored可用同一合法凭据继续只读查询，此故障不是凭据被拒绝，也不要求伪造一次凭据轮换。UNKNOWN和关闭对照均保留零重新POST行为。
+
+补充实际Gradle只跑新类17项、取消5项及连接可靠性41项，**共63项通过、0失败、0错误、0跳过**。`BUILD SUCCESSFUL in 1m 22s`，443任务31执行、412最新；没有重复全量127。精确status0/500分类、预算、owner保留、unknown和关闭结果见[Spec补充白名单](2026-11-12-native-auth-183-android-artifacts/spec-storage-failure-public-summary.json)。首次错误使用根目录gradlew未进入构建，已保留为工具失败；随后正确入口结果单独记录。
 
 ## 尚待主任务验收
 

@@ -114,6 +114,86 @@ class NativeAuthenticationStreamRecoveryTest {
         } finally { h.close() }
     }
 
+    @Test fun failedAuthenticationStorageKeepsItsOwnBoundedClassification() {
+        val failures = listOf(0, 500).map { status ->
+            classifyNativeReadFailure(com.openandroidintelligence.gateway.agents.AgentSessionException(
+                "AUTHENTICATION_STORAGE_FAILED", status), "GENERATION_RECOVERY")
+        }
+        assertEquals(listOf(NativeReadFailureKind.STORAGE, NativeReadFailureKind.STORAGE), failures.map { it.kind })
+        assertTrue(failures.all { it.code == "AUTHENTICATION_STORAGE_FAILED" && it.stage == "GENERATION_RECOVERY" })
+    }
+
+    @Test fun failedAuthenticationStorageHasABoundedReadBudgetAndRetainsItsOwner() = runTest {
+        for (status in listOf(200, 500)) {
+            val h = Harness(this, errorCode = "AUTHENTICATION_STORAGE_FAILED").apply {
+                streamStatus = status
+                authorityFailureCode = "AUTHENTICATION_STORAGE_FAILED"
+            }
+            try {
+                h.queuePair("a"); h.releaseFirst("a"); runCurrent()
+                advanceTimeBy(90_000); runCurrent()
+                assertEquals("每轮恢复最多六次存储失败读取", 6, h.firstGenerationReads("a"))
+                val readsAtBudget = h.firstGenerationReads("a")
+                advanceTimeBy(90_000); runCurrent()
+                assertEquals("预算耗尽后不得在后台无限读取", readsAtBudget, h.firstGenerationReads("a"))
+                assertEquals(listOf("first-a"), h.postedClients("a"))
+                assertEquals(1, h.repository.pendingDeliveries("chat").size)
+                assertEquals(StreamHealth.FAILED, h.repository.streamHealth.first())
+                h.authorityFailureCode = null
+                h.repository.connectionRestored(); runCurrent()
+                assertEquals("同凭据存储恢复后原owner仍能继续权威读取", listOf("first-a", "next-a"), h.postedClients("a"))
+                assertTrue(h.repository.pendingDeliveries("chat").isEmpty())
+                assertEquals(0, h.refreshCount)
+            } finally { h.close() }
+        }
+    }
+
+    @Test fun anUnavailableStreamDoesNotRetryHttp500StorageFailureWithoutABudget() = runTest {
+        val h = Harness(this, errorCode = "AUTHENTICATION_STORAGE_UNAVAILABLE").apply {
+            authorityFailureCode = "AUTHENTICATION_STORAGE_FAILED"
+        }
+        try {
+            h.queuePair("a"); h.releaseFirst("a"); runCurrent()
+            advanceTimeBy(100); runCurrent()
+            assertEquals("HTTP500不能盖过确定存储失败的六次读取预算", 6, h.firstGenerationReads("a"))
+            advanceTimeBy(1_000); runCurrent()
+            assertEquals(6, h.firstGenerationReads("a"))
+            assertEquals(listOf("first-a"), h.postedClients("a"))
+            assertEquals(1, h.repository.pendingDeliveries("chat").size)
+        } finally { h.close() }
+    }
+
+    @Test fun failedAuthenticationStorageCannotTurnUnknownIntoPermissionToPostAgain() = runTest {
+        val h = Harness(this, errorCode = "AUTHENTICATION_STORAGE_FAILED").apply { authorityState = "unknown" }
+        try {
+            h.queuePair("a"); h.releaseFirst("a"); runCurrent()
+            advanceTimeBy(90_000); runCurrent()
+            h.rotateCredential(); h.repository.connectionRestored(); runCurrent()
+            h.repository.retryPendingDeliveries("chat"); runCurrent()
+            assertTrue(h.firstGenerationReads("a") > 0)
+            assertEquals(listOf("first-a"), h.postedClients("a"))
+            assertEquals(1, h.repository.pendingDeliveries("chat").size)
+            assertEquals(GenerationState.OUTCOME_UNKNOWN, h.repository.generationState.value)
+        } finally { h.close() }
+    }
+
+    @Test fun closingTheRepositoryStopsFailedAuthenticationStorageRecovery() = runTest {
+        val h = Harness(this, errorCode = "AUTHENTICATION_STORAGE_FAILED").apply {
+            authorityFailureCode = "AUTHENTICATION_STORAGE_FAILED"
+        }
+        try {
+            h.queuePair("a"); h.releaseFirst("a"); runCurrent()
+            val beforeClose = h.firstGenerationReads("a")
+            assertTrue(beforeClose > 0)
+            h.repository.close()
+            h.authorityFailureCode = null
+            h.rotateCredential(); h.repository.connectionRestored(); runCurrent()
+            advanceTimeBy(90_000); runCurrent()
+            assertEquals(beforeClose, h.firstGenerationReads("a"))
+            assertEquals(listOf("first-a"), h.postedClients("a"))
+        } finally { h.close() }
+    }
+
     @Test fun aNewCredentialCannotTurnAnUnknownReceiptIntoPermissionToResend() = runTest {
         val h = Harness(this).apply { authorityState = "unknown" }
         try {
@@ -225,6 +305,8 @@ class NativeAuthenticationStreamRecoveryTest {
         var rejectInitialHttp = false
         var refreshCount = 0
         var authorityUnavailable = false
+        var authorityFailureCode: String? = null
+        var streamStatus = 200
         var authorityState = "completed"
         private var selectedAgent = "a"
         private val agents = listOf("a", "b").associateWith { id ->
@@ -243,6 +325,9 @@ class NativeAuthenticationStreamRecoveryTest {
                             if (rejectAuthorityOnce) {
                                 rejectAuthorityOnce = false
                                 return WireResponse(403, emptyList(), """{"error":{"code":"SESSION_EXPIRED"}}""".toByteArray())
+                            }
+                            authorityFailureCode?.let { code ->
+                                return WireResponse(500, emptyList(), """{"error":{"code":"$code"}}""".toByteArray())
                             }
                             if (authorityUnavailable) return WireResponse(503, emptyList(), """{"error":{"code":"AGENT_UNAVAILABLE"}}""".toByteArray())
                         }
@@ -266,6 +351,10 @@ class NativeAuthenticationStreamRecoveryTest {
                 }
                 posts += agent to client
                 if (client.startsWith("first-")) firstReleases.getValue(agent).await()
+                if (client.startsWith("first-") && streamStatus != 200) {
+                    return consume(streamStatus, listOf(RawHeader("Content-Type", "application/json")),
+                        ByteArrayInputStream("""{"error":{"code":"$errorCode"}}""".toByteArray()))
+                }
                 val generation = "g-$agent-$client"
                 val identity = "\"generationId\":\"$generation\",\"clientMessageId\":\"$client\",\"userMessageId\":\"u-$agent-$client\""
                 val errorIdentity = if (includeAcceptedFrame) ",$identity" else ""

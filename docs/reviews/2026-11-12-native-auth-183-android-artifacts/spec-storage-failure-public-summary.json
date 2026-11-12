@@ -1,0 +1,65 @@
+{
+  "reviewFinding": "P2：AUTHENTICATION_STORAGE_FAILED在prepared SSE(status0)落PROTOCOL、HTTP500落无界TRANSIENT，可能丢失owner或无限读取",
+  "baseline": "3401b0f1",
+  "red": {
+    "tests": 17,
+    "failed": 5,
+    "passed": 12,
+    "errors": 0,
+    "skipped": 0,
+    "method": "同一正式17项测试，仓储与分类器固定3401源码；客户端保留已验证实际代次实现"
+  },
+  "fix": "FAILED优先分类STORAGE并纳入send原身份恢复；复用最多6次读取预算，耗尽后保留owner等待显式唤醒，不当凭据拒绝",
+  "green": {
+    "method": "真实GradleFullDebug聚焦",
+    "build": "SUCCESSFUL",
+    "elapsed": "1m22s",
+    "tasks": 443,
+    "executed": 31,
+    "upToDate": 412,
+    "rows": [
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeAuthenticationStreamRecoveryTest",
+        "tests": 17,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.306",
+        "xmlSha256": "4b77e016b61cf8a2cd26db9a6bf6d48cc5e9e3ccb3af399b41f13a3e018bd41e"
+      },
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeCancelledStreamRecoveryTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.226",
+        "xmlSha256": "3ef135621be9dcc8dcc053d9d54f527cd913d5ceca07c0ea7a27090f23e954dd"
+      },
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeConnectionReliabilityTest",
+        "tests": 41,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.42",
+        "xmlSha256": "a7a74cd81494a976d823e4a31e336575118c0381030010cb13e4080892a61c73"
+      }
+    ],
+    "tests": 63,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "newCases": [
+    "status0与HTTP500都保留准确STORAGE分类",
+    "终帧与HTTP500均最多6次读取，耗尽不无限重试，保留owner后同凭据可恢复",
+    "HTTP500不能覆盖FAILED六次预算",
+    "unknown即使换凭据也不重POST或排后继",
+    "关闭后不得继续恢复"
+  ],
+  "coreSourceChanged": false,
+  "deviceOrServiceOperated": false,
+  "fullVerified": false,
+  "toolFailureRetained": "首次使用不存在的根目录gradlew退出127未进入构建，改用已有apps/android/gradlew后完成本次实际验证"
+}
