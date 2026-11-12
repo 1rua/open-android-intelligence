@@ -350,8 +350,11 @@ class Authentication:
                 raise GatewayError("GRANT_STALE")
         finally:
             account.close()
-        if principal.context is not None and not self.core.is_event_session_active(principal.context):
-            raise GatewayError("SESSION_REVOKED")
+        if principal.context is not None:
+            # 保留到期、撤销和存储故障各自的认证事实，不能把不可用都写成撤销。
+            failure = self.core.event_session_failure(principal.context)
+            if failure is not None:
+                raise GatewayError(failure)
         if principal.token_id is not None:
             row = self.database.execute("SELECT account_id,device_id,generation FROM core_tokens WHERE digest=? AND expires>?", (principal.token_id, time.time())).fetchone()
             if row is None or tuple(row) != (principal.account_id, principal.device_id, principal.pairing_generation):

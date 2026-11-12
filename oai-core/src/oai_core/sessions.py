@@ -723,7 +723,15 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
 
     async def require_operation_authority(principal: Principal, request_id: str, *, record_rejection: bool = True) -> None:
         # Admission can wait for storage. Recheck before the first host side effect.
-        if not await active(principal):
+        try:
+            if await active(principal):
+                return
+        except GatewayError as failure:
+            if record_rejection:
+                await registry.operations.complete(principal.account_id, request_id,
+                    {"error": {"code": failure.code}})
+            raise
+        else:
             if record_rejection:
                 await registry.operations.complete(principal.account_id, request_id,
                     {"error": {"code": "SESSION_REVOKED"}})
@@ -1099,13 +1107,26 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
         registry.start_operation(produce(), key=(principal.account_id, request_id))
         response = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache",
                                                "X-Accel-Buffering": "no"})
+
+        async def observer_active() -> bool:
+            # 响应已准备后只能发送错误终帧，不得另写 JSON 或伪报撤销。
+            try:
+                if await active(principal):
+                    return True
+            except GatewayError as failure:
+                code = failure.code
+            else:
+                code = "SESSION_REVOKED"
+            event = {"type": "error", "code": code}
+            await response.write(("event: message\ndata: " + json.dumps(event) + "\n\n").encode())
+            return False
+
         first_delta_written = False
         try:
             await asyncio.shield(admitted)
             await response.prepare(request)
             while True:
-                if not await active(principal):
-                    await response.write(b'event: message\ndata: {"type":"error","code":"SESSION_REVOKED"}\n\n')
+                if not await observer_active():
                     break
                 try:
                     async with asyncio.timeout(5):
@@ -1115,8 +1136,7 @@ def create_agent_routes(registry: AgentRegistry, authenticate: Authenticate, is_
                     continue
                 if event is None:
                     break
-                if not await active(principal):
-                    await response.write(b'event: message\ndata: {"type":"error","code":"SESSION_REVOKED"}\n\n')
+                if not await observer_active():
                     break
                 await response.write(("event: message\ndata: " + json.dumps(event, ensure_ascii=False) + "\n\n").encode())
                 if event.get("type") != "delta" or not first_delta_written:
