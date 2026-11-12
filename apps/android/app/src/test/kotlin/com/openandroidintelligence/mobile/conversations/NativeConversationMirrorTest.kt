@@ -458,7 +458,11 @@ class NativeConversationMirrorTest {
 
             // Block each real monitor separately so both production paths can finish even on the old lock order.
             val listWrite=async(Dispatchers.IO,start=CoroutineStart.LAZY) { mirror.saveConversations(page) }
-            val recordsProbe=monitorProbe(records)
+            val recordsLock = SqliteConversationRecords::class.java.getDeclaredField("databaseLock").let { field ->
+                field.isAccessible=true
+                checkNotNull(field.get(records))
+            }
+            val recordsProbe=monitorProbe(recordsLock)
             val recordsAvailable=synchronized(delegate) {
                 listWrite.start()
                 check(waitForBlockedCall("saveNativeConversations")) { "NATIVE_LIST_WAIT_NOT_OBSERVED" }
@@ -470,8 +474,12 @@ class NativeConversationMirrorTest {
             assertFalse(recordsProbe.thread.isAlive)
 
             val ack=async(Dispatchers.IO,start=CoroutineStart.LAZY) { mirror.confirmAck("chat","cursor_one") }
-            val mirrorProbe=monitorProbe(delegate)
-            val mirrorAvailable=synchronized(records) {
+            val mirrorRecordsLock = SqliteConversationRecords::class.java.getDeclaredField("databaseLock").let { field ->
+                field.isAccessible=true
+                checkNotNull(field.get(records))
+            }
+            val mirrorProbe=monitorProbe(mirrorRecordsLock)
+            val mirrorAvailable=synchronized(mirrorRecordsLock) {
                 ack.start()
                 check(waitForBlockedCall("confirmNativeAck")) { "NATIVE_ACK_WAIT_NOT_OBSERVED" }
                 mirrorProbe.start()
