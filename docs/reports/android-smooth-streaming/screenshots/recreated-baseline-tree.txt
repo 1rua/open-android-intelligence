@@ -1,0 +1,33 @@
+scroll=18281/18281
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(42, 42 - 1038, 2358) description=StreamingReplyInstrumentedFixture:3 text=
+Rect(42, 42 - 1038, 2358) description=OaiMessage:instrumented-stream:streaming text=
+Rect(42, 42 - 899, 2150) description= text=
+Rect(84, 42 - 857, 461) description= text=
+Rect(84, 42 - 857, 461) description= text=第17段：逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。
+Rect(84, 482 - 857, 1553) description= text=
+Rect(84, 482 - 857, 1553) description= text=第18段：逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。逐字呈现必须保留接收事实，连续分块不能丢字，完整正文只用于最终排版。
+Rect(84, 1585 - 857, 1781) description= text=
+Rect(116, 1606 - 226, 1648) description= text=kotlin
+Rect(691, 1564 - 825, 1669) description= text=
+Rect(707, 1611 - 739, 1643) description=复制代码 text=
+Rect(750, 1606 - 809, 1648) description= text=复制
+Rect(84, 1669 - 857, 1781) description= text=
+Rect(116, 1701 - 417, 1749) description= text=
+Rect(116, 1701 - 417, 1749) description= text=val answer = 42
+Rect(158, 1813 - 331, 1876) description= text=
+Rect(158, 1813 - 331, 1876) description= text=中文列表
+Rect(158, 1887 - 532, 1950) description= text=
+Rect(158, 1887 - 532, 1950) description= text=粗体内容与代码片段
+Rect(84, 1971 - 344, 2034) description= text=
+Rect(84, 1971 - 344, 2034) description= text=长文结束标记
+Rect(84, 2055 - 431, 2118) description= text=
+Rect(84, 2055 - 431, 2118) description= text=后台接收快照终点
+Rect(74, 2171 - 207, 2211) description= text=正在输出…
+Rect(42, 2232 - 201, 2358) description= text=
+Rect(121, 2274 - 180, 2316) description= text=复制
+Rect(42, 2232 - 201, 2358) description= text=

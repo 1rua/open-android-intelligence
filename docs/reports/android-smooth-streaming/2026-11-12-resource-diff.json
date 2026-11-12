@@ -1,0 +1,10 @@
+{
+  "base": "26c0e5c92745e3374b88c293d27677f200efff0f",
+  "codeCommit": "7e8a7393e768e9696a699675bcb7c1b560f06aa9",
+  "added": {
+    "settings_streaming_haptic_feedback": "震动反馈",
+    "settings_streaming_haptic_feedback_description": "输出时伴随轻微震动触觉反馈"
+  },
+  "modified": {},
+  "removed": []
+}

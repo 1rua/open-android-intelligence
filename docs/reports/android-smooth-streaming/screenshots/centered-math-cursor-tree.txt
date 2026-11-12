@@ -1,0 +1,16 @@
+scroll=0/0
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(42, 42 - 1038, 2358) description=StreamingReplyInstrumentedFixture:2 text=
+Rect(42, 42 - 1038, 391) description=OaiMessage:instrumented-stream:streaming text=
+Rect(42, 42 - 899, 183) description= text=
+Rect(84, 85 - 857, 140) description= text=
+Rect(84, 85 - 857, 140) description= text=
+Rect(84, 85 - 857, 140) description= text=
+Rect(74, 204 - 207, 244) description= text=正在输出…
+Rect(42, 265 - 201, 391) description= text=
+Rect(121, 307 - 180, 349) description= text=复制
+Rect(42, 265 - 201, 391) description= text=

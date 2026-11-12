@@ -1,0 +1,36 @@
+scroll=0/0
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(0, 0 - 1080, 2400) description= text=
+Rect(42, 42 - 1038, 2358) description=StreamingReplyInstrumentedFixture:23 text=
+Rect(694, 42 - 1038, 169) description= text=
+Rect(736, 74 - 996, 137) description= text=
+Rect(736, 74 - 996, 137) description= text=执行本地验收
+Rect(949, 190 - 1038, 224) description= text=08:00
+Rect(879, 256 - 1038, 382) description= text=
+Rect(958, 298 - 1017, 340) description= text=复制
+Rect(879, 256 - 1038, 382) description= text=
+Rect(42, 435 - 899, 910) description= text=
+Rect(42, 435 - 899, 561) description= text=
+Rect(42, 435 - 899, 561) description=执行过程，2 步，已展开 text=
+Rect(74, 474 - 799, 523) description= text=执行过程 · 2 步 · 点击收起
+Rect(42, 435 - 899, 561) description= text=
+Rect(74, 572 - 867, 698) description= text=
+Rect(74, 572 - 867, 698) description= text=
+Rect(106, 611 - 767, 660) description= text=已思考 · 8 字 · 点击展开
+Rect(74, 572 - 867, 698) description= text=
+Rect(74, 741 - 867, 867) description= text=
+Rect(74, 741 - 867, 867) description= text=
+Rect(106, 781 - 153, 828) description=执行成功 text=
+Rect(174, 773 - 479, 836) description= text=[local_fixture]
+Rect(500, 780 - 638, 829) description= text=本地结果
+Rect(74, 741 - 867, 867) description= text=
+Rect(42, 931 - 899, 1625) description= text=
+Rect(84, 963 - 857, 1593) description= text=
+Rect(84, 963 - 857, 1593) description= text=聚合最终回答首段。这是模拟器本地流式验收，逐步显示中文、标点与真实换行排版。这是模拟器本地流式验收，逐步显示中文、标点与真实换行排版。这是模拟器本地流式验收，逐步显示中文、标点与真实换行排版。这是模拟器本地流式验收，逐步显示中文、标点与真实换行排版。这是模拟器本地流式验收，逐步显示中文、标点与真实换行排本地短回复结束聚合最终回答结束
+Rect(74, 1646 - 207, 1686) description= text=正在输出…
+Rect(42, 1707 - 201, 1833) description= text=
+Rect(121, 1749 - 180, 1791) description= text=复制
+Rect(42, 1707 - 201, 1833) description= text=
