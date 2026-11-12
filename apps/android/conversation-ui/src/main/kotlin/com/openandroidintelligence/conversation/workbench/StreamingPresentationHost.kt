@@ -151,7 +151,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val scopedTerminal = incoming.executionGenerationState?.isTerminal() == true ||
             incoming.generationId?.let { id -> entries.any { it.generationId == id && it.executionGenerationState?.isTerminal() == true } } == true
         val ownedTerminal = generation?.isTerminal() == true && generationOwner?.let {
-            it.key == incoming.key || it.isUpgrade(incoming)
+            it == ReplyIdentity(incoming) || it.isUpgrade(incoming)
         } == true
         sourceStart = source.start(incoming.text)
         val advance = state.update(incoming.text, metadata.revision, metadata.origin,

@@ -73,6 +73,17 @@ class StreamingReviewPresentationRegistryTest {
         assertTrue(registry.frameFor(next)!!.active)
     }
 
+    @Test fun 相同消息键的旧生成归属不能结束替换后的生成() {
+        val registry = StreamingPresentationRegistry(emptyList())
+        val old = reply("旧")
+        registry.accept(listOf(old), true, 0, GenerationState.RUNNING)
+        val next = old.copy(text = "旧" + "字".repeat(150), generationId = "new-generation",
+            presentation = StreamPresentationMetadata(LIVE, 2))
+        registry.accept(listOf(next), true, 1_000_000, GenerationState.COMPLETED)
+        registry.advance(300_000_000)
+        assertTrue("相同显示键不能绕过生成身份检查", registry.frameFor(next)!!.active)
+    }
+
     @Test fun 执行最终回答快照恢复仍然直接建立完整基线() {
         val entry = reply("<think>过程</think>\n\n完整回答").copy(presentation = StreamPresentationMetadata(SNAPSHOT, 1))
         val registry = StreamingPresentationRegistry(listOf(entry))
