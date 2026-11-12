@@ -45,13 +45,16 @@ class NativeConversationMirrorTest {
         val account=scope("checkpoint-recovery-"+UUID.randomUUID())
         val mirror=NativeConversationMirror(context,account,{"dsh"},key)
         var failNext=false
+        var holdRecovery=false
         var injectedFailures=0
+        val recoveryRelease = kotlinx.coroutines.CompletableDeferred<Unit>()
         val persistence=object:com.openandroidintelligence.conversation.state.AwaitableWorkbenchPersistence by mirror {
             override suspend fun saveCheckpoint(checkpoint:WorkbenchCheckpoint) {
                 if(failNext) {
                     failNext=false;injectedFailures++
                     throw java.io.IOException("SYNTHETIC_CHECKPOINT_WRITE_FAILED")
                 }
+                if (holdRecovery) recoveryRelease.await()
                 mirror.saveCheckpoint(checkpoint)
             }
         }
@@ -77,15 +80,21 @@ class NativeConversationMirrorTest {
             withTimeout(5_000) { controller.state.first { it.historyHydrated } }
             controller.flushPendingPersistence()
             failNext=true
+            holdRecovery=true
             controller.editDraft("合成失败草稿")
             withTimeout(5_000) { controller.state.first { it.notice?.startsWith("LOCAL_SAVE_FAILED:")==true } }
             assertEquals(1,injectedFailures)
             assertNotEquals("失败写入不能被当成持久成功","合成失败草稿",mirror.load()!!.draft)
+            holdRecovery=false
+            recoveryRelease.complete(Unit)
             controller.editDraft("合成恢复后草稿")
             controller.flushPendingPersistence()
             assertEquals("合成恢复后草稿",mirror.load()!!.draft)
             assertNull("恢复成功应清理 checkpoint 独占的错误",controller.state.value.notice)
-        } finally { controller.closeAndAwait();owner.cancel();mirror.closeStore() }
+        } finally {
+            if (!recoveryRelease.isCompleted) recoveryRelease.complete(Unit)
+            controller.closeAndAwait();owner.cancel();mirror.closeStore()
+        }
         val reopened=NativeConversationMirror(context,account,{"dsh"},key)
         try {
             val persisted=reopened.load()!!
