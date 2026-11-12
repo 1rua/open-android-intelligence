@@ -946,7 +946,12 @@ class WorkbenchController(
     private var checkpointFailure: Throwable? = null
     /** 每次真实 checkpoint 写入都有独立代次，不能用草稿版本代替事件/队列快照身份。 */
     private var checkpointAttempt = 0L
-    private data class CheckpointFailureNotice(val value: String, val attempt: Long, val draftVersion: Long)
+    private data class CheckpointFailureNotice(
+        val value: String,
+        val attempt: Long,
+        val draftVersion: Long,
+        val failure: Throwable,
+    )
     private var checkpointFailureNotice: CheckpointFailureNotice? = null
     private enum class PersistenceFailurePhase { CHECKPOINT_WRITE, CREATION_FLUSH, ATTACHMENT_ARCHIVE, EVENT_COMMIT }
     private val persistenceFailureDiagnostics = mutableMapOf<PersistenceFailurePhase, String>()
@@ -964,8 +969,23 @@ class WorkbenchController(
         }
     }
 
-    /** 其他持久化阶段拥有独立错误；相同文案不能借用 checkpoint 的恢复令牌。 */
+    /** 协程栈恢复可复制异常，但会保留原 cause；只按对象身份识别同一保存故障。 */
+    private fun originatedFromCheckpoint(failure: Throwable, origin: Throwable): Boolean {
+        val origins = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        var current: Throwable? = origin
+        while (current != null && origins.add(current)) current = current.cause
+        val visited = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        current = failure
+        while (current != null && visited.add(current)) {
+            if (current in origins) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    /** 同源 checkpoint 转抛保留令牌；真正异源错误即使文案相同也接管通知。 */
     private fun reportOtherPersistenceFailure(phase: PersistenceFailurePhase, failure: Exception) {
+        if (checkpointFailureNotice?.let { originatedFromCheckpoint(failure, it.failure) } == true) return
         checkpointFailureNotice = null
         recordPersistenceFailure(phase, failure)
     }
@@ -5999,7 +6019,7 @@ class WorkbenchController(
                 recordPersistenceFailure(PersistenceFailurePhase.CHECKPOINT_WRITE, failure)
                 val notice = "LOCAL_SAVE_FAILED:${errorCodeOf(failure)}"
                 checkpointFailureNotice = CheckpointFailureNotice(notice, writingAttempt,
-                    writingCheckpoint?.draftVersion ?: 0L)
+                    writingCheckpoint?.draftVersion ?: 0L, failure)
                 _state.update { it.copy(notice=notice) }
             }
         }

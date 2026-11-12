@@ -42,6 +42,24 @@ class WorkbenchCheckpointNoticeRecoveryTest {
         } finally { fixture.controller.close() }
     }
 
+    @Test fun creationFlushKeepsTheCheckpointOriginUntilThatWriteRecovers() = runTest {
+        val fixture = Fixture(this)
+        val previous = GatewayLog.sink
+        val phases = mutableListOf<String>()
+        GatewayLog.sink = { tag, value -> if (tag == "OaiPersistence") phases += value }
+        try {
+            fixture.host.onCreate = { fixture.storage.rejectAllCheckpoints = true }
+            fixture.controller.createThread(); runCurrent()
+            assertTrue("创建回执后的 checkpoint 故障必须实际发生", fixture.storage.checkpointFailures > 0)
+            assertTrue(fixture.controller.state.value.notice.orEmpty().startsWith("LOCAL_SAVE_FAILED:"))
+            assertFalse("同一 checkpoint 故障不能被创建 flush 误报为新来源", phases.any { it.contains("phase=CREATION_FLUSH") })
+            fixture.storage.rejectAllCheckpoints = false
+            fixture.controller.editDraft("创建后保存恢复"); runCurrent()
+            assertEquals("创建后保存恢复", fixture.storage.load()!!.draft)
+            assertNull(fixture.controller.state.value.notice)
+        } finally { fixture.controller.close(); GatewayLog.sink = previous }
+    }
+
     @Test fun aLaterCheckpointFailureIsStillVisibleUntilItsOwnRetrySucceeds() = runTest {
         val fixture = Fixture(this)
         try {
@@ -199,6 +217,7 @@ class WorkbenchCheckpointNoticeRecoveryTest {
         private val atoms = mutableMapOf<String, List<LocalSendAtom>>()
         var failNextCheckpoint = false
         var rejectDraft: String? = null
+        var rejectAllCheckpoints = false
         var rejectAtomReads = false
         var atomReadFailures = 0
         var checkpointFailures = 0
@@ -224,7 +243,7 @@ class WorkbenchCheckpointNoticeRecoveryTest {
                 val release = blockNextCheckpoint
                 blockNextCheckpoint = null
                 release?.await()
-                if (failNextCheckpoint || checkpoint.draft == rejectDraft) {
+                if (failNextCheckpoint || rejectAllCheckpoints || checkpoint.draft == rejectDraft) {
                     failNextCheckpoint = false
                     checkpointFailures++
                     throw IOException(failureMessage)
@@ -239,11 +258,15 @@ class WorkbenchCheckpointNoticeRecoveryTest {
 
     private class Host : ConversationRepository {
         val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 16)
+        var onCreate: (() -> Unit)? = null
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
             ConversationPage(listOf("chat", "other").map { ConversationSummary(ConversationId(it), it, 1) }, null)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
         override fun observeEvents(scope: ConversationScope) = events
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation = error("合成只读仓储")
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
+            onCreate?.invoke()
+            return Conversation(ConversationId("created"), "合成新会话", 1)
+        }
         override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = error("合成只读仓储")
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("合成只读仓储")
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)

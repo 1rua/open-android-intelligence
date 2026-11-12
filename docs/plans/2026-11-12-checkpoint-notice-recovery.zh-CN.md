@@ -14,11 +14,15 @@
 
 1. 每次真正开始写入 checkpoint 分配单调 attempt；失败通知记录其 attempt 和草稿版本。
 2. 后续 writer 排空全部 pending 且原子耐久保存返回成功后，只有比失败更新的 attempt、草稿版本不倒退、当前通知仍未被其他来源接管时才清理旧通知。
-3. 附件归档、事件提交、创建后 flush 三条非 checkpoint 本地保存错误路径显式使 checkpoint 恢复令牌失效；相同错误字符串也不能共享来源。
+3. 附件归档、事件提交、创建后 flush 三条本地保存错误路径先按 Throwable/cause 对象身份识别 checkpoint 同源传播，保留原恢复令牌；真正异源故障显式使令牌失效。异常文案不参与来源识别，协程栈恢复的异常复制通过共享 cause 身份识别。
 4. pending 相等仅在 writer 活跃时去重；writer 失败结束后允许相同 pending 快照重启一次。保持单 writer，不追加无条件后台重试。
 5. checkpoint 是账号级快照，包含 composerDrafts。切线程后的成功快照含旧会话草稿，因此不使用当前 threadId 作为永久阻挡清理的条件。
 6. 保存成功仍依赖既有 WorkbenchPersistence 原子耐久契约；不为了通知每次写入后全库回读。真实 NativeConversationMirror → EncryptedConversationMirror → SQLite 的恢复后重开回读由测试验证。
 7. 诊断字段只允许固定 phase、kind、code 和 result；异常 message、正文、凭据、会话 ID 均不写日志。同阶段同类型连续错误去重，恢复时记录一次结果。
+
+## 独立复核补强
+
+固定候选 8529c861 的独立公开事件探针确认：checkpoint 故障四次后被外层事件 catch 当作异源，令牌丢失；存储恢复后原事件已成功持久化，checkpointFailure 已清，但旧通知残留。现将失败 Throwable 保存在所属令牌，通过 cause 链的对象身份交集保留同源传播；循环 cause 使用 identity 集合去重。恢复原 WorkbenchEventCommitRecoveryTest 的最终清提示断言，并增加 createThread 后 flush 同源回归。原同值异源 atom 读取错误负例保持不变。
 
 ## 验收
 
