@@ -3093,6 +3093,10 @@ class GatewayRuntime(
                     })
             }
         }
+        // Connected 的观察者可能立即处理回复，通知身份必须先就绪。
+        // bind 持有通知侧锁，保持在后台状态锁外，避免与通知更新的锁顺序相反。
+        checkOwner()
+        nativeConversationNotifications.bind(profileId, session.accountId)
         synchronized(backgroundOwnershipLock) {
             checkOwner()
             val effectiveAgentName = if (nativeAgentSessions) {
@@ -3132,7 +3136,6 @@ class GatewayRuntime(
             backgroundSessionActive = true
         }
         GatewayLog.d("OaiConnection", "stage=CONNECTED state=ready")
-        nativeConversationNotifications.bind(profileId, session.accountId)
         refreshBackgroundWork()
         val platformStatus = EventStreamStatusSink()
         val platformHttp = GatewayHttpClient(
