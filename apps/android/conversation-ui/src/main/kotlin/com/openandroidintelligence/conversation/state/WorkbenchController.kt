@@ -5611,8 +5611,17 @@ class WorkbenchController(
                 }
                 entry.copy(executionSteps = visibleSteps(generationId, merged), executionGenerationState = taskState(generationId))
             } else if (generationId != null && !entry.isUser) {
-                // 普通正文也携带按会话和生成身份确认的状态；无需先看到工具步骤或 RUNNING。
-                entry.copy(executionGenerationState = taskState(generationId))
+                // 普通正文仅补明确终态；稳定投影继续复用同一实例，不能让每帧追加重建历史。
+                val terminal = taskState(generationId)?.takeIf {
+                    it == GenerationState.COMPLETED || it == GenerationState.FAILED || it == GenerationState.CANCELLED
+                }
+                if (entry.executionGenerationState == terminal) entry else {
+                    val projected = entry.copy(executionGenerationState = terminal)
+                    renderedEntryCache[entry.key]?.takeIf { it.entry === entry }?.let { cached ->
+                        renderedEntryCache[entry.key] = cached.copy(entry = projected)
+                    }
+                    projected
+                }
             } else entry
         }.toMutableList()
         executionFacts.forEach { (identity, facts) ->

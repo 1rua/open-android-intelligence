@@ -58,8 +58,8 @@ private class StreamingReplySource {
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
-    private data class Observation(val revision: Long, val text: String) {
-        constructor(entry: TimelineEntry) : this(entry.presentation?.revision ?: -1L, entry.text)
+    private data class Observation(val identity: ReplyIdentity, val revision: Long, val text: String) {
+        constructor(entry: TimelineEntry) : this(ReplyIdentity(entry), entry.presentation?.revision ?: -1L, entry.text)
         val length: Int get() = text.length
         fun isPrefixOf(entry: TimelineEntry): Boolean = entry.text.length > length && entry.text.startsWith(text)
     }
@@ -105,7 +105,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         // frame 的变化没有订阅者，正文会停在空投影而调度器仍在后台推进。
         val committed = frame
         if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
-        if (currentIdentity?.key == entry.key || currentIdentity?.isUpgrade(entry) == true) {
+        if (currentIdentity == ReplyIdentity(entry) || currentIdentity?.isUpgrade(entry) == true) {
             val start = source.start(entry.text)
             return if (committed != null && committed.sourceStart != start) committed.copy(sourceStart = start) else committed
         }
@@ -122,7 +122,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
             return
         }
         val identity = currentIdentity
-        val current = entries.firstOrNull { it.key == identity?.key }
+        val current = entries.firstOrNull { ReplyIdentity(it) == identity }
         val upgrade = if (current == null) entries.lastOrNull { identity?.isUpgrade(it) == true && eligible(it) } else null
         val incoming = entries.lastOrNull(::canStart) ?: current ?: upgrade
         if (incoming == null || !eligible(incoming) || incoming.presentation == null) {
@@ -131,12 +131,12 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
             return
         }
         val metadata = incoming.presentation
-        if (identity?.key != incoming.key) {
+        if (identity != ReplyIdentity(incoming)) {
             if (identity?.isUpgrade(incoming) == true && engine != null) {
                 // 仅占位身份升级继承进度；两个真实消息 ID 即使正文相同也永不合并。
                 engine?.adoptRevision(metadata.revision)
             } else {
-                engine = StreamingPresentationState(baselineText(incoming), observed[incoming.key]?.revision ?: -1L)
+                engine = StreamingPresentationState(baselineText(incoming), observationFor(incoming)?.revision ?: -1L)
                 frame = null
             }
             currentIdentity = ReplyIdentity(incoming)
@@ -193,16 +193,20 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
 
     private fun canStart(entry: TimelineEntry): Boolean {
         if (!eligible(entry) || entry.presentation?.origin != StreamPresentationOrigin.LIVE) return false
-        val previous = observed[entry.key] ?: return entry.text.isNotEmpty()
+        val previous = observationFor(entry) ?: return entry.text.isNotEmpty()
         return entry.presentation.revision >= previous.revision && previous.isPrefixOf(entry)
     }
 
     private fun baselineText(entry: TimelineEntry): String {
-        val previous = observed[entry.key] ?: return ""
+        val previous = observationFor(entry) ?: return ""
         if (entry.text.length < previous.length) return entry.text
         val prefix = entry.text.substring(0, previous.length)
         return if (prefix == previous.text) prefix else entry.text
     }
+
+    // 显示键可以在新生成中复用；只有完整身份相同的事实才允许继承正文、修订和终态时钟。
+    private fun observationFor(entry: TimelineEntry): Observation? = observed[entry.key]
+        ?.takeIf { it.identity == ReplyIdentity(entry) }
 
     private fun rememberAll(entries: List<TimelineEntry>) {
         observed.clear()
