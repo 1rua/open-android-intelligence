@@ -84,6 +84,43 @@ class StreamingReviewPresentationRegistryTest {
         assertTrue("相同显示键不能绕过生成身份检查", registry.frameFor(next)!!.active)
     }
 
+    @Test fun 旧生成排空后同键新生成修订归零不继承旧进度或终态时钟() {
+        val registry = StreamingPresentationRegistry(emptyList())
+        val old = reply("旧".repeat(150)).copy(presentation = StreamPresentationMetadata(LIVE, 40))
+        registry.accept(listOf(old), true, 0, GenerationState.RUNNING)
+        registry.accept(listOf(old), true, 1_000_000, GenerationState.COMPLETED)
+        registry.advance(300_000_000)
+        assertEquals(old.text, registry.frameFor(old)?.text)
+        assertFalse(registry.frameFor(old)!!.active)
+
+        val next = old.copy(text = "新".repeat(150), generationId = "next-generation",
+            presentation = StreamPresentationMetadata(LIVE, 0))
+        val first = requireNotNull(registry.frameFor(next))
+        assertEquals("新身份的组合首帧不能投射旧回复全文", "", first.text)
+        assertTrue(first.active)
+        registry.accept(listOf(next), true, 310_000_000, GenerationState.RUNNING)
+        assertEquals("新", registry.frameFor(next)?.text)
+        registry.advance(610_000_000)
+        val progressed = requireNotNull(registry.frameFor(next))
+        assertTrue("新生成不能继承旧排空截止时间", progressed.active)
+        assertTrue(progressed.text.length in 2 until next.text.length)
+        assertTrue(progressed.text.all { it == '新' })
+        assertTrue(registry.hasPending)
+    }
+
+    @Test fun 同键同生成但客户端身份变化也从空投影和新修订开始() {
+        val old = reply("旧正文").copy(clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("old-client"))
+        val registry = StreamingPresentationRegistry(listOf(old))
+        registry.accept(listOf(old), true, 0, GenerationState.RUNNING)
+        val next = old.copy(text = "新".repeat(150), clientMessageId = com.openandroidintelligence.conversation.model.ClientMessageId("new-client"),
+            presentation = StreamPresentationMetadata(LIVE, 0))
+        assertEquals("", registry.frameFor(next)?.text)
+        registry.accept(listOf(next), true, 1_000_000, GenerationState.RUNNING)
+        assertEquals("新", registry.frameFor(next)?.text)
+        assertTrue(registry.frameFor(next)!!.active)
+        assertTrue(registry.hasPending)
+    }
+
     @Test fun 没有先看到运行状态的匹配生成终态仍然排空新接收正文() {
         val registry = StreamingPresentationRegistry(emptyList())
         val entry = reply("字".repeat(150)).copy(executionGenerationState = GenerationState.COMPLETED)

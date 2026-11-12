@@ -39,6 +39,33 @@ class WorkbenchRenderReuseTest {
     }
 
     @Test
+    fun 普通正文终态投影只更新一次且后续流式帧复用同一实例() = runTest {
+        val repository = Repository()
+        val controller = controller(repository)
+        try {
+            runCurrent()
+            repository.generationId.value = "gen_a"
+            repository.generationState.value = GenerationState.RUNNING
+            repository.events.emit(stream("m1", "gen_a", "上一轮完整回答", state = "CONFIRMED"))
+            runCurrent()
+            val running = rows(controller).single { it.key == "m1" }
+            repository.generationState.value = GenerationState.COMPLETED
+            runCurrent()
+            val terminal = rows(controller).single { it.key == "m1" }
+            assertNotSame("首次明确终态必须发布新投影", running, terminal)
+            assertEquals(GenerationState.COMPLETED, terminal.executionGenerationState)
+            repository.generationId.value = "gen_b"
+            repository.generationState.value = GenerationState.RUNNING
+            repository.events.emit(stream("m2", "gen_b", "新轮次流式"))
+            runCurrent()
+            assertSame("新轮次到来不重建旧终态正文", terminal, rows(controller).single { it.key == "m1" })
+            repository.events.emit(stream("m2", "gen_b", "新轮次流式新增"))
+            runCurrent()
+            assertSame("新轮次每帧追加不重建旧终态正文", terminal, rows(controller).single { it.key == "m1" })
+        } finally { controller.close() }
+    }
+
+    @Test
     fun 实时正文后的相同修订历史确认保留来源且重新进入会话为快照() = runTest {
         val repository = Repository()
         val controller = controller(repository)
