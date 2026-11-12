@@ -1,0 +1,6 @@
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> @open-android-intelligence/openclaw@1.1.0 contract:check
+> python3 tools/check-contract-snapshot.py
+
+契约快照通过：02ad53e09049c2b06c21cacd9d009c2f14e6d5bd

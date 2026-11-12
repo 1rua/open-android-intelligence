@@ -1,0 +1,15 @@
+{
+  "oaiBaseline": "dabfdbe35d52f4ca11ba2cfeaaff38cdfddd2ebb",
+  "pluginCanonicalRepository": "1rua/openclaw-android-gateway",
+  "pluginRevision": "e73ddfe1b333cfe0f69c4ea519db3553b056381a",
+  "pluginVersion": "1.1.0",
+  "pluginLicenseSha256": "8c4e1f4ed972e117988671a62bffa3243a4255a936e81b6a3d2be235c4dc1014",
+  "node": "v24.18.0",
+  "toolTestPython": "Python 3.14.6",
+  "conformancePython": "Python 3.14.6",
+  "hermesPluginRevision": "ebe527da2426dd25877dd335786e80cf85d1cdde",
+  "vitest": "4.1.10",
+  "dependencyReuse": "复用本仓现有node_modules与固定历史Python解释器；不修改或安装依赖",
+  "fullLockVerifyCommandExecuted": false,
+  "scope": "执行原pin/contract/lock/工具/完整跨宿主门禁，原生宿主安装验证属于外仓独立CI证据；不执行账号、模型、设备操作。"
+}
