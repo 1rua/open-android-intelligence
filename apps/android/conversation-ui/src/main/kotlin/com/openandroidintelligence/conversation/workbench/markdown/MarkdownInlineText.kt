@@ -56,7 +56,10 @@ fun MarkdownInlineText(
         ?: LocalMarkdownBlockSource.current?.takeIf { it.text == text }
     val document = LocalStreamingMarkdownDocument.current
     val active = isStreaming && LocalStreamingTextPresentation.current?.active == true
-    val laidOutSource = source?.let { streamingInlineSource(text, it, document, active) }
+    // 同一份正文的尾换行来源必须复用，否则布局回调重组时会不断更换来源与偏移数组。
+    val laidOutSource = remember(text, source, document, active) {
+        source?.let { streamingInlineSource(text, it, document, active) }
+    }
     val laidOutText = laidOutSource?.text ?: text
 
     // 默认行为：交给系统处理（浏览器 / 邮件 / 电话），失败时给用户一个明确提示而不是静默无响应。
