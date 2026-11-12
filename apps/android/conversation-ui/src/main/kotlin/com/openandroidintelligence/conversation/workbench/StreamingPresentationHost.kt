@@ -278,6 +278,9 @@ internal fun StreamingReplyBody(
     content: @Composable (List<TimelineBlock>, Boolean) -> Unit,
 ) {
     val frame = registry?.frameFor(entry)
+    // 列表回收或呈现容器切换会重建局部绘制状态；挂载时已有的批次只作为稳定基线。
+    // 取原始进度而非可能仍等待后台解析的 renderFrame，避免解析完成后补播旧范围。
+    val mountedBatch = remember(registry, entry.key) { frame?.batchId ?: 0L }
     val displayed = frame?.text ?: entry.text
     val document = rememberStreamingMarkdownDocument(displayed)
     var committedFrame by remember(entry.key) { mutableStateOf<StreamingPresentationFrame?>(null) }
@@ -290,14 +293,15 @@ internal fun StreamingReplyBody(
     } else {
         null
     }
+    val newBatch = renderFrame != null && renderFrame.batchId > mountedBatch
     val presentation = StreamingTextPresentation(
         batchId = renderFrame?.batchId ?: 0L,
-        sourceRevealStart = renderFrame?.start ?: 0,
+        sourceRevealStart = if (newBatch) renderFrame.start else renderFrame?.end ?: 0,
         sourceRevealEnd = renderFrame?.end ?: 0,
         active = active,
         reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
-        onVisibleAdvance = { id -> haptic?.invoke(id) },
-        hapticSourceRanges = renderFrame?.liveSourceRanges.orEmpty(),
+        onVisibleAdvance = { id -> if (newBatch) haptic?.invoke(id) },
+        hapticSourceRanges = if (newBatch) renderFrame.liveSourceRanges else emptyList(),
     )
     // 执行事实仍按完整消息分组；最终正文仅使用同一次解析中最后一个执行块之后的节点，
     // 不能把整条 entry 重新当 narrative 解析，也不能按字符串相似度寻找正文。
