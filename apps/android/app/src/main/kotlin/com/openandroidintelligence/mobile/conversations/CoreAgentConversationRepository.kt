@@ -1230,7 +1230,14 @@ class CoreAgentConversationRepository(
                                 (classified.kind != NativeReadFailureKind.STORAGE || failures >= 6)) {
                                 turn.recoveryBlocked = classified.kind
                                 if (classified.kind == NativeReadFailureKind.AUTHENTICATION)
-                                    turn.rejectedCredentialVersion = client.credentialVersion()
+                                    turn.rejectedCredentialVersion = (failure as? AgentSessionException)?.rejectedCredentialVersion
+                                        ?: client.credentialVersion()
+                                if (classified.kind == NativeReadFailureKind.AUTHENTICATION &&
+                                    turn.rejectedCredentialVersion != client.credentialVersion()) {
+                                    // 新凭据已在旧读取结束前生效，只重做权威查询，不重发输入。
+                                    turn.recoveryBlocked = null
+                                    continue
+                                }
                                 updateTurnHealth(turn, StreamHealth.FAILED, classified.notice)
                                 return@launch
                             }
@@ -1553,8 +1560,9 @@ class CoreAgentConversationRepository(
                 // Closing a reader says nothing about whether Hermes stopped.
                 throw cancelled
             } catch (failure: Exception) {
+                val classified = classifyNativeReadFailure(failure)
                 GatewayLog.w("OaiLatency", "turn.failed client=${message.clientMessageId.value} " +
-                    "type=${failure.javaClass.simpleName} code=${classifyNativeReadFailure(failure).code}")
+                    "type=${failure.javaClass.simpleName} code=${classified.code}")
                 if (isSettled(key, turn.clientMessageId)) { drainAfterTurn = true }
                 else if (turn.cancelled) { publish("CANCELLED"); flush(); cancelled() }
                 else if (failure is NativePersistenceFailed) {
@@ -1566,10 +1574,24 @@ class CoreAgentConversationRepository(
                         updateTurnHealth(turn, StreamHealth.RECONNECTING, "NATIVE_EVENT_SYNC_FAILED:LOCAL_SAVE_FAILED")
                     }
                 }
+                else if (classified.kind == NativeReadFailureKind.AUTHENTICATION && agent.capabilities.generationRecovery) {
+                    // 认证失败只暂停原身份读取；当前凭据不能替代实际被拒绝的请求代次。
+                    queueUnknownBarriers.add(key)
+                    turn.state = GenerationState.OUTCOME_UNKNOWN
+                    recoverAfterTurn = true
+                    turn.recoveryBlocked = NativeReadFailureKind.AUTHENTICATION
+                    turn.rejectedCredentialVersion = (failure as? AgentSessionException)?.rejectedCredentialVersion
+                        ?: client.credentialVersion()
+                    updateTurnHealth(turn, StreamHealth.FAILED, classified.notice)
+                    if (text.isNotEmpty()) publish("OUTCOME_UNKNOWN")
+                    flush()
+                    withSelectedTurn(turn) { set(_generationState, GenerationState.OUTCOME_UNKNOWN) }
+                }
                 // 宿主取消也可通过错误终帧到达；终态仍须按原受理身份查询确认。
                 else if (failure is AgentSessionException && (failure.code in setOf(
                         "OUTCOME_UNKNOWN", "AGENT_TIMEOUT", "AGENT_STREAM_INTERRUPTED", "STREAM_INTERRUPTED",
                         "AGENT_UNAVAILABLE", "AGENT_STREAM_TOO_LARGE", "AGENT_STREAM_INVALID", "INVALID_AGENT_EVENT", "CURSOR_EXPIRED",
+                        "AUTHENTICATION_STORAGE_UNAVAILABLE",
                     ) || failure.code in setOf("AGENT_FAILED", "CANCELLED") &&
                         agent.capabilities.generationRecovery && turn.userMessageId != null)) {
                     queueUnknownBarriers.add(key)

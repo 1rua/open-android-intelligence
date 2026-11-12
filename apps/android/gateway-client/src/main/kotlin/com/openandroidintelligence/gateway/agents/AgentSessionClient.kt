@@ -63,7 +63,8 @@ sealed interface NativeAgentStreamEvent {
     data class MessageIdentity(val messageId: String?, val userMessageId: String?, val clientMessageId: String?,
         val contentRevision: Long? = null, val eventId: String? = null) : NativeAgentStreamEvent
 }
-class AgentSessionException(val code: String, val status: Int = 0) : IllegalStateException(code)
+class AgentSessionException(val code: String, val status: Int = 0,
+    val rejectedCredentialVersion: String? = null) : IllegalStateException(code)
 
 /** All native session operations use the already authenticated Core connection. */
 class AgentSessionClient(private val http: GatewayHttpClient, private val traceEnabled: Boolean = false) {
@@ -315,8 +316,9 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
         com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T1.request_started", mapOf(
             "agentId" to agent.id, "conversationId" to sessionId, "clientMessageId" to clientMessageId,
             "monotonicNs" to System.nanoTime()))
+        var attemptedCredentialVersion: String? = null
         return try {
-            http.consumeResponse(request) { status, headers, stream ->
+            http.consumeResponse(request, onCredentialVersion = { attemptedCredentialVersion = it }) { status, headers, stream ->
                 if (status !in 200..299) {
                     val failure = try { readErrorBody(stream)?.let(::responseRoot) }
                     catch (_: IOException) { null }
@@ -467,6 +469,9 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
                 if (!done) throw AgentSessionException("OUTCOME_UNKNOWN")
                 NativeGenerationResult(outcome, generationId, identity.messageId, identity.userMessageId, identity.clientMessageId, finalText, finalRevision)
             }
+        } catch (failure: AgentSessionException) {
+            // 只保留实际请求的会话代次供恢复围栏使用；不写入错误正文或日志。
+            throw AgentSessionException(failure.code, failure.status, attemptedCredentialVersion).also { it.initCause(failure) }
         } catch (_: IOException) {
             // A transport failure cannot establish whether the native turn ran.
             // Preserve the draft and partial output; never resend it here.
@@ -490,11 +495,12 @@ class AgentSessionClient(private val http: GatewayHttpClient, private val traceE
     private suspend fun request(method: String, target: String, body: Map<String, Any?>? = null, requestId: String? = null,
         traceKey: String? = null, beforeDispatch: (suspend () -> Unit)? = null): JsonValue.JObject {
         val request = jsonRequest(method, target, body)
+        var attemptedCredentialVersion: String? = null
         val response = http.execute(request.copy(requestId = requestId, headers = request.headers + traceHeaders(traceKey),
-            beforeDispatch = beforeDispatch))
+            beforeDispatch = beforeDispatch), onCredentialVersion = { attemptedCredentialVersion = it })
         val root = responseRoot(response.body)
         if (response.status !in 200..299) {
-            throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status)
+            throw AgentSessionException(errorCode(root, "AGENT_REQUEST_FAILED"), response.status, attemptedCredentialVersion)
         }
         return JsonFields.obj(JsonFields.field(root, "data")) ?: root ?: error("AGENT_RESPONSE_INVALID")
     }

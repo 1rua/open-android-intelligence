@@ -25,6 +25,71 @@ class GatewaySessionRecoveryTest {
     private fun profile() = GatewayProfile("account", "device", "session_old", "https://gateway.example", accessToken = "old")
     private fun WireRequest.header(name: String) = headers.single { it.name.equals(name, true) }.value
 
+    @Test fun rejectedResponseReportsTheSignedAttemptInsteadOfTheAlreadyRotatedCredential() = runTest {
+        val initial = profile()
+        val versions = mutableListOf<String>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                assertEquals("session_old", request.header("X-Open-Android-Intelligence-Session"))
+                renewal.refresh(initial)
+                return WireResponse(403, emptyList(), "{}".toByteArray())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("非预期事件流")
+        }
+        try {
+            val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            assertEquals(403, client.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/test"),
+                onCredentialVersion = versions::add).status)
+            assertEquals(listOf("session_old"), versions)
+            assertEquals("session_new", client.credentialVersion())
+        } finally { renewal.close() }
+    }
+
+    @Test fun aRefreshedStreamReportsBothActualAttemptsBeforeConsumingItsFinalError() = runTest {
+        val initial = profile()
+        val versions = mutableListOf<String>()
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(if (wires.size == 1) 401 else 200, emptyList(), "error".toByteArray())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("非预期事件流")
+        }
+        try {
+            val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            val consumed = client.consumeResponse(SignedGatewayRequest("GET", "/open-android-intelligence/v2/test"),
+                onCredentialVersion = versions::add) { _, _, stream ->
+                assertEquals("session_new", versions.last())
+                stream.readBytes().decodeToString()
+            }
+            assertEquals("error", consumed)
+            assertEquals(listOf("session_old", "session_new"), versions)
+            assertEquals(versions, wires.map { it.header("X-Open-Android-Intelligence-Session") })
+        } finally { renewal.close() }
+    }
+
+    @Test fun anAuthorizationGuardFailureDoesNotPublishAnAttemptThatNeverRan() = runTest {
+        val versions = mutableListOf<String>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("不应发送")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("不应订阅")
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, InMemoryEventCursorStore())
+        val request = SignedGatewayRequest("GET", "/open-android-intelligence/v2/test",
+            beforeSend = { error("LOCAL_AUTHORIZATION_CHANGED") })
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", runCatching {
+            client.consumeResponse(request, onCredentialVersion = versions::add) { _, _, _ -> Unit }
+        }.exceptionOrNull()?.message)
+        assertTrue(versions.isEmpty())
+    }
+
     @Test fun deviceResultIsNotReplayedWhenRenewalRevokesTheAuthorizationAgreement() = runTest {
         val initial = profile()
         var allowed = true
