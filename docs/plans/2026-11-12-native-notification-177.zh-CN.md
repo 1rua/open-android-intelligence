@@ -1,0 +1,7 @@
+# 原生回复完成通知的最终门禁诊断
+
+关联 #177。基线 `2caabfb1206fd93cd0232171f0bf287fdfeea498`。
+
+最终Full在NativeAgentBackgroundWorkTest.mainWorkbenchCompletionPublishesTheExistingReplyNotification[34]失败，632映射到activeNotifications.single筛选回复channel，实际是存在多条匹配通知而非缺通知。原方法本机单次通过不代替原失败。
+
+先以可控通知数量/身份与生命周期红环区分测试残留、双发布或通知ID漂移，再做最小修正，保留准确Agent/会话/生成身份及非ongoing/bubble断言；不删通知断言、不关闭现有通知功能。独立评审和相关门禁后再集成，最终Full单独验收。
