@@ -57,7 +57,8 @@ class WorkbenchEventCommitRecoveryTest {
             storage.rejectEvent=null
             controller.onForegrounded();runCurrent()
             host.events.emit(event("blocked",1));runCurrent()
-            assertTrue("恢复存储后重新进入能应用原事件", "blocked" in storage.checkpoint!!.eventIds)
+            assertTrue("恢复存储后重新进入能应用原事件", "blocked" in storage.load()!!.eventIds)
+            assertNull("checkpoint 同源故障恢复后必须清理旧保存失败提示", controller.state.value.notice)
         } finally {controller.close()}
     }
 

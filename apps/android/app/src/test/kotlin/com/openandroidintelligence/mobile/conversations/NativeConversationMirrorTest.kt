@@ -41,6 +41,59 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
 class NativeConversationMirrorTest {
+    @Test fun checkpointFailureRecoversAndReopensTheRealSqliteDraft() = runBlocking {
+        val account=scope("checkpoint-recovery-"+UUID.randomUUID())
+        val mirror=NativeConversationMirror(context,account,{"dsh"},key)
+        var failNext=false
+        var injectedFailures=0
+        val persistence=object:com.openandroidintelligence.conversation.state.AwaitableWorkbenchPersistence by mirror {
+            override suspend fun saveCheckpoint(checkpoint:WorkbenchCheckpoint) {
+                if(failNext) {
+                    failNext=false;injectedFailures++
+                    throw java.io.IOException("SYNTHETIC_CHECKPOINT_WRITE_FAILED")
+                }
+                mirror.saveCheckpoint(checkpoint)
+            }
+        }
+        val repository=object:ConversationRepository {
+            override suspend fun listConversations(scope:ConversationScope,page:PageRequest)=
+                ConversationPage(listOf(ConversationSummary(ConversationId("chat"),"合成会话",1)),null)
+            override suspend fun timeline(conversationId:String,page:PageRequest)=TimelinePage(emptyList(),null)
+            override fun observeEvents(scope:ConversationScope)=emptyFlow<VerifiedConversationEvent>()
+            override suspend fun createConversation(scope:ConversationScope,clientConversationId:String):Conversation=error("合成测试不创建会话")
+            override suspend fun submitMessage(message:OutgoingMessage):MessageAcceptance=error("合成测试不发送消息")
+            override suspend fun submitBatch(batch:MessageBatch):BatchAcceptance=error("合成测试不发送消息")
+            override suspend fun cancelGeneration(generationId:String,requestId:String)=CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val owner=kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob()+Dispatchers.Unconfined)
+        val controller=com.openandroidintelligence.conversation.state.WorkbenchController(owner,repository,
+            object:AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId:String,languageCode:String)=
+                    AgentCommandCatalog(com.openandroidintelligence.conversation.model.CatalogVersion("synthetic"),emptyList())
+            },{account},persistence=persistence,
+            replyTimeouts=com.openandroidintelligence.conversation.state.WorkbenchController.ReplyTimeouts(enabled=false))
+        try {
+            controller.openThread("chat")
+            withTimeout(5_000) { controller.state.first { it.historyHydrated } }
+            controller.flushPendingPersistence()
+            failNext=true
+            controller.editDraft("合成失败草稿")
+            withTimeout(5_000) { controller.state.first { it.notice?.startsWith("LOCAL_SAVE_FAILED:")==true } }
+            assertEquals(1,injectedFailures)
+            assertNotEquals("失败写入不能被当成持久成功","合成失败草稿",mirror.load()!!.draft)
+            controller.editDraft("合成恢复后草稿")
+            controller.flushPendingPersistence()
+            assertEquals("合成恢复后草稿",mirror.load()!!.draft)
+            assertNull("恢复成功应清理 checkpoint 独占的错误",controller.state.value.notice)
+        } finally { controller.closeAndAwait();owner.cancel();mirror.closeStore() }
+        val reopened=NativeConversationMirror(context,account,{"dsh"},key)
+        try {
+            val persisted=reopened.load()!!
+            assertEquals("合成恢复后草稿",persisted.draft)
+            assertEquals("合成恢复后草稿",persisted.composerDrafts.single { it.threadId=="chat" }.text)
+        } finally { reopened.closeStore() }
+    }
+
     @Test fun workbenchReopensCancelledPlaceholderAndReadsNativeHistoryWithoutPostingAgain() = runBlocking {
         val account=scope("workbench-cancelled-${UUID.randomUUID()}")
         val clientId=ClientMessageId("stopped-before-identity")
