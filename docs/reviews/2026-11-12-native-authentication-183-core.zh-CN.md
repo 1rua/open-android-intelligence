@@ -6,7 +6,7 @@
 
 `Authentication.assert_current()` 原来把 `core.is_event_session_active()` 返回的所有 `False` 都转换为 `SESSION_REVOKED`。Core 的事件会话检查实际可以区分 `SESSION_EXPIRED`，并可能抛出 `AUTHENTICATION_STORAGE_UNAVAILABLE` 或 `AUTHENTICATION_STORAGE_FAILED`。服务器的 `is_active()` 又捕获所有 `GatewayError` 并返回 `False`，因此已经准备好的原生 SSE 在第二次活动检查时统一写成 `SESSION_REVOKED`。
 
-Android 收到已经准备好的 SSE `error` 后由 `AgentSessionClient` 转成异常；Core 仓储原有认证失败门禁会保留恢复阻塞和凭据代次判断。错误被改写为撤销后，已受理的 turn 会走普通失败分支，可能留下 `FAILED + queueUnknownBarrier + queued successor` 且没有恢复 owner。该现场与本次最终设备验收中精确观察到的 `SESSION_REVOKED` 一致，但不能单凭现场证明它原本一定是过期或存储故障；真实撤销仍应拒绝。
+Android 收到已经准备好的 SSE `error` 后由 `AgentSessionClient` 转成异常；仓储的既有恢复流程具有认证阻塞与凭据代次门禁，但发送异常入口尚未把本次认证终帧移交该恢复流程。收到撤销错误后，已受理的 turn 会走普通失败分支，可能留下 `FAILED + queueUnknownBarrier + queued successor` 且没有恢复 owner。该现场与本次最终设备验收中精确观察到的 `SESSION_REVOKED` 一致，但不能单凭现场证明它原本一定是过期或存储故障；真实撤销仍应拒绝。
 
 ## 最小实现
 
@@ -18,7 +18,7 @@ Android 收到已经准备好的 SSE `error` 后由 `AgentSessionClient` 转成�
 ## 验证
 
 - 新增正式回归：修复工作树 `8/8` 通过；基线旧源码受控红环为过期/存储不可用分类失败，真实撤销对照保持通过。
-- Core 相关回归：`test_authentication_storage.py`、`test_native_operation_recovery.py`、`test_native_transport_lifecycle.py`、`test_sessions.py`、`test_core_transport.py` 合计 `104 + 26` 项通过；账号认证/刷新/集成回归另为 `26` 项通过；总计 `156` 项。
+- Core 相关回归：新类连同 `test_authentication_storage.py`、`test_native_operation_recovery.py`、`test_native_transport_lifecycle.py`、`test_sessions.py`、`test_core_transport.py` 共 `104` 项通过；`test_account_refresh.py`、`test_android_account_auth.py`、`test_account_core_integration.py` 另为 `26` 项通过。两轮共 `130` 项；新类单独的8项已包含在104中，不重复计数。
 - 受控红绿仅使用合成账号、真实 Core HTTP/原生 SSE 和临时 SQLite 状态，不连接设备、不读取凭据或私人会话、不发送生产消息。
 
 ## 边界
