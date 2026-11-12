@@ -955,6 +955,10 @@ class GatewaySessionRefreshTest {
 
         runtime.refreshSession()
 
+        // Connected 可能先于初始化门禁释放；等待本次刷新真正给出结果，再检查原有语义。
+        assertTrue("没有刷新凭据时必须最终给出说明", awaitCondition(AWAIT_MILLIS) {
+            runtime.operationNotice.value?.contains("刷新凭据") == true
+        })
         val notice = runtime.operationNotice.value
         assertNotNull("没有刷新凭据时必须给出可读说明，而不是静默", notice)
         assertTrue("说明必须点出缺少刷新凭据：$notice", notice!!.contains("刷新凭据"))
@@ -962,6 +966,62 @@ class GatewaySessionRefreshTest {
             "没有凭据时不得向 Gateway 发续期请求",
             gateway.targetsOf("POST").contains(REFRESH_PATH),
         )
+    }
+
+    @Test
+    fun aMissingRefreshCredentialOperationWaitsForTheConnectionInitializer() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val initializationHeld = AtomicBoolean(false)
+        val previousSink = GatewayLog.sink
+        GatewayLog.sink = { tag, message ->
+            if (tag == "OaiConnection" && message == "stage=CONNECTED state=ready") {
+                initializationHeld.set(true)
+                entered.countDown()
+                try {
+                    check(release.await(AWAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                        "连接初始化闩锁必须在测试结束前释放"
+                    }
+                } finally { initializationHeld.set(false) }
+            }
+        }
+        try {
+            val runtime = runtime()
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            assertTrue("必须暂停在 Connected 已发布、初始化尚未结束的真实边界",
+                awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+            val workbench = requireNotNull(runtime.controller.value)
+            val binding = pairingGrants.currentBinding()
+            val localDecision = pairingGrants.state.value
+            val account = runtime.connectedAccountId
+            credentialStore.clearRefresh(profileId())
+
+            runtime.refreshSession()
+
+            assertTrue("刷新操作返回时初始化仍须被闩锁阻塞", initializationHeld.get())
+            val immediateNotice = runtime.operationNotice.value
+            assertNull("初始化未完成时刷新应排队，不能提前发布结果", immediateNotice)
+            assertFalse("初始化门禁内不能发送缺凭据的续期请求",
+                gateway.targetsOf("POST").contains(REFRESH_PATH))
+            release.countDown()
+            assertTrue("初始化结束后，排队的刷新操作必须给出缺凭据说明",
+                awaitCondition(AWAIT_MILLIS) {
+                    runtime.credentialStatus.value == GatewayCredentialStatus.UNAVAILABLE &&
+                        runtime.operationNotice.value == context.getString(UiR.string.conn_toast_no_refresh_token)
+                })
+            assertSame("延迟刷新不能替换当前工作台", workbench, runtime.controller.value)
+            assertEquals("延迟刷新不能更改设备授权绑定", binding, pairingGrants.currentBinding())
+            assertEquals("延迟刷新不能改写本机授权决定", localDecision, pairingGrants.state.value)
+            assertEquals("延迟刷新不能切换当前账号", account, runtime.connectedAccountId)
+            assertTrue("缺少刷新凭据不能删除设备密钥", deviceKeys.hasKey(profileId()))
+            assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+            assertFalse("缺凭据说明发布后仍不得发送续期请求",
+                gateway.targetsOf("POST").contains(REFRESH_PATH))
+        } finally {
+            release.countDown()
+            GatewayLog.sink = previousSink
+        }
     }
 
     @Test

@@ -1,0 +1,7 @@
+gradle.afterProject { project, state ->
+    project.tasks.withType(Test).configureEach {
+        systemProperty 'robolectric.offline', 'true'
+        systemProperty 'robolectric.dependency.dir', System.getenv('OAI_ROBOLECTRIC_JARS')
+        testLogging { showStandardStreams = true; exceptionFormat = 'full' }
+    }
+}
