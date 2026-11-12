@@ -40,6 +40,7 @@ fun OpenAndroidIntelligenceTheme(
     dynamicColor: Boolean = false,
     palette: ThemePalette = ThemePalette.EMBER,
     reduceMotion: Boolean = false,
+    streamingHapticFeedback: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -61,6 +62,7 @@ fun OpenAndroidIntelligenceTheme(
     val stateColors = if (darkTheme) DarkAppStateColors else LightAppStateColors
     CompositionLocalProvider(
         LocalMotionPolicy provides policy,
+        LocalStreamingHapticFeedbackEnabled provides streamingHapticFeedback,
         LocalAppStateColors provides stateColors,
     ) {
         MaterialTheme(

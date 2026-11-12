@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.toOutcome
@@ -125,6 +126,8 @@ data class TimelineEntry(
     val executionFact: Boolean = false,
     /** 该执行过程所属任务的明确状态，独立于消息正文是否仍在流式。 */
     val executionGenerationState: GenerationState? = null,
+    /** UI 临时来源；历史装载重新建立快照基线，不进入 checkpoint。 */
+    val presentation: StreamPresentationMetadata? = null,
 )
 
 data class WorkbenchUiState(
@@ -727,6 +730,20 @@ class WorkbenchController(
         }
     }
     private val mirroredRevisions = LinkedHashMap<String, Long>()
+    private val streamPresentations = mutableMapOf<String, StreamPresentationMetadata>()
+
+    private fun presentationOf(message: TimelineMessage): StreamPresentationMetadata =
+        streamPresentations[message.id] ?: StreamPresentationMetadata(
+            StreamPresentationOrigin.SNAPSHOT, message.contentRevision ?: mirroredRevisions[message.id] ?: 0L,
+        )
+
+    private fun rememberPresentation(message: TimelineMessage, revision: Long, origin: StreamPresentationOrigin) {
+        val previous = streamPresentations[message.id]
+        // 同修订、同正文的历史确认不能把刚收到的实时来源降级成恢复。
+        if (origin == StreamPresentationOrigin.SNAPSHOT && previous?.origin == StreamPresentationOrigin.LIVE &&
+            previous.revision == revision && mirrored[message.id]?.let { messageTextOf(it) == messageTextOf(message) } == true) return
+        streamPresentations[message.id] = StreamPresentationMetadata(origin, revision)
+    }
     private data class MessageStatusReceipt(
         val status: com.openandroidintelligence.conversation.ports.AgentMessageStatus,
         val revision: Long,
@@ -1399,7 +1416,7 @@ class WorkbenchController(
         disarmReplyWatchdog()
         activeThreadId=null
         onActiveThreadChanged(null)
-        mirrored.clear(); mirroredRevisions.clear(); messageStatusRevisions.clear()
+        mirrored.clear(); streamPresentations.clear(); mirroredRevisions.clear(); messageStatusRevisions.clear()
         renderedEntryCache.clear()
         messageStatusesById.clear(); messageStatusesByClientId.clear()
         failedSubmission=failedSubmission?.takeUnless { it.conversationId == threadId }
@@ -1949,7 +1966,7 @@ class WorkbenchController(
         draftRevision = savedComposer?.revision ?: restored?.draftRevision ?: 0L
         onActiveThreadChanged(threadId)
         if (persistence==null) sendAtomsByThread.putIfAbsent(threadId,linkedMapOf())
-        mirrored.clear()
+        mirrored.clear(); streamPresentations.clear()
         renderedEntryCache.clear()
         mirroredRevisions.clear()
         messageStatusRevisions.clear()
@@ -2047,6 +2064,7 @@ class WorkbenchController(
                             if (message.sender == "assistant" && message.state == "CONFIRMED") {
                                 pruneConfirmedAssistantDuplicates(message)
                             }
+                            rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
                             mirrored[message.id] = message
                             mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
                         }
@@ -2646,7 +2664,7 @@ class WorkbenchController(
                 }
                 activeThreadId = conversation.id.value
                 onActiveThreadChanged(conversation.id.value)
-                mirrored.clear()
+                mirrored.clear(); streamPresentations.clear()
                 renderedEntryCache.clear()
                 mirroredRevisions.clear()
                 timelineJob?.cancel()
@@ -4948,6 +4966,7 @@ class WorkbenchController(
                             }
                         }
                     }
+                    rememberPresentation(message, event.revision, event.presentationOrigin)
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = event.revision
                 }
@@ -5162,6 +5181,7 @@ class WorkbenchController(
                                 belongsToCurrentTurn = matched,
                             )
                         }
+                        rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
                         mirrored[message.id] = message
                         mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
                     } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
@@ -5226,6 +5246,7 @@ class WorkbenchController(
                 val message = withLatestMessageStatus(rawMessage)
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
+                    rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = revision
                 }
@@ -5473,7 +5494,7 @@ class WorkbenchController(
         }
         if (cacheable) {
             renderedEntryCache[message.id]
-                ?.takeIf { it.message === message && it.cancelled == cancelled }
+                ?.takeIf { it.message === message && it.cancelled == cancelled && it.entry.presentation == presentationOf(message) }
                 ?.let { return it.entry }
         }
         val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
@@ -5547,6 +5568,7 @@ class WorkbenchController(
             },
             executionSteps = message.executionSteps,
             localPlaceholder = message.localPlaceholder,
+            presentation = presentationOf(message),
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
@@ -5559,6 +5581,7 @@ class WorkbenchController(
 
     private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
         val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
+        streamPresentations.keys.retainAll(mirrored.keys)
         val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
         val queuedClientIds = _state.value.pendingDeliveries.map { it.clientMessageId.value }.toSet()
         val mirroredEntries = mergedMessages.filterNot {
@@ -5638,6 +5661,18 @@ class WorkbenchController(
                     else old
                 }
                 entry.copy(executionSteps = visibleSteps(generationId, merged), executionGenerationState = taskState(generationId))
+            } else if (generationId != null && !entry.isUser) {
+                // 普通正文仅补明确终态；稳定投影继续复用同一实例，不能让每帧追加重建历史。
+                val terminal = taskState(generationId)?.takeIf {
+                    it == GenerationState.COMPLETED || it == GenerationState.FAILED || it == GenerationState.CANCELLED
+                }
+                if (entry.executionGenerationState == terminal) entry else {
+                    val projected = entry.copy(executionGenerationState = terminal)
+                    renderedEntryCache[entry.key]?.takeIf { it.entry === entry }?.let { cached ->
+                        renderedEntryCache[entry.key] = cached.copy(entry = projected)
+                    }
+                    projected
+                }
             } else entry
         }.toMutableList()
         executionFacts.forEach { (identity, facts) ->
@@ -6049,7 +6084,7 @@ class WorkbenchController(
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
         timelineSnapshots.clear()
-        handledEventIds.clear(); mirrored.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
+        handledEventIds.clear(); mirrored.clear(); streamPresentations.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
     }

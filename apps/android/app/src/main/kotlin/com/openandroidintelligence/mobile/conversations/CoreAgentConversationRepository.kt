@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.model.StreamHealthSource
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.BatchAcceptance
 import com.openandroidintelligence.conversation.ports.CancelGenerationOutcome
@@ -1394,7 +1395,8 @@ class CoreAgentConversationRepository(
                 turn.messageRevisions[assistantMsgId] = contentRevision
                 enqueue("message:$assistantMsgId", VerifiedConversationEvent.TimelineUpsert(
                     eventId = "${nativeEventId ?: "evt_${UUID.randomUUID()}"}:$state", occurredAt = System.currentTimeMillis(),
-                    revision = contentRevision, message = TimelineMessage(
+                    revision = contentRevision, presentationOrigin = StreamPresentationOrigin.LIVE,
+                    message = TimelineMessage(
                         id = assistantMsgId, sender = "assistant", parts = listOf(MessagePart.Text(current)),
                         timestamp = assistantTimestamp, state = state,
                         clientMessageId = if (associateClient) ClientMessageId("assistant_${message.clientMessageId.value}") else null,

@@ -155,15 +155,41 @@ class NativeEventSynchronizerTest {
     }
 
     @Test fun hostBodyFramesArePublishedOnceForTheNotificationLayerWhileHistoryStaysSynthetic() = runTest {
-        val h = Harness()
+        val h = Harness().apply {
+            // 本例验证同一正文修订的实时来源；不能拿缺省为 0 的宿主修订匹配历史修订 1。
+            raw = """{"eventId":"e1","eventType":"conversation.message.completed","payload":{"conversationId":"chat","messageId":"reply","generationId":"gen","revision":1}}"""
+        }
         h.sync().synchronize()
         val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().map { it.eventId }
         assertEquals("权威历史只落盘一次", listOf("history-reply"), saved)
         val published = h.published.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
-        assertEquals("历史快照之后必须再发布宿主自己发出的正文帧", listOf("history-reply", "e1"), published.map { it.eventId })
+        assertEquals("保留历史事实和宿主正文的原有发布顺序", listOf("history-reply", "e1"), published.map { it.eventId })
+        assertEquals(StreamPresentationOrigin.LIVE, published.first().presentationOrigin)
+        assertEquals(StreamPresentationOrigin.LIVE, published.last().presentationOrigin)
+        assertEquals(StreamPresentationOrigin.SNAPSHOT, h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().presentationOrigin)
         // 提醒层按 eventId 前缀过滤手机合成的事件；宿主帧必须保持原身份。
         assertTrue(published.last().eventId.isNotBlank())
         assertTrue(published.last().message.id == "reply")
+    }
+
+    @Test fun 宿主缺少正文修订时历史静默降级但通知事实与顺序完整保留() = runTest {
+        val h = Harness()
+        h.sync().synchronize()
+        val saved = h.store.events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+        assertEquals("权威历史仍然只落盘一次", listOf("history-reply"), saved.map { it.eventId })
+        assertEquals(1L, saved.single().revision)
+        assertEquals(StreamPresentationOrigin.SNAPSHOT, saved.single().presentationOrigin)
+        val published = h.published.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+        assertEquals("缺少修订不改变历史与宿主通知的发布顺序", listOf("history-reply", "e1"), published.map { it.eventId })
+        assertEquals("不能把无修订的宿主帧当成历史修订 1 的实时证据",
+            StreamPresentationOrigin.SNAPSHOT, published.first().presentationOrigin)
+        assertEquals(1L, published.first().revision)
+        assertEquals(StreamPresentationOrigin.LIVE, published.last().presentationOrigin)
+        assertEquals(0L, published.last().revision)
+        assertEquals("宿主事件的通知身份必须原样保留", "e1", published.last().eventId)
+        assertEquals("reply", published.last().message.id)
+        assertEquals(listOf("next"), h.acks)
+        assertTrue(h.log.indexOf("commit") < h.log.indexOf("ack:next"))
     }
 
     @Test fun deletedHistoryWithoutAContentRevisionCoversOldBodyEventsAndSyncsTheFollowingPage() = runTest {

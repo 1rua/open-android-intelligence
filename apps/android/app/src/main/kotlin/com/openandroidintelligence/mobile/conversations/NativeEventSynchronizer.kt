@@ -135,7 +135,16 @@ internal class NativeEventSynchronizer(
         // 权威历史已经覆盖了同一修订，落盘只写一次；正文帧只额外多发布一次，
         // 让提醒层看到宿主自己发出的事件。
         val facts = snapshotFacts + lifecycle
-        val published = facts + liveBodies
+        // 同页确实含宿主实时正文时，匹配的权威全文只在 UI 投影上标注实时来源。
+        // 保持原有事实/生命周期/宿主帧的发布顺序，落盘内容及通知层事件身份均不改变。
+        val liveRevisions = liveBodies.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+            .mapTo(hashSetOf()) { it.message.id to it.revision }
+        val presentationFacts = facts.map { fact ->
+            if (fact is VerifiedConversationEvent.TimelineUpsert && (fact.message.id to fact.revision) in liveRevisions) {
+                fact.copy(presentationOrigin = com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE)
+            } else fact
+        }
+        val published = presentationFacts + liveBodies
         localStore { store.commitPage(conversationId, facts, approvals, page.cursor) }
         pendingPage = null
         if (snapshot || page.events.isNotEmpty()) {

@@ -115,6 +115,7 @@ class SettingsBackupCoordinatorTest {
                 dynamicIconColor = true,
                 palette = com.openandroidintelligence.conversation.theme.ThemePalette.VIOLET,
                 reduceMotion = true,
+                streamingHapticFeedback = true,
             ),
         )
         notifications.setEnabled(false)
@@ -134,10 +135,28 @@ class SettingsBackupCoordinatorTest {
         assertTrue(appearance.settings.value.dynamicIconColor)
         assertEquals(com.openandroidintelligence.conversation.theme.ThemePalette.VIOLET, appearance.settings.value.palette)
         assertTrue(appearance.settings.value.reduceMotion)
+        assertTrue(appearance.settings.value.streamingHapticFeedback)
         assertFalse(notifications.enabled.value)
         assertEquals(AppUpdateChannel.STABLE, updates.readChannel())
         assertTrue(outcome.appliedSummaries.isNotEmpty())
         assertTrue(outcome.ignoredFields.isEmpty())
+    }
+
+    @Test
+    fun importingAnOlderAppearanceBackupDefaultsStreamingHapticsOff() {
+        appearance.setStreamingHapticFeedback(true)
+        val text = backupWith(
+            "appearance" to mapOf(
+                "theme" to "SYSTEM",
+                "palette" to "EMBER",
+                "reduceMotion" to false,
+            ),
+        )
+
+        coordinator().import(text).getOrThrow()
+
+        assertFalse(appearance.settings.value.streamingHapticFeedback)
+        assertTrue(coordinator().exportSummary().none { it.contains("震动反馈") })
     }
 
     @Test
@@ -296,6 +315,11 @@ class SettingsBackupCoordinatorTest {
                 com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Rejected("TEST_REJECT")
         }
         val text = backupWith(
+            "appearance" to mapOf(
+                "theme" to "SYSTEM",
+                "palette" to "EMBER",
+                "streamingHapticFeedback" to true,
+            ),
             "notificationCollection" to mapOf(
                 "packageIds" to listOf("com.example.chat"),
                 "fieldAccess" to "CONTENT",
@@ -307,6 +331,7 @@ class SettingsBackupCoordinatorTest {
         val message = failure!!.message.orEmpty()
         assertTrue("应指出未恢复的项目：$message", message.contains("未能恢复"))
         assertTrue("应列出具体项目：$message", message.contains("通知采集范围"))
+        assertFalse(appearance.settings.value.streamingHapticFeedback)
     }
 
     @Test

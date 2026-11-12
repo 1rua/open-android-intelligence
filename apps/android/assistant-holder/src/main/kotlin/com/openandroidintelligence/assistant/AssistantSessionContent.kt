@@ -338,6 +338,7 @@ internal fun AssistantAppearanceScope(
         dynamicColor = appearance.dynamicColor,
         palette = appearance.resolvedPalette(),
         reduceMotion = appearance.reduceMotion,
+        streamingHapticFeedback = appearance.streamingHapticFeedback,
         content = content,
     )
 }

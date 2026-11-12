@@ -55,15 +55,19 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
  *   逐块渲染实时思维链卡 / 工具卡与紧凑叙述，末尾保留流式光标。
  */
 @Composable
-fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier) {
+fun AssistantMessageContent(
+    entry: TimelineEntry,
+    modifier: Modifier = Modifier,
+    presentations: StreamingPresentationRegistry? = null,
+) {
     val text = entry.text
     if (text.isBlank()) {
         when {
-            entry.isStreaming -> StreamingCursor(
+            entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true) -> StreamingCursor(
                 modifier = modifier.padding(vertical = Dimensions.SpaceTiny),
             )
 
-            entry.attachments.isEmpty() -> Text(
+            !entry.isStreaming && entry.attachments.isEmpty() -> Text(
                 text = "此消息没有可显示的文本",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -75,13 +79,22 @@ fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier)
         return
     }
 
+    if (!mayContainExecutionMarkup(text)) {
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
+        return
+    }
+
     val blocks = remember(text) {
         runCatching { MarkdownParser.parse(text) }
             .getOrElse { listOf(TimelineBlock.Paragraph(text)) }
     }
 
     if (blocks.none { isExecutionBlock(it) }) {
-        MarkdownDocumentView(blocks = blocks, isStreaming = entry.isStreaming, modifier = modifier)
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
         return
     }
 

@@ -62,6 +62,9 @@ class AssistantBridgeService : Service() {
         var visible: Boolean = false,
         /** 单调递增的状态帧序号；接收方据此丢弃乱序帧。 */
         var revision: Long = 0L,
+        /** 当前活跃正文延续到终态，避免助理吐字被预算截断。 */
+        var protectedReplyId: String? = null,
+        var protectedThreadId: String? = null,
         /** 最近一次交接尝试的结果；没有请求过时为 null（帧里也不出现该字段）。 */
         var handoff: AssistantHandoffResult? = null,
         /** 上述结果所属的请求代次；与客户端这一次上滑带来的 `handoffId` 对应。 */
@@ -450,6 +453,8 @@ class AssistantBridgeService : Service() {
         client.sessionToken?.let(runtime::releaseAssistantSession)
         client.sessionToken = null
         client.controller = null
+        client.protectedReplyId = null
+        client.protectedThreadId = null
     }
 
     /**
@@ -481,7 +486,14 @@ class AssistantBridgeService : Service() {
         val trimmed = if (entries.size > AssistantWireBudget.MAX_ENTRIES) {
             entries.takeLast(AssistantWireBudget.MAX_ENTRIES)
         } else entries
-        val (budgeted, truncated) = AssistantWireBudget.applyBudget(trimmed)
+        if (client.protectedThreadId != state?.activeThreadId) {
+            client.protectedThreadId = state?.activeThreadId
+            client.protectedReplyId = null
+        }
+        entries.lastOrNull { !it.isUser && !it.executionFact &&
+            (it.isStreaming || it.presentation?.origin == com.openandroidintelligence.conversation.model.StreamPresentationOrigin.LIVE)
+        }?.let { client.protectedReplyId = it.key }
+        val (budgeted, truncated) = AssistantWireBudget.applyBudget(trimmed, client.protectedReplyId)
         val dropped = truncated || trimmed.size < entries.size
         val appearance = (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.value
         val profileId = runtime.connectedProfileId
@@ -513,6 +525,7 @@ class AssistantBridgeService : Service() {
                 dynamicColor = appearance.dynamicColor,
                 palette = appearance.palette.name,
                 reduceMotion = appearance.reduceMotion,
+                streamingHapticFeedback = appearance.streamingHapticFeedback,
             ),
             // 交接结果随状态帧下发：浮层据此决定打开主 App 还是保留自己。
             // 代次一并下发，客户端才能区分「这一轮的回执」与「上一轮残留的终态」。
@@ -550,6 +563,12 @@ class AssistantBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         runtime.restoreSessionIfAvailable()
+        // 设置变化也主动发布，不能等下一条网络内容才同步助理开关。
+        jobs.launch {
+            (application as OpenAndroidIntelligenceApplication).appearancePreferences.settings.collect {
+                clients.values.toList().forEach { client -> publish(client) }
+            }
+        }
         // 工作区可能晚于 connect 建立（连接刚恢复、Agent 刚发现），也可能因账号切换
         // 退役后重建：按 token 重新取一次当前工作区持有的控制器。
         // `open` 对同一 token 是幂等的，因此重复触发不会替换仍在发送的控制器。

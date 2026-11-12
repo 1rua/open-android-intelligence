@@ -49,6 +49,7 @@ data class AppearanceSection(
     val dynamicIconColor: Boolean,
     val palette: String,
     val reduceMotion: Boolean,
+    val streamingHapticFeedback: Boolean = false,
 ) {
     fun encode(): JsonValue.JObject = JsonValue.JObject(
         listOf(
@@ -57,6 +58,7 @@ data class AppearanceSection(
             "dynamicIconColor" to Json.of(dynamicIconColor),
             "palette" to Json.of(palette),
             "reduceMotion" to Json.of(reduceMotion),
+            "streamingHapticFeedback" to Json.of(streamingHapticFeedback),
         ),
     )
 
@@ -87,6 +89,7 @@ data class AppearanceSection(
                 dynamicIconColor = BackupFields.boolean(section, "dynamicIconColor") ?: false,
                 palette = palette,
                 reduceMotion = BackupFields.boolean(section, "reduceMotion") ?: false,
+                streamingHapticFeedback = BackupFields.boolean(section, "streamingHapticFeedback") ?: false,
             )
         }
     }
@@ -440,7 +443,7 @@ data class SettingsBackupSections(
 
 /** 各节接受的字段闭集；用于把未知字段记进诊断，而不是悄悄丢弃。 */
 internal object BackupFieldSets {
-    val APPEARANCE = setOf("theme", "dynamicColor", "dynamicIconColor", "palette", "reduceMotion")
+    val APPEARANCE = setOf("theme", "dynamicColor", "dynamicIconColor", "palette", "reduceMotion", "streamingHapticFeedback")
     val NOTIFICATIONS = setOf("replyAlertsEnabled")
     // 新文件只写 `delayMillis`；`global`/`cores` 属于旧版本导出的形状，读取时兼容，
     // 因此不算「本版本不认识的字段」。

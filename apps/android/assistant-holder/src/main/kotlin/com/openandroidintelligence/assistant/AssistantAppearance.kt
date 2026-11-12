@@ -21,6 +21,7 @@ internal data class AssistantAppearance(
     /** 预设色板名（ThemePalette 枚举名），非法或缺失时回落到靛蓝。 */
     val palette: String,
     val reduceMotion: Boolean,
+    val streamingHapticFeedback: Boolean = false,
 ) {
     fun darkTheme(context: Context): Boolean = when (theme) {
         THEME_LIGHT -> false
@@ -41,6 +42,7 @@ internal fun readFallbackAppearance(context: Context): AssistantAppearance {
         dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false),
         palette = prefs.getString(KEY_PALETTE, ThemePalette.EMBER.name) ?: ThemePalette.EMBER.name,
         reduceMotion = prefs.getBoolean(KEY_REDUCE_MOTION, false),
+        streamingHapticFeedback = prefs.getBoolean("streaming_haptic_feedback", false),
     )
 }
 

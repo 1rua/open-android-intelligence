@@ -134,6 +134,7 @@ internal fun parseAssistantState(payload: String): AssistantState? {
             dynamicColor = dto.appearance.dynamicColor,
             palette = dto.appearance.palette,
             reduceMotion = dto.appearance.reduceMotion,
+            streamingHapticFeedback = dto.appearance.streamingHapticFeedback,
         ),
     )
 }

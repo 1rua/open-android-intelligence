@@ -175,6 +175,34 @@ class SettingsViewModelTest {
 
         viewModel.setReduceMotion(true)
         assertTrue(viewModel.uiState.value.appearance.reduceMotion)
+
+        viewModel.setStreamingHapticFeedback(true)
+        assertTrue(viewModel.uiState.value.appearance.streamingHapticFeedback)
+        viewModel.setStreamingHapticFeedback(false)
+        assertFalse(viewModel.uiState.value.appearance.streamingHapticFeedback)
+    }
+
+    @Test
+    fun streamingHapticFeedbackDefaultsOffAndPersistsWhenPreferencesAreRecreated() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val storage = context.getSharedPreferences("open_android_intelligence_appearance", 0)
+        val key = "streaming_haptic_feedback"
+        val hadPreviousValue = storage.contains(key)
+        val previousValue = storage.getBoolean(key, false)
+        assertTrue(storage.edit().remove(key).commit())
+
+        try {
+            val appearance = AppearancePreferences(context)
+            assertFalse(appearance.settings.value.streamingHapticFeedback)
+
+            appearance.setStreamingHapticFeedback(true)
+            assertTrue(appearance.settings.value.streamingHapticFeedback)
+            assertTrue(AppearancePreferences(context).settings.value.streamingHapticFeedback)
+        } finally {
+            val editor = storage.edit()
+            if (hadPreviousValue) editor.putBoolean(key, previousValue) else editor.remove(key)
+            assertTrue(editor.commit())
+        }
     }
 
     @Test

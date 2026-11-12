@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -90,17 +89,23 @@ internal fun MarkdownBlockView(
     isStreaming: Boolean,
     colors: MarkdownColors,
 ) {
-    when (block) {
-        is TimelineBlock.Heading -> MarkdownHeadingView(block, isStreaming, colors)
-        is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isStreaming, colors)
-        is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isStreaming)
-        is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isStreaming, colors)
-        is TimelineBlock.ListBlock -> MarkdownListView(block, isStreaming, colors)
-        is TimelineBlock.Table -> MarkdownTableView(block, isStreaming, colors)
-        is TimelineBlock.MathBlock -> MarkdownMathBlockView(block)
-        is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
-        is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isStreaming)
-        is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
+    val trace = LocalStreamingMarkdownDocument.current?.trace?.blocks?.get(block)
+    CompositionLocalProvider(
+        LocalMarkdownBlockSource provides trace?.source,
+        LocalMarkdownLeafSource provides trace?.leaves?.lastOrNull(),
+    ) {
+        when (block) {
+            is TimelineBlock.Heading -> MarkdownHeadingView(block, isStreaming, colors)
+            is TimelineBlock.Paragraph -> MarkdownParagraphView(block, isStreaming, colors)
+            is TimelineBlock.CodeBlock -> MarkdownCodeBlock(block, isStreaming = isStreaming)
+            is TimelineBlock.Blockquote -> MarkdownBlockquoteView(block, isStreaming, colors)
+            is TimelineBlock.ListBlock -> MarkdownListView(block, isStreaming, colors)
+            is TimelineBlock.Table -> MarkdownTableView(block, isStreaming, colors)
+            is TimelineBlock.MathBlock -> MarkdownMathBlockView(block)
+            is TimelineBlock.ThematicBreak -> MarkdownThematicBreakView()
+            is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(block, isStreaming = isStreaming)
+            is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(block)
+        }
     }
 }
 
@@ -252,6 +257,7 @@ fun MarkdownListView(
     } else {
         MaterialTheme.colorScheme.onSurface
     }
+    val listLeaves = LocalStreamingMarkdownDocument.current?.trace?.blocks?.get(block)?.leaves.orEmpty()
 
     Column(
         modifier = modifier,
@@ -273,23 +279,27 @@ fun MarkdownListView(
             val itemColor = if (checked) MaterialTheme.colorScheme.onSurfaceVariant else baseColor
             val baseStyle = if (compact) AppTextStyles.Thought else MaterialTheme.typography.bodyLarge
 
-            Row(
-                modifier = Modifier
-                    .padding(start = Dimensions.ListIndent * item.level),
-                verticalAlignment = Alignment.Top,
+            CompositionLocalProvider(
+                LocalMarkdownLeafSource provides listLeaves.getOrNull(index),
             ) {
-                ListItemMarker(item = item, height = markerHeight)
-                Spacer(Modifier.width(Dimensions.SpaceSmall))
-                MarkdownInlineText(
-                    text = item.text,
-                    colors = colors,
-                    isStreaming = isLast,
-                    modifier = Modifier.weight(1f, fill = false),
-                    style = baseStyle.copy(
-                        textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
-                    ),
-                    color = itemColor,
-                )
+                Row(
+                    modifier = Modifier
+                        .padding(start = Dimensions.ListIndent * item.level),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    ListItemMarker(item = item, height = markerHeight)
+                    Spacer(Modifier.width(Dimensions.SpaceSmall))
+                    MarkdownInlineText(
+                        text = item.text,
+                        colors = colors,
+                        isStreaming = isLast,
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = baseStyle.copy(
+                            textDecoration = if (checked) TextDecoration.LineThrough else TextDecoration.None,
+                        ),
+                        color = itemColor,
+                    )
+                }
             }
         }
     }
@@ -407,6 +417,10 @@ fun MarkdownTableView(
     val evenBg = MaterialTheme.colorScheme.surfaceContainerLowest
     val oddBg = MaterialTheme.colorScheme.surfaceContainerLow
     val density = LocalDensity.current
+    val rowSourceStarts = remember(block.headers.size, block.rows) {
+        var offset = block.headers.size
+        block.rows.map { cells -> offset.also { offset += cells.size } }
+    }
 
     // 单元格最小宽度保证表头与简短内容整齐；最大宽度促成长文本在单元格内折行，防止穿透
     val columnMinimum = 84.dp
@@ -453,6 +467,8 @@ fun MarkdownTableView(
                             TableAlignment.CENTER -> TextAlign.Center
                             TableAlignment.RIGHT -> TextAlign.End
                         }
+                        val headerSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
+                            ?.get(block)?.leaves?.getOrNull(colIdx)
                         Box(
                             modifier = Modifier
                                 .width(colWidth)
@@ -463,15 +479,17 @@ fun MarkdownTableView(
                                 TableAlignment.RIGHT -> Alignment.CenterEnd
                             },
                         ) {
-                            MarkdownInlineText(
-                                text = header,
-                                colors = colors,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                                fontSize = 13.sp,
-                                textAlign = textAlign,
-                                modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
+                            CompositionLocalProvider(LocalMarkdownLeafSource provides headerSource) {
+                                MarkdownInlineText(
+                                    text = header,
+                                    colors = colors,
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                                    fontSize = 13.sp,
+                                    textAlign = textAlign,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                            }
                         }
                         if (colIdx < block.headers.lastIndex) {
                             Box(
@@ -507,6 +525,9 @@ fun MarkdownTableView(
                             val isLastCell = isStreaming &&
                                 rowIdx == block.rows.lastIndex &&
                                 colIdx == block.headers.lastIndex
+                            val cellSource = LocalStreamingMarkdownDocument.current?.trace?.blocks
+                                ?.get(block)?.leaves?.getOrNull(rowSourceStarts[rowIdx] + colIdx)
+                                ?.takeIf { colIdx < rowCells.size }
                             Box(
                                 modifier = Modifier
                                     .width(colWidth)
@@ -517,17 +538,19 @@ fun MarkdownTableView(
                                     TableAlignment.RIGHT -> Alignment.CenterEnd
                                 },
                             ) {
-                                MarkdownInlineText(
-                                    text = cellText,
-                                    colors = colors,
-                                    isStreaming = isLastCell,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontSize = 12.5.sp,
-                                    lineHeight = 18.sp,
-                                    textAlign = textAlign,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
+                                CompositionLocalProvider(LocalMarkdownLeafSource provides cellSource) {
+                                    MarkdownInlineText(
+                                        text = cellText,
+                                        colors = colors,
+                                        isStreaming = isLastCell,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 18.sp,
+                                        textAlign = textAlign,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                }
                             }
                             if (colIdx < block.headers.lastIndex) {
                                 Box(
@@ -634,21 +657,22 @@ fun MarkdownCodeBlock(
                     .horizontalScroll(rememberScrollState())
                     .padding(if (compact) Dimensions.SpaceSmall else 12.dp),
             ) {
-                val cursorInlineId = "streaming_code_cursor"
-                val annotatedCode = remember(block.code, isStreaming) {
-                    AnnotatedString.Builder().apply {
-                        append(block.code)
-                        if (isStreaming) {
-                            append(" ")
-                            appendInlineContent(cursorInlineId, "[cursor]")
-                        }
-                    }.toAnnotatedString()
-                }
-                val inlineContent = streamingCursorInlineContent(isStreaming, cursorInlineId, 14.sp)
+                // 流式光标由正文容器的独立 Overlay 绘制；代码文本不能追加占位字符，
+                // 否则会改变横向滚动范围、复制内容和真实末端布局。
+                val annotatedCode = remember(block.code) { AnnotatedString(block.code) }
+                val codeSource = LocalMarkdownLeafSource.current
+                val codeOffsets = codeSource?.offsets?.takeIf { it.size == block.code.length }
+                    ?: IntArray(block.code.length) { it }
+                val (codeModifier, onCodeLayout) = streamingTextModifier(
+                    text = block.code,
+                    sourceOffsets = codeOffsets,
+                    modifier = Modifier,
+                )
                 SelectionContainer {
                     Text(
                         text = annotatedCode,
-                        inlineContent = inlineContent,
+                        modifier = codeModifier,
+                        onTextLayout = onCodeLayout,
                         fontFamily = FontFamily.Monospace,
                         style = MaterialTheme.typography.bodySmall,
                         fontSize = if (compact) 11.5.sp else 12.sp,

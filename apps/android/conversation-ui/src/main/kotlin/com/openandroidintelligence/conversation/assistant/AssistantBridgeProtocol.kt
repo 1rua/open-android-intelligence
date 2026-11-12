@@ -15,6 +15,8 @@ import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.state.ApprovalCardState
+import com.openandroidintelligence.conversation.state.StreamPresentationMetadata
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import org.json.JSONArray
 import org.json.JSONObject
@@ -110,6 +112,9 @@ data class AssistantTimelineEntryDto(
     val executionFact: Boolean = false,
     /** 该执行段所属任务的明确状态名；未知值解码为 null，不伪造终态。 */
     val executionGenerationState: String? = null,
+    /** 仅用于当前页面呈现，不进入消息持久化。 */
+    val presentationOrigin: String? = null,
+    val presentationRevision: Long = 0L,
 )
 
 /**
@@ -194,6 +199,7 @@ data class AssistantAppearanceDto(
     val dynamicColor: Boolean = false,
     val palette: String = DEFAULT_PALETTE,
     val reduceMotion: Boolean = false,
+    val streamingHapticFeedback: Boolean = false,
 )
 
 /** 交接请求的三种状态，与 [AssistantHandoffDto.state] 的线上字面量一一对应。 */
@@ -348,6 +354,8 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
     generationId = generationId,
     executionFact = executionFact,
     executionGenerationState = executionGenerationState?.name,
+    presentationOrigin = presentation?.origin?.name,
+    presentationRevision = presentation?.revision ?: 0L,
 )
 
 /** 把一条线上投影还原为界面条目。 */
@@ -371,6 +379,8 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry = TimelineEntry(
     executionFact = executionFact,
     // 未知状态名折成 null：宁可「不知道任务结论」，也不能猜成已完成或失败。
     executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
+    presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
+        ?.let { StreamPresentationMetadata(it, presentationRevision) },
 )
 
 private fun TimelineAttachment.toAssistantAttachmentDto(): AssistantAttachmentDto = AssistantAttachmentDto(
@@ -493,17 +503,18 @@ object AssistantWireBudget {
     /** 首尾保留比例：开头承载更多上下文，尾部保留最新结论。 */
     private const val HEAD_SHARE = 0.6
 
-    fun applyBudget(entries: List<TimelineEntry>): Pair<List<TimelineEntry>, Boolean> {
+    fun applyBudget(entries: List<TimelineEntry>, protectedMessageId: String? = null): Pair<List<TimelineEntry>, Boolean> {
         if (entries.isEmpty()) return emptyList<TimelineEntry>() to false
         val lastIndex = entries.lastIndex
         val adjusted = entries.mapIndexed { index, entry ->
             // 流式尾条是仍在增长的增量，截掉中段会隐藏最新内容；尾条正文必须完整送达。
-            val streamingTail = index == lastIndex && entry.isStreaming
+            val streamingTail = (index == lastIndex && entry.isStreaming) || entry.key == protectedMessageId
             if (streamingTail) entry else entry.copy(text = truncateText(entry.text))
         }
 
         // 先按条数封顶；保留最新条目，因此流式尾条必然留下。
-        var start = (adjusted.size - MAX_ENTRIES).coerceAtLeast(0)
+        val protectedIndex = adjusted.indexOfFirst { it.key == protectedMessageId }.takeIf { it >= 0 } ?: lastIndex
+        var start = minOf((adjusted.size - MAX_ENTRIES).coerceAtLeast(0), protectedIndex)
         var dropped = start > 0
 
         // 后缀字节和：每条的投影都是独立 JSON 对象，数组开销是分离符 + 方括号。
@@ -521,7 +532,7 @@ object AssistantWireBudget {
         }
 
         // 至少留下最后一条：即使预算仍不够，也宁可超限也不返回空时间线。
-        while (start < lastIndex && timelineBytes(start) > MAX_PAYLOAD_BYTES) {
+        while (start < protectedIndex && timelineBytes(start) > MAX_PAYLOAD_BYTES) {
             start += 1
             dropped = true
         }
@@ -609,6 +620,7 @@ private fun AssistantAppearanceDto.toJson(): JSONObject = JSONObject().apply {
     put("dynamicColor", dynamicColor)
     put("palette", palette)
     put("reduceMotion", reduceMotion)
+    put("streamingHapticFeedback", streamingHapticFeedback)
 }
 
 private fun AssistantAttachmentDto.toJson(): JSONObject = JSONObject().apply {
@@ -662,6 +674,7 @@ private fun AssistantTimelineEntryDto.toJson(): JSONObject = JSONObject().apply 
     generationId?.let { put("generationId", it) }
     if (executionFact) put("executionFact", true)
     executionGenerationState?.let { put("executionGenerationState", it) }
+    presentationOrigin?.let { put("presentationOrigin", it); put("presentationRevision", presentationRevision) }
 }
 
 /** 测量与编码共用同一份序列化，预算不会和实际 payload 走偏。 */
@@ -690,6 +703,7 @@ private fun JSONObject.toAppearanceDto(): AssistantAppearanceDto = AssistantAppe
     dynamicColor = optBoolean("dynamicColor", false),
     palette = stringOrEmpty("palette").ifBlank { DEFAULT_PALETTE },
     reduceMotion = optBoolean("reduceMotion", false),
+    streamingHapticFeedback = optBoolean("streamingHapticFeedback", false),
 )
 
 private fun JSONObject.toAttachmentDto(): AssistantAttachmentDto = AssistantAttachmentDto(
@@ -743,6 +757,8 @@ private fun JSONObject.toTimelineEntryDto(): AssistantTimelineEntryDto = Assista
     generationId = stringOrNull("generationId"),
     executionFact = optBoolean("executionFact", false),
     executionGenerationState = stringOrNull("executionGenerationState"),
+    presentationOrigin = stringOrNull("presentationOrigin"),
+    presentationRevision = optLong("presentationRevision", 0L),
 )
 
 /**

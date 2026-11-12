@@ -68,6 +68,8 @@
     <string name="settings_section_theme_mode">主题模式</string>
     <string name="settings_section_theme_color">主题色</string>
     <string name="settings_color_dynamic">系统动态取色</string>
+    <string name="settings_streaming_haptic_feedback">震动反馈</string>
+    <string name="settings_streaming_haptic_feedback_description">输出时伴随轻微震动触觉反馈</string>
     <string name="settings_title_security">安全与隐私</string>
     <string name="settings_section_plugin_security">插件运行安全</string>
     <string name="settings_dev_trust_mode">开发者信任模式</string>

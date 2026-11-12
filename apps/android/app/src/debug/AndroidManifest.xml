@@ -1,3 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:networkSecurityConfig="@xml/debug_network_security_config" />
+    <application android:networkSecurityConfig="@xml/debug_network_security_config">
+        <!-- 仅供仪表测试注入共享正文；正式发布包不包含此入口。 -->
+        <activity
+            android:name=".StreamingReplyTestActivity"
+            android:exported="false" />
+    </application>
 </manifest>

@@ -164,6 +164,7 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = appearanceSettings.dynamicColor,
                 palette = appearanceSettings.palette,
                 reduceMotion = appearanceSettings.reduceMotion,
+                streamingHapticFeedback = appearanceSettings.streamingHapticFeedback,
             ) {
                 val reduceMotion = LocalMotionPolicy.current.reduceMotion
                 // 全 App 唯一的 Snackbar 落点：离上下文远的操作结果统一在这里出现，

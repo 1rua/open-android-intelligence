@@ -32,6 +32,7 @@ import com.openandroidintelligence.conversation.workbench.AttachmentPreviewHost
 import com.openandroidintelligence.conversation.workbench.ScrollToLatestButton as WorkbenchScrollToLatestButton
 import com.openandroidintelligence.conversation.workbench.ThinkingIndicator
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayItem
+import com.openandroidintelligence.conversation.workbench.rememberStreamingPresentations
 import com.openandroidintelligence.conversation.workbench.TimelineDisplayRow
 import com.openandroidintelligence.conversation.workbench.rememberExecutionTimingStore
 import com.openandroidintelligence.conversation.workbench.rememberTimelineDisplayItems
@@ -143,6 +144,7 @@ internal fun AssistantTimelineView(
     val resolvedEntries = content.entries
     val displayItems = content.displayItems
     val timing = rememberExecutionTimingStore(threadId = threadId)
+    val presentations = rememberStreamingPresentations(resolvedEntries, threadId, generation = generation)
     val state = listState ?: rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -230,6 +232,7 @@ internal fun AssistantTimelineView(
                     ) { item ->
                         TimelineDisplayRow(
                             item = item,
+                            presentations = presentations,
                             // 助理会话与工作台共用同一套审批语义：被按下的那张卡片
                             // 就是被回答的那张审批，宿主拿到的是它的 approvalId。
                             onDecide = onDecide,
