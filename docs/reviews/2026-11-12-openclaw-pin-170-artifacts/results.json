@@ -1,0 +1,73 @@
+{
+  "oaiBaseline": "dabfdbe35d52f4ca11ba2cfeaaff38cdfddd2ebb",
+  "oaiConfigurationCommit": "ae4d8e57cde7f920b4fa2f730053ea60db9da3a5",
+  "configurationSha256": {
+    "openclaw-plugin-pin.json": "23e6273d34ff4488b7defce6bccd8b2255d532b7c855df7982149b05ce5d2558",
+    "docs/mvp/mvp-dependency-lock.md": "68d58c3dbeab604bf7ea8edaac31dfcb50b9e5ae3a049d8f2314e014774d851d"
+  },
+  "pluginCanonicalRepository": "1rua/openclaw-android-gateway",
+  "pluginMergeRevision": "e73ddfe1b333cfe0f69c4ea519db3553b056381a",
+  "reviewedPluginHead": "3fafc92a148e83b8b47a0876029c94dbd51ff20b",
+  "pluginTree": "257d3d763d52275370adbab4805978700234bcaa",
+  "contractRevision": "02ad53e09049c2b06c21cacd9d009c2f14e6d5bd",
+  "red": {
+    "oldImplementationPinExitCode": 1,
+    "unsynchronizedLockPassed": 8,
+    "unsynchronizedLockFailed": 1
+  },
+  "green": {
+    "implementationPinExitCode": 0,
+    "contractPinExitCode": 0,
+    "pluginContractCheckExitCode": 0,
+    "dependencyLockToolTestsPassed": 9,
+    "dependencyLockRowsPassed": 8,
+    "contractAndPlanningTestsPassed": 103,
+    "currentOpenClawPassed": 70,
+    "currentHermesPassed": 70,
+    "crossHostTestsPassed": 3,
+    "all70IdOperationResultHashEqual": true
+  },
+  "checks": {
+    "reviewedAndMergedWholeTreeEqual": true,
+    "26CurrentInputsEqual": true,
+    "61RuntimeFilesEqualReviewedBuild": true,
+    "originalCheckersUnmodified": true,
+    "onlyPluginLockRowUpdated": true,
+    "lockReviewExpiryUnchanged": true,
+    "workingTreeDiffCheckExitCode": 0,
+    "fullBaselineWorkingTreeDiffCheckExitCode": 0
+  },
+  "notExecuted": [
+    "本轮未执行锁行完整原生安装串",
+    "未重复插件220项或双次build，复用同tree已独立验证证据",
+    "OAI Full CI和真实Android/宿主/模型验收后续在最终集成commit进行"
+  ],
+  "evidenceSha256": {
+    "conformance/hermes-python.jsonl": "25a56959e5295a0ed06c131c403490cda4a29ce64b9782d2c185935e20a7c260",
+    "conformance/hermes-python.manifest.json": "43c2ce1458d6e21439e94aabd29687416d455d5defdc8fa50e419fad49754dd8",
+    "conformance/openclaw-typescript.jsonl": "7c37652af511d9907b211744ad2ee6f09b5cbba1aef8c7dae64ef6e528cdecc4",
+    "conformance/openclaw-typescript.manifest.json": "6fd9bd72562d3f92c2a9d2f0e8c8dcda7f7f72da34372b4c92904ba165aa956a",
+    "contract-pin-green.txt": "86ca8fcb30692ef06c1c7d886da3931bdd484524e71ea71c971b523f71c02b92",
+    "contract-planning-tools-green.txt": "197146fb970ce01457a25e58dfb630578b70d0ca1126c4004b5babb99f0bf598",
+    "cross-host-current.txt": "dd6fa35a79cb0c1681b4f395c2c3c3df489f911b90886eb0396b0e39e257dabe",
+    "environment.json": "4fc1e56ab170788c1b6189965e3c72faec2df6da9664d19af345afd30ae6db06",
+    "external-ci-runs.json": "4c9f3b2faed95059d92357b111c2710af300e0b778a9f83987418c51a68ae312",
+    "external-contract-file-verification.json": "e6aee31973f4da1ea55c91dd52c753f4b2253951208ccc225e45bdfe986d6a33",
+    "external-final-normalization-check.json": "61e3dd8e3240c1547be64eaa3dfc5745c5467a1b6c9c0b51b717ef0565a98c89",
+    "external-results.json": "8f96da97746a863a89551dde8662f738162bae82e6cd6d7899017cc34fe83f5c",
+    "external-spec-review.md": "2a39b6e829be50227843e64853d052c10ce0546b632f59ba05b03aa014a76d6d",
+    "external-standards-review.md": "b9ff0534882b46a8a7464c22e51c98640e278517675c30e23c6dddfd84f33e76",
+    "fixed-source-contract-pin.txt": "0955d584df4d429b68014b8b59293b326c5b04ceeac7eef5eb8c7fab055f45bb",
+    "fixed-source-implementation-pin.txt": "b29a661372087a3193e0d353462a0572d395220c7e2a7ea58149d9804a1e4251",
+    "implementation-pin-green.txt": "b29a661372087a3193e0d353462a0572d395220c7e2a7ea58149d9804a1e4251",
+    "integration-content-verification.json": "7ceffebd997d18c293a3abea3979992fde2f1af49d830740d39ec30583ac1161",
+    "lock-check-green.txt": "459231228e4dd7e056d4d48dc540cdc57c515a98b2195a219d5bfcd4363d3154",
+    "lock-tools-green.txt": "c1e076540ff08720b92cab5fea8535b579c4a7498c67765447e0908677578345",
+    "log-normalization.json": "2ef846b7d36ca2f9f5bdbac372e0abab499df5b1de989a4f1583cd055ee26330",
+    "old-implementation-pin-red.txt": "f01e012d10098563029a7b74e062e98a836d3121bf4fb2abffb6f4a6b78edb42",
+    "openclaw-contract-green.txt": "31b1da1abdbd87646189b66f35da7fa4b98fb555867f2495273b83ed2776eefe",
+    "openclaw-merge-source.json": "d8b5198350bac2fba769d9dc8d84aab36088d722047ee3df09140b3c306f7487",
+    "plugin-lock-fields.json": "8a00acdba4cf1732f0e2d71d0d13bd5912aa3e0702fe956298e3013cefb304ac",
+    "unsynchronized-lock-red.txt": "626baf5dd6eb26e504a15e5140816b85be56df8945c4c35b6676ad463734d913"
+  }
+}

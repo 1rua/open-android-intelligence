@@ -1,0 +1,24 @@
+[
+  {
+    "conclusion": "success",
+    "created_at": "2026-11-11T23:52:39Z",
+    "event": "pull_request",
+    "head_sha": "2f1a08a33ec0255302789a03b48194364dd754ed",
+    "html_url": "https://github.com/1rua/openclaw-android-gateway/actions/runs/43123126400",
+    "id": 43123126400,
+    "path": ".github/workflows/ci.yml",
+    "status": "completed",
+    "updated_at": "2026-11-11T23:54:04Z"
+  },
+  {
+    "conclusion": "success",
+    "created_at": "2026-11-12T00:00:51Z",
+    "event": "pull_request",
+    "head_sha": "3fafc92a148e83b8b47a0876029c94dbd51ff20b",
+    "html_url": "https://github.com/1rua/openclaw-android-gateway/actions/runs/43124113590",
+    "id": 43124113590,
+    "path": ".github/workflows/ci.yml",
+    "status": "completed",
+    "updated_at": "2026-11-12T00:01:55Z"
+  }
+]

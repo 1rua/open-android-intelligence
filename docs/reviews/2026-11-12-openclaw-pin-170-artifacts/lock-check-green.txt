@@ -1,0 +1,6 @@
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> lock:check
+> node --experimental-strip-types tools/check-dependency-lock.ts
+
+MVP dependency lock: PASS (8 rows)
