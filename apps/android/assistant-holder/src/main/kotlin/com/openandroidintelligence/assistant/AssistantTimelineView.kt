@@ -144,7 +144,7 @@ internal fun AssistantTimelineView(
     val resolvedEntries = content.entries
     val displayItems = content.displayItems
     val timing = rememberExecutionTimingStore(threadId = threadId)
-    val presentations = rememberStreamingPresentations(resolvedEntries, threadId)
+    val presentations = rememberStreamingPresentations(resolvedEntries, threadId, generation = generation)
     val state = listState ?: rememberLazyListState()
     val scope = rememberCoroutineScope()
 

@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
+import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.LocalStreamingHapticFeedbackEnabled
@@ -30,7 +31,30 @@ internal data class StreamingPresentationFrame(
     val hapticEligible: Boolean = false,
     val advancedGraphemes: Int = 0,
     val liveSourceRanges: List<IntRange> = emptyList(),
+    val sourceStart: Int = 0,
 )
+
+/** 完整接收事实的最终回答起点；只在事实文本变化时复用原解析器及来源图计算。 */
+private class StreamingReplySource {
+    private val cache = StreamingMarkdownCache()
+    private var receivedText: String? = null
+    private var start = 0
+
+    fun start(text: String): Int {
+        if (text == receivedText) return start
+        receivedText = text
+        start = if (!mayContainExecutionMarkup(text)) 0 else {
+            val document = cache.parse(text)
+            val lastExecution = document.blocks.indexOfLast(::isExecutionBlock)
+            if (lastExecution < 0) 0 else {
+                var offset = document.trace.blocks[document.blocks[lastExecution]]?.source?.end ?: text.length
+                while (offset < text.length && text[offset].isWhitespace()) offset++
+                offset
+            }
+        }
+        return start
+    }
+}
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
@@ -52,6 +76,9 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
     private val observed = initial.associate { it.key to Observation(it) }.toMutableMap()
     private var currentIdentity: ReplyIdentity? = null
     private var engine: StreamingPresentationState? = null
+    private val source = StreamingReplySource()
+    private var sourceStart = 0
+    private var generationOwner: ReplyIdentity? = null
     private var nextBatch = 0L
     private var consumedHapticBatch = 0L
     private var visible = true
@@ -78,14 +105,16 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         // frame 的变化没有订阅者，正文会停在空投影而调度器仍在后台推进。
         val committed = frame
         if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
-        if (currentIdentity?.key == entry.key) return committed
-        if (currentIdentity?.isUpgrade(entry) == true) return committed
+        if (currentIdentity?.key == entry.key || currentIdentity?.isUpgrade(entry) == true) {
+            val start = source.start(entry.text)
+            return if (committed != null && committed.sourceStart != start) committed.copy(sourceStart = start) else committed
+        }
         if (!canStart(entry)) return null
         // accept 在组合提交后运行；先给新 LIVE 一个仅含旧前缀的投影，首帧不能闪现整段全文。
-        return StreamingPresentationFrame(baselineText(entry), active = true)
+        return StreamingPresentationFrame(baselineText(entry), active = true, sourceStart = source.start(entry.text))
     }
 
-    internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long) {
+    internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long, generation: GenerationState? = null) {
         if (!pageVisible || !visible) {
             clearActive()
             rememberAll(entries)
@@ -115,7 +144,18 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
             currentIdentity = ReplyIdentity(incoming)
         }
         val state = requireNotNull(engine)
-        val advance = state.update(incoming.text, metadata.revision, metadata.origin, incoming.isStreaming, now)
+        // 无轮次 ID 的全局状态只能结束此前确实观察过生成中的同一回复；旧终态不能认领新回复。
+        if (generation == GenerationState.RUNNING || generation == GenerationState.QUEUED || generation == GenerationState.CANCEL_REQUESTED) {
+            generationOwner = ReplyIdentity(incoming)
+        }
+        val scopedTerminal = incoming.executionGenerationState?.isTerminal() == true ||
+            incoming.generationId?.let { id -> entries.any { it.generationId == id && it.executionGenerationState?.isTerminal() == true } } == true
+        val ownedTerminal = generation?.isTerminal() == true && generationOwner?.let {
+            it.key == incoming.key || it.isUpgrade(incoming)
+        } == true
+        sourceStart = source.start(incoming.text)
+        val advance = state.update(incoming.text, metadata.revision, metadata.origin,
+            incoming.isStreaming && !scopedTerminal && !ownedTerminal, now, revealFromOffset = sourceStart)
         publish(state, advance)
         rememberAll(entries)
     }
@@ -129,6 +169,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         visible = false
         clearActive()
         observed.clear()
+        generationOwner = null
     }
 
     internal fun hide() {
@@ -173,6 +214,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         engine = null
         frame = null
         hasPending = false
+        sourceStart = 0
     }
 
     private fun publish(state: StreamingPresentationState, advance: StreamingRevealAdvance) {
@@ -184,11 +226,11 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
                 if (advance.corrected) state.revealOffset else advance.startOffset,
                 state.revealOffset, advance.hapticEligible && !advance.corrected,
                 advance.advancedGraphemes,
-                advance.liveSourceRanges,
+                advance.liveSourceRanges, sourceStart,
             )
-        } else if (previous == null || previous.active != state.isPresenting || previous.text != state.displayedText) {
+        } else if (previous == null || previous.active != state.isPresenting || previous.text != state.displayedText || previous.sourceStart != sourceStart) {
             frame = (previous ?: StreamingPresentationFrame(state.displayedText)).copy(
-                text = state.displayedText, active = state.isPresenting,
+                text = state.displayedText, active = state.isPresenting, sourceStart = sourceStart,
             )
         }
     }
@@ -200,6 +242,7 @@ fun rememberStreamingPresentations(
     entries: List<TimelineEntry>,
     owner: Any?,
     enabled: Boolean = true,
+    generation: GenerationState? = null,
 ): StreamingPresentationRegistry {
     val view = LocalView.current
     val registry = remember(owner) { StreamingPresentationRegistry(entries) }
@@ -225,10 +268,10 @@ fun rememberStreamingPresentations(
     DisposableEffect(registry) { onDispose { registry.close() } }
     val visible = enabled && foreground
     registry.prepare(entries, visible)
-    LaunchedEffect(registry, entries, visible) {
+    LaunchedEffect(registry, entries, visible, generation) {
         // 接收与消费共用 Compose 帧时间基准，避免测试时钟或宿主时钟的起点不同导致永不推进。
-        if (visible) withFrameNanos { registry.accept(entries, true, it) }
-        else registry.accept(entries, false, 0L)
+        if (visible) withFrameNanos { registry.accept(entries, true, it, generation) }
+        else registry.accept(entries, false, 0L, generation)
     }
     // 只在有待显内容时请求帧。网络空闲、后台和终态排空后不留下循环。
     val pending = registry.hasPending
@@ -281,9 +324,12 @@ internal fun StreamingReplyBody(
     // 列表回收或呈现容器切换会重建局部绘制状态；挂载时已有的批次只作为稳定基线。
     // 取原始进度而非可能仍等待后台解析的 renderFrame，避免解析完成后补播旧范围。
     val mountedBatch = remember(registry, entry.key) { frame?.batchId ?: 0L }
-    val displayed = frame?.text ?: entry.text
+    val receivedSource = remember(entry.key) { StreamingReplySource() }
+    val sourceStart = if (finalOnly) frame?.sourceStart ?: receivedSource.start(entry.text) else 0
+    val prefix = frame?.text ?: entry.text
+    val displayed = prefix.drop(sourceStart)
     val document = rememberStreamingMarkdownDocument(displayed)
-    var committedFrame by remember(entry.key) { mutableStateOf<StreamingPresentationFrame?>(null) }
+    var committedFrame by remember(entry.key, sourceStart) { mutableStateOf<StreamingPresentationFrame?>(null) }
     val renderFrame = if (document.sourceText == displayed || frame?.start == frame?.end) frame else committedFrame
     SideEffect { if (document.sourceText == displayed) committedFrame = frame }
     // 已消费完源文仍需等待最后一次 Markdown 解析真正上屏，之后才结束光标。
@@ -296,23 +342,21 @@ internal fun StreamingReplyBody(
     val newBatch = renderFrame != null && renderFrame.batchId > mountedBatch
     val presentation = StreamingTextPresentation(
         batchId = renderFrame?.batchId ?: 0L,
-        sourceRevealStart = if (newBatch) renderFrame.start else renderFrame?.end ?: 0,
-        sourceRevealEnd = renderFrame?.end ?: 0,
+        sourceRevealStart = ((if (newBatch) renderFrame.start else renderFrame?.end ?: 0) - sourceStart).coerceAtLeast(0),
+        sourceRevealEnd = ((renderFrame?.end ?: 0) - sourceStart).coerceAtLeast(0),
         active = active,
         reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
         onVisibleAdvance = { id -> if (newBatch) haptic?.invoke(id) },
-        hapticSourceRanges = if (newBatch) renderFrame.liveSourceRanges else emptyList(),
+        hapticSourceRanges = if (newBatch) renderFrame.liveSourceRanges.mapNotNull { range ->
+            val start = maxOf(range.first, sourceStart)
+            if (range.last < start) null else (start - sourceStart)..(range.last - sourceStart)
+        } else emptyList(),
     )
-    // 执行事实仍按完整消息分组；最终正文仅使用同一次解析中最后一个执行块之后的节点，
-    // 不能把整条 entry 重新当 narrative 解析，也不能按字符串相似度寻找正文。
-    val blocks = remember(document, finalOnly) {
-        if (finalOnly) document.blocks.drop(document.blocks.indexOfLast(::isExecutionBlock) + 1)
-        else document.blocks
-    }
+    // 最终回答的来源起点已经由完整事实确认；半截展示前缀绝不能重新猜测执行标签。
     StreamingMarkdownContainer(
         sourceText = displayed,
         presentation = presentation,
         modifier = modifier,
         document = document,
-    ) { content(blocks, active) }
+    ) { content(document.blocks, active) }
 }

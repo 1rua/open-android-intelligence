@@ -55,6 +55,7 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         origin: StreamPresentationOrigin,
         streaming: Boolean,
         nowNanos: Long,
+        revealFromOffset: Int = 0,
     ): StreamingRevealAdvance {
         val unchanged = StreamingRevealAdvance(revealOffset, revealOffset)
         // 旧事件可能没有内容修订号（统一为 0）；同修订的合法前缀追加仍须接收，
@@ -93,20 +94,28 @@ class StreamingPresentationState(initialText: String = "", initialRevision: Long
         val firstLive = !enrolled
         enrolled = true
         appendSource(oldText.length, text.length, origin == StreamPresentationOrigin.LIVE)
+        // 完整事实已经确认属于过程区的前缀不参与正文吐字、追赶速度或触觉。
+        val revealFloor = revealFromOffset.coerceIn(0, safeEnd())
+        val skippedPrefix = revealFloor > revealOffset
+        if (skippedPrefix) {
+            revealOffset = revealFloor
+            discardConsumedSources()
+        }
         // 新分块可能续接已经显示的末字素：原位补齐，不把组合符或 ZWJ 当成新打字。
-        var extensionEnd = oldOffset
-        if (oldOffset > 0 && oldOffset !in boundaries) {
+        var extensionEnd = maxOf(oldOffset, revealOffset)
+        if (!skippedPrefix && oldOffset > 0 && oldOffset !in boundaries) {
             extensionEnd = boundaries.firstOrNull { it > oldOffset && it <= safeEnd() } ?: oldOffset
             revealOffset = extensionEnd
             discardConsumedSources()
         }
-        if (firstLive) {
+        if (firstLive || skippedPrefix) {
             lastFrameNanos = nowNanos
             if (!this.streaming) drainDeadlineNanos = nowNanos + DrainNanos
             val next = boundaries.firstOrNull { it > revealOffset && it <= safeEnd() }
             if (next != null) return revealTo(next, extensionEnd)
         }
-        return StreamingRevealAdvance(oldOffset, revealOffset)
+        return if (skippedPrefix) StreamingRevealAdvance(revealOffset, revealOffset, corrected = true)
+        else StreamingRevealAdvance(oldOffset, revealOffset)
     }
 
     fun advance(nowNanos: Long): StreamingRevealAdvance {

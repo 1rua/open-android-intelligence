@@ -150,7 +150,7 @@ fun WorkbenchScreen(
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
     val presentations = rememberStreamingPresentations(
-        entries, controller to state.activeThreadId, enabled = !settingsOpen,
+        entries, controller to state.activeThreadId, enabled = !settingsOpen, generation = state.generation,
     )
     LaunchedEffect(state.activeThreadId, displayItems, listState) {
         if (!com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled) return@LaunchedEffect

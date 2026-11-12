@@ -224,7 +224,7 @@ private fun BubbleChat(
     val state by controller.state.collectAsState()
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
-    val presentations = rememberStreamingPresentations(entries, controller to state.activeThreadId)
+    val presentations = rememberStreamingPresentations(entries, controller to state.activeThreadId, generation = state.generation)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val downloadAction: ((String) -> Unit)? =

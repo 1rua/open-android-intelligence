@@ -88,7 +88,7 @@ fun MessageTimeline(
 ) {
     val displayItems = rememberTimelineDisplayItems(entries, generation = generation)
     val timing = rememberExecutionTimingStore(threadId = null)
-    val presentations = rememberStreamingPresentations(entries, owner = null)
+    val presentations = rememberStreamingPresentations(entries, owner = null, generation = generation)
     AttachmentPreviewHost(
         attachments = entries.flatMap { it.attachments },
         onDownload = onDownloadAttachment,
