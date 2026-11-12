@@ -65,7 +65,7 @@ internal fun classifyNativeReadFailure(failure: Exception, defaultStage: String 
             "NATIVE_APPROVAL_SCOPE_MISMATCH", "UNSUPPORTED", "UNSUPPORTED_CAPABILITY", "GENERATION_NOT_FOUND") -> NativeReadFailureKind.PROTOCOL
         status == 408 || status == 429 || status in 500..599 -> NativeReadFailureKind.TRANSIENT
         status != 0 -> NativeReadFailureKind.PROTOCOL
-        code in setOf("AGENT_TIMEOUT", "AGENT_UNAVAILABLE", "EVENT_ACK_UNAVAILABLE") || cause is IOException -> NativeReadFailureKind.TRANSIENT
+        code in setOf("AGENT_TIMEOUT", "AGENT_UNAVAILABLE", "EVENT_ACK_UNAVAILABLE", "AUTHENTICATION_STORAGE_UNAVAILABLE") || cause is IOException -> NativeReadFailureKind.TRANSIENT
         else -> NativeReadFailureKind.PROTOCOL
     }
     return NativeReadFailure(kind, stage, code, status)

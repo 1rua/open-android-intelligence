@@ -325,13 +325,13 @@ class GatewayHttpClient(
             "method" to request.method, "status" to status))
     }
 
-    suspend fun execute(request: SignedGatewayRequest): GatewayResponse {
+    suspend fun execute(request: SignedGatewayRequest, onCredentialVersion: ((String) -> Unit)? = null): GatewayResponse {
         val replayable = request.copy(requestId = request.requestId ?: newRequestId())
         val recovery = currentCoroutineContext()[CursorRecoveryAttempt]?.takeIf {
             it.client === this && request.method == "GET" && request.target == SNAPSHOT_TARGET
         }
         var snapshot = sessionProfile()
-        var response = executeOnce(replayable, snapshot)
+        var response = executeOnce(replayable, snapshot, onCredentialVersion)
         if (response.status == 401 && sessionRenewal != null) {
             if (recovery == null) {
                 snapshot = sessionRenewal.refresh(snapshot)
@@ -339,7 +339,7 @@ class GatewayHttpClient(
                 if (!recoverEventAuthentication(snapshot, recovery.owner)) throw EventSessionRejectedException(snapshot, httpStatus = 401)
                 snapshot = sessionProfile()
             }
-            response = executeOnce(replayable, snapshot)
+            response = executeOnce(replayable, snapshot, onCredentialVersion)
         }
         if (recovery != null) {
             requireEventOwner(recovery.owner)
@@ -353,12 +353,14 @@ class GatewayHttpClient(
         return response
     }
 
-    private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile): GatewayResponse {
+    private suspend fun executeOnce(request: SignedGatewayRequest, snapshot: GatewayProfile,
+        onCredentialVersion: ((String) -> Unit)? = null): GatewayResponse {
         val wire = signedWireRequest(request, snapshot)
         transportPhase("http.io_queued", wire)
         return withContext(ioDispatcher) {
             transportPhase("http.io_dequeued", wire)
             request.beforeSend()
+            onCredentialVersion?.invoke(snapshot.sessionId)
             transportPhase("http.dispatched", wire)
             val beforeDispatch = request.beforeDispatch
             val response = if (beforeDispatch == null) transport.execute(wire)
@@ -371,17 +373,20 @@ class GatewayHttpClient(
     /** Validate raw headers first; close a rejected stream before retrying the request. */
     suspend fun <T> consumeResponse(
         request: SignedGatewayRequest,
+        onCredentialVersion: ((String) -> Unit)? = null,
         consume: suspend (Int, List<RawHeader>, java.io.InputStream) -> T,
     ): T {
         val replayable = request.copy(requestId = request.requestId ?: newRequestId())
         var snapshot = sessionProfile()
         var canRecover = sessionRenewal != null
         while (true) {
-            val wire = signedWireRequest(replayable, snapshot)
+            val attempt = snapshot
+            val wire = signedWireRequest(replayable, attempt)
             transportPhase("http.io_queued", wire)
             val result = withContext(ioDispatcher) {
                 transportPhase("http.io_dequeued", wire)
                 replayable.beforeSend()
+                onCredentialVersion?.invoke(attempt.sessionId)
                 transportPhase("http.dispatched", wire)
                 transport.consumeResponse(wire) { status, rawHeaders, stream ->
                     transportPhase("http.headers_received", wire, status)

@@ -25,6 +25,17 @@ class AgentSessionClientTest {
     private val agent = CoreAgent("codex", "Codex", "codex", true, "deployment",
         AgentCapabilities(list = true, history = true, create = true, send = true, stream = true))
 
+    @Test fun authenticationFailureKeepsItsAttemptVersionOutOfTheDiagnosticText() = runBlocking {
+        val transport = RecordingTransport("event: message\ndata: {\"type\":\"error\",\"code\":\"SESSION_EXPIRED\"}\n\n", "text/event-stream")
+        val failure = runCatching { client(transport).send(agent, "native", "合成输入") {} }.exceptionOrNull()
+            as AgentSessionException
+        assertEquals("SESSION_EXPIRED", failure.message)
+        assertEquals("session", failure.rejectedCredentialVersion)
+        assertFalse(failure.toString().contains("access"))
+        assertFalse(failure.toString().contains("session"))
+        assertEquals(1, transport.requests.size)
+    }
+
     @Test fun pureAttachmentsAndMixedMessagesKeepIdsAndNativeReceipts() = runBlocking {
         for (text in listOf("", "看看这些文件")) {
             val transport = RecordingTransport("event: message\ndata: {\"type\":\"delta\",\"text\":\"收到\",\"messageId\":\"native-answer\",\"userMessageId\":\"native-question\",\"clientMessageId\":\"cm_files\"}\n\nevent: message\ndata: {\"type\":\"done\",\"outcome\":\"completed\"}\n\n", "text/event-stream")
