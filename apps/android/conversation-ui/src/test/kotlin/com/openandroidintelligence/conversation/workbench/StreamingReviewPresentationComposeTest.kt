@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -105,7 +106,11 @@ class StreamingReviewPresentationComposeTest {
         assertEquals("动画不能修改已接收事实", received, entry.text)
     }
 
-    private fun assertGenerationTerminalDrains(terminal: GenerationState) {
+    @Test fun 执行最终回答仅生成完成状态变化也排空光标() {
+        assertGenerationTerminalDrains(GenerationState.COMPLETED, execution = true)
+    }
+
+    private fun assertGenerationTerminalDrains(terminal: GenerationState, execution: Boolean = false) {
         val entries = mutableStateOf(emptyList<TimelineEntry>())
         val generation = mutableStateOf(GenerationState.RUNNING)
         val received = "字".repeat(150)
@@ -117,7 +122,7 @@ class StreamingReviewPresentationComposeTest {
             }
         }
         pump()
-        val entry = reply(received)
+        val entry = reply(if (execution) "<think>过程</think>\n\n$received" else received)
         compose.runOnIdle { entries.value = listOf(entry) }
         compose.waitUntil(5_000) { pump(); visibleReplyText().isNotEmpty() }
         assertTrue(visibleReplyText().length < received.length)
@@ -141,7 +146,10 @@ class StreamingReviewPresentationComposeTest {
         .filter { it.isNotEmpty() && it.all { char -> char == '字' } }.maxByOrNull { it.length }.orEmpty()
 
     private fun cursorPixelCount(key: String): Int {
-        val bounds = compose.onNodeWithTag("message-bubble:$key", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val matches = compose.onAllNodes(hasTestTag("message-bubble:$key"), useUnmergedTree = true).fetchSemanticsNodes()
+        if (matches.isEmpty()) return 0
+        assertEquals("同一回复气泡必须具有唯一布局节点", 1, matches.size)
+        val bounds = matches.single().boundsInRoot
         val image = compose.runOnIdle {
             val bitmap = Bitmap.createBitmap(ceil(bounds.width).toInt(), ceil(bounds.height).toInt(), Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)

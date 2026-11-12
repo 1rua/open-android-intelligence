@@ -17,6 +17,43 @@ import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchNativeExecutionEventsTest {
+    @Test fun 普通正文首次恢复就带匹配生成终态且没有伪造工具步骤() = runTest {
+        val host = Host().apply {
+            generationState.value = GenerationState.COMPLETED
+            history = listOf(
+                TimelineMessage("answer", "assistant", listOf(MessagePart.Text("完整正文")), 200,
+                    state = "STREAMING", conversationId = ConversationId("a"), generationId = "g"),
+            )
+        }
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            val answer = rows(controller).single { it.key == "answer" }
+            assertEquals(GenerationState.COMPLETED, answer.executionGenerationState)
+            assertTrue("明确终态只补 UI 元数据，不伪造执行步骤", answer.executionSteps.isEmpty())
+            assertFalse(answer.executionFact)
+        } finally { controller.close() }
+    }
+
+    @Test fun 普通正文生成终态不会被下一生成状态覆盖() = runTest {
+        val host = Host().apply {
+            history = listOf(
+                TimelineMessage("answer", "assistant", listOf(MessagePart.Text("完整正文")), 200,
+                    state = "STREAMING", conversationId = ConversationId("a"), generationId = "g"),
+            )
+        }
+        val controller = controller(host)
+        try {
+            runCurrent(); controller.openThread("a"); runCurrent()
+            host.generationState.value = GenerationState.FAILED; runCurrent()
+            assertEquals(GenerationState.FAILED, rows(controller).single { it.key == "answer" }.executionGenerationState)
+            host.generationId.value = "next-generation"
+            host.generationState.value = GenerationState.RUNNING; runCurrent()
+            assertEquals(GenerationState.FAILED, rows(controller).single { it.key == "answer" }.executionGenerationState)
+            assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        } finally { controller.close() }
+    }
+
     @Test fun offlineCompletedHistoryDoesNotReopenAnUnfinishedToolStep() = runTest {
         val call = step("old-call", 1, NativeExecutionStatus.RUNNING).copy(sourceMessageId = "old-tool", occurredAt = 150L)
         val host = Host().apply {

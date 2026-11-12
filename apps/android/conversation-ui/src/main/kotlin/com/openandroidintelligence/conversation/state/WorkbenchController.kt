@@ -5610,6 +5610,9 @@ class WorkbenchController(
                     else old
                 }
                 entry.copy(executionSteps = visibleSteps(generationId, merged), executionGenerationState = taskState(generationId))
+            } else if (generationId != null && !entry.isUser) {
+                // 普通正文也携带按会话和生成身份确认的状态；无需先看到工具步骤或 RUNNING。
+                entry.copy(executionGenerationState = taskState(generationId))
             } else entry
         }.toMutableList()
         executionFacts.forEach { (identity, facts) ->

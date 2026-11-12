@@ -84,6 +84,15 @@ class StreamingReviewPresentationRegistryTest {
         assertTrue("相同显示键不能绕过生成身份检查", registry.frameFor(next)!!.active)
     }
 
+    @Test fun 没有先看到运行状态的匹配生成终态仍然排空新接收正文() {
+        val registry = StreamingPresentationRegistry(emptyList())
+        val entry = reply("字".repeat(150)).copy(executionGenerationState = GenerationState.COMPLETED)
+        registry.accept(listOf(entry), true, 0, GenerationState.COMPLETED)
+        registry.advance(300_000_000)
+        assertEquals(entry.text, registry.frameFor(entry)?.text)
+        assertFalse(registry.frameFor(entry)!!.active)
+    }
+
     @Test fun 执行最终回答快照恢复仍然直接建立完整基线() {
         val entry = reply("<think>过程</think>\n\n完整回答").copy(presentation = StreamPresentationMetadata(SNAPSHOT, 1))
         val registry = StreamingPresentationRegistry(listOf(entry))

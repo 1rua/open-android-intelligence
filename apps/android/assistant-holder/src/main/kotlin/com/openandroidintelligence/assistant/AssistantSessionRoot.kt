@@ -356,7 +356,7 @@ private fun ExpandedConversation(
         generation = generation,
     )
     val timing = rememberExecutionTimingStore(threadId = threadId)
-    val presentations = rememberStreamingPresentations(content.entries, threadId)
+    val presentations = rememberStreamingPresentations(content.entries, threadId, generation = generation)
     // 还没有流式正文时用真实的生成状态说明"在等什么"，而不是显示空态。
     val isThinking = isGenerating && content.entries.none { !it.isUser && it.isStreaming }
 
