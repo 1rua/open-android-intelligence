@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-11-06
 ---
 
 # Core 管理须认证，账号登录与设备路由分离
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 Core 的全局管理操作必须验证现有 Core 管理员及其 Core 密码；系统用户、root、本机确认或会话桥凭据不能代替。全新部署受控引导首位管理员，旧部署指定并验证现有账号；删除或降权不得移除最后一位可用管理员，安全改密不要求先另建管理员。管理员本机恢复使用预先登记的独立一次性恢复码，不代替普通账号的二次验证备用码，也不授予读取他人设备或会话的权限。
 

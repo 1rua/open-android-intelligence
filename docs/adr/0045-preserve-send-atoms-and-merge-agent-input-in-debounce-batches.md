@@ -5,6 +5,8 @@ date: 2026-08-29
 
 # 保留独立发送身份并以防抖批次聚合 Agent 输入
 
+> **2026-11-13 目标范围**：客户端发送原子和已由 ADR-0062 修订的消息合并行为保留；旧 Gateway wire 格式与路由不移植到 Remote。 见[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。本次仅确认目标，不宣称运行时代码已变更。
+
 > 2026-11-10 修订：防抖窗口改为纯客户端配置（默认 0 秒、0～30 秒、不按 Core 覆盖）。
 > 本文其余约束继续有效，详见 [ADR-0062](0062-own-message-merging-in-the-android-client.md)。
 

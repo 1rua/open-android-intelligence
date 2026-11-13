@@ -7,15 +7,17 @@ acceptance_status: pending
 
 # 全局设备授权架构重构与 Android 运行验收
 
+> **2026-11-13 目标范围更新**：本机全局授权、数据范围、默认手动与功能保真继续有效；Core 路由、旧 grant/身份数据迁移和旧线协议要求由新规格取代。 见[新架构文档](2026-11-13-dsh-remote-architecture-refactor.md)。本次只更新文档，既有运行代码及历史证据不因此改变。
+
 本文件完整保存用户于 2026-11-01 确认的任务要求。需求已接受不代表功能已实现。
 审计基线：`dev@3c9b82d1ef18062fc7dd09546efe6136803079cc`；目标 PR 分支：`dev`，停留 Review，不自动合并。
 本规格取代 2026-10-28 规格中按配对保留能力许可、来源不明则要求迁移复核、启用即自动执行及独立逐次确认的冲突规则。
 安装/启用与总开关仍独立；新能力默认「每次手动」，主动推送默认关闭。
 系统权限与系统强制单次同意、设备合法访问关系、账号私有会话/附件隔离继续生效。
 
-决策见 [ADR-0059](../../adr/0059-android-is-the-sole-device-capability-authority.md)，术语见 [CONTEXT](../../../CONTEXT.md)，
-实施、测试与阻塞状态见[执行记录](../../reviews/2026-11-01-global-device-authorization.zh-CN.md)，
-真机/模拟器分项证据见[Terra 验收报告](../../reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)。
+决策见 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md)，术语见 [CONTEXT](../../CONTEXT.md)，
+实施、测试与阻塞状态见[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)，
+真机/模拟器分项证据见[Terra 验收报告](../reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)。
 
 ## 可核对需求编号
 
