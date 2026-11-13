@@ -77,6 +77,7 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
 | `ui.drag` | `snapshotId`、`x/y/endX/endY`；可传 `durationMs` | `android_drag` |
 | `ui.launch_app` | `snapshotId`、`packageName`，由原生端口校验目标 | `android_launch_app` |
 | `plugin.invoke` | `pluginId`、版本化 `capabilityId`、`method`、`params`；按已验证 `.alp` 声明与内核端口执行 | 以下数据工具及通用已授权插件调用 |
+| `request.cancel` | `targetRequestId`；仅取消同一任务内该可信拥有者的指定请求，返回原请求的真实状态 | `android_cancel_request` |
 
 滚动、拖动、启动应用和时长参数来自现有
 [屏幕端口](../../apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ScreenContracts.kt)，
@@ -149,8 +150,15 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
   不能证明副作用是否发生，回执为 `outcome_unknown/unknown`，不能当作失败自动重发。
 - 重启恢复时保留 request_id、参数摘要和未知事实；结果已持久化则返回原结果。
   不通过新的 request_id 或重新创建任务来绕过去重。账本不可用时拒绝新的副作用操作。
+- 按请求取消使用 `request.cancel`，取消信封有独立 request_id，`args.targetRequestId` 指向
+  原请求。路由器在普通动作排队前处理该受限管理操作，并在同一原子状态转换中核对拥有者、
+  任务及目标请求，标记取消并阻止其待执行步骤；不能把取消排在正在等待本机确认的动作之后。
+  迟到取消只返回原请求终态或未知事实，不能取消同任务中已开始的下一请求，也不能转为 session/cancel。
+  取消记录和回执同样持久化并去重；未知目标不猜测为当前请求。管理取消只减少执行权，
+  不授予业务能力，不得要求先批准仍在等待确认的原动作才能取消它。
 - 取消只阻止尚未开始的执行或请求原生端口停止后续步骤，不撤销已经完成的点击、发送
-  或文件导出；无法确认停止时保留未知状态。关闭等待或 MCP 进程退出不等于取消任务。
+  或文件导出；无法确认停止时保留未知状态。原生 session/cancel 则明确取消整个任务 Session，
+  冻结该任务后续请求，不关闭 control-bus 或影响其他任务。关闭等待或 MCP 进程退出不等于取消任务。
 - 每个结果作为该任务会话中的真实 Assistant 记录发布，并保留 request_id；
   活动执行、待人工处理和终态通过真实 Session 投影同步，不能只来回切换 running/idle。
   任务等待本机确认时必须可观察为 `needs_user_input`，不能伪装成完成。
@@ -217,7 +225,7 @@ Kill Switch 在手机本地立即使屏幕执行授权失效、停止后续注�
 | `session/create` | 在该工作区建立独立空任务，持久记录拥有者，返回新 Session ID |
 | `session/prompt` | 接收 `mode:queue` 的文本块，解析 JSON/CLI 控制信封；不执行自然语言或调用 LLM |
 | `session/follow`、`session/page`、`session/control` | 提供 Session V3 真实基线、游标、记录、执行与待输入投影；按请求读结果 |
-| `session/cancel` | 对所属任务请求停止，返回受理而非伪造已停止；后续读结果确认 |
+| `session/cancel` | 只接收 sessionId，取消整个所属任务并冻结其后续请求；返回受理而非伪造已停止，不能充当按 request_id 取消 |
 | `workspaceFiles/stat/readBytes` | 按任务 Session scope 读取本任务 artifact，返回并校验文件版本、大小、块偏移和结束标记 |
 
 现有 `remote_send_message` 实际转为 `session/prompt`，其 operationId 对应信封 request_id；
@@ -256,6 +264,9 @@ RPC 等待中断后仍能用同一标识查状态。`read_artifact` 不接受任
 接口只接受本契约操作或下述委派操作，不提供任意 namespace/method 代理。
 所有 MCP Android 工具映射到上述操作；另暴露 `android_request_status` 和
 `android_cancel_request`，保证审批等待、长任务和未知结果可以继续查询与停止。
+Android 的 Bridge `cancel` 根据原回执确定任务与 `targetRequestId`，通过同一任务的
+session/prompt 发送 `request.cancel` 信封；原生 remote_interrupt_session 仍采用整任务语义。
+两者不能混用，也不能通过“先查请求再 session/cancel”的客户端竞态模拟精确取消。
 跨 Agent 委派的持久回执由 Bridge 保存，绑定同一活动账号、完整目标、任务与参数摘要；
 手机请求仍以手机账本为执行权威。Bridge 恢复后不能因本地没有上游内存回执就重发已受理
 委派，未知结果保留未知。MCP 子进程不持有这些权威状态，进程重启后通过 Bridge 查询。
@@ -278,6 +289,11 @@ Bridge 的目标不是官方独立 SDK。固定上游版本提供进程内 `dshR
 5. 委派回执绑定完整目标、原生 Session/Thread、任务和 request_id。后端审批保留原生
    单次审批契约；待审批时返回需要人工处理，不自动允许，也不把本机 Bridge token 当作审批。
 
+`remote_agent_delegate` 的 `action` 为 `start`、`status` 或 `cancel`：start 接收稳定
+request_id、endpointId 与任务内容，返回任务句柄；status/cancel 使用该句柄查询或取消原委派。
+Bridge 按回执种类区分 Android 精确请求取消与 Agent 原生任务取消；委派取消只发送给已验证的
+原后端 Session/Thread。目标绑定失效时明确返回未知或无法取消，不向电脑当前新工作区发送取消。
+
 各 Agent 通过电脑端原生配置挂载 Stdio MCP。上游 Remote ACP 的 `session/new/load`
 固定使用 `mcpServers:[]`，不能声称可从手机会话参数注入 MCP。
 不同后端的 Prompt、图片、模型、effort、审批和中断以真实 capability 与确认结果为准。
@@ -291,6 +307,8 @@ Bridge 的目标不是官方独立 SDK。固定上游版本提供进程内 `dshR
   对未知字段、Shell 片段和冲突参数同样拒绝，长按与现有滚动/拖动/启动应用不丢失。
 - 使用未修改上游原生工具完成工作区发现、真实任务创建、发送、等待、按 request_id
   读取结果及 `stat/readBytes` 下载；并发 stream、关闭、任务 owner 与文件 scope 不串线。
+- 同任务 A 已完成、B 正在执行时迟到取消 A，只返回 A 的原终态；等待本机确认的 A 可按 ID 取消，
+  取消不能被动作队列阻塞。原生整任务取消冻结后续请求，MCP 精确取消不误停 B。
 - 相同 request_id 重复、参数冲突、任务冲突、发送回执丢失、执行前/后崩溃、进程恢复、
   账本失败、取消竞态均不重复副作用；unknown 查询不被当作“尚未执行”。
 - 首次手动、范围内只读免逐次确认、敏感强制确认、系统权限撤销、锁屏与授权代际变化；
