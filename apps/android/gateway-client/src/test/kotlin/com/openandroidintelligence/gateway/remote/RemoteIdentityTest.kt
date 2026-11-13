@@ -54,6 +54,34 @@ class RemoteIdentityTest {
     }
 
     @Test
+    fun 身份作用域拒绝孤立代理项且合法代理对不碰撞() {
+        listOf("\ud800", "\udc00", "a\ud800b", "a\udc00b").forEach { invalid ->
+            val failure = assertThrows(IllegalArgumentException::class.java) {
+                RemoteIdentityScope(origin, invalid, RemoteRole.HOST)
+            }
+            assertEquals("REMOTE_SCOPE_UNICODE_INVALID", failure.message)
+            assertThrows(IllegalArgumentException::class.java) {
+                RemoteIdentityScope("https://remote.example/$invalid", "account-a", RemoteRole.HOST)
+            }
+        }
+        val paired = RemoteIdentityScope(origin, "account-\uD83D\uDE00", RemoteRole.HOST)
+        val question = RemoteIdentityScope(origin, "account-?", RemoteRole.HOST)
+        val other = RemoteIdentityScope(origin, "account-\uD83D\uDE01", RemoteRole.HOST)
+        assertEquals(3, listOf(paired, question, other).map { it.storageKey }.distinct().size)
+        assertEquals("account-\uD83D\uDE00", paired.accountId)
+        assertEquals(Json.canonical(Json.of(listOf("remote-identity/v1", origin, paired.accountId, "host"))),
+            paired.authenticatedData().toString(Charsets.UTF_8))
+    }
+
+    @Test
+    fun 身份origin只接受ASCII规范坐标与有效端口范围() {
+        listOf("https://rémote.example", "https://remote.example:65536").forEach { invalid ->
+            assertThrows(IllegalArgumentException::class.java) { RemoteIdentityScope(invalid, "account-a", RemoteRole.CLIENT) }
+        }
+        assertEquals("https://remote.example:65535", RemoteIdentityScope("https://remote.example:65535", "account-a", RemoteRole.CLIENT).origin)
+    }
+
+    @Test
     fun 复制另一作用域的密文无法通过认证() {
         val fixture = Fixture()
         fixture.store().save(clientScope, credential(clientId))

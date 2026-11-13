@@ -4,10 +4,14 @@ import com.openandroidintelligence.gateway.remote.crypto.NoiseIkChannel
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
 import com.openandroidintelligence.gateway.schema.Json
 import java.net.URI
+import java.nio.CharBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 import java.util.Collections
+import java.util.Locale
 
 enum class RemoteRole(val wireValue: String) {
     CLIENT("client"),
@@ -24,16 +28,32 @@ data class RemoteIdentityScope(
         require(origin.isNotEmpty() && origin == origin.trim()) { "REMOTE_ORIGIN_REQUIRED" }
         require(accountId.isNotEmpty()) { "REMOTE_ACCOUNT_REQUIRED" }
         require('\u0000' !in origin && '\u0000' !in accountId) { "REMOTE_SCOPE_INVALID" }
+        strictIdentityUtf8(origin)
+        strictIdentityUtf8(accountId)
+        require(origin.all { it.code in 0x21..0x7e }) { "REMOTE_ORIGIN_NOT_CANONICAL" }
         val uri = try { URI(origin) } catch (_: Exception) { throw IllegalArgumentException("REMOTE_ORIGIN_INVALID") }
-        require(uri.scheme in setOf("https", "http") && uri.host != null && uri.host == uri.host.lowercase() &&
+        require(uri.scheme in setOf("https", "http") && uri.host != null && uri.host == uri.host.lowercase(Locale.ROOT) &&
             uri.rawUserInfo == null && uri.rawPath.isNullOrEmpty() && uri.rawQuery == null && uri.rawFragment == null &&
-            uri.port != (if (uri.scheme == "https") 443 else 80) &&
+            uri.port in -1..65535 && uri.port != (if (uri.scheme == "https") 443 else 80) &&
             origin == "${uri.scheme}://${uri.host}${if (uri.port == -1) "" else ":${uri.port}"}") { "REMOTE_ORIGIN_NOT_CANONICAL" }
     }
 
-    fun authenticatedData(): ByteArray = Json.canonical(Json.of(listOf("remote-identity/v1", origin, accountId, role.wireValue))).encodeToByteArray()
+    fun authenticatedData(): ByteArray = strictIdentityUtf8(
+        Json.canonical(Json.of(listOf("remote-identity/v1", origin, accountId, role.wireValue))),
+    )
 
     val storageKey: String get() = RemoteBase64Url.encode(MessageDigest.getInstance("SHA-256").digest(authenticatedData()))
+}
+
+/** 严格拒绝孤立代理项，避免 UTF-8 替换字符使不同账号得到相同 AAD 或存储键。 */
+private fun strictIdentityUtf8(value: String): ByteArray = try {
+    val encoded = Charsets.UTF_8.newEncoder()
+        .onMalformedInput(CodingErrorAction.REPORT)
+        .onUnmappableCharacter(CodingErrorAction.REPORT)
+        .encode(CharBuffer.wrap(value))
+    ByteArray(encoded.remaining()).also(encoded::get)
+} catch (_: CharacterCodingException) {
+    throw IllegalArgumentException("REMOTE_SCOPE_UNICODE_INVALID")
 }
 
 @JvmInline
