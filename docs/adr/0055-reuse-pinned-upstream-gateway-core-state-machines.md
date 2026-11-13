@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-10-26
 ---
 
 # OAI Core 复用固定提交的上游 GatewayCore 设备状态机
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 **后续范围说明（2026-10-28）**：下文记录状态机的历史来源；当前实现已迁入 `oai_core.gateway`，不运行时依赖 Hermes 插件。对签名、配对、幂等和恢复行为的继承，不表示继续继承旧账号级设备能力许可。授权规则按 [ADR-0059](0059-android-is-the-sole-device-capability-authority.md) 修订为 Android 唯一权威，已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；分支测试和真机验收状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。
 

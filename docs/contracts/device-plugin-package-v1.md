@@ -7,6 +7,8 @@ version: 1.0.0
 
 # open-android-intelligence 设备插件包契约 v1
 
+> **2026-11-13 目标范围更新**：设备插件容器、签名、作者与沙箱边界继续有效；旧 Gateway 兼容字段和 Core 接线须在实施中同步解除，不作为新 Remote 身份或能力授权条件。 见[新架构文档](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。本次只更新文档，既有运行代码及历史证据不因此改变。
+
 ## 1. 适用范围
 
 本契约定义 Android 宿主可以发现、验证和安装的 `.alp` 产物。它覆盖受保护 WASM、开发者信任原生代码和 Companion APK 三种运行类型。

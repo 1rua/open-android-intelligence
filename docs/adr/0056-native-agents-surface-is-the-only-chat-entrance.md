@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-10-26
 ---
 
 # OAI Core 不提供旧聊天路由，原生 /agents 是唯一会话入口
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 OAI Core 刻意不实现 `/open-android-intelligence/v2/conversations*` 聊天路由，
 并在协商响应中剔除 `conversationUi` 可选能力；会话读写全部走

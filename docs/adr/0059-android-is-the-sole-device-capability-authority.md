@@ -6,8 +6,10 @@ updated: 2026-11-01
 
 # Android 安装实例是设备能力授权的唯一权威
 
+> **2026-11-13 目标范围**：Android 安装实例权威、默认每次手动、独立范围与敏感确认继续有效；Core 认证/路由及旧数据迁移条款由新总规格取代。 见[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。本次仅确认目标，不宣称运行时代码已变更。
+
 同一手机连接不同 Core、账号或 Agent 时需要保持相同的本地能力策略。2026-11-01 的
-[全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)取代本 ADR 旧版的配对范围能力限制、
+[全局授权规格](../specs/2026-11-01-global-device-authorization.md)取代本 ADR 旧版的配对范围能力限制、
 旧许可迁移复核和启用即自动执行规则；实现与验收状态见[执行记录](../reviews/2026-11-01-global-device-authorization.zh-CN.md)。
 此前报告仅保留历史证据价值，不代表当前新模型已实现。
 

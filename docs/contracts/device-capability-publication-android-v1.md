@@ -1,5 +1,7 @@
 # Android 本地授权与能力状态发布
 
+> **2026-11-13 目标范围更新**：本文件的旧 Core 发布、配对和 android-v1 协商流程退出目标；本机授权与网络同步相互独立的原则保留。 见[新架构文档](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。本次只更新文档，既有运行代码及历史证据不因此改变。
+
 日期：2026-10-30。本约定细化 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 的授权与同步职责；不新增 Core 账号级设备能力许可，也不让 Hermes/DSH Adapter 成为授权入口。
 
 ## 权威与可执行状态

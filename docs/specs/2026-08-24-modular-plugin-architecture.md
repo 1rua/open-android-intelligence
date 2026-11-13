@@ -9,11 +9,13 @@ supersedes:
 
 # Open Android Intelligence 模块化插件架构规格
 
+> **2026-11-13 目标范围更新**：本文件关于旧服务拓扑、Gateway 协议和身份/迁移的目标规则已被新规格取代；Android 最小宿主、插件隔离与本机权威原则继续有效。 见[新架构文档](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。本次只更新文档，既有运行代码及历史证据不因此改变。
+
 ## 1. 权威范围
 
 本文是 Open Android Intelligence 新架构的总规格，规定 Android 宿主、设备插件、Gateway Protocol v2、Hermes/OpenClaw Gateway 适配器及迁移边界。
 
-**2026-10-28 授权修订**：设备能力按[新需求](2026-10-28-device-capability-authorization.md) 与 [ADR-0059](../../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权；普通前台能力默认开启，后台许可、系统权限、通知范围和敏感确认仍单独管理。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；当前测试和真机验收状态见[实施记录](../../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。早期 Bridge 规格、迁移计划和证据中的旧授权规则只作历史记录，不得用来恢复远端授权门槛。
+**2026-10-28 授权修订**：设备能力按[新需求](2026-10-28-device-capability-authorization.md) 与 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权；普通前台能力默认开启，后台许可、系统权限、通知范围和敏感确认仍单独管理。实现已在 `feature/android-device-authority-20261028`，待 PR 合入 `dev`；当前测试和真机验收状态见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。早期 Bridge 规格、迁移计划和证据中的旧授权规则只作历史记录，不得用来恢复远端授权门槛。
 
 规范细节分别由以下文件唯一负责：
 
@@ -23,7 +25,7 @@ supersedes:
 - Android 与 Gateway 的网络协议：`docs/contracts/gateway-protocol-v2.md`
 - 实施顺序和验收门槛：`docs/superpowers/plans/2026-08-24-modular-plugin-architecture-migration.md`
 
-旧规格继续保留历史背景；设备能力授权现行决策以 2026-10-28 需求修订与已接受的 ADR-0059 为准。该修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收；实现及验证见[授权实施记录](../../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。ADR-0004/0027 的重复配对许可条款不再适用于当前授权规则，其余协议状态隔离与故障关闭决定继续保留。其他主题发生冲突时以本文、契约和对应 accepted ADR 为准。旧 Bridge Protocol v1、独立 Bridge 部署及 Tailscale 默认链路不构成兼容要求。
+旧规格继续保留历史背景；设备能力授权现行决策以 2026-10-28 需求修订与已接受的 ADR-0059 为准。该修复已在 `feature/android-device-authority-20261028` 分支实施，待合入 `dev` 和真机验收；实现及验证见[授权实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。ADR-0004/0027 的重复配对许可条款不再适用于当前授权规则，其余协议状态隔离与故障关闭决定继续保留。其他主题发生冲突时以本文、契约和对应 accepted ADR 为准。旧 Bridge Protocol v1、独立 Bridge 部署及 Tailscale 默认链路不构成兼容要求。
 
 ## 2. 产品目标
 

@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-10-26
 ---
 
 # 用单一 OAI Core 进程统一承载设备权威与多 Agent 原生会话
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 **2026-10-28 职责澄清**：本 ADR 的“设备权威”指设备协议、连接认证、配对绑定与请求状态机的服务端权威，不包括设备能力许可。设备能力由 Android 唯一授权，已安装且启用插件的前台能力默认开启，后台及系统授权仍单独管理。此决策见 [ADR-0059](0059-android-is-the-sole-device-capability-authority.md)，已在 `feature/android-device-authority-20261028` 实施，待 PR 合入 `dev`；分支验证见[实施记录](../reviews/2026-10-28-device-capability-authorization-implementation.zh-CN.md)。以下保留当时的架构背景。
 

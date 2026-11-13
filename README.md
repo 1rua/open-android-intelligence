@@ -22,6 +22,11 @@
 
 ---
 
+> **架构规划（2026-11-13）**：[DSH Remote 重构规格](docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)已确认，
+> 配套[架构决策](docs/adr/0063-adopt-dsh-remote-with-independent-client-and-host-identities.md)、
+> [控制协议](docs/contracts/oai-control-rpc-v1.md)与[事实/验收基线](docs/architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)已纳入文档。
+> 目标是退出自建 Core 和旧 Gateway，保留原生聊天与本机权限裁决。**运行时代码尚未切换，以下介绍与安装步骤仍描述现有版本；文档确认不等于功能或真机验收完成。**
+
 ## 项目介绍
 
 平时我们在电脑上用 Claude Code、Codex、Hermes、DSH 等 AI 助手时，常常遇到两个痛点：

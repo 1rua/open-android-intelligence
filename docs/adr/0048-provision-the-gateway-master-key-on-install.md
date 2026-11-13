@@ -1,9 +1,12 @@
 ---
-status: accepted
+status: superseded
+superseded_by: ADR-0063
 date: 2026-09-15
 ---
 
 # 安装插件时自动预置受限主密钥文件
+
+> **2026-11-13 目标替代**：本决策中旧 Bridge、Gateway 或 Core 的部署、协议与服务端身份规则由 [ADR-0063](0063-adopt-dsh-remote-with-independent-client-and-host-identities.md) 与[新总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)取代；正文保留历史背景。本次仅更新文档，现有运行代码尚未切换。
 
 ADR 0023 要求主密钥优先来自宿主秘密存储，没有时由部署者提供权限受限的专用密钥文件，并在密钥来源缺失或权限不安全时拒绝启动。Hermes 的 `PluginContext` 并不提供秘密存储，而实现此前只是把这种情况静默降级为空主密钥，于是"宿主没有密钥接口"被伪装成"密码登录成功、但每个已认证请求都返回 400"：设备公钥与签名都正确，用户却无法上传附件或发送消息，且日志里没有一行可归因的失败。本 ADR 细化了 ADR 0023 的落地方式，不改变其安全属性。
 
