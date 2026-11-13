@@ -760,3 +760,10 @@ def test_remote_android_fixture_routes_to_gateway_without_legacy_dsh(impact):
     result = impact.classify([("M", "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json")])
     assert result["lanes"]["android-gateway"]
     assert not result["lanes"]["dsh"]
+
+
+def test_control_ports_remote_types_reach_gateway_and_ui_consumers(impact):
+    result = impact.classify([("M", "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt")])
+    expected = {"android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications", "android-app", "android-play"}
+    assert expected <= active_lanes(result)
+    assert not result["unknown"]

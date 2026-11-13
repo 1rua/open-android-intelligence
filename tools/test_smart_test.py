@@ -460,3 +460,14 @@ def test_full_still_runs_legacy_dsh_adapter_with_only_remote_changes():
     impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
     assert runner.execute_strategy("full", impact) == 0
     assert any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
+
+
+def test_control_ports_remote_change_executes_gateway_and_conversation_pr_tasks():
+    runner = load_runner()
+    impact = runner.analyze_impact([
+        "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt",
+    ])
+    tasks = [task for invocation in runner.android_test_invocations("pr", impact) for task in invocation]
+    assert ":gateway-client:testDebugUnitTest" in tasks
+    assert ":conversation-data:testDebugUnitTest" in tasks
+    assert ":conversation-ui:testDebugUnitTest" in tasks

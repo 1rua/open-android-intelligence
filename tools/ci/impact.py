@@ -125,7 +125,7 @@ MODULE_LANE_TO_APP_SECTION = {
 # build script (verified by tools/test_ci_planning.py against the real files).
 MODULE_DEPENDENTS = {
     "gateway-client": ("device", "conversation", "plugins"),
-    "control-ports": ("conversation", "plugins", "notifications"),
+    "control-ports": ("gateway", "conversation", "plugins", "notifications"),
     "capability-ports": ("plugins", "notifications"),
     "platform-kernel": ("conversation", "plugins", "notifications", "device"),
     "plugin-package": ("plugins",),
