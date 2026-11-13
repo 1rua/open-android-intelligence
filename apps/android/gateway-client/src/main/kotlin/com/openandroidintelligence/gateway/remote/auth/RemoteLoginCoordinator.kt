@@ -6,8 +6,9 @@ import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.identity.RemoteRoleCredential
 import com.openandroidintelligence.gateway.remote.identity.RemoteStaticIdentity
 import com.openandroidintelligence.gateway.remote.identity.RemoteTokenPair
+import kotlinx.coroutines.CancellationException
 
-enum class RemoteRoleRegistrationState { NOT_STARTED, REGISTERING, REGISTERED, FAILED }
+enum class RemoteRoleRegistrationState { REGISTERED, FAILED }
 
 data class RemoteRoleRegistration(
     val role: RemoteRole,
@@ -45,6 +46,9 @@ class RemoteLoginCoordinator(
         clientIdentity: RemoteStaticIdentity,
         hostIdentity: RemoteStaticIdentity,
     ): RemoteLoginResult {
+        require(clientIdentity.deviceId != hostIdentity.deviceId && !clientIdentity.publicKey.contentEquals(hostIdentity.publicKey)) {
+            "REMOTE_ROLE_IDENTITIES_MUST_DIFFER"
+        }
         val client = registerOne(RemoteIdentityScope(origin, accountId, RemoteRole.CLIENT), clientIdentity, accountToken)
         val host = registerOne(RemoteIdentityScope(origin, accountId, RemoteRole.HOST), hostIdentity, accountToken)
         return RemoteLoginResult(accountId, client, host)
@@ -58,10 +62,15 @@ class RemoteLoginCoordinator(
         val role = scope.role
         return try {
             val credential = registrar.registerAccountRole(scope, identity, accountToken)
-            store.save(scope, credential)
-            RemoteRoleRegistration(role, RemoteRoleRegistrationState.REGISTERED, credential)
-        } catch (failure: Exception) {
-            RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = failure.message ?: "REMOTE_ROLE_REGISTRATION_FAILED")
+            if (!identity.sameIdentity(credential.identity)) {
+                return RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_REGISTERED_IDENTITY_MISMATCH")
+            }
+            val saved = store.save(scope, credential)
+            RemoteRoleRegistration(role, RemoteRoleRegistrationState.REGISTERED, saved)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_ROLE_REGISTRATION_FAILED")
         }
     }
 }
@@ -86,18 +95,23 @@ class RemoteTokenRotator(
             ?: return RemoteTokenRotationResult.Failed("REMOTE_CREDENTIAL_MISSING")
         val nextTokens = try {
             refresher.refresh(scope, current.identity.deviceId.value, current.tokens.refreshToken)
-        } catch (failure: Exception) {
-            return RemoteTokenRotationResult.Failed(failure.message ?: "REMOTE_REFRESH_FAILED")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return RemoteTokenRotationResult.Failed("REMOTE_REFRESH_FAILED")
         }
         val next = current.copy(tokens = nextTokens)
         return try {
-            if (store.rotateTokens(scope, current.tokens.refreshToken, next)) {
-                RemoteTokenRotationResult.Rotated(next)
+            val saved = store.rotateTokens(scope, current, next)
+            if (saved != null) {
+                RemoteTokenRotationResult.Rotated(saved)
             } else {
                 RemoteTokenRotationResult.Failed("REMOTE_REFRESH_CONFLICT")
             }
-        } catch (failure: Exception) {
-            RemoteTokenRotationResult.Failed(failure.message ?: "REMOTE_REFRESH_PERSISTENCE_FAILED")
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            RemoteTokenRotationResult.Failed("REMOTE_REFRESH_PERSISTENCE_FAILED")
         }
     }
 }
