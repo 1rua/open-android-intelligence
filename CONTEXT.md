@@ -52,6 +52,14 @@ _Avoid_: 插件 ID、版本号、文件摘要
 插件向宿主声明的一项用户可识别功能；它不能自行定义或扩大平台内核拥有的安全权限。
 _Avoid_: Android 权限、内核原语、自然语言工具名
 
+**内核安全原语（Kernel Security Primitive）**:
+由平台内核固定定义并裁定风险的敏感基础操作；插件可以请求使用，不能改变其含义或风险等级。
+_Avoid_: 插件自定义权限、通配能力、Agent 风险声明
+
+**Companion 插件（Companion Plugin）**:
+通过独立 Android 应用提供宿主包络之外能力的扩展；它仍经本机内核介入，不成为独立设备授权入口。
+_Avoid_: 第二 Android 宿主、Remote Server、权限旁路
+
 **插件包（Plugin Package）**:
 带有可验证作者身份、能力声明和可执行内容的可分发插件单元。
 _Avoid_: 源码仓库、裸运行载荷、已授予权限
@@ -59,6 +67,10 @@ _Avoid_: 源码仓库、裸运行载荷、已授予权限
 **本机能力策略（Local Capability Policy）**:
 由 Android 用户控制、限定本机能力是否可用以及可访问范围的策略；它独立于 Remote 登录身份和 Agent 会话。
 _Avoid_: Remote 账号授权、设备发现、Agent 请求同意
+
+**临时能力许可（Temporary Capability Grant）**:
+用户在手机批准、限定操作与数据范围且可撤销的短期许可；账号登录或 Agent 自报理由不能创建这项许可。
+_Avoid_: 登录 token、远程审批、永久设备开放
 
 **主动设备推送（Proactive Device Delivery）**:
 用户允许 Android 按本机选定的数据范围，把短信或通知主动交给指定的 Agent 端点；它与 Agent 按需读取设备数据是不同的许可。
@@ -79,7 +91,7 @@ _Avoid_: 普通断开连接、卸载插件、服务端账号停用
 ## Remote 与 Agent 身份
 
 **Remote 服务（RemoteServer）**:
-承载账号登录、设备发现和远程控制请求的服务端；它可以是官方服务，也可以是兼容协议的自托管服务。
+提供账号、设备目录、连接协调和密文转发的服务；它可以由官方或兼容自托管部署提供，不拥有手机能力许可。
 _Avoid_: Android 宿主、AgentBackend、旧协议服务
 
 **Remote 账号（Remote Account）**:
@@ -87,11 +99,11 @@ _Avoid_: Android 宿主、AgentBackend、旧协议服务
 _Avoid_: Host 身份、AgentEndpoint、设备能力许可
 
 **设备身份（DeviceIdentity）**:
-Remote 服务用于识别并寻址某台 Android 设备的身份；它只表示设备主体，不代替本机能力策略。
+Remote 中某个设备角色的密码学主体；同一手机的主动客户端与虚拟主机是不同主体，身份不代替本机能力许可。
 _Avoid_: Android 安装配置、用户账号、Agent 身份
 
 **主机（Host）**:
-运行 DSH 并向 Remote 账号提供可控工作区的电脑或其他计算主机；此处的“主机”与 Android 宿主是不同主体。
+向 Remote 客户端提供工作区与会话接口的被连接设备；电脑主机提供 Agent 后端，手机虚拟主机提供确定性设备能力。
 _Avoid_: Android Host、Remote 服务、AgentBackend
 
 **Agent 后端（AgentBackend）**:
@@ -103,7 +115,7 @@ _Avoid_: Remote 服务、Android 插件、模型名称
 _Avoid_: 嵌套后端层级、设备身份、会话 ID
 
 **主动客户端身份（RemoteClient）**:
-登录 Remote 账号后由 Android 建立、代表本机主动发现设备并发起控制的独立身份；它可以独立于被控身份休眠。
+登录 Remote 账号后由 Android 建立、用于发现设备并访问电脑 Agent 会话与工作区的独立身份；它可以独立于被控身份休眠。
 _Avoid_: VirtualHost、Android 宿主、AgentEndpoint
 
 **虚拟主机身份（VirtualHost）**:
@@ -112,17 +124,33 @@ _Avoid_: 电脑主机、RemoteClient、后台 Agent
 
 ## 会话与消息
 
+**会话（Session）**:
+归属于一个端点、承载连续输入与结果的交互边界；它可以对应 Agent 原生会话或手机控制任务，不能只凭同名标识合并。
+_Avoid_: Remote 登录、全局会话 ID、本地缓存
+
 **原生会话（NativeSession）**:
 由 Agent 后端拥有的真实会话；会话内容和生成状态以该后端为权威，模型与思考强度选项取决于该会话实际提供的能力。
 _Avoid_: Remote 登录会话、Android 本地历史副本、服务端会话线程
 
 **消息（Message）**:
-属于一个 NativeSession 的用户输入、Agent 回复或执行结果；各后端差异由会话能力表达，不改变消息属于哪个会话。
+属于一个会话的用户输入、Agent 回复或确定性执行结果；后端差异不改变消息的会话归属。
 _Avoid_: 独立设备请求、附件本体、Agent 账号
 
 **会话投影（SessionProjection）**:
-Android 为呈现和操作一个 NativeSession 而维护的本地视图状态；它不是另一份会话权威。
+为呈现和操作后端原生会话而形成的适配视图；它不产生另一份原生会话权威。
 _Avoid_: 第二会话、独立聊天历史、RemoteClient
+
+**加密离线镜像（Encrypted Conversation Mirror）**:
+Android 为已访问会话保存、按账号与端点隔离的加密本地记录；它提供离线访问，不接管后端会话权威。
+_Avoid_: 内存投影、第二个 Agent 会话库、跨端点共享历史
+
+**发送原子（Send Atom）**:
+用户一次明确发送产生的独立内容与身份；即使被合并提交，也保留其来源和发送结果。
+_Avoid_: 网络重试、服务端轮次、合并后丢失来源的文本
+
+**消息合并批次（Send Batch）**:
+Android 按用户偏好把连续发送原子组成的一次提交；批次不替代各原子的身份，也不隐式跨越附件与命令边界。
+_Avoid_: 服务端消息合并、多个会话共用队列、隐式重发
 
 **附件草稿（Attachment Draft）**:
 用户在消息发送前选定并仍可编辑的附件集合；草稿转入提交后，其内容和顺序固定。
@@ -135,7 +163,7 @@ _Avoid_: 部分发送、隐式重试、上传完成即发送
 ## 手机控制与屏幕语义
 
 **控制工作区（ControlWorkspace）**:
-当前接受手机控制任务的 DSH 工作区；来自原生入口和 MCP 的调用都遵循同一个工作区归属。
+手机 VirtualHost 对外提供、专门承载确定性控制任务的逻辑工作区；它不是手机任意目录的访问许可。
 _Avoid_: Android 宿主、Agent 会话、账号资料
 
 **控制总线（ControlBus）**:
@@ -159,7 +187,7 @@ _Avoid_: 聊天消息、授权凭据、执行日志正文
 _Avoid_: 失败、成功、可安全重试
 
 **本机桥接（LocalBridge）**:
-电脑上的 MCP 入口与 DSH 控制总线之间的进程内连接，使外部 Agent 复用 DSH 的设备通道和授权边界。
+电脑 DSH 内供外部 MCP 入口复用已登录 Remote 通道的受限适配边界；它不另持一套手机身份或设备授权。
 _Avoid_: Android Companion、独立 Relay 服务、第二控制通道
 
 **Agent 委派（AgentDelegation）**:
