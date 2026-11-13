@@ -3,7 +3,7 @@
 本目录提供 P0 的隔离执行证据，不连接真实 Remote 账号、Host、手机或后端。
 
 ```sh
-node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
+node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
 ```
 
 使用仓库规定的 Node 24.18.0。探针以 Node 自带 TypeScript 类型擦除与 VM 模块执行
@@ -25,8 +25,12 @@ node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
   后验结果检查只能拒收失效观察，不能证明没有执行副作用。
 - 同 Host、同 backend 换 workspace 并消费临时选择后，公开 status 可能完全一致。
   仅靠 status 不能证明 workspace 代际，生产 Bridge 必须拒绝缺少该证明的写入。
-- 旧投影关闭只在测试替身边界验证；真实投影的缓冲事件排空、关闭时点、原生 Session ID
-  还原、公开流所有者绑定仍待专门互操作证据。不能把旧流关闭通知的后验检查当作派发前原子租约。
+- 原始 ACP 投影在 `session/prompt` 中按当前选中 workspace 注册未知 Session，未校验请求内的旧
+  workspaceId；同名 Session ID 可被当前 workspace 接收。发送前没有公开的 workspace/session scope
+  原子租约，Bridge 不得把 prompt 内 scope 当作已验证归属。
+- 原始 workspace follow 使用可缓冲队列；关闭后队列中已有 baseline/upsert 仍可读出，关闭只终止后续
+  等待。真实投影的缓冲事件排空、关闭时点、原生 Session ID 还原、公开流所有者绑定仍待专门
+  互操作证据。不能把旧流关闭通知的后验检查当作派发前原子租约。
 
 当前 P0 的跨后端目标归属门禁保持未通过；原生原子 expectedTarget/租约接口并不存在。
 本探针不访问 private hooks，也不据此扩写上游支持范围。真实 DSH 加载与各后端行为单列未验证。

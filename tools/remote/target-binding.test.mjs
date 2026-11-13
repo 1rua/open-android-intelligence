@@ -178,7 +178,7 @@ function assertHost(ctx, hostId, backend = 'harness') {
 // 这是隔离探针断言，尚非生产 Bridge；真实账号、协议和后端未参与。
 test('固定上游文件逐个保持原始摘要与MIT许可', () => {
   assert.equal(sourceIndex.commit, 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7');
-  assert.equal(sourceIndex.files.length, 5);
+  assert.equal(sourceIndex.files.length, 9);
   assert.match(sources.get('LICENSE'), /MIT License/);
 });
 

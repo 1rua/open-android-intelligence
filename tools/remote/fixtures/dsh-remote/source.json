@@ -26,6 +26,26 @@
       "upstreamPath": "packages/plugin/src/client-control.ts",
       "fixture": "client-control.ts",
       "sha256": "5ab344f183cbfd9c800e9e5e1660b29b0092fe06b2b9507750acc22535f97c9a"
+    },
+    {
+      "upstreamPath": "packages/plugin/src/acp/virtual-harness.ts",
+      "fixture": "acp/virtual-harness.ts",
+      "sha256": "17673511033fcf61f042674d04fb48b256f6d9bc65449dd9036ca50a930c95fc"
+    },
+    {
+      "upstreamPath": "packages/plugin/src/acp/virtual-contract.ts",
+      "fixture": "acp/virtual-contract.ts",
+      "sha256": "e3e6649df1b82383fa901abf541da55ef97b25f8151aa5e225fda27363f8346a"
+    },
+    {
+      "upstreamPath": "packages/plugin/src/acp/virtual-event-carrier.ts",
+      "fixture": "acp/virtual-event-carrier.ts",
+      "sha256": "0c3c6338f906ed45ad99f9f2b29840a1499b8b98a4771c601d7a7a3c9b4b9e52"
+    },
+    {
+      "upstreamPath": "packages/plugin/src/acp/virtual-catalog.ts",
+      "fixture": "acp/virtual-catalog.ts",
+      "sha256": "ddf3150c1ccf2dc18a8a1678fcd115e0ff46c0dd75d782f6fbf019537f7a2041"
     }
   ]
 }
