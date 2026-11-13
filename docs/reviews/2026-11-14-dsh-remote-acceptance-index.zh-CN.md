@@ -113,3 +113,33 @@ Virtual Harness/Event Carrier 原文参与执行，没有实际账号、Host 或
 
 以上局部证据不改变 P0 整体状态，也不证明全量委派安全。后续必须在公开接口边界内补足证明，
 否则保持该能力明确不可用并报告精确阻塞。
+
+### 集成 focused 验证（集成 SHA `761c0c63`）
+
+以下命令均使用仓库现有 JDK 21、Android SDK 与 Gradle 用户缓存；没有使用 `--no-daemon`，也没有连接真实账号或设备。
+
+```sh
+cd apps/android
+./gradlew :gateway-client:testDebugUnitTest --tests 'com.openandroidintelligence.gateway.remote.*'
+./gradlew :conversation-domain:testDebugUnitTest
+cd ../..
+node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
+```
+
+- `gateway-client`：BUILD SUCCESSFUL，16 actionable tasks，远程包测试 XML 共 137 项（Noise 9、协议固定 fixture 117、wire 5、DSHF 6），失败/错误/跳过均为 0。
+- `conversation-domain`：BUILD SUCCESSFUL，64 项模块测试（其中 Remote 新增 17 项），失败/错误/跳过均为 0；本次大部分任务来自缓存。
+- 固定上游目标/ACP 隔离探针：11 项通过。证据仅覆盖固定源码与测试替身，不覆盖真实 DSH、Host、后端或手机。
+- 构建日志有既有 `DispatchedSchemaRegistry` nullable 警告、旧 `GatewayEventStream` ExperimentalCoroutines 警告，以及当前命令环境不可写 `/home/djbd/.android/analytics.settings` 的提示；没有因此放宽门禁。
+
+### 独立 P0 目标归属审计
+
+独立审计固定上游 `ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7` 的原文后确认：
+
+- `packages/plugin/src/acp/virtual-harness.ts:468-489` 的 `ensureSessionRegistered` 可将未知的 `hermes:<id>` 按当前 selected workspace 注册；
+  `:492-531` 的 `prompt` 不核验请求内 `workspaceId`。因此同名 Session ID 可能在当前 workspace 接收，而不是证明原 workspace 归属。
+- `packages/plugin/src/acp/virtual-live.ts:59-123` 在等待 `openStream` 返回前就注册 follow；关闭期间可能留下 pending-open 窗口。
+  `AcpVirtualHarness.close` 的清理不能被解释为派发前的原子租约。
+- Typert Gateway 的公开 status 只能证明 Host/mode；workspace selection 被消费后，同 Host/backend 换 workspace 可出现等价 status。
+
+因此 P0 的跨后端/ACP 委派保持 `BLOCKED`。安全可行的局部范围只能是不可切换目标、已登记 Session、同 Host/backend/session 的同步调用；
+ACP/Codex 跨 workspace 委派和依赖后验状态检查的写入必须拒绝，不能用 private hooks、隐式全局目标或后验关闭信号绕过。
