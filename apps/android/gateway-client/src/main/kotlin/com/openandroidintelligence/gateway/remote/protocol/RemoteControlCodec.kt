@@ -16,7 +16,7 @@ class RemoteControlFrame internal constructor(
         "v" to RemoteProtocol.VERSION, "id" to id, "type" to type, "timestamp" to timestamp, "payload" to payload,
     )) as JsonValue.JObject
 
-    override fun toString(): String = "RemoteControlFrame(type=$type,payload=已隐藏)"
+    override fun toString(): String = "RemoteControlFrame(type=$type,payload=已隐藏)" // i18n-ignore: 内部诊断的脱敏占位，不向用户显示。
 }
 
 data class RemoteFrameLimits(val maxControlFrameBytes: Int? = null, val maxRelayFrameBytes: Int? = null)

@@ -19,6 +19,7 @@ android {
 dependencies {
     implementation("com.bloxbean.cardano:net-i2p-crypto-eddsa:0.3.1")
     implementation("org.signal.forks:noise-java:0.1.1")
+    implementation("io.github.webrtc-sdk:android:150.7871.04")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
     testImplementation("junit:junit:4.13.2")

@@ -146,6 +146,8 @@ class NoiseIkChannelTest {
         val a = RemoteSecureChannel(channel("initiator"))
         val b = RemoteSecureChannel(channel("responder"))
         try {
+            assertEquals(binding, a.binding)
+            assertEquals(binding, b.binding)
             b.readHandshakeFrame(a.writeHandshakeFrame("first", 1))
             a.readHandshakeFrame(b.writeHandshakeFrame("second", 2))
             val bytes = ByteArray(150_000) { (it % 251).toByte() }

@@ -149,3 +149,16 @@ ACP/Codex 跨 workspace 委派和依赖后验状态检查的写入必须拒绝�
 独立 Spec 审查指出，当前 `conversation-domain` Remote 类型只能表达聊天端点/活跃连接：`EndpointKey`、`SessionOwner` 与 `RemoteFileRef` 尚未共同表达控制契约要求的 Remote Server origin、双方设备身份、本机授权代际、task/request 及 artifact scope。
 
 因此现有聊天类型不得直接复用于控制账本、`request.status` 或文件读取授权。P1/P3 必须新增或明确独立的 `RemotePrincipal`、`TaskScope`、`ArtifactScope`（或等价不可混淆类型），并以 owner+request_id 做持久防重键；重连后同一可信 owner 才能查询原 task，其他同账号设备、旧连接或缺少授权代际的请求一律拒绝。未补齐前，未绑定 owner 的控制请求、旧 task 查询和 artifact 读取保持安全拒绝，不能把当前 domain 首片标成控制面完成。
+
+
+### Fast/PR 首次运行与原生依赖静态补证
+
+固定提交 `6e8f9706` 的 Fast/PR 均在源码中文扫描处阻断：`RemoteControlCodec.toString` 的内部脱敏
+占位“已隐藏”被识别为 UI 文案。依赖锁检查已通过，后续阶段未执行。修复只对该内部诊断行添加
+带中文理由的精确 `i18n-ignore`，不豁免目录、不改用户文案、不关闭门禁；修改后中文扫描通过。
+后续门禁先 Fast，成功后才进入 PR，结果按新提交单独追加。
+
+WebRTC 缓存产物已补核对，详见[原生依赖记录](2026-11-14-dsh-remote-native-dependencies.zh-CN.md)：
+AAR/POM 摘要、minAPI 21、四 ABI、64 位 `0x4000` / 32 位 `0x1000` LOAD 段对齐，以及包装 MIT/原生 BSD
+许可分层可记为静态证据；APK、native 加载、16 KiB 运行与真实通道仍未验证。精确运行依赖用于后续
+真实 DataChannel adapter，不解除 P0 整体阻塞。

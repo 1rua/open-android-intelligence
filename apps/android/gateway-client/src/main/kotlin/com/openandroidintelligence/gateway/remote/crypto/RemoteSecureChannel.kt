@@ -1,6 +1,7 @@
 package com.openandroidintelligence.gateway.remote.crypto
 
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
+import com.openandroidintelligence.gateway.remote.protocol.RemoteConnectionBinding
 import com.openandroidintelligence.gateway.remote.protocol.RemoteControlCodec
 import com.openandroidintelligence.gateway.remote.protocol.RemoteControlFrame
 import com.openandroidintelligence.gateway.remote.protocol.RemoteProtocolException
@@ -13,6 +14,9 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 class RemoteSecureChannel(private val noise: NoiseIkChannel) : AutoCloseable {
     private val codec = SecureMessageCodec()
     private var closed = false
+
+    /** 仅暴露不可变归属，供传输适配核对连接及双方设备，不能替换底层密码状态。 */
+    val binding: RemoteConnectionBinding get() = noise.binding
 
     val complete: Boolean @Synchronized get() = !closed && noise.complete
 
