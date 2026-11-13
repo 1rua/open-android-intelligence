@@ -182,3 +182,37 @@ PR 前序的 Core 配置关联测试 266 项、DSH 旧适配器 147 项与 Remot
 已写 XML 的 Android 模块中，domain 64、capability-ports 67、control-ports 38、screen-control 41 均无失败。
 后续先补齐既有固定插件/SDK/contract 环境，只复测失败模块，再决定最终提交完整 PR 门禁。
 该记录只属于 ce0cccbf，不代替后续身份/传输集成后的验证。
+
+
+### 身份与传输候选线性集成（9d5af960）
+
+唯一写者停写后，由集成者对已测试分支执行 rebase 与 ff-only，未并发修改 worker 源码：
+
+| 工作包 | 验证旧头 | rebase 后候选头 | patch-id |
+| --- | --- | --- | --- |
+| 身份 | `7db2924d9f68b96a4d8c2999ca2f13af70090ad5` | `c120678db0e3ea04d4f74171f7c1d738c192b193` | `1e382275d46b9f6dab17b1a32ff6670fdc3f9257` 前后相同 |
+| 传输 | `9a4ff53c25e7c8f9abbf3a41c7f6469b50dc0c02` | `9d5af96052d70610cd50e65ba54bd77dd945669a` | `9ebffc5370fc60718bfe3fae32143d89a82a4776` 前后相同 |
+
+集成候选 `9d5af960` 在既有正常权限副本执行关联验证，不使用新依赖缓存：
+
+```sh
+cd apps/android
+./gradlew :gateway-client:testDebugUnitTest --tests 'com.openandroidintelligence.gateway.remote.*'
+./gradlew :conversation-domain:testDebugUnitTest
+cd ../..
+python tools/check_hardcoded_chinese.py
+python -m pytest -q tools/test_smart_test.py tools/test_ci_planning.py
+node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
+```
+
+- `gateway-client` XML：198 项 = 协议/Noise/wire/DSHF 137 + Identity 24 + Transport 37，失败/错误/跳过均 0；36.62 秒。
+- `conversation-domain` XML：64 项，失败/错误/跳过均 0；3.35 秒。
+- 中文扫描 0 新违规；路由测试 194 项、固定上游双探针 11 项通过；`git diff --check` 通过。
+- 先前 ce0cccbf 的 conversation-data 漏夹具环境已只复测该模块：设置固定历史插件 ebe527da、SDK75b083…、
+  contract 与既有夹具 Python 环境后，61 项全部通过，18.78 秒。它属于原 SHA 的修复环境证据，不与新候选重复合计。
+
+身份 fresh 安全复审关闭了“挂起注册后退出仍写入”和“重复注册覆盖已有对端 pin”两项缺陷。
+当前仍只有 Store 接口、内存/逻辑协调与注册边界，生产 Keystore/AtomicFile/跨进程锁/真实 HTTP 注册尚未接入；
+同一 Store 的进程内撤销不能被扩写为跨重启完整撤销保证。P1 不是实现完成。
+传输只提供已协商 PeerConnection 的真实 DataChannel 窄适配、RTCH/串行/背压/关闭与加密归属，
+尚无登录信令、ICE/TURN/Relay 选路和 App 生产装配，真实双向握手及设备互操作保持未验证/环境阻塞。
