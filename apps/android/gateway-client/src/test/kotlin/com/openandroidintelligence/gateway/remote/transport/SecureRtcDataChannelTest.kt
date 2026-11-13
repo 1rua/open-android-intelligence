@@ -14,6 +14,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SecureRtcDataChannelTest {
@@ -66,6 +67,47 @@ class SecureRtcDataChannelTest {
         assertFalse(pair.first.complete)
         assertFalse(carrier.stats().connected)
         pair.second.close()
+    }
+
+    @Test
+    fun carrier预先关闭时构造失败必须销毁已认证Noise() = runTest {
+        val pair = securePair()
+        val port = FakeRtcPort(RtcChannelState.OPEN)
+        val carrier = RtcDataChannelTransport(port.identity, port, backgroundScope)
+        carrier.close()
+        val failure = runCatching { SecureRtcDataChannel(pair.first, carrier) }.exceptionOrNull()
+        assertNotNull(failure)
+        assertFalse("构造失败后不得保留可用Noise", pair.first.complete)
+        assertThrows(NoiseChannelException::class.java) { pair.first.encryptMessage(byteArrayOf(1)) }
+        assertEquals("SECURE_RTC_INITIALIZATION_FAILED", (failure as RtcTransportException).code)
+        assertNull(failure.cause)
+        pair.second.close()
+    }
+
+    @Test
+    fun carrier关闭与两次订阅竞争不留下可用Noise或可接收外壳() = runTest {
+        repeat(32) {
+            val pair = securePair()
+            val port = FakeRtcPort(RtcChannelState.OPEN)
+            val carrier = RtcDataChannelTransport(port.identity, port, backgroundScope)
+            val start = CountDownLatch(1)
+            val closer = Thread {
+                start.await()
+                carrier.close()
+            }
+            closer.start()
+            start.countDown()
+            val outcome = runCatching { SecureRtcDataChannel(pair.first, carrier) }
+            closer.join()
+            assertFalse("关闭与订阅竞争后Noise必须失效", pair.first.complete)
+            assertThrows(NoiseChannelException::class.java) { pair.first.encryptMessage(byteArrayOf(1)) }
+            outcome.getOrNull()?.let { channel ->
+                assertThrows(RtcTransportException::class.java) { channel.onMessage { error("关闭后不得接收") } }
+                assertTrue(runCatching { channel.sendMessage(byteArrayOf(1)) }.exceptionOrNull() is RtcTransportException)
+                channel.close()
+            }
+            pair.second.close()
+        }
     }
 
     @Test

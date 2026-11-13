@@ -1,7 +1,7 @@
 /*
  * 改写自 ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7 的 packages/webrtc/src/websocket-backpressure.ts。
  * Copyright (c) 2026 DSH Remote contributors，MIT 许可。
- * 完整许可见 gateway-client/src/test/resources/dsh-remote/LICENSE.upstream。
+ * 完整许可见 gateway-client/src/main/assets/licenses/remote/dsh-remote-MIT.txt。
  */
 package com.openandroidintelligence.gateway.remote.transport
 

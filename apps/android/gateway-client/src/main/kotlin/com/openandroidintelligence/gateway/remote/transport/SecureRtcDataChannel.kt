@@ -15,24 +15,41 @@ class SecureRtcDataChannel(
 
     init {
         if (secure.binding != carrier.identity.binding) {
-            secure.close()
-            carrier.close()
+            close()
             fail("SECURE_RTC_BINDING_MISMATCH")
         }
-        received = carrier.onMessage { ciphertext ->
-            val message = try { secure.decryptMessage(ciphertext) } catch (_: Exception) {
-                close()
-                null
-            }
-            if (message != null) {
-                val callbacks = synchronized(lock) { if (closed) emptyList() else handlers.toList() }
-                callbacks.forEach { handler ->
-                    synchronized(lock) { if (closed) return@onMessage }
-                    try { handler(message.copyOf()) } catch (_: Exception) { close(); return@onMessage }
+        var messageSubscription: AutoCloseable? = null
+        var closeSubscription: AutoCloseable? = null
+        try {
+            messageSubscription = carrier.onMessage { ciphertext ->
+                val message = try { secure.decryptMessage(ciphertext) } catch (_: Exception) {
+                    close()
+                    null
+                }
+                if (message != null) {
+                    val callbacks = synchronized(lock) { if (closed) emptyList() else handlers.toList() }
+                    callbacks.forEach { handler ->
+                        synchronized(lock) { if (closed) return@onMessage }
+                        try { handler(message.copyOf()) } catch (_: Exception) { close(); return@onMessage }
+                    }
                 }
             }
+            synchronized(lock) {
+                if (closed) fail("SECURE_RTC_INITIALIZATION_FAILED")
+                received = messageSubscription
+            }
+            closeSubscription = carrier.onClose { close() }
+            synchronized(lock) {
+                if (closed) fail("SECURE_RTC_INITIALIZATION_FAILED")
+                closedSubscription = closeSubscription
+            }
+        } catch (_: Exception) {
+            close()
+            // onClose 可能在返回订阅句柄前同步关闭；局部句柄也必须清理，不能只依赖字段。
+            closeQuietly(messageSubscription)
+            closeQuietly(closeSubscription)
+            fail("SECURE_RTC_INITIALIZATION_FAILED")
         }
-        closedSubscription = carrier.onClose { close() }
     }
 
     suspend fun sendMessage(plaintext: ByteArray) {
@@ -49,14 +66,21 @@ class SecureRtcDataChannel(
     }
 
     override fun close() {
-        synchronized(lock) {
+        val subscriptions = synchronized(lock) {
             if (closed) return
             closed = true
             handlers.clear()
+            listOfNotNull(received, closedSubscription).also {
+                received = null
+                closedSubscription = null
+            }
         }
-        secure.close()
-        received?.close()
-        closedSubscription?.close()
-        carrier.close()
+        closeQuietly(secure)
+        subscriptions.forEach(::closeQuietly)
+        closeQuietly(carrier)
+    }
+
+    private fun closeQuietly(resource: AutoCloseable?) {
+        try { resource?.close() } catch (_: Exception) { }
     }
 }
