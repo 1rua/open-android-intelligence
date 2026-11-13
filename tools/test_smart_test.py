@@ -401,3 +401,28 @@ def test_observation_audit_edits_run_the_offline_regression(monkeypatch, changed
     assert runner.execute_strategy("fast", impact) == 0
     assert any("tools/test_audit_communication.py" in command for command in commands)
 
+
+
+@pytest.mark.parametrize("path", ["docs/plans/dsh-remote.md", "docs/reviews/hermes-remote.md"])
+def test_remote_documents_do_not_trigger_legacy_adapters(path):
+    runner = load_runner()
+    impact = runner.analyze_impact([path])
+    assert not impact["affects_dsh"]
+    assert not impact["affects_hermes"]
+    assert not impact["affects_remote"]
+
+
+@pytest.mark.parametrize("level", ["fast", "pr", "full"])
+def test_remote_probe_runs_and_propagates_failure(level):
+    runner = load_runner()
+    commands = []
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        return 23 if "tools/remote/target-binding.test.mjs" in command else 0
+
+    runner.run_command = execute
+    impact = runner.analyze_impact(["tools/remote/target-binding.test.mjs"])
+    assert runner.execute_strategy(level, impact) == 23
+    assert commands[-1] == ["node", "--experimental-vm-modules", "--test", "tools/remote/target-binding.test.mjs"]
+    assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)

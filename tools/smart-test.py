@@ -77,6 +77,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_android_kernel": False,
         "affects_hermes": False,
         "affects_dsh": False,
+        "affects_remote": False,
         "affects_plugins": False,
         "affects_android_control": False,
         "affects_android_conversation": False,
@@ -91,6 +92,12 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         return impact
 
     for f in changed_files:
+        # 文档中的宿主名称不代表修改了可选适配器实现。
+        if f.startswith("docs/") or f.endswith(".md"):
+            continue
+        if f.startswith("tools/remote/"):
+            impact["affects_remote"] = True
+            continue
         if f in {"tools/observe-communication.py", "tools/test_observe_communication.py",
                  "tools/audit-communication.py", "tools/test_audit_communication.py"}:
             impact["affects_observer"] = True
@@ -372,6 +379,13 @@ def execute_strategy(
                 "oai-core/tests/test_native_event_sync.py",
             ])
         ret = run_command(hermes_cmd, env=hermes_env)
+        if ret != 0:
+            return ret
+
+    # 固定 Remote 的公开接口探针独立于旧 Core 适配器，用同一命令接入本地与 CI。
+    if impact.get("affects_remote") or level == "full":
+        print("\n--- 固定 Remote 公开目标绑定探针 ---")
+        ret = run_command(["node", "--experimental-vm-modules", "--test", "tools/remote/target-binding.test.mjs"])
         if ret != 0:
             return ret
 

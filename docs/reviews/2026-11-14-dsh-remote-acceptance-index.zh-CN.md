@@ -86,3 +86,26 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 启动时完成需求/计划登记；5 份变更文档的相对链接、3 个 JSON 示例、REM-01～20 与 P0～P5 覆盖及 `git diff --check` 检查通过。该检查只证明文档结构，不证明运行行为。
 
 初始提交为 `8d2bde75`，Draft PR #190；#187/#188/#189 已回帖认领。尚无新增运行验证。后续记录必须按具体提交和场景追加，不能把待执行命令记为通过。
+
+
+### P0 公开目标绑定隔离探针
+
+2026-11-14 使用 Node 24.18.0 执行：
+
+```sh
+node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
+```
+
+8 项通过。证据源码与 SHA 锁见 `tools/remote/fixtures/dsh-remote/source.json`，复现范围见
+[探针说明](../../tools/remote/README.md)。真实网络与后端投影由隔离测试替身提供；固定上游的
+公开 Runtime、Control 与 GatewaySwitch 原文参与执行，没有实际账号、Host 或手机连接。
+
+- VERIFIED（隔离自动化）：invoke/stream 同步捕获目标，已派发调用不随之后切 Host 重定向。
+- VERIFIED（反例）：status 后存在异步间隙时可把同 Session ID 写入误发给新 Host；远端切本机后还会回落本机 Agent。
+- VERIFIED（限制）：同 Host 同后端换工作区并消费临时选择后，公开 status 前后可相同。
+- UNVERIFIED：真实投影关闭/缓冲事件排空与公开流所有者租用；真实 DSH 加载与后端互操作。
+- BLOCKED（P0 委派放行）：尚无足够公开的 workspace/选择代际派发前证明；不得只凭 status
+  或后验检查放行生产跨后端写入，不使用 private hooks 绕过。
+
+以上局部证据不改变 P0 整体状态，也不证明全量委派安全。后续必须在公开接口边界内补足证明，
+否则保持该能力明确不可用并报告精确阻塞。

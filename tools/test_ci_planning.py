@@ -728,3 +728,15 @@ def test_release_workflows_wait_for_verified_ci():
 def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     properties = (REPO_ROOT / "apps/android/gradle.properties").read_text(encoding="utf-8")
     assert "org.gradle.configuration-cache=true" in properties
+
+
+@pytest.mark.parametrize("path", [
+    "tools/remote/target-binding.test.mjs",
+    "tools/remote/fixtures/dsh-remote/client-runtime.ts",
+    "tools/remote/fixtures/dsh-remote/source.json",
+])
+def test_fixed_remote_probe_routes_to_dsh_lane(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["lanes"]["dsh"]
+    assert not result["unknown"]
+    assert not result["full_required"]

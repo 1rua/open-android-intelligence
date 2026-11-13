@@ -333,6 +333,9 @@ jobs:
           npm ci --prefer-offline --no-audit --fund=false
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
+      - name: 固定 Remote 公开目标绑定探针
+        run: node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
+
   # --- Android -------------------------------------------------------------
   android-setup:
     name: Android Fixtures

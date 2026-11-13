@@ -315,6 +315,11 @@ def classify_path(
         sections.add("plugins")
         return True
 
+    if path.startswith("tools/remote/"):
+        # Remote 探针与固定源码由 DSH lane 执行，不落入未知路径而漏测。
+        lanes["dsh"] = True
+        return True
+
     if path.startswith("integrations/dsh-session-adapter/"):
         lanes["dsh"] = True
         lanes["fast"] = True
