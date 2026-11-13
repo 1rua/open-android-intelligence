@@ -742,3 +742,21 @@ def test_fixed_remote_probe_routes_to_remote_lane(impact, path):
     assert not result["lanes"]["dsh"]
     assert not result["unknown"]
     assert not result["full_required"]
+
+
+@pytest.mark.parametrize("path", [
+    "integrations/dsh-session-adapter/install.mjs",
+    "integrations/package.json",
+    "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh_builtin_contract.py",
+])
+def test_legacy_dsh_real_support_paths_keep_ci_adapter_coverage(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["lanes"]["dsh"]
+    assert not result["lanes"]["remote"]
+
+
+def test_remote_android_fixture_routes_to_gateway_without_legacy_dsh(impact):
+    result = impact.classify([("M", "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json")])
+    assert result["lanes"]["android-gateway"]
+    assert not result["lanes"]["dsh"]

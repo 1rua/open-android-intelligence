@@ -32,6 +32,15 @@ CORE_SECURITY_CONTRACT_PATTERNS = [
     "package-lock.json",
 ]
 
+# 旧 DSH 适配器及其真实安装/配置支持面，不以文件名包含 dsh 推断依赖。
+DSH_ADAPTER_SUPPORT_PATHS = {
+    "integrations/package.json", "integrations/package-lock.json", "integrations/tsconfig.json",
+    "oai-core/src/oai_core/adapters/dsh.py", "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh.py", "oai-core/tests/test_dsh_setup.py",
+    "oai-core/tests/test_dsh_installation.py", "oai-core/tests/test_dsh_builtin_contract.py",
+}
+
+
 def get_git_diff_files(since_ref: str | None) -> list[str]:
     cmd = ["git", "-C", str(REPO_ROOT), "diff", "--name-only"]
     if since_ref:
@@ -125,7 +134,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             "oai-core/tests/test_communication_process_recovery.py",
         }:
             impact["affects_hermes"] = True
-        if "dsh" in f:
+        if f.startswith("integrations/dsh-session-adapter/") or f in DSH_ADAPTER_SUPPORT_PATHS:
             impact["affects_dsh"] = True
         if f.startswith("plugins/") or f.startswith("plugin-tooling/"):
             impact["affects_plugins"] = True

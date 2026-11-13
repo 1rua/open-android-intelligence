@@ -70,6 +70,14 @@ SECURITY_OR_CONTRACT_PATHS = {
     "apps/android/ci/hermes-fixture-requirements.txt",
 }
 
+# 旧 DSH 的共享安装/清单支持面也需要 Node adapter 回归。
+DSH_ADAPTER_SUPPORT_PATHS = {
+    "integrations/package.json", "integrations/package-lock.json", "integrations/tsconfig.json",
+    "oai-core/src/oai_core/adapters/dsh.py", "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh.py", "oai-core/tests/test_dsh_setup.py",
+    "oai-core/tests/test_dsh_installation.py", "oai-core/tests/test_dsh_builtin_contract.py",
+}
+
 # Test modules that only the Hermes lane executes. The Core job explicitly
 # `--ignore`s them, so classifying them as "core" alone would let a change to a
 # test file pass CI without ever running that file.
@@ -321,9 +329,11 @@ def classify_path(
         lanes["remote"] = True
         return True
 
-    if path.startswith("integrations/dsh-session-adapter/"):
+    if path.startswith("integrations/dsh-session-adapter/") or path in DSH_ADAPTER_SUPPORT_PATHS:
         lanes["dsh"] = True
         lanes["fast"] = True
+        if path.startswith("oai-core/"):
+            lanes["core"] = True
         return True
 
     if path.startswith("integrations/hermes-session-adapter/") or "hermes" in path:

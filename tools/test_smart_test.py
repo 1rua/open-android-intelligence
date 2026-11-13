@@ -429,3 +429,34 @@ def test_remote_probe_runs_and_propagates_failure(level):
         "tools/remote/target-binding.test.mjs", "tools/remote/projection-scope.test.mjs",
     ]
     assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
+
+
+@pytest.mark.parametrize("path", [
+    "integrations/dsh-session-adapter/index.js",
+    "integrations/dsh-session-adapter/install.mjs",
+    "integrations/dsh-session-adapter/cordis.patch.yml",
+    "integrations/package.json",
+    "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh_builtin_contract.py",
+])
+def test_legacy_dsh_real_support_paths_keep_adapter_coverage(path):
+    runner = load_runner()
+    assert runner.analyze_impact([path])["affects_dsh"]
+
+
+def test_remote_android_fixture_does_not_trigger_legacy_dsh_adapter():
+    runner = load_runner()
+    impact = runner.analyze_impact([
+        "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json",
+    ])
+    assert impact["affects_android_gateway"]
+    assert not impact["affects_dsh"]
+
+
+def test_full_still_runs_legacy_dsh_adapter_with_only_remote_changes():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
+    assert runner.execute_strategy("full", impact) == 0
+    assert any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
