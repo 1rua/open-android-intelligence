@@ -64,7 +64,10 @@ class RtcDataChannelTransport(
             // 不持有载体锁调用业务回调，避免业务关闭与 native 回调相互等待。
             for (handler in delivery.second) {
                 if (isClosed()) return
-                handler(delivery.first.copyOf())
+                try { handler(delivery.first.copyOf()) } catch (_: Exception) {
+                    closeWithCode("RTC_MESSAGE_HANDLER_FAILED")
+                    return
+                }
             }
         }
 
@@ -92,20 +95,20 @@ class RtcDataChannelTransport(
     suspend fun awaitOpen() { opened.await() }
 
     /** 原始密文入口；生产业务优先使用拥有 Noise 的 SecureRtcDataChannel。 */
-    suspend fun sendCiphertext(ciphertext: ByteArray) = sends.run(ciphertext.size) {
-        sendFrames(listOf(ciphertext))
+    suspend fun sendCiphertext(ciphertext: ByteArray) = sends.runOwned(ciphertext) { owned ->
+        sendFrames(listOf(owned))
     }
 
     /** 受理、加密与全部密文片发送属于同一串行任务，任何可能耗掉 nonce 的失败都销毁 cipher。 */
     internal suspend fun sendEncrypted(
-        plaintextBytes: Int,
-        encrypt: suspend () -> List<ByteArray>,
+        plaintext: ByteArray,
+        encrypt: suspend (ByteArray) -> List<ByteArray>,
         invalidateCipher: () -> Unit,
-    ) = sends.run(plaintextBytes) {
+    ) = sends.runOwned(plaintext) { owned ->
         requireOpen()
         currentCoroutineContext().ensureActive()
         try {
-            val encrypted = encrypt()
+            val encrypted = encrypt(owned)
             currentCoroutineContext().ensureActive()
             sendFrames(encrypted)
         } catch (failure: Exception) {
@@ -207,7 +210,7 @@ class RtcDataChannelTransport(
         try { port.observe(null) } catch (_: Exception) { }
         try { port.close() } catch (_: Exception) { }
         job.cancel()
-        callbacks.forEach { it(code) }
+        callbacks.forEach { callback -> try { callback(code) } catch (_: Exception) { } }
     }
 
     companion object { const val CHANNEL_LABEL = "dsh" }

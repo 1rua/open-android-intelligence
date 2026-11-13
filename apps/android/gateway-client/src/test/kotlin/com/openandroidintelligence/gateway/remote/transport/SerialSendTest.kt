@@ -82,6 +82,24 @@ class SerialSendTest {
     }
 
     @Test
+    fun 正文在受理后复制排队期间外部修改不影响发送且完成后清零() = runTest {
+        val queue = SerialSend()
+        val gate = CompletableDeferred<Unit>()
+        val first = launch { queue.run(1) { gate.await() } }
+        runCurrent()
+        val input = byteArrayOf(1, 2, 3)
+        var used: ByteArray? = null
+        var observed: ByteArray? = null
+        val second = launch { queue.runOwned(input) { owned -> used = owned; observed = owned.copyOf() } }
+        runCurrent()
+        input.fill(9)
+        gate.complete(Unit); first.join(); second.join()
+        assertArrayEquals(byteArrayOf(1, 2, 3), observed)
+        assertArrayEquals(byteArrayOf(0, 0, 0), used)
+        queue.close()
+    }
+
+    @Test
     fun 取消的排队项在前驱完成前保留额度以防无界依赖链() = runTest {
         val queue = SerialSend()
         val gate = CompletableDeferred<Unit>()

@@ -28,7 +28,7 @@ class SecureRtcDataChannel(
                 val callbacks = synchronized(lock) { if (closed) emptyList() else handlers.toList() }
                 callbacks.forEach { handler ->
                     synchronized(lock) { if (closed) return@onMessage }
-                    handler(message.copyOf())
+                    try { handler(message.copyOf()) } catch (_: Exception) { close(); return@onMessage }
                 }
             }
         }
@@ -37,7 +37,7 @@ class SecureRtcDataChannel(
 
     suspend fun sendMessage(plaintext: ByteArray) {
         // 固定上游 4MiB secure message 限制由 cipher codec 验证，队列仍按原始正文大小计费。
-        carrier.sendEncrypted(plaintext.size, { secure.encryptMessage(plaintext) }, { secure.close() })
+        carrier.sendEncrypted(plaintext, { secure.encryptMessage(it) }, { secure.close() })
     }
 
     fun onMessage(handler: (ByteArray) -> Unit): AutoCloseable {

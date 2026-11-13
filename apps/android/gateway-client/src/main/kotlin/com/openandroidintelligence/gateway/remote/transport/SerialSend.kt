@@ -20,7 +20,20 @@ class SerialSend : AutoCloseable {
     private var closed = false
 
     suspend fun <T> run(payloadBytes: Int, send: suspend () -> T): T {
-        val ticket = synchronized(lock) {
+        return runTicket(reserve(payloadBytes), send)
+    }
+
+    /** 先计入额度再复制受理内容，排队取消也清除副本，拒绝时不分配载荷。 */
+    suspend fun <T> runOwned(payload: ByteArray, send: suspend (ByteArray) -> T): T {
+        val ticket = reserve(payload.size)
+        val owned = try { payload.copyOf() } catch (failure: Throwable) {
+            release(ticket)
+            throw failure
+        }
+        return try { runTicket(ticket) { send(owned) } } finally { owned.fill(0) }
+    }
+
+    private fun reserve(payloadBytes: Int): Ticket = synchronized(lock) {
             if (closed) fail("RTC_CLOSED")
             if (payloadBytes < 0 || bytes + payloadBytes > MAX_PENDING_BYTES || count >= MAX_PENDING_SENDS) fail("SEND_QUEUE_LIMIT")
             val next = CompletableDeferred<Unit>()
@@ -30,7 +43,9 @@ class SerialSend : AutoCloseable {
                 count += 1
                 next.invokeOnCompletion { synchronized(lock) { bytes -= payloadBytes; count -= 1 } }
             }
-        }
+    }
+
+    private suspend fun <T> runTicket(ticket: Ticket, send: suspend () -> T): T {
         try {
             select<Unit> {
                 stopped.onAwait { fail("RTC_CLOSED") }
@@ -40,10 +55,14 @@ class SerialSend : AutoCloseable {
             synchronized(lock) { if (closed) fail("RTC_CLOSED") }
             return send()
         } finally {
-            // 等待中的调用取消时仍要保留前驱关系，不能使后面的消息越过正在发送的消息。
-            if (ticket.previous.isCompleted) ticket.done.complete(Unit)
-            else ticket.previous.invokeOnCompletion { ticket.done.complete(Unit) }
+            release(ticket)
         }
+    }
+
+    private fun release(ticket: Ticket) {
+        // 取消项释放正文，但依赖和额度等前驱结束后才释放，不能越序或构造无界链。
+        if (ticket.previous.isCompleted) ticket.done.complete(Unit)
+        else ticket.previous.invokeOnCompletion { ticket.done.complete(Unit) }
     }
 
     override fun close() {

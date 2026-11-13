@@ -18,7 +18,7 @@ class NativeDataChannelPortTest {
         })
         val source = byteArrayOf(99, 1, 2, 3, 98)
         val buffer = ByteBuffer.wrap(source).apply { position(1); limit(4) }
-        handle.listener!!.onMessage(buffer)
+        handle.listener!!.onMessage(buffer, true)
         source.fill(0)
         assertEquals(1, buffer.position())
         assertArrayEquals(byteArrayOf(1, 2, 3), received)
@@ -37,7 +37,7 @@ class NativeDataChannelPortTest {
         })
         val old = handle.listener!!
         port.close(); port.close()
-        old.onMessage(ByteBuffer.wrap(byteArrayOf(1)))
+        old.onMessage(ByteBuffer.wrap(byteArrayOf(1)), true)
         assertEquals(0, messages)
         assertEquals(listOf("observe", "unregister", "close", "dispose"), handle.steps)
         assertFalse(port.sendBinary(byteArrayOf(1)))
@@ -76,15 +76,33 @@ class NativeDataChannelPortTest {
             override fun onMessage(identity: RtcChannelIdentity, bytes: ByteArray) { count++ }
             override fun onBufferedAmountChanged(identity: RtcChannelIdentity) { }
         })
-        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(1)))
+        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(1)), true)
         assertEquals(1, count)
         port.close()
         assertEquals(1, queued.size)
         assertEquals(listOf("observe"), handle.steps)
-        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(2)))
+        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(2)), true)
         assertEquals(1, count)
         queued.single().run()
         assertEquals(listOf("observe", "unregister", "close", "dispose"), handle.steps)
+    }
+
+    @Test
+    fun text按上游JSstring语义验证UTF8而非法字节关闭不冒充binary() {
+        val handle = Handle()
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { it.run() })
+        val received = mutableListOf<ByteArray>()
+        port.observe(object : RtcDataChannelPort.Observer {
+            override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { }
+            override fun onMessage(identity: RtcChannelIdentity, bytes: ByteArray) { received += bytes }
+            override fun onBufferedAmountChanged(identity: RtcChannelIdentity) { }
+        })
+        val text = "文本".toByteArray()
+        handle.listener!!.onMessage(ByteBuffer.wrap(text), false)
+        assertArrayEquals(text, received.single())
+        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(0xc3.toByte(), 0x28)), false)
+        assertEquals(1, received.size)
+        assertEquals(RtcChannelState.CLOSED, port.state)
     }
 
     private class Handle : NativeDataChannelHandle {

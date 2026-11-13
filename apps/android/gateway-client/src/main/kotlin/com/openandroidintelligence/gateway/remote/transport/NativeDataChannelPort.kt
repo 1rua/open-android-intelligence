@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.transport
 import org.webrtc.DataChannel
 import org.webrtc.PeerConnection
 import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.Executor
@@ -38,8 +39,7 @@ class NativeDataChannelPort internal constructor(
         synchronized(nativeLock) {
             if (closed.get()) {
                 listener.set(null)
-                if (observer != null) fail("RTC_CLOSED")
-                return
+                fail("RTC_CLOSED")
             }
             handle.observe(object : NativeDataChannelHandle.Observer {
                 override fun onStateChanged() {
@@ -48,10 +48,16 @@ class NativeDataChannelPort internal constructor(
                     dispatch { it.onStateChanged(identity, current) }
                 }
 
-                override fun onMessage(data: ByteBuffer) {
+                override fun onMessage(data: ByteBuffer, binary: Boolean) {
                     if (closed.get()) return
                     // 原生文档明确：回调退出后 buffer 内存释放，不能把原 buffer 交给异步代码。
                     val view = data.asReadOnlyBuffer()
+                    if (view.remaining() > RtcChunkCodec.MAX_MESSAGE_BYTES) { close(); return }
+                    // 上游接受 ArrayBuffer 或 JS string；原生 text 先验证 UTF-8，合法编码即其 TextEncoder 结果。
+                    if (!binary) try {
+                        Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(CodingErrorAction.REPORT).decode(view.asReadOnlyBuffer())
+                    } catch (_: Exception) { close(); return }
                     val bytes = ByteArray(view.remaining())
                     view.get(bytes)
                     dispatch { it.onMessage(identity, bytes) }
@@ -138,7 +144,7 @@ internal interface NativeDataChannelHandle {
 
     interface Observer {
         fun onStateChanged()
-        fun onMessage(data: ByteBuffer)
+        fun onMessage(data: ByteBuffer, binary: Boolean)
         fun onBufferedAmountChanged()
     }
 }
@@ -161,7 +167,7 @@ private class OrgWebRtcChannelHandle(private val channel: DataChannel) : NativeD
             channel.registerObserver(object : DataChannel.Observer {
             override fun onBufferedAmountChange(previousAmount: Long) { observer.onBufferedAmountChanged() }
             override fun onStateChange() { observer.onStateChanged() }
-            override fun onMessage(buffer: DataChannel.Buffer) { observer.onMessage(buffer.data) }
+            override fun onMessage(buffer: DataChannel.Buffer) { observer.onMessage(buffer.data, buffer.binary) }
             })
             observing = true
         }

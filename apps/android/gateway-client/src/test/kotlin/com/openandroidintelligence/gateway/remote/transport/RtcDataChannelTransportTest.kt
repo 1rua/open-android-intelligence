@@ -149,6 +149,20 @@ class RtcDataChannelTransportTest {
         assertTrue(carrier.stats().connected)
         carrier.close()
     }
+
+    @Test
+    fun 消息监听失败会关闭且一个关闭监听异常不阻止其他清理() = runTest {
+        val port = FakeRtcPort(RtcChannelState.OPEN)
+        val carrier = RtcDataChannelTransport(port.identity, port, backgroundScope)
+        var released = false
+        carrier.onMessage { error("不把业务异常带入native回调") }
+        carrier.onClose { error("清理失败不能阻止cipher清理") }
+        carrier.onClose { released = true }
+        port.receive(byteArrayOf(1))
+        assertFalse(carrier.stats().connected)
+        assertTrue(released)
+        assertEquals(1, port.closeCount)
+    }
 }
 
 internal class FakeRtcPort(initialState: RtcChannelState = RtcChannelState.CONNECTING) : RtcDataChannelPort {

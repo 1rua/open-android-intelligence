@@ -91,7 +91,7 @@ class SecureRtcDataChannelTest {
         val port = FakeRtcPort(RtcChannelState.OPEN)
         val carrier = RtcDataChannelTransport(port.identity, port, backgroundScope)
         val gate = CompletableDeferred<Unit>()
-        val first = launch { carrier.sendEncrypted(1, { gate.await(); listOf(ByteArray(1)) }, {}) }
+        val first = launch { carrier.sendEncrypted(byteArrayOf(1), { gate.await(); listOf(ByteArray(1)) }, {}) }
         runCurrent()
         val channel = SecureRtcDataChannel(pair.first, carrier)
         val waiting = launch { channel.sendMessage(byteArrayOf(1)) }
