@@ -31,8 +31,14 @@ class AgentSessionForegroundServiceTest {
             assertEquals(AGENT_SESSION_FOREGROUND_NOTIFICATION_ID, shadow.lastForegroundNotificationId)
             assertEquals(ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC, service.foregroundServiceType)
             assertEquals(AGENT_SESSION_FOREGROUND_CHANNEL_ID, notification.channelId)
-            assertEquals("Agent 任务处理中", notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
-            assertEquals("正在后台接收会话回复", notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+            assertEquals(
+                service.getString(com.openandroidintelligence.ui.resources.R.string.notif_agent_session_title),
+                notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString(),
+            )
+            assertEquals(
+                service.getString(com.openandroidintelligence.ui.resources.R.string.notif_agent_session_content),
+                notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString(),
+            )
             assertTrue(notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
             assertTrue(notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
             assertEquals(Notification.CATEGORY_SERVICE, notification.category)

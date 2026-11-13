@@ -18,7 +18,7 @@ import org.robolectric.annotation.Config
 /**
  * 回合级执行过程聚合的端到端界面契约：
  * - 最终回答开始后，前面所有助手消息里的思考/工具统一收进一个折叠面板；
- * - 仍在执行时不提前聚合；
+ * - 从明确执行块出现起使用统一面板；
  * - 没有执行块的普通多条助手消息保持逐条；
  * - 中断、只有工具没有最终回答时也不伪造回答。
  */
@@ -51,18 +51,18 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已完成 2 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 2 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("设置应用已经打开了。", substring = true).assertIsDisplayed()
         // 折叠时过程正文不可见
         compose.onNodeWithText("先确认设备状态", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 2 步执行与思考", substring = true).performClick()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 2 步", substring = true).performClick()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()
     }
 
     @Test
-    fun liveExecutionIsNotAggregatedBeforeTheFinalAnswerStarts() {
+    fun liveExecutionKeepsThoughtInsideUnifiedPanelBeforeFinalAnswer() {
         val entries = listOf(
             user("现在几点"),
             assistant("<think>正在查询系统时间", key = "msg_live", timestamp = 2L, isStreaming = true),
@@ -72,7 +72,8 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在查询系统时间", substring = true).assertIsDisplayed()
         compose.onNodeWithText("已完成", substring = true).assertDoesNotExist()
     }
@@ -114,7 +115,7 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("此消息没有可显示的文本", substring = true).assertDoesNotExist()
     }
 
@@ -145,12 +146,14 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(listOf(user("继续"), current)) }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        // 从默认展开切到手动展开，随后验证流式增量不会丢失用户选择。
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").performClick()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击展开").performClick()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
 
         compose.runOnIdle { streamingText = "$streamingText，第二段" }
 
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("第二段", substring = true).assertIsDisplayed()
     }
 

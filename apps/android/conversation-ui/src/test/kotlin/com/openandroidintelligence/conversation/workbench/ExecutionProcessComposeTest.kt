@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.workbench
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
@@ -7,6 +8,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import org.junit.Rule
@@ -54,18 +58,45 @@ class ExecutionProcessComposeTest {
     // ==========================================
 
     @Test
-    fun realtimeExecutionEntryRendersLiveThoughtCardInsteadOfPanel() {
+    fun completedGenerationDoesNotShowLiveCursorWhenToolMarkupIsUnclosed() {
+        val entry = assistantEntry("tool", "<tool_call name=\"read_file\"><command>Reading config.yaml...</command>", streaming = true)
+        val run = (TimelineDisplayModel().build(
+            listOf(entry),
+            generation = com.openandroidintelligence.conversation.model.GenerationState.COMPLETED,
+        ).single() as TimelineDisplayItem.Execution).run
+
+        compose.setContent { MaterialTheme { AssistantExecutionTurnBody(run) } }
+        compose.onNodeWithText("点击展开", substring = true).performClick()
+        compose.onNodeWithText("正在输出", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("执行中", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun completedPlainActivityLogDoesNotKeepAStreamingCursor() {
+        val entry = assistantEntry("log", "Reading config.yaml...", streaming = true)
+        val item = TimelineDisplayModel().build(
+            listOf(entry),
+            generation = com.openandroidintelligence.conversation.model.GenerationState.COMPLETED,
+        ).single() as TimelineDisplayItem.Single
+
+        compose.setContent { MaterialTheme { AssistantMessageContent(item.entry) } }
+        compose.onNodeWithText("Reading config.yaml...", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("正在输出", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun realtimeExecutionEntryKeepsLiveThoughtInsidePanel() {
         val entry = assistantEntry("a1", "<think>正在分析设备状态", streaming = true)
-        val items = TimelineDisplayModel().build(listOf(entry))
-        assertTrue(items.single() is TimelineDisplayItem.Single)
+        val run = runOf(entry)
 
         compose.setContent {
             MaterialTheme {
-                AssistantMessageContent(entry)
+                AssistantExecutionTurnBody(run)
             }
         }
 
-        compose.onNodeWithText("AI 正在思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
+        compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在分析设备状态", substring = true).assertIsDisplayed()
         compose.onNodeWithText("已完成", substring = true).assertDoesNotExist()
     }
@@ -101,7 +132,7 @@ class ExecutionProcessComposeTest {
 
         compose.onNodeWithText("遥测总览", substring = true).assertIsDisplayed()
         compose.onNodeWithText("系统运行正常", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("正在思考", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -134,15 +165,15 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         compose.onNodeWithText("最终回答：已完成。", substring = true).assertIsDisplayed()
         // 折叠时步骤内容不在组合树里。
-        compose.onNodeWithText("已深度思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -160,11 +191,11 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
         // 没有最终正文：不伪造回答占位，也不显示步骤详情。
         compose.onNodeWithText("执行成功", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithText("执行成功", substring = true).assertIsDisplayed()
         // 面板里的工具卡同样按规格默认折叠：再点一次摘要栏才看到命令与输出。
@@ -222,7 +253,9 @@ class ExecutionProcessComposeTest {
             }
         }
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        // 执行中默认展开，先手动收起再展开，明确记录用户展开偏好。
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").performClick()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击展开").performClick()
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
 
         // 模拟同一轮继续流式输出：run 重建但 key 不变，用户展开状态必须保持。
@@ -235,7 +268,94 @@ class ExecutionProcessComposeTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("已深度思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun runningExecutionUsesProcessTitleForLegacyAndCompletedNativeSteps() {
+        val legacyRun = runOf(assistantEntry("legacy-live", "<think>继续思考", streaming = true))
+        val nativeRun = runOf(assistantEntry("native-source", "").copy(
+            generationId = "running-generation",
+            executionGenerationState = GenerationState.RUNNING,
+            executionSteps = listOf(NativeExecutionStep(
+                stepId = "finished-step",
+                eventId = "completed-event",
+                toolName = "read_file",
+                arguments = "{}",
+                output = "已有工具结果",
+                status = NativeExecutionStatus.COMPLETED,
+            )),
+        ))
+
+        compose.setContent {
+            MaterialTheme {
+                Column {
+                    ExecutionProcessPanel(legacyRun)
+                    ExecutionProcessPanel(nativeRun)
+                }
+            }
+        }
+
+        compose.onAllNodesWithText("执行过程 · 1 步", substring = true).assertCountEquals(2)
+        compose.onAllNodesWithText("已执行 1 步", substring = true).assertCountEquals(0)
+    }
+
+    @Test
+    fun liveExecutionDefaultsExpandedThenCollapsesOnCompletion() {
+        var run by mutableStateOf(runOf(
+            assistantEntry("automatic", "<think>自动收起前的思考详情", streaming = true),
+        ))
+        compose.setContent { MaterialTheme { AssistantExecutionTurnBody(run) } }
+
+        compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("自动收起前的思考详情", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行 1 步", substring = true).assertDoesNotExist()
+
+        compose.runOnIdle {
+            run = runOf(assistantEntry("automatic", "<think>自动收起前的思考详情</think>最终回答"))
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("自动收起前的思考详情", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("最终回答").assertIsDisplayed()
+    }
+
+    @Test
+    fun manualPanelChoiceSurvivesStreamingAndGenerationCompletion() {
+        var run by mutableStateOf(runOf(
+            assistantEntry("manual", "<think>手动选择保留的思考详情", streaming = true),
+        ))
+        compose.setContent { MaterialTheme { AssistantExecutionTurnBody(run) } }
+
+        // 手动收起后，后续流式增量不能重新展开。
+        compose.onNodeWithText("执行过程 · 1 步", substring = true).assertIsDisplayed().performClick()
+        compose.onNodeWithText("手动选择保留的思考详情", substring = true).assertDoesNotExist()
+        compose.runOnIdle {
+            run = runOf(assistantEntry("manual", "<think>手动选择保留的思考详情与增量", streaming = true))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("手动选择保留的思考详情与增量", substring = true).assertDoesNotExist()
+
+        // 用户重新展开后，即使生成结束也保留选择；最终正文继续独立展示。
+        compose.onNodeWithText("执行过程 · 1 步", substring = true).performClick()
+        compose.onNodeWithText("手动选择保留的思考详情与增量", substring = true).assertIsDisplayed()
+        compose.runOnIdle {
+            run = runOf(assistantEntry("manual", "<think>手动选择保留的思考详情与增量</think>最终回答第一版"))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("最终回答第一版").assertIsDisplayed()
+
+        compose.runOnIdle {
+            run = runOf(assistantEntry("manual", "<think>手动选择保留的思考详情与增量</think>最终回答第二版"))
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("最终回答第二版").assertIsDisplayed()
     }
 
     @Test
@@ -274,14 +394,14 @@ class ExecutionProcessComposeTest {
         }
 
         compose.onNodeWithContentDescription(
-            "执行过程，已完成 1 步，已收起",
+            "执行过程，已执行 1 步，已收起",
             substring = true,
         ).assertIsDisplayed()
 
-        compose.onNodeWithText("已完成 1 步执行与思考", substring = true).performClick()
+        compose.onNodeWithText("已执行 1 步", substring = true).performClick()
 
         compose.onNodeWithContentDescription(
-            "执行过程，已完成 1 步，已展开",
+            "执行过程，已执行 1 步，已展开",
             substring = true,
         ).assertIsDisplayed()
     }

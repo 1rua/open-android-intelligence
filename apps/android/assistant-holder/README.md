@@ -19,7 +19,7 @@ The main app is responsible for digesting the granted selection and entering
 the `artifact-ports` ticket/scratch lifecycle. This module does not claim a
 real Photo Picker/SAF adapter, encryption implementation, or upload path.
 
-## 系统助理会话界面（2026-10-21 M3 Compose 重构）
+## 系统助理会话界面（底部悬浮输入栏重构）
 
 助理浮层只有在**其他 App 之上被系统唤起**时才有意义，因此这里的界面就是系统助理
 会话本身，而不是"只能在 App 内打开的面板"。
@@ -28,11 +28,21 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
 
 | 文件 | 职责 |
 | --- | --- |
-| `AssistantSessionService.kt` | `VoiceInteractionSession`：窗口尺寸、停靠态、圈选态、返回键与生命周期 |
-| `AssistantActivity.kt` | 未设为默认助理时的 `action.ASSIST` 兜底页 |
-| `AssistantComposeHost.kt` | 轻量 Compose 宿主：`ComposeView` + `LifecycleOwner` + `SavedStateRegistryOwner` |
-| `AssistantSessionContent.kt` | 主题根、停靠球、会话浮层卡片、兜底页、圈选层 |
-| `AssistantConversationBody.kt` | 共享内容层：标题、消息、空态引导、输入坞、动作行、提示条 |
+| `AssistantSessionService.kt` | `VoiceInteractionSession`：测量驱动窗口高度、状态机驱动形态、圈选全屏、返回键与生命周期 |
+| `AssistantSessionLifecycle.kt` | 一次展示的桥接动作：进入绑定并声明可见，退出先撤销可见再断开（不取消生成） |
+| `AssistantSessionRoot.kt` | 宿主无关的根组合：紧凑输入 / 展开会话两态、高度回传、状态机持有者 |
+| `AssistantCompactBar.kt` | 底部悬浮输入栏（附件条 + 多行输入 + 麦克风/圈选/发送）与录音态 |
+| `AssistantExpandedPanel.kt` | 可展开会话框容器：高度上限、内部滚动、智能跟随与「回到最新」 |
+| `AssistantTimelineView.kt` | 复用工作台时间线渲染（Markdown/执行段/审批卡/附件）与跟随策略 |
+| `AssistantSelectionStage.kt` | 全屏圈选舞台：截图 → 圈选 → 后台裁剪编码 → PNG 附件 |
+| `AssistantVoiceDelivery.kt` | 把结束的录音经桥接交给主进程（管道 + 看门狗超时） |
+| `AssistantSessionWindowPolicy.kt` | 高度上限与跟随判定的纯函数（0.7 比例、键盘可用区） |
+| `AssistantUiStateMachine.kt` | 界面状态 reducer：唤起重置、发送成功才展开、返回键优先级 |
+| `AssistantLocalPreviews.kt` | `localKey → 缩略图/语音时长` 的会话内存存储 |
+| `AssistantActivity.kt` | 未设为默认助理时的 `action.ASSIST` 兜底页（同一棵根组合） |
+| `AssistantComposeHost.kt` | 轻量 Compose 宿主：`ComposeView` + `LifecycleOwner` + `SavedStateRegistryOwner` + 高度回传 |
+| `AssistantSessionContent.kt` | 主题根、圈选舞台切换、根组合装配 |
+| `AssistantConversationBody.kt` | 仅保留共享提示条 `AssistantNoticeBar` |
 | `AssistantBridgeClient.kt` | 只依赖 `Context` 的桥接客户端：`StateFlow<AssistantState>` + 命令方法 |
 | `AssistantState.kt` | 桥接 JSON 的只读映射，以及"Gateway 状态/禁用原因"的文案规则 |
 | `AssistantScreenCrop.kt` | 圈选画布坐标 → 截图像素的裁剪换算 |
@@ -40,20 +50,32 @@ real Photo Picker/SAF adapter, encryption implementation, or upload path.
 
 约束：
 
-1. **跨进程协议不变**：`version=1` 的 `connect` / `consent` / `thread` / `send` /
-   `cancel` / `draft` / `screen` / `disconnect` 与 JSON 字段一字未改；本进程不初始化
-   Gateway、不持有凭据，只做呈现。
-2. **不伪造状态**：未绑定主进程、未连接 Gateway、未同意当前对话时分别显示对应引导，
-   消息与线程列表全部来自主进程发布的状态，没有演示数据。
-3. **窗口即卡片**：会话用 `setLayout` 在 72dp 停靠球与展开卡片之间整窗切换，窗口背景
-   透明，圆角与品牌环由 Compose 绘制；兜底页复用 App 内同一个 `AssistantSurface`。
-4. **圈选来自系统截图**：只有 `onHandleScreenshot` 提供的截图可被圈选；没有截图时给出
-   明确提示，不降级到任何后台采集。确认后才裁剪并通过 `screen` 命令以管道提交，
-   10 秒看门狗与 8MB 上限保持不变。
-5. **无障碍与减少动态**：图标按钮均有 `contentDescription`，停靠球有
-   `stateDescription`，动画令牌来自 `conversation-ui` 的 `MotionSpecs` 并随系统动画
-   缩放退化。
+1. **跨进程协议 v2**：`version=2` 的 `connect` / `session.new` / `presence` / `send` /
+   `cancel` / `draft` / `screen` / `voice` / `attachment.remove` / `approval` / `retry` /
+   `disconnect`，字段白名单与主进程 `AssistantBridgeService` 一致；状态帧由
+   `conversation-ui` 的 `AssistantBridgeProtocol.decodeState()` 解析（`revision` 单调递增，
+   旧帧丢弃）。本进程不初始化 Gateway、不持有凭据，只做呈现。
+2. **不伪造状态**：未绑定主进程、未连接 Gateway 时分别显示对应引导，消息全部来自
+   主进程发布的状态，没有演示数据。
+3. **窗口由内容测量驱动**：窗口常驻 `MATCH_PARENT` 宽、`Gravity.BOTTOM`、背景透明；
+   Compose 根节点把自身高度回传会话，会话用 `window.setLayout(MATCH_PARENT, heightPx)`
+   精确对齐。没有停靠球，也不再在"球 / 卡片"之间整窗切换。
+4. **状态机驱动形态**：唤起重置为紧凑输入；只有主进程真正接收的发送才展开会话；
+   返回键先退出覆盖层（圈选），否则结束会话 —— 不中断生成、不折叠对话。
+5. **每次唤起都是新会话**：`onShow` 一律丢弃旧客户端并重建，主进程的 `connect`
+   会 `openSession(client, UUID.randomUUID())`（`restoreLastThread=false`），因此不需要
+   额外的 `session.new`，也不会恢复上一次浮层的会话与草稿。
+6. **原生气泡互斥**：进入展示时发 `presence(visible=true)`，退出时**先**发
+   `presence(false)` **再** `disconnect`；未绑定前的声明由客户端记住并在首帧后补发。
+   退出路径中没有任何 `cancel`，生成继续留在主进程。
+7. **圈选来自系统截图**：只有 `onHandleScreenshot` 提供的截图可被圈选；圈选态窗口临时
+   铺满屏幕（`TOP|START`），没有截图时给出明确提示，不降级到任何后台采集。确认后才裁剪
+   并通过 `screen` 命令以管道提交，10 秒看门狗与 8MB 上限保持不变。
+8. **键盘与系统栏**：`SOFT_INPUT_ADJUST_NOTHING` + `setDecorFitsSystemWindows(false)`，
+   键盘留白由 Compose 的 `imePadding()` 承担，避免系统缩放与内容让位叠加。
+9. **无障碍与减少动态**：图标按钮均有 `contentDescription`，动画令牌来自
+   `conversation-ui` 的 `MotionSpecs` 并随系统动画缩放退化。
 
-旧的 `AssistantPanel`（手搓 `LinearLayout` + 系统 `Button`）与原生 `AssistSelectionView`
-已整体替换为上述 Compose 实现；被替换的文件在任务记录中说明（已移入
-`/tmp/open-android-intelligence-trash/`，未做永久删除）。
+旧的停靠球（`AssistantDockedBall` / `BrandRing`）、面板内标题/线程列表/绑定确认/动作行
+已随本次重构删除：这些能力要么由输入栏本身承担（圈选、录音），要么在新交互里不再需要
+（手动绑定对话、切换线程）。

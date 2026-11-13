@@ -4,6 +4,7 @@ import com.openandroidintelligence.gateway.http.GatewayHttpClient
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
 import com.openandroidintelligence.gateway.http.requireData
+import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.gateway.schema.JsonFields
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -51,44 +52,48 @@ class CommandCatalogClient(private val http: GatewayHttpClient) {
         if (response.status != 200) {
             throw IllegalStateException("COMMAND_CATALOG_FAILED:${response.status}")
         }
-        val body = response.requireData("COMMAND_CATALOG_FAILED")
+        return decode(response.requireData("COMMAND_CATALOG_FAILED"), languageCode)
+    }
 
-        val commandArray = JsonFields.array(JsonFields.field(body, "commands"))
-            ?: throw IllegalStateException("COMMAND_CATALOG_FAILED:invalid-commands")
-        val wireCommands = commandArray.items.mapNotNull(JsonFields::obj)
-        val commands = wireCommands.mapNotNull { entry ->
-            val rawInvocation = JsonFields.string(entry, "invocation") ?: return@mapNotNull null
-            val trimmedInvocation = rawInvocation.trim()
-            if (trimmedInvocation.isBlank() || trimmedInvocation.any { it.isWhitespace() }) {
-                return@mapNotNull null
+    companion object {
+        internal fun decode(body: JsonValue.JObject, languageCode: String): CommandCatalog {
+            val commandArray = JsonFields.array(JsonFields.field(body, "commands"))
+                ?: throw IllegalStateException("COMMAND_CATALOG_FAILED:invalid-commands")
+            val wireCommands = commandArray.items.mapNotNull(JsonFields::obj)
+            val commands = wireCommands.mapNotNull { entry ->
+                val rawInvocation = JsonFields.string(entry, "invocation") ?: return@mapNotNull null
+                val trimmedInvocation = rawInvocation.trim()
+                if (trimmedInvocation.isBlank() || trimmedInvocation.any { it.isWhitespace() }) {
+                    return@mapNotNull null
+                }
+                val invocation = if (trimmedInvocation.startsWith("/")) {
+                    trimmedInvocation
+                } else {
+                    "/$trimmedInvocation"
+                }
+                if (invocation == "/" || invocation.startsWith("//")) return@mapNotNull null
+                CommandCatalogEntry(
+                    id = JsonFields.string(entry, "id")?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: invocation.removePrefix("/"),
+                    invocation = invocation,
+                    title = JsonFields.string(entry, "title")?.trim()?.takeIf { it.isNotEmpty() } ?: invocation,
+                    description = JsonFields.string(entry, "description")?.trim().orEmpty(),
+                    acceptsArguments = JsonFields.bool(entry, "acceptsArguments") ?: false,
+                    availability = JsonFields.string(entry, "availability") ?: "available",
+                    argumentHint = JsonFields.string(entry, "argumentHint")?.trim()?.takeIf { it.isNotEmpty() },
+                )
             }
-            val invocation = if (trimmedInvocation.startsWith("/")) {
-                trimmedInvocation
-            } else {
-                "/$trimmedInvocation"
+            if (commandArray.items.isNotEmpty() && commands.isEmpty()) {
+                throw IllegalStateException("COMMAND_CATALOG_FAILED:no-valid-commands")
             }
-            if (invocation == "/" || invocation.startsWith("//")) return@mapNotNull null
-            CommandCatalogEntry(
-                id = JsonFields.string(entry, "id")?.trim()?.takeIf { it.isNotEmpty() }
-                    ?: invocation.removePrefix("/"),
-                invocation = invocation,
-                title = JsonFields.string(entry, "title")?.trim()?.takeIf { it.isNotEmpty() } ?: invocation,
-                description = JsonFields.string(entry, "description")?.trim().orEmpty(),
-                acceptsArguments = JsonFields.bool(entry, "acceptsArguments") ?: false,
-                availability = JsonFields.string(entry, "availability") ?: "available",
-                argumentHint = JsonFields.string(entry, "argumentHint")?.trim()?.takeIf { it.isNotEmpty() },
+
+            return CommandCatalog(
+                format = JsonFields.string(body, "format") ?: CommandCatalog.FORMAT_V1,
+                catalogVersion = JsonFields.string(body, "catalogVersion")
+                    ?: throw IllegalStateException("COMMAND_CATALOG_FAILED:missing-version"),
+                languageCode = JsonFields.string(body, "languageCode") ?: languageCode,
+                commands = commands,
             )
         }
-        if (commandArray.items.isNotEmpty() && commands.isEmpty()) {
-            throw IllegalStateException("COMMAND_CATALOG_FAILED:no-valid-commands")
-        }
-
-        return CommandCatalog(
-            format = JsonFields.string(body, "format") ?: CommandCatalog.FORMAT_V1,
-            catalogVersion = JsonFields.string(body, "catalogVersion")
-                ?: throw IllegalStateException("COMMAND_CATALOG_FAILED:missing-version"),
-            languageCode = JsonFields.string(body, "languageCode") ?: languageCode,
-            commands = commands,
-        )
     }
 }

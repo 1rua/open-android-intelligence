@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -35,6 +36,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -53,15 +55,19 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
  *   逐块渲染实时思维链卡 / 工具卡与紧凑叙述，末尾保留流式光标。
  */
 @Composable
-fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier) {
+fun AssistantMessageContent(
+    entry: TimelineEntry,
+    modifier: Modifier = Modifier,
+    presentations: StreamingPresentationRegistry? = null,
+) {
     val text = entry.text
     if (text.isBlank()) {
         when {
-            entry.isStreaming -> StreamingCursor(
+            entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true) -> StreamingCursor(
                 modifier = modifier.padding(vertical = Dimensions.SpaceTiny),
             )
 
-            entry.attachments.isEmpty() -> Text(
+            !entry.isStreaming && entry.attachments.isEmpty() -> Text(
                 text = "此消息没有可显示的文本",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -73,13 +79,22 @@ fun AssistantMessageContent(entry: TimelineEntry, modifier: Modifier = Modifier)
         return
     }
 
+    if (!mayContainExecutionMarkup(text)) {
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
+        return
+    }
+
     val blocks = remember(text) {
         runCatching { MarkdownParser.parse(text) }
             .getOrElse { listOf(TimelineBlock.Paragraph(text)) }
     }
 
     if (blocks.none { isExecutionBlock(it) }) {
-        MarkdownDocumentView(blocks = blocks, isStreaming = entry.isStreaming, modifier = modifier)
+        StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
+            MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
+        }
         return
     }
 
@@ -167,9 +182,9 @@ fun AssistantExecutionTurnBody(
 /**
  * 执行过程折叠面板（规格 §4.3）。
  *
- * 首次出现即折叠；用户手动展开后保持，不因流式增量重建而强制收起。
+ * 运行中默认展开，生成结束后自动收起；用户手动选择优先于自动状态。
  * 标题两种文案：
- * - 折叠：「已完成 N 步执行与思考 · 点击展开」；
+ * - 折叠：「已执行 N 步 · 点击展开」；
  * - 展开：「执行过程 · N 步 · 点击收起」；
  * - 有失败/中断时追加「· 含 M 步失败」（中断另行标注「· 已中断」）。
  */
@@ -183,17 +198,20 @@ fun ExecutionProcessPanel(
     val stateColors = LocalAppStateColors.current
 
     val hasFailure = run.steps.any { it is ExecutionStep.ToolCall && !it.block.isSuccess }
+    val nativeStatuses = run.steps.filterIsInstance<ExecutionStep.ToolCall>().mapNotNull { it.block.executionStatus }
+    val unknownSteps = nativeStatuses.count { it == NativeExecutionStatus.UNKNOWN }
+    val nativeRunning = nativeStatuses.any { it == NativeExecutionStatus.RUNNING }
     val accentColor = when {
         hasFailure -> MaterialTheme.colorScheme.error
         run.interrupted -> stateColors.warning
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    // 默认折叠；段身份不变时用户选择保持不变。
-    // 无最终正文且过程区含有附件（例如 Agent 只回了截图）时默认展开：
-    // 折叠面板把唯一的可见附件藏起来，用户会以为消息丢了内容。
-    val startsExpanded = !run.hasFinalAnswer && run.steps.any { it is ExecutionStep.Attachments }
-    var expanded by rememberSaveable(run.segmentKey) { mutableStateOf(startsExpanded) }
+    // 自动状态随任务结束收起，用户选择单独保存，不能被增量或终态覆盖。
+    // 无最终正文且过程区只有附件时，继续保留默认展开，避免隐藏唯一可见内容。
+    var userExpanded by rememberSaveable(run.segmentKey) { mutableStateOf<Boolean?>(null) }
+    val expanded = userExpanded ?: (run.isStreaming ||
+        !run.hasFinalAnswer && run.steps.any { it is ExecutionStep.Attachments })
 
     val chevronRotation = if (reduceMotion) {
         if (expanded) 180f else 0f
@@ -207,13 +225,17 @@ fun ExecutionProcessPanel(
 
     val baseTitle = if (expanded) {
         "执行过程 · ${run.stepCount} 步"
+    } else if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
+        "执行过程 · ${run.stepCount} 步"
     } else {
-        "已完成 ${run.stepCount} 步执行与思考"
+        "已执行 ${run.stepCount} 步"
     }
     val failureSuffix = if (run.failedStepCount > 0) " · 含 ${run.failedStepCount} 步失败" else ""
     val interruptedSuffix = if (run.interrupted) " · 已中断" else ""
     val actionSuffix = if (expanded) " · 点击收起" else " · 点击展开"
-    val title = "$baseTitle$failureSuffix$interruptedSuffix$actionSuffix"
+    val unknownSuffix = if (unknownSteps > 0) " · $unknownSteps 步结果未知" else ""
+    val runningSuffix = if (nativeRunning) " · 执行中" else ""
+    val title = "$baseTitle$failureSuffix$interruptedSuffix$unknownSuffix$runningSuffix$actionSuffix"
 
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -232,11 +254,15 @@ fun ExecutionProcessPanel(
                         role = Role.Button,
                         onClickLabel = if (expanded) "收起执行过程" else "展开执行过程",
                     ) {
-                        expanded = !expanded
+                        userExpanded = !expanded
                     }
                     .semantics {
                         contentDescription =
-                            "执行过程，已完成 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                            if (run.isStreaming || unknownSteps > 0 || nativeRunning) {
+                                "执行过程，${run.stepCount} 步$unknownSuffix$runningSuffix，${if (expanded) "已展开" else "已收起"}"
+                            } else {
+                                "执行过程，已执行 ${run.stepCount} 步，${if (expanded) "已展开" else "已收起"}"
+                            }
                         stateDescription = if (expanded) "已展开" else "已收起"
                     }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
@@ -281,29 +307,31 @@ fun ExecutionProcessPanel(
                         ),
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
                 ) {
-                    run.steps.forEach { step ->
-                        when (step) {
-                            is ExecutionStep.Thought -> MarkdownThoughtBlockView(
-                                block = step.block,
-                                // 过程区里的步骤只在整轮仍流式时保留实时指示；
-                                // 已折叠的步骤默认是已完成或已中断的。
-                                isStreaming = run.isStreaming && step.entryIsStreaming,
-                                timingKey = step.stepKey,
-                            )
+                    run.steps.forEachIndexed { index, step ->
+                        key(step.stepKey ?: "${step.entryKey}:$index") {
+                            when (step) {
+                                is ExecutionStep.Thought -> MarkdownThoughtBlockView(
+                                    block = step.block,
+                                    // 过程区里的步骤只在整轮仍流式时保留实时指示；
+                                    // 已折叠的步骤默认是已完成或已中断的。
+                                    isStreaming = run.isStreaming && step.entryIsStreaming,
+                                    timingKey = step.stepKey,
+                                )
 
-                            is ExecutionStep.ToolCall -> MarkdownToolCallView(
-                                block = step.block,
-                                isStreaming = run.isStreaming && step.entryIsStreaming,
-                                timingKey = step.stepKey,
-                            )
+                                is ExecutionStep.ToolCall -> MarkdownToolCallView(
+                                    block = step.block,
+                                    isStreaming = run.isStreaming && step.entryIsStreaming,
+                                    timingKey = step.stepKey,
+                                )
 
-                            is ExecutionStep.Narrative -> CompositionLocalProvider(
-                                LocalMarkdownCompact provides true,
-                            ) {
-                                MarkdownDocumentView(blocks = listOf(step.block), isStreaming = false)
+                                is ExecutionStep.Narrative -> CompositionLocalProvider(
+                                    LocalMarkdownCompact provides true,
+                                ) {
+                                    MarkdownDocumentView(blocks = listOf(step.block), isStreaming = false)
+                                }
+
+                                is ExecutionStep.Attachments -> processAttachmentsSlot(step.entry)
                             }
-
-                            is ExecutionStep.Attachments -> processAttachmentsSlot(step.entry)
                         }
                     }
                 }

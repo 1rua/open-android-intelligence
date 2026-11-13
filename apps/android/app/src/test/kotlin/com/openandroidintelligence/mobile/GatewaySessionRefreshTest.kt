@@ -3,16 +3,21 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
@@ -49,6 +54,8 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34], application = Application::class)
 class GatewaySessionRefreshTest {
 
+    private val context: Context get() = ApplicationProvider.getApplicationContext<Application>()
+
     private lateinit var gateway: LoopbackGatewayStub
     private lateinit var credentialStore: InMemoryCredentialStore
     private lateinit var pairingGrants: PairingGrantStateHolder
@@ -73,8 +80,11 @@ class GatewaySessionRefreshTest {
 
     @After
     fun tearDown() {
-        runtimeScope.cancel()
-        gateway.closed()
+        val owner = requireNotNull(runtimeScope.coroutineContext[Job])
+        try {
+            runtimeScope.cancel()
+            assertTrue("所有恢复与凭据清理任务结束后才释放 Robolectric Context", awaitCondition(AWAIT_MILLIS) { owner.isCompleted })
+        } finally { gateway.closed() }
     }
 
     @Test
@@ -116,22 +126,25 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun aGrantCleanupFailureAfterConfirmedUnpairStillDeletesRefreshAndSigningKeys() {
+    fun confirmedUnpairRevokesConnectionKeysAndPreservesGlobalCapabilityPolicy() {
         val path = "/open-android-intelligence/v2/pairings/current"
         gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
         val underlying = InMemoryPairingGrantStore()
         pairingGrants = PairingGrantStateHolder(object : PairingGrantStore {
             override fun load(binding: PairingGrantBinding) = underlying.load(binding)
             override fun save(binding: PairingGrantBinding, state: PairingGrantState) = underlying.save(binding, state)
-            override fun clear(binding: PairingGrantBinding) = error("PAIRING_GRANT_CLEAR_FAILED")
         }, AndroidAuditStore(InMemoryAuditSink()))
+        pairingGrants.updateCapabilityPolicy("sms-test", com.openandroidintelligence.kernel.CapabilityPolicy(
+            mode = com.openandroidintelligence.kernel.CapabilityAuthorizationMode.READ_ONLY))
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         runtime.unpair()
-        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) && runtime.operationNotice.value?.contains("清理失败") == true })
+        assertTrue(awaitCondition(AWAIT_MILLIS) { !deviceKeys.hasKey(profileId()) && !credentialStore.hasRefresh(profileId()) })
         assertFalse(credentialStore.hasRefresh(profileId()))
-        assertNull(pairingGrants.state.value)
+        assertNotNull(pairingGrants.state.value)
+        assertEquals(com.openandroidintelligence.kernel.CapabilityAuthorizationMode.READ_ONLY,
+            pairingGrants.capabilityPolicy("sms-test").mode)
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
     }
 
@@ -209,6 +222,45 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
+    fun aColdRestoreDoesNotInventAnOfflineNoticeWhileNegotiating() {
+        saveLoginBeforeProcessDeath()
+        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        val restored = runtime()
+        try {
+            restored.restoreSessionIfAvailable()
+            assertTrue("本地工作台就绪后只等待远端，不宣称离线", awaitCondition(AWAIT_MILLIS) {
+                restored.phase.value is ConnectionPhase.Initializing && restored.controller.value != null
+            })
+            assertNull("尚无失败事实不能显示离线提示", restored.operationNotice.value)
+            release.countDown()
+            awaitConnected(restored)
+            assertNull("恢复成功后不能继续提示只能离线阅读", restored.operationNotice.value)
+        } finally { release.countDown() }
+    }
+
+    @Test
+    fun aColdRestorePreservesANewerLocalRecoveryNotice() {
+        saveLoginBeforeProcessDeath()
+        val release = gateway.holdResponse(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        val restored = runtime()
+        try {
+            restored.restoreSessionIfAvailable()
+            assertTrue(awaitCondition(AWAIT_MILLIS) {
+                restored.phase.value is ConnectionPhase.Initializing && restored.controller.value != null
+            })
+            // 模拟另一条本地恢复路径在协商等待期间发布的新通知；不能用清空所有通知掩盖它。
+            val field = GatewayRuntime::class.java.getDeclaredField("_operationNotice").apply { isAccessible = true }
+            @Suppress("UNCHECKED_CAST")
+            val notices = field.get(restored) as kotlinx.coroutines.flow.MutableStateFlow<String?>
+            val mediaNotice = "本地附件状态恢复失败，消息正文已保留，附件暂不可用，请重试同步。"
+            notices.value = mediaNotice
+            release.countDown()
+            awaitConnected(restored)
+            assertEquals("在线恢复不能吞掉更新的本地附件告警", mediaNotice, restored.operationNotice.value)
+        } finally { release.countDown() }
+    }
+
+    @Test
     fun aColdProcessAutomaticallyRecoversWhenTheGatewayReturns() {
         val originalScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val original = GatewayRuntime(
@@ -264,29 +316,114 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
+    fun aBackgroundRecoveryCannotStartTransportAfterItsLeaseExpires() {
+        assertExpiredBackgroundLeaseStopsBeforeTransport(NEGOTIATE_PATH)
+    }
+
+    @Test
+    fun aBackgroundRecoveryCannotRefreshIfItsLeaseExpiresBeforeTransport() {
+        assertExpiredBackgroundLeaseStopsBeforeTransport(REFRESH_PATH)
+    }
+
+    private fun assertExpiredBackgroundLeaseStopsBeforeTransport(target: String) {
+        saveLoginBeforeProcessDeath()
+        val recovery = AgentSessionRecoveryState(ApplicationProvider.getApplicationContext())
+        assertTrue(recovery.markPendingWork())
+        assertNotNull(recovery.beginRecovery())
+        val previousAttempts = gateway.requests.count { it.target == target }
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val transportNumber = if (target == NEGOTIATE_PATH) 1 else 2
+        val transportAttempts = java.util.concurrent.atomic.AtomicInteger()
+        val previousSink = GatewayLog.sink
+        val previousEvidence = GatewayLog.protocolEvidenceEnabled
+        GatewayLog.protocolEvidenceEnabled = true
+        GatewayLog.sink = { tag, message ->
+            if (tag == "OaiE2E" && message.contains("\"type\":\"transport.io_dequeued\"") &&
+                message.contains("\"mode\":\"execute\"") && transportAttempts.incrementAndGet() == transportNumber) {
+                entered.countDown()
+                check(release.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "transport 闩锁未释放" }
+            }
+        }
+        val restored = runtime()
+        try {
+            restored.onBackgroundSessionRestarted()
+            assertTrue("必须暂停在 IO 已调度、尚未打开连接的边界", awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            assertTrue(recovery.hasRecoveryLease)
+            assertEquals("暂停时尚未发出 $target 请求", previousAttempts,
+                gateway.requests.count { it.target == target })
+            val owner = restoreJob(restored)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+            assertFalse(recovery.hasRecoveryLease)
+            release.countDown()
+            assertTrue("失去后台租约后恢复所有者必须结束", awaitCondition(AWAIT_MILLIS) { owner.isCompleted })
+            assertEquals("IO 调度期间过期的后台租约不得开始 $target transport", previousAttempts,
+                gateway.requests.count { it.target == target })
+            assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
+            assertEquals("未发送刷新不能轮换或删除凭据", "refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
+            restored.onAppForegrounded()
+            awaitConnected(restored)
+            assertEquals("前台恢复必须仍可提交一次真实刷新", 1, gateway.requests.count { it.target == REFRESH_PATH })
+            assertEquals("refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
+        } finally {
+            release.countDown()
+            GatewayLog.sink = previousSink
+            GatewayLog.protocolEvidenceEnabled = previousEvidence
+        }
+    }
+
+    @Test
     fun aBackgroundRecoveryStopsRetryingAtLeaseExpiryAndForegroundingRestartsIt() {
         saveLoginBeforeProcessDeath()
         val context = ApplicationProvider.getApplicationContext<Application>()
         val recovery = AgentSessionRecoveryState(context)
         assertTrue(recovery.markPendingWork())
         assertNotNull(recovery.beginRecovery())
-        gateway.respond(NEGOTIATE_PATH, """{"error":{"code":"GATEWAY_UNAVAILABLE","retryable":true}}""", 503)
+        val unavailable = """{"error":{"code":"GATEWAY_UNAVAILABLE","retryable":true}}"""
+        gateway.respond(NEGOTIATE_PATH, unavailable, 503)
         val previousAttempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
         val restored = runtime()
         restored.onBackgroundSessionRestarted()
         assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value is ConnectionPhase.OfflineMirror })
-        val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
-        assertTrue(attempts > previousAttempts)
-        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
-        repeat(3) { restored.onNetworkAvailable() }
-        Thread.sleep(1_100)
-        assertEquals("租约过期后恢复循环不得继续发网络请求", attempts,
-            gateway.requests.count { it.target == NEGOTIATE_PATH })
-        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
-        restored.onAppForegrounded()
-        awaitConnected(restored)
-        assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+        assertTrue(gateway.requests.count { it.target == NEGOTIATE_PATH } > previousAttempts)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        gateway.respond(NEGOTIATE_PATH) {
+            entered.countDown()
+            check(release.await(10, java.util.concurrent.TimeUnit.SECONDS)) { "在途协商响应未释放" }
+            503 to unavailable
+        }
+        try {
+            restored.onNetworkAvailable()
+            assertTrue("租约仍有效时将下一次请求固定在服务端已登记、尚未响应的边界", awaitCondition(AWAIT_MILLIS) {
+                entered.count == 0L
+            })
+            assertTrue(recovery.hasRecoveryLease)
+            val attempts = gateway.requests.count { it.target == NEGOTIATE_PATH }
+            val owner = restoreJob(restored)
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+            repeat(3) { restored.onNetworkAvailable() }
+            release.countDown()
+            assertTrue("等待同一恢复所有者完成，不能把 OfflineMirror 当成没有在途请求", awaitCondition(AWAIT_MILLIS) {
+                owner.isCompleted
+            })
+            repeat(3) { restored.onNetworkAvailable() }
+            assertSame("后台网络回调不得创建新的恢复所有者", owner, restoreJob(restored))
+            assertEquals("租约过期后恢复循环不得继续发网络请求", attempts,
+                gateway.requests.count { it.target == NEGOTIATE_PATH })
+            assertFalse(gateway.requests.any { it.target == REFRESH_PATH })
+            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
+            restored.onAppForegrounded()
+            awaitConnected(restored)
+            assertEquals(1, gateway.requests.count { it.target == PASSWORD_PATH })
+        } finally { release.countDown() }
     }
+
+    private fun restoreJob(runtime: GatewayRuntime): Job =
+        GatewayRuntime::class.java.getDeclaredField("connectionJob").run {
+            isAccessible = true
+            get(runtime) as Job
+        }
 
     @Test
     fun aStoppedBackgroundRecoveryPersistsALateRotationWithoutPublishingAConnection() {
@@ -321,9 +458,13 @@ class GatewaySessionRefreshTest {
         try {
             restored.onBackgroundSessionRestarted()
             assertTrue(awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            val recoveryOwner = restoreJob(restored)
             serviceController.get().onTimeout(1, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             // This test Application is not the production composition root.
             restored.onBackgroundSessionStopped()
+            assertTrue("停止服务已请求取消原恢复任务", recoveryOwner.isCancelled)
+            assertFalse("凭据提交仍在闩锁内，取消不等于恢复任务已经完成", recoveryOwner.isCompleted)
+            assertEquals("保存闩锁释放之前仍是旧凭据", "refresh_1", credentialStore.loadRefresh(profileId())?.decodeToString())
             if (foregroundBeforeCommit) {
                 restored.onAppForegrounded()
                 assertEquals("旧owner完成凭据落盘之前不能启动第二次刷新", 1,
@@ -331,7 +472,9 @@ class GatewaySessionRefreshTest {
             }
             release.countDown()
             if (!foregroundBeforeCommit) {
-                assertTrue(awaitCondition(AWAIT_MILLIS) { restored.phase.value !is ConnectionPhase.Negotiating })
+                assertTrue("等待原恢复所有者完成不可取消的凭据提交及清理", awaitCondition(AWAIT_MILLIS) {
+                    recoveryOwner.isCompleted
+                })
                 assertEquals("服务停止也必须保管已轮换凭据", "refresh_2", credentialStore.loadRefresh(profileId())?.decodeToString())
                 assertFalse("持久化完成不得复活后台连接", restored.phase.value is ConnectionPhase.Connected)
                 assertFalse(gateway.requests.any { it.target.startsWith("/open-android-intelligence/v2/events") &&
@@ -394,12 +537,18 @@ class GatewaySessionRefreshTest {
         try {
             restored.onBackgroundSessionRestarted()
             assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.count { it.target == NEGOTIATE_PATH } > attempts })
-            val restoreOwner = scopeOwner.children.single { it !in previousJobs }
+            // 本地镜像会带来自己的 session Job，不能把 scope 子任务数量当成恢复所有者身份。
+            val restoreWork = scopeOwner.children.filter { it !in previousJobs }.toList()
+            assertTrue("必须实际启动后台恢复工作", restoreWork.isNotEmpty())
             release.countDown()
-            runBlocking { kotlinx.coroutines.withTimeout(AWAIT_MILLIS) { restoreOwner.join() } }
+            assertTrue("撤权及本轮所有后台清理必须完成", awaitCondition(AWAIT_MILLIS) {
+                restoreWork.all { it.isCompleted }
+            })
             assertEquals(GatewayLoginStatus.REAUTHENTICATION_REQUIRED, restored.loginStatus.value)
             assertEquals(GatewayCredentialStatus.UNAVAILABLE, restored.credentialStatus.value)
-            assertTrue(restored.phase.value is ConnectionPhase.Failed)
+            assertEquals(ConnectionPhase.Failed("AUTHENTICATION_FAILED:401"), restored.phase.value)
+            assertNull(restored.controller.value)
+            assertFalse(recovery.hasPendingWork)
             assertFalse(credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
         } finally { release.countDown() }
@@ -677,7 +826,8 @@ class GatewaySessionRefreshTest {
             assertEquals("POST_LOGIN_INITIALIZATION_FAILED:ATTACHMENT_RECOVERY", (runtime.phase.value as ConnectionPhase.Failed).code)
             assertNull(runtime.controller.value)
             assertNull(runtime.connectedAccountId)
-            assertNull(pairingGrants.state.value)
+            assertNotNull(pairingGrants.state.value)
+            assertNull(pairingGrants.currentBinding())
             assertTrue("登录已签发的刷新凭据必须保留", credentialStore.hasRefresh(profileId()))
             assertTrue("配对设备密钥必须保留", deviceKeys.hasKey(profileId()))
             assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
@@ -727,18 +877,24 @@ class GatewaySessionRefreshTest {
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
         pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        val localDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.NOTIFICATIONS, false)
+        runtime.dismissOperationNotice()
         fun frame(id: String, device: String, revision: Int) = "id: $id\nevent: pairing.grant.changed\ndata: {\"payload\":{\"deviceId\":\"$device\",\"grantRevision\":$revision}}\n\n"
         gateway.respond(path, frame("evt_other", "dev_other", 3), contentType = "text/event-stream")
         val platformCursor = AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId() + ":platform")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_other" })
-        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        assertEquals(localDecision, pairingGrants.state.value)
+        assertNull(runtime.operationNotice.value)
         gateway.respond(path, frame("evt_current", "dev_stub", 4), contentType = "text/event-stream")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_current" })
-        assertTrue(pairingGrants.state.value!!.granted.isEmpty())
-        pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, true)
+        assertEquals("远端修订变化只能触发重新同步，不能清除本机开启或关闭的决定", localDecision, pairingGrants.state.value)
+        assertTrue(runtime.operationNotice.value?.contains("本机开关保持原设置") == true)
+        val nextLocalDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, false)
+        runtime.dismissOperationNotice()
         gateway.respond(path, frame("evt_duplicate", "dev_stub", 4), contentType = "text/event-stream")
         assertTrue(awaitCondition(AWAIT_MILLIS) { platformCursor.load("acc_stub") == "evt_duplicate" })
-        assertTrue(PairingGrantCapabilities.SMS in pairingGrants.state.value!!.granted)
+        assertEquals(nextLocalDecision, pairingGrants.state.value)
+        assertNull("重复修订不能再次使本机连接状态失效", runtime.operationNotice.value)
         assertNull(AndroidEventCursorStore(ApplicationProvider.getApplicationContext(), profileId()).load("acc_stub"))
     }
 
@@ -799,6 +955,10 @@ class GatewaySessionRefreshTest {
 
         runtime.refreshSession()
 
+        // Connected 可能先于初始化门禁释放；等待本次刷新真正给出结果，再检查原有语义。
+        assertTrue("没有刷新凭据时必须最终给出说明", awaitCondition(AWAIT_MILLIS) {
+            runtime.operationNotice.value?.contains("刷新凭据") == true
+        })
         val notice = runtime.operationNotice.value
         assertNotNull("没有刷新凭据时必须给出可读说明，而不是静默", notice)
         assertTrue("说明必须点出缺少刷新凭据：$notice", notice!!.contains("刷新凭据"))
@@ -806,6 +966,62 @@ class GatewaySessionRefreshTest {
             "没有凭据时不得向 Gateway 发续期请求",
             gateway.targetsOf("POST").contains(REFRESH_PATH),
         )
+    }
+
+    @Test
+    fun aMissingRefreshCredentialOperationWaitsForTheConnectionInitializer() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val initializationHeld = AtomicBoolean(false)
+        val previousSink = GatewayLog.sink
+        GatewayLog.sink = { tag, message ->
+            if (tag == "OaiConnection" && message == "stage=CONNECTED state=ready") {
+                initializationHeld.set(true)
+                entered.countDown()
+                try {
+                    check(release.await(AWAIT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                        "连接初始化闩锁必须在测试结束前释放"
+                    }
+                } finally { initializationHeld.set(false) }
+            }
+        }
+        try {
+            val runtime = runtime()
+            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+            assertTrue("必须暂停在 Connected 已发布、初始化尚未结束的真实边界",
+                awaitCondition(AWAIT_MILLIS) { entered.count == 0L })
+            assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+            val workbench = requireNotNull(runtime.controller.value)
+            val binding = pairingGrants.currentBinding()
+            val localDecision = pairingGrants.state.value
+            val account = runtime.connectedAccountId
+            credentialStore.clearRefresh(profileId())
+
+            runtime.refreshSession()
+
+            assertTrue("刷新操作返回时初始化仍须被闩锁阻塞", initializationHeld.get())
+            val immediateNotice = runtime.operationNotice.value
+            assertNull("初始化未完成时刷新应排队，不能提前发布结果", immediateNotice)
+            assertFalse("初始化门禁内不能发送缺凭据的续期请求",
+                gateway.targetsOf("POST").contains(REFRESH_PATH))
+            release.countDown()
+            assertTrue("初始化结束后，排队的刷新操作必须给出缺凭据说明",
+                awaitCondition(AWAIT_MILLIS) {
+                    runtime.credentialStatus.value == GatewayCredentialStatus.UNAVAILABLE &&
+                        runtime.operationNotice.value == context.getString(UiR.string.conn_toast_no_refresh_token)
+                })
+            assertSame("延迟刷新不能替换当前工作台", workbench, runtime.controller.value)
+            assertEquals("延迟刷新不能更改设备授权绑定", binding, pairingGrants.currentBinding())
+            assertEquals("延迟刷新不能改写本机授权决定", localDecision, pairingGrants.state.value)
+            assertEquals("延迟刷新不能切换当前账号", account, runtime.connectedAccountId)
+            assertTrue("缺少刷新凭据不能删除设备密钥", deviceKeys.hasKey(profileId()))
+            assertTrue(runtime.phase.value is ConnectionPhase.Connected)
+            assertFalse("缺凭据说明发布后仍不得发送续期请求",
+                gateway.targetsOf("POST").contains(REFRESH_PATH))
+        } finally {
+            release.countDown()
+            GatewayLog.sink = previousSink
+        }
     }
 
     @Test
@@ -841,6 +1057,72 @@ class GatewaySessionRefreshTest {
     )
 
     @Test
+    fun legacyNegotiationNeverProbesTheHostsUnknownAgentRoute() {
+        val agents = "/open-android-intelligence/v2/agents"
+        gateway.respond(agents, """{"error":{"code":"HOST_AUTH_REQUIRED"}}""", 401)
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertNull(runtime.nativeAgents.value)
+        assertFalse(gateway.requests.any { it.target == agents })
+    }
+
+    @Test
+    fun aCoreMarkerEnablesDiscoveryThroughTheExistingAuthenticatedConnection() {
+        val agents = "/open-android-intelligence/v2/agents"
+        val negotiation = NEGOTIATE_BODY.replace(Regex("\"conversationUi\":\\s*\\[[^]]*]"), "\"conversationUi\":[]")
+        gateway.respond(NEGOTIATE_PATH, negotiation, headers = mapOf("X-OAI-Agent-Sessions" to "1"))
+        gateway.respond(agents, """{"agents":[]}""")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.nativeAgents.value?.state?.value?.supported == true })
+        val request = gateway.requests.first { it.target == agents }
+        assertTrue(request.headers.any { it == "Authorization: Bearer token_1" })
+        assertTrue(request.headers.any { it.startsWith("X-Open-Android-Intelligence-Signature:", true) })
+    }
+
+    @Test
+    fun anIndependentHttpFailureCannotOverrideTheAuthoritativeAgentPresence() {
+        val agents = "/open-android-intelligence/v2/agents"
+        val sessions = "$agents/hermes/sessions"
+        val negotiation = NEGOTIATE_BODY.replace(Regex("\"conversationUi\":\\s*\\[[^]]*]"), "\"conversationUi\":[]")
+        gateway.respond(NEGOTIATE_PATH, negotiation, headers = mapOf("X-OAI-Agent-Sessions" to "1"))
+        gateway.respond(agents, """{"agents":[{"id":"hermes","name":"Hermes","kind":"hermes","online":true,"sessionScope":"account","capabilities":{"list":true,"history":true,"send":true}}]}""")
+        gateway.respond(sessions, """{"sessions":[]}""")
+        val runtime = runtime()
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(runtime)
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.nativeAgents.value?.state?.value?.agent?.online == true &&
+                runtime.controller.value?.state?.value?.isOnline == true &&
+                runtime.controller.value?.state?.value?.threads is com.openandroidintelligence.conversation.state.Loadable.Empty &&
+                gateway.requests.any { it.target == sessions }
+        })
+        val controller = requireNotNull(runtime.controller.value)
+        controller.editDraft("读取失败期间保留的草稿")
+        // 关闭响应连接模拟独立会话列表读取断流；Agent 发现的权威结果保持在线。
+        gateway.respond(sessions, "", status = 0)
+        controller.refreshThreads()
+        val failedReadCompleted = awaitCondition(AWAIT_MILLIS) {
+            runtime.coreHttpHealth.value.reachability == CoreHttpReachability.UNREACHABLE &&
+                controller.state.value.notice?.startsWith("THREAD_SYNC_FAILED:") == true
+        }
+        assertTrue("等待断流读取完成：HTTP=${runtime.coreHttpHealth.value.reachability}，notice=${controller.state.value.notice}，列表=${controller.state.value.threads::class.simpleName}", failedReadCompleted)
+        assertEquals(true, runtime.nativeAgents.value?.state?.value?.agent?.online)
+        assertTrue("一次 HTTP 读取失败不得覆盖 Hermes 权威在线事实", controller.state.value.isOnline)
+        assertEquals("读取失败期间保留的草稿", controller.state.value.draft)
+
+        gateway.respond(sessions, """{"sessions":[]}""")
+        controller.refreshThreads()
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.coreHttpHealth.value.reachability == CoreHttpReachability.REACHABLE
+        })
+        assertSame(controller, runtime.controller.value)
+        assertTrue(controller.state.value.isOnline)
+    }
+
+    @Test
     fun unpairUsesTheRevocationEndpointAndClearsTheActualSigningKeyAfterConfirmation() {
         val path = "/open-android-intelligence/v2/pairings/current"
         gateway.respond(path, """{"protocol":"2.1","data":{"deviceId":"dev_stub","deviceKeysRevoked":true,"refreshRevoked":true,"grantsRevoked":true,"deviceRequestsRevoked":true,"unconfirmedAttachmentsRevoked":true,"sessionsRevoked":true}}""")
@@ -853,6 +1135,26 @@ class GatewaySessionRefreshTest {
         assertTrue(gateway.targetsOf("DELETE").contains(path))
         assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.unpairOperation.value is LocalOperationState.Completed })
+        assertTrue(runtime.localSessionState.value is LocalSessionState.SignedOut)
+    }
+
+    @Test
+    fun anUnpairRequestedAsARestoredSessionBecomesConnectedStillReachesTheServer() {
+        val path = "/open-android-intelligence/v2/pairings/current"
+        gateway.respond(path, """{"error":{"code":"SESSION_REVOKED"}}""", 401)
+        val initial = runtime()
+        initial.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(initial)
+        val restored = runtime()
+        restored.restoreSessionIfAvailable()
+        awaitConnected(restored)
+        restored.unpair()
+        assertTrue(awaitCondition(AWAIT_MILLIS) { restored.operationNotice.value?.contains("解除配对未获") == true })
+        assertTrue(gateway.targetsOf("DELETE").contains(path))
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertTrue(restored.phase.value is ConnectionPhase.Connected)
     }
 
     @Test
@@ -863,6 +1165,8 @@ class GatewaySessionRefreshTest {
         awaitConnected(runtime)
         runtime.unpair()
         assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value != null })
+        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.unpairOperation.value is LocalOperationState.Failed })
+        assertFalse((runtime.unpairOperation.value as LocalOperationState.Failed).remoteCompleted)
         assertTrue(deviceKeys.hasKey(profileId()))
         assertTrue(credentialStore.hasRefresh(profileId()))
         assertTrue(runtime.phase.value is ConnectionPhase.Connected)
@@ -883,16 +1187,19 @@ class GatewaySessionRefreshTest {
     }
 
     @Test
-    fun refusedLogoutKeepsTheSessionAndItsCredentialsForRetry() {
+    fun refusedLogoutCompletesLocallyAndRetainsPairingForExplicitLogin() {
         gateway.respond("/open-android-intelligence/v2/sessions/current", """{"error":{"code":"SERVICE_UNAVAILABLE"}}""", 503)
         val runtime = runtime()
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         awaitConnected(runtime)
-        runtime.logout(revokeRefresh = true)
-        assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.operationNotice.value?.contains("未获 Gateway 确认") == true })
-        assertTrue(runtime.phase.value is ConnectionPhase.Connected)
-        assertNotNull(runtime.controller.value)
-        assertTrue(credentialStore.hasRefresh(profileId()))
+        runtime.logout(revokeRefresh = false)
+        // 本地优先退出完成，远端登出未获确认但本地已退出
+        assertTrue(awaitCondition(AWAIT_MILLIS) {
+            runtime.operationNotice.value == context.getString(UiR.string.conn_toast_logout_unconfirmed) && runtime.phase.value is ConnectionPhase.Disconnected
+        })
+        assertTrue(runtime.phase.value is ConnectionPhase.Disconnected)
+        assertNull(runtime.controller.value)
+        assertFalse(credentialStore.hasRefresh(profileId()))
         assertTrue(deviceKeys.hasKey(profileId()))
     }
 
@@ -914,7 +1221,7 @@ class GatewaySessionRefreshTest {
         awaitConnected(runtime)
         runtime.logout(revokeRefresh = true)
         assertTrue(awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Disconnected })
-        assertEquals("Gateway 已登出，但本机凭据清理失败，请检查设备存储。", runtime.operationNotice.value)
+        assertEquals(context.getString(UiR.string.conn_toast_logout_cleanup_failed), runtime.operationNotice.value)
         assertTrue(credentialStore.hasRefresh(profileId()))
         assertTrue(deviceKeys.hasKey(profileId()))
         assertEquals(listOf(profileId()), runtime.savedProfiles.value.map { it.localProfileId })
@@ -935,8 +1242,13 @@ class GatewaySessionRefreshTest {
             val runtime = runtime()
             runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
             awaitConnected(runtime)
+            val localDecision = pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, false)
+            assertEquals("acc_stub", runtime.connectedAccountId)
             runtime.dismissOperationNotice()
             runtime.logout(revokeRefresh = true)
+            assertTrue("等待远端注销时本地必须已经退出", runtime.localSessionState.value is LocalSessionState.SignedOut)
+            assertNull("等待远端注销不能继续给后台设备任务提供认证账号", runtime.connectedAccountId)
+            assertEquals("本地退出只能撤销本次连接，不能改写用户的能力开关", localDecision, pairingGrants.state.value)
             assertTrue(awaitCondition(AWAIT_MILLIS) { gateway.requests.any { it.method == "DELETE" && it.target.startsWith(path) } })
             runtimeScope.cancel()
             release.countDown()
@@ -1014,18 +1326,49 @@ class GatewaySessionRefreshTest {
             )
             offline.restoreSessionIfAvailable()
             assertTrue("断网重启必须进入已保存的离线镜像", awaitCondition(AWAIT_MILLIS) { offline.phase.value is ConnectionPhase.OfflineMirror })
-            val controller = requireNotNull(offline.controller.value)
+            assertEquals("离线草稿仍需保留", requireNotNull(offline.controller.value).state.value.draft)
             offline.dismissOperationNotice()
-            offline.logout(revokeRefresh = true)
-            assertEquals("当前离线，无法向 Gateway 确认退出，请先重新连接。", offline.operationNotice.value)
-            assertTrue(offline.phase.value is ConnectionPhase.OfflineMirror)
-            assertEquals(controller, offline.controller.value)
-            assertEquals("离线草稿仍需保留", controller.state.value.draft)
-            assertTrue(credentialStore.hasRefresh(profileId()))
+            offline.logout(revokeRefresh = false)
+            assertTrue("离线退出必须立即锁定工作台", offline.localSessionState.value is LocalSessionState.SignedOut)
+            assertNull(offline.connectedAccountId)
+            assertTrue("异步收尾完成后必须关闭离线工作台", awaitCondition(AWAIT_MILLIS) {
+                offline.phase.value is ConnectionPhase.Disconnected && offline.controller.value == null
+            })
+            assertNull(offline.controller.value)
+            val context = ApplicationProvider.getApplicationContext<Application>()
+            assertEquals("离线退出不能伪造远端凭据已撤销", context.getString(com.openandroidintelligence.ui.resources.R.string.conn_toast_offline_logout_locked), offline.operationNotice.value)
+            assertTrue("未通知远端时保留被退出屏障锁定的刷新凭据", credentialStore.hasRefresh(profileId()))
             assertTrue(deviceKeys.hasKey(profileId()))
+            val installId = requireNotNull(context.getSharedPreferences("open_android_intelligence_runtime", Context.MODE_PRIVATE).getString("installation_id", null))
+            val mirror = com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror(
+                context,
+                com.openandroidintelligence.conversation.ports.ConversationScope(profileId(), gateway.baseUrl, "acc_stub", installId),
+                TestDocumentKeys,
+            )
+            assertEquals("退出后草稿仍须保留在加密镜像内", "离线草稿仍需保留", mirror.load()?.draft)
+            runBlocking { mirror.closeStore() }
+            val before = gateway.requests.size
+            offline.restoreSessionIfAvailable()
+            assertTrue(offline.localSessionState.value is LocalSessionState.SignedOut)
+            assertEquals("保留凭据不允许自动恢复已退出账户", before, gateway.requests.size)
         } finally {
             offlineScope.cancel()
         }
+    }
+
+    @Test
+    fun choosingAnotherAccountImmediatelyOnConnectedWaitsForTheSameInitializer() {
+        val runtime = runtime()
+        val choice = runtimeScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            runtime.phase.filterIsInstance<ConnectionPhase.Connected>().first()
+            runtime.chooseAnotherAccount()
+        }
+        runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitAccountChooser(runtime)
+        assertTrue(choice.isCompleted)
+        assertTrue(deviceKeys.hasKey(profileId()))
+        assertTrue(credentialStore.hasRefresh(profileId()))
+        assertFalse(gateway.requests.any { it.target.contains("pairings/current") })
     }
 
     @Test

@@ -24,6 +24,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "open-android-intelligence-screen-capture"
+version = "0.1.0"
+dependencies = [
+ "open-android-intelligence-sdk",
+]
+
+[[package]]
+name = "open-android-intelligence-screen-control"
+version = "0.1.0"
+dependencies = [
+ "open-android-intelligence-sdk",
+]
+
+[[package]]
+name = "open-android-intelligence-screen-reader"
+version = "0.1.0"
+dependencies = [
+ "open-android-intelligence-sdk",
+]
+
+[[package]]
 name = "open-android-intelligence-sdk"
 version = "0.1.0"
 

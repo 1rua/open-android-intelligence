@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Assistant
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
@@ -40,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.contentDescription
@@ -48,12 +50,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
-import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_BODY
-import com.openandroidintelligence.mobile.onboarding.PERMISSION_NOTICE_TITLE
 import com.openandroidintelligence.mobile.onboarding.PermissionEntry
 import com.openandroidintelligence.mobile.onboarding.PermissionGroup
 import com.openandroidintelligence.mobile.onboarding.PermissionStatus
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 系统权限引导页。
@@ -91,64 +93,12 @@ fun PermissionsScreen(
             .fillMaxSize()
             .testTag("onboarding-permissions"),
     ) {
-        // ===== 顶部：返回 + 步骤 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "SYSTEM ACCESS",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "02/04",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-        }
-
-        // ===== 进度刻度：瑞士式刻度尺 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Dimensions.ScreenHorizontal)
-                .padding(bottom = Dimensions.SpaceCompact),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            repeat(4) { index ->
-                val active = index <= 1
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(2.dp)
-                        .background(
-                            when {
-                                index == 1 -> MaterialTheme.colorScheme.tertiary
-                                active -> MaterialTheme.colorScheme.onSurfaceVariant
-                                else -> MaterialTheme.colorScheme.outlineVariant
-                            },
-                        ),
-                )
-            }
-        }
+        OnboardingStepHeader(
+            categoryTitle = "SYSTEM ACCESS",
+            stepIndex = 3,
+            totalSteps = 5,
+            onBack = onBack,
+        )
 
         Column(
             modifier = Modifier
@@ -168,7 +118,7 @@ fun PermissionsScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Text(
-                text = "按需授权",
+                text = stringResource(UiR.string.perm_screen_title),
                 fontSize = 30.sp,
                 lineHeight = 34.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -177,8 +127,7 @@ fun PermissionsScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             Text(
-                text = "以下权限只影响对应功能。可选权限跳过不影响登录与对话；" +
-                    "系统权限也不等于 Agent 授权——设备能力需在插件启用后按账号单独授权。",
+                text = stringResource(UiR.string.perm_intro_body),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -189,7 +138,7 @@ fun PermissionsScreen(
             if (grouped.isEmpty()) {
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
                 Text(
-                    text = "当前没有需要授权的系统权限。",
+                    text = stringResource(UiR.string.perm_screen_empty),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -227,14 +176,14 @@ fun PermissionsScreen(
                 Spacer(modifier = Modifier.width(Dimensions.SpaceCompact))
                 Column {
                     Text(
-                        text = PERMISSION_NOTICE_TITLE,
+                        text = stringResource(UiR.string.perm_notice_title),
                         style = MaterialTheme.typography.labelSmall,
                         letterSpacing = 1.4.sp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                     Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                     Text(
-                        text = PERMISSION_NOTICE_BODY,
+                        text = stringResource(UiR.string.perm_notice_body),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -263,7 +212,7 @@ fun PermissionsScreen(
                     .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)
                     .testTag("onboarding-permissions-next"),
             ) {
-                Text(text = "下一步", style = MaterialTheme.typography.labelLarge)
+                Text(text = stringResource(UiR.string.perm_action_next), style = MaterialTheme.typography.labelLarge)
                 Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
                 Text(text = "→", style = MaterialTheme.typography.labelLarge)
             }
@@ -272,7 +221,7 @@ fun PermissionsScreen(
                 modifier = Modifier.testTag("onboarding-permissions-skip"),
             ) {
                 Text(
-                    text = "跳过可选权限",
+                    text = stringResource(UiR.string.perm_action_skip_optional),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -285,9 +234,9 @@ fun PermissionsScreen(
 @Composable
 private fun PermissionGroupHeader(group: PermissionGroup) {
     val (title, hint) = when (group) {
-        PermissionGroup.REQUIRED -> "基础功能" to "REQUIRED"
-        PermissionGroup.OPTIONAL -> "可选增强" to "OPTIONAL · 可跳过"
-        PermissionGroup.DEVICE_CAPABILITY -> "设备能力" to "PLUGIN · 按需"
+        PermissionGroup.REQUIRED -> stringResource(UiR.string.perm_group_required) to "REQUIRED"
+        PermissionGroup.OPTIONAL -> stringResource(UiR.string.perm_group_optional) to stringResource(UiR.string.perm_group_hint_optional)
+        PermissionGroup.DEVICE_CAPABILITY -> stringResource(UiR.string.perm_group_device_capability) to stringResource(UiR.string.perm_group_hint_plugin)
     }
     Column {
         Row(
@@ -335,6 +284,12 @@ private fun PermissionCard(
     val stateColors = LocalAppStateColors.current
     val granted = status == PermissionStatus.GRANTED
     val blocked = status == PermissionStatus.BLOCKED
+    // 设备/系统根本不支持这项能力：只做说明，不给按钮——
+    // 点了不会有任何结果，属于需求禁止的「点了没反应」。
+    val unsupported = status == PermissionStatus.UNSUPPORTED
+    // 系统角色项（默认数字助理）与运行时权限的文案不同：
+    // 它没有「授权」这个概念，只有「是否已设为默认」。
+    val isRoleCard = entry.systemRole != null
 
     val statusText: String
     val actionText: String
@@ -347,26 +302,48 @@ private fun PermissionCard(
     val dialogOnly = entry.id == "screen_capture"
     when {
         dialogOnly -> {
-            statusText = "使用时由系统询问 · 无需现在授权"
-            actionText = "无需操作"
+            statusText = stringResource(UiR.string.perm_status_dialog_only)
+            actionText = stringResource(UiR.string.perm_action_no_op)
             action = {}
         }
+        unsupported -> {
+            statusText = if (isRoleCard) {
+                stringResource(UiR.string.perm_status_role_unsupported)
+            } else {
+                stringResource(UiR.string.perm_status_device_unsupported)
+            }
+            actionText = stringResource(UiR.string.perm_action_unsupported)
+            action = {}
+        }
+        isRoleCard && granted -> {
+            statusText = stringResource(UiR.string.perm_status_role_granted)
+            actionText = stringResource(UiR.string.perm_action_role_set)
+            action = {}
+        }
+        isRoleCard -> {
+            statusText = stringResource(UiR.string.perm_status_role_not_set)
+            actionText = stringResource(UiR.string.perm_action_settings)
+            action = onRequest
+        }
         granted -> {
-            statusText = "已授权"
-            actionText = "已开启"
+            statusText = stringResource(UiR.string.perm_status_granted)
+            actionText = stringResource(UiR.string.perm_action_enabled)
             action = {}
         }
         blocked -> {
-            statusText = "已被拒绝 · 需在系统设置开启"
-            actionText = "前往设置"
+            statusText = stringResource(UiR.string.perm_status_blocked)
+            actionText = stringResource(UiR.string.perm_action_settings)
             action = onOpenSettings
         }
         else -> {
-            statusText = "未授权"
-            actionText = "开启"
+            statusText = stringResource(UiR.string.perm_status_not_granted)
+            actionText = stringResource(UiR.string.perm_action_enable)
             action = onRequest
         }
     }
+
+    val entryPurpose = stringResource(entry.purposeRes)
+    val entryDisplayName = stringResource(entry.displayNameRes)
 
     Column(
         modifier = Modifier
@@ -384,7 +361,7 @@ private fun PermissionCard(
             )
             .padding(Dimensions.SpaceCompact + Dimensions.SpaceTiny)
             .semantics(mergeDescendants = true) {
-                contentDescription = "${entry.displayName}，$statusText"
+                contentDescription = "$entryDisplayName，$statusText"
             }
             .testTag("permission-card-${entry.id}"),
     ) {
@@ -416,7 +393,7 @@ private fun PermissionCard(
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = entry.displayName,
+                        text = entryDisplayName,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -426,7 +403,7 @@ private fun PermissionCard(
                 }
                 Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                 Text(
-                    text = entry.purpose,
+                    text = entryPurpose,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -468,7 +445,8 @@ private fun PermissionCard(
             )
             when {
                 // 系统对话框型权限：没有可点的授权入口，只给状态文字，避免「点了没反应」。
-                dialogOnly -> Text(
+                // 系统不支持的项同理：系统里没有可授予的东西，按钮只会是死路。
+                dialogOnly || unsupported -> Text(
                     text = actionText,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -497,13 +475,13 @@ private fun PermissionCard(
 private fun GroupBadge(entry: PermissionEntry) {
     val (label, color) = when {
         entry.group == PermissionGroup.REQUIRED ->
-            "必需" to MaterialTheme.colorScheme.tertiary
+            stringResource(UiR.string.perm_badge_required) to MaterialTheme.colorScheme.tertiary
         entry.isSpecialSystemAccess ->
-            "系统设置" to MaterialTheme.colorScheme.onSurfaceVariant
+            stringResource(UiR.string.perm_badge_system_settings) to MaterialTheme.colorScheme.onSurfaceVariant
         entry.group == PermissionGroup.OPTIONAL ->
-            "可选" to MaterialTheme.colorScheme.onSurfaceVariant
+            stringResource(UiR.string.perm_badge_optional) to MaterialTheme.colorScheme.onSurfaceVariant
         else ->
-            "按需" to MaterialTheme.colorScheme.onSurfaceVariant
+            stringResource(UiR.string.perm_badge_on_demand) to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Box(
         modifier = Modifier
@@ -531,5 +509,6 @@ private fun PermissionEntry.icon(): ImageVector = when (id) {
     "screen_capture" -> Icons.Default.ScreenShare
     "sms" -> Icons.Default.Sms
     "call_log" -> Icons.Default.Phone
+    "assistant_role" -> Icons.Default.Assistant
     else -> Icons.Default.Notifications
 }

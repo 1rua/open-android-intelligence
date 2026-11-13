@@ -27,7 +27,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -81,8 +84,33 @@ fun GatewayLoginScreen(
     onInvite: ((String,String,CharArray,String?)->Unit)? = null,
     onDeviceKey: ((String,String)->Unit)? = null,
     invitationPayload: String? = null,
+    accountLoginStep: AccountLoginStep = AccountLoginStep.None,
+    onAccountProof: (CharArray, Boolean) -> Unit = { proof, _ -> proof.fill('\u0000') },
+    onRecoveryCodesSaved: () -> Unit = {},
+    onCancelAccountLogin: () -> Unit = {},
 ) {
-    var url by rememberSaveable { mutableStateOf("") }
+    // 预填上一次成功登录（或被设置导入写入）的 Core 地址：换机后不必重新输入。
+    // 只填地址，不填账号与密码；用户仍可随时改。读取失败时保持空值。
+    val prefillContext = LocalContext.current
+    val initialPrefill = remember(prefillContext) { LoginGatewayPrefill.read(prefillContext).orEmpty() }
+    var url by rememberSaveable { mutableStateOf(initialPrefill) }
+    // 用户还没动过地址栏时跟随预填变化（设置里导入备份后地址栏立即更新）；
+    // 一旦用户自己输入过，就不再覆盖他写的内容。
+    var lastAppliedPrefill by rememberSaveable { mutableStateOf(initialPrefill) }
+    val prefilled = lastAppliedPrefill
+    val urlMatchesPrefill = url == prefilled
+    LaunchedEffect(prefillContext, urlMatchesPrefill) {
+        if (!urlMatchesPrefill) return@LaunchedEffect
+        LoginGatewayPrefill.observe(prefillContext).collect { latest ->
+            // 清空（导入失败回滚会把地址撤掉）与写入同样要同步，否则表单会继续
+            // 显示那次失败导入留下的地址，与「本机设置已恢复」的结论自相矛盾。
+            val next = latest.orEmpty()
+            if (next != url) {
+                url = next
+                lastAppliedPrefill = next
+            }
+        }
+    }
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var invitation by remember { mutableStateOf(false) }
@@ -112,7 +140,8 @@ fun GatewayLoginScreen(
     val urlIsValid = endpoint != null
     val showUrlError = url.isNotBlank() && !urlIsValid
     val plaintextAddress = endpoint?.isTls == false
-    val isBusy = phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating || isManagingProfiles
+    val isBusy = phase is ConnectionPhase.Initializing || phase is ConnectionPhase.Reconnecting ||
+        phase is ConnectionPhase.Negotiating || phase is ConnectionPhase.Authenticating || isManagingProfiles
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
     Box(
@@ -152,7 +181,7 @@ fun GatewayLoginScreen(
                 )
                 Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
                 Text(
-                    text = if (phase is ConnectionPhase.Connected) "已连接" else "未连接",
+                    text = if (phase is ConnectionPhase.Connected) stringResource(UiR.string.conn_status_connected) else stringResource(UiR.string.conn_status_disconnected),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -170,7 +199,7 @@ fun GatewayLoginScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
             Text(
-                text = "连接你的 Agent Gateway",
+                text = stringResource(UiR.string.conn_login_welcome_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -189,17 +218,24 @@ fun GatewayLoginScreen(
                     verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
                 ) {
                     if (onInvite != null) {
-                        TextButton(onClick={ invitation=!invitation; password="";invitePayload="" }) { Text(if (invitation) "改用密码登录" else "使用邀请短码") }
-                        if (invitation) FormInputField(label="二维码内容",value=invitePayload,onValueChange={ value ->
-                            invitePayload=value
-                            val uri=android.net.Uri.parse(value)
-                            if (uri.scheme=="oai" && uri.host=="pair") {
-                                uri.getQueryParameter("gateway")?.let { url=it }; uri.getQueryParameter("account")?.let { username=it }; uri.getQueryParameter("code")?.let { password=it }
-                            }
-                        },placeholder="粘贴 oai://pair?… 邀请内容")
+                        TextButton(onClick={ invitation=!invitation; password="";invitePayload="" }) {
+                            Text(if (invitation) stringResource(UiR.string.conn_login_tab_password) else stringResource(UiR.string.conn_login_tab_invite_code))
+                        }
+                        if (invitation) FormInputField(
+                            label = stringResource(UiR.string.conn_login_qr_content),
+                            value = invitePayload,
+                            onValueChange = { value ->
+                                invitePayload=value
+                                val uri=android.net.Uri.parse(value)
+                                if (uri.scheme=="oai" && uri.host=="pair") {
+                                    uri.getQueryParameter("gateway")?.let { url=it }; uri.getQueryParameter("account")?.let { username=it }; uri.getQueryParameter("code")?.let { password=it }
+                                }
+                            },
+                            placeholder = stringResource(UiR.string.conn_login_paste_invite_hint),
+                        )
                     }
                     FormInputField(
-                        label = "网关地址",
+                        label = stringResource(UiR.string.conn_onboarding_welcome_core_address_label),
                         value = url,
                         onValueChange = { input ->
                             var cleaned = input
@@ -213,9 +249,9 @@ fun GatewayLoginScreen(
                             url = cleaned
                         },
                         onClear = { url = "" },
-                        placeholder = "https://gateway.example.local:8443 或 http://10.0.2.2:8045",
+                        placeholder = stringResource(UiR.string.conn_server_address_example),
                         isError = showUrlError,
-                        supportingText = if (showUrlError) "请输入包含主机名的有效网关地址（例如 http://10.0.2.2:8045 或 https://gateway.example.com）" else null,
+                        supportingText = if (showUrlError) stringResource(UiR.string.conn_server_address_validation_error) else null,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                     )
 
@@ -225,19 +261,19 @@ fun GatewayLoginScreen(
                     }
 
                     FormInputField(
-                        label = "用户名 / 账号",
+                        label = stringResource(UiR.string.conn_login_username_label),
                         value = username,
                         onValueChange = { username = it },
                         onClear = { username = "" },
-                        placeholder = "输入账号",
+                        placeholder = stringResource(UiR.string.conn_login_username_hint),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     )
 
                     FormInputField(
-                        label = if (invitation) "一次性邀请短码" else "访问凭据 / 密码",
+                        label = if (invitation) stringResource(UiR.string.conn_login_invite_code_label) else stringResource(UiR.string.conn_login_password_label),
                         value = password,
                         onValueChange = { password = it },
-                        placeholder = "输入访问凭据或密码",
+                        placeholder = stringResource(UiR.string.conn_login_password_hint),
                         isPassword = true,
                         passwordVisible = passwordVisible,
                         onTogglePassword = { passwordVisible = !passwordVisible },
@@ -285,9 +321,9 @@ fun GatewayLoginScreen(
                                 color = MaterialTheme.colorScheme.onPrimary,
                             )
                             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-                            Text("正在连接…", style = MaterialTheme.typography.labelLarge)
+                            Text(stringResource(UiR.string.conn_status_connecting), style = MaterialTheme.typography.labelLarge)
                         } else {
-                            Text("连接至网关", style = MaterialTheme.typography.labelLarge)
+                            Text(stringResource(UiR.string.conn_login_title), style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }
@@ -309,7 +345,7 @@ fun GatewayLoginScreen(
                 )
                 Spacer(modifier = Modifier.width(Dimensions.SpaceTiny))
                 Text(
-                    text = "凭据只用于本次认证，刷新凭据由 Android Keystore 保护",
+                    text = stringResource(UiR.string.conn_login_keystore_security_hint),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -318,7 +354,7 @@ fun GatewayLoginScreen(
             if (savedProfiles.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
                 Text(
-                    text = "已保存账号",
+                    text = stringResource(UiR.string.conn_account_saved_title),
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.fillMaxWidth(),
@@ -344,7 +380,7 @@ fun GatewayLoginScreen(
                                 TextButton(
                                     enabled = !isBusy,
                                     onClick = { removingProfile = profile },
-                                ) { Text("移除") }
+                                ) { Text(stringResource(UiR.string.common_action_remove)) }
                             },
                             // 卡片底色由分组卡片负责，行本身保持透明，避免叠出第二块面。
                             colors = ListItemDefaults.colors(
@@ -374,40 +410,107 @@ fun GatewayLoginScreen(
             if (invitation && !invitationCurrent) {
                 Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
                 Text(
-                    text = "邀请内容无效或已过期，请重新获取。",
+                    text = stringResource(UiR.string.conn_login_invite_invalid_error),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
             if (onDeviceKey != null && savedProfiles.any { it.gatewayBaseUrl==normalizedUrl && it.username==username.trim() }) {
-                TextButton(enabled=!isBusy,onClick={ password="";onDeviceKey(normalizedUrl,username.trim()) }) { Text("使用已配对设备密钥登录") }
+                TextButton(enabled=!isBusy,onClick={ password="";onDeviceKey(normalizedUrl,username.trim()) }) { Text(stringResource(UiR.string.conn_login_use_paired_key)) }
             }
             if (endpoint?.isTls == true && username.isNotBlank() && phase is ConnectionPhase.Failed) {
-                TextButton(enabled = !isBusy, onClick = { showIdentityConfirmation = true }) { Text("重新确认网关身份") }
+                TextButton(enabled = !isBusy, onClick = { showIdentityConfirmation = true }) { Text(stringResource(UiR.string.conn_login_reconfirm_identity)) }
             }
 
             // ===== 4. 页脚入口 =====
             TextButton(onClick = onOpenSettings) {
                 Text(
-                    "设置与平台管理",
+                    stringResource(UiR.string.common_action_settings),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
         }
     }
+    if (accountLoginStep !== AccountLoginStep.None) {
+        AccountLoginDialog(accountLoginStep, onAccountProof, onRecoveryCodesSaved, onCancelAccountLogin)
+    }
     removingProfile?.let { profile ->
-        AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text("移除本机账号") },
-            text = { Text("将退出 ${profile.username} 并删除本机凭据、配对密钥、账号资料和临时文件。Gateway 账号仍会保留；移除失败时可重试。") },
-            confirmButton = { TextButton(onClick = { onRemoveProfile(profile.localProfileId); removingProfile = null }) { Text("移除") } },
-            dismissButton = { TextButton(onClick = { removingProfile = null }) { Text("取消") } })
+        AlertDialog(onDismissRequest = { removingProfile = null }, title = { Text(stringResource(UiR.string.conn_account_remove_dialog_title)) },
+            text = { Text(stringResource(UiR.string.conn_account_remove_dialog_message, profile.username)) },
+            confirmButton = { TextButton(onClick = { onRemoveProfile(profile.localProfileId); removingProfile = null }) { Text(stringResource(UiR.string.common_action_remove)) } },
+            dismissButton = { TextButton(onClick = { removingProfile = null }) { Text(stringResource(UiR.string.common_action_cancel)) } })
     }
     if (showIdentityConfirmation) {
-        AlertDialog(onDismissRequest = { showIdentityConfirmation = false }, title = { Text("重新确认网关身份") },
-            text = { Text("请先向管理员核对部署或证书变更。继续会清除该账号的旧网关身份和自动登录凭据；下一次密码登录会重新建立 TLS 信任。") },
-            confirmButton = { TextButton(onClick = { password = ""; onReconfirmIdentity(normalizedUrl, username.trim()); showIdentityConfirmation = false }) { Text("已核对，继续") } },
-            dismissButton = { TextButton(onClick = { showIdentityConfirmation = false }) { Text("取消") } })
+        AlertDialog(onDismissRequest = { showIdentityConfirmation = false }, title = { Text(stringResource(UiR.string.conn_reconfirm_identity_dialog_title)) },
+            text = { Text(stringResource(UiR.string.conn_reconfirm_identity_dialog_message)) },
+            confirmButton = { TextButton(onClick = { password = ""; onReconfirmIdentity(normalizedUrl, username.trim()); showIdentityConfirmation = false }) { Text(stringResource(UiR.string.conn_reconfirm_identity_confirm)) } },
+            dismissButton = { TextButton(onClick = { showIdentityConfirmation = false }) { Text(stringResource(UiR.string.common_action_cancel)) } })
     }
+}
+
+@Composable
+private fun AccountLoginDialog(
+    step: AccountLoginStep,
+    onProof: (CharArray, Boolean) -> Unit,
+    onCodesSaved: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    var input by remember(step) { mutableStateOf("") }
+    var recovery by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        properties = androidx.compose.ui.window.DialogProperties(securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn),
+        title = { Text(when (step) {
+            is AccountLoginStep.Verification -> stringResource(UiR.string.conn_2fa_dialog_title)
+            is AccountLoginStep.Enrollment -> stringResource(UiR.string.conn_2fa_bind_authenticator)
+            is AccountLoginStep.RecoveryCodes -> stringResource(UiR.string.conn_2fa_save_recovery_code)
+            AccountLoginStep.None -> ""
+        }) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                when (step) {
+                    is AccountLoginStep.Verification -> {
+                        Text(if (recovery) stringResource(UiR.string.conn_2fa_recovery_code_prompt) else stringResource(UiR.string.conn_2fa_totp_prompt))
+                        TextButton(onClick = { input = ""; recovery = !recovery }) {
+                            Text(if (recovery) stringResource(UiR.string.conn_2fa_switch_to_totp) else stringResource(UiR.string.conn_2fa_switch_to_recovery))
+                        }
+                        OutlinedTextField(value = input, onValueChange = { input = it },
+                            label = { Text(if (recovery) stringResource(UiR.string.conn_2fa_recovery_code_label) else stringResource(UiR.string.conn_2fa_totp_label)) }, singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = if (recovery) KeyboardType.Password else KeyboardType.NumberPassword))
+                        step.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
+                    is AccountLoginStep.Enrollment -> {
+                        Text(stringResource(UiR.string.conn_2fa_bind_instruction))
+                        Text(step.provisioningUri)
+                        step.secret?.let { Text(it) }
+                        OutlinedTextField(value = input, onValueChange = { input = it }, label = { Text(stringResource(UiR.string.conn_2fa_totp_label)) },
+                            singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
+                        step.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    }
+                    is AccountLoginStep.RecoveryCodes -> {
+                        Text(stringResource(UiR.string.conn_2fa_recovery_instruction))
+                        step.codes.forEach { Text(it) }
+                    }
+                    AccountLoginStep.None -> Unit
+                }
+            }
+        },
+        confirmButton = {
+            if (step is AccountLoginStep.RecoveryCodes) {
+                TextButton(onClick = onCodesSaved) { Text(stringResource(UiR.string.conn_2fa_saved_confirm)) }
+            } else {
+                TextButton(enabled = input.isNotBlank(), onClick = {
+                    val proof = input.toCharArray()
+                    input = ""
+                    onProof(proof, step is AccountLoginStep.Verification && recovery)
+                }) { Text(stringResource(UiR.string.common_action_verify)) }
+            }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(UiR.string.common_action_cancel)) } },
+    )
 }
 
 /**
@@ -459,7 +562,7 @@ private fun FormInputField(
                 IconButton(onClick = { onTogglePassword?.invoke() }) {
                     Icon(
                         imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = if (passwordVisible) "隐藏密码" else "显示密码",
+                        contentDescription = if (passwordVisible) stringResource(UiR.string.common_accessibility_hide_password) else stringResource(UiR.string.common_accessibility_show_password),
                     )
                 }
             }
@@ -468,7 +571,7 @@ private fun FormInputField(
                 IconButton(onClick = onClear) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "清除内容",
+                        contentDescription = stringResource(UiR.string.common_accessibility_clear_text),
                     )
                 }
             }
@@ -489,14 +592,18 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
     val stateColors = LocalAppStateColors.current
     when (phase) {
         ConnectionPhase.Disconnected -> Text(
-            text = "尚未连接 Gateway",
+            text = stringResource(UiR.string.conn_status_not_connected_gateway),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        ConnectionPhase.Negotiating -> PhaseProgressRow(text = "正在协商协议版本…")
+        ConnectionPhase.Initializing -> PhaseProgressRow(text = stringResource(UiR.string.conn_status_connecting_core))
 
-        ConnectionPhase.Authenticating -> PhaseProgressRow(text = "正在验证凭据…")
+        ConnectionPhase.Reconnecting -> PhaseProgressRow(text = stringResource(UiR.string.conn_status_reconnecting_core))
+
+        ConnectionPhase.Negotiating -> PhaseProgressRow(text = stringResource(UiR.string.conn_status_connecting))
+
+        ConnectionPhase.Authenticating -> PhaseProgressRow(text = stringResource(UiR.string.conn_status_verifying_credentials))
 
         is ConnectionPhase.OfflineMirror -> PhaseSurface(
             containerColor = stateColors.warningContainer,
@@ -508,7 +615,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-            Text("离线镜像：显示本机缓存，收发需重新连接", style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(UiR.string.conn_status_offline_mode_hint), style = MaterialTheme.typography.bodySmall)
         }
 
         is ConnectionPhase.Connected -> PhaseSurface(
@@ -523,7 +630,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
             )
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
             Text(
-                text = "已连接 ${phase.username}",
+                text = stringResource(UiR.string.conn_status_connected_user_format, phase.username),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f),
             )
@@ -548,7 +655,7 @@ private fun PhaseBanner(phase: ConnectionPhase, onRetry: () -> Unit) {
                     )
                 }
                 TextButton(onClick = onRetry) {
-                    Text("重试", color = MaterialTheme.colorScheme.onErrorContainer)
+                    Text(stringResource(UiR.string.common_action_retry), color = MaterialTheme.colorScheme.onErrorContainer)
                 }
             }
         }
@@ -604,8 +711,8 @@ private fun PlaintextConnectionNotice() {
             )
             Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
             Text(
-                text = "未加密连接（HTTP）：账号口令、消息与附件内容在传输途中可被读取或篡改，" +
-                    "且无法核验 Gateway 身份。请仅在你信任的本机或局域网内使用，正式部署请改用 https://。",
+                text = stringResource(UiR.string.conn_security_http_warning_part1) +
+                    stringResource(UiR.string.conn_security_http_warning_part2),
                 style = MaterialTheme.typography.labelSmall,
             )
         }
@@ -631,9 +738,9 @@ private fun TransportSecurityChip(security: TransportSecurity) {
     ) {
         Text(
             text = when (security) {
-                TransportSecurity.PLAINTEXT -> "未加密（HTTP）"
-                TransportSecurity.TLS_PINNED -> "TLS 已固定"
-                TransportSecurity.TLS_SYSTEM_TRUST -> "系统 CA 信任"
+                TransportSecurity.PLAINTEXT -> stringResource(UiR.string.conn_security_badge_unencrypted)
+                TransportSecurity.TLS_PINNED -> stringResource(UiR.string.conn_security_badge_tls_pinned)
+                TransportSecurity.TLS_SYSTEM_TRUST -> stringResource(UiR.string.conn_security_badge_system_ca)
             },
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),

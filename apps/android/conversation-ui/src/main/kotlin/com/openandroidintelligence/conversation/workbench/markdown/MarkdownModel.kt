@@ -91,6 +91,8 @@ sealed interface TimelineBlock {
          * 这类消息没有命令参数与返回值，状态应显示「已调用」，不能伪装成「执行成功」。
          */
         val invocationOnly: Boolean = false,
+        /** 原生工具的明确状态优先于旧文本标记是否闭合。 */
+        val executionStatus: com.openandroidintelligence.conversation.model.NativeExecutionStatus? = null,
     ) : TimelineBlock
 }
 

@@ -5,7 +5,9 @@ import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.gateway.schema.SharedContract
 import java.io.File
-import kotlinx.coroutines.runBlocking
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.*
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -232,6 +234,82 @@ class DeviceRequestClientTest {
 
         assertEquals("idempotent claim must return the same receipt", first, second)
         assertEquals(listOf("claim", "claim"), transport.calls)
+    }
+
+    @Test
+    fun conflictingClaimsForTheSameRequestCannotReplaceTheFirstIssuedReceipt() = runBlocking {
+        val original = receipt()
+        val secondReply = CompletableDeferred<ClaimReceipt>()
+        val attempts = AtomicInteger()
+        val submitted = mutableListOf<Map<String, Any?>>()
+        val transport = object : DeviceRequestTransport {
+            override suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt =
+                if (attempts.incrementAndGet() == 1) original else secondReply.await()
+            override suspend fun submitResult(requestId: String, body: Map<String, Any?>) { submitted += body }
+        }
+        val client = DeviceRequestClient(transport)
+        val first = client.claim("req-1", 7)
+        val conflicting = async { runCatching { client.claim("req-1", 7) }.exceptionOrNull() }
+        secondReply.complete(original.copy(claimId = "claim-conflict"))
+        assertTrue(conflicting.await()?.message.orEmpty().contains("RECEIPT_BINDING_MISMATCH"))
+        client.submitResult(first, DeviceRequestResult.Succeeded(emptyMap()))
+        assertEquals("claim-1", submitted.single()["claimId"])
+    }
+
+    @Test
+    fun oneClaimIdCannotBeReboundToAnotherRequest() = runBlocking {
+        val submitted = mutableListOf<String>()
+        val transport = object : DeviceRequestTransport {
+            override suspend fun claim(requestId: String, grantRevision: Int) = receipt(requestId = requestId)
+            override suspend fun submitResult(requestId: String, body: Map<String, Any?>) { submitted += requestId }
+        }
+        val client = DeviceRequestClient(transport)
+        val first = client.claim("req-1", 7)
+        val failure = runCatching { client.claim("req-2", 7) }.exceptionOrNull()
+        assertTrue(failure?.message.orEmpty().contains("RECEIPT_BINDING_MISMATCH"))
+        client.submitResult(first, DeviceRequestResult.Succeeded(emptyMap()))
+        assertEquals(listOf("req-1"), submitted)
+    }
+
+    @Test
+    fun aReceiptForADifferentRequestOrRevisionIsNeverRegistered() = runBlocking {
+        for (reply in listOf(receipt(requestId = "req-other"), receipt(grantRevision = 8))) {
+            val transport = object : DeviceRequestTransport {
+                override suspend fun claim(requestId: String, grantRevision: Int) = reply
+                override suspend fun submitResult(requestId: String, body: Map<String, Any?>) { error("UNEXPECTED_RESULT") }
+            }
+            val client = DeviceRequestClient(transport)
+            assertTrue(runCatching { client.claim("req-1", 7) }.exceptionOrNull()?.message.orEmpty().contains("RECEIPT_BINDING_MISMATCH"))
+            assertTrue(runCatching { client.submitResult(reply, DeviceRequestResult.OutcomeUnknown) }
+                .exceptionOrNull()?.message.orEmpty().contains("NOT_CLAIMED"))
+        }
+    }
+
+    @Test
+    fun parallelClaimsAndResultsRetainEachRequestsOwnReceipt() = runBlocking {
+        val submitted = ConcurrentHashMap<String, Map<String, Any?>>()
+        val transport = object : DeviceRequestTransport {
+            override suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt {
+                yield()
+                return receipt(claimId = "claim-$requestId", requestId = requestId, grantRevision = grantRevision)
+            }
+            override suspend fun submitResult(requestId: String, body: Map<String, Any?>) {
+                submitted[requestId] = body
+            }
+        }
+        val client = DeviceRequestClient(transport)
+        val start = CompletableDeferred<Unit>()
+        val jobs = (1..128).map { index -> async(Dispatchers.Default) {
+            start.await()
+            val id = "req-$index"
+            val claim = client.claim(id, 7)
+            assertEquals(claim, client.claim(id, 7))
+            client.submitResult(claim, DeviceRequestResult.Succeeded(mapOf("request" to id)))
+        } }
+        start.complete(Unit)
+        jobs.awaitAll()
+        assertEquals(128, submitted.size)
+        for ((id, body) in submitted) assertEquals("claim-$id", body["claimId"])
     }
 
     @Test

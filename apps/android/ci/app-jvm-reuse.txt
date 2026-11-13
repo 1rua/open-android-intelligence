@@ -1,0 +1,63 @@
+# App 测试 JVM 复用实验的明确审计清单；仅为候选，不代表已通过乱序回归。
+# 每行一个完整限定类名。原测试、断言、SDK 矩阵和 forkEvery=1 均保留。
+# 启用前必须对同一源码执行重复、不同随机种子与四组并发回归，核对真实测试集合。
+# 不根据类名或 Runner 自动扩大范围；新增类必须重新核对资源与状态清理。
+
+# 纯 JVM：仅做状态转换、数据编解码、文案映射、几何计算或只读源码约束。
+# 没有宿主注册表、环境修改、网络端口、长驻协程或 Android/Compose 启动。
+com.openandroidintelligence.mobile.ArchitectureBoundaryTest
+com.openandroidintelligence.mobile.ConversationUiCapabilitiesTest
+com.openandroidintelligence.mobile.DistributionVariantTest
+com.openandroidintelligence.mobile.GatewayLoginSanitizerTest
+com.openandroidintelligence.mobile.MaterialTokenGuardTest
+com.openandroidintelligence.mobile.NativeNotificationNavigationTest
+com.openandroidintelligence.mobile.NotificationReplyExcerptTest
+com.openandroidintelligence.mobile.TemporaryApprovalCopyTest
+com.openandroidintelligence.mobile.WorkbenchNavigationTest
+com.openandroidintelligence.mobile.assistant.AssistantBridgeServiceTest
+com.openandroidintelligence.mobile.assistant.AssistantClientScopeTest
+com.openandroidintelligence.mobile.conversations.NativeNotificationBridgeTest
+com.openandroidintelligence.mobile.onboarding.GatewayTutorialsTest
+com.openandroidintelligence.mobile.onboarding.OnboardingStateTest
+com.openandroidintelligence.mobile.onboarding.PermissionCatalogTest
+com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealGeometryTest
+com.openandroidintelligence.mobile.plugins.DeviceCapabilityBlockTest
+com.openandroidintelligence.mobile.plugins.PluginCapabilityRiskTest
+com.openandroidintelligence.mobile.plugins.PluginPackageInputTest
+com.openandroidintelligence.mobile.plugins.ScreenExecutionErrorsTest
+com.openandroidintelligence.mobile.push.PushStateCodecMigrationTest
+com.openandroidintelligence.mobile.screen.AccessibilityServiceWiringTest
+com.openandroidintelligence.mobile.screen.DeviceAuthorizationCopyTest
+com.openandroidintelligence.mobile.screen.ScreenCapabilityPresentationTest
+com.openandroidintelligence.mobile.screen.ScreenCaptureSystemConsentTest
+com.openandroidintelligence.mobile.screen.ScreenControlCopyTest
+com.openandroidintelligence.mobile.screen.ScreenErrorMessagesTest
+com.openandroidintelligence.mobile.settings.SettingsShortcutsTest
+com.openandroidintelligence.mobile.settings.backup.SettingsBackupCodecTest
+com.openandroidintelligence.mobile.settings.capabilities.CapabilityCatalogTest
+com.openandroidintelligence.mobile.settings.capabilities.CapabilityStateTest
+
+# 轻量 Robolectric：显式使用普通 Application，保留各类原有的 SDK 版本矩阵。
+# 这些类仅使用 Robolectric 管理的 Android 权限、Intent、AccountManager、
+# ContentResolver、SharedPreferences 或每例独立的内存审计对象。
+com.openandroidintelligence.mobile.AndroidAccountProfileStoreTest
+com.openandroidintelligence.mobile.AndroidApiCompatibilityTest
+com.openandroidintelligence.mobile.ApprovalAuditBridgeTest
+com.openandroidintelligence.mobile.ContentResolverAttachmentSourceTest
+com.openandroidintelligence.mobile.GatewayIdentityTrustStoreTest
+com.openandroidintelligence.mobile.GatewayRefreshJournalTest
+com.openandroidintelligence.mobile.InputPlatformRegressionTest
+com.openandroidintelligence.mobile.NativeNotificationRoutingTest
+com.openandroidintelligence.mobile.PairingGrantPersistenceTest
+com.openandroidintelligence.mobile.SettingsStateIntegrityTest
+com.openandroidintelligence.mobile.TrustModePersistenceTest
+com.openandroidintelligence.mobile.plugins.DeviceCapabilityPermissionsTest
+com.openandroidintelligence.mobile.plugins.NotificationAccessSettingsTest
+com.openandroidintelligence.mobile.plugins.ScreenCaptureGrantRoutingTest
+
+# 应用目录缓存有明确的 @Before 与 @After 清理，不接宿主能力注册表。
+com.openandroidintelligence.mobile.notifications.InstalledNotificationAppCacheTest
+
+# 继续逐类隔离：所有 Compose、完整 App 组合根、真实 HTTP/子进程、
+# KernelPrimitiveRegistry/ScreenHostRegistry 等宿主注册表、Security Provider、
+# Locale/默认异常处理器修改、未取消的 CoroutineScope 与生命周期运行时测试。

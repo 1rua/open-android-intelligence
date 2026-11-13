@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { buildPackage, bytesToBase64url, type BuiltPackage } from "./build-package.js";
 import { referenceSigningKey, validateReferenceWasm } from "./reference-build-policy.js";
@@ -11,10 +11,13 @@ const BUNDLED_PLUGINS = [
   { directory: "notifications", wasm: "notifications.wasm", output: "notifications.alp" },
   { directory: "sms", wasm: "sms.wasm", output: "sms.alp" },
   { directory: "call-log", wasm: "call_log.wasm", output: "call-log.alp" },
+  { directory: "screen-reader", wasm: "screen_reader.wasm", output: "screen-reader.alp" },
+  { directory: "screen-capture", wasm: "screen_capture.wasm", output: "screen-capture.alp" },
+  { directory: "screen-control", wasm: "screen_control.wasm", output: "screen-control.alp" },
 ] as const;
 
 /**
- * 构建随 APK 内置的三个官方插件签名包（notifications / sms / call-log）。
+ * 构建随 APK 内置的官方插件签名包（数据读取与独立屏幕能力）。
  *
  * 每个插件的 manifest 模版取自 plugins/<directory>/manifest.json，
  * 仅把 author.publicKey 替换为由签名私钥派生的公钥；wasm 取自
@@ -91,7 +94,9 @@ async function buildBundledPlugin(
     await writeFile(join(outputDirectory, plugin.output), result.bytes);
     return result;
   } finally {
-    // 暂存目录用完即清，不留下带 payload 的临时文件
-    await rm(staging, { recursive: true, force: true });
+    // 暂存目录移入回收区，遵循仓库文件保留规范。
+    const trash = join(tmpdir(), "open-android-intelligence-trash");
+    await mkdir(trash, { recursive: true });
+    await rename(staging, join(trash, basename(staging)));
   }
 }

@@ -108,7 +108,7 @@ class ExtractPackageVersionTest(unittest.TestCase):
 
     def test_current_android_project_uses_the_gradle_package_version(self):
         root = Path(extractor.__file__).resolve().parents[3]
-        self.assertEqual(extractor.extract_package_version(root, platform="android"), "2.1.1")
+        self.assertEqual(extractor.extract_package_version(root, platform="android"), "2.2.1")
 
 
 if __name__ == "__main__":

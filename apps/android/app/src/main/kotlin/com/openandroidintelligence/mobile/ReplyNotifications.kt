@@ -30,10 +30,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
 import java.time.Instant
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /** App reply alerts are independent of notification collection and pairing grants. */
-class ReplyNotificationSettings(private val context: Context) {
-    private val preferences = context.getSharedPreferences("agent-reply-alert-settings", Context.MODE_PRIVATE)
+class ReplyNotificationSettings(
+    private val context: Context,
+    private val preferences: SharedPreferences = context.getSharedPreferences("agent-reply-alert-settings", Context.MODE_PRIVATE),
+) {
     private val _enabled = MutableStateFlow(preferences.getBoolean("enabled", true))
     val enabled = _enabled.asStateFlow()
     private val _allowed = MutableStateFlow(isAllowed())
@@ -47,16 +50,18 @@ class ReplyNotificationSettings(private val context: Context) {
     fun shouldRequestPermission(): Boolean = postNotificationsPermissionRequired && !permissionRequested &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
 
-    fun setEnabled(enabled: Boolean) {
-        check(preferences.edit().putBoolean("enabled", enabled).commit())
+    /** Publish a preference only once the existing durable owner accepted it. */
+    fun setEnabled(enabled: Boolean): Boolean {
+        if (!preferences.edit().putBoolean("enabled", enabled).commitOrLog(TAG)) return false
         _enabled.value = enabled
         if (!enabled) context.getSystemService(NotificationManager::class.java).let { manager ->
             manager.activeNotifications.filter { it.notification.channelId in setOf(REPLY_CHANNEL_ID, LIVE_UPDATE_CHANNEL_ID) }.forEach { manager.cancel(it.tag, it.id) }
         }
+        return true
     }
 
     fun markPermissionRequested() {
-        check(preferences.edit().putBoolean("permission-requested", true).commit())
+        preferences.edit().putBoolean("permission-requested", true).commitOrLog(TAG)
     }
 
     fun refreshPermission() {
@@ -89,22 +94,45 @@ class ReplyNotificationSettings(private val context: Context) {
 
 internal const val REPLY_CHANNEL_ID = "agent-task-replies"
 private const val REPLY_ACTION = "com.openandroidintelligence.mobile.OPEN_AGENT_REPLY"
+private const val TAG = "ReplyNotifications"
 
-internal data class ReplyNotificationTarget(val profileId: String, val accountId: String, val conversationId: String) {
+/**
+ * 一条回复提醒指向的账号、Agent 与会话。
+ *
+ * [agentId] 只有原生 `/agents` 会话才有：同一个账号下不同 Agent 的会话 ID 各自
+ * 独立，不带上 Agent 就会把两个 Agent 的同名会话当成同一个通知身份。平台旧帧
+ * 没有 Agent 概念，保持为 null，路由和摘要算法都与历史版本一致。
+ */
+internal data class ReplyNotificationTarget(
+    val profileId: String,
+    val accountId: String,
+    val conversationId: String,
+    val agentId: String? = null,
+) {
     fun bubbleIntent(context: Context): Intent = BubbleConversationActivity.intent(context, this)
     fun intent(context: Context): Intent = Intent(context, MainActivity::class.java)
         .setAction(REPLY_ACTION)
         .setData(Uri.Builder().scheme("oai-reply").authority("conversation")
-            .appendPath(profileId).appendPath(accountId).appendPath(conversationId).build())
+            .appendPath(profileId).appendPath(accountId).appendPath(conversationId)
+            .also { builder -> agentId?.let(builder::appendPath) }.build())
         .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+    /**
+     * 会话在账号内的唯一身份。
+     *
+     * 平台旧链路没有 Agent 维度，保持纯会话 ID，历史围栏的摘要才不变；原生会话
+     * 加上 Agent，避免同一个会话 ID 在另一个 Agent 下命中别人的去重记录。
+     */
+    internal fun identityKey(): String = if (agentId == null) conversationId else "$conversationId\u0000$agentId"
 
     companion object {
         fun from(intent: Intent): ReplyNotificationTarget? {
             val uri = intent.data ?: return null
             if (intent.action != REPLY_ACTION || uri.scheme != "oai-reply" || uri.host != "conversation") return null
             val parts = uri.pathSegments
-            if (parts.size != 3 || parts.any { it.isBlank() }) return null
-            return ReplyNotificationTarget(parts[0], parts[1], parts[2])
+            // 3 段是平台旧链路，4 段是原生 Agent 会话；其它形状一律不认。
+            if (parts.size !in 3..4 || parts.any { it.isBlank() }) return null
+            return ReplyNotificationTarget(parts[0], parts[1], parts[2], parts.getOrNull(3))
         }
     }
 }
@@ -112,6 +140,13 @@ internal data class ReplyNotificationTarget(val profileId: String, val accountId
 internal class AndroidReplyNotificationPublisher(
     private val context: Context,
     private val settings: ReplyNotificationSettings,
+    /**
+     * 会话是否正被系统助理界面展示。
+     *
+     * 助理界面已经把这轮回复放在用户眼前时，再弹通知或气泡只是重复打扰；
+     * 这里只抑制通知，不改变任何订阅或投递状态——界面离开后下一帧会重新发布。
+     */
+    private val suppress: (ReplyNotificationTarget) -> Boolean = { false },
 ) {
     private val publishedShortcuts = mutableMapOf<String, String>()
     private val liveUpdates = LiveUpdateNotifications(context, settings)
@@ -139,22 +174,29 @@ internal class AndroidReplyNotificationPublisher(
 
     fun update(session: NativeConversationSession, alert: Boolean) {
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, "Agent 任务回复", NotificationManager.IMPORTANCE_DEFAULT)
-            .apply { description = "Agent 处理中实时显示公开回复，并在任务结束时提醒"; setAllowBubbles(true) })
+        manager.createNotificationChannel(NotificationChannel(REPLY_CHANNEL_ID, context.getString(UiR.string.notif_channel_reply_name), NotificationManager.IMPORTANCE_DEFAULT)
+            .apply { description = context.getString(UiR.string.notif_channel_reply_desc); setAllowBubbles(true) })
+        // 助理界面已展示这条会话：撤回已发布的通知，也不再以气泡重复打扰用户。
+        if (suppress(session.target)) {
+            cancel(session.target)
+            return
+        }
         val hasLiveUpdate = liveUpdates.update(session)
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
+        // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
+        val title = session.title.ifBlank { context.getString(UiR.string.notif_conv_default_title) }
         val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
         val participantKey = replyDigest("${target.profileId}\u0000${target.accountId}")
-        val localUser = Person.Builder().setName("我").setKey("user-$participantKey").setBot(false).build()
+        val localUser = Person.Builder().setName(context.getString(UiR.string.notif_person_local_user)).setKey("user-$participantKey").setBot(false).build()
         val agent = Person.Builder().setName("Agent").setKey("agent-$participantKey")
             .setBot(true).setIcon(icon).build()
         val bubbleIntent = target.bubbleIntent(context)
         val shortcutManager = context.getSystemService(ShortcutManager::class.java)
         val accountGroup = replyAccountGroup(target.profileId, target.accountId)
-        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(session.title)
+        val shortcut = ShortcutInfo.Builder(context, shortcutId).setShortLabel(title)
             .setActivity(android.content.ComponentName(context, MainActivity::class.java))
             .setCategories(setOf("android.shortcut.conversation"))
             .setLongLived(true).setPersons(arrayOf(localUser, agent)).setIcon(icon)
@@ -163,10 +205,10 @@ internal class AndroidReplyNotificationPublisher(
         // A device may disable shortcuts/bubbles. The notification still works.
         val keepBubble = hasLiveUpdate && userSelectedBubble(manager, shortcutId, tag)
         val bubbleMetadata = try {
-            if (publishedShortcuts[shortcutId] != session.title) {
+            if (publishedShortcuts[shortcutId] != title) {
                 shortcutManager.enableShortcuts(listOf(shortcutId))
                 shortcutManager.pushDynamicShortcut(shortcut)
-                publishedShortcuts[shortcutId] = session.title
+                publishedShortcuts[shortcutId] = title
             }
             Notification.BubbleMetadata.Builder(shortcutId).setDesiredHeight(640)
                 .setSuppressNotification(keepBubble).build()
@@ -177,30 +219,30 @@ internal class AndroidReplyNotificationPublisher(
         }
         val pendingIntent = PendingIntent.getActivity(context, 0, target.intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val heading = if (session.isRunning && session.lastOutcome != null) when (session.lastOutcome) {
-            NativeConversationStatus.COMPLETED -> "Agent 已回复，仍有任务处理中"
-            NativeConversationStatus.FAILED -> "部分任务失败，仍有任务处理中"
-            NativeConversationStatus.CANCELLED -> "部分任务已取消，仍有任务处理中"
-            else -> "Agent 正在处理"
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_heading_replied_running)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_heading_partial_failed)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_heading_partial_cancelled)
+            else -> context.getString(UiR.string.notif_reply_heading_processing)
         } else when (session.status) {
-            NativeConversationStatus.QUEUED -> "Agent 任务排队中"
-            NativeConversationStatus.RUNNING -> "Agent 正在处理"
-            NativeConversationStatus.COMPLETED -> "Agent 任务已完成"
-            NativeConversationStatus.FAILED -> "Agent 任务失败"
-            NativeConversationStatus.CANCELLED -> "Agent 任务已取消"
-            NativeConversationStatus.ENDED -> "任务已结束"
-            NativeConversationStatus.DISCONNECTED -> "Gateway 已断开，任务状态待同步"
+            NativeConversationStatus.QUEUED -> context.getString(UiR.string.notif_reply_heading_queued)
+            NativeConversationStatus.RUNNING -> context.getString(UiR.string.notif_reply_heading_running)
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_heading_completed)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_heading_failed)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_heading_cancelled)
+            NativeConversationStatus.ENDED -> context.getString(UiR.string.notif_reply_heading_ended)
+            NativeConversationStatus.DISCONNECTED -> context.getString(UiR.string.notif_reply_heading_disconnected)
         }
-        val preview = notificationReplyExcerpt(session.latestReply, session.isRunning).ifBlank { when (session.status) {
-            NativeConversationStatus.QUEUED -> "等待 Agent 开始处理"
-            NativeConversationStatus.RUNNING -> "等待 Agent 回复"
-            NativeConversationStatus.COMPLETED -> "已收到回复，点击查看会话"
-            NativeConversationStatus.FAILED -> "任务未完成，请查看会话中的错误信息"
-            NativeConversationStatus.CANCELLED -> "任务已取消"
-            NativeConversationStatus.ENDED -> "任务已结束，点击查看会话"
-            NativeConversationStatus.DISCONNECTED -> "重新连接后同步任务状态"
+        val preview = notificationReplyExcerpt(session.latestReply, session.isRunning, context.getString(UiR.string.notif_reply_excerpt_full_hint)).ifBlank { when (session.status) {
+            NativeConversationStatus.QUEUED -> context.getString(UiR.string.notif_reply_preview_waiting_start)
+            NativeConversationStatus.RUNNING -> context.getString(UiR.string.notif_reply_preview_waiting_reply)
+            NativeConversationStatus.COMPLETED -> context.getString(UiR.string.notif_reply_preview_received)
+            NativeConversationStatus.FAILED -> context.getString(UiR.string.notif_reply_preview_error)
+            NativeConversationStatus.CANCELLED -> context.getString(UiR.string.notif_reply_preview_cancelled)
+            NativeConversationStatus.ENDED -> context.getString(UiR.string.notif_reply_preview_ended)
+            NativeConversationStatus.DISCONNECTED -> context.getString(UiR.string.notif_reply_preview_reconnecting)
         } }
         val style = Notification.MessagingStyle(localUser)
-            .setConversationTitle(session.title).addMessage(preview, session.updatedAt, agent)
+            .setConversationTitle(title).addMessage(preview, session.updatedAt, agent)
         val notification = Notification.Builder(context, REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
             .setContentTitle(heading)
@@ -217,7 +259,7 @@ internal class AndroidReplyNotificationPublisher(
             .setAutoCancel(!session.isRunning)
             .setOnlyAlertOnce(hasLiveUpdate || !alert)
             .setContentIntent(pendingIntent)
-            .addAction(Notification.Action.Builder(null, "打开会话窗口",
+            .addAction(Notification.Action.Builder(null, context.getString(UiR.string.notif_action_open_conversation),
                 PendingIntent.getActivity(context, 0, bubbleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
             .build()
         // Permission may be revoked between checking it and the Binder call.
@@ -225,7 +267,7 @@ internal class AndroidReplyNotificationPublisher(
     }
 
     fun eraseAccount(profileId: String, accountId: String) {
-        check(replyCompletionPreferences(context, profileId, accountId).edit().clear().commit())
+        replyCompletionPreferences(context, profileId, accountId).edit().clear().commitOrLog(TAG)
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.activeNotifications.filter { it.notification.extras.getString("reply-account") == replyAccountGroup(profileId, accountId) }
             .forEach { manager.cancel(it.tag, it.id) }
@@ -244,7 +286,7 @@ internal class AndroidReplyNotificationPublisher(
     }
 
     private fun notificationTag(target: ReplyNotificationTarget) =
-        replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+        replyDigest(listOfNotNull(target.profileId, target.accountId, target.conversationId, target.agentId).joinToString("\u0000"))
 
     private fun userSelectedBubble(manager: NotificationManager, shortcutId: String, tag: String): Boolean {
         when (manager.bubblePreference) {
@@ -272,8 +314,17 @@ internal class ReplyCompletionObserver(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val firstEnabledAt = preferences.getLong("first-enabled-at", 0L).takeIf { it > 0L }
-        ?: now().also { check(preferences.edit().putLong("first-enabled-at", it).commit()) }
+        ?: now().also { preferences.edit().putLong("first-enabled-at", it).commitOrLog(TAG) }
     private var nextPruneAt = Long.MIN_VALUE
+
+    /**
+     * 原生 Agent 会话 ID 只在一个 Agent 内唯一，提醒的持久围栏必须带上 Agent，
+     * 否则另一个 Agent 的同名会话会命中别人已消费的完成记录。平台旧帧没有这个
+     * 字段，目标保持三要素，历史摘要与路由都不变。
+     */
+    private fun target(payload: com.openandroidintelligence.gateway.schema.JsonValue.JObject, conversationId: String) =
+        ReplyNotificationTarget(profileId, accountId, conversationId,
+            JsonFields.string(payload, "agentId")?.takeIf { it.isNotBlank() })
 
     @Synchronized fun accept(event: GatewayEvent) {
         if (event.event !in REPLY_EVENTS) return
@@ -285,25 +336,26 @@ internal class ReplyCompletionObserver(
         pruneExpired()
         val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: return
         val conversationId = JsonFields.string(payload, "conversationId")?.takeIf { it.isNotBlank() } ?: return
+        val identity = target(payload, conversationId).identityKey()
         val generationId = JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() }
         val decoded = runCatching { GatewayEventDecoder.decode(event) }.getOrNull() ?: return
         if (generationId == null) {
-            acceptLegacy(event, decoded, payload, conversationId, occurredAt)
+            acceptLegacy(event, decoded, payload, conversationId, identity, occurredAt)
             return
         }
         // A generation-bearing event must never borrow a legacy round's body.
-        clearLegacy(conversationId, occurredAt)
-        val key = replyDigest("$conversationId\u0000$generationId")
+        clearLegacy(conversationId, identity, occurredAt)
+        val key = replyDigest("$identity\u0000$generationId")
         if (preferences.contains("done.$key")) return
         when (event.event) {
             "conversation.message.completed" -> {
                 if (!isPublicAssistantPayload(payload) || !hasAssistantReply(decoded, JsonFields.string(payload, "sender"))) return
-                check(preferences.edit().putLong("reply.$key", occurredAt).commit())
+                preferences.edit().putLong("reply.$key", occurredAt).commitOrLog(TAG)
             }
             "conversation.message.status" -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
                 when (status.status) {
-                    AgentMessageStatus.COMPLETED -> check(preferences.edit().putLong("success.$key", occurredAt).commit())
+                    AgentMessageStatus.COMPLETED -> preferences.edit().putLong("success.$key", occurredAt).commitOrLog(TAG)
                     AgentMessageStatus.FAILED -> { finish(key, occurredAt); return }
                     else -> return
                 }
@@ -314,7 +366,7 @@ internal class ReplyCompletionObserver(
             // Persist before posting: a replay must not revive a dismissed alert.
             // A denied permission consumes this completion instead of queuing old alerts.
             finish(key, occurredAt)
-            post(ReplyNotificationTarget(profileId, accountId, conversationId), generationId)
+            post(target(payload, conversationId), generationId)
         }
     }
 
@@ -326,20 +378,21 @@ internal class ReplyCompletionObserver(
         decoded: VerifiedConversationEvent,
         payload: com.openandroidintelligence.gateway.schema.JsonValue.JObject,
         conversationId: String,
+        identity: String,
         occurredAt: Long,
     ) {
-        val conversationKey = replyDigest(conversationId)
+        val conversationKey = replyDigest(identity)
         val activeKey = "legacy.current.$conversationKey"
         when (event.event) {
             "conversation.message.status" -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
-                val round = replyDigest("legacy\u0000$conversationId\u0000${status.messageId}\u0000${status.clientMessageId.value}")
+                val round = replyDigest("legacy\u0000$identity\u0000${status.messageId}\u0000${status.clientMessageId.value}")
                 if (preferences.contains("done.$round")) return
                 when (status.status) {
                     AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
                         if (preferences.getString(activeKey, null) != round) {
-                            clearLegacy(conversationId, occurredAt)
-                            check(preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commit())
+                            clearLegacy(conversationId, identity, occurredAt)
+                            preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commitOrLog(TAG)
                         }
                     }
                     AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED -> {
@@ -348,7 +401,7 @@ internal class ReplyCompletionObserver(
                         finish(round, occurredAt)
                         if (active == round) removeLegacy(conversationKey)
                         if (status.status == AgentMessageStatus.COMPLETED && hasReply) {
-                            post(ReplyNotificationTarget(profileId, accountId, conversationId), "legacy:$round")
+                            post(target(payload, conversationId), "legacy:$round")
                         }
                     }
                 }
@@ -356,9 +409,9 @@ internal class ReplyCompletionObserver(
             "conversation.message.completed" -> {
                 if (!isPublicAssistantPayload(payload) || !hasAssistantReply(decoded, JsonFields.string(payload, "sender"))) return
                 val round = preferences.getString(activeKey, null) ?: return
-                check(preferences.edit().putLong("reply.$round", occurredAt).commit())
+                preferences.edit().putLong("reply.$round", occurredAt).commitOrLog(TAG)
             }
-            "conversation.generation.cancelled" -> clearLegacy(conversationId, occurredAt)
+            "conversation.generation.cancelled" -> clearLegacy(conversationId, identity, occurredAt)
         }
     }
 
@@ -369,20 +422,20 @@ internal class ReplyCompletionObserver(
         }
     }
 
-    private fun clearLegacy(conversationId: String, occurredAt: Long) {
-        val conversationKey = replyDigest(conversationId)
+    private fun clearLegacy(conversationId: String, identity: String, occurredAt: Long) {
+        val conversationKey = replyDigest(identity)
         val round = preferences.getString("legacy.current.$conversationKey", null) ?: return
         finish(round, occurredAt)
         removeLegacy(conversationKey)
     }
 
     private fun removeLegacy(conversationKey: String) {
-        check(preferences.edit().remove("legacy.current.$conversationKey").remove("legacy.started.$conversationKey").commit())
+        preferences.edit().remove("legacy.current.$conversationKey").remove("legacy.started.$conversationKey").commitOrLog(TAG)
     }
 
     private fun finish(key: String, occurredAt: Long) {
         val edit = preferences.edit().putLong("done.$key", occurredAt).remove("reply.$key").remove("success.$key")
-        check(edit.commit())
+        edit.commitOrLog(TAG)
     }
 
     private fun pruneExpired() {
@@ -398,7 +451,7 @@ internal class ReplyCompletionObserver(
                 edit.remove(key)
                 if (key.startsWith("legacy.started.")) edit.remove("legacy.current." + key.removePrefix("legacy.started."))
             }
-            check(edit.commit())
+            edit.commitOrLog(TAG)
         }
     }
 
@@ -408,6 +461,19 @@ internal class ReplyCompletionObserver(
         private const val PRUNE_INTERVAL_MILLIS = 30L * 60 * 1000
         private val REPLY_EVENTS = setOf("conversation.message.completed", "conversation.message.status", "conversation.generation.cancelled")
     }
+}
+
+/**
+ * 通知链路上的偏好写入不能把进程带走：commit 失败只意味着这次围栏没有落盘，
+ * 下一次事件仍然可以重新判定，因此只记录日志并返回失败。
+ */
+internal fun SharedPreferences.Editor.commitOrLog(tag: String): Boolean {
+    val committed = runCatching { commit() }.getOrElse { failure ->
+        android.util.Log.w(tag, "SharedPreferences commit threw", failure)
+        false
+    }
+    if (!committed) android.util.Log.w(tag, "SharedPreferences commit returned false")
+    return committed
 }
 
 internal fun replyDigest(value: String): String = MessageDigest.getInstance("SHA-256")

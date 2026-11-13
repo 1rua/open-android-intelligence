@@ -1,6 +1,9 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
@@ -10,7 +13,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -18,11 +21,16 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,6 +43,7 @@ import com.openandroidintelligence.conversation.components.connectionLabel
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamHealth
+import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
@@ -43,9 +52,20 @@ import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+private data class TimelineReadingAnchor(val key: String, val offset: Int)
+
+private class TimelineReadingPosition {
+    val listState = LazyListState()
+    val followLatest = mutableStateOf(true)
+    var anchor: TimelineReadingAnchor? = null
+    var opened = false
+}
 
 /**
  * 对话工作台界面：严格遵守产品主导航边界（账号/Gateway、对话、附件）。
@@ -65,7 +85,15 @@ fun WorkbenchScreen(
     onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit,
     modifier: Modifier = Modifier,
-    onOpenAssistant: (() -> Unit)? = null,
+    /**
+     * 正在录音时的真实时长与音量；null 表示没有录音。
+     *
+     * 录音态原地替换输入坞主行（不弹独立卡片、不遮挡时间线），并与默认数字助手共用
+     * 同一份 [VoiceRecordingRow] 波形/计时/取消/发送实现。
+     */
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     isDarkTheme: Boolean = true,
     onToggleTheme: (() -> Unit)? = null,
     onLogout: () -> Unit,
@@ -83,19 +111,81 @@ fun WorkbenchScreen(
     agentName: String? = null,
     accountAvatar: androidx.compose.ui.graphics.ImageBitmap? = null,
     onChangeAvatar: (() -> Unit)? = null,
+    connectionHealth: StreamHealth? = null,
+    /**
+     * 设置面板是否打开（受控状态，真值由宿主持有）。
+     *
+     * 设置与会话列表共用同一个左侧侧栏容器，只是内容不同：宿主把它置为 true 时，
+     * 工作台在自己的抽屉/固定侧栏里切到设置面板，不再叠一层底部弹层。
+     * 登录页、无控制器分支等其他入口也复用这份状态。
+     */
+    settingsOpen: Boolean = false,
+    /** 设置面板的开合回写。设置内容里的「关闭设置」/返回最终都收敛到这一个回调。 */
+    onSettingsOpenChange: (Boolean) -> Unit = {},
+    /**
+     * 设置内容插槽：由 App 模块提供（设置界面的侧栏呈现）。
+     *
+     * 传 null 表示宿主没有装配设置界面，此时「设置」入口回落到 [onOpenSettings]。
+     * 退出回调区分设置根页返回和抽屉的手势关闭。
+     */
+    settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
 ) {
     val state by controller.state.collectAsState()
+    val displayStreamHealth = workbenchDisplayStreamHealth(connectionHealth, state.streamHealth)
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    // 抽屉打开时返回键先关抽屉：交给平台默认处理会把用户直接退出 App。
-    BackHandler(enabled = drawer.isOpen) { scope.launch { drawer.close() } }
+    val sidebarPanel = if (settingsOpen) SidebarPanel.SETTINGS else SidebarPanel.CONVERSATIONS
+    // 从会话列表进入时，设置根页返回应保留抽屉并恢复列表。
+    var settingsFromConversations by rememberSaveable { mutableStateOf(false) }
 
     val snackbar = remember { SnackbarHostState() }
-    val listState = rememberLazyListState()
-    var followLatest by remember(state.activeThreadId) { mutableStateOf(true) }
+    val readingPositions = remember(controller.localConversationScope) { mutableMapOf<String?, TimelineReadingPosition>() }
+    val readingPosition = remember(controller.localConversationScope, state.activeThreadId) {
+        readingPositions.getOrPut(state.activeThreadId) { TimelineReadingPosition() }
+    }
+    val listState = readingPosition.listState
+    var followLatest by readingPosition.followLatest
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
     // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
+    val presentations = rememberStreamingPresentations(
+        entries, controller to state.activeThreadId, enabled = !settingsOpen, generation = state.generation,
+    )
+    LaunchedEffect(state.activeThreadId, displayItems, listState) {
+        if (!com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidenceEnabled) return@LaunchedEffect
+        val userRows = displayItems.filterIsInstance<TimelineDisplayItem.Single>()
+            .filter { it.entry.isUser }.takeLast(64).map { item ->
+                mapOf("uiKey" to item.key, "messageId" to item.entry.key,
+                    "clientMessageId" to item.entry.clientMessageId?.value,
+                    "generationId" to item.entry.generationId,
+                    "state" to item.entry.messageStatus?.name,
+                    "pendingAcceptance" to item.entry.pendingAcceptance)
+            }
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            Triple(layout.viewportStartOffset, layout.viewportEndOffset,
+                layout.visibleItemsInfo.take(64).map { item ->
+                    mapOf("uiKey" to item.key.toString(), "index" to item.index,
+                        "offset" to item.offset, "size" to item.size)
+                })
+        }.distinctUntilChanged().collect { (start, end, visible) ->
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("T9.list_layout", mapOf(
+                "conversationId" to state.activeThreadId, "itemCount" to displayItems.size,
+                "viewportStart" to start, "viewportEnd" to end, "userRows" to userRows,
+                "visibleItems" to visible))
+        }
+    }
+    val currentDisplayKeys by rememberUpdatedState(displayItems.map { it.key }.toSet())
+    LaunchedEffect(readingPosition) {
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+                val key = item.key as? String
+                key != null && key in currentDisplayKeys
+            }?.let { item -> TimelineReadingAnchor(item.key as String, -item.offset) }
+        }.distinctUntilChanged().collect { anchor ->
+            if (anchor != null) readingPosition.anchor = anchor
+        }
+    }
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
     var showAttachmentLibrary by remember { mutableStateOf(false) }
     var commandPopupDismissed by remember(state.activeThreadId) { mutableStateOf(false) }
@@ -111,6 +201,18 @@ fun WorkbenchScreen(
     var bottomDockHeightPx by remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
 
+    val firstFrameRecorded = remember(controller, state.activeThreadId, state.timelineRequestEpoch) {
+        java.util.concurrent.atomic.AtomicBoolean(false)
+    }
+    val firstFrameModifier = Modifier.drawWithContent {
+        drawContent()
+        if (state.timelineOpenedAtNs > 0 && state.timelineDataSource != null &&
+            firstFrameRecorded.compareAndSet(false, true)) {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.protocolEvidence("timeline.first_draw", mapOf(
+                "conversationId" to state.activeThreadId, "epoch" to state.timelineRequestEpoch,
+                "source" to state.timelineDataSource, "elapsedNs" to System.nanoTime() - state.timelineOpenedAtNs))
+        }
+    }
     val timelineReady = state.timeline is Loadable.Ready
     val isThinking = (state.generation == GenerationState.QUEUED ||
         state.generation == GenerationState.RUNNING) &&
@@ -122,6 +224,13 @@ fun WorkbenchScreen(
         (if (creatingThreadInThisThread) 1 else 0) +
         (if (isThinking) 1 else 0)
     val lastItemIndex = itemCount - 1
+    // 同一帧内折叠会让条目数变少，先前算出的索引可能越界：
+    // 目标索引以当前布局的条目数为上限，取不到合法目标时就不滚动。
+    fun latestScrollTarget(): Int? {
+        val total = listState.layoutInfo.totalItemsCount
+        if (total <= 0) return lastItemIndex.takeIf { it >= 0 }
+        return minOf(lastItemIndex, total - 1).takeIf { it >= 0 }
+    }
     val latestItemVisible by remember(listState, lastItemIndex) {
         derivedStateOf {
             listState.layoutInfo.visibleItemsInfo.any { it.index == lastItemIndex }
@@ -135,16 +244,18 @@ fun WorkbenchScreen(
 
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
-            controller.dismissNotice()
-            // A failed send must explain itself: an error code alone reads as "no reaction".
+            // 显示完成后再消费，避免清空 effect 的 key 取消正在显示的说明。
             snackbar.showSnackbar(noticeText(notice))
+            if (controller.state.value.notice == notice) controller.dismissNotice()
         }
     }
     // A dead reply channel is the one cause of "sent but nothing came back"
     // that the user cannot see from the timeline, so it says so out loud.
+    val streamDisconnectedMessage = stringResource(UiR.string.conv_state_stream_disconnected)
     LaunchedEffect(state.streamHealth) {
         if (state.streamHealth == StreamHealth.FAILED) {
-            snackbar.showSnackbar("实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务。")
+            snackbar.showSnackbar(state.notice?.let(::noticeText)
+                ?: streamDisconnectedMessage)
         }
     }
 
@@ -163,13 +274,17 @@ fun WorkbenchScreen(
             }
     }
 
-    // 打开 / 切换到某个会话：直接定位到最新一条。这是「读到这里」的位置语义，
-    // 不是流式跟随，所以这里允许一次瞬时定位。
-    LaunchedEffect(state.activeThreadId, timelineReady) {
-        if (timelineReady) {
-            followLatest = true
-            if (lastItemIndex > 0) listState.scrollToItem(lastItemIndex)
+    // 首次打开定位最新；回访与补同步按真实展示 key 恢复，不把旧索引当成消息身份。
+    LaunchedEffect(readingPosition, timelineReady) {
+        if (!timelineReady) return@LaunchedEffect
+        val savedAnchor = readingPosition.anchor
+        if (!readingPosition.opened || followLatest) {
+            latestScrollTarget()?.takeIf { it > 0 }?.let { target -> listState.scrollToItem(target) }
+        } else if (savedAnchor != null) {
+            val index = displayItems.indexOfFirst { it.key == savedAnchor.key }
+            if (index >= 0) listState.scrollToItem(index + 1, savedAnchor.offset)
         }
+        readingPosition.opened = true
     }
 
     // 尾部形状变化（新消息、思考点出现/消失、创建中）：平滑跟到最新，不整段硬跳。
@@ -187,8 +302,8 @@ fun WorkbenchScreen(
         previousTailSignature = tailSignature
         if (previous == null) return@LaunchedEffect
         if (!followLatest) return@LaunchedEffect
-        if (lastItemIndex <= 0) return@LaunchedEffect
-        if (reduceMotion) listState.scrollToItem(lastItemIndex) else listState.animateScrollToItem(lastItemIndex)
+        val target = latestScrollTarget()?.takeIf { it > 0 } ?: return@LaunchedEffect
+        if (reduceMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
     }
 
     // M05/M12：文字在流式增长时不做逐 token 动画，只按「最后一条长高了多少」增量贴底。
@@ -196,14 +311,24 @@ fun WorkbenchScreen(
     var lastEntryKey by remember(state.activeThreadId) { mutableStateOf<String?>(null) }
     // 键盘弹出、附件条出现会让输入坞变高（可视区变矮）；停留在底部时跟着贴底。
     LaunchedEffect(bottomDockHeightPx) {
-        if (!followLatest || lastItemIndex <= 0) return@LaunchedEffect
+        if (!followLatest) return@LaunchedEffect
+        val target = latestScrollTarget()?.takeIf { it > 0 } ?: return@LaunchedEffect
         if (listState.canScrollForward) {
-            if (reduceMotion) listState.scrollToItem(lastItemIndex) else listState.animateScrollToItem(lastItemIndex)
+            if (reduceMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
         }
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
+
+        // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
+        LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
+            if (settingsPanel == null) return@LaunchedEffect
+            if (!settingsOpen && expanded) settingsFromConversations = false
+            if (settingsOpen && !expanded && (drawer.isOpen || drawer.isAnimationRunning)) {
+                drawer.snapTo(DrawerValue.Closed)
+            }
+        }
 
         val drawerContent: @Composable () -> Unit = {
             ThreadDrawer(
@@ -211,13 +336,18 @@ fun WorkbenchScreen(
                 agentName = agentName,
                 avatar = accountAvatar,
                 onChangeAvatar = onChangeAvatar,
-                streamHealth = state.streamHealth,
+                streamHealth = displayStreamHealth,
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
                 organization = state.browserOrganization,
                 selectedFolderId = state.selectedFolderId,
                 managementSupported = state.conversationManagementSupported,
+                deleteSupported = state.conversationDeleteSupported,
+                archiveSupported = state.conversationArchiveSupported,
+                unarchiveSupported = state.conversationUnarchiveSupported,
+                renameSupported = state.conversationRenameSupported,
+                organizationStoredLocally = state.organizationStoredLocally,
                 managing = state.managingThreads,
                 online = state.isOnline,
                 busyThreadIds = state.busyThreadIds,
@@ -243,7 +373,8 @@ fun WorkbenchScreen(
                 },
                 onRefresh = controller::refreshThreads,
                 onOpenSettings = {
-                    scope.launch { drawer.close() }
+                    settingsFromConversations = settingsPanel != null
+                    if (settingsPanel == null || !expanded) scope.launch { drawer.close() }
                     onOpenSettings()
                 },
                 onCloseDrawer = { scope.launch { drawer.close() } },
@@ -261,7 +392,7 @@ fun WorkbenchScreen(
 
         val mainContent: @Composable () -> Unit = {
             // M01：列表离开顶部后，顶栏与内容之间出现 1dp 分隔线（150ms alpha）。
-            val timelineScrolled by remember(state.activeThreadId) {
+            val timelineScrolled by remember(listState) {
                 derivedStateOf {
                     listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0
                 }
@@ -299,12 +430,11 @@ fun WorkbenchScreen(
                         WorkbenchTopBar(
                             threadTitle = state.activeThreadTitle,
                             gatewayLabel = gatewayLabel,
-                            streamHealth = state.streamHealth,
+                            streamHealth = displayStreamHealth,
                             expanded = expanded,
                             canRename = state.activeThreadId != null,
                             creatingThread = state.creatingThread,
                             overflowExpanded = overflowMenuExpanded,
-                            showAssistant = onOpenAssistant != null,
                             subtitleInBar = !stackedContext,
                             onOpenDrawer = { scope.launch { drawer.open() } },
                             onCreateThread = controller::createThread,
@@ -313,14 +443,16 @@ fun WorkbenchScreen(
                                 showRenameDialog = true
                             },
                             onOpenAttachments = { showAttachmentLibrary = true },
-                            onOpenAssistant = onOpenAssistant,
-                            onOpenSettings = onOpenSettings,
+                            onOpenSettings = {
+                                settingsFromConversations = false
+                                onOpenSettings()
+                            },
                             onOverflowExpandedChange = { overflowMenuExpanded = it },
                         )
                         if (stackedContext) {
                             WorkbenchContextLine(
                                 gatewayLabel = gatewayLabel,
-                                streamHealth = state.streamHealth,
+                                streamHealth = displayStreamHealth,
                                 modifier = Modifier.padding(
                                     start = Dimensions.SpaceMedium,
                                     end = Dimensions.SpaceMedium,
@@ -348,7 +480,7 @@ fun WorkbenchScreen(
 
                     // 抽屉盖在上面时它才是「当前可见的一层」：不能让背后看不见的
                     // 命令菜单先吃掉返回键（否则按一次返回抽屉纹丝不动）。
-                    if (isCommandPopupVisible && !drawer.isOpen) {
+                    if (isCommandPopupVisible && !drawer.isOpen && sidebarPanel != SidebarPanel.SETTINGS) {
                         BackHandler {
                             commandPopupDismissed = true
                         }
@@ -378,7 +510,7 @@ fun WorkbenchScreen(
                                 } else {
                                     LoadableRegion(
                                         state.timeline,
-                                        "写下第一条消息，开始这段对话",
+                                        "发送消息开始对话",
                                         controller::retryTimeline,
                                         modifier = Modifier.fillMaxSize(),
                                         ready = { _ ->
@@ -392,7 +524,7 @@ fun WorkbenchScreen(
                                             ) { openPreview ->
                                             LazyColumn(
                                                 state = listState,
-                                                modifier = Modifier.fillMaxSize(),
+                                                modifier = Modifier.fillMaxSize().then(firstFrameModifier),
                                                 contentPadding = PaddingValues(
                                                     start = Dimensions.TimelineHorizontal,
                                                     end = Dimensions.TimelineHorizontal,
@@ -407,7 +539,7 @@ fun WorkbenchScreen(
                                                         placementSpec = MotionSpecs.morph(reduceMotion),
                                                     )) { pluginCards() }
                                                 }
-                                                items(displayItems, key = { it.key }) { item ->
+                                                items(displayItems, key = { it.key }, contentType = { it.contentType }) { item ->
                                                     val fresh = item.key in freshEntryKeys
                                                     val isTail = item.key == displayItems.lastOrNull()?.key
                                                     val jumpTarget = (item as? TimelineDisplayItem.Single)?.entry?.systemThreadId
@@ -449,6 +581,8 @@ fun WorkbenchScreen(
                                                     } else {
                                                         TimelineDisplayRow(
                                                             item = item,
+                                                            presentations = presentations,
+                                                            evidenceOwner = controller to state.activeThreadId,
                                                             onDecide = controller::decideApproval,
                                                             timing = executionTiming,
                                                             onDownloadAttachment = downloadAction,
@@ -498,10 +632,11 @@ fun WorkbenchScreen(
                                     onClick = {
                                         followLatest = true
                                         scope.launch {
+                                            val target = latestScrollTarget() ?: return@launch
                                             if (reduceMotion) {
-                                                listState.scrollToItem(lastItemIndex)
+                                                listState.scrollToItem(target)
                                             } else {
-                                                listState.animateScrollToItem(lastItemIndex)
+                                                listState.animateScrollToItem(target)
                                             }
                                         }
                                     },
@@ -523,37 +658,56 @@ fun WorkbenchScreen(
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
-                                if (state.hasRecoverableSubmissions) TextButton(onClick=controller::retryPendingSubmissions,enabled=state.isOnline) { Text("确认并查询未确认消息") }
                                 // Honest degradation: a Gateway that cannot take
                                 // a decision gets no card at all, and the user is
                                 // told the text command is the way to answer.
-                                if (!state.approvalCardsSupported && !approvalHintDismissed) {
+                                if (state.isOnline && !state.approvalCardsSupported && !approvalHintDismissed) {
                                     ApprovalUnsupportedHint(onDismiss = { approvalHintDismissed = true })
                                 }
                                 ComposerBar(
                                     editorKey = controller to state.activeThreadId,
                                     onPasteImages = onPasteImages,
                                     draft = state.draft,
-                                    onDraftChange = { newDraft ->
-                                        if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(state.draft))) {
-                                            commandPopupDismissed = false
-                                        } else if (newDraft != state.draft && !newDraft.startsWith("/")) {
-                                            commandPopupDismissed = false
+                                    draftEpoch = state.draftEpoch,
+                                    onDraftChange = controller::editDraft,
+                                    onDraftEdit = { newDraft, expectedEpoch ->
+                                        val current = controller.state.value
+                                        if (expectedEpoch == current.draftEpoch) {
+                                            if (commandPopupDismissed && (newDraft.isEmpty() || !newDraft.startsWith(current.draft))) {
+                                                commandPopupDismissed = false
+                                            } else if (newDraft != current.draft && !newDraft.startsWith("/")) {
+                                                commandPopupDismissed = false
+                                            }
+                                            controller.editDraft(newDraft, expectedEpoch)
                                         }
-                                        controller.editDraft(newDraft)
                                     },
+                                    onSubmitDraft = controller::submitComposerDraft,
                                     generation = state.generation,
                                     canSend = state.canSend,
                                     onSend = controller::sendDraft,
+                                    onQueue = {
+                                        controller.sendDraft(
+                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE,
+                                        )
+                                    },
+                                    onSteer = {
+                                        controller.sendDraft(
+                                            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER,
+                                        )
+                                    },
                                     onStop = controller::stopGeneration,
                                     onPickCamera = onPickCamera,
                                     onPickGallery = onPickGallery,
                                     onPickDocument = onPickDocument,
                                     onVoiceInput = onVoiceInput,
+                                    recording = recording,
+                                    onCancelRecording = onCancelRecording,
+                                    onFinishRecording = onFinishRecording,
                                     voiceInputEnabled = controller.canSendVoiceAttachment(state.activeThreadId),
                                     attachments = state.attachments,
                                     inFlightAttachmentIds = state.inFlightAttachmentIds,
-                                    hasUnknownSubmissionOutcome = state.hasUnknownSubmissionOutcome,
+                                    pendingDeliveries = state.pendingDeliveries,
+                                    onRetryPendingDelivery = controller::retryPendingDeliveries,
                                     onRemoveAttachment = controller::removeAttachment,
                                     onRetryAttachment = controller::retryAttachment,
                                     modifier = Modifier.padding(horizontal = Dimensions.SpaceMedium, vertical = Dimensions.SpaceSmall),
@@ -586,19 +740,104 @@ fun WorkbenchScreen(
             }
         }
 
+        val sidebarInsets = WindowInsets.systemBars.union(WindowInsets.displayCutout)
+            .only(WindowInsetsSides.Vertical + WindowInsetsSides.Start)
+        val savedSidebarState = rememberSaveableStateHolder()
+        val latestMainContent by rememberUpdatedState(mainContent)
+        val movableMain = remember { movableContentOf { latestMainContent() } }
+        val latestSettingsPanel by rememberUpdatedState(settingsPanel)
+        val movableSettings = remember {
+            movableContentOf<() -> Unit> { onClose ->
+                savedSidebarState.SaveableStateProvider(SidebarPanel.SETTINGS) {
+                    latestSettingsPanel?.invoke(onClose)
+                }
+            }
+        }
+
+        // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
+        // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
         if (expanded) {
+            val tabletSidebarContent: @Composable () -> Unit = {
+                AnimatedContent(
+                    targetState = sidebarPanel,
+                    transitionSpec = {
+                        if (targetState == SidebarPanel.SETTINGS) {
+                            AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
+                        } else {
+                            AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    label = "tablet-sidebar-content",
+                ) { panel ->
+                    when (panel) {
+                        SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                        SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                    }
+                }
+            }
             Row(Modifier.fillMaxSize()) {
-                Box(Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()) { drawerContent() }
+                Box(
+                    Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
+                        .windowInsetsPadding(sidebarInsets),
+                ) { tabletSidebarContent() }
                 VerticalDivider()
-                Box(Modifier.weight(1f)) { mainContent() }
+                Box(Modifier.weight(1f)) { movableMain() }
             }
         } else {
-            ModalNavigationDrawer(
-                drawerState = drawer,
-                gesturesEnabled = true,
-                drawerContent = { ModalDrawerSheet(Modifier.width(Dimensions.DrawerWidth)) { drawerContent() } },
-            ) {
-                mainContent()
+            // 手机端：侧边抽屉始终仅承载会话列表（固定320dp），绝不把全屏设置塞入抽屉假装全屏
+            val phoneDrawerContent: @Composable () -> Unit = {
+                drawerContent()
+            }
+            val latestPhoneDrawerContent by rememberUpdatedState(phoneDrawerContent)
+            val movablePhoneDrawer = remember { movableContentOf { latestPhoneDrawerContent() } }
+
+            Box(Modifier.fillMaxSize()) {
+                ModalNavigationDrawer(
+                    drawerState = drawer,
+                    gesturesEnabled = !settingsOpen,
+                    drawerContent = {
+                        ModalDrawerSheet(
+                            modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
+                            windowInsets = sidebarInsets,
+                        ) {
+                            movablePhoneDrawer()
+                        }
+                    },
+                ) {
+                    movableMain()
+                }
+
+                // 手机端全屏侧滑设置页面：
+                // 从左向右滑入（起点 translationX = -screenWidth，终点 translationX = 0）
+                // 退出时向左滑出（起点 translationX = 0，终点 translationX = -screenWidth）
+                // 覆盖整个应用窗口，宽度为全部可用宽度，高度填满整个内容区域，无右侧残留会话或背景遮罩空隙
+                AnimatedVisibility(
+                    visible = settingsOpen,
+                    enter = AppTransitions.modalEnter(reduceMotion),
+                    exit = AppTransitions.modalExit(reduceMotion),
+                    modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
+                ) {
+                    BackHandler(enabled = settingsOpen) {
+                        if (settingsFromConversations) {
+                            scope.launch {
+                                drawer.open()
+                            }
+                        }
+                        onSettingsOpenChange(false)
+                    }
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.surface,
+                    ) {
+                        movableSettings {
+                            if (settingsFromConversations) {
+                                scope.launch { drawer.open() }
+                            }
+                            onSettingsOpenChange(false)
+                        }
+                    }
+                }
             }
         }
 
@@ -626,13 +865,13 @@ fun WorkbenchScreen(
         if (showRenameDialog) {
             AlertDialog(
                 onDismissRequest = { showRenameDialog = false },
-                title = { Text("重命名对话") },
+                title = { Text(stringResource(UiR.string.conv_workbench_title_rename_dialog)) },
                 text = {
                     OutlinedTextField(
                         value = renameDraft,
                         onValueChange = { renameDraft = it },
                         singleLine = true,
-                        label = { Text("对话标题") },
+                        label = { Text(stringResource(UiR.string.conv_workbench_title_rename_label)) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                 },
@@ -646,14 +885,14 @@ fun WorkbenchScreen(
                             showRenameDialog = false
                         },
                     ) {
-                        Text("确定")
+                        Text(stringResource(UiR.string.common_action_confirm))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showRenameDialog = false }) {
-                        Text("取消")
+                        Text(stringResource(UiR.string.common_action_cancel))
                     }
-                },
+                }
             )
         }
     }
@@ -665,7 +904,7 @@ fun WorkbenchScreen(
  * 之前这里挂了 5 个动作图标并把标题挤成 170px，而 `windowInsets = WindowInsets(0,0,0,0)`
  * 让整条 bar 落在系统状态栏触摸区里 —— 两个问题都在这一个组件里修掉：
  * 1. 使用 [TopAppBarDefaults.windowInsets]，标题不再压状态栏、按钮点得到；
- * 2. 直接动作只有「新建对话」，其余（重命名、附件库、浮助理、设置）收进溢出菜单。
+ * 2. 直接动作只有「新建对话」，其余（重命名、附件库、设置）收进更多菜单。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -677,13 +916,11 @@ private fun WorkbenchTopBar(
     canRename: Boolean,
     creatingThread: Boolean,
     overflowExpanded: Boolean,
-    showAssistant: Boolean,
     subtitleInBar: Boolean,
     onOpenDrawer: () -> Unit,
     onCreateThread: () -> Unit,
     onRenameThread: () -> Unit,
     onOpenAttachments: () -> Unit,
-    onOpenAssistant: (() -> Unit)?,
     onOpenSettings: () -> Unit,
     onOverflowExpandedChange: (Boolean) -> Unit,
 ) {
@@ -696,7 +933,7 @@ private fun WorkbenchTopBar(
             ) {
                 Column(modifier = Modifier.weight(1f, fill = false)) {
                     Text(
-                        text = threadTitle.ifBlank { "新对话" },
+                        text = resolveDisplayConversationTitle(threadTitle),
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -714,7 +951,7 @@ private fun WorkbenchTopBar(
             // 展开宽度下抽屉常驻在左侧，再给一个开抽屉按钮只会重复。
             if (!expanded) {
                 IconButton(onClick = onOpenDrawer) {
-                    Icon(Icons.Default.Menu, contentDescription = "打开会话抽屉")
+                    Icon(Icons.Default.Menu, contentDescription = stringResource(UiR.string.conv_workbench_cd_open_drawer))
                 }
             }
         },
@@ -726,21 +963,21 @@ private fun WorkbenchTopBar(
             ) {
                 Icon(
                     imageVector = Icons.Default.Add,
-                    contentDescription = "新建对话",
+                    contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
                     modifier = Modifier.size(Dimensions.Icon),
                 )
             }
             Spacer(Modifier.width(Dimensions.SpaceSmall))
             Box {
                 IconButton(onClick = { onOverflowExpandedChange(true) }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "更多操作")
+                    Icon(Icons.Default.MoreVert, contentDescription = stringResource(UiR.string.conv_workbench_cd_more_actions))
                 }
                 DropdownMenu(
                     expanded = overflowExpanded,
                     onDismissRequest = { onOverflowExpandedChange(false) },
                 ) {
                     DropdownMenuItem(
-                        text = { Text("重命名对话") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_rename)) },
                         enabled = canRename,
                         leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                         onClick = {
@@ -749,25 +986,15 @@ private fun WorkbenchTopBar(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("附件库") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_attachment_lib)) },
                         leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
                         onClick = {
                             onOverflowExpandedChange(false)
                             onOpenAttachments()
                         },
                     )
-                    if (showAssistant) {
-                        DropdownMenuItem(
-                            text = { Text("浮动助理") },
-                            leadingIcon = { Icon(Icons.Default.PictureInPictureAlt, contentDescription = null) },
-                            onClick = {
-                                onOverflowExpandedChange(false)
-                                onOpenAssistant?.invoke()
-                            },
-                        )
-                    }
                     DropdownMenuItem(
-                        text = { Text("设置") },
+                        text = { Text(stringResource(UiR.string.conv_workbench_menu_settings)) },
                         leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
                         onClick = {
                             onOverflowExpandedChange(false)
@@ -779,6 +1006,14 @@ private fun WorkbenchTopBar(
         },
     )
 }
+
+/** Core 已连接时允许原生请求正常空闲，同时保留原生连接、恢复和失败状态。 */
+internal fun workbenchDisplayStreamHealth(coreHealth: StreamHealth?, nativeHealth: StreamHealth): StreamHealth =
+    when {
+        coreHealth == null -> nativeHealth
+        coreHealth == StreamHealth.LIVE && nativeHealth != StreamHealth.IDLE -> nativeHealth
+        else -> coreHealth
+    }
 
 /**
  * 顶栏第二行：`Gateway 主机名 · 连接状态`。
@@ -839,9 +1074,9 @@ private fun ConversationWelcome(
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
         ) {
             SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
-            Text("从一个想法开始", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(UiR.string.conv_workbench_empty_headline), style = MaterialTheme.typography.headlineMedium)
             Text(
-                "与自己的 Agent 对话，分享你选中的图片和文件。",
+                stringResource(UiR.string.conv_workbench_empty_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -853,7 +1088,7 @@ private fun ConversationWelcome(
                         modifier = Modifier.size(Dimensions.SmallIcon),
                     )
                     Spacer(Modifier.width(Dimensions.SpaceSmall))
-                    Text("新建对话")
+                    Text(stringResource(UiR.string.conv_workbench_cd_new_conversation))
                 }
             }
             if (commands.isNotEmpty()) {
@@ -871,7 +1106,7 @@ private fun ConversationWelcome(
                 }
             } else if (onCreate == null) {
                 Text(
-                    "输入 / 可查看此 Gateway 提供的命令。",
+                    stringResource(UiR.string.conv_workbench_empty_command_hint),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -955,12 +1190,12 @@ private fun CreatingThreadRow(onCancel: () -> Unit, modifier: Modifier = Modifie
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "正在由 Agent 创建新对话…",
+                text = stringResource(UiR.string.conv_workbench_creating_thread),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = onCancel) { Text("取消") }
+            TextButton(onClick = onCancel) { Text(stringResource(UiR.string.common_action_cancel)) }
         }
     }
 }

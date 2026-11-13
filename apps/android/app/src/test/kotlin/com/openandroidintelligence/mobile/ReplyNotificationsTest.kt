@@ -296,6 +296,8 @@ class ReplyNotificationsTest {
         val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
         val style = android.app.Notification.Builder.recoverBuilder(context, notification).style as android.app.Notification.MessagingStyle
         val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == notification.shortcutId }
+        assertEquals("Agent 会话", shortcut.shortLabel.toString())
+        assertEquals("Agent 会话", style.conversationTitle.toString())
         val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
         assertEquals(2, participants.size)
         assertTrue("Android excludes only-bot shortcuts from conversation/bubble eligibility", participants.any { !it.isBot && it.key == style.user.key })
@@ -348,6 +350,32 @@ class ReplyNotificationsTest {
         }
     }
 
+    @Test
+    fun failingCommitOnTerminalEventsNeverThrows() {
+        val preferences = FailingCommitPreferences(context.getSharedPreferences("completion-test", Context.MODE_PRIVATE))
+        val throwing = ReplyCompletionObserver(preferences, "profile-a", "account-a", { _, _ -> }, { clock })
+
+        // 终态、状态、取消三类事件都必须只是丢弃围栏，不得把异常抛进事件分发栈。
+        throwing.accept(message("conversation.message.completed"))
+        throwing.accept(status("completed"))
+        throwing.accept(status("failed"))
+        throwing.accept(event("conversation.generation.cancelled", """{"conversationId":"conv-a","generationId":"gen-a"}"""))
+    }
+
+    @Test
+    fun failingCommitStillKeepsLaterEventsWorking() {
+        val preferences = FailingCommitPreferences(context.getSharedPreferences("completion-test", Context.MODE_PRIVATE))
+        val posts = mutableListOf<Pair<ReplyNotificationTarget, String>>()
+        val observer = ReplyCompletionObserver(preferences, "profile-a", "account-a", { target, id -> posts += target to id }, { clock })
+
+        observer.accept(status("delivered"))
+        observer.accept(message("conversation.message.completed"))
+        observer.accept(status("completed"))
+
+        // 围栏没落盘时允许补发提醒，但流程必须走完且不崩溃。
+        assertTrue(posts.isNotEmpty())
+    }
+
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE), "profile-a", "account-a", post, { clock },
     )
@@ -367,6 +395,16 @@ class ReplyNotificationsTest {
     private class CountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
         var allReads = 0
         override fun getAll(): Map<String, *> = delegate.all.also { allReads++ }
+    }
+
+    /** commit 恒失败的偏好：模拟终态到达时磁盘 I/O 争用。 */
+    private class FailingCommitPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
+        override fun edit(): SharedPreferences.Editor {
+            val inner = delegate.edit()
+            return object : SharedPreferences.Editor by inner {
+                override fun commit(): Boolean = false
+            }
+        }
     }
 
     /** Robolectric 4.14 does not retain cached shortcuts or implement their removal. */

@@ -13,6 +13,61 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NegotiationClientTest {
+    @Test fun httpFailuresPreserveStatusAndOnlyTemporaryStatusesAllowRetry() = runBlocking {
+        for (status in listOf(400, 401, 403, 406, 408, 409, 429, 500, 503)) {
+            val client = NegotiationClient({ GatewayResponse(status, emptyList(), ByteArray(0)) }, "phone", "test", 34)
+            val failure = runCatching { client.negotiate("neg_failure") }.exceptionOrNull()
+            assertTrue("协商失败必须保留结构化 HTTP 状态：$status", failure is NegotiationHttpException)
+            failure as NegotiationHttpException
+            assertEquals(status, failure.httpStatus)
+            assertEquals(status in setOf(408, 429, 500, 503), failure.retryable)
+            assertEquals(if (status in setOf(406, 409)) "PROTOCOL_INCOMPATIBLE:$status" else "NEGOTIATION_FAILED:$status", failure.message)
+        }
+    }
+
+    @Test fun explicitRefusalsInsideServiceErrorsOverrideTheRetryableStatus() = runBlocking {
+        for (code in listOf("SESSION_REVOKED", "PROTOCOL_INCOMPATIBLE", "AUTHENTICATION_STORAGE_UNAVAILABLE")) {
+            val client = NegotiationClient({ GatewayResponse(503, emptyList(),
+                """{"error":{"code":"$code","retryable":true}}""".toByteArray()) }, "phone", "test", 34)
+            val failure = runCatching { client.negotiate("neg_refusal") }.exceptionOrNull() as NegotiationHttpException
+            assertEquals("明确错误码必须保留", code, failure.code)
+            assertEquals(code == "AUTHENTICATION_STORAGE_UNAVAILABLE", failure.retryable)
+        }
+    }
+
+    @Test fun accountAuthenticationRequiresAnUnambiguousExplicitAgreement() = runBlocking {
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_legacy").accountAuthSupported)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(ACCOUNT_AUTH_HEADER, ACCOUNT_AUTH_VERSION)))
+            .negotiate("neg_core").accountAuthSupported)
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1", listOf(RawHeader(ACCOUNT_AUTH_HEADER, "v2")))
+            .negotiate("neg_unknown").accountAuthSupported)
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(ACCOUNT_AUTH_HEADER, "v1"), RawHeader(ACCOUNT_AUTH_HEADER.lowercase(), "v1")))
+            .negotiate("neg_ambiguous") }.exceptionOrNull() is IllegalArgumentException)
+    }
+    @Test fun androidDeviceAuthorizationRequiresAnExplicitSingletonAgreement() = runBlocking {
+        org.junit.Assert.assertFalse(clientWithVersion("2", "1").negotiate("neg_old").androidDeviceAuthorization)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL)))
+            .negotiate("neg_android").androidDeviceAuthorization)
+        for (value in listOf("android-v2", "android-v1, android-v1")) {
+            org.junit.Assert.assertFalse(clientWithVersion("2", "1", listOf(RawHeader(DEVICE_AUTHORIZATION_HEADER, value)))
+                .negotiate("neg_unknown").androidDeviceAuthorization)
+        }
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL),
+            RawHeader(DEVICE_AUTHORIZATION_HEADER.lowercase(), ANDROID_AUTHORIZATION_MODEL)))
+            .negotiate("neg_ambiguous") }.exceptionOrNull() is IllegalArgumentException)
+    }
+    @Test fun nativeAgentSessionsRequireAnUnambiguousCoreMarker() = runBlocking {
+        assertTrue(!clientWithVersion("2", "1").negotiate("neg_legacy").nativeAgentSessions)
+        assertTrue(clientWithVersion("2", "1", listOf(RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "1")))
+            .negotiate("neg_core").nativeAgentSessions)
+        assertTrue(!clientWithVersion("2", "1", listOf(RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "2")))
+            .negotiate("neg_future").nativeAgentSessions)
+        assertTrue(runCatching { clientWithVersion("2", "1", listOf(
+            RawHeader(NATIVE_AGENT_SESSIONS_HEADER, "1"), RawHeader(NATIVE_AGENT_SESSIONS_HEADER.lowercase(), "1")))
+            .negotiate("neg_duplicate") }.exceptionOrNull() is IllegalArgumentException)
+    }
     @Test fun optionalAgentDisplayMetadataSurvivesNegotiationWithoutChangingIdentity() = runBlocking {
         val result = clientWithVersion("2", "1", listOf(RawHeader(AGENT_NAME_HEADER, "Hermes"))).negotiate("neg_agent")
         assertEquals("Hermes", result.agentName)

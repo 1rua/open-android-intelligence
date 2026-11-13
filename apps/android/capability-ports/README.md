@@ -43,3 +43,16 @@ python3 -m unittest apps/android/tools/test_capability_ports_static.py
 
 Passing this test proves only source-boundary invariants; it does not prove any
 platform provider permission, data read, or device behavior.
+
+## Screen capture implementation
+
+The source-only description above applies to the typed `CapabilityPorts.kt`
+policy contract. `ScreenCaptureSource` and `MediaProjectionScreenCaptureSource`
+provide the real, separately tested Android capture implementation. Remote
+requests use `RemoteScreenCaptureRegistry.source`, never the conversation
+picker's consent result. The existing projection foreground service tracks
+local and remote owners independently. System consent, an active foreground
+service and a current local screen grant are all required.
+
+No remote consent UI is wired in this change. The exact future frontend call
+order and cleanup rules are in the [screen frontend handoff](../../../docs/guides/android-screen-frontend-handoff.zh-CN.md).

@@ -15,6 +15,20 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** An authenticated, short-lived Core challenge; its signed facts are never reconstructed. */
+class AccountLoginChallenge internal constructor(
+    internal val facts: JsonValue.JObject,
+    val challengeId: String,
+    val accountId: String,
+    val deviceId: String?,
+    val expiresAt: java.time.Instant,
+    val methods: Set<String>,
+    val enrollmentRequired: Boolean,
+)
+
+/** Sensitive enrollment material is held only until the user completes or cancels the flow. */
+class AccountMfaEnrollment(val enrollmentId: String, val provisioningUri: String, val secret: String?)
+
 /** Everything the app needs to build an authenticated client after login. */
 data class SessionCredentials(
     val accountId: String,
@@ -86,6 +100,126 @@ class GatewayAuthClient(
         } finally {
             password.fill('\u0000')
         }
+    }
+
+    /** Only call after the server explicitly agrees to X-OAI-Account-Auth: v1. */
+    suspend fun beginAccountLogin(
+        negotiationId: String,
+        username: String,
+        password: CharArray,
+        displayName: String,
+        devicePublicKeyBase64Url: String,
+        accountId: String? = null,
+        deviceId: String? = null,
+    ): AccountLoginChallenge = withContext(Dispatchers.IO) {
+        try {
+            require(username.isNotBlank() && password.isNotEmpty()) { "AUTH_INVALID" }
+            require((accountId == null) == (deviceId == null)) { "ACCOUNT_BINDING_INVALID" }
+            val payload = mutableMapOf<String, Any?>(
+                "negotiationId" to negotiationId, "username" to username, "password" to String(password),
+                "installation" to mapOf("installationId" to installationId, "displayName" to displayName,
+                    "devicePublicKey" to devicePublicKeyBase64Url),
+            )
+            if (accountId != null && deviceId != null) {
+                payload["accountId"] = accountId
+                payload["deviceId"] = deviceId
+            }
+            val response = postJson("/open-android-intelligence/v2/sessions/password/challenge", payload)
+            val facts = JsonFields.obj(JsonFields.field(response, "data")) ?: error("ACCOUNT_CHALLENGE_INVALID")
+            val required = setOf("challengeId", "accountId", "negotiationId", "installationId", "purpose",
+                "expiresAt", "nonce", "methods", "enrollmentRequired")
+            val keys = facts.fields.map { it.first }
+            check(keys.size == keys.toSet().size && keys.containsAll(required) &&
+                keys.all { it in required || it == "deviceId" }) { "ACCOUNT_CHALLENGE_INVALID" }
+            fun identifier(name: String): String = JsonFields.string(facts, name)
+                ?.takeIf { GatewayHttpClient.CURSOR_ALPHABET.matches(it) }
+                ?: error("ACCOUNT_CHALLENGE_INVALID")
+            val challengeId = identifier("challengeId")
+            val issuedAccount = identifier("accountId")
+            val issuedDevice = if ("deviceId" in keys) identifier("deviceId") else null
+            check(JsonFields.string(facts, "negotiationId") == negotiationId &&
+                JsonFields.string(facts, "installationId") == installationId &&
+                JsonFields.string(facts, "purpose") == "android-login" &&
+                (accountId == null || accountId == issuedAccount) &&
+                issuedDevice == deviceId) { "ACCOUNT_CHALLENGE_SCOPE_MISMATCH" }
+            check(!JsonFields.string(facts, "nonce").isNullOrBlank()) { "ACCOUNT_CHALLENGE_INVALID" }
+            val expiry = runCatching { java.time.Instant.parse(JsonFields.string(facts, "expiresAt")) }
+                .getOrElse { error("ACCOUNT_CHALLENGE_INVALID") }
+            check(expiry.isAfter(java.time.Instant.now())) { "ACCOUNT_CHALLENGE_EXPIRED" }
+            val methods = JsonFields.array(JsonFields.field(facts, "methods"))?.items?.map {
+                (it as? JsonValue.JString)?.value ?: error("ACCOUNT_CHALLENGE_INVALID")
+            } ?: error("ACCOUNT_CHALLENGE_INVALID")
+            check(methods.distinct().size == methods.size &&
+                (methods.isEmpty() || methods == listOf("totp", "recovery-code"))) { "ACCOUNT_CHALLENGE_INVALID" }
+            val enrollment = JsonFields.bool(facts, "enrollmentRequired") ?: error("ACCOUNT_CHALLENGE_INVALID")
+            check(!enrollment || methods.isNotEmpty()) { "ACCOUNT_CHALLENGE_INVALID" }
+            AccountLoginChallenge(facts, challengeId, issuedAccount, issuedDevice, expiry, methods.toSet(), enrollment)
+        } finally {
+            password.fill('\u0000')
+        }
+    }
+
+    suspend fun beginMfaEnrollment(challenge: AccountLoginChallenge): AccountMfaEnrollment = withContext(Dispatchers.IO) {
+        challenge.requireCurrent()
+        check(challenge.enrollmentRequired) { "MFA_ENROLLMENT_NOT_REQUIRED" }
+        val response = postJson("/open-android-intelligence/v2/sessions/mfa/enroll", mapOf("challengeId" to challenge.challengeId))
+        val data = JsonFields.obj(JsonFields.field(response, "data")) ?: error("MFA_ENROLLMENT_INVALID")
+        val id = JsonFields.string(data, "enrollmentId")?.takeIf { GatewayHttpClient.CURSOR_ALPHABET.matches(it) }
+            ?: error("MFA_ENROLLMENT_INVALID")
+        val uri = JsonFields.string(data, "provisioningUri")?.takeIf {
+            runCatching { java.net.URI(it).let { parsed -> parsed.scheme == "otpauth" && parsed.host == "totp" } }.getOrDefault(false)
+        } ?: error("MFA_ENROLLMENT_INVALID")
+        AccountMfaEnrollment(id, uri, JsonFields.string(data, "secret"))
+    }
+
+    suspend fun confirmMfaEnrollment(challenge: AccountLoginChallenge, enrollmentId: String, otp: CharArray): List<String> = withContext(Dispatchers.IO) {
+        try {
+            challenge.requireCurrent()
+            require(challenge.enrollmentRequired && otp.isNotEmpty()) { "MFA_CONFIRM_INVALID" }
+            val response = postJson("/open-android-intelligence/v2/sessions/mfa/confirm", mapOf(
+                "challengeId" to challenge.challengeId, "enrollmentId" to enrollmentId, "otp" to String(otp)))
+            val data = JsonFields.obj(JsonFields.field(response, "data")) ?: error("MFA_CONFIRM_INVALID")
+            val codes = JsonFields.array(JsonFields.field(data, "recoveryCodes"))?.items?.map {
+                (it as? JsonValue.JString)?.value?.takeIf(String::isNotBlank) ?: error("MFA_CONFIRM_INVALID")
+            } ?: error("MFA_CONFIRM_INVALID")
+            check(codes.isNotEmpty() && codes.distinct().size == codes.size) { "MFA_CONFIRM_INVALID" }
+            codes
+        } finally { otp.fill('\u0000') }
+    }
+
+    suspend fun completeAccountLogin(
+        challenge: AccountLoginChallenge,
+        sign: (ByteArray) -> ByteArray,
+        otp: CharArray? = null,
+        recoveryCode: CharArray? = null,
+    ): SessionCredentials = withContext(Dispatchers.IO) {
+        try {
+            challenge.requireCurrent()
+            require(otp == null || recoveryCode == null) { "MFA_PROOF_INVALID" }
+            require((otp == null || otp.isNotEmpty()) && (recoveryCode == null || recoveryCode.isNotEmpty())) { "MFA_PROOF_INVALID" }
+            require(challenge.methods.isNotEmpty() || (otp == null && recoveryCode == null)) { "MFA_PROOF_INVALID" }
+            require(challenge.enrollmentRequired || challenge.methods.isEmpty() || otp != null || recoveryCode != null) { "MFA_PROOF_REQUIRED" }
+            require(!challenge.enrollmentRequired || (otp == null && recoveryCode == null)) { "MFA_PROOF_INVALID" }
+            val preimage = ("OPEN_ANDROID_INTELLIGENCE_ACCOUNT_LOGIN_V1\n" + Json.canonical(challenge.facts)).toByteArray(Charsets.UTF_8)
+            val signature = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(sign(preimage))
+            val payload = mutableMapOf<String, Any?>("challengeId" to challenge.challengeId,
+                "negotiationId" to JsonFields.string(challenge.facts, "negotiationId"), "signature" to signature)
+            otp?.let { payload["otp"] = String(it) }
+            recoveryCode?.let { payload["recoveryCode"] = String(it) }
+            val session = parseSessionCredentials(postJson("/open-android-intelligence/v2/sessions/password/complete", payload), "LOGIN_FAILED")
+            check(session.accountId == challenge.accountId && (challenge.deviceId == null || session.deviceId == challenge.deviceId)) {
+                session.refreshCredential.fill(0)
+                "ACCOUNT_SESSION_SCOPE_MISMATCH"
+            }
+            session
+        } finally {
+            otp?.fill('\u0000')
+            recoveryCode?.fill('\u0000')
+        }
+    }
+
+    private fun AccountLoginChallenge.requireCurrent() {
+        check(expiresAt.isAfter(java.time.Instant.now())) { "ACCOUNT_CHALLENGE_EXPIRED" }
     }
 
     suspend fun loginWithInvite(negotiationId:String,accountId:String,code:String,displayName:String,

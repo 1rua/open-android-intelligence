@@ -9,6 +9,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import androidx.annotation.RequiresApi
+import com.openandroidintelligence.ui.resources.R as UiR
 
 internal const val LIVE_UPDATE_CHANNEL_ID = "agent-live-task-updates"
 // Public opt-in extra added in SDK 36.1. Keep compiling against the 36.0 SDK.
@@ -22,8 +23,8 @@ internal class LiveUpdateNotifications(
     fun update(session: NativeConversationSession): Boolean {
         if (Build.VERSION.SDK_INT < 36) return false
         val manager = context.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(NotificationChannel(LIVE_UPDATE_CHANNEL_ID, "Agent 实时任务状态", NotificationManager.IMPORTANCE_LOW).apply {
-            description = "进行中的 Agent 任务状态，可在系统支持的 Live Updates 界面显示"
+        manager.createNotificationChannel(NotificationChannel(LIVE_UPDATE_CHANNEL_ID, context.getString(UiR.string.notif_channel_live_update_name), NotificationManager.IMPORTANCE_LOW).apply {
+            description = context.getString(UiR.string.notif_channel_live_update_desc)
             setShowBadge(false)
             setSound(null, null)
         })
@@ -56,9 +57,9 @@ internal class LiveUpdateNotifications(
     internal object Api36 {
         fun build(context: Context, session: NativeConversationSession): Notification {
             val queued = session.status == NativeConversationStatus.QUEUED
-            val heading = if (queued) "Agent 任务排队中" else "Agent 正在执行任务"
+            val heading = if (queued) context.getString(UiR.string.notif_live_update_heading_queued) else context.getString(UiR.string.notif_live_update_heading_running)
             val preview = notificationReplyExcerpt(session.latestReply, isRunning = true)
-                .ifBlank { if (queued) "等待 Agent 开始处理" else "任务进行中，等待新的公开回复" }
+                .ifBlank { if (queued) context.getString(UiR.string.notif_live_update_preview_waiting) else context.getString(UiR.string.notif_live_update_preview_running) }
             val pending = PendingIntent.getActivity(context, 0, session.target.intent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val conversationWindow = PendingIntent.getActivity(context, 0, session.target.bubbleIntent(context), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             val builder = Notification.Builder(context, LIVE_UPDATE_CHANNEL_ID)
@@ -67,11 +68,11 @@ internal class LiveUpdateNotifications(
                 .setContentText(preview)
                 .setSubText(session.title)
                 .setStyle(Notification.ProgressStyle().setProgressIndeterminate(true))
-                .setShortCriticalText(if (queued) "排队中" else "处理中")
+                .setShortCriticalText(if (queued) context.getString(UiR.string.notif_status_queued) else context.getString(UiR.string.notif_status_running))
                 .setShowWhen(false)
                 .setCategory(Notification.CATEGORY_PROGRESS)
                 .setContentIntent(pending)
-                .addAction(Notification.Action.Builder(null, "打开会话窗口", conversationWindow).build())
+                .addAction(Notification.Action.Builder(null, context.getString(UiR.string.notif_action_open_conversation), conversationWindow).build())
                 .setVisibility(Notification.VISIBILITY_PRIVATE)
                 .setOngoing(true)
                 .setAutoCancel(false)
@@ -97,7 +98,9 @@ internal class LiveUpdateNotifications(
     }
 }
 
-internal fun liveUpdateTag(target: ReplyNotificationTarget) = "agent-live-" + replyDigest("${target.profileId}\u0000${target.accountId}\u0000${target.conversationId}")
+internal fun liveUpdateTag(target: ReplyNotificationTarget) =
+    "agent-live-" + replyDigest(listOfNotNull(target.profileId, target.accountId, target.conversationId, target.agentId)
+        .joinToString("\u0000"))
 
 internal fun cancelLiveUpdateNotifications(context: Context) {
     val manager = context.getSystemService(NotificationManager::class.java)

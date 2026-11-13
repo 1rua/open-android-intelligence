@@ -8,6 +8,7 @@
 /.codebuddy/
 /.trae/
 .claude/
+.kilo/
 /third_party/tailscale
 node_modules
 **/node_modules
@@ -29,10 +30,14 @@ apps/android/**/*.aab
 # Gradle
 .gradle/
 **/.gradle/
+# 隔离的 Gradle 用户目录（worktree 并行构建时用，含依赖缓存，禁止提交）
+.gradle-home/
+**/.gradle-home/
 
 # IDE
 .idea/
 .vscode/
+.zcode/
 
 # OS
 .DS_Store
@@ -53,6 +58,8 @@ Thumbs.db
 /logs/
 /tmp/
 /docs/test-evidence
+.mimosa/
+/docs/reviews/evidence
 
 # Temp
 *.tmp
@@ -76,7 +83,8 @@ apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.provenance.json
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar.sha256
 apps/android/tailnet-core/libs/tsnet-android-1.98.10.aar
-apps/android/tailnet-core/libs/tsnet-android-1.98.10.sbom.json
+docs/mvp/evidence/
+
 
 # Rust 插件工具链构建产物
 plugins/target/
@@ -103,3 +111,18 @@ apps/android/.toolchains/
 .hermes-gateway-plugin/
 .openclaw-gateway-plugin/
 oai-release.keystore
+
+# OAI Core runtime state, credentials and local virtual environments
+/oai-core/runtime/
+/.venv/
+/runtime/
+/core.json
+/start-core.sh
+/oai-core/dist/
+
+# 一次性本地运维脚本（CI 轮询等），不随仓库分发
+/.worktree-ci/
+
+# 临时测试证据
+docs/reviews/2026-11-10-device-capability-e2e/
+docs/reviews/2026-11-11-pr134-evidence/

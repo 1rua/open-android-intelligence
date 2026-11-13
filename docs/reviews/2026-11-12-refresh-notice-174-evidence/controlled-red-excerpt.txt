@@ -1,0 +1,8 @@
+> Task :app:testPlayDebugUnitTest
+GatewaySessionRefreshTest > aMissingRefreshCredentialOperationWaitsForTheConnectionInitializer STANDARD_OUT
+    刷新时序诊断：initialNotice=null finalNotice=本机没有为当前账号保存刷新凭据，请重新登录以获取自动登录凭据。 refreshRequests=0
+GatewaySessionRefreshTest > aMissingRefreshCredentialOperationWaitsForTheConnectionInitializer FAILED
+    java.lang.AssertionError: 没有刷新凭据时必须给出可读说明，而不是静默
+> Task :app:testPlayDebugUnitTest FAILED
+BUILD FAILED in 52s
+442 actionable tasks: 26 executed, 416 up-to-date

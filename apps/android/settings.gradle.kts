@@ -2,9 +2,13 @@ import org.gradle.api.initialization.resolve.RepositoriesMode
 
 pluginManagement {
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
-        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        // CI can reach the official repositories directly; a mirror outage
+        // must not disable dependency resolution for every build task.
+        if (!providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true)) {
+            maven { url = uri("https://maven.aliyun.com/repository/google") }
+            maven { url = uri("https://maven.aliyun.com/repository/public") }
+            maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        }
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -14,8 +18,10 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        maven { url = uri("https://maven.aliyun.com/repository/google") }
-        maven { url = uri("https://maven.aliyun.com/repository/public") }
+        if (!providers.environmentVariable("CI").orNull.equals("true", ignoreCase = true)) {
+            maven { url = uri("https://maven.aliyun.com/repository/google") }
+            maven { url = uri("https://maven.aliyun.com/repository/public") }
+        }
         google()
         mavenCentral()
     }
@@ -30,6 +36,7 @@ include(
     ":capability-sync-runtime",
     ":core-model",
     ":control-ports",
+    ":screen-control",
     ":gateway-client",
     ":conversation-domain",
     ":conversation-data",
@@ -46,4 +53,5 @@ include(
     ":plugin-package",
     ":plugin-runtime-wasm",
     ":plugin-ui",
+    ":ui-resources",
 )

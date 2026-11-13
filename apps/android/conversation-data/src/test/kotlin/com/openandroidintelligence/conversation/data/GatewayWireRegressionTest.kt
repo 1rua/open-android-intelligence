@@ -31,6 +31,24 @@ class GatewayWireRegressionTest {
         assertEquals("/open-android-intelligence/v2/conversations?limit=17", transport.requests.last().target)
     }
 
+    @Test fun unnamedGatewayConversationsKeepEmptyStorageTitlesAndNamedTitlesStayUntouched() = runBlocking {
+        val requests = mutableListOf<WireRequest>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests += request
+                val data = """{"conversations":[{"conversationId":"empty","title":null},{"conversationId":"named","title":"新对话"}],"nextCursor":null,"snapshotRevision":1}"""
+                return WireResponse(200, emptyList(), """{"protocol":"2.1","data":$data}""".toByteArray())
+            }
+            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
+        }
+        val repository = GatewayConversationRepository(ConversationClient(http(transport)))
+
+        val page = repository.listConversations(scope, PageRequest())
+
+        assertEquals(listOf("", "新对话"), page.conversations.map { it.title })
+        assertTrue("读取标题不能触发远端写入", requests.all { it.method == "GET" })
+    }
+
     @Test fun sendsTextAndVerifiedAttachmentsUsingTheChatV1Request() = runBlocking {
         val transport = ContractTransport()
         val repository = GatewayConversationRepository(ConversationClient(http(transport))) { "conv_server" }

@@ -1,0 +1,6 @@
+{
+  "type": "sample-custom",
+  "id": "my-bot",
+  "name": "我的示例插件机器人",
+  "sessionScope": "deployment"
+}

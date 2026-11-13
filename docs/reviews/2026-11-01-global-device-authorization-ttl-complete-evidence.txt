@@ -1,0 +1,19 @@
+2026-11-01 原模拟器user10真实临时许可到期观察；仅未来范围空数据请求。
+5min为到期后延迟复验；30/60按记录点击上界+期限+5秒排定，不改系统时钟。
+{"event": "started", "startedUTC": "2026-11-01T04:19:17.068Z", "deadlineSeconds": 4200, "clockSource": "host_monotonic_seconds", "cases": [5, 30, 60], "beforeExpiryInvocations": false}
+{"event": "next_check", "durationMinutes": 5, "dueUTC": "2026-11-01T04:06:21.530+00:00", "dueAsiaShanghai": "2026-11-01T12:06:21.530+08:00", "lateRetestAuthorized": true}
+{"event": "next_check", "durationMinutes": 30, "dueUTC": "2026-11-01T04:33:39.142+00:00", "dueAsiaShanghai": "2026-11-01T12:33:39.142+08:00", "lateRetestAuthorized": false}
+{"event": "next_check", "durationMinutes": 60, "dueUTC": "2026-11-01T05:06:31.758+00:00", "dueAsiaShanghai": "2026-11-01T13:06:31.758+08:00", "lateRetestAuthorized": false}
+{"event": "submitted", "scopeId": "scope-5", "durationMinutes": 5, "requestId": "devreq_f2d65fb3-bc4e-42ba-adcf-e1ad61c8a4dd", "idempotencyKey": "ttl-5-998764f5c43e4b7e9648b5fba7e9759e"}
+{"event": "progress", "scopeId": "scope-5", "requestId": "devreq_f2d65fb3-bc4e-42ba-adcf-e1ad61c8a4dd", "state": "claimed", "localAuthorizationState": "awaiting_confirmation", "classification": "AWAITING"}
+{"event": "cancellation", "scopeId": "scope-5", "requestId": "devreq_f2d65fb3-bc4e-42ba-adcf-e1ad61c8a4dd", "outcome": "CANCELLED", "reason": "CANCELLED"}
+{"event": "case_finished", "scopeId": "scope-5", "durationMinutes": 5, "requestId": "devreq_f2d65fb3-bc4e-42ba-adcf-e1ad61c8a4dd", "result": "PASS", "reason": "AWAITING_THEN_CANCELLED", "awaitingObserved": true}
+{"event": "submitted", "scopeId": "scope-30", "durationMinutes": 30, "requestId": "devreq_3d65079a-0b10-47a2-810f-1a82ccc83609", "idempotencyKey": "ttl-30-c21ff535cddf45b4898ff74d1134806a"}
+{"event": "progress", "scopeId": "scope-30", "requestId": "devreq_3d65079a-0b10-47a2-810f-1a82ccc83609", "state": "claimed", "localAuthorizationState": "awaiting_confirmation", "classification": "AWAITING"}
+{"event": "cancellation", "scopeId": "scope-30", "requestId": "devreq_3d65079a-0b10-47a2-810f-1a82ccc83609", "outcome": "CANCELLED", "reason": "CANCELLED"}
+{"event": "case_finished", "scopeId": "scope-30", "durationMinutes": 30, "requestId": "devreq_3d65079a-0b10-47a2-810f-1a82ccc83609", "result": "PASS", "reason": "AWAITING_THEN_CANCELLED", "awaitingObserved": true}
+{"event": "submitted", "scopeId": "scope-60", "durationMinutes": 60, "requestId": "devreq_db56f068-6553-41fd-884b-d5e0b3235109", "idempotencyKey": "ttl-60-9df34b9ffcd64facb29fbc8ea2db80ad"}
+{"event": "progress", "scopeId": "scope-60", "requestId": "devreq_db56f068-6553-41fd-884b-d5e0b3235109", "state": "claimed", "localAuthorizationState": "awaiting_confirmation", "classification": "AWAITING"}
+{"event": "cancellation", "scopeId": "scope-60", "requestId": "devreq_db56f068-6553-41fd-884b-d5e0b3235109", "outcome": "CANCELLED", "reason": "CANCELLED"}
+{"event": "case_finished", "scopeId": "scope-60", "durationMinutes": 60, "requestId": "devreq_db56f068-6553-41fd-884b-d5e0b3235109", "result": "PASS", "reason": "AWAITING_THEN_CANCELLED", "awaitingObserved": true}
+{"event": "finished", "result": "PASS", "caseResults": ["PASS", "PASS", "PASS"], "elapsedSeconds": 2848.13}

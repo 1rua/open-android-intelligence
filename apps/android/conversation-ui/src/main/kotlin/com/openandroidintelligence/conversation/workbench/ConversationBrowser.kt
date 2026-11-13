@@ -20,6 +20,8 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -77,6 +79,11 @@ fun ConversationBrowser(
         selectedFolderId = state.selectedFolderId,
         activeThreadId = activeThreadId ?: state.activeThreadId,
         managementSupported = state.conversationManagementSupported,
+        deleteSupported = state.conversationDeleteSupported,
+        archiveSupported = state.conversationArchiveSupported,
+        unarchiveSupported = state.conversationUnarchiveSupported,
+        renameSupported = state.conversationRenameSupported,
+        organizationStoredLocally = state.organizationStoredLocally,
         managing = state.managingThreads,
         online = state.isOnline,
         busyThreadIds = state.busyThreadIds,
@@ -128,6 +135,11 @@ fun ConversationBrowser(
     modifier: Modifier = Modifier,
     organization: ConversationOrganization = ConversationOrganization(),
     managementSupported: Boolean = false,
+    deleteSupported: Boolean = managementSupported,
+    archiveSupported: Boolean = managementSupported,
+    unarchiveSupported: Boolean = archiveSupported,
+    renameSupported: Boolean = managementSupported,
+    organizationStoredLocally: Boolean = false,
     managing: Boolean = false,
     online: Boolean = true,
     busyThreadIds: Set<String> = emptySet(),
@@ -161,8 +173,9 @@ fun ConversationBrowser(
             actions.selectFolder(null)
         }
     }
+    val defaultTitle = stringResource(UiR.string.conv_title_new_default)
     val filtered = ordered.filter { thread ->
-        thread.title.contains(query, ignoreCase = true) && when (filter) {
+        ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) && when (filter) {
             ARCHIVED_THREADS -> thread.archived
             UNFILED_THREADS -> !thread.archived && organization.assignments[thread.id.value] == null
             ALL_THREADS -> !thread.archived
@@ -341,6 +354,7 @@ fun ConversationBrowser(
                         !managementSupported -> "此 Gateway 暂不支持会话管理，请更新 Gateway。"
                         !online -> "连接 Gateway 后可管理会话。"
                         managing -> "正在保存会话设置…"
+                        organizationStoredLocally -> "文件夹与排序保存在本机；长按会话可拖动排序"
                         else -> "长按会话并拖动可调整顺序"
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -376,6 +390,10 @@ fun ConversationBrowser(
                 folder = organization.folders.firstOrNull { it.folderId == organization.assignments[id] }?.name,
                 busy = id in busyThreadIds,
                 canManage = canManage,
+                canDelete = canManage && deleteSupported,
+                canArchive = canManage && archiveSupported && (!thread.archived || unarchiveSupported),
+                canRename = canManage && renameSupported,
+                deleteSupported = deleteSupported,
                 onOpen = { onOpenThread(id) },
                 onRename = { renameThread = thread },
                 onClassify = { classifyThread = thread },
@@ -460,7 +478,7 @@ fun ConversationBrowser(
         )
     }
     deleteThread?.let { thread ->
-        ConfirmDeleteDialog("删除对话", "确定删除“${thread.title.ifBlank { "未命名对话" }}”？对话记录将从 Gateway 删除。",
+        ConfirmDeleteDialog("删除对话", stringResource(UiR.string.conv_browser_dialog_delete_thread_message, resolveDisplayConversationTitle(thread.title)),
             onDismiss = { deleteThread = null }, onConfirm = { actions.delete(thread.id.value); deleteThread = null })
     }
     // Keep one folder dialog visible so the active editor owns window and keyboard focus.
@@ -511,6 +529,10 @@ private fun ConversationBrowserRow(
     folder: String?,
     busy: Boolean,
     canManage: Boolean,
+    canDelete: Boolean,
+    canArchive: Boolean,
+    canRename: Boolean,
+    deleteSupported: Boolean,
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onClassify: () -> Unit,
@@ -549,7 +571,7 @@ private fun ConversationBrowserRow(
     ListItem(
         headlineContent = {
             Text(
-                text = thread.title.ifBlank { "未命名对话" },
+                text = resolveDisplayConversationTitle(thread.title),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
@@ -587,17 +609,19 @@ private fun ConversationBrowserRow(
                     IconButton(onClick = { menu = true }) {
                         Icon(
                             Icons.Default.MoreVert,
-                            "管理会话 ${thread.title.ifBlank { "未命名对话" }}",
+                            stringResource(UiR.string.conv_browser_item_manage_cd, resolveDisplayConversationTitle(thread.title)),
                             modifier = Modifier.size(Dimensions.SmallIcon),
                         )
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("重命名对话") }, enabled = canManage, onClick = { menu = false; onRename() })
+                        DropdownMenuItem(text = { Text("重命名对话") }, enabled = canRename, onClick = { menu = false; onRename() })
                         DropdownMenuItem(text = { Text("移动到文件夹") }, enabled = canManage, onClick = { menu = false; onClassify() })
-                        DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canManage && !busy,
+                        DropdownMenuItem(text = { Text(if (thread.archived) "取消归档" else "归档对话") }, enabled = canArchive && !busy,
                             onClick = { menu = false; onArchive() })
-                        DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canManage && !busy,
+                        DropdownMenuItem(text = { Text("删除对话", color = MaterialTheme.colorScheme.error) }, enabled = canDelete && !busy,
                             onClick = { menu = false; onDelete() })
+                        if (!deleteSupported) Text("当前 Agent 不支持删除对话", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                         if (busy) Text("任务结束后可归档或删除", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
                     }

@@ -1,0 +1,20 @@
+{
+  "eventId": "push_45e447a7...f6345750",
+  "A": {
+    "state": "acknowledged",
+    "acknowledgedAt": "2026-11-01T03:50:57.882Z",
+    "initialAckRequests": 1,
+    "repeatAckRequests": 1,
+    "repeatedReceiptIdentical": true,
+    "routeMatches": true
+  },
+  "B": {
+    "state": "acknowledged",
+    "acknowledgedAt": "2026-11-01T03:50:58.278Z",
+    "initialAckRequests": 1,
+    "repeatAckRequests": 1,
+    "repeatedReceiptIdentical": true,
+    "routeMatches": true
+  },
+  "otherEventsAcknowledged": false
+}

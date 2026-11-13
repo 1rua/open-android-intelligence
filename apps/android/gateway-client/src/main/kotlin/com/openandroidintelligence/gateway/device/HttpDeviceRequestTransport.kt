@@ -23,6 +23,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
  */
 class HttpDeviceRequestTransport(
     private val http: GatewayHttpClient,
+    private val beforeSend: (String) -> Unit = {},
 ) : DeviceRequestTransport {
 
     override suspend fun claim(requestId: String, grantRevision: Int): ClaimReceipt {
@@ -31,6 +32,7 @@ class HttpDeviceRequestTransport(
                 method = "POST",
                 target = "/open-android-intelligence/v2/device-requests/$requestId/claim",
                 requestId = stableOperationId("claim", requestId),
+                beforeSend = { beforeSend(requestId) },
                 headers = JSON_HEADERS,
                 // The contract fixes the receipt, not the claim request body; the
                 // grant revision the phone is asking under is the one fact the
@@ -60,6 +62,7 @@ class HttpDeviceRequestTransport(
                 method = "POST",
                 target = "/open-android-intelligence/v2/device-requests/$requestId/result",
                 requestId = stableOperationId("result", requestId),
+                beforeSend = { beforeSend(requestId) },
                 headers = JSON_HEADERS,
                 body = Json.canonical(Json.of(body)).toByteArray(Charsets.UTF_8),
             ),

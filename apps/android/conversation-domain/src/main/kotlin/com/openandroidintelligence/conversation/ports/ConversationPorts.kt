@@ -46,6 +46,9 @@ data class TimelineMessage(
     val contentRevision: Long? = null,
     /** Gateway generation identity, when supplied by a live event. */
     val generationId: String? = null,
+    val executionSteps: List<NativeExecutionStep> = emptyList(),
+    /** 仅端侧临时流式行设为 true；不能从真实 ID 的字符串形式猜测。 */
+    val localPlaceholder: Boolean = false,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
@@ -62,6 +65,36 @@ data class OutgoingMessage(
     val text: String,
     val attachmentIds: List<String> = emptyList(),
     val command: MessagePart.Command? = null,
+    val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+)
+
+/** How a follow-up relates to an already-running Agent turn. */
+enum class MessageDeliveryMode(val wireValue: String) {
+    /** The host's ordinary message path. */
+    NORMAL("normal"),
+
+    /** Hold on this phone until the current turn reaches a terminal state. */
+    QUEUE("queue"),
+
+    /** Inject into the exact running generation; never create a second turn. */
+    STEER("steer"),
+}
+
+enum class PendingDeliveryState(val wireValue: String) {
+    QUEUED("queued"),
+    SENDING("sending"),
+    FAILED("failed"),
+    OUTCOME_UNKNOWN("outcome_unknown"),
+}
+
+data class PendingDelivery(
+    val clientMessageId: ClientMessageId,
+    val conversationId: ConversationId,
+    val text: String,
+    val attachmentCount: Int,
+    val state: PendingDeliveryState,
+    val errorCode: String? = null,
+    val generationId: String? = null,
 )
 
 /**
@@ -76,6 +109,7 @@ data class BatchAcceptance(
     val batchId: String,
     val memberIds: Map<String, String> = emptyMap(),
     val generationId: String? = null,
+    val authoritative: Boolean = true,
 ) {
     /**
      * The ids the Gateway issued for the accepted members.
@@ -85,7 +119,14 @@ data class BatchAcceptance(
      */
     val acceptedMessageIds: List<String> get() = memberIds.values.toList()
 }
-data class MessageAcceptance(val messageId: String, val correlationId: String, val generationId: String? = null)
+data class MessageAcceptance(
+    val messageId: String,
+    val correlationId: String,
+    val generationId: String? = null,
+    val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+    /** false 表示本地已记录/启动提交，尚无服务端身份回执。 */
+    val authoritative: Boolean = true,
+)
 
 enum class CancelGenerationOutcome {
     CANCELLED,
@@ -116,9 +157,14 @@ enum class AgentMessageStatus(val wireValue: String) {
 
 enum class AgentMessageErrorCode(val wireValue: String) {
     AGENT_UNAVAILABLE("AGENT_UNAVAILABLE"),
+    INVALID_MESSAGE("INVALID_MESSAGE"),
+    UNSUPPORTED_CAPABILITY("UNSUPPORTED_CAPABILITY"),
+    PROTOCOL_ERROR("PROTOCOL_ERROR"),
+    AGENT_REQUEST_FAILED("AGENT_REQUEST_FAILED"),
     ATTACHMENT_READ_FAILED("ATTACHMENT_READ_FAILED"),
     AGENT_MEDIA_REJECTED("AGENT_MEDIA_REJECTED"),
     MODEL_REQUEST_REJECTED("MODEL_REQUEST_REJECTED"),
+    APPROVAL_UNSUPPORTED("APPROVAL_UNSUPPORTED"),
 }
 data class CancelSubmissionResult(val success: Boolean)
 data class PendingSubmissionIntent(
@@ -257,6 +303,8 @@ sealed interface VerifiedConversationEvent {
         val messageId: String,
         val correlationId: String,
         val conversationId: ConversationId? = null,
+        /** Legacy Gateway acceptance also means delivered; native Core can acknowledge admission only. */
+        val agentReceived: Boolean = true,
     ) : VerifiedConversationEvent
 
     data class MessageStatus(
@@ -316,6 +364,20 @@ sealed interface VerifiedConversationEvent {
         override val occurredAt: Long,
         val revision: Long,
         val message: TimelineMessage,
+        /** 仅供临时呈现区分实时正文与历史同步，不进入消息持久化。 */
+        val presentationOrigin: StreamPresentationOrigin = StreamPresentationOrigin.SNAPSHOT,
+    ) : VerifiedConversationEvent
+
+    /** Native execution facts have their own revision domain, separate from message content. */
+    data class ExecutionStepsUpdated(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val generationId: String,
+        val executionRevision: Long,
+        val steps: List<NativeExecutionStep>,
+        val clientMessageId: String? = null,
+        val userMessageId: String? = null,
     ) : VerifiedConversationEvent
 
     data class TimelineTombstoned(
@@ -362,6 +424,31 @@ sealed interface VerifiedConversationEvent {
         val decidedAt: Long? = null,
         val conversationId: ConversationId? = null,
     ) : VerifiedConversationEvent
+
+    /**
+     * Readable fallback for an approval that cannot be drawn as a card.
+     *
+     * The command is preserved so the user can inspect exactly what is waiting
+     * and answer through the host's typed command path. This is a pending
+     * question, never an automatic denial.
+     */
+    data class ApprovalTextFallback(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val conversationId: ConversationId,
+        val approvalId: ApprovalId? = null,
+        val command: String,
+        val reason: String = "",
+        val commands: List<String> = emptyList(),
+        val diagnosticCode: String? = null,
+    ) : VerifiedConversationEvent
+
+    /** A phone-held queue item changed state without becoming a new Agent turn yet. */
+    data class PendingDeliveryUpdated(
+        override val eventId: String,
+        override val occurredAt: Long,
+        val delivery: PendingDelivery,
+    ) : VerifiedConversationEvent
 }
 
 data class MirrorScope(
@@ -372,6 +459,11 @@ data class MirrorScope(
 )
 
 interface MirrorSession
+
+/** 持久事件读取者负责恢复历史；已有本地快照无需再并发请求完整历史。 */
+interface EventSynchronizedHistory {
+    fun observesHistory(conversationId: String): Boolean
+}
 
 interface ConversationRepository {
     suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage
@@ -387,6 +479,12 @@ interface ConversationRepository {
     /** Scoped overload used by in-flight sends; legacy implementations may delegate. */
     suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
         submitMessage(message)
+    /** Inject a text correction into one exact running generation. */
+    suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance =
+        error("STEERING_UNSUPPORTED")
+    suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> = emptyList()
+    suspend fun retryPendingDeliveries(conversationId: String): Unit = Unit
+    suspend fun retryAllPendingDeliveries(): Unit = Unit
     fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent>
     suspend fun cancelGeneration(generationId: String, requestId: String): CancelGenerationResult
     /** Scoped cancellation overload; the default keeps old test adapters source-compatible. */
@@ -427,6 +525,10 @@ interface ConversationRepository {
         ApprovalSubmissionResult(
             outcome = ApprovalSubmissionOutcome.UNSUPPORTED,
         )
+
+    /** Text approval prompts that remain pending on this host. */
+    suspend fun pendingApprovalFallbacks(conversationId: String): List<VerifiedConversationEvent.ApprovalTextFallback> =
+        emptyList()
 }
 
 /**
@@ -567,6 +669,8 @@ data class HistoricalMediaTransition(val conversationId: String, val messageId: 
     init { require(revision == null || revision >= 0); require(deleted || revision != null) }
 }
 interface HistoricalMediaPort {
+    /** 只从已持久消息的明确长度及摘要恢复旧原件，默认不认领未知来源。 */
+    suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean = false
     suspend fun metadata(conversationId:String,attachmentId:String):HistoricalMediaMetadata
     suspend fun retain(metadata:HistoricalMediaMetadata)
     fun isRetained(attachmentId:String):Boolean
@@ -595,4 +699,15 @@ interface HistoricalMediaPort {
 data class AttachmentDownloadResult(val uri: String, val filename: String, val recoveryWarningCode: String? = null)
 interface AttachmentDownloadPort {
     suspend fun download(conversationId: String, attachmentId: String): AttachmentDownloadResult
+}
+
+/** 已保存的未确认创建只查询回执；调用此端口不能隐式重新 POST。 */
+interface ConversationCreationRecovery {
+    suspend fun recoverConversationCreation(scope: ConversationScope, clientConversationId: String): Conversation
+}
+
+/** 原生创建的发送围栏；回调必须在真正连接前完成持久提交。 */
+interface ConversationCreationDispatch {
+    suspend fun createConversation(scope: ConversationScope, clientConversationId: String,
+        beforeDispatch: suspend () -> Unit): Conversation
 }

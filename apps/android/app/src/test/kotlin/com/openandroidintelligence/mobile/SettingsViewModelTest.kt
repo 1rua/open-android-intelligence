@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.gateway.account.AccountProfile
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
@@ -10,7 +11,6 @@ import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.NativePluginLoader
 import com.openandroidintelligence.kernel.PairingGrantBinding
-import com.openandroidintelligence.kernel.PairingGrantCapabilities
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.PhoneLimits
 import com.openandroidintelligence.kernel.PluginKernel
@@ -105,7 +105,49 @@ class SettingsViewModelTest {
         assertEquals(0, state.emergencyStoppedCount)
         assertEquals(ConnectionPhase.Disconnected, state.connectionPhase)
         assertFalse(state.isGatewayConnected)
+        assertFalse(state.hasLocalSession)
+        assertTrue(state.localSessionState is LocalSessionState.SignedOut)
         assertNotNull(state.pairingGrants)
+    }
+
+    @Test
+    fun localAccountControlsRemainAvailableForEveryWorkspaceConnectionPhase() {
+        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
+        val phases = listOf(
+            ConnectionPhase.Failed("PROTOCOL_INCOMPATIBLE:406"),
+            ConnectionPhase.Disconnected,
+            ConnectionPhase.Initializing,
+            ConnectionPhase.Reconnecting,
+            ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
+        )
+        phases.forEach { phase ->
+            val state = SettingsUiState(
+                connectionPhase = phase,
+                localSessionState = LocalSessionState.Workspace(account, phase),
+            )
+            assertTrue("本地工作台在 $phase 下仍须提供账号操作", state.hasLocalSession)
+            assertFalse("本地账号操作不能授予远端连接能力", state.isGatewayConnected)
+            assertEquals(account.username, state.connectedUsername)
+            assertEquals(account.gatewayBaseUrl, state.connectedGatewayUrl)
+        }
+    }
+
+    @Test
+    fun localAccountControlsRequireAWorkspaceRatherThanAnOldConnectionPhase() {
+        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
+        val localStates = listOf(
+            LocalSessionState.LoadingLocal,
+            LocalSessionState.SignedOut(),
+            LocalSessionState.AccountPicker(listOf(account)),
+            LocalSessionState.Locked(account, "KEY_UNAVAILABLE"),
+        )
+        localStates.forEach { local ->
+            val state = SettingsUiState(
+                connectionPhase = ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
+                localSessionState = local,
+            )
+            assertFalse("$local 不拥有活动工作台，旧连接阶段不能伪造本地登录", state.hasLocalSession)
+        }
     }
 
     @Test
@@ -133,6 +175,34 @@ class SettingsViewModelTest {
 
         viewModel.setReduceMotion(true)
         assertTrue(viewModel.uiState.value.appearance.reduceMotion)
+
+        viewModel.setStreamingHapticFeedback(true)
+        assertTrue(viewModel.uiState.value.appearance.streamingHapticFeedback)
+        viewModel.setStreamingHapticFeedback(false)
+        assertFalse(viewModel.uiState.value.appearance.streamingHapticFeedback)
+    }
+
+    @Test
+    fun streamingHapticFeedbackDefaultsOffAndPersistsWhenPreferencesAreRecreated() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val storage = context.getSharedPreferences("open_android_intelligence_appearance", 0)
+        val key = "streaming_haptic_feedback"
+        val hadPreviousValue = storage.contains(key)
+        val previousValue = storage.getBoolean(key, false)
+        assertTrue(storage.edit().remove(key).commit())
+
+        try {
+            val appearance = AppearancePreferences(context)
+            assertFalse(appearance.settings.value.streamingHapticFeedback)
+
+            appearance.setStreamingHapticFeedback(true)
+            assertTrue(appearance.settings.value.streamingHapticFeedback)
+            assertTrue(AppearancePreferences(context).settings.value.streamingHapticFeedback)
+        } finally {
+            val editor = storage.edit()
+            if (hadPreviousValue) editor.putBoolean(key, previousValue) else editor.remove(key)
+            assertTrue(editor.commit())
+        }
     }
 
     @Test
@@ -163,28 +233,6 @@ class SettingsViewModelTest {
 
         val updatedAppearance = AppearancePreferences(context)
         assertTrue(updatedAppearance.settings.value.dynamicIconColor)
-    }
-
-    @Test
-    fun pairingGrantsUpdateAndPersist() = runBlocking {
-        val viewModel = SettingsViewModel(
-            environment = environment,
-            runtime = null,
-            externalScope = testScope,
-        )
-
-        viewModel.setSmsGrant(true)
-        assertTrue(viewModel.uiState.value.isSmsGranted)
-
-        viewModel.setScreenSelectionGrant(true)
-        assertTrue(viewModel.uiState.value.isScreenSelectionGranted)
-
-        viewModel.setNotificationsGrant(true)
-        assertFalse("没有回复通知装配时不得伪造系统通知授权", viewModel.uiState.value.isNotificationsGranted)
-        assertFalse(pairingGrants.state.value!!.granted.contains(PairingGrantCapabilities.NOTIFICATIONS))
-
-        viewModel.setSmsGrant(false)
-        assertFalse(viewModel.uiState.value.isSmsGranted)
     }
 
     @Test
@@ -236,6 +284,24 @@ class SettingsViewModelTest {
 
         viewModel.disableTrustMode()
         assertFalse(viewModel.uiState.value.isTrustModeEnabled)
+    }
+
+    @Test
+    fun emergencyStopReportsAnUnsavedTrustDisableWithoutReenablingExecution() = runBlocking {
+        val failingTrust = DeveloperTrustMode(object : com.openandroidintelligence.kernel.TrustModePersistence {
+            override fun load() = true
+            override fun save(enabled: Boolean) { error("disk unavailable") }
+        })
+        val failingKernel = PluginKernel(
+            hostEnvelope = HostEnvelope(emptySet()), phoneLimits = PhoneLimits(emptySet()), runtimes = emptyMap(),
+            audit = auditStore, trustMode = failingTrust, nativeLoader = NativePluginLoader(failingTrust),
+            providerSelector = CapabilityProviderSelector(emptyMap()), grants = { null },
+        )
+        val model = SettingsViewModel(environment.copy(trustMode = failingTrust, kernel = failingKernel), externalScope = testScope)
+        model.emergencyStop()
+        assertTrue(failingKernel.isEmergencyStopped())
+        assertFalse(failingTrust.isEnabled())
+        assertTrue(model.uiState.value.localError?.contains("未能保存") == true)
     }
 
     @Test

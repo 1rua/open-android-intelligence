@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/1rua/hermes-android-gateway.git",
+  "repositoryAliases": [
+    "https://github.com/1rua/hermes-gateway-plugin.git"
+  ],
+  "revision": "ebe527da2426dd25877dd335786e80cf85d1cdde",
+  "contractRepository": "https://github.com/1rua/open-android-intelligence.git",
+  "contractRevision": "f0b3f1bd4f6f3301b820e38c9f3241bcac05cd10"
+}

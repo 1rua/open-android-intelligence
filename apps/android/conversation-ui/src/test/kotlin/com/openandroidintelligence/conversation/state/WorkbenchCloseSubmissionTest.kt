@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.state
 
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import java.io.ByteArrayInputStream
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.test.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class WorkbenchCloseSubmissionTest {
@@ -87,30 +89,132 @@ class WorkbenchCloseSubmissionTest {
         assertEquals(0,uploads.prepares)
     }
 
-    private fun TestScope.controller(repository:Repository,store:Store,uploads:Uploads,batches:Boolean=false)=WorkbenchController(
-        workbenchTestScope(),repository,object:AgentCommandCatalogRepository {
+    private fun TestScope.controller(repository:Repository,store:Store,uploads:Uploads,batches:Boolean=false,ownerScope:CoroutineScope?=null)=WorkbenchController(
+        ownerScope ?: workbenchTestScope(),repository,object:AgentCommandCatalogRepository {
             override suspend fun get(gatewayId:String,languageCode:String)=AgentCommandCatalog(CatalogVersion("test"),emptyList())
         },{ConversationScope("p","g","a","i")},attachmentCoordinator=uploads,persistence=store,
         persistenceDispatcher=UnconfinedTestDispatcher(testScheduler),supportsMessageBatches=batches,
+        // 客户端默认立即发送；本用例需要一个可推进的合并窗口。
+        debouncePolicy=if(batches) DebouncePolicy(delay=1_500.milliseconds) else DebouncePolicy(),
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
+    @Test fun retirementStopsNewRemoteOperationsBeforeWaitingForAnEarlierFlush() = runTest {
+        val store=Store()
+        val repository=Repository()
+        val controller=controller(repository,store,Uploads())
+        runCurrent()
+        assertTrue(controller.canSendVoiceAttachment("conv_a"))
+        val drainsBefore=repository.drains
+        val durableGate=CompletableDeferred<Unit>()
+        store.flushGate=durableGate
+        val flushing=launch { controller.flushPendingPersistence() }
+        runCurrent()
+        val closing=launch { controller.closeAndAwait() }
+        runCurrent()
+        assertFalse("退役不能等待持久化锁之后才冻结发送",controller.state.value.isOnline)
+        controller.updateRemoteCapabilities(online=true,send=true,delete=true,archive=true,rename=true,approvals=true)
+        controller.editDraft("交接期间的新输入")
+        controller.sendDraft()
+        controller.createThread()
+        controller.retryPendingDeliveries()
+        runCurrent()
+        assertFalse("迟到的在线状态不能重新启用旧工作台",controller.state.value.isOnline)
+        assertFalse("退役期间不能开始新的录音提交",controller.canSendVoiceAttachment("conv_a"))
+        assertEquals(drainsBefore,repository.drains)
+        assertTrue(repository.messages.isEmpty())
+        durableGate.complete(Unit)
+        runCurrent()
+        flushing.join(); closing.join()
+        assertEquals(1,store.closeCount)
+    }
+
+    @Test fun aGracefullyRetiredWorkbenchCanBeFlushedAndClosedAgainDuringAccountSwitch() = runTest {
+        val store=Store()
+        val controller=controller(Repository(),store,Uploads())
+        runCurrent()
+        controller.closeAndAwait()
+        assertTrue(store.closed)
+        // Agent replacement may finish retiring the old controller just before
+        // account exit reads that same controller. Its durable boundary is done.
+        controller.flushPendingPersistence()
+        controller.closeAndAwait()
+        assertEquals(1,store.closeCount)
+    }
+
+    @Test fun aRetiredWorkbenchKeepsItsFailedSaveVisibleToAnotherExitAttempt() = runTest {
+        val store=Store()
+        val controller=controller(Repository(),store,Uploads())
+        runCurrent()
+        store.flushFailure=java.io.IOException("synthetic storage failure")
+        assertTrue(runCatching {controller.closeAndAwait()}.exceptionOrNull() is java.io.IOException)
+        assertTrue(runCatching {controller.flushPendingPersistence()}.exceptionOrNull() is java.io.IOException)
+        assertTrue(runCatching {controller.closeAndAwait()}.exceptionOrNull() is java.io.IOException)
+        assertEquals(1,store.closeCount)
+    }
+
+    @Test fun cancellingOneExitCallerDoesNotCancelTheNextIndependentExit() = runTest {
+        val store=Store()
+        val controller=controller(Repository(),store,Uploads())
+        runCurrent()
+        val durableGate=CompletableDeferred<Unit>()
+        store.flushGate=durableGate
+        val closing=launch { controller.closeAndAwait() }
+        runCurrent()
+        closing.cancel()
+        durableGate.complete(Unit)
+        runCurrent()
+        closing.join()
+        assertTrue(closing.isCancelled)
+        assertTrue(store.closed)
+        controller.flushPendingPersistence()
+        controller.closeAndAwait()
+        assertEquals(1,store.closeCount)
+    }
+
+    @Test fun cancellationOfTheCheckpointWriterCannotBeReportedAsDurableRetirement() = runTest {
+        val store=Store()
+        val owner=SupervisorJob()
+        val ownerScope=CoroutineScope(owner+UnconfinedTestDispatcher(testScheduler))
+        val saveGate=CompletableDeferred<Unit>()
+        store.saveGate=saveGate
+        val controller=controller(Repository(),store,Uploads(),ownerScope=ownerScope)
+        runCurrent()
+        controller.editDraft("must not claim this draft was committed")
+        runCurrent()
+        owner.cancel()
+        runCurrent()
+        val result=async { runCatching {controller.closeAndAwait()}.exceptionOrNull() }
+        runCurrent()
+        saveGate.complete(Unit)
+        runCurrent()
+        assertTrue(result.await() is java.io.IOException)
+        assertTrue(runCatching {controller.flushPendingPersistence()}.exceptionOrNull() is java.io.IOException)
+        assertEquals(1,store.closeCount)
+    }
+
     private class Store:AwaitableWorkbenchPersistence {
         var closed=false
+        var closeCount=0
+        var flushFailure:java.io.IOException?=null
+        var flushGate:CompletableDeferred<Unit>?=null
+        var saveGate:CompletableDeferred<Unit>?=null
         var checkpoint:WorkbenchCheckpoint?=null
         val atoms=linkedMapOf<String,List<LocalSendAtom>>()
         var statesAtClose=emptyList<LocalSubmissionState>()
         override fun load()=checkpoint
         override fun save(checkpoint:WorkbenchCheckpoint) { check(!closed); this.checkpoint=checkpoint }
-        override suspend fun saveCheckpoint(checkpoint:WorkbenchCheckpoint)=save(checkpoint)
+        override suspend fun saveCheckpoint(checkpoint:WorkbenchCheckpoint) { saveGate?.await();save(checkpoint) }
         override fun loadSendAtoms(conversationId:String)=atoms[conversationId].orEmpty()
         override fun saveSendAtoms(conversationId:String,atoms:List<LocalSendAtom>) { check(!closed); this.atoms[conversationId]=atoms.toList() }
         override suspend fun saveSendAtomsDurably(conversationId:String,atoms:List<LocalSendAtom>)=saveSendAtoms(conversationId,atoms)
         override suspend fun loadTimeline(conversationId:String)=TimelinePage(emptyList(),null)
         override suspend fun loadKnownMediaMessages()=emptyList<TimelineMessage>()
-        override suspend fun flush() { check(!closed) }
-        override suspend fun closeStore() { statesAtClose=atoms.values.flatten().map { it.submissionState }; closed=true }
+        override suspend fun flush() { check(!closed);flushGate?.await();flushFailure?.let {throw it} }
+        override suspend fun closeStore() { closeCount++;statesAtClose=atoms.values.flatten().map { it.submissionState }; closed=true }
     }
     private class Repository:ConversationRepository,MessageOutcomeQuery {
         var block=true
+        var drains=0
+        override suspend fun retryPendingDeliveries(conversationId:String) { drains++ }
         val messages=mutableListOf<OutgoingMessage>()
         val batches=mutableListOf<MessageBatch>()
         val accepted=linkedMapOf<String,TimelineMessage>()

@@ -5,6 +5,8 @@ dependencies {
     implementation(project(":gateway-client"))
     implementation(project(":core-model"))
     implementation(project(":capability-ports"))
+    implementation(project(":control-ports"))
+    implementation(project(":screen-control"))
     implementation(project(":sms-collector"))
     implementation(project(":call-log-collector"))
     implementation(project(":notification-collector"))
@@ -12,4 +14,5 @@ dependencies {
     implementation(project(":policy-engine"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

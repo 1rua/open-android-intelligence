@@ -15,11 +15,130 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.net.ServerSocket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class GatewaySessionRecoveryTest {
     private fun profile() = GatewayProfile("account", "device", "session_old", "https://gateway.example", accessToken = "old")
     private fun WireRequest.header(name: String) = headers.single { it.name.equals(name, true) }.value
+
+    @Test fun rejectedResponseReportsTheSignedAttemptInsteadOfTheAlreadyRotatedCredential() = runTest {
+        val initial = profile()
+        val versions = mutableListOf<String>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                assertEquals("session_old", request.header("X-Open-Android-Intelligence-Session"))
+                renewal.refresh(initial)
+                return WireResponse(403, emptyList(), "{}".toByteArray())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("非预期事件流")
+        }
+        try {
+            val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            assertEquals(403, client.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/test"),
+                onCredentialVersion = versions::add).status)
+            assertEquals(listOf("session_old"), versions)
+            assertEquals("session_new", client.credentialVersion())
+        } finally { renewal.close() }
+    }
+
+    @Test fun aRefreshedStreamReportsBothActualAttemptsBeforeConsumingItsFinalError() = runTest {
+        val initial = profile()
+        val versions = mutableListOf<String>()
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(if (wires.size == 1) 401 else 200, emptyList(), "error".toByteArray())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("非预期事件流")
+        }
+        try {
+            val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+            val consumed = client.consumeResponse(SignedGatewayRequest("GET", "/open-android-intelligence/v2/test"),
+                onCredentialVersion = versions::add) { _, _, stream ->
+                assertEquals("session_new", versions.last())
+                stream.readBytes().decodeToString()
+            }
+            assertEquals("error", consumed)
+            assertEquals(listOf("session_old", "session_new"), versions)
+            assertEquals(versions, wires.map { it.header("X-Open-Android-Intelligence-Session") })
+        } finally { renewal.close() }
+    }
+
+    @Test fun anAuthorizationGuardFailureDoesNotPublishAnAttemptThatNeverRan() = runTest {
+        val versions = mutableListOf<String>()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse = error("不应发送")
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("不应订阅")
+        }
+        val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, InMemoryEventCursorStore())
+        val request = SignedGatewayRequest("GET", "/open-android-intelligence/v2/test",
+            beforeSend = { error("LOCAL_AUTHORIZATION_CHANGED") })
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", runCatching {
+            client.consumeResponse(request, onCredentialVersion = versions::add) { _, _, _ -> Unit }
+        }.exceptionOrNull()?.message)
+        assertTrue(versions.isEmpty())
+    }
+
+    @Test fun deviceResultIsNotReplayedWhenRenewalRevokesTheAuthorizationAgreement() = runTest {
+        val initial = profile()
+        var allowed = true
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            allowed = false
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(401, emptyList(), byteArrayOf())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val devices = com.openandroidintelligence.gateway.device.HttpDeviceRequestTransport(client) { requestId ->
+            assertEquals("req_result", requestId)
+            check(allowed) { "DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED" }
+        }
+        val failure = runCatching { devices.submitResult("req_result", mapOf("result" to "private-result")) }.exceptionOrNull()
+        assertEquals("DEVICE_AUTHORIZATION_MODEL_UNSUPPORTED", failure?.message)
+        assertEquals(1, wires.size)
+        assertEquals("Bearer old", wires.single().header("Authorization"))
+    }
+
+    @Test fun responseConsumptionRechecksItsGuardBeforeARefreshReplay() = runTest {
+        val initial = profile()
+        var allowed = true
+        var attempts = 0
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            allowed = false
+            it.copy(sessionId = "session_new", accessToken = "new")
+        }
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                attempts++
+                return WireResponse(401, emptyList(), byteArrayOf())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val failure = runCatching {
+            client.consumeResponse(SignedGatewayRequest("GET", "/open-android-intelligence/v2/protected",
+                beforeSend = { check(allowed) { "LOCAL_AUTHORIZATION_CHANGED" } })) { _, _, _ -> error("must not consume") }
+        }.exceptionOrNull()
+        assertEquals("LOCAL_AUTHORIZATION_CHANGED", failure?.message)
+        assertEquals(1, attempts)
+    }
 
     @Test fun signingKeepsOneSnapshotWhenAnotherRotationCompletesInsideTheSigner() = kotlinx.coroutines.runBlocking {
         val initial = profile()
@@ -136,6 +255,35 @@ class GatewaySessionRecoveryTest {
         val failed = GatewayHttpClient(initial, failing, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
         assertTrue(runCatching { failed.execute(SignedGatewayRequest("GET", "/open-android-intelligence/v2/test")) }.exceptionOrNull() is IOException)
         assertEquals(1, refreshes)
+    }
+
+    @Test fun upstreamBridgeAuthenticationFailureDoesNotRefreshSessionOrReplayThePost() = runTest {
+        val initial = profile()
+        var refreshes = 0
+        val wires = mutableListOf<WireRequest>()
+        val renewal = GatewaySessionRenewal(initial, backgroundScope) {
+            refreshes++
+            error("an upstream 502 must not refresh Core credentials")
+        }
+        val responseBody = """{"error":{"code":"AGENT_UNAVAILABLE","details":{"source":"agent_bridge","reason":"authentication_failed","upstreamStatus":401}}}"""
+            .toByteArray()
+        val transport = object : GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                wires += request
+                return WireResponse(502, emptyList(), responseBody)
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = error("unused")
+        }
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
+        val response = client.execute(SignedGatewayRequest(
+            "POST", "/open-android-intelligence/v2/agents/hermes/sessions/chat/events/ack", """{"cursor":"base"}""".toByteArray()))
+
+        assertEquals(502, response.status)
+        assertArrayEquals(responseBody, response.body)
+        assertEquals(1, wires.size)
+        assertEquals("POST", wires.single().method)
+        assertEquals("Bearer old", wires.single().header("Authorization"))
+        assertEquals(0, refreshes)
     }
 
     @Test fun eventAuthenticationRecoveryIsBoundedUntilRealStreamDataArrives() = runTest {
@@ -284,7 +432,8 @@ class GatewaySessionRecoveryTest {
         val sibling = GatewayHttpClient(initial, healthy, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
         repeat(3) {
             val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+                override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                     throw EventSessionRejectedException(requireNotNull(sessionSnapshot))
                 }
             }
@@ -316,7 +465,7 @@ class GatewaySessionRecoveryTest {
         assertEquals("before", cursors.load("account"))
     }
 
-    @Test fun anAuthenticatedHeartbeatResetsNetworkFailuresAndReconnectBackoff() = runTest {
+    @Test fun oneHeartbeatCannotResetTheBackoffBeforeSixtySecondsOfStableActivity() = runTest {
         var attempts = 0
         val delays = mutableListOf<Long>()
         val status = EventStreamStatusSink()
@@ -330,9 +479,9 @@ class GatewaySessionRecoveryTest {
             }
         }
         val client = GatewayHttpClient(profile(), transport, { ByteArray(64) }, InMemoryEventCursorStore(),
-            delayFn = { delays += it }, maxConsecutiveFailures = 3, statusSink = status)
+            jitterFn = { it }, delayFn = { delays += it }, maxConsecutiveFailures = 3, statusSink = status)
         assertEquals("recovered", client.events().take(1).toList().single().id)
-        assertEquals(listOf(1_000L, 2_000L, 1_000L), delays)
+        assertEquals(listOf(1_000L, 2_000L, 5_000L), delays)
         assertEquals(EventStreamStatus.LIVE, status.status.value)
     }
 
@@ -363,7 +512,7 @@ class GatewaySessionRecoveryTest {
         assertEquals(3, attempts)
     }
 
-    @Test fun failedSharedRotationCanBeRetriedByARecollectedStream() = runTest {
+    @Test fun failedSharedRotationRetriesInTheSameStream() = runTest {
         val initial = profile()
         var refreshes = 0
         val renewal = GatewaySessionRenewal(initial, backgroundScope) {
@@ -378,8 +527,8 @@ class GatewaySessionRecoveryTest {
                 emit("id: recovered\nevent: notice\ndata: {}\n\n".toByteArray())
             }
         }
-        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(), sessionRenewal = renewal)
-        assertTrue(runCatching { client.events().toList() }.exceptionOrNull() is IOException)
+        val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore(),
+            sessionRenewal = renewal, delayFn = {}, jitterFn = { it })
         assertEquals("recovered", client.events().take(1).toList().single().id)
         assertEquals(2, refreshes)
     }
@@ -429,7 +578,8 @@ class GatewaySessionRecoveryTest {
         var attempts = 0
         val renewal = GatewaySessionRenewal(initial, backgroundScope) { refreshes++; it.copy(accessToken = "new") }
         val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 attempts++
                 throw EventSessionRejectedException(renewal.current)
             }
@@ -454,7 +604,8 @@ class GatewaySessionRecoveryTest {
             it.copy(sessionId = "session_new", accessToken = "new")
         }
         val websocket = object : com.openandroidintelligence.gateway.ws.GatewayWebSocketTransport(initial, { ByteArray(64) }) {
-            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
+            override fun events(cursor: String?, onActivity: () -> Unit, sessionSnapshot: GatewayProfile?,
+                onSignal: (com.openandroidintelligence.gateway.ws.GatewayWebSocketSignal) -> Unit): Flow<com.openandroidintelligence.gateway.events.GatewayEvent> = flow {
                 val snapshot = requireNotNull(sessionSnapshot)
                 snapshots += snapshot
                 if (snapshots.size == 1) {
@@ -497,4 +648,80 @@ class GatewaySessionRecoveryTest {
         assertEquals("after", client.events().take(1).toList().single().id)
         assertEquals(2, refreshes)
     }
+    @Test fun eventFailureLogCarriesOnlyKnownAuthenticationMetadata() = runTest {
+        assertEquals(1, EventSessionRejectedException::class.java.getConstructor(GatewayProfile::class.java).parameterCount)
+        assertEquals(0, EventSessionRejectedException::class.java.getConstructor().parameterCount)
+        assertEquals(0, EventStreamForbiddenException::class.java.getConstructor().parameterCount)
+        val oldSink = com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink
+        val logs = mutableListOf<String>()
+        com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = { _, line -> logs += line }
+        try {
+            val initial = profile()
+            val cases = listOf(
+                Triple(EventSessionRejectedException(httpStatus = 401), 401, "authentication"),
+                Triple(EventStreamForbiddenException(httpStatus = 403), 403, "terminal"),
+                Triple(EventSessionRejectedException(), null, "authentication"),
+            )
+            cases.forEach { (failure, expectedStatus, expectedAction) ->
+                logs.clear()
+                val transport = object : GatewayByteTransport {
+                    override suspend fun execute(request: WireRequest): WireResponse = error("unused")
+                    override fun eventStream(request: WireRequest): Flow<ByteArray> = flow { throw failure }
+                }
+                val client = GatewayHttpClient(initial, transport, { ByteArray(64) }, InMemoryEventCursorStore())
+                assertSame(failure, runCatching { client.events().toList() }.exceptionOrNull())
+                val line = logs.single { it.contains("stage=AUTH") }
+                assertTrue(line, line.contains("status=${expectedStatus ?: "null"}"))
+                assertTrue(line, line.contains("closeCode=null"))
+                assertTrue(line, line.contains("action=$expectedAction"))
+                assertFalse(line, line.contains("Bearer old"))
+            }
+        } finally {
+            com.openandroidintelligence.gateway.diagnostics.GatewayLog.sink = oldSink
+        }
+    }
+
+    @Test fun sseHandshakePreservesKnownHttpStatus() = kotlinx.coroutines.runBlocking {
+        listOf(401, 403).forEach { status ->
+            ServerSocket(0).use { server ->
+                server.soTimeout = 5_000
+                val served = CompletableFuture<Unit>()
+                thread(isDaemon = true) {
+                    try {
+                        server.accept().use { socket ->
+                            socket.soTimeout = 5_000
+                            val reader = socket.getInputStream().bufferedReader()
+                            while (true) {
+                                val line = reader.readLine() ?: break
+                                if (line.isEmpty()) break
+                            }
+                            socket.getOutputStream().write(
+                                "HTTP/1.1 $status Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                                    .toByteArray(Charsets.US_ASCII),
+                            )
+                            socket.getOutputStream().flush()
+                        }
+                        served.complete(Unit)
+                    } catch (failure: Throwable) {
+                        served.completeExceptionally(failure)
+                    }
+                }
+                val bound = profile().copy(gatewayBaseUrl = "http://127.0.0.1:${server.localPort}")
+                val failure = runCatching {
+                    GatewayTransport(bound).eventStream(WireRequest("GET", "/open-android-intelligence/v2/events")).toList()
+                }.exceptionOrNull()
+                served.get(5, TimeUnit.SECONDS)
+                if (status == 401) {
+                    assertTrue(failure is EventSessionRejectedException)
+                    assertEquals(401, (failure as EventSessionRejectedException).httpStatus)
+                    assertNull((failure as EventSessionRejectedException).closeCode)
+                } else {
+                    assertTrue(failure is EventStreamForbiddenException)
+                    assertEquals(403, (failure as EventStreamForbiddenException).httpStatus)
+                    assertNull((failure as EventStreamForbiddenException).closeCode)
+                }
+            }
+        }
+    }
+
 }

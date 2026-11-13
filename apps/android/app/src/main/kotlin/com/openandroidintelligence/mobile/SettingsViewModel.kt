@@ -3,16 +3,20 @@ package com.openandroidintelligence.mobile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.openandroidintelligence.gateway.http.TransportSecurity
+import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.gateway.events.EventStreamStatus
 import com.openandroidintelligence.kernel.AuditEvent
 import com.openandroidintelligence.kernel.DeveloperTrustMode
-import com.openandroidintelligence.kernel.PairingGrantCapabilities
 import com.openandroidintelligence.kernel.PairingGrantState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.map
 
 /**
  * 设置界面不可变 UI 状态。
@@ -39,15 +43,33 @@ data class SettingsUiState(
     val replyNotificationsWired: Boolean = false,
     val replyNotificationsEnabled: Boolean = false,
     val replyNotificationsAllowed: Boolean = false,
+    val nativeAgentsState: NativeAgentsState? = null,
+    val localSessionState: LocalSessionState = LocalSessionState.SignedOut(),
+    val coreHttpHealth: CoreHttpHealth = CoreHttpHealth(),
+    val eventStreamStatus: EventStreamStatus = EventStreamStatus.IDLE,
+    val loginStatus: GatewayLoginStatus = GatewayLoginStatus.SIGNED_OUT,
+    val savedProfiles: List<AccountProfile> = emptyList(),
+    val isManagingProfiles: Boolean = false,
+    val liveUpdatesAllowed: Boolean = false,
+    val localError: String? = null,
+    val unpairOperation: LocalOperationState = LocalOperationState.Idle,
+    val accountPickerRequested: Boolean = false,
 ) {
     val isGatewayConnected: Boolean
         get() = connectionPhase is ConnectionPhase.Connected
 
+    val hasLocalSession: Boolean
+        get() = localSessionState is LocalSessionState.Workspace
+
     val connectedUsername: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.username
+            ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.username
+            ?: (localSessionState as? LocalSessionState.Workspace)?.account?.username
 
     val connectedGatewayUrl: String?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.gatewayUrl
+            ?: (connectionPhase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
+            ?: (localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl
 
     val connectedTransportSecurity: TransportSecurity?
         get() = (connectionPhase as? ConnectionPhase.Connected)?.transportSecurity
@@ -57,12 +79,6 @@ data class SettingsUiState(
 
     val grantRevision: Long
         get() = pairingGrants?.revision ?: 0L
-
-    val isSmsGranted: Boolean
-        get() = pairingGrants?.granted?.contains(PairingGrantCapabilities.SMS) == true
-
-    val isScreenSelectionGranted: Boolean
-        get() = pairingGrants?.screenSelectionEnabled == true
 
     val isNotificationsGranted: Boolean
         get() = replyNotificationsEnabled && replyNotificationsAllowed
@@ -107,6 +123,7 @@ data class SettingsUiState(
 private data class BaseSettings(
     val appearance: AppearanceSettings,
     val phase: ConnectionPhase,
+    val localSession: LocalSessionState,
     val grants: PairingGrantState?,
     val auditEvents: List<AuditEvent>,
 )
@@ -134,30 +151,39 @@ class SettingsViewModel(
     externalScope: CoroutineScope? = null,
 ) : ViewModel() {
 
+    internal val settingsEnvironment get() = environment
+    internal val gatewayRuntime get() = runtime
     private val scope: CoroutineScope = externalScope ?: viewModelScope
 
+    private val _accountPickerRequested = MutableStateFlow(false)
+    private val _localError = MutableStateFlow<String?>(null)
     private val _trustModeEnabled = MutableStateFlow(environment.trustMode.isEnabled())
     private val _emergencyStopped = MutableStateFlow(environment.kernel.isEmergencyStopped())
     // 计数的持久来源：Application 级持有者。面板销毁重建后从这里恢复，
     // 而不是从 0 起步把一次真实熔断说成没有发生。
     private val _stoppedCount = MutableStateFlow(environment.emergencyStoppedCount.value)
 
-    init {
-        environment.trustMode.onChange { enabled ->
-            _trustModeEnabled.value = enabled
-        }
-        environment.kernel.onEmergencyStop { stopped ->
-            _emergencyStopped.value = stopped
-        }
+    private val trustRegistration = environment.trustMode.observeChanges { enabled ->
+        _trustModeEnabled.value = enabled
+    }
+    private val stopRegistration = environment.kernel.observeEmergencyStop { stopped ->
+        _emergencyStopped.value = stopped
+    }
+
+    override fun onCleared() {
+        trustRegistration.close()
+        stopRegistration.close()
+        super.onCleared()
     }
 
     private val baseSettingsFlow = combine(
         environment.appearance.settings,
         runtime?.phase ?: MutableStateFlow(ConnectionPhase.Disconnected),
+        runtime?.localSessionState ?: MutableStateFlow<LocalSessionState>(LocalSessionState.SignedOut()),
         environment.pairingGrants.state,
         environment.auditSink.eventsFlow,
-    ) { appearance, phase, grants, auditEvents ->
-        BaseSettings(appearance, phase, grants, auditEvents)
+    ) { appearance, phase, localSession, grants, auditEvents ->
+        BaseSettings(appearance, phase, localSession, grants, auditEvents)
     }
 
     private val controlSettingsFlow = combine(
@@ -178,14 +204,41 @@ class SettingsViewModel(
         notice to refreshing
     }
 
-    val uiState: StateFlow<SettingsUiState> = combine(
+    private val nativeAgentsFlow: StateFlow<NativeAgentsState?> =
+        (runtime?.nativeAgents?.flatMapLatest { controller ->
+            controller?.state ?: MutableStateFlow<NativeAgentsState?>(null)
+        } ?: MutableStateFlow(null)).stateIn(
+            scope = scope,
+            started = SharingStarted.Eagerly,
+            initialValue = runtime?.nativeAgents?.value?.state?.value,
+        )
+
+    private data class ConnectionFacts(
+        val http: CoreHttpHealth,
+        val events: EventStreamStatus,
+        val login: GatewayLoginStatus,
+        val profiles: List<AccountProfile>,
+        val managing: Boolean,
+    )
+
+    private val connectionFacts = combine(
+        runtime?.coreHttpHealth ?: MutableStateFlow(CoreHttpHealth()),
+        runtime?.connectionStatus ?: MutableStateFlow(EventStreamStatus.IDLE),
+        runtime?.loginStatus ?: MutableStateFlow(GatewayLoginStatus.SIGNED_OUT),
+        runtime?.savedProfiles ?: MutableStateFlow(emptyList<AccountProfile>()),
+        runtime?.isManagingProfiles ?: MutableStateFlow(false),
+    ) { http, events, login, profiles, managing -> ConnectionFacts(http, events, login, profiles, managing) }
+
+    private val baseUiState = combine(
         baseSettingsFlow,
         controlSettingsFlow,
         operationSettingsFlow,
-    ) { base, control, operations ->
+        nativeAgentsFlow,
+    ) { base, control, operations, nativeAgentsState ->
         SettingsUiState(
             appearance = base.appearance,
             connectionPhase = base.phase,
+            localSessionState = base.localSession,
             pairingGrants = base.grants,
             isTrustModeEnabled = control.trustEnabled,
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,
@@ -194,12 +247,39 @@ class SettingsViewModel(
             isEmergencyStopped = control.emergencyStopped,
             emergencyStoppedCount = control.stoppedCount,
             auditEvents = base.auditEvents,
-            auditLines = base.auditEvents.map { environment.audit.render(it) },
             operationNotice = operations.first,
             isRefreshingSession = operations.second,
             replyNotificationsWired = runtime != null,
             replyNotificationsEnabled = control.replyEnabled,
             replyNotificationsAllowed = control.replyAllowed,
+            nativeAgentsState = nativeAgentsState,
+        )
+    }
+
+    private val auditPresentation = environment.auditSink.eventsFlow
+        .map { events -> events.map { environment.audit.render(it) } }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    private val presentedBase = combine(baseUiState, _accountPickerRequested, auditPresentation) { base, requested, audit ->
+        base.copy(accountPickerRequested = requested, auditLines = audit)
+    }
+
+    val uiState: StateFlow<SettingsUiState> = combine(
+        presentedBase,
+        connectionFacts,
+        _localError,
+        runtime?.unpairOperation ?: MutableStateFlow<LocalOperationState>(LocalOperationState.Idle),
+        runtime?.replyNotifications?.liveUpdatesAllowed ?: MutableStateFlow(false),
+    ) { base, facts, error, unpair, liveAllowed ->
+        base.copy(
+            coreHttpHealth = facts.http,
+            eventStreamStatus = facts.events,
+            loginStatus = facts.login,
+            savedProfiles = facts.profiles,
+            isManagingProfiles = facts.managing,
+            localError = error,
+            unpairOperation = unpair,
+            liveUpdatesAllowed = liveAllowed,
         )
     }.stateIn(
         scope = scope,
@@ -207,13 +287,14 @@ class SettingsViewModel(
         initialValue = SettingsUiState(
             appearance = environment.appearance.settings.value,
             connectionPhase = runtime?.phase?.value ?: ConnectionPhase.Disconnected,
+            localSessionState = runtime?.localSessionState?.value ?: LocalSessionState.SignedOut(),
             pairingGrants = environment.pairingGrants.state.value,
             isTrustModeEnabled = environment.trustMode.isEnabled(),
             allowDeveloperTrustMode = environment.allowDeveloperTrustMode,
             allowRuntimePlugins = environment.allowRuntimePlugins,
             pluginRuntimesWired = environment.pluginRuntimesWired,
             isEmergencyStopped = environment.kernel.isEmergencyStopped(),
-            emergencyStoppedCount = 0,
+            emergencyStoppedCount = environment.emergencyStoppedCount.value,
             auditEvents = environment.auditSink.eventsFlow.value,
             auditLines = environment.auditSink.eventsFlow.value.map { environment.audit.render(it) },
             operationNotice = runtime?.operationNotice?.value,
@@ -221,6 +302,14 @@ class SettingsViewModel(
             replyNotificationsWired = runtime != null,
             replyNotificationsEnabled = runtime?.replyNotifications?.enabled?.value ?: false,
             replyNotificationsAllowed = runtime?.replyNotifications?.allowed?.value ?: false,
+            nativeAgentsState = runtime?.nativeAgents?.value?.state?.value,
+            coreHttpHealth = runtime?.coreHttpHealth?.value ?: CoreHttpHealth(),
+            eventStreamStatus = runtime?.connectionStatus?.value ?: EventStreamStatus.IDLE,
+            loginStatus = runtime?.loginStatus?.value ?: GatewayLoginStatus.SIGNED_OUT,
+            savedProfiles = runtime?.savedProfiles?.value.orEmpty(),
+            isManagingProfiles = runtime?.isManagingProfiles?.value ?: false,
+            liveUpdatesAllowed = runtime?.replyNotifications?.liveUpdatesAllowed?.value ?: false,
+            unpairOperation = runtime?.unpairOperation?.value ?: LocalOperationState.Idle,
         ),
     )
 
@@ -244,18 +333,25 @@ class SettingsViewModel(
         environment.appearance.setReduceMotion(enabled)
     }
 
-    fun setSmsGrant(enabled: Boolean) {
-        environment.pairingGrants.updatePrimitive(PairingGrantCapabilities.SMS, enabled)
+    fun setStreamingHapticFeedback(enabled: Boolean) {
+        environment.appearance.setStreamingHapticFeedback(enabled)
     }
 
-    fun setScreenSelectionGrant(enabled: Boolean) {
-        environment.pairingGrants.updateScreenSelection(enabled)
-    }
-
-    fun setNotificationsGrant(enabled: Boolean) {
-        runtime?.replyNotifications?.setEnabled(enabled)
+    fun setNotificationsGrant(enabled: Boolean): Boolean {
+        val saved = runtime?.replyNotifications?.setEnabled(enabled) == true
+        if (!saved) {
+            _localError.value = "通知偏好未能保存，请检查手机存储后重试。"
+            return false
+        }
         if (enabled) runtime?.nativeConversationNotifications?.refreshActive()
+        return true
     }
+
+    fun dismissLocalError() { _localError.value = null }
+    fun dismissUnpairOperation() { runtime?.dismissUnpairOperation() }
+    fun selectSavedAccount(profileId: String) { runtime?.selectSavedAccount(profileId) }
+    fun removeLocalAccount(profileId: String) { runtime?.removeLocalAccount(profileId) }
+    fun retryConnection() { runtime?.retryConnection() }
 
     fun refreshReplyNotificationPermission() {
         runtime?.replyNotifications?.refreshPermission()
@@ -270,13 +366,19 @@ class SettingsViewModel(
         val accepted = environment.trustMode.enable(
             DeveloperTrustMode.Acknowledgement(acknowledgementText),
         )
-        _trustModeEnabled.value = accepted
+        _trustModeEnabled.value = environment.trustMode.isEnabled()
+        if (!environment.trustMode.lastPersistenceSucceeded) {
+            _localError.value = "信任模式当前已改变，但未能保存；下次启动可能恢复原设置，请检查存储。"
+        }
         return accepted
     }
 
     fun disableTrustMode() {
         environment.trustMode.disable()
         _trustModeEnabled.value = false
+        if (!environment.trustMode.lastPersistenceSucceeded) {
+            _localError.value = "信任模式当前已关闭，但关闭状态未能保存，请检查存储后重试。"
+        }
     }
 
     fun emergencyStop(): Int {
@@ -285,6 +387,9 @@ class SettingsViewModel(
         environment.emergencyStoppedCount.value = count
         _emergencyStopped.value = true
         _trustModeEnabled.value = false
+        if (!environment.trustMode.lastPersistenceSucceeded) {
+            _localError.value = "本次紧急停止已生效，但信任模式关闭状态未能保存；重启前请检查存储并重新确认关闭状态。"
+        }
         return count
     }
 
@@ -302,5 +407,26 @@ class SettingsViewModel(
     }
 
     fun unpair() { runtime?.unpair() }
-    fun chooseAnotherAccount() { runtime?.chooseAnotherAccount() }
+    fun chooseAnotherAccount() {
+        if (runtime == null) return
+        _accountPickerRequested.value = true
+        runtime.chooseAnotherAccount()
+        if (runtime.operationNotice.value != null && runtime.localSessionState.value !is LocalSessionState.AccountPicker) {
+            _accountPickerRequested.value = false
+        }
+    }
+    fun consumeAccountPickerRequest() { _accountPickerRequested.value = false }
+
+    fun selectAgent(agentId: String) {
+        val agents = runtime?.nativeAgents?.value
+        if (agents == null || agents.state.value.busy) {
+            _localError.value = "Agent 当前尚未就绪，请稍后再选择。"
+            return
+        }
+        agents.selectAgent(agentId)
+    }
+
+    fun refreshAgents() {
+        runtime?.nativeAgents?.value?.refresh()
+    }
 }

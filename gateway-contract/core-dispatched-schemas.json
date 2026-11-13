@@ -563,7 +563,7 @@
       "key": {
         "kind": "event",
         "eventType": "device.requested",
-        "schemaSha256": "sha256:7dcc1ce17e2a105149a9e1a80c3971225f73b0d46361e31134c76a32c292a0e4"
+        "schemaSha256": "sha256:1d5f99758eba2dde0d2f98c52de4eed69c2a5f0418ff824125a0fec45dacae64"
       },
       "schema": {
         "type": "object",
@@ -641,6 +641,28 @@
           },
           "requiresForegroundConfirmation": {
             "type": "boolean"
+          },
+          "caller": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "agentName",
+              "purpose"
+            ],
+            "properties": {
+              "agentName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[\\s\\S]*\\S[\\s\\S]*$"
+              },
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "pattern": "^[\\s\\S]*\\S[\\s\\S]*$"
+              }
+            }
           }
         }
       }
@@ -1029,7 +1051,7 @@
         "kind": "event",
         "eventType": "device.requested"
       },
-      "schemaSha256": "sha256:7dcc1ce17e2a105149a9e1a80c3971225f73b0d46361e31134c76a32c292a0e4"
+      "schemaSha256": "sha256:1d5f99758eba2dde0d2f98c52de4eed69c2a5f0418ff824125a0fec45dacae64"
     },
     {
       "key": {

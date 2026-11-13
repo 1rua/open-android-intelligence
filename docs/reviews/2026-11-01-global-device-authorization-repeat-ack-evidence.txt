@@ -1,0 +1,18 @@
+2026-11-01 Core A: unselected old B and first sample repeated acknowledgements
+
+Old B owned GET /deliveries: HTTP 409, ENDPOINT_UNAVAILABLE.
+The recorded old B lease expired at 2026-11-01T03:03:07.082Z; the GET was
+performed after that time. The response contained no delivery list, so its
+count and presence of the sample marker are unknown. This is not proof that
+the phone's endpoint whitelist prevented delivery. Old B was not renewed.
+
+Repeated ACK for the observed first sample event push_7e267b91...fd8e0b79:
+A: acknowledged; first and repeated acknowledgedAt 2026-11-01T03:10:17.680Z;
+   entire receipt equal; payloadExpiresAt null; response has no payload field.
+B: acknowledged; first and repeated acknowledgedAt 2026-11-01T03:14:00.170Z;
+   entire receipt equal; payloadExpiresAt null; response has no payload field.
+
+Read-only Core storage metadata for those two delivery IDs only: both state
+acknowledged, stored payload empty, payload_bytes 0, payload_expires null,
+and acknowledged_at equal to the original receipt. No payload value was read
+or printed. No other event was acknowledged, and no sample was emitted.

@@ -88,6 +88,27 @@ class DeveloperTrustModeTest {
     }
 
     @Test
+    fun aClosedSettingsObserverDoesNotReceiveLaterTransitions() {
+        val trust = DeveloperTrustMode()
+        val observed = mutableListOf<Boolean>()
+        val registration = trust.observeChanges { observed += it }
+        registration.close()
+        trust.enable(acknowledged())
+        assertEquals(listOf(false), observed)
+    }
+
+    @Test
+    fun persistenceFailureIsVisibleWithoutUndoingASafetyDisable() {
+        val trust = DeveloperTrustMode(object : TrustModePersistence {
+            override fun load() = true
+            override fun save(enabled: Boolean) { error("disk failure") }
+        })
+        trust.disable()
+        assertFalse(trust.isEnabled())
+        assertFalse(trust.lastPersistenceSucceeded)
+    }
+
+    @Test
     fun wrongAcknowledgementIsRejectedAndNeverPersistedEvenWhenRestored() {
         val persistence = RecordingPersistence().apply { stored = true }
         val trust = DeveloperTrustMode(persistence)

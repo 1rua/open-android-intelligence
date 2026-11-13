@@ -3,6 +3,8 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror
+import com.openandroidintelligence.mobile.plugins.EncryptedDocuments
+import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.state.*
@@ -25,6 +27,29 @@ class EncryptedMirrorRecoveryTest {
     private val context get()=ApplicationProvider.getApplicationContext<Application>()
     private val key=object:AesGcmKeyProvider {override fun getOrCreate()=SecretKeySpec(ByteArray(32){7},"AES");override fun delete(){}}
     private val scope=ConversationScope("profile_mirror","https://first.example","acct_same","install_one")
+    @Test fun creationDispatchFactsSurviveEncryptedMirrorReopenAndLegacyAbsenceMeansPossiblySent() {
+        for (mayHaveBeenSent in listOf(false, true)) {
+            val testScope = scope.copy(profileId = "creation_dispatch_$mayHaveBeenSent")
+            val pending = SavedConversationCreation("original-client", "work", mayHaveBeenSent)
+            val checkpoint = WorkbenchCheckpoint(emptyList(), null, "", emptyList(), emptyMap(), "保留草稿", 1,
+                emptyList(), null, emptySet(), emptySet(), pendingConversationCreation = pending)
+            EncryptedConversationMirror(context, testScope, key).save(checkpoint)
+            val reopened = EncryptedConversationMirror(context, testScope, key).load()!!
+            assertEquals(pending, reopened.pendingConversationCreation)
+            assertEquals("保留草稿", reopened.draft)
+        }
+        val legacyScope = scope.copy(profileId = "legacy_creation_without_dispatch")
+        val documentScope = "conversation-mirror-v1:" + Json.canonical(Json.of(listOf(
+            legacyScope.profileId, legacyScope.gatewayId, legacyScope.accountId, legacyScope.installId)))
+        val payload = mapOf("version" to 3, "threads" to emptyList<Any>(), "title" to "", "messages" to emptyList<Any>(),
+            "revisions" to emptyMap<String, Long>(), "draft" to "旧草稿", "draftRevision" to 1,
+            "pendingConversationCreation" to mapOf("clientId" to "legacy-client", "folderId" to "work"))
+        EncryptedDocuments(context, documentScope, key).write("workbench", Json.canonical(Json.of(payload)).toByteArray())
+        val legacy = EncryptedConversationMirror(context, legacyScope, key).load()!!
+        assertEquals(SavedConversationCreation("legacy-client", "work", true), legacy.pendingConversationCreation)
+        assertEquals("旧草稿", legacy.draft)
+    }
+
     @Test fun aCrashAfterCursorCommitBeforeControllerDeliveryRetainsCancellationAndRevisionedAssociations() = runTest {
         val testScope=scope.copy(profileId="cursor_cancel_crash")
         val dispatcher=StandardTestDispatcher(testScheduler)
@@ -195,5 +220,42 @@ class EncryptedMirrorRecoveryTest {
         val reopened=EncryptedConversationMirror(context,scope,key);reopened.finishBaselineRecovery()
         assertNull(reopened.timeline("conv_obsolete"));assertEquals("new",reopened.timeline("conv_new")!!.messages.single().id);assertEquals(threads,reopened.threads())
         reopened.wipe()
+    }
+    @Test fun conflictingMessageIdentityIsDroppedInsteadOfCrashing() = runTest {
+        val testScope=scope.copy(profileId="conflicting_message_identity")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"queued",
+            ConversationId("conv_a"),clientMessageId=ClientMessageId("client_a"))
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question),null))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_queued",1,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.QUEUED,0,null))
+        assertEquals("client_a",mirror.loadSendAtoms("conv_a").single().clientMessageId.value)
+        // 同一 messageId 带着另一个 clientMessageId 到达：丢弃该事件，不得把进程打崩。
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_conflict",2,ConversationId("conv_a"),
+            "question",ClientMessageId("client_other"),AgentMessageStatus.FAILED,3,AgentMessageErrorCode.AGENT_UNAVAILABLE))
+        val untouched=mirror.loadSendAtoms("conv_a").single()
+        assertEquals("client_a",untouched.clientMessageId.value)
+        assertNull(untouched.errorCode)
+        // 身份正确的事件仍能推进状态。
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_completed",3,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.COMPLETED,1,null))
+        assertEquals(AgentMessageStatus.COMPLETED,mirror.loadSendAtoms("conv_a").single().status)
+        mirror.wipe()
+    }
+    @Test fun divergentServerIdOnAUserUpsertKeepsTheBoundIdentity() = runTest {
+        val testScope=scope.copy(profileId="divergent_upsert_identity")
+        val mirror=EncryptedConversationMirror(context,testScope,key)
+        val question=TimelineMessage("question","user",listOf(MessagePart.Text("request")),1,"queued",
+            ConversationId("conv_a"),clientMessageId=ClientMessageId("client_a"))
+        mirror.saveTimeline("conv_a",TimelinePage(listOf(question),null))
+        mirror.applyAndCommit(VerifiedConversationEvent.MessageStatus("evt_queued",1,ConversationId("conv_a"),
+            "question",ClientMessageId("client_a"),AgentMessageStatus.QUEUED,0,null))
+        // 同一 clientMessageId 以另一个服务端 id 到达：身份保持、正文更新，不得抛异常。
+        mirror.applyAndCommit(VerifiedConversationEvent.TimelineUpsert("evt_upsert",2,3,
+            question.copy(id="question_server_side",parts=listOf(MessagePart.Text("edited request")))))
+        val atom=mirror.loadSendAtoms("conv_a").single()
+        assertEquals("question",atom.messageId)
+        assertEquals("edited request",(atom.parts.single() as MessagePart.Text).value)
+        mirror.wipe()
     }
 }

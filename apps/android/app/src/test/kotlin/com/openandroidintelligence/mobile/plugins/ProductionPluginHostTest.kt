@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile.plugins
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.kernel.*
@@ -38,7 +39,7 @@ class ProductionPluginHostTest {
             bind(PairingGrantBinding("https://host.example","acct_damaged","install_damaged"))
         }
         val trust = DeveloperTrustMode()
-        val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_damaged")
+        val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_damaged")
         val bytes = TestAlpPackages.compiledNotificationsPackage()
         val otherScoped = "plugin:org.example.other:other-author:kernel.notifications.read"
         val preferences = context.getSharedPreferences("open_android_intelligence_pairing_grants",Application.MODE_PRIVATE)
@@ -46,7 +47,7 @@ class ProductionPluginHostTest {
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(bytes)
             val kernel = PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
-                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate)
+                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel);host.enable(NOTIFICATION_PLUGIN_ID,true);host.grant(NOTIFICATION_PLUGIN_ID,true)
             grants.updatePrimitive(otherScoped,true)
             val ownScoped = grants.state.value!!.granted.filter { it.startsWith("plugin:$NOTIFICATION_PLUGIN_ID:") }.toSet()
@@ -87,11 +88,11 @@ class ProductionPluginHostTest {
                 bind(PairingGrantBinding("https://host.example","acct_integrity","install_integrity"))
             }
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_integrity")
+            val host = thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_integrity")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledNotificationsPackage())
             host.attach(PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
-                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },host::mediate))
+                audit,trust,host.nativeLoader,host.selector,{ grants.currentKernelGrant(it) },mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
             val id = "org.openandroidintelligence.notifications"
             host.enable(id,true); host.grant(id,true)
             assertEquals(1,host.capabilitySnapshot().bindings.size)
@@ -154,15 +155,16 @@ class ProductionPluginHostTest {
             val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             grants.bind(PairingGrantBinding("https://host.example","acct_upgrade","install_upgrade"))
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_upgrade")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_upgrade")
             val author=java.security.KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage(author=author,version="1.0.0"))
             val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),host.runtimes,
-                audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},host::mediate)
+                audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
             val original=host.entries("org.openandroidintelligence.sms").first { it.id.endsWith(".query") }
             host.enable(original.identity.pluginId,true);host.grant(original.identity.pluginId,true)
+            host.setCapabilityPolicy(original.identity.pluginId, original.key, CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
             val before=grants.state.value!!
             val selection=host.selector.select(original.key,before.pairingId)
             for (version in listOf("2.0.0","1.0.0")) {
@@ -215,18 +217,23 @@ class ProductionPluginHostTest {
             val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
             grants.bind(PairingGrantBinding("https://host.example", "acct_host", "install_host"))
             val trust = DeveloperTrustMode()
-            val host = ProductionPluginHost(context, grants, trust, NativePluginLoader(trust), "install_host")
+            val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), "install_host")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage())
             val kernel = PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
                 host.runtimes, audit, trust, host.nativeLoader, host.selector,
-                { grants.currentKernelGrant(it) }, host::mediate)
+                { grants.currentKernelGrant(it) }, mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
             val entry = host.entries("org.openandroidintelligence.sms").first { it.id.endsWith(".query") }
             host.enable(entry.identity.pluginId, true)
             host.grant(entry.identity.pluginId, true)
             assertTrue(host.authorizedBindings().any { it["capabilityId"] == entry.id })
-            assertArrayEquals(records, host.invoke(entry.identity, "acct_host", entry.key, Json.parse("{\"limit\":1}"), "cor_host"))
+            val parameters = Json.parse("""{"limit":1}""")
+            assertEquals(CapabilityAuthorizationMode.MANUAL, host.capabilityPolicy(entry.identity.pluginId, entry.key).mode)
+            assertEquals(CapabilityAuthorization.AwaitingConfirmation, host.requestAuthorization("cor_host", entry, parameters))
+            host.approveRequest("cor_host", entry, parameters, durationMinutes = 0, remainingRequestMillis = 60_000L)
+            assertArrayEquals(records, host.invoke(entry.identity, "acct_host", entry.key, parameters, "cor_host"))
+            host.finishRequestAuthorization("cor_host")
             assertEquals(1, calls)
             val invalid = runCatching { host.invoke(entry.identity, "acct_host", entry.key, Json.parse("{\"limit\":101}"), "cor_bad") }.exceptionOrNull()
             assertEquals("SCHEMA_INVALID", invalid?.message)
@@ -238,7 +245,11 @@ class ProductionPluginHostTest {
             host.grant(entry.identity.pluginId, true)
             val submitted = CompletableDeferred<Unit>()
             val results = mutableListOf<WireRequest>()
-            var terminal = false
+            val authorizationStates = java.util.concurrent.CopyOnWriteArrayList<Pair<String, String>>()
+            val states = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val receipts = java.util.concurrent.ConcurrentHashMap<String, Map<String, Any?>>()
+            val adoptedResults = java.util.concurrent.ConcurrentHashMap<String, String>()
+            val expiresAt = Instant.now().plusSeconds(120).toString()
             var gatewayRevoked = false
             val transport = object : GatewayByteTransport {
                 override suspend fun execute(request: WireRequest): WireResponse {
@@ -247,18 +258,47 @@ class ProductionPluginHostTest {
                         return WireResponse(403,emptyList(),"""{"protocol":"2.1","error":{"code":"CAPABILITY_DENIED"}}""".toByteArray())
                     }
                     val data = when {
-                        request.target.endsWith("/claim") -> mapOf("claimId" to "claim_$activeId", "requestId" to activeId,
-                            "accountId" to "acct_host", "deviceId" to "dev_host", "pairingGeneration" to 1, "grantRevision" to 7)
+                        request.target.endsWith("/claim") -> {
+                            assertEquals("POST", request.method)
+                            val body = JsonFields.obj(Json.parse(request.body.decodeToString()))!!
+                            assertEquals(7, JsonFields.int(body, "grantRevision"))
+                            states.putIfAbsent(activeId, "claimed")
+                            receipts.getOrPut(activeId) {
+                                mapOf("claimId" to "claim_$activeId", "requestId" to activeId,
+                                    "accountId" to "acct_host", "deviceId" to "dev_host", "pairingGeneration" to 1, "grantRevision" to 7)
+                            }
+                        }
+                        request.target.endsWith("/authorization") -> {
+                            assertEquals("POST", request.method)
+                            val body = JsonFields.obj(Json.parse(request.body.decodeToString()))!!
+                            val state = JsonFields.string(body, "state")!!
+                            assertTrue(state in setOf("awaiting_confirmation", "executing"))
+                            assertEquals("claimed", states[activeId])
+                            authorizationStates += activeId to state
+                            mapOf("requestId" to activeId, "localAuthorizationState" to state)
+                        }
                         request.target.endsWith("/result") -> {
+                            assertEquals("POST", request.method)
+                            val encoded = request.body.decodeToString()
+                            val body = JsonFields.obj(Json.parse(encoded))!!
+                            val issued = receipts[activeId] ?: error("RESULT_WITHOUT_CLAIM")
+                            assertEquals(issued["claimId"], JsonFields.string(body, "claimId"))
+                            assertEquals(issued["grantRevision"], JsonFields.int(body, "grantRevision"))
+                            val result = JsonFields.obj(JsonFields.field(body, "result"))!!
+                            val outcome = JsonFields.string(result, "outcome")!!
+                            assertTrue(outcome in setOf("succeeded", "denied", "cancelled", "failed", "outcome_unknown"))
+                            val previous = adoptedResults.putIfAbsent(activeId, encoded)
+                            assertTrue("Lost-ACK retries must retain the adopted result", previous == null || previous == encoded)
+                            states[activeId] = outcome
                             results.add(request)
-                            terminal = true
                             if (results.size == 1) throw IOException("Lost result ACK after Gateway adoption")
                             submitted.complete(Unit)
-                            emptyMap<String, Any?>()
+                            mapOf("requestId" to activeId, "state" to outcome)
                         }
                         else -> mapOf("request" to mapOf("requestId" to activeId, "deviceId" to "dev_host",
-                            "pairingGeneration" to 1, "grantRevision" to 7, "state" to if (terminal && activeId == "req_host") "result_succeeded" else "pending",
-                            "expiresAt" to Instant.now().plusSeconds(60).toString(), "risk" to "read",
+                            "pairingGeneration" to 1, "grantRevision" to 7, "state" to (states[activeId] ?: "pending"),
+                            "expiresAt" to expiresAt, "risk" to entry.risk,
+                            "caller" to mapOf("agentName" to "回归测试 Agent", "purpose" to "验证短信执行与结果交付"),
                             "provider" to mapOf("pluginId" to entry.identity.pluginId, "authorKeyId" to "sha256:${entry.identity.authorKeyFingerprint}"),
                             "capability" to mapOf("id" to entry.id, "version" to entry.version), "parameters" to mapOf("limit" to 1)))
                     }
@@ -275,11 +315,17 @@ class ProductionPluginHostTest {
                     "test_host_execution", { 7 }, { foreground }, TestDocumentKeys)
                 driver.accept("req_host")
                 driver.accept("req_host") // Snapshot/event replay must not create another invocation.
-                withTimeout(5000) { driver.confirmation.filterNotNull().first() }
-                driver.decide("req_host",true) // The local verified risk wins over the mock's stale "read" risk.
+                val confirmation = withTimeout(5000) { driver.confirmation.filterNotNull().first { it.requestId == "req_host" } }
+                assertEquals("回归测试 Agent", confirmation.agentName)
+                assertEquals("验证短信执行与结果交付", confirmation.purpose)
+                assertEquals(DeviceOperation.READ.name, confirmation.operation)
+                assertEquals(1, calls)
+                driver.decide("req_host",true) // Manual mode still requires local confirmation for an SMS read.
                 withTimeout(5000) { submitted.await(); executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
                 assertEquals(2, calls) // Initial direct invocation plus one device invocation.
                 assertEquals(2, results.size)
+                assertEquals(listOf("awaiting_confirmation", "executing"),
+                    authorizationStates.filter { it.first == "req_host" }.map { it.second })
                 assertArrayEquals(results[0].body, results[1].body)
                 assertEquals(results[0].headers.first { it.name == "Idempotency-Key" }.value,
                     results[1].headers.first { it.name == "Idempotency-Key" }.value)
@@ -287,10 +333,18 @@ class ProductionPluginHostTest {
                 driver.accept("req_host")
                 assertEquals(2, calls)
                 foreground = false
+                val previousResults = results.size
                 driver.accept("req_background")
+                val background = withTimeout(5000) { driver.confirmation.filterNotNull().first { it.requestId == "req_background" } }
+                assertEquals("回归测试 Agent", background.agentName)
+                assertEquals(previousResults, results.size)
+                assertEquals(2, calls)
+                driver.decide("req_background", false)
                 withTimeout(5000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
                 assertEquals(2, calls)
-                assertTrue(results.last().body.decodeToString().contains("LOCAL_CONFIRMATION_REQUIRED"))
+                assertTrue(results.last().body.decodeToString().contains("LOCAL_USER_REJECTED"))
+                assertEquals(listOf("awaiting_confirmation"),
+                    authorizationStates.filter { it.first == "req_background" }.map { it.second })
                 foreground = true
                 // Revoke at the Gateway while the Android confirmation is open;
                 // a missed cancellation event must not permit another invocation.
@@ -302,6 +356,8 @@ class ProductionPluginHostTest {
                 withTimeout(5000) { executionScope.coroutineContext[Job]!!.children.toList().forEach { it.join() } }
                 assertEquals(2,calls)
                 assertTrue(results.last().body.decodeToString().contains("GATEWAY_AUTHORIZATION_REVOKED"))
+                assertEquals(listOf("awaiting_confirmation"),
+                    authorizationStates.filter { it.first == "req_disabled" }.map { it.second })
             } finally {
                 executionScope.cancel()
             }
@@ -332,14 +388,15 @@ class ProductionPluginHostTest {
             val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             grants.bind(PairingGrantBinding("https://host.example","acct_host","install_host"))
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install_host")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_host")
             host.installStore.installRoot.deleteRecursively()
             host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0"))
             val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),
-                host.runtimes,audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},host::mediate)
+                host.runtimes,audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
             val entry=host.entries("org.openandroidintelligence.sms").first { it.id.endsWith(".fetch") }
             host.enable(entry.identity.pluginId,true);host.grant(entry.identity.pluginId,true)
+            host.setCapabilityPolicy(entry.identity.pluginId, entry.key, CapabilityPolicy(mode = CapabilityAuthorizationMode.AUTOMATIC))
             val call=KernelCallContext(entry.identity,"acct_host",grants.state.value!!.pairingId,
                 SessionConstraints(entry.primitives+entry.key,false,"cor_schedule"),kernel.registrationFor(entry.identity.pluginId)!!.budget)
             val args=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.of(mapOf(

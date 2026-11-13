@@ -35,6 +35,8 @@ internal class LoopbackGatewayStub {
     private val routes = ConcurrentHashMap<String, StubResponse>()
     private val responders = ConcurrentHashMap<String, (RecordedGatewayRequest) -> StubResponse>()
     private val recorded = CopyOnWriteArrayList<RecordedGatewayRequest>()
+    private val streamReleases = CopyOnWriteArrayList<java.util.concurrent.CountDownLatch>()
+    private val controlledStreams = CopyOnWriteArrayList<ControlledEventStream>()
 
     val baseUrl: String = "http://127.0.0.1:${server.localPort}"
 
@@ -45,7 +47,9 @@ internal class LoopbackGatewayStub {
         thread(isDaemon = true, name = "loopback-gateway") {
             while (!server.isClosed) {
                 val socket = runCatching { server.accept() }.getOrNull() ?: break
-                runCatching { handle(socket) }
+                thread(isDaemon = true, name = "loopback-gateway-request") {
+                    runCatching { handle(socket) }
+                }
             }
         }
     }
@@ -73,7 +77,77 @@ internal class LoopbackGatewayStub {
     fun targetsOf(method: String): List<String> =
         requests.filter { it.method == method }.map { it.target }
 
-    fun closed() = server.close()
+    /** Real chunked SSE whose lifetime the test controls after headers arrive. */
+    fun openEventStream(path: String): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        streamReleases += release
+        responders.remove(path)
+        routes[path] = StubResponse(200, ": heartbeat\n\n", "text/event-stream", streamRelease = release)
+        return release
+    }
+
+    /** 心跳停止只影响当前连接；重连后的 socket 继续正常提供心跳。 */
+    fun controllableEventStream(path: String): ControlledEventStream {
+        val stream = ControlledEventStream()
+        controlledStreams += stream
+        responders.remove(path)
+        routes[path] = StubResponse(200, "", "text/event-stream", controlledStream = stream)
+        return stream
+    }
+
+    internal class ControlledEventStream {
+        private val release = java.util.concurrent.CountDownLatch(1)
+        private val opened = java.util.concurrent.atomic.AtomicInteger()
+        private val silencedThrough = java.util.concurrent.atomic.AtomicInteger()
+        val heartbeatCount = java.util.concurrent.atomic.AtomicInteger()
+
+        val connectionCount: Int get() = opened.get()
+
+        fun pauseCurrentConnections() { silencedThrough.set(opened.get()) }
+        fun close() { release.countDown() }
+
+        fun write(socket: Socket) {
+            val connection = opened.incrementAndGet()
+            val output = socket.getOutputStream()
+            // 与当前 Core 的 SSE 心跳声明一致，保留测试流的快速心跳。
+            output.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\nX-Open-Android-Intelligence-Event-Heartbeat-Ms: 1000\r\n\r\n".toByteArray())
+            output.flush()
+            while (release.count != 0L) {
+                if (connection > silencedThrough.get()) {
+                    val heartbeat = ": heartbeat\n\n".toByteArray()
+                    output.write((heartbeat.size.toString(16) + "\r\n").toByteArray())
+                    output.write(heartbeat)
+                    output.write("\r\n".toByteArray())
+                    output.flush()
+                    heartbeatCount.incrementAndGet()
+                }
+                if (release.await(100, TimeUnit.MILLISECONDS)) break
+            }
+            output.write("0\r\n\r\n".toByteArray())
+            output.flush()
+        }
+    }
+
+    /** 流式回复保持连接时，测试可继续切换 Agent，最后显式释放真实终态。 */
+    fun controlledStream(
+        path: String,
+        initial: (RecordedGatewayRequest) -> String,
+        final: (RecordedGatewayRequest) -> String,
+    ): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        streamReleases += release
+        responders[path] = { request ->
+            StubResponse(200, initial(request), "text/event-stream", streamRelease = release,
+                finalBody = { final(request) })
+        }
+        return release
+    }
+
+    fun closed() {
+        controlledStreams.forEach { it.close() }
+        streamReleases.forEach { it.countDown() }
+        server.close()
+    }
 
     private fun handle(socket: Socket) {
         socket.use { open ->
@@ -106,6 +180,26 @@ internal class LoopbackGatewayStub {
 
     private fun write(socket: Socket, response: StubResponse) {
         if (response.status == 0) return // Commit succeeded, but the HTTP response was lost.
+        response.controlledStream?.let { it.write(socket); return }
+        response.streamRelease?.let { release ->
+            socket.getOutputStream().apply {
+                write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: keep-alive\r\n\r\n".toByteArray())
+                val heartbeat = response.body.toByteArray(Charsets.UTF_8)
+                write((heartbeat.size.toString(16) + "\r\n").toByteArray())
+                write(heartbeat)
+                write("\r\n".toByteArray())
+                flush()
+                check(release.await(20, TimeUnit.SECONDS)) { "SSE test owner was not released" }
+                response.finalBody?.invoke()?.toByteArray(Charsets.UTF_8)?.let { final ->
+                    write((final.size.toString(16) + "\r\n").toByteArray())
+                    write(final)
+                    write("\r\n".toByteArray())
+                }
+                write("0\r\n\r\n".toByteArray())
+                flush()
+            }
+            return
+        }
         val payload = response.body.toByteArray(Charsets.UTF_8)
         val reason = if (response.status in 200..299) "OK" else "Error"
         val header = buildString {
@@ -128,6 +222,9 @@ internal class LoopbackGatewayStub {
         val contentType: String,
         val release: java.util.concurrent.CountDownLatch? = null,
         val headers: Map<String, String> = emptyMap(),
+        val streamRelease: java.util.concurrent.CountDownLatch? = null,
+        val controlledStream: ControlledEventStream? = null,
+        val finalBody: (() -> String)? = null,
     )
 }
 

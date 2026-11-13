@@ -9,6 +9,9 @@ import java.io.FileNotFoundException
 internal const val NOTIFICATION_PLUGIN_ID = "org.openandroidintelligence.notifications"
 internal const val SMS_PLUGIN_ID = "org.openandroidintelligence.sms"
 internal const val CALL_LOG_PLUGIN_ID = "org.openandroidintelligence.call-log"
+internal const val SCREEN_READER_PLUGIN_ID = "org.openandroidintelligence.screen-reader"
+internal const val SCREEN_CAPTURE_PLUGIN_ID = "org.openandroidintelligence.screen-capture"
+internal const val SCREEN_CONTROL_PLUGIN_ID = "org.openandroidintelligence.screen-control"
 
 /**
  * Full APK 可携带的官方插件包。
@@ -41,12 +44,34 @@ enum class BundledPlugin(
         installTag = "bundled-call-log-install",
         displayName = "通话记录读取",
     ),
+    SCREEN_READER(
+        pluginId = SCREEN_READER_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-reader.alp",
+        installTag = "bundled-screen-reader-install",
+        displayName = "屏幕读取",
+    ),
+    SCREEN_CAPTURE(
+        pluginId = SCREEN_CAPTURE_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-capture.alp",
+        installTag = "bundled-screen-capture-install",
+        displayName = "屏幕截图",
+    ),
+    SCREEN_CONTROL(
+        pluginId = SCREEN_CONTROL_PLUGIN_ID,
+        assetPath = "bundled-plugins/screen-control.alp",
+        installTag = "bundled-screen-control-install",
+        displayName = "屏幕控制",
+    ),
 }
 
-/** 当前安装包未附带这一项内置插件包；界面据此如实说明，而不是假装安装成功。 */
+/** 当前安装包未附带这一项内置能力包；装配据此如实报告缺包，而不是假装可用。 */
 internal class BundledPluginUnavailable(val plugin: BundledPlugin) : IllegalStateException()
 
-/** APK 资产只是包来源；验签与安装仍属于 [PluginInstallStore]。 */
+/**
+ * APK 资产只是内建能力的来源；验签在 [loadBuiltInCapabilities] 里完成，产物不落盘。
+ *
+ * 这里不再走「安装到私有目录」的路径：内建能力没有安装这一步，也就不存在版本残留。
+ */
 internal fun readBundledPluginPackage(context: Context, plugin: BundledPlugin): ByteArray = try {
     context.assets.open(plugin.assetPath).use(::readPluginPackageBytes)
 } catch (_: FileNotFoundException) {

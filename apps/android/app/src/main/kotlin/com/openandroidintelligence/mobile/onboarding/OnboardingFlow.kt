@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,11 +38,18 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.ui.resources.R as UiR
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+import com.openandroidintelligence.conversation.theme.ThemePalette
+import com.openandroidintelligence.mobile.AppearancePreferences
+import com.openandroidintelligence.mobile.AppearanceSettings
+import com.openandroidintelligence.mobile.ThemePreference
+import com.openandroidintelligence.mobile.onboarding.screens.AppearanceSetupScreen
 import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
 import com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealTransition
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
@@ -72,6 +80,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun OnboardingFlow(
     state: OnboardingState,
+    appearanceSettings: AppearanceSettings,
+    appearancePreferences: AppearancePreferences,
     onStageChange: (OnboardingStage) -> Unit,
     onGatewaySelected: (String) -> Unit,
     onFinished: () -> Unit,
@@ -86,6 +96,22 @@ fun OnboardingFlow(
 
     // ---- 权限状态：进入页面时查询一次，回到前台时再查（用户可能去系统设置里改过） ----
     val statuses = remember { mutableStateMapOf<String, PermissionStatus>() }
+    /**
+     * 一次性提示前先确认 RoleManager 的真实结论，再调用这里。
+     *
+     * 引导页没有独立的 notice 通道，用与其它入口一致的短 Toast 呈现；
+     * 只说明「发生了什么、下一步怎么做」，不改变任何权限状态。
+     */
+    fun showRoleNotice(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+    /**
+     * 用户点了「去设置」但还没确认结果的那张卡片。
+     *
+     * 不能把「Intent 启动成功」当成「已设置」：系统页可能根本没有本应用，
+     * 用户也可能直接返回。回到前台时用它决定是否需要给出可见反馈。
+     */
+    var awaitingRoleSetup by remember { mutableStateOf(false) }
     fun refreshPermissions() {
         val entries = buildVisiblePermissions(pluginPrimitives)
         entries.forEach { entry ->
@@ -94,7 +120,18 @@ fun OnboardingFlow(
     }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) refreshPermissions()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refreshPermissions()
+                // 「点了去设置」的那次返回：只以系统真实状态为准。
+                // 仍持有 → 什么都不用说；仍未持有 → 明确告诉用户还差哪一步，
+                // 而不是让界面看起来「点了没反应」。
+                if (awaitingRoleSetup) {
+                    awaitingRoleSetup = false
+                    if (!AssistantRole.isAssistantRoleHeld(context)) {
+                        showRoleNotice(context.getString(UiR.string.perm_role_assistant_not_set_hint))
+                    }
+                }
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         refreshPermissions()
@@ -132,21 +169,74 @@ fun OnboardingFlow(
         pendingPermissionId = null
         refreshPermissions()
     }
+    // 系统角色申请：角色授予对话框是独立页面，结果回调只表示「用户离开了那个页面」，
+    // 真正的授权状态必须重新向 RoleManager 查询——不能把 resultCode 当作已设置的证据。
+    val assistantRoleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        pendingPermissionId = null
+        refreshPermissions()
+    }
 
     val entries = remember(pluginPrimitives) { buildVisiblePermissions(pluginPrimitives) }
+
+    /**
+     * 尝试启动 Intent。
+     *
+     * 只捕获 `RuntimeException`：部分 ROM 对角色申请或设置页会抛
+     * `SecurityException` / `IllegalStateException`，那样会从 `onClick` 里穿出去，
+     * 用户看到的就是「点了完全没反应」。
+     */
+    fun launchOrFallback(intent: Intent): Boolean = try {
+        assistantRoleLauncher.launch(intent)
+        true
+    } catch (_: RuntimeException) {
+        false
+    }
+
+    /**
+     * 发起系统角色申请。
+     *
+     * 顺序由 [AssistantRole.roleSettingsIntents] 决定：角色申请对话框优先，其次是
+     * 可解析的系统设置页（默认应用 → 数字助理 → 应用管理）；不可解析的页面不会
+     * 出现在列表里，所以不会「启动了却什么都不弹」。
+     *
+     * **启动成功不等于设置成功**：这里只记下「正在等用户回来」，真正的结论由
+     * `ON_RESUME` 时重新查询 `RoleManager` 得出。所有入口都启动失败时如实标成
+     * 「不支持」并说明原因，不留在假的「未设置」。
+     */
+    fun requestSystemRole(role: SystemRole) {
+        val candidates = when (role) {
+            SystemRole.ASSISTANT -> AssistantRole.roleSettingsIntents(context)
+        }
+        if (candidates.any { launchOrFallback(it) }) {
+            awaitingRoleSetup = true
+            pendingPermissionId = null
+            return
+        }
+
+        // 一条路都走不通：如实呈现「不支持」，并说明为什么点了没反应。
+        pendingPermissionId = null
+        val entry = entries.firstOrNull { it.systemRole == role }
+        if (entry != null) statuses[entry.id] = PermissionStatus.UNSUPPORTED
+        showRoleNotice(context.getString(UiR.string.perm_role_assistant_settings_unavailable))
+    }
 
     fun requestPermission(id: String) {
         val entry = entries.firstOrNull { it.id == id } ?: return
         pendingPermissionId = id
-        when (id) {
+        when {
+            // 系统角色（默认数字助理）不是运行时权限：走 RoleManager 的角色对话框；
+            // AOSP 不允许普通应用直接请求该角色，弹不出来时回退到系统「默认数字助理」设置页。
+            entry.systemRole != null -> requestSystemRole(entry.systemRole)
             // 屏幕采集不是运行时权限：走 MediaProjection 授权对话框，由业务侧在使用时发起。
             // 引导页只解释机制，**不主动拉起投屏授权**（那会让用户以为必须现在授权）。
             // 因此这里把它标为「无需现在处理」，让卡片显示「使用时询问」而不是留下
             // 一个点了没反应的按钮。
-            "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
+            id == "screen_capture" -> statuses[id] = PermissionStatus.NOT_REQUIRED
             // 通知使用权是特殊权限：只能引导用户去系统设置页开启。
-            "notification_access" -> openNotificationAccessSettings(context)
-            "sms", "call_log" -> {
+            id == "notification_access" -> openNotificationAccessSettings(context)
+            id == "sms" || id == "call_log" -> {
                 val needed = entry.manifestPermissions
                     .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
                 if (needed.isEmpty()) {
@@ -235,7 +325,17 @@ fun OnboardingFlow(
             ) { stage ->
                 when (stage) {
                     OnboardingStage.WELCOME -> WelcomeScreen(
-                        onStart = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onStart = { onStageChange(OnboardingStage.APPEARANCE) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+
+                    OnboardingStage.APPEARANCE -> AppearanceSetupScreen(
+                        settings = appearanceSettings,
+                        onSetTheme = appearancePreferences::setTheme,
+                        onSetDynamicColor = appearancePreferences::setDynamicColor,
+                        onSetPalette = appearancePreferences::selectPalette,
+                        onNext = { onStageChange(OnboardingStage.PERMISSIONS) },
+                        onBack = { onStageChange(OnboardingStage.WELCOME) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -252,7 +352,7 @@ fun OnboardingFlow(
                         },
                         onNext = { onStageChange(OnboardingStage.DEPLOYMENT) },
                         onSkipOptional = { onStageChange(OnboardingStage.DEPLOYMENT) },
-                        onBack = { onStageChange(OnboardingStage.WELCOME) },
+                        onBack = { onStageChange(OnboardingStage.APPEARANCE) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -360,7 +460,7 @@ private fun RevealLandingMark() {
         )
         Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
         Text(
-            text = "连接你的 Agent Gateway",
+            text = stringResource(UiR.string.conn_onboarding_welcome_connect_title),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

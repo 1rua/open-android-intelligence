@@ -53,6 +53,39 @@ class MarkdownRenderingComposeTest {
     }
 
     @Test
+    fun tableRendersComplexContentWithLongTextAndAlignments() {
+        val markdownTable = """
+            | 左对齐 | 居中显示 | 右对齐数值 |
+            | :--- | :---: | ---: |
+            | 较短内容 | 🟢 正常 | ¥128.50 |
+            | 这是一段非常长非常长的文本用来测试表格单元格换行 | ⚠️ 警告 | ¥12,345.00 |
+        """.trimIndent()
+
+        val entry = TimelineEntry(
+            key = "msg_complex_table",
+            sender = "assistant",
+            text = markdownTable,
+            isUser = false,
+            timestamp = 1000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            isStreaming = false,
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                MessageTimeline(listOf(entry))
+            }
+        }
+
+        compose.onNodeWithText("左对齐", substring = true).assertExists()
+        compose.onNodeWithText("居中显示", substring = true).assertExists()
+        compose.onNodeWithText("右对齐数值", substring = true).assertExists()
+        compose.onNodeWithText("这是一段非常长非常长的文本", substring = true).assertExists()
+        compose.onNodeWithText("¥12,345.00", substring = true).assertExists()
+    }
+
+    @Test
     fun headingRendersTextInCompose() {
         val markdownHeadings = """
             # 遥测总览

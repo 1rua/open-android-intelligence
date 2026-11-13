@@ -6,6 +6,8 @@ import android.content.ComponentName
 import android.content.pm.PackageManager
 import android.view.WindowManager
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.voice.VoiceRecorderDevice
+import com.openandroidintelligence.conversation.voice.VoiceRecording
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith

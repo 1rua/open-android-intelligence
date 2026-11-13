@@ -1,0 +1,1 @@
+OpenClaw 插件 pin 通过：1.1.0 e73ddfe1b333cfe0f69c4ea519db3553b056381a

@@ -17,7 +17,7 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
         runCatching {
             AccountProfile(account.name, required(account, "gateway"), required(account, "username"),
                 manager.getUserData(account, "tlsTrustId").orEmpty(), manager.getUserData(account, "avatar"),
-                manager.getUserData(account, "agentName"))
+                manager.getUserData(account, "agentName"), manager.getUserData(account, "selectedAgentId"))
         }.getOrNull()
     }
     override fun find(localProfileId: String): AccountProfile? = list().find { it.localProfileId == localProfileId }
@@ -30,7 +30,8 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
     private fun saveProfile(profile: AccountProfile, binding: Binding?) {
         val account = Account(profile.localProfileId, TYPE)
         val values = mutableMapOf("gateway" to profile.gatewayBaseUrl, "username" to profile.username,
-            "tlsTrustId" to profile.tlsTrustId, "avatar" to profile.avatarBase64, "agentName" to profile.agentName)
+            "tlsTrustId" to profile.tlsTrustId, "avatar" to profile.avatarBase64, "agentName" to profile.agentName,
+            "selectedAgentId" to profile.selectedAgentId)
         binding?.let { values["binding"] = encode(it) }
         if (manager.getAccountsByType(TYPE).none { it == account }) {
             val data = Bundle().apply { values.forEach { (key, value) -> if (value != null) putString(key, value) } }
@@ -48,6 +49,12 @@ class AndroidAccountProfileStore(context: Context) : AccountProfileStore {
     fun saveAvatar(profileId: String, avatarBase64: String) {
         check(find(profileId) != null) { "UNKNOWN_PROFILE" }
         manager.setUserData(Account(profileId, TYPE), "avatar", avatarBase64)
+    }
+
+    /** 记录用户最后选择的原生 Agent；只允许列表里真实存在的 id，空值清除记录。 */
+    fun saveSelectedAgent(profileId: String, agentId: String?) {
+        check(find(profileId) != null) { "UNKNOWN_PROFILE" }
+        manager.setUserData(Account(profileId, TYPE), "selectedAgentId", agentId)
     }
 
     fun binding(profileId: String): Binding? {

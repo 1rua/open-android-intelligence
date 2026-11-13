@@ -1,8 +1,15 @@
 package com.openandroidintelligence.mobile.onboarding
 
+import android.app.Application
+import android.content.Context
+import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
  * 权限目录的可见性与排序测试。
@@ -12,54 +19,74 @@ import org.junit.Test
  * - 「拒绝权限不应阻断无关功能」→ 任何权限都不得被标记为登录前置条件；
  * - 布局稳定 → 分组顺序固定。
  */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class PermissionCatalogTest {
 
-    /** 空插件集：只有三项基础/增强权限，设备能力组整体缺席。 */
+    private val context: Context get() = ApplicationProvider.getApplicationContext<Application>()
+
+    /** 引导展示完整的基础功能、可选增强以及设备能力项。 */
     @Test
-    fun `empty plugin set exposes only base permissions`() {
+    fun `visible permissions expose standard items`() {
         val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
 
         assertEquals(
-            listOf("notifications", "microphone", "screen_capture"),
+            listOf(
+                "notifications",
+                "microphone",
+                "screen_capture",
+                "assistant_role",
+                "sms",
+                "call_log",
+                "notification_access",
+            ),
             entries.map { it.id },
         )
-        // 设备能力组一项都不该出现 —— 不是禁用态，是不存在。
-        assertTrue(entries.none { it.group == PermissionGroup.DEVICE_CAPABILITY })
+        assertTrue(entries.any { it.group == PermissionGroup.DEVICE_CAPABILITY })
     }
 
-    /** 短信插件启用后，短信权限才出现；未启用时不得出现。 */
+    /**
+     * 默认数字助理卡片必须声明为**系统角色**而不是运行时权限。
+     *
+     * 这条区分直接决定界面行为：角色项走 RoleManager 对话框/系统设置，
+     * 运行时权限走系统权限弹窗；混在一起就会出现「点了弹不出任何东西」。
+     */
     @Test
-    fun `sms permission appears only when plugin primitive is enabled`() {
-        val withSms = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_SMS_READ),
-        )
-        assertTrue(withSms.any { it.id == "sms" })
+    fun `assistant role card declares system role and no manifest permission`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        val role = entries.first { it.id == "assistant_role" }
 
-        val withoutSms = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
-        assertTrue(withoutSms.none { it.id == "sms" })
+        assertEquals(SystemRole.ASSISTANT, role.systemRole)
+        assertEquals(PermissionGroup.OPTIONAL, role.group)
+        assertTrue("只能是系统设置/角色授予", role.isSpecialSystemAccess)
+        assertTrue("系统角色不是运行时权限", role.manifestPermissions.isEmpty())
+        assertTrue("系统角色同样不能阻断登录", !role.requiredForLogin)
     }
 
-    /** 通知插件启用后，通知使用权才出现。 */
+    /** 只有默认数字助理是系统角色项：其余权限不得被误标。 */
     @Test
-    fun `notification access appears only when notifications plugin is enabled`() {
-        val entries = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_NOTIFICATIONS_READ),
+    fun `only assistant role entry uses a system role`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        assertEquals(
+            listOf("assistant_role"),
+            entries.filter { it.systemRole != null }.map { it.id },
         )
+    }
+
+    /** 短信权限与通知使用权均被声明并展示。 */
+    @Test
+    fun `sms and notification access are present`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
+        assertTrue(entries.any { it.id == "sms" })
         val entry = entries.firstOrNull { it.id == "notification_access" }
         assertTrue("通知使用权应当出现", entry != null)
-        // 特殊系统访问：必须走系统设置页，而不是运行时弹窗。
         assertTrue("通知使用权应标记为特殊系统访问", entry!!.isSpecialSystemAccess)
     }
 
-    /** 通话记录同理。 */
+    /** 通话记录权限被声明并展示。 */
     @Test
-    fun `call log permission follows its plugin primitive`() {
-        val entries = buildVisiblePermissions(
-            androidSdk = 34,
-            enabledPluginPrimitives = setOf(KERNEL_CALL_LOG_READ),
-        )
+    fun `call log permission is present`() {
+        val entries = buildVisiblePermissions(androidSdk = 34, enabledPluginPrimitives = emptySet())
         assertTrue(entries.any { it.id == "call_log" })
     }
 
@@ -127,8 +154,10 @@ class PermissionCatalogTest {
             androidSdk = 34,
             enabledPluginPrimitives = setOf(KERNEL_SMS_READ, KERNEL_CALL_LOG_READ, KERNEL_NOTIFICATIONS_READ),
         )
-        assertTrue(entries.all { it.purpose.isNotBlank() })
-        assertTrue(entries.all { it.displayName.isNotBlank() })
+        assertTrue(entries.all { it.purposeRes != 0 })
+        assertTrue(entries.all { it.displayNameRes != 0 })
+        assertTrue(entries.all { context.getString(it.purposeRes).isNotBlank() })
+        assertTrue(entries.all { context.getString(it.displayNameRes).isNotBlank() })
     }
 
     /**
@@ -160,5 +189,24 @@ class PermissionCatalogTest {
             "通知使用权不应被当作无需操作的权限",
             notificationAccess.id != "screen_capture",
         )
+    }
+
+    @Test
+    fun permissionGuidanceUsesAndroidLocalSettingsAndRetainsIndependentConsent() {
+        assertTrue(PERMISSION_NOTICE_TITLE_RES != 0)
+        assertTrue(PERMISSION_INTRO_BODY_RES != 0)
+        assertTrue(PERMISSION_NOTICE_BODY_RES != 0)
+
+        val noticeTitle = context.getString(PERMISSION_NOTICE_TITLE_RES)
+        val introBody = context.getString(PERMISSION_INTRO_BODY_RES)
+        val noticeBody = context.getString(PERMISSION_NOTICE_BODY_RES)
+
+        assertEquals("权限 ≠ 授权", noticeTitle)
+        assertTrue(introBody.contains("设备能力由本机决定"))
+        assertFalse(introBody.contains("按账号单独授权"))
+        assertTrue(noticeBody.contains("已关闭的设置会保留"))
+        assertTrue(noticeBody.contains("旧设置需先在本机复核"))
+        assertTrue(noticeBody.contains("敏感操作确认仍分别检查"))
+        assertFalse(noticeBody.contains("设备能力与配对授权"))
     }
 }

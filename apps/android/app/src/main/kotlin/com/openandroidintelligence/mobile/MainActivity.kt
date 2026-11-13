@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.ui.resources.R as UiR
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -19,6 +20,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,7 +31,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,24 +42,29 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.lifecycleScope
-import com.openandroidintelligence.capability.MediaProjectionCaptureService
-import com.openandroidintelligence.capability.MediaProjectionRuntime
-import com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.model.StreamHealth
+import com.openandroidintelligence.gateway.events.EventStreamStatus
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
-import com.openandroidintelligence.conversation.workbench.FloatingConversationPanel
+import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
+import com.openandroidintelligence.conversation.voice.VoiceRecorder
+import com.openandroidintelligence.conversation.voice.VoiceRecorderState
+import com.openandroidintelligence.conversation.voice.VoiceRejection
+import com.openandroidintelligence.conversation.voice.activeRecording
+import com.openandroidintelligence.conversation.voice.voiceRejectionMessage
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.conversation.workbench.PastedImageContent
 import com.openandroidintelligence.core.model.AssistantHandoffDecision
@@ -66,13 +72,16 @@ import com.openandroidintelligence.core.model.AssistantHandoffDenialReason
 import com.openandroidintelligence.core.model.AssistantHandoffGate
 import com.openandroidintelligence.core.model.AssistantHandoffRequest
 import com.openandroidintelligence.core.model.DefaultAssistantHandoffGate
+import com.openandroidintelligence.mobile.assistant.handoffSessionToken
 import com.openandroidintelligence.mobile.onboarding.OnboardingFlow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.withContext
+import com.openandroidintelligence.mobile.screen.ScreenControlConfirmationDialog
 
 /**
  * 宿主主入口 Activity。
@@ -86,16 +95,32 @@ import kotlinx.coroutines.withContext
  * 系统栏：图标明暗不再由 `themes.xml` 写死，而是在 [setContent] 里按应用内 `isDark`
  * 交给 [applySystemBarContrast]；这样「应用内深色 + 系统浅色」时状态栏图标仍然可读。
  */
+/** 交接导航的重试次数与间隔：覆盖 Agent 切换后工作台发布的那一小段空窗。 */
+private const val HANDOFF_NAVIGATION_ATTEMPTS = 6
+private const val HANDOFF_NAVIGATION_RETRY_MILLIS = 500L
+
 class MainActivity : ComponentActivity() {
     private val sharedAttachments: SharedConversationAttachments by viewModels()
     private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
     private val pendingReply = androidx.compose.runtime.mutableStateOf<ReplyNotificationTarget?>(null)
+
+    /** 助手浮层「上滑交接」带来的会话身份（只由主进程刚刚接受过的那一次产生）。 */
+    private val pendingHandoff = androidx.compose.runtime.mutableStateOf<String?>(null)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
-        ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
+        // 助手交接的深链与回复通知同形（同一 action、同一条 oai-reply:// 路径），
+        // 两者都会被解析出来。交接意图必须**只**进 pendingHandoff：否则回复通知那条
+        // 路径会先跑、忽略 agentId 去 openThread，把用户带到旧 Agent 的同名会话或直接失败，
+        // 而真正的交接导航又被它抢先消费掉。
+        val handoffToken = intent.handoffSessionToken()
+        if (handoffToken != null) {
+            pendingHandoff.value = handoffToken
+        } else {
+            ReplyNotificationTarget.from(intent)?.let { pendingReply.value = it }
+        }
     }
 
     private val handoffGate: AssistantHandoffGate = DefaultAssistantHandoffGate()
@@ -111,7 +136,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) receiveSharedConversationAttachments(this, sharedAttachments, intent)
         if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
-        pendingReply.value = ReplyNotificationTarget.from(intent)
+        // 与 onNewIntent 同一规则：交接意图只进 pendingHandoff，不重复当回复通知处理。
+        val initialHandoffToken = intent.handoffSessionToken()
+        if (initialHandoffToken != null) {
+            pendingHandoff.value = initialHandoffToken
+        } else {
+            pendingReply.value = ReplyNotificationTarget.from(intent)
+        }
 
         val app = application as OpenAndroidIntelligenceApplication
         val runtime = app.gatewayRuntime
@@ -133,6 +164,7 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = appearanceSettings.dynamicColor,
                 palette = appearanceSettings.palette,
                 reduceMotion = appearanceSettings.reduceMotion,
+                streamingHapticFeedback = appearanceSettings.streamingHapticFeedback,
             ) {
                 val reduceMotion = LocalMotionPolicy.current.reduceMotion
                 // 全 App 唯一的 Snackbar 落点：离上下文远的操作结果统一在这里出现，
@@ -148,7 +180,7 @@ class MainActivity : ComponentActivity() {
                     uiScope.launch {
                         val result = snackbarHostState.showSnackbar(
                             message = message,
-                            actionLabel = "去设置",
+                            actionLabel = getString(UiR.string.common_action_go_to_settings),
                             withDismissAction = true,
                         )
                         if (result == SnackbarResult.ActionPerformed) {
@@ -164,21 +196,27 @@ class MainActivity : ComponentActivity() {
 
                 val deviceConfirmation by runtime.deviceConfirmation.collectAsState()
                 deviceConfirmation?.let { request ->
-                    AlertDialog(
-                        onDismissRequest = { runtime.decideDeviceRequest(request.requestId,false) },
-                        title = { Text("确认设备操作") },
-                        text = { Text("${request.pluginId}\n${request.capability}\n${request.parameters}") },
-                        confirmButton = { TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,true) }) { Text("允许这次操作") } },
-                        dismissButton = { TextButton(onClick = { runtime.decideDeviceRequest(request.requestId,false) }) { Text("拒绝") } },
+                    ScreenControlConfirmationDialog(
+                        requestId = request.requestId,
+                        pluginId = request.pluginId,
+                        capability = request.capability,
+                        parameters = request.parameters,
+                        agentName = request.agentName,
+                        purpose = request.purpose,
+                        operation = request.operation,
+                        expiresAtMillis = request.expiresAtMillis,
+                        onApprove = { durationMinutes -> runtime.decideDeviceRequest(request.requestId, true, durationMinutes, request.decisionToken) },
+                        onDeny = { runtime.decideDeviceRequest(request.requestId, false, decisionToken = request.decisionToken) },
                     )
                 }
                 val phase by runtime.phase.collectAsState()
+                val accountLoginStep by runtime.accountLoginStep.collectAsState()
                 val controller by runtime.controller.collectAsState()
                 val savedProfiles by runtime.savedProfiles.collectAsState()
                 val isManagingProfiles by runtime.isManagingProfiles.collectAsState()
                 val operationNotice by runtime.operationNotice.collectAsState()
-                var showSettingsSheet by remember { mutableStateOf(false) }
-                var showAssistant by remember { mutableStateOf(false) }
+                var showSettings by rememberSaveable { mutableStateOf(false) }
+                val settingsEnvironment = remember(app) { app.platformSettingsEnvironment() }
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
                     runtime.replyNotifications.refreshPermission()
                     runtime.nativeConversationNotifications.refreshActive()
@@ -192,11 +230,32 @@ class MainActivity : ComponentActivity() {
                         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     }
                 }
+                // 助手交接：复用 pendingReply 的形状 —— 控制器就绪且主进程确认才能清空。
+                LaunchedEffect(phase, controller, pendingHandoff.value) {
+                    pendingHandoff.value?.let { sessionToken ->
+                        // Agent 切换后工作台要等旧分区的 IO 收尾才发布：短时间内重试几次，
+                        // 而不是第一次失败就把用户推去手动操作。
+                        var attempts = 0
+                        while (attempts < HANDOFF_NAVIGATION_ATTEMPTS) {
+                            if (runtime.consumeAssistantHandoff(sessionToken)) {
+                                showSettings = false
+                                pendingHandoff.value = null
+                                intent.data = null
+                                break
+                            }
+                            if (phase !is ConnectionPhase.Connected) break
+                            attempts++
+                            kotlinx.coroutines.delay(HANDOFF_NAVIGATION_RETRY_MILLIS)
+                        }
+                        if (pendingHandoff.value == sessionToken && phase is ConnectionPhase.Connected) {
+                            notify(getString(UiR.string.assistant_main_enter_session_failed))
+                        }
+                    }
+                }
                 LaunchedEffect(phase, controller, pendingReply.value) {
                     pendingReply.value?.let { target ->
                         if (runtime.openReplyNotification(target)) {
-                            showSettingsSheet = false
-                            showAssistant = false
+                            showSettings = false
                             pendingReply.value = null
                             intent.data = null
                         } else if (phase is ConnectionPhase.Connected) {
@@ -205,31 +264,106 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                var recording by remember { mutableStateOf<VoiceRecording?>(null) }
-                var recordingTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
+                // 语音录制与默认数字助手共用同一个 VoiceRecorder：同一套状态机、同一套
+                // 波形/计时/取消/发送界面。录音态由输入坞原地呈现，不再弹独立卡片遮挡会话。
+                // 录音开始时所属的对话；交付开始后转移到 [sendingTarget]，让「正在交付的那段
+                // 录音」与「用户可能立刻开始的新录音」各自持有自己的目标，不会串对话。
+                // 用原子引用而不是 Compose 状态：交付回调在后台线程读取，界面从不直接渲染它们。
+                val voiceTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
+                val sendingTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
                 var permissionTarget by remember { mutableStateOf<Pair<WorkbenchController, String?>?>(null) }
-                var sendingVoice by remember { mutableStateOf(false) }
-                var voiceSendJob by remember { mutableStateOf<Job?>(null) }
-                var voiceSendController by remember { mutableStateOf<WorkbenchController?>(null) }
+                // start() 的失败与交付阶段的失败是两种原因，提示沿用原来的两句话：
+                // 「无法开始录音」发生在按下麦克风的同一帧，交付失败则是之后的后台写文件。
+                val startFailure = remember { AtomicBoolean(false) }
+                val recorder = remember(app) {
+                    VoiceRecorder.create(
+                        context = app,
+                        onRecorded = { voice, sessionKey ->
+                            // 交付在后台线程回调；真正的发送与提示回到主线程，
+                            // 并且必须仍停留在录音所属的对话，绝不把语音发到别的会话。
+                            // 组合已经销毁（作用域已取消）时任务体不会执行，必须在这里
+                            // 自己关闭临时音频，否则缓存目录会留一份没人释放的录音。
+                            if (uiScope.coroutineContext[Job]?.isActive != true) {
+                                voice.close()
+                                sendingTarget.set(null)
+                                return@create
+                            }
+                            // 在回调线程就取走目标：交付收尾会清空 sendingTarget，晚一步就丢了。
+                            val target = sendingTarget.get()
+                            uiScope.launch {
+                                try {
+                                    if (target == null) {
+                                        notify("录音已丢失，请重新录制")
+                                    } else if (runtime.controller.value !== target.first) {
+                                        notify("对话已切换，语音未发送")
+                                    } else if (target.first.state.value.activeThreadId != sessionKey) {
+                                        notify("对话已切换，语音未发送")
+                                    } else if (!target.first.sendVoiceAttachment(voice.selection(), target.second)) {
+                                        notify("语音未发送，请查看对话提示后重试")
+                                    }
+                                } finally {
+                                    voice.close()
+                                    sendingTarget.compareAndSet(target, null)
+                                }
+                            }
+                        },
+                        onRejected = { rejection ->
+                            // ALREADY_SENDING 说明上一段仍在这条交付路径上，目标不能被清掉；
+                            // 其余拒绝都意味着没有在途录音，顺手清掉目标，避免永久挡住下一次发送。
+                            if (rejection != VoiceRejection.ALREADY_SENDING) sendingTarget.set(null)
+                            val message = when {
+                                rejection != VoiceRejection.RECORDING_FAILED ->
+                                    voiceRejectionMessage(rejection)
+                                startFailure.getAndSet(false) ->
+                                    getString(UiR.string.perm_audio_error_start_failed)
+                                else -> "录音或发送失败，请重试"
+                            }
+                            uiScope.launch { notify(message) }
+                        },
+                    )
+                }
+                DisposableEffect(recorder) {
+                    onDispose { recorder.close() }
+                }
+                val voiceState by recorder.state.collectAsState()
+                val activeRecording = voiceState.activeRecording()
+                // 只有真的取消了一段录音才清掉发送目标：正在写文件/发送时的 cancel() 返回
+                // false，交付仍要落到原来那条对话上，不能被这里顺手清空成"录音已丢失"。
                 val cancelRecording: () -> Unit = {
-                    recording?.close()
-                    recording = null
-                    recordingTarget = null
+                    if (recorder.cancel()) voiceTarget.set(null)
+                }
+                val finishRecording: () -> Unit = {
+                    // 上一段仍在交付时 send() 会拒绝这一次；此时不能动 sendingTarget，
+                    // 否则会把正在交付的音频指向错误的对话。
+                    if (sendingTarget.get() == null) {
+                        val target = voiceTarget.getAndSet(null)
+                        // 目标必须在 send() 之前登记：交付回调可能在后台线程立刻到达，
+                        // 写在 send() 之后会留下"回调先到、目标还是空的"窗口。
+                        sendingTarget.set(target)
+                        val accepted = recorder.send {
+                            runtime.controller.value?.state?.value?.activeThreadId
+                        }
+                        // 被拒绝（未在录音 / 会话已切换）时录音器已回到 Idle，目标一并清掉。
+                        if (!accepted) sendingTarget.compareAndSet(target, null)
+                    }
                 }
                 val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->
                     if (runtime.controller.value !== target.first || target.first.state.value.activeThreadId != target.second) {
                         notify("对话已切换，请重新开始录音")
                     } else if (!target.first.canSendVoiceAttachment(target.second)) {
                         notify("当前对话暂不能发送语音，请等待处理完成后重试")
-                    } else if (recording == null && !sendingVoice) {
-                        try {
-                            val capture = VoiceRecording.create(this@MainActivity)
-                            capture.start()
-                            recordingTarget = target
-                            recording = capture
-                        } catch (_: Exception) {
-                            notify("无法开始录音，请检查麦克风权限及占用情况")
-                        }
+                    } else if (voiceState is VoiceRecorderState.Sending) {
+                        notify(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
+                    } else if (voiceState is VoiceRecorderState.Idle) {
+                        voiceTarget.set(target)
+                        // 失败原因统一由 onRejected 给出，这里不重复提示；
+                        // startFailure 让那条回调区分「起不来」与「交付失败」两种原因。
+                        startFailure.set(true)
+                        val started = recorder.start(target.second)
+                        // start() 失败时 onRejected 已在调用内消费掉这个标记；成功后也要复位，
+                        // 否则之后一次正常的录制失败会被误报成「无法开始录音」。
+                        startFailure.set(false)
+                        if (!started) voiceTarget.compareAndSet(target, null)
                     }
                 }
                 val audioPermissionLauncher = rememberLauncherForActivityResult(
@@ -240,7 +374,7 @@ class MainActivity : ComponentActivity() {
                     if (granted && target != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
                         beginRecording(target)
                     } else if (!granted) {
-                        notifyWithSettingsAction("需要麦克风权限才能发送语音")
+                        notifyWithSettingsAction(getString(UiR.string.perm_audio_required))
                     }
                 }
                 val startVoiceInput: () -> Unit = {
@@ -249,7 +383,9 @@ class MainActivity : ComponentActivity() {
                         notify("对话尚未就绪")
                     } else if (!active.canSendVoiceAttachment(active.state.value.activeThreadId)) {
                         notify("当前对话暂不能发送语音，请等待处理完成后重试")
-                    } else if (recording == null && !sendingVoice && permissionTarget == null) {
+                    } else if (voiceState is VoiceRecorderState.Sending) {
+                        notify(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
+                    } else if (voiceState is VoiceRecorderState.Idle && permissionTarget == null) {
                         val target = active to active.state.value.activeThreadId
                         if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             beginRecording(target)
@@ -257,6 +393,13 @@ class MainActivity : ComponentActivity() {
                             permissionTarget = target
                             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
+                    }
+                }
+                // 录音只属于录制它的对话：宿主切走会话时立即丢弃，而不是等发送时才失败。
+                LaunchedEffect(controller) {
+                    val active = controller ?: return@LaunchedEffect
+                    snapshotFlow { active.state.value.activeThreadId }.collect { threadId ->
+                        if (recorder.onSessionChanged(threadId)) voiceTarget.set(null)
                     }
                 }
                 DisposableEffect(Unit) {
@@ -269,66 +412,9 @@ class MainActivity : ComponentActivity() {
                     lifecycle.addObserver(observer)
                     onDispose {
                         lifecycle.removeObserver(observer)
-                        voiceSendJob?.cancel()
                         permissionTarget = null
                         cancelRecording()
                     }
-                }
-                LaunchedEffect(controller) {
-                    if (recordingTarget?.first?.let { it !== controller } == true) cancelRecording()
-                    if (voiceSendController?.let { it !== controller } == true) voiceSendJob?.cancel()
-                }
-                if (recording != null) {
-                    AlertDialog(
-                        onDismissRequest = cancelRecording,
-                        title = { Text("正在录音") },
-                        text = { Text("录音结束后会将原始音频直接发送给 Agent。当前草稿和附件会保留。离开应用将取消录音。") },
-                        dismissButton = { TextButton(onClick = cancelRecording) { Text("取消") } },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                val capture = recording
-                                val target = recordingTarget
-                                // Consume this recording before scheduling work: repeated clicks cannot resend it.
-                                recording = null
-                                recordingTarget = null
-                                if (capture != null && target != null) {
-                                    sendingVoice = true
-                                    voiceSendController = target.first
-                                    voiceSendJob = lifecycleScope.launch {
-                                        var voice: RecordedVoice? = null
-                                        try {
-                                            val completed = withContext(Dispatchers.IO) { capture.finish() }
-                                            voice = completed
-                                            if (runtime.controller.value !== target.first) {
-                                                notify("对话已切换，语音未发送")
-                                            } else if (!target.first.sendVoiceAttachment(completed.selection(), target.second)) {
-                                                notify("语音未发送，请查看对话提示后重试")
-                                            }
-                                        } catch (cause: CancellationException) {
-                                            throw cause
-                                        } catch (_: Exception) {
-                                            notify("录音或发送失败，请重试")
-                                        } finally {
-                                            voice?.close()
-                                            capture.close()
-                                            sendingVoice = false
-                                            voiceSendController = null
-                                            voiceSendJob = null
-                                        }
-                                    }
-                                }
-                            }) { Text("结束并发送") }
-                        },
-                    )
-                }
-                if (sendingVoice) {
-                    AlertDialog(
-                        onDismissRequest = { voiceSendJob?.cancel() },
-                        title = { Text("正在发送语音") },
-                        text = { CircularProgressIndicator() },
-                        dismissButton = { TextButton(onClick = { voiceSendJob?.cancel() }) { Text("停止等待") } },
-                        confirmButton = {},
-                    )
                 }
 
                 // 启动时自动尝试恢复已存储凭据
@@ -341,53 +427,94 @@ class MainActivity : ComponentActivity() {
                 }
                 ReceivePendingConversationShares(sharedAttachments,
                     controller.takeIf { phase is ConnectionPhase.Connected }, attachmentPickers.receive) {
-                    showSettingsSheet = false
-                    showAssistant = false
+                    showSettings = false
                 }
 
-                // 真实系统能力契约：屏幕圈选的截图来源（MediaProjection）。
-                // 授权必须由前台 Activity 发起系统对话框；授权结果先启动
-                // mediaProjection 型前台服务（Android 14+ 硬性要求），再交给
-                // 来源建立会话。拒绝/失败一律如实提示，圈选保持不可用降级。
-                val screenCaptureSource = remember {
-                    MediaProjectionScreenCaptureSource(MediaProjectionRuntime(applicationContext))
+                // 远程屏幕截图：系统投屏授权与每次请求的能力策略分别校验。
+                // 系统授权仅在本次安装内有效，前台服务启动前后都必须再次核对授权票据。
+                var remoteCaptureTicket by remember {
+                    mutableStateOf<com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket?>(null)
                 }
-                val screenCaptureAuthLauncher = rememberLauncherForActivityResult(
+                fun captureEnabled(): Boolean {
+                    val plugin = "org.openandroidintelligence.screen-capture"
+                    val entry = app.pluginHost.entries(plugin).firstOrNull { "kernel.screen.capture" in it.primitives }
+                        ?: return false
+                    return app.pluginHost.isEnabled(plugin) && app.pluginHost.capabilityPolicy(plugin, entry.key).enabled
+                }
+                fun captureConsentCurrent() = com.openandroidintelligence.mobile.screen.screenCaptureConsentCurrent(
+                    remoteCaptureTicket, app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value,
+                    captureEnabled(), app.kernel.isEmergencyStopped(),
+                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L)
+                val remoteScreenCaptureLauncher = rememberLauncherForActivityResult(
                     contract = ActivityResultContracts.StartActivityForResult()
                 ) { result ->
-                    if (result.resultCode == android.app.Activity.RESULT_OK) {
-                        // getMediaProjection 要求 mediaProjection 型前台服务已经
-                        // 完成 startForeground：必须等服务就绪回调后再转交授权
-                        // 结果，否则 targetSdk 34+ 下确定性 SecurityException。
-                        MediaProjectionCaptureService.start(this@MainActivity) {
-                            val granted = screenCaptureSource.onAuthorizationResult(
-                                result.resultCode, result.data,
-                            )
+                    val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+                    if (source == null) {
+                        notify(getString(UiR.string.perm_screen_capture_disabled))
+                        return@rememberLauncherForActivityResult
+                    }
+                    val accepted = result.resultCode == android.app.Activity.RESULT_OK
+                    if (!accepted) {
+                        remoteCaptureTicket = null
+                        // 用户拒绝或结果数据缺失：能力保持不可用，绝不伪造结果。
+                        source.release()
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                            .stopForeground(this@MainActivity)
+                        notify(getString(UiR.string.perm_screen_screenshot_denied))
+                        return@rememberLauncherForActivityResult
+                    }
+                    val stillGranted = captureConsentCurrent()
+                    if (!stillGranted) {
+                        source.release()
+                        com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                            .stopForeground(this@MainActivity)
+                        remoteCaptureTicket = null
+                        notify(getString(UiR.string.perm_screen_screenshot_changed))
+                        return@rememberLauncherForActivityResult
+                    }
+                    // 先等前台服务完成 startForeground，再转交授权结果：
+                    // Android 14+ 下顺序反了会确定性抛出 SecurityException。
+                    com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                        .startForeground(this@MainActivity) {
+                            if (!captureConsentCurrent()) {
+                                source.release()
+                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.stopForeground(this@MainActivity)
+                                remoteCaptureTicket = null
+                                notify(getString(UiR.string.perm_screen_screenshot_revoked))
+                                return@startForeground
+                            }
+                            val granted = source.onAuthorizationResult(result.resultCode, result.data)
+                            remoteCaptureTicket = null
                             if (!granted) {
-                                // 会话建立失败也要撤掉前台状态，常驻通知不得悬挂。
-                                MediaProjectionCaptureService.stop(this@MainActivity)
+                                com.openandroidintelligence.capability.RemoteScreenCaptureRegistry
+                                    .stopForeground(this@MainActivity)
                             }
                             notify(
-                                if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
-                                else "屏幕采集会话建立失败，圈选暂不可用",
+                                if (granted) getString(UiR.string.perm_screen_screenshot_granted)
+                                else getString(UiR.string.perm_screen_screenshot_session_failed)
                             )
                         }
-                    } else {
-                        val granted = screenCaptureSource.onAuthorizationResult(
-                            result.resultCode, result.data,
-                        )
-                        MediaProjectionCaptureService.stop(this@MainActivity)
-                        notify(
-                            if (granted) "已获得屏幕采集授权，请再次点击圈选开始截取"
-                            else "未获得屏幕采集授权，圈选暂不可用",
-                        )
-                    }
                 }
-                // 面板关闭即结束采集会话：常驻通知与投屏会话不得跨出使用场景存活。
-                LaunchedEffect(showAssistant) {
-                    if (!showAssistant) {
-                        screenCaptureSource.release()
-                        MediaProjectionCaptureService.stop(this@MainActivity)
+                val requestRemoteScreenCaptureAuth: () -> Unit = {
+                    val source = com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source
+                    val permitted = captureEnabled() && !app.kernel.isEmergencyStopped()
+                    when {
+                        source == null -> notify(getString(UiR.string.perm_screen_capture_disabled))
+                        !permitted -> notify(getString(UiR.string.perm_screen_screenshot_enable_plugin_hint))
+                        // 截图来源已可用（无障碍按需截图已就绪，或投屏此前已授权）
+                        // 时不需要再走一次系统授权，如实告知即可。
+                        source.isAvailable -> notify(getString(UiR.string.perm_screen_screenshot_ready_no_auth))
+                        else -> {
+                            val intent = source.createAuthorizationIntent()
+                            if (intent == null) {
+                                notify(getString(UiR.string.perm_screen_record_service_unavailable))
+                            } else {
+                                remoteCaptureTicket = com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket(
+                                    app.pairingGrants.state.value?.revision ?: -1L, app.pluginHost.revision.value,
+                                    com.openandroidintelligence.control.ScreenHostRegistry.current?.status()?.stopGeneration ?: -1L)
+                                remoteScreenCaptureLauncher.launch(intent)
+                            }
+                        }
                     }
                 }
 
@@ -429,6 +556,8 @@ class MainActivity : ComponentActivity() {
                 if (onboardingVisible) {
                     OnboardingFlow(
                         state = onboardingState,
+                        appearanceSettings = appearanceSettings,
+                        appearancePreferences = app.appearancePreferences,
                         onStageChange = onboardingPreferences::setStage,
                         onGatewaySelected = onboardingPreferences::setLastGateway,
                         onFinished = {
@@ -459,13 +588,20 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.surface,
                 ) {
                     // 登录页 ↔ 工作台：统一走标准淡入滑移转场，禁止生硬替换。
-                    val enterWorkbench = (phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null
+                    val localSessionState by runtime.localSessionState.collectAsState()
+                    val enterWorkbench = localSessionState is LocalSessionState.LoadingLocal ||
+                        localSessionState is LocalSessionState.Workspace ||
+                        ((phase is ConnectionPhase.Connected || phase is ConnectionPhase.OfflineMirror) && controller != null)
                     val pluginRevision by app.pluginHost.revision.collectAsState()
                     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
+                    var displayedNativeUi by remember { mutableStateOf(nativeUi) }
+                    LaunchedEffect(nativeUi, showSettings) {
+                        if (!showSettings) displayedNativeUi = nativeUi
+                    }
                     Box(modifier = Modifier.fillMaxSize()) {
                         // 原生插件界面 ↔ 宿主界面：交叉淡化切换，而不是硬 if 重建。
                         AnimatedContent(
-                            targetState = nativeUi,
+                            targetState = displayedNativeUi,
                             transitionSpec = {
                                 fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                                     fadeOut(MotionSpecs.fade(reduceMotion))
@@ -473,24 +609,32 @@ class MainActivity : ComponentActivity() {
                             label = "native-plugin-surface",
                         ) { activeNative ->
                             if (activeNative != null) {
-                                val state = controller?.state?.collectAsState()?.value
-                                com.openandroidintelligence.mobile.plugins.NativePluginSurface(
-                                    app.pluginHost,
-                                    activeNative.first,
-                                    activeNative.second,
-                                    com.openandroidintelligence.plugin.ui.NativeUiContext(
-                                        (phase as? ConnectionPhase.Connected)?.gatewayUrl.orEmpty(),
-                                        state?.activeThreadId,
-                                        state?.activeThreadTitle.orEmpty(),
-                                        state?.draft.orEmpty(),
-                                        (state?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty()
-                                            .map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key, it.sender, it.text, it.isStreaming) },
-                                        { controller?.editDraft(it) },
-                                        { controller?.sendDraft() },
-                                        { controller?.stopGeneration() },
-                                        { showSettingsSheet = true },
-                                    ),
-                                )
+                                PlatformSettingsDrawer(
+                                    open = showSettings && displayedNativeUi == activeNative,
+                                    onDismiss = { showSettings = false },
+                                    environment = settingsEnvironment,
+                                    runtime = runtime,
+                                    onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                ) {
+                                    val state = controller?.state?.collectAsState()?.value
+                                    com.openandroidintelligence.mobile.plugins.NativePluginSurface(
+                                        app.pluginHost,
+                                        activeNative.first,
+                                        activeNative.second,
+                                        com.openandroidintelligence.plugin.ui.NativeUiContext(
+                                            (phase as? ConnectionPhase.Connected)?.gatewayUrl.orEmpty(),
+                                            state?.activeThreadId,
+                                            state?.activeThreadTitle.orEmpty(),
+                                            state?.draft.orEmpty(),
+                                            (state?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty()
+                                                .map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key, it.sender, it.text, it.isStreaming) },
+                                            { controller?.editDraft(it) },
+                                            { controller?.sendDraft() },
+                                            { controller?.stopGeneration() },
+                                            { showSettings = true },
+                                        ),
+                                    )
+                                }
                             } else AnimatedContent(
                                 targetState = enterWorkbench,
                                 transitionSpec = {
@@ -500,30 +644,60 @@ class MainActivity : ComponentActivity() {
                                 label = "root-surface",
                             ) { onWorkbench ->
                                 if (!onWorkbench) {
-                                    GatewayLoginScreen(
-                                        phase = phase,
-                                        onLogin = { url, username, password ->
-                                            runtime.login(url, username, password)
-                                        },
-                                        onOpenSettings = { showSettingsSheet = true },
-                                        onRetry = { runtime.resetFailure() },
-                                        savedProfiles = savedProfiles,
-                                        onSelectProfile = runtime::selectSavedAccount,
-                                        onRemoveProfile = runtime::removeLocalAccount,
-                                        onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
-                                        isManagingProfiles = isManagingProfiles,
-                                        operationNotice = operationNotice,
-                                        onDismissNotice = runtime::dismissOperationNotice,
-                                        onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
-                                        onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
-                                        invitationPayload = pendingInvitation.value,
-                                    )
+                                    PlatformSettingsDrawer(
+                                        open = showSettings && !enterWorkbench && displayedNativeUi == null,
+                                        onDismiss = { showSettings = false },
+                                        environment = settingsEnvironment,
+                                        runtime = runtime,
+                                        onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                    ) {
+                                        GatewayLoginScreen(
+                                            phase = phase,
+                                            onLogin = { url, username, password ->
+                                                runtime.login(url, username, password)
+                                            },
+                                            onOpenSettings = { showSettings = true },
+                                            onRetry = { runtime.resetFailure() },
+                                            savedProfiles = savedProfiles,
+                                            onSelectProfile = runtime::selectSavedAccount,
+                                            onRemoveProfile = runtime::removeLocalAccount,
+                                            onReconfirmIdentity = runtime::reconfirmGatewayIdentity,
+                                            isManagingProfiles = isManagingProfiles,
+                                            operationNotice = operationNotice,
+                                            onDismissNotice = runtime::dismissOperationNotice,
+                                            onInvite = { url,account,code,fingerprint -> runtime.login(url,account,code,invitation=true,expectedIdentityFingerprint=fingerprint) },
+                                            onDeviceKey = { url,account -> runtime.login(url,account,charArrayOf(),deviceKey=true) },
+                                            invitationPayload = pendingInvitation.value,
+                                            accountLoginStep = accountLoginStep,
+                                            onAccountProof = runtime::submitAccountLoginProof,
+                                            onRecoveryCodesSaved = runtime::confirmAccountRecoveryCodesSaved,
+                                            onCancelAccountLogin = runtime::cancelAccountLogin,
+                                        )
+                                    }
                                     return@AnimatedContent
                                 }
                                 val activeController = controller
                                 if (activeController == null) {
-                                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        CircularProgressIndicator(strokeWidth = 2.dp)
+                                    PlatformSettingsDrawer(
+                                        open = showSettings && enterWorkbench && displayedNativeUi == null && controller == null,
+                                        onDismiss = { showSettings = false },
+                                        environment = settingsEnvironment,
+                                        runtime = runtime,
+                                        onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                    ) {
+                                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                            if (operationNotice != null || phase is ConnectionPhase.Failed) {
+                                                Column(
+                                                    modifier = Modifier.padding(Dimensions.SpaceMedium),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                                                ) {
+                                                    Text(operationNotice ?: "本地会话暂时不可用，资料已保留。")
+                                                    TextButton(onClick = runtime::retryConnection) { Text("重试连接") }
+                                                    TextButton(onClick = { showSettings = true }) { Text("设置") }
+                                                }
+                                            } else CircularProgressIndicator(strokeWidth = 2.dp)
+                                        }
                                     }
                                     return@AnimatedContent
                                 }
@@ -533,62 +707,40 @@ class MainActivity : ComponentActivity() {
                                     runtime = runtime,
                                     controller = activeController,
                                     gatewayLabel = (phase as? ConnectionPhase.Connected)?.gatewayUrl
-                                        ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl.orEmpty(),
-                                    onOpenSettings = { showSettingsSheet = true },
-                                    onOpenAssistant = { showAssistant = true },
+                                        ?: (phase as? ConnectionPhase.OfflineMirror)?.gatewayUrl
+                                        ?: (localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl.orEmpty(),
+                                    onOpenSettings = { showSettings = true },
+                                    settingsOpen = showSettings && enterWorkbench && displayedNativeUi == null,
+                                    onSettingsOpenChange = { showSettings = it },
+                                    settingsPanel = { presentation, onClose ->
+                                        SettingsScreen(
+                                            environment = settingsEnvironment,
+                                            runtime = runtime,
+                                            onBack = onClose,
+                                            presentation = presentation,
+                                            onRequestScreenCaptureAuthorization = requestRemoteScreenCaptureAuth,
+                                        )
+                                    },
                                     onPickCamera = attachmentPickers.camera,
                                     onPickGallery = attachmentPickers.gallery,
                                     onPickDocument = attachmentPickers.document,
                                     onPasteImages = attachmentPickers.paste,
                                     onVoiceInput = startVoiceInput,
+                                    recording = activeRecording,
+                                    onCancelRecording = cancelRecording,
+                                    onFinishRecording = finishRecording,
                                     pluginCards = {
                                         com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(
                                             app.pluginHost,
                                             runtime.connectedAccountId,
-                                        ) { showSettingsSheet = true }
+                                        ) { showSettings = true }
                                     },
                                     offlineMirrorPhase = phase is ConnectionPhase.OfflineMirror,
                                     onReconnectOfflineMirror = runtime::reconnectOfflineMirror,
                                     reduceMotion = reduceMotion,
                                     modifier = Modifier.fillMaxSize(),
                                 )
-                                AnimatedVisibility(
-                                    visible = showAssistant,
-                                    enter = AppTransitions.modalEnter(reduceMotion),
-                                    exit = AppTransitions.modalExit(reduceMotion),
-                                ) {
-                                    FloatingConversationPanel(
-                                        controller = activeController,
-                                        onClose = { showAssistant = false },
-                                        onPickCamera = attachmentPickers.camera,
-                                        onPickGallery = attachmentPickers.gallery,
-                                        onPickDocument = attachmentPickers.document,
-                                        onPasteImages = attachmentPickers.paste,
-                                        onVoiceInput = startVoiceInput,
-                                        screenCaptureSource = screenCaptureSource,
-                                        onNeedScreenCaptureAuthorization = {
-                                            val intent = screenCaptureSource.createAuthorizationIntent()
-                                            if (intent == null) {
-                                                notify("此设备不支持屏幕采集，圈选不可用")
-                                            } else {
-                                                screenCaptureAuthLauncher.launch(intent)
-                                            }
-                                        },
-                                    )
-                                }
                             }
-                        }
-
-                        // 设置呈现形式：标准 M3 ModalBottomSheet（规格
-                        // specs/2026-09-12-app-material-ui-and-motion.md），替代此前
-                        // 的全屏 AnimatedVisibility。关闭走 onDismissRequest，
-                        // 进出场动画由组件自身按 M3 规范承担。
-                        if (showSettingsSheet) {
-                            PlatformSettingsBottomSheet(
-                                environment = app.platformSettingsEnvironment(),
-                                runtime = runtime,
-                                onDismissRequest = { showSettingsSheet = false },
-                            )
                         }
 
                         // 底部 Snackbar：留出输入坞高度，避免压住撰写栏与手势条。
@@ -649,13 +801,13 @@ private fun OfflineMirrorBanner(onReconnect: () -> Unit) {
                 modifier = Modifier.size(Dimensions.SmallIcon),
             )
             Text(
-                text = "离线镜像：仅显示本机缓存，收发需重新连接 Gateway",
+                text = stringResource(UiR.string.conn_status_offline_mode_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .weight(1f)
                     .padding(horizontal = Dimensions.SpaceSmall),
             )
-            TextButton(onClick = onReconnect) { Text("重新连接") }
+            TextButton(onClick = onReconnect) { Text(stringResource(UiR.string.conn_action_reconnect)) }
         }
     }
 }
@@ -672,64 +824,112 @@ internal fun GatewayWorkbenchScreen(
     onPickDocument: () -> Unit,
     onVoiceInput: () -> Unit,
     modifier: Modifier = Modifier,
-    onOpenAssistant: (() -> Unit)? = null,
+    recording: ActiveVoiceRecording? = null,
+    onCancelRecording: () -> Unit = {},
+    onFinishRecording: () -> Unit = {},
     pluginCards: @Composable () -> Unit = {},
     header: @Composable () -> Unit = {},
     offlineMirrorPhase: Boolean = false,
     onReconnectOfflineMirror: () -> Unit = {},
     reduceMotion: Boolean = false,
     onPasteImages: ((PastedImageContent) -> Unit)? = null,
+    settingsOpen: Boolean = false,
+    onSettingsOpenChange: (Boolean) -> Unit = {},
+    settingsPanel: (@Composable (presentation: SettingsPresentation, onClose: () -> Unit) -> Unit)? = null,
 ) {
     val operationNotice by runtime.operationNotice.collectAsState()
     val phase by runtime.phase.collectAsState()
+    val connectionStatus by runtime.connectionStatus.collectAsState()
+    val localSession by runtime.localSessionState.collectAsState()
     val profiles by runtime.savedProfiles.collectAsState()
     val username = when (val current = phase) {
         is ConnectionPhase.Connected -> current.username
         is ConnectionPhase.OfflineMirror -> current.username
-        else -> ""
+        else -> (localSession as? LocalSessionState.Workspace)?.account?.username.orEmpty()
     }
     val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
     val avatar = rememberAccountAvatarPicker(runtime, profile)
-    Column(modifier.fillMaxSize()) {
-        WorkbenchScreen(
-            accountName = username,
-            agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
-            accountAvatar = avatar.image,
-            onChangeAvatar = avatar.pick,
-            onPasteImages = onPasteImages,
-            controller = controller,
-            gatewayLabel = gatewayLabel,
-            onOpenSettings = onOpenSettings,
-            onPickCamera = onPickCamera,
-            onPickGallery = onPickGallery,
-            onPickDocument = onPickDocument,
-            onVoiceInput = onVoiceInput,
-            modifier = Modifier.weight(1f),
-            onOpenAssistant = onOpenAssistant,
-            onLogout = { runtime.logout(revokeRefresh = true) },
-            pluginCards = pluginCards,
-            header = {
-                // 通告区与时间线同宽，随内容滚动容器顶部分布；横幅本体带自己的圆角与内边距。
-                Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                    AnimatedVisibility(
-                        visible = offlineMirrorPhase,
-                        enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) +
-                            fadeIn(MotionSpecs.fade(reduceMotion)),
-                        exit = shrinkVertically(MotionSpecs.emphasized(reduceMotion)) +
-                            fadeOut(MotionSpecs.fade(reduceMotion)),
-                    ) {
-                        OfflineMirrorBanner(onReconnect = onReconnectOfflineMirror)
+    // 必须读取工作台宿主宽度；进入设置插槽后，宽屏侧栏已经只有 320dp。
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val settingsPresentation = if (maxWidth >= Dimensions.ExpandedWindow) {
+            SettingsPresentation.SIDEBAR
+        } else {
+            SettingsPresentation.SCREEN
+        }
+        Column(Modifier.fillMaxSize()) {
+            WorkbenchScreen(
+                accountName = username,
+                agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
+                accountAvatar = avatar.image,
+                onChangeAvatar = avatar.pick,
+                connectionHealth = workbenchConnectionHealth(phase, connectionStatus),
+                onPasteImages = onPasteImages,
+                controller = controller,
+                gatewayLabel = gatewayLabel,
+                onOpenSettings = onOpenSettings,
+                settingsOpen = settingsOpen,
+                onSettingsOpenChange = onSettingsOpenChange,
+                settingsPanel = settingsPanel?.let { panel ->
+                    { onClose -> panel(settingsPresentation, onClose) }
+                },
+                onPickCamera = onPickCamera,
+                onPickGallery = onPickGallery,
+                onPickDocument = onPickDocument,
+                onVoiceInput = onVoiceInput,
+                recording = recording,
+                onCancelRecording = onCancelRecording,
+                onFinishRecording = onFinishRecording,
+                modifier = Modifier.weight(1f),
+                onLogout = { runtime.logout(revokeRefresh = true) },
+                pluginCards = pluginCards,
+                header = {
+                    // 通告区与时间线同宽，随内容滚动容器顶部分布；横幅本体带自己的圆角与内边距。
+                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                        AnimatedVisibility(
+                            visible = offlineMirrorPhase,
+                            enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) +
+                                fadeIn(MotionSpecs.fade(reduceMotion)),
+                            exit = shrinkVertically(MotionSpecs.emphasized(reduceMotion)) +
+                                fadeOut(MotionSpecs.fade(reduceMotion)),
+                        ) {
+                            OfflineMirrorBanner(onReconnect = onReconnectOfflineMirror)
+                        }
+                        operationNotice?.let { notice ->
+                            OperationNoticeBanner(
+                                text = notice,
+                                onDismiss = runtime::dismissOperationNotice,
+                                onRetry = if (runtime.canRetryWorkbenchInitialization || phase is ConnectionPhase.Failed) runtime::retryConnection else null,
+                                modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
+                            )
+                        }
                     }
-                    operationNotice?.let { notice ->
-                        OperationNoticeBanner(
-                            text = notice,
-                            onDismiss = runtime::dismissOperationNotice,
-                            modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
-                        )
-                    }
-                }
-                header()
-            },
-        )
+                    header()
+                },
+            )
+        }
+    }
+}
+
+internal fun workbenchConnectionHealth(
+    phase: ConnectionPhase,
+    status: EventStreamStatus,
+): StreamHealth? {
+    return when (phase) {
+        ConnectionPhase.Initializing, ConnectionPhase.Negotiating, ConnectionPhase.Authenticating ->
+            StreamHealth.CONNECTING
+        ConnectionPhase.Reconnecting -> StreamHealth.RECONNECTING
+        is ConnectionPhase.OfflineMirror -> StreamHealth.FAILED
+        is ConnectionPhase.Connected -> when (status) {
+            EventStreamStatus.CONNECTING ->
+                StreamHealth.CONNECTING
+            EventStreamStatus.RECONNECTING ->
+                StreamHealth.RECONNECTING
+            EventStreamStatus.FAILED ->
+                StreamHealth.FAILED
+            EventStreamStatus.LIVE ->
+                StreamHealth.LIVE
+            else -> null
+        }
+        else -> null
     }
 }

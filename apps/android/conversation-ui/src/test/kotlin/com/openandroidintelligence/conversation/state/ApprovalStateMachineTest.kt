@@ -203,6 +203,27 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun aChoiceTheHostDidNotOfferCannotBeSubmitted() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository)
+        advanceUntilIdle()
+        repository.events.emit(requested(options = listOf(
+            ApprovalOption(ApprovalChoice.ONCE),
+            ApprovalOption(ApprovalChoice.DENY),
+        )))
+        advanceUntilIdle()
+
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ALWAYS)
+        advanceUntilIdle()
+
+        assertTrue(repository.decisions.isEmpty(), "客户端不得提交宿主没有提供的审批操作")
+        assertTrue(cardRow(controller)?.approval is ApprovalCardState.Waiting)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.ONCE)
+        advanceUntilIdle()
+        assertEquals(listOf(APPROVAL_ID to ApprovalChoice.ONCE), repository.decisions)
+    }
+
+    @Test
     fun aFailedPressComesBackAsALiveCardWithAStructuredNotice() = runWorkbench {
         val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.FAILED }
         val controller = controller(repository)
@@ -367,6 +388,40 @@ class ApprovalStateMachineTest {
     }
 
     @Test
+    fun anUnrenderableApprovalStaysPendingAsTextAndNeverSubmitsADecision() = runWorkbench {
+        val repository = FakeRepository()
+        val controller = controller(repository, supportsApprovalCards = false)
+        advanceUntilIdle()
+        repository.events.emit(
+            VerifiedConversationEvent.ApprovalTextFallback(
+                eventId = "fallback",
+                occurredAt = REQUESTED_AT,
+                conversationId = ConversationId(THREAD_ID),
+                approvalId = ApprovalId(APPROVAL_ID),
+                command = "rm -rf /tmp/dangerous_test_backup",
+                reason = "清理测试备份",
+                commands = listOf("/approve", "/deny"),
+                diagnosticCode = "APPROVAL_PAYLOAD_INVALID",
+            ),
+        )
+        advanceUntilIdle()
+
+        val fallback = cardRow(controller)!!.approval
+        assertTrue(fallback is ApprovalCardState.TextOnly, "解析失败必须保留待审批文本：$fallback")
+        assertEquals(listOf("/approve", "/deny"), (fallback as ApprovalCardState.TextOnly).commands)
+        controller.decideApproval(APPROVAL_ID, ApprovalChoice.DENY)
+        advanceUntilIdle()
+        assertTrue(repository.decisions.isEmpty(), "UI 失败不得自动提交拒绝或批准")
+        assertTrue(cardRow(controller)!!.approval is ApprovalCardState.TextOnly)
+
+        repository.events.emit(resolved(outcome = ApprovalOutcome.DENIED))
+        advanceUntilIdle()
+        val settled = cardRow(controller)!!.approval
+        assertTrue(settled is ApprovalCardState.Resolved, "后端终态仍必须落定文本审批：$settled")
+        assertEquals(ApprovalOutcome.DENIED, (settled as ApprovalCardState.Resolved).outcome)
+    }
+
+    @Test
     fun anApprovalTheGatewayDoesNotKnowIsNotClaimedAsWithdrawn() = runWorkbench {
         val repository = FakeRepository().apply { submissionOutcome = ApprovalSubmissionOutcome.NOT_FOUND }
         val controller = controller(repository)
@@ -455,7 +510,7 @@ class ApprovalStateMachineTest {
         )
 
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation =
-            Conversation(ConversationId(clientConversationId), "新对话", 0L)
+            Conversation(ConversationId(clientConversationId), "", 0L)
 
         override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
             TimelinePage(

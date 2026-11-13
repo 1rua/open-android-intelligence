@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.os.Messenger
+import com.openandroidintelligence.conversation.assistant.ASSISTANT_BRIDGE_VERSION
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -33,7 +34,7 @@ import org.robolectric.annotation.LooperMode
  * 界面从原生 View 换成了 Compose 之后，这层边界必须保持：
  * 1. 编码发生在工作线程，且位图在回调前已经被拥有者释放；
  * 2. 界面关闭后迟到的编码结果必须被丢弃，不能把附件塞进已经结束的会话；
- * 3. 没有当前同意时附件立即回收，不会发出 `screen` 命令。
+ * 3. 没有当前连接时附件立即回收，不会发出 `screen` 命令。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -53,7 +54,7 @@ class AssistantScreenAttachmentTest {
         override fun unbindService(connection: ServiceConnection) {}
     }
 
-    private fun connectedClient(consent: Boolean = true): AssistantBridgeClient {
+    private fun connectedClient(connected: Boolean = true): AssistantBridgeClient {
         val context = BridgeContext()
         val target = AssistantBridgeClient(context).also { client = it }
         target.connect()
@@ -65,9 +66,9 @@ class AssistantScreenAttachmentTest {
                     message.replyTo.send(
                         Message.obtain().apply {
                             data = Bundle().apply {
-                                putInt("version", 1)
+                                putInt("version", ASSISTANT_BRIDGE_VERSION)
                                 putString("token", "test-session")
-                                putString("state", """{"connected":true,"consent":$consent}""")
+                                putString("state", """{"version":$ASSISTANT_BRIDGE_VERSION,"revision":1,"connected":$connected}""")
                             }
                         },
                     )
@@ -132,8 +133,8 @@ class AssistantScreenAttachmentTest {
         assertFalse(commands.contains("screen"))
     }
 
-    @Test fun anAttachmentWithoutCurrentConsentIsReleasedWithoutDelivery() {
-        val target = connectedClient(consent = false)
+    @Test fun anAttachmentWithoutACurrentConnectionIsReleasedWithoutDelivery() {
+        val target = connectedClient(connected = false)
         val bitmap = Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888)
 
         target.attachScreen(bitmap)

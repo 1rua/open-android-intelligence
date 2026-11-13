@@ -8,12 +8,31 @@ import com.openandroidintelligence.conversation.model.LocalSendAtom
 data class SavedBatch(val batchId:String,val conversationId:String,val messages:List<com.openandroidintelligence.conversation.ports.OutgoingMessage>,val sealed:Boolean=true)
 
 data class SavedSubmission(val text: String, val attachmentIds: List<String>, val revision: Long,
-    val conversationId: String?, val clientMessageId: String)
+    val conversationId: String?, val clientMessageId: String,
+    val delivery: com.openandroidintelligence.conversation.ports.MessageDeliveryMode = com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL,
+    val generationId: String? = null)
+
+data class SavedComposerDraft(val threadId: String?, val text: String, val revision: Long,
+    val attachments: List<AttachmentDraft>, val explicit: Boolean = true)
+
+/**
+ * 交给主 App 的助手草稿快照（上滑交接）。
+ *
+ * 只含身份与元数据：文字、附件草稿（已有 `draftId`），不含字节与 provider 位置。
+ * 调用方在 [WorkbenchController.openThread] 之后再用它覆盖输入栏，那是用户刚在浮层里
+ * 编辑的那份内容。
+ */
+data class AssistantDraftSnapshot(
+    val text: String,
+    val attachments: List<AttachmentDraft>,
+)
 
 data class SavedCancellation(val conversationId: String, val generationId: String)
 data class SavedMessageGeneration(val conversationId: String, val messageId: String, val generationId: String, val revision: Long)
 data class SavedFolderAssignment(val conversationId: String, val folderId: String)
-data class SavedConversationCreation(val clientId: String, val folderId: String?)
+data class SavedConversationCreation(val clientId: String, val folderId: String?,
+    /** 旧 checkpoint 缺少发送事实时保守恢复；只有明确保存 false 才允许首次发送。 */
+    val mayHaveBeenSent: Boolean = true)
 
 /** Durable state never contains preview/screenshot bytes and never implies permission to send. */
 data class WorkbenchCheckpoint(
@@ -32,6 +51,11 @@ data class WorkbenchCheckpoint(
     val messageGenerations: List<SavedMessageGeneration> = emptyList(),
     val pendingFolderAssignments: List<SavedFolderAssignment> = emptyList(),
     val pendingConversationCreation: SavedConversationCreation? = null,
+    /** true 时空草稿也是用户已保存的事实，不用旧发送文字补齐。 */
+    val draftExplicit: Boolean = false,
+    val composerDrafts: List<SavedComposerDraft> = emptyList(),
+    val pendingSubmissions: List<SavedSubmission> = emptyList(),
+    val draftVersion: Long = draftRevision,
 )
 
 interface WorkbenchPersistence {
@@ -45,6 +69,8 @@ interface WorkbenchPersistence {
 
 /** 真实磁盘适配器提供可等待的 IO 提交；内存测试仓库继续使用基础端口。 */
 interface AwaitableWorkbenchPersistence : WorkbenchPersistence {
+    /** null 为尚无列表镜像；非 null 的空页仍是已保存的真实快照。 */
+    suspend fun loadConversations(): com.openandroidintelligence.conversation.ports.ConversationPage? = null
     suspend fun loadTimeline(conversationId: String): com.openandroidintelligence.conversation.ports.TimelinePage?
     suspend fun loadKnownMediaMessages(): List<TimelineMessage>
     suspend fun saveCheckpoint(checkpoint: WorkbenchCheckpoint)

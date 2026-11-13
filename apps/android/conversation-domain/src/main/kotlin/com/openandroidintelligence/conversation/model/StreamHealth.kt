@@ -32,4 +32,6 @@ enum class StreamHealth {
  */
 interface StreamHealthSource {
     val streamHealth: Flow<StreamHealth>
+    /** 可选的具体观察失败，不表示 Agent 执行失败。 */
+    val streamFailure: Flow<String?> get() = kotlinx.coroutines.flow.emptyFlow()
 }

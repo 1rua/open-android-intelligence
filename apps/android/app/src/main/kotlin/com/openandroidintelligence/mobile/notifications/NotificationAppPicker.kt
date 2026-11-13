@@ -4,10 +4,18 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,9 +53,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.compose.ui.platform.LocalView
+import android.view.Gravity
+import android.view.WindowManager
 import androidx.core.graphics.drawable.toBitmap
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.BuildConfig
+import com.openandroidintelligence.mobile.SettingsPresentation
 
 /** 选择只编辑草稿；保存成功前不改变通知采集白名单。 */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,11 +76,13 @@ internal fun NotificationAppPicker(
     onReloadSelection: () -> Unit,
     onCancel: () -> Unit,
     onSave: () -> Unit,
+    saving: Boolean = false,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val candidates = remember(apps, savedPackages) {
+    val candidates = remember(apps, savedPackages, selectedPackages) {
         val installedIds = apps.orEmpty().map { it.packageId }.toSet()
-        apps.orEmpty() + savedPackages.filterNot { it in installedIds }.map {
+        apps.orEmpty() + (savedPackages + selectedPackages).distinct().filterNot { it in installedIds }.map {
             InstalledNotificationApp(packageId = it, label = it)
         }
     }
@@ -80,115 +95,204 @@ internal fun NotificationAppPicker(
     val installedIds = remember(apps) { apps.orEmpty().map { it.packageId }.toSet() }
     val selectedIds = selectedPackages.toSet()
 
-    Dialog(
-        onDismissRequest = onCancel,
-        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
-            Box(contentAlignment = Alignment.TopCenter) {
-                Scaffold(
-                    modifier = Modifier
-                        .widthIn(max = Dimensions.ReadingWidth)
-                        .fillMaxSize()
-                        .testTag("notification-app-picker"),
-                    topBar = {
-                        TopAppBar(
-                            title = { Text("选择应用") },
-                            navigationIcon = {
-                                IconButton(onClick = onCancel) {
-                                    Icon(Icons.Default.Close, contentDescription = "取消选择")
-                                }
-                            },
-                            actions = {
-                                TextButton(
-                                    onClick = onSave,
-                                    enabled = apps != null && !loadFailed && rejection == null,
-                                    modifier = Modifier.testTag("notification-app-save"),
-                                ) { Text("保存") }
-                            },
-                        )
+    val picker: @Composable () -> Unit = {
+        Scaffold(
+            modifier = Modifier
+                .widthIn(max = Dimensions.ReadingWidth)
+                .fillMaxSize()
+                .testTag("notification-app-picker"),
+            contentWindowInsets = if (presentation == SettingsPresentation.SIDEBAR) WindowInsets(0, 0, 0, 0) else WindowInsets.systemBars,
+            topBar = {
+                TopAppBar(
+                    windowInsets = if (presentation == SettingsPresentation.SIDEBAR) WindowInsets(0, 0, 0, 0) else androidx.compose.material3.TopAppBarDefaults.windowInsets,
+                    title = { Text("选择应用") },
+                    navigationIcon = {
+                        IconButton(onClick = onCancel, enabled = !saving) {
+                            Icon(Icons.Default.Close, contentDescription = "取消选择")
+                        }
                     },
-                ) { padding ->
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                        modifier = Modifier
-                            .padding(padding)
-                            .imePadding()
-                            .padding(horizontal = Dimensions.ScreenHorizontal)
-                            .fillMaxSize(),
-                    ) {
+                    actions = {
+                        TextButton(
+                            onClick = onSave,
+                            enabled = !saving && apps != null && !loadFailed && rejection == null,
+                            modifier = Modifier.testTag("notification-app-save"),
+                        ) { Text("保存") }
+                    },
+                )
+            },
+        ) { padding ->
+            LazyColumn(
+                modifier = Modifier
+                    .padding(padding)
+                    .consumeWindowInsets(padding)
+                    .imePadding()
+                    .padding(horizontal = Dimensions.ScreenHorizontal)
+                    .fillMaxSize()
+                    .testTag("notification-app-list"),
+            ) {
+                item(key = "notification-picker:summary") {
+                    Text(
+                        text = "已选 ${selectedIds.size} 个应用；未选择任何应用时不会采集通知。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+                    )
+                }
+                if (BuildConfig.FLAVOR == "play") {
+                    item(key = "notification-picker:visibility-note") {
                         Text(
-                            text = "已选 ${selectedIds.size} 个应用；未选择任何应用时不会采集通知。",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "此发行版仅显示系统允许查询的已安装应用。",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
                         )
-                        if (BuildConfig.FLAVOR == "play") {
-                            Text(
-                                text = "此发行版仅显示系统允许查询的已安装应用。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        OutlinedTextField(
-                            value = query,
-                            onValueChange = { query = it },
-                            singleLine = true,
-                            label = { Text("搜索应用名称或包名") },
-                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                            modifier = Modifier.fillMaxWidth().testTag("notification-app-search"),
-                        )
-                        if (rejection != null) {
-                            Text(
-                                text = "设置没有保存成功：$rejection",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodyMedium,
-                            )
-                            TextButton(onClick = onReloadSelection) { Text("重新载入已保存选择") }
-                        }
-                        when {
-                            loadFailed -> {
-                                Text("无法读取本机应用列表，请重试。", color = MaterialTheme.colorScheme.error)
-                                TextButton(onClick = onRetry) { Text("重试") }
-                            }
-                            apps == null -> {
-                                CircularProgressIndicator(modifier = Modifier.size(Dimensions.Progress))
-                                Text("正在读取本机应用…")
-                            }
-                            filtered.isEmpty() -> Text(
-                                text = if (query.isBlank()) "未找到可选择的已安装应用。" else "没有匹配的应用。",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            else -> LazyColumn(
-                                modifier = Modifier.weight(1f).testTag("notification-app-list"),
-                            ) {
-                                items(filtered, key = { it.packageId }) { app ->
-                                    val checked = app.packageId in selectedIds
-                                    ListItem(
-                                        headlineContent = {
-                                            Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                                        },
-                                        supportingContent = {
-                                            Text(
-                                                if (app.packageId in installedIds) app.packageId
-                                                else "未安装或当前不可见，可以保留或取消原有选择",
-                                            )
-                                        },
-                                        leadingContent = { ApplicationIcon(app) },
-                                        trailingContent = { Checkbox(checked = checked, onCheckedChange = null) },
-                                        modifier = Modifier
-                                            .testTag("notification-app-${app.packageId}")
-                                            .toggleable(value = checked, role = Role.Checkbox) { selected ->
-                                                onSelectionChanged(
-                                                    if (selected) selectedPackages + app.packageId
-                                                    else selectedPackages - app.packageId,
-                                                )
-                                            },
-                                    )
+                    }
+                }
+                item(key = "notification-picker:search") {
+                    OutlinedTextField(
+                        enabled = !saving,
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        label = { Text("搜索应用名称或包名") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = Dimensions.SpaceSmall)
+                            .testTag("notification-app-search"),
+                    )
+                }
+                if (apps != null && !loadFailed && candidates.isNotEmpty()) {
+                    val targetApps = if (filtered.isNotEmpty()) filtered else candidates
+                    val targetIds = targetApps.map { it.packageId }.toSet()
+                    val allTargetSelected = targetIds.isNotEmpty() && targetIds.all { it in selectedIds }
+
+                    item(key = "notification-picker:select-all") {
+                        TextButton(
+                            enabled = !saving,
+                            onClick = {
+                                if (allTargetSelected) {
+                                    onSelectionChanged((selectedIds - targetIds).toList())
+                                } else {
+                                    onSelectionChanged((selectedIds + targetIds).toList())
                                 }
-                            }
+                            },
+                            modifier = Modifier.testTag("notification-app-select-all"),
+                        ) {
+                            Text(if (allTargetSelected) "取消全选" else "全选")
+                        }
+                    }
+                    item(key = "notification-picker:invert-selection") {
+                        TextButton(
+                            enabled = !saving,
+                            onClick = {
+                                val newSelection = selectedIds.toMutableSet()
+                                for (id in targetIds) {
+                                    if (id in newSelection) {
+                                        newSelection.remove(id)
+                                    } else {
+                                        newSelection.add(id)
+                                    }
+                                }
+                                onSelectionChanged(newSelection.toList())
+                            },
+                            modifier = Modifier.testTag("notification-app-invert-selection"),
+                        ) {
+                            Text("反选")
                         }
                     }
                 }
+                if (rejection != null) {
+                    item(key = "notification-picker:rejection") {
+                        Text(
+                            text = "设置没有保存成功：$rejection",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(bottom = Dimensions.SpaceSmall),
+                        )
+                    }
+                    item(key = "notification-picker:reload-selection") {
+                        TextButton(onClick = onReloadSelection, enabled = !saving) {
+                            Text("重新载入已保存选择")
+                        }
+                    }
+                }
+                when {
+                    loadFailed -> item(key = "notification-picker:failure") {
+                        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                            Text("无法读取本机应用列表，请重试。", color = MaterialTheme.colorScheme.error)
+                            TextButton(onClick = onRetry, enabled = !saving) { Text("重试") }
+                        }
+                    }
+                    apps == null -> item(key = "notification-picker:loading") {
+                        Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
+                            CircularProgressIndicator(modifier = Modifier.size(Dimensions.Progress))
+                            Text("正在读取本机应用…")
+                        }
+                    }
+                    filtered.isEmpty() -> item(key = "notification-picker:empty") {
+                        Text(
+                            text = if (query.isBlank()) "未找到可选择的已安装应用。" else "没有匹配的应用。",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    else -> items(filtered, key = { it.packageId }) { app ->
+                        val checked = app.packageId in selectedIds
+                        ListItem(
+                            headlineContent = {
+                                Text(app.label, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            },
+                            supportingContent = {
+                                Text(
+                                    if (app.packageId in installedIds) app.packageId
+                                    else "未安装或当前不可见，可以保留或取消原有选择",
+                                )
+                            },
+                            leadingContent = { ApplicationIcon(app) },
+                            trailingContent = { Checkbox(checked = checked, onCheckedChange = null) },
+                            modifier = Modifier
+                                .testTag("notification-app-${app.packageId}")
+                                .toggleable(value = checked, enabled = !saving, role = Role.Checkbox) { selected ->
+                                    onSelectionChanged(
+                                        if (selected) selectedPackages + app.packageId
+                                        else selectedPackages - app.packageId,
+                                    )
+                                },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog(
+        onDismissRequest = { if (!saving) onCancel() },
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        if (presentation == SettingsPresentation.SIDEBAR) {
+            // 缩小 Dialog 窗口本身，而不只是缩小内部 Surface，避免侧栏外被遮罩或拦截。
+            val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+            val drawerWidth = with(LocalDensity.current) { Dimensions.DrawerWidth.roundToPx() }
+            androidx.compose.runtime.SideEffect {
+                dialogWindow?.setDimAmount(0f)
+                dialogWindow?.setGravity(Gravity.START or Gravity.TOP)
+                dialogWindow?.setLayout(drawerWidth, WindowManager.LayoutParams.MATCH_PARENT)
+            }
+            Box(
+                modifier = Modifier.fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout).only(WindowInsetsSides.Vertical + WindowInsetsSides.Start))
+                    .imePadding(),
+                contentAlignment = Alignment.TopStart,
+            ) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier.widthIn(max = Dimensions.DrawerWidth)
+                        .fillMaxSize().testTag("notification-picker-sidebar"),
+                ) { picker() }
+            }
+        } else {
+            Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxSize()) {
+                Box(contentAlignment = Alignment.TopCenter) { picker() }
             }
         }
     }

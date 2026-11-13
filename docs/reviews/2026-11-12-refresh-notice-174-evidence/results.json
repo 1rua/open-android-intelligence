@@ -1,0 +1,50 @@
+{
+  "baseline": "83fbef075a494f0d4899cc22c08b4864c9edb3cd",
+  "planOnlyHead": "905468deae802cecb4e251fd501adaa233f0fc33",
+  "variant": ":app:testPlayDebugUnitTest",
+  "original": {
+    "name": "com.openandroidintelligence.mobile.GatewaySessionRefreshTest",
+    "tests": "1",
+    "skipped": "0",
+    "failures": "0",
+    "errors": "0",
+    "timestamp": "2026-11-12T02:43:38",
+    "hostname": "djbd-cachyos",
+    "time": "3.421"
+  },
+  "controlledRed": {
+    "name": "com.openandroidintelligence.mobile.GatewaySessionRefreshTest",
+    "tests": "1",
+    "skipped": "0",
+    "failures": "1",
+    "errors": "0",
+    "timestamp": "2026-11-12T02:45:14",
+    "hostname": "djbd-cachyos",
+    "time": "3.289"
+  },
+  "productionSourceChanged": false,
+  "timeoutMillisChanged": false,
+  "controlledGreen": {
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "gradle": "1m19s"
+  },
+  "allClass": {
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junitSeconds": "46.139",
+    "gradle": "57s"
+  },
+  "finalFocused": {
+    "tests": 2,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "gradle": "1m18s",
+    "condition": "等待包含“刷新凭据”的最终通知"
+  }
+}

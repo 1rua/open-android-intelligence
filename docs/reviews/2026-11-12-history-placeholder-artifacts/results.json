@@ -1,0 +1,74 @@
+{
+  "baseCommit": "688e2b8197f67bbdcf9da00e8fb4948060466869",
+  "minimalBaseline": {
+    "tests": 1,
+    "failed": 1
+  },
+  "addedBaseline": {
+    "tests": 4,
+    "passed": 1,
+    "failed": 3
+  },
+  "workbenchBaseline": {
+    "tests": 1,
+    "failed": 1
+  },
+  "fixedFocused": {
+    "tests": 24,
+    "passed": 24,
+    "failed": 0,
+    "skipped": 0
+  },
+  "fast": {
+    "passed": true,
+    "nodePassed": 120,
+    "nodeOptionalSkipped": 3
+  },
+  "sourceSha256": "321604b189d946ce440210f5f239fe6d7935627dfacb907aa963addd2ee55b04",
+  "deviceValidation": "由主任务继续；本分支未操作设备或清理数据",
+  "prModules": {
+    "conversationDomain": 47,
+    "conversationUi": 855,
+    "conversationData": 61,
+    "passed": 963,
+    "failed": 0,
+    "skipped": 0
+  },
+  "prGate": {
+    "passed": true,
+    "counts": {
+      "conversation-domain": {
+        "tests": 47,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 9
+      },
+      "conversation-ui": {
+        "tests": 855,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 93
+      },
+      "conversation-data": {
+        "tests": 61,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 8
+      },
+      "app": {
+        "tests": 1258,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "classes": 104
+      }
+    },
+    "nodePassed": 120,
+    "nodeOptionalSkipped": 3,
+    "jdk": "21.0.10",
+    "wasmCiRun": 43055128442
+  }
+}

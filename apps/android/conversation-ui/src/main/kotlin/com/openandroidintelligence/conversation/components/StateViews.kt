@@ -9,12 +9,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * 无论处于哪一状态都保留调用方的尺寸约束，避免列表把编辑器挤出窗口。
@@ -29,31 +31,31 @@ fun <T> LoadableRegion(state: Loadable<T>, emptyHint: String, onRetry: () -> Uni
     Box(modifier, contentAlignment = Alignment.Center) {
         when (state) {
             Loadable.Idle -> Text(
-                "选择会话后显示内容",
+                stringResource(UiR.string.common_state_idle_hint),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(Dimensions.SpaceMedium),
             )
             Loadable.Loading -> StatusColumn(
                 icon = null,
-                title = "正在加载",
-                body = "正在从 Gateway 读取内容…",
+                title = stringResource(UiR.string.common_status_loading_title),
+                body = stringResource(UiR.string.common_state_loading_reading),
                 failed = false,
                 action = null,
             )
             Loadable.Empty -> StatusColumn(
                 icon = Icons.Default.Forum,
-                title = "还没有内容",
+                title = stringResource(UiR.string.common_status_empty),
                 body = emptyHint,
                 failed = false,
-                action = "刷新" to onRetry,
+                action = stringResource(UiR.string.common_action_refresh) to onRetry,
             )
             is Loadable.Failed -> StatusColumn(
                 icon = Icons.Default.ErrorOutline,
-                title = "暂时无法加载",
+                title = stringResource(UiR.string.common_status_load_failed),
                 body = readableFailure(state.code),
                 failed = true,
-                action = if (state.retryable) "重试" to onRetry else null,
+                action = if (state.retryable) stringResource(UiR.string.common_action_retry) to onRetry else null,
             )
             is Loadable.Ready -> ready(state.value)
         }
@@ -118,15 +120,30 @@ fun specificFailureText(code: String): String? {
             }
             "登录已成功，但 App 未能完成${stage}的初始化。账号资料和历史记录已保留，请更新 App 后重试；若持续发生，请查看手机上的连接诊断。"
         }
+        value.contains("LOCAL_SAVE_FAILED") ->
+            "会话记录保存失败，同步已暂停。请检查存储空间后重新进入会话重试；暂勿重复发送原消息。"
+        value.contains("EVENT_APPLY_FAILED") ->
+            "会话同步数据未能处理，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App 与 Core 的版本兼容性。"
         value.contains("DEVICE_KEY_REGISTRATION_UPGRADE_REQUIRED") -> "设备认证已修复，请重新登录一次以更新设备公钥。"
-        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关没有配置主密钥，无法保存附件或发送消息。请让网关部署者执行插件仓的 tools/hermes-account.py init-key 生成受限密钥文件（或修复其权限后）并重启网关。"
+        value.contains("MASTER_KEY_UNAVAILABLE") -> "网关暂时无法保存附件或发送消息（主密钥来源不可用）。请重启网关；若持续发生，请让网关部署者检查密钥文件的路径、所有者与权限。"
         value.contains("APPROVAL_UNSUPPORTED") ->
-            "该 Gateway 不支持审批卡片，App 不会伪造一张无法提交的卡片。请升级 Gateway，或用 /approve 文本命令回复。"
+            "审批卡暂时无法显示，命令仍在等待执行。请回复 /approve 或 /deny 完成审批。"
         value.contains("APPROVAL_EXPIRED") ->
-            "审批已超时，命令没有执行。卡片恢复为不可点击，如需执行请让 Agent 重新发起。"
+            "审批已超时，命令未执行。如需执行请让 Agent 重新发起。"
         value.contains("APPROVAL_FAILED") ->
             "审批决策没有送达 Gateway，卡片已恢复为可点击，请重试。"
+        value.startsWith("STEERED:") ->
+            "引导消息已交给 Agent，由 Agent 处理当前任务。"
+        value.startsWith("STEERING_UNAVAILABLE:") -> when {
+            value.endsWith(":ATTACHMENTS") -> "实时引导只接受文本；带附件的消息请选择排队。"
+            else -> "引导消息未提交，草稿已保留，请重试。"
+        }
         value.contains("CONVERSATION_MANAGEMENT_UNSUPPORTED") -> "当前 Gateway 不支持会话管理，请安装配套网关更新后重试。"
+        value.contains("CONVERSATION_DELETE_UNSUPPORTED") -> "当前 Agent 不支持删除对话，会话记录已保留。"
+        value.contains("CONVERSATION_ARCHIVE_UNSUPPORTED") -> "当前 Agent 不支持归档操作，会话记录已保留。"
+        value.contains("CONVERSATION_RENAME_UNSUPPORTED") -> "当前 Agent 不支持重命名对话。"
+        value.contains("LOCAL_HISTORY_UNAVAILABLE") -> "暂无可用的会话缓存。"
+        value.contains("AGENT_OFFLINE") -> "当前 Agent 已离线，请等待恢复连接后重试。"
         value.contains("CONVERSATION_BUSY") -> "会话仍有发送或任务正在处理，请等待结束后再归档或删除。"
         value.contains("ORGANIZATION_CONFLICT") -> "另一端已修改文件夹或排序，已重新同步，请重试这次操作。"
         value.contains("FOLDER_NOT_FOUND") -> "文件夹已发生变化，请刷新会话列表后重试。"
@@ -142,6 +159,7 @@ fun specificFailureText(code: String): String? {
             "Agent 迟迟没有返回新建的会话，已停在原会话。请确认 Gateway 与 Agent 正在运行后重试。"
         value.contains("CONVERSATION_CREATE_CANCELLED") || value.contains("USER_CANCELLED") ->
             "已停止等待新建对话，仍停留在原会话。可以重新点击「新建对话」。"
+        value == "CONVERSATION_CREATE_FAILED:OUTCOME_UNKNOWN" -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("CONVERSATION_CREATE_FAILED") ->
             "新建对话失败，已停留在原会话，本地没有留下与 Gateway 不一致的会话。请检查连接后重试。"
         value.contains("RENAME") || value.contains("TITLE_UPDATE") -> "网关没有保存这次重命名，已恢复原标题。请确认网关版本支持会话重命名。"
@@ -155,13 +173,13 @@ fun specificFailureText(code: String): String? {
         // `AUTHENTICATION_FAILED:406`（`GatewayAuthClient` 在非 2xx 时只能回落到状态码），
         // 而契约把 406 专属给 `PROTOCOL_INCOMPATIBLE`。
         value.contains("PROTOCOL_INCOMPATIBLE") || STATUS_406.containsMatchIn(value) ->
-            "App 与 Gateway 的契约版本不一致（或本次协商已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
+            "App 与 Gateway 协议版本不一致（或连接已失效），连接被拒绝。请把 App 与插件升级到同一版本后重试；若刚升级过，重新登录一次即可。"
         value.contains("HOST_INCOMPATIBLE") ->
             "Gateway 与当前 Agent 宿主版本不兼容，请在 Agent 端升级插件或宿主后重试。"
         // 必须排在 `MISSING-TLS-IDENTITY` 之后：`NEGOTIATION_FAILED:missing-tls-identity`
         // 这种「前缀 + 更具体原因」的组合要命中更具体的那条说明。
         value.contains("NEGOTIATION_FAILED") ->
-            "Gateway 没有完成协议协商。请确认地址指向的是 Gateway v2 服务，并检查 Gateway 版本与运行日志。"
+            "Gateway 正在连接或连接未完成。请确认地址指向有效的 Gateway 服务，并检查版本与运行日志。"
         value.contains("OUTCOME_UNKNOWN") -> "操作结果尚未确认。请刷新核实，避免重复提交。"
         value.contains("AGENT_MESSAGE_FAILED") && value.contains("ATTACHMENT_READ_FAILED") ->
             "Agent 无法读取附件，请重新选择文件后重试。"
@@ -180,6 +198,10 @@ fun specificFailureText(code: String): String? {
         value.contains("429") || value.contains("RATE_LIMIT") -> "请求过于频繁，请稍后重试。"
         value.contains("REPLY_TIMEOUT") || value.contains("NO_REPLY") ->
             "Gateway 一直没有返回回复。已尝试重新同步会话，若仍无内容请检查 Gateway 与 Agent 是否在运行。"
+        value.contains("NATIVE_EVENT_SYNC_FAILED:ACK_FAILED") ->
+            "会话同步进度尚未获 Gateway 确认，本机记录已保留。请检查连接后重新进入会话重试同步，避免重复发送原消息。"
+        value.contains("NATIVE_EVENT_SYNC_FAILED:READ_FAILED") ->
+            "读取会话同步数据失败，本机记录已保留。请重新进入会话重试；若持续失败，请检查 App、Core 与 Agent 的版本兼容性。"
         value.contains("EVENTS_FAILED") || value.contains("EVENT_STREAM") ->
             "与 Gateway 的实时通道已断开，暂时收不到新回复。请检查网络或 Gateway 服务后重试。"
         value.contains("TIMEOUT") || value.contains("TIMED OUT") -> "连接超时，请检查网络后重试。"
@@ -216,6 +238,7 @@ fun streamHealthText(health: com.openandroidintelligence.conversation.model.Stre
  */
 fun noticeText(notice: String): String {
     if (!notice.contains(':')) return specificFailureText(notice) ?: notice
+    specificFailureText(notice)?.let { return it }
     // Both halves are candidates: "SEND_FAILED:MASTER_KEY_UNAVAILABLE" carries its
     // cause on the right, while "CONVERSATION_CREATE_TIMEOUT:NO_COMMAND_RESULT"
     // carries the actionable code on the left. Asking the halves in order is what

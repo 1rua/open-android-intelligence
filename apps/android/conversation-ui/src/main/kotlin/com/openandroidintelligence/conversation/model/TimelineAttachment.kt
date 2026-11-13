@@ -32,6 +32,14 @@ data class TimelineAttachment(
     val originalBytes: ByteArray? = null,
     val originalState: OriginalImageState = OriginalImageState.IDLE,
     val originalError: String? = null,
+    /**
+     * 语音附件的真实时长（毫秒）；null 表示「未知」，界面不显示时间。
+     *
+     * 时长不是协议字段：线协议只传身份与元数据，能给出真实时长的只有录下这段音频的
+     * 进程（见助理的 `AssistantLocalPreviews`）。没有观察到的时长保持 null，
+     * 界面不会用 0 秒冒充。
+     */
+    val audioDurationMs: Long? = null,
 ) {
     val isImage: Boolean
         get() = mediaType.startsWith("image/", ignoreCase = true) ||
@@ -43,6 +51,16 @@ data class TimelineAttachment(
             filename.endsWith(".heic", ignoreCase = true) ||
             filename.endsWith(".heif", ignoreCase = true)
 
+    /** 语音等音频附件：时间线里以「文件名 + 时长」芯片呈现，不进大图预览。 */
+    val isAudio: Boolean
+        get() = mediaType.startsWith("audio/", ignoreCase = true) ||
+            filename.endsWith(".m4a", ignoreCase = true) ||
+            filename.endsWith(".aac", ignoreCase = true) ||
+            filename.endsWith(".mp3", ignoreCase = true) ||
+            filename.endsWith(".ogg", ignoreCase = true) ||
+            filename.endsWith(".wav", ignoreCase = true) ||
+            filename.endsWith(".opus", ignoreCase = true)
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -52,6 +70,7 @@ data class TimelineAttachment(
         if (localState != other.localState || downloadState != other.downloadState ||
             localError != other.localError || downloadError != other.downloadError) return false
         if (originalState != other.originalState || originalError != other.originalError) return false
+        if (audioDurationMs != other.audioDurationMs) return false
         if (draftId != other.draftId) return false
         if (filename != other.filename) return false
         if (mediaType != other.mediaType) return false
@@ -85,6 +104,7 @@ data class TimelineAttachment(
         result = 31 * result + (originalBytes?.contentHashCode() ?: 0)
         result = 31 * result + originalState.hashCode()
         result = 31 * result + (originalError?.hashCode() ?: 0)
+        result = 31 * result + (audioDurationMs?.hashCode() ?: 0)
         return result
     }
 }

@@ -24,9 +24,8 @@ enum class ThemePreference {
 /**
  * 本机外观偏好。
  *
- * 动态取色（Monet）**默认开启**（Android 12+）：默认跟随系统壁纸取色，与 Material 3
- * 的平台默认形态一致。用户可以在「外观与动效」里关掉它，回落到本机预设色板；也可以
- * 直接从预设色板中选择一套（色板选择入口由主题层统一提供，本文件只负责偏好持久化）。
+ * 动态取色（Monet）默认关闭，预设色板默认为 EMBER。支持动态取色的系统上，
+ * 用户可自行开启跟随系统壁纸取色；关闭后使用选中的预设色板。
  * 代码不自行计算壁纸色，只调用 Android 官方的 `dynamicLightColorScheme` /
  * `dynamicDarkColorScheme`。
  *
@@ -38,10 +37,11 @@ enum class ThemePreference {
  */
 data class AppearanceSettings(
     val theme: ThemePreference = ThemePreference.SYSTEM,
-    val dynamicColor: Boolean = supportsDynamicColor(),
-    val dynamicIconColor: Boolean = supportsDynamicColor(),
-    val palette: ThemePalette = ThemePalette.INDIGO,
+    val dynamicColor: Boolean = false,
+    val dynamicIconColor: Boolean = false,
+    val palette: ThemePalette = ThemePalette.EMBER,
     val reduceMotion: Boolean = false,
+    val streamingHapticFeedback: Boolean = false,
 )
 
 class AppearancePreferences(context: Context) {
@@ -85,17 +85,33 @@ class AppearancePreferences(context: Context) {
         persist(_settings.value.copy(reduceMotion = enabled))
     }
 
+    fun setStreamingHapticFeedback(enabled: Boolean) {
+        persist(_settings.value.copy(streamingHapticFeedback = enabled))
+    }
+
+    /**
+     * 一次性写入整份外观偏好。
+     *
+     * 设置导入与回滚使用它：整份偏好必须作为一次提交生效，否则中途失败会留下
+     * 「主题换了、色板没换」的半套状态。图标别名与应用内状态同样在此刷新。
+     */
+    fun applySettings(next: AppearanceSettings) {
+        persist(next)
+        LauncherIconManager.applyDynamicIconPreference(appContext, next.dynamicIconColor)
+    }
+
     private fun read(): AppearanceSettings = AppearanceSettings(
         theme = preferences.getString(KEY_THEME, ThemePreference.SYSTEM.name)
             ?.let { value -> runCatching { ThemePreference.valueOf(value) }.getOrNull() }
             ?: ThemePreference.SYSTEM,
-        // 默认跟随系统动态取色（Android 12+）；用户显式关闭过则读回 false。
-        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, supportsDynamicColor()),
-        dynamicIconColor = preferences.getBoolean(KEY_DYNAMIC_ICON_COLOR, supportsDynamicColor()),
-        palette = preferences.getString(KEY_PALETTE, ThemePalette.INDIGO.name)
+        // 首次启动默认不打开动态取色，默认使用图标同款配色（EMBER）；用户显式更改过则读回配置。
+        dynamicColor = preferences.getBoolean(KEY_DYNAMIC_COLOR, false),
+        dynamicIconColor = preferences.getBoolean(KEY_DYNAMIC_ICON_COLOR, false),
+        palette = preferences.getString(KEY_PALETTE, ThemePalette.EMBER.name)
             ?.let { value -> runCatching { ThemePalette.valueOf(value) }.getOrNull() }
-            ?: ThemePalette.INDIGO,
+            ?: ThemePalette.EMBER,
         reduceMotion = preferences.getBoolean(KEY_REDUCE_MOTION, false),
+        streamingHapticFeedback = preferences.getBoolean(KEY_STREAMING_HAPTIC_FEEDBACK, false),
     )
 
     private fun persist(next: AppearanceSettings) {
@@ -105,6 +121,7 @@ class AppearancePreferences(context: Context) {
                 .putBoolean(KEY_DYNAMIC_COLOR, next.dynamicColor)
                 .putBoolean(KEY_DYNAMIC_ICON_COLOR, next.dynamicIconColor)
                 .putBoolean(KEY_REDUCE_MOTION, next.reduceMotion)
+                .putBoolean(KEY_STREAMING_HAPTIC_FEEDBACK, next.streamingHapticFeedback)
                 .putString(KEY_PALETTE, next.palette.name)
                 .commit(),
         ) { "APPEARANCE_PREFERENCE_PERSISTENCE_FAILED" }
@@ -117,6 +134,7 @@ class AppearancePreferences(context: Context) {
         const val KEY_DYNAMIC_COLOR = "dynamic_color"
         const val KEY_DYNAMIC_ICON_COLOR = "dynamic_icon_color"
         const val KEY_REDUCE_MOTION = "reduce_motion"
+        const val KEY_STREAMING_HAPTIC_FEEDBACK = "streaming_haptic_feedback"
         const val KEY_PALETTE = "palette"
     }
 }

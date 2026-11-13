@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- ================================================================= -->
+    <!-- 功能域: 系统通知与前台服务 (Notifications & Foreground Services)   -->
+    <!-- 资源前缀: notif_                                                  -->
+    <!-- 适用场景: 通知渠道名称/说明、常驻前台服务提示、快捷回复动作            -->
+    <!-- ================================================================= -->
+
+    <!-- 系统通知渠道 (Notification Channels) -->
+    <string name="notif_channel_service_name">后台运行状态</string>
+    <string name="notif_channel_service_desc">用于保持与服务器的实时连接，保证助手的后台响应能力</string>
+    <string name="notif_channel_messages_name">助手消息与提醒</string>
+    <string name="notif_channel_messages_desc">接收来自智能助手的对话回复、任务处理结果与主动提醒</string>
+    <string name="notif_channel_screen_capture_name">屏幕圈选采集</string>
+    <string name="notif_channel_screen_capture_desc">屏幕圈选依赖系统投屏授权，采集期间显示此常驻通知。</string>
+    <string name="notif_channel_agent_session_name">助手后台会话</string>
+    <string name="notif_channel_agent_session_desc">仅在助手任务运行期间接收会话回复</string>
+    <string name="notif_channel_live_update_name">助手实时任务状态</string>
+    <string name="notif_channel_live_update_desc">进行中的助手任务状态，可在系统支持的 Live Updates 界面显示</string>
+    <string name="notif_channel_reply_name">助手任务回复</string>
+    <string name="notif_channel_reply_desc">助手处理中实时显示公开回复，并在任务结束时提醒</string>
+
+    <!-- 常驻服务前台通知文案 -->
+    <string name="notif_service_running_title">OAI 正在后台运行</string>
+    <string name="notif_service_running_content">保持与服务器的实时连接</string>
+    <string name="notif_screen_capturing_title">屏幕圈选采集中</string>
+    <string name="notif_screen_capturing_content">正在使用你授予的系统投屏权限采集屏幕截图。</string>
+    <string name="notif_agent_session_title">助手任务处理中</string>
+    <string name="notif_agent_session_content">正在后台接收会话回复</string>
+
+    <!-- 实时任务卡片 (Live Updates) 文案 -->
+    <string name="notif_live_update_heading_queued">助手任务排队中</string>
+    <string name="notif_live_update_heading_running">助手正在执行任务</string>
+    <string name="notif_live_update_preview_waiting">等待助手开始处理</string>
+    <string name="notif_live_update_preview_running">任务进行中，等待新的公开回复</string>
+    <string name="notif_status_queued">排队中</string>
+    <string name="notif_status_running">处理中</string>
+
+    <!-- 会话回复与完成通知 (Reply Notifications) -->
+    <string name="notif_person_local_user">我</string>
+    <string name="notif_reply_heading_replied_running">助手已回复，仍有任务处理中</string>
+    <string name="notif_reply_heading_partial_failed">部分任务失败，仍有任务处理中</string>
+    <string name="notif_reply_heading_partial_cancelled">部分任务已取消，仍有任务处理中</string>
+    <string name="notif_reply_heading_processing">助手正在处理</string>
+    <string name="notif_reply_heading_queued">助手任务排队中</string>
+    <string name="notif_reply_heading_running">助手正在处理</string>
+    <string name="notif_reply_heading_completed">助手任务已完成</string>
+    <string name="notif_reply_heading_failed">助手任务失败</string>
+    <string name="notif_reply_heading_cancelled">助手任务已取消</string>
+    <string name="notif_reply_heading_ended">任务已结束</string>
+    <string name="notif_reply_heading_disconnected">服务器连接断开，任务状态待同步</string>
+    <string name="notif_reply_preview_waiting_start">等待助手开始处理</string>
+    <string name="notif_reply_preview_waiting_reply">等待助手回复</string>
+    <string name="notif_reply_preview_received">已收到回复，点击查看会话</string>
+    <string name="notif_reply_preview_error">任务未完成，请查看会话中的错误信息</string>
+    <string name="notif_reply_preview_cancelled">任务已取消</string>
+    <string name="notif_reply_preview_ended">任务已结束，点击查看会话</string>
+    <string name="notif_reply_preview_reconnecting">重新连接后同步任务状态</string>
+    <string name="notif_reply_excerpt_full_hint">点击查看完整回复</string>
+
+    <!-- 原生会话标题与附件占位 -->
+    <string name="notif_conv_default_title">Agent 会话</string>
+    <string name="notif_reply_attachment_placeholder">[附件回复]</string>
+    <string name="notif_conv_fallback_title_format">会话 %1$s</string>
+
+    <!-- 通知操作动作 -->
+    <string name="notif_action_reply">快速回复</string>
+    <string name="notif_action_stop">停止服务</string>
+    <string name="notif_action_open_conversation">打开会话窗口</string>
+</resources>

@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -41,7 +42,7 @@ import com.openandroidintelligence.conversation.theme.LocalAppStateColors
  * 2. Gateway 身份与账号信息（首字母头像、主机名、在线状态的文字 + 圆点）；
  * 3. 当前 Gateway 的对话线程（支持搜索、选中高亮与相对时间）；
  * 4. 附件库；
- * 5. 设置与平台管理（置于底部页脚常驻区吸底显示）。
+ * 5. 设置（置于底部页脚常驻区吸底显示）。
  * 底部安全区由抽屉自己承担 `navigationBarsPadding()`，页脚不会落进手势导航条。
  * 坚决不包含假设备卡片（ADB、电量、Wi-Fi）及越界导航项（通知中心、帮助反馈等）。
  */
@@ -61,6 +62,11 @@ fun ThreadDrawer(
     onLogout: () -> Unit,
     organization: ConversationOrganization = ConversationOrganization(),
     managementSupported: Boolean = false,
+    deleteSupported: Boolean = managementSupported,
+    archiveSupported: Boolean = managementSupported,
+    unarchiveSupported: Boolean = archiveSupported,
+    renameSupported: Boolean = managementSupported,
+    organizationStoredLocally: Boolean = false,
     managing: Boolean = false,
     online: Boolean = true,
     busyThreadIds: Set<String> = emptySet(),
@@ -102,6 +108,11 @@ fun ThreadDrawer(
                 selectedFolderId = selectedFolderId,
                 activeThreadId = activeThreadId,
                 managementSupported = managementSupported,
+                deleteSupported = deleteSupported,
+                archiveSupported = archiveSupported,
+                unarchiveSupported = unarchiveSupported,
+                renameSupported = renameSupported,
+                organizationStoredLocally = organizationStoredLocally,
                 managing = managing,
                 online = online,
                 busyThreadIds = busyThreadIds,
@@ -122,53 +133,50 @@ fun ThreadDrawer(
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            // ===== 页脚：设置、协议版本与退出登录，常驻吸底 =====
-            Column(
+            // ===== 页脚：设置与退出登录，常驻吸底 =====
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceTiny),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                DrawerNavItem(
-                    icon = Icons.Default.Settings,
-                    label = "设置与平台管理",
-                    onClick = {
-                        onOpenSettings()
-                        onCloseDrawer()
-                    },
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Dimensions.SpaceTiny, vertical = Dimensions.SpaceTiny),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                TextButton(
+                    onClick = onOpenSettings,
+                    contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
                 ) {
-                    Text(
-                        text = "Gateway Protocol v2",
-                        style = AppTextStyles.MonoSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
                     )
+                    Spacer(Modifier.width(Dimensions.SpaceTiny))
+                    Text(
+                        text = "设置",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
 
-                    TextButton(
-                        onClick = onLogout,
-                        contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(Dimensions.SmallIcon),
-                        )
-                        Spacer(Modifier.width(Dimensions.SpaceTiny))
-                        Text(
-                            text = "退出登录",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    }
+                TextButton(
+                    onClick = onLogout,
+                    contentPadding = PaddingValues(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceTiny),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ExitToApp,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(Dimensions.SmallIcon),
+                    )
+                    Spacer(Modifier.width(Dimensions.SpaceTiny))
+                    Text(
+                        text = "退出登录",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Medium,
+                    )
                 }
             }
         }
@@ -357,7 +365,10 @@ private fun DrawerNavItem(
 ) {
     SettingsListItem(
         headline = label,
-        modifier = modifier.clip(RoundedCornerShape(AppRadius.Medium)),
+        modifier = modifier
+            .clip(RoundedCornerShape(AppRadius.Medium))
+            .semantics(mergeDescendants = true) {}
+            .testTag("drawer-nav-item-$label"),
         icon = icon,
         tone = if (isActive) SettingsTone.PRIMARY else SettingsTone.NEUTRAL,
         onClick = onClick,

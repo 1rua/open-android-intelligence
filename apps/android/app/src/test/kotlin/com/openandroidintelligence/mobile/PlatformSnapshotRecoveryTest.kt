@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.schema.Json
 import java.io.IOException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -69,13 +70,45 @@ class PlatformSnapshotRecoveryTest {
 
     @Test fun aFailedRequestRecoveryDoesNotAdvanceThePlatformCursor()=runBlocking {
         val cursors=Cursors("evt_platform_old")
-        val client=GatewayHttpClient(profile,transport("platform"),{ByteArray(64)},cursors)
+        val stopped = CancellationException("bounded snapshot retry test")
+        var retryScheduled = false
+        val client=GatewayHttpClient(profile,transport("platform"),{ByteArray(64)},cursors,
+            delayFn = {
+                assertEquals("evt_platform_old", cursors.load("acct"))
+                retryScheduled = true
+                throw stopped
+            })
         var journalRecovered=false
         client.setCursorRecovery {
             recoverPlatformSnapshot(client,{}, {throw IOException("DEVICE_LOOKUP_FAILED")}, {journalRecovered=true})
         }
-        assertEquals("DEVICE_LOOKUP_FAILED",runCatching {client.events().take(1).toList()}.exceptionOrNull()?.message)
+        // A temporary lookup outage now retries; cancel only after observing
+        // that scheduling boundary and proving no unjournaled cursor escaped.
+        assertSame(stopped,runCatching {client.events().take(1).toList()}.exceptionOrNull())
+        assertTrue(retryScheduled)
         assertEquals("evt_platform_old",cursors.load("acct"))
         assertFalse(journalRecovered)
+    }
+
+    @Test fun aCoreWithoutLegacyChatRoutesRestoresDeviceRequestsFromItsSnapshot()=runBlocking {
+        val requests=mutableListOf<String>()
+        val upstream=transport("platform")
+        val core=object: GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                requests+=request.target
+                if (request.target.contains("/conversations")) return WireResponse(405,emptyList(),ByteArray(0))
+                return upstream.execute(request)
+            }
+            override fun eventStream(request: WireRequest)=upstream.eventStream(request)
+        }
+        val cursors=Cursors("evt_platform_old")
+        val client=GatewayHttpClient(profile,core,{ByteArray(64)},cursors)
+        val restored=mutableListOf<String>()
+        client.setCursorRecovery {
+            recoverPlatformSnapshot(client,{}, {restored+=it}, {restored+="journal"})
+        }
+        assertEquals("evt_platform_next",client.events().take(1).toList().single().id)
+        assertEquals(listOf("req_missed","journal"),restored)
+        assertEquals(listOf("/open-android-intelligence/v2/sync/snapshot"),requests)
     }
 }

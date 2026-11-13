@@ -48,7 +48,7 @@ data class PluginRegistration(
  *
  * Every invocation is resolved through the same six-term intersection, so a
  * capability is reachable only when the host build owns it, the phone allows
- * it, the plugin declared it, the plugin is enabled, the pairing granted it and
+ * it, the plugin declared it, the plugin is enabled, Android-local state permits it and
  * the current session still permits it. Missing any term fails closed.
  */
 class PluginKernel(
@@ -61,6 +61,9 @@ class PluginKernel(
     private val providerSelector: CapabilityProviderSelector,
     private val grants: (String) -> PairingGrant?,
     private val mediate: (KernelCallContext, String, ByteArray) -> ByteArray = { _, id, _ -> throw CapabilityDenied(id) },
+    private val authorizeInvocation: (PluginIdentity, String, ByteArray, SessionConstraints) -> Unit = { _, _, _, _ ->
+        throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
+    },
 ) {
     companion object {
         const val RUNTIME_PROTECTED_WASM = "protected-wasm"
@@ -86,6 +89,11 @@ class PluginKernel(
             registration.declaredPrimitives, registration.state.isExecutable(), grants(context.pairingId), context.session), primitive)
         requireIdentityGrant(registration, context.pairingId, primitive)
         val result = mediate(context, primitive, input.copyOf())
+        if (grants(context.pairingId)?.revision != context.grantRevision ||
+            !registration.state.isExecutable() || registrations[identity.pluginId]?.identity != identity || emergencyStopped) {
+            throw CapabilityDenied(primitive)
+        }
+        requireIdentityGrant(registration, context.pairingId, primitive)
         if (result.size > context.budget.maxOutputBytes) throw BudgetExceeded("OUTPUT")
         audit.record(identity.pluginId, context.accountId, context.pairingId, primitive, AuditOutcome.ALLOWED, context.session.correlationId)
         return result
@@ -128,10 +136,14 @@ class PluginKernel(
      * created after the stop cannot miss that it already happened.
      */
     fun onEmergencyStop(listener: (Boolean) -> Unit) {
-        synchronized(emergencyStopListeners) {
-            emergencyStopListeners += listener
-        }
+        observeEmergencyStop(listener)
+    }
+
+    /** UI owners can stop observing without retaining a destroyed ViewModel. */
+    fun observeEmergencyStop(listener: (Boolean) -> Unit): AutoCloseable {
+        synchronized(emergencyStopListeners) { emergencyStopListeners += listener }
         listener(emergencyStopped)
+        return AutoCloseable { synchronized(emergencyStopListeners) { emergencyStopListeners -= listener } }
     }
 
     fun register(registration: PluginRegistration) {
@@ -139,7 +151,7 @@ class PluginKernel(
         if (previous != null && previous.identity != registration.identity) throw ProviderRejected("IDENTITY_CONFLICT")
         registrations[registration.identity.pluginId] = registration
         semaphores[registration.identity.pluginId] =
-            Semaphore(registration.budget.maxConcurrentInvocations.coerceAtLeast(1))
+            Semaphore(registration.budget.maxConcurrentInvocations.coerceAtLeast(1), true)
     }
 
     fun unregister(pluginId: String) {
@@ -150,7 +162,7 @@ class PluginKernel(
     fun registrationFor(pluginId: String): PluginRegistration? = registrations[pluginId]
 
     private fun requireIdentityGrant(registration: PluginRegistration, pairingId: String, capability: String) {
-        if (registration.identityScopedGrants && identityGrantKey(registration.identity, capability) !in grants(pairingId)?.granted.orEmpty()) {
+        if (registration.identityScopedGrants && grants(pairingId)?.permits(identityGrantKey(registration.identity, capability)) != true) {
             throw CapabilityDenied(capability)
         }
     }
@@ -238,6 +250,7 @@ class PluginKernel(
         }
 
         try {
+            authorizeInvocation(identity, capability, input, session)
             // "Plugin enabled" is one of the six terms in the intersection, so
             // a plugin that is installed but not enabled is denied by the
             // intersection rather than by a separate check. That keeps the
@@ -252,39 +265,52 @@ class PluginKernel(
                 throw ProviderRejected("NOT_PROVIDER:$capability")
             }
 
-            EffectiveCapabilities.require(
-                CapabilityInputs(
-                    hostEnvelope = hostEnvelope.primitives,
-                    phoneLimits = phoneLimits.primitives,
-                    manifestRequests = registration.declaredPrimitives,
-                    pluginEnabled = registration.state.isExecutable(),
-                    pairingGrant = grants(pairingId),
-                    session = session,
-                    ),
-                    capability,
-                    )
-
-            val semaphore = semaphores[identity.pluginId]!!
-            requireIdentityGrant(registration, pairingId, capability)
-            if (session.background && !EffectiveCapabilities.compute(CapabilityInputs(hostEnvelope.primitives,
-                phoneLimits.primitives, registration.declaredPrimitives, true, grants(pairingId), session)).backgroundAllowed) {
-                throw CapabilityDenied("kernel.background.run")
+            requireInvocationCapabilities(registration, pairingId, capability, session)
+            val semaphore = semaphores[identity.pluginId] ?: throw CapabilityDenied(capability)
+            val grantRevision = grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
+            // The host passes the selected capability's primitive set, not just its
+            // public (versioned) capability ID. Queue before the plugin budget gate
+            // so a one-slot screen plugin can reach the device-wide lease queue.
+            val screenControl = "kernel.screen.control" in registration.declaredPrimitives &&
+                "kernel.screen.control" in session.primitives
+            if (screenControl) {
+                // invoke is synchronous and the trusted driver uses runInterruptible:
+                // acquire preserves FIFO and removes cancelled waiters by interruption.
+                semaphore.acquire()
+            } else if (!semaphore.tryAcquire()) {
+                throw BudgetExceeded("CONCURRENCY")
             }
-            val grantRevision=grants(pairingId)?.revision ?: error("PAIRING_REQUIRED")
-            if (!semaphore.tryAcquire()) throw BudgetExceeded("CONCURRENCY")
             val output = try {
+                if (screenControl) {
+                    // Admission is not permission to execute after waiting. Keep the
+                    // original generation, and reject replacement/unregistration too.
+                    requireCurrentInvocation(registration, semaphore, pairingId, grantRevision, capability)
+                    authorizeInvocation(identity, capability, input, session)
+                    if (providerSelector.select(capability, pairingId) != selected) {
+                        throw ProviderRejected("NOT_PROVIDER:$capability")
+                    }
+                    requireInvocationCapabilities(registration, pairingId, capability, session)
+                    requireCurrentInvocation(registration, semaphore, pairingId, grantRevision, capability)
+                    if (Thread.currentThread().isInterrupted) throw InterruptedException()
+                    // RemoteScreenRuntime still acquires the real exclusive lease
+                    // and checks request/session/expiry and expected screen revision.
+                }
                 currentCall.set(KernelCallContext(identity, accountId, pairingId, session, registration.budget,grantRevision))
-                when (registration.runtimeType) {
-                    RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
-                    RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
-                    else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
+                try {
+                    when (registration.runtimeType) {
+                        RUNTIME_PROTECTED_WASM -> runProtected(registration, registration.identity, input)
+                        RUNTIME_DEVELOPER_NATIVE -> runNative(registration, registration.identity, input)
+                        else -> throw ProviderRejected("UNSUPPORTED_RUNTIME:${registration.runtimeType}")
+                    }
+                } finally {
+                    currentCall.remove()
                 }
             } finally {
-                currentCall.remove()
                 semaphore.release()
             }
             if (grants(pairingId)?.revision!=grantRevision || !registration.state.isExecutable() || emergencyStopped) throw CapabilityDenied(capability)
 
+            authorizeInvocation(identity, capability, input, session)
             if (output.size > registration.budget.maxOutputBytes) {
                 throw BudgetExceeded("OUTPUT")
             }
@@ -306,6 +332,38 @@ class PluginKernel(
                 "invoke", AuditOutcome.FAILED, correlationId,
             )
             throw cause
+        }
+    }
+
+    private fun requireCurrentInvocation(
+        registration: PluginRegistration,
+        semaphore: Semaphore,
+        pairingId: String,
+        grantRevision: Long,
+        capability: String,
+    ) {
+        val pluginId = registration.identity.pluginId
+        if (emergencyStopped || !registration.state.isExecutable() || registrations[pluginId] !== registration ||
+            semaphores[pluginId] !== semaphore || grants(pairingId)?.revision != grantRevision) {
+            throw CapabilityDenied(capability)
+        }
+    }
+
+    private fun requireInvocationCapabilities(
+        registration: PluginRegistration,
+        pairingId: String,
+        capability: String,
+        session: SessionConstraints,
+    ) {
+        val inputs = CapabilityInputs(hostEnvelope.primitives, phoneLimits.primitives,
+            registration.declaredPrimitives, registration.state.isExecutable(), grants(pairingId), session)
+        EffectiveCapabilities.require(inputs, capability)
+        requireIdentityGrant(registration, pairingId, capability)
+        if (session.background) {
+            requireIdentityGrant(registration, pairingId, "kernel.background.run")
+            if (!EffectiveCapabilities.compute(inputs.copy(pluginEnabled = true, pairingGrant = grants(pairingId))).backgroundAllowed) {
+                throw CapabilityDenied("kernel.background.run")
+            }
         }
     }
 

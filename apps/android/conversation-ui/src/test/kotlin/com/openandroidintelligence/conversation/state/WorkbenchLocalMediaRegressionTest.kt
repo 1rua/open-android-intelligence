@@ -185,7 +185,7 @@ class WorkbenchLocalMediaRegressionTest {
         } finally { controller.close() }
     }
 
-    @Test fun resendingTheSameDraftQueriesBeforeRetryAndWaitsForThisAttemptDespiteTheOldVerifiedState() = runTest {
+    @Test fun explicitlyRecoveringUnknownAttachmentQueriesBeforeRetryAndWaitsForThisAttempt() = runTest {
         val host=Host().apply { submitFailure=IOException("ACK_LOST") }
         val coordinator=Coordinator()
         val journal=MemoryJournal()
@@ -201,7 +201,7 @@ class WorkbenchLocalMediaRegressionTest {
             host.submitFailure=null
             coordinator.retryGate=retryGate
             coordinator.beforeRetry={ assertEquals("必须先查询原客户端消息身份",listOf(originalId),host.queried) }
-            controller.sendDraft(); runCurrent()
+            controller.retryPendingSubmissions(); runCurrent()
             assertEquals("旧 VERIFIED 不能替代本次附件恢复完成",1,host.submissions)
             assertEquals(1,coordinator.retries)
             assertEquals(0,coordinator.releases)
@@ -270,6 +270,22 @@ class WorkbenchLocalMediaRegressionTest {
             assertEquals(AttachmentDownloadState.SAVED,rows(controller).single().attachments.single().downloadState)
             assertTrue(controller.state.value.notice?.contains("已保存到下载/OpenAndroidIntelligence：新文件.png") == true)
             assertTrue("新下载成功不能覆盖旧下载恢复失败提醒",controller.state.value.notice?.contains("上次中断的下载尚未恢复") == true)
+        } finally { controller.close() }
+    }
+
+    @Test fun aRefreshWithoutThumbnailBytesKeepsTheAlreadyVisiblePreview() = runTest {
+        val host = Host().apply { rows = listOf(mediaMessage.copy(contentRevision = 1)) }
+        val media = Media()
+        val controller = createController(host, media)
+        try {
+            controller.openThread("conv_a"); runCurrent()
+            val first = rows(controller).single().attachments.single().previewBytes!!.copyOf()
+            media.previewBytes = null
+            host.events.emit(VerifiedConversationEvent.TimelineUpsert("preview-refresh", 2, 2,
+                mediaMessage.copy(contentRevision = 2)))
+            runCurrent()
+            assertArrayEquals("远端及媒体快照暂缺缩略图不能清除已可见图片", first,
+                rows(controller).single().attachments.single().previewBytes)
         } finally { controller.close() }
     }
 
@@ -345,6 +361,7 @@ class WorkbenchLocalMediaRegressionTest {
         var cancelledFetches=0
         var completedFetches=0
         var finishDespiteCancellation=false
+        var previewBytes: ByteArray? = byteArrayOf(1,2,3)
         override suspend fun metadata(conversationId:String,attachmentId:String)=HistoricalMediaMetadata(conversationId,attachmentId,"回答.png","image/png",3,"sha256:"+"0".repeat(64),true,3)
         override suspend fun retain(metadata:HistoricalMediaMetadata) { local[metadata.conversationId to metadata.attachmentId]=metadata }
         override suspend fun localMetadata(conversationId:String,attachmentId:String)=local[conversationId to attachmentId]
@@ -357,7 +374,7 @@ class WorkbenchLocalMediaRegressionTest {
             return metadata(conversationId,attachmentId).also { retain(it); completedFetches++ }
         }
         override fun isRetained(attachmentId:String)=local.keys.any { it.second==attachmentId }
-        override fun preview(attachmentId:String)=byteArrayOf(1,2,3)
+        override fun preview(attachmentId:String)=previewBytes?.copyOf()
         override fun remove(attachmentId:String) { local.keys.removeAll { it.second==attachmentId } }
         override suspend fun applyTransition(transition:HistoricalMediaTransition) {
             val revision=transition.revision

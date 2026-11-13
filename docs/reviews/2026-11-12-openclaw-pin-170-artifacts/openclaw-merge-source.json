@@ -1,0 +1,18 @@
+{
+  "canonicalRepository": "1rua/openclaw-android-gateway",
+  "repositoryAliasRequiredByUnmodifiedChecker": "1rua/openclaw-gateway-plugin",
+  "reviewedHead": "3fafc92a148e83b8b47a0876029c94dbd51ff20b",
+  "mergedCommit": "e73ddfe1b333cfe0f69c4ea519db3553b056381a",
+  "reviewedTree": "257d3d763d52275370adbab4805978700234bcaa",
+  "mergedTree": "257d3d763d52275370adbab4805978700234bcaa",
+  "allTrackedContentEqual": true,
+  "cleanMergedCheckout": true,
+  "pr": {
+    "base": "35b2a595fd4374eb64761d08a90d83ea5390570f",
+    "head": "3fafc92a148e83b8b47a0876029c94dbd51ff20b",
+    "html_url": "https://github.com/1rua/openclaw-android-gateway/pull/4",
+    "merge_commit_sha": "e73ddfe1b333cfe0f69c4ea519db3553b056381a",
+    "merged": true,
+    "merged_at": "2026-11-12T00:03:37Z"
+  }
+}

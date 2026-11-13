@@ -1,3 +1,4 @@
+import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Properties
@@ -48,6 +49,17 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
     inputs.files(fileTree(contractRoot) {
         include("schemas/**/*.json", "vectors/**/*.json", "src/**/*.ts", "core-dispatched-schemas.json")
     }).withPropertyName("historyMediaContract").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    // The device-capability integration peer is this checkout's Core. Changes
+    // to its protocol/runtime must invalidate the Android end-to-end result.
+    val corePython = providers.environmentVariable("OAI_CORE_PYTHON").orNull?.takeIf { it.isNotBlank() } ?: historyPython
+    environment("OAI_CORE_PYTHON", corePython)
+    inputs.property("deviceCapabilityPythonExecutable", corePython)
+    inputs.file(repositoryRoot.resolve("oai-core/tests/device_capability_fixture.py"))
+        .withPropertyName("deviceCapabilityCoreFixture").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+    inputs.files(fileTree(repositoryRoot.resolve("oai-core/src")) {
+        include("**/*.py")
+        exclude("**/__pycache__/**")
+    }).withPropertyName("deviceCapabilityCoreSources").withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
     if (sdkRoot != null) inputs.files(fileTree(sdkRoot) {
         include("**/*.py", "pyproject.toml", "requirements*.txt")
         exclude(".git/**", "**/__pycache__/**", "tests/**", "docs/**", "**/.venv/**", "**/node_modules/**")
@@ -55,12 +67,66 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 }
 
 tasks.withType<Test>().configureEach {
+    // App tests emulate distinct installations but host registries and Compose idling resources
+    // are process globals. A prior class must not leak callbacks or Android state into the next.
+    // Keep compiled outputs/caches; isolate only the test JVM, without disabling idle checks.
+    forkEvery = 1
+    // 每个测试类一个 JVM 意味着 Robolectric 启动开销占主导。并发 fork 在不共享进程
+    // 状态的前提下把这些启动开销重叠起来；上界由 CI 实际核数与内存决定。
+    maxParallelForks = (providers.gradleProperty("oai.testParallelForks").orNull?.toIntOrNull() ?: 1)
+        .coerceAtLeast(1)
+    maxHeapSize = providers.gradleProperty("oai.testMaxHeap").orNull ?: "1g"
+    when (providers.gradleProperty("oai.testJit").orElse("default").get()) {
+        "default" -> Unit
+        // 仅实验切换编译层级；保持测试断言、超时、线程与进程隔离不变。
+        "startup" -> jvmArgs("-XX:TieredStopAtLevel=1")
+        else -> error("无效的测试 JIT 策略")
+    }
+    when (providers.gradleProperty("oai.testGc").orElse("default").get()) {
+        "default" -> Unit
+        "serial" -> jvmArgs("-XX:+UseSerialGC")
+        else -> error("无效的测试垃圾回收策略")
+    }
+    // 仅显式清单中的测试允许经 JUnit Suite 复用进程；其余测试仍逐类启动 JVM。
+    // 默认关闭，完成同源码、重复、乱序、并行验收后由 CI 明确启用。
+    val reuseClasses = providers.gradleProperty("oai.testReuseClasses").orElse("").get()
+        .split(',').filter(String::isNotBlank)
+    val reuseAllowlist = rootProject.file("ci/app-jvm-reuse.txt")
+    val allowedClasses = if (reuseAllowlist.isFile) reuseAllowlist.readLines()
+        .map { it.substringBefore('#').trim() }.filter(String::isNotBlank).toSet() else emptySet()
+    check(reuseClasses.all { it in allowedClasses }) { "JVM 复用请求包含未审计的测试类" }
+    inputs.file(reuseAllowlist).optional().withPropertyName("jvmReuseAllowlist")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    systemProperty("oai.testReuseClasses", reuseClasses.joinToString(","))
+    systemProperty("oai.testReuseAllowlist", allowedClasses.sorted().joinToString("\n"))
+    systemProperty("oai.testReuseSeed", providers.gradleProperty("oai.testReuseSeed").orElse("0").get())
+    if (reuseClasses.isEmpty()) {
+        exclude("**/ci/ReusableAppTestGroup*.class")
+    } else {
+        // 只排除被 Suite 接管的类文件。真实类名仍保留在 --tests 过滤器中，
+        // JUnit 子树及 JUnit XML 因而保留原始类/方法身份。
+        reuseClasses.forEach { exclude("${it.replace('.', '/')}.class") }
+    }
+
+    val performanceEnabled = providers.gradleProperty("oai.testPerformance").orElse("false").get().toBooleanStrict()
+    if (performanceEnabled) {
+        // 性能验收需要真实执行；仅禁用测试结果复用，编译和依赖缓存照常使用。
+        outputs.upToDateWhen { false }
+        outputs.doNotCacheIf("性能验收必须实际执行测试") { true }
+        val performancePath = layout.buildDirectory.dir("reports/app-performance").get().asFile.absolutePath
+        systemProperty("oai.testPerformanceDir", performancePath)
+        jvmArgs("-Xlog:gc:file=$performancePath/gc-%p.log:time,uptime")
+        doFirst { File(performancePath).mkdirs() }
+    }
     // 参考插件的真实编译产物与清单：测试用它们构造与发布同构的签名包，
     // 因此这些输入变动必须让测试失效，不能复用旧结果。
     for (spec in listOf(
         "sms" to "sms.wasm",
         "notifications" to "notifications.wasm",
         "call-log" to "call_log.wasm",
+        "screen-reader" to "screen_reader.wasm",
+        "screen-capture" to "screen_capture.wasm",
+        "screen-control" to "screen_control.wasm",
     )) {
         inputs.files(rootProject.projectDir.resolve("../../plugins/target/wasm32-unknown-unknown/release/${spec.second}"))
             .withPropertyName("compiled${spec.first.replace("-", "")}Reference".replaceFirstChar(Char::uppercase))
@@ -73,7 +139,7 @@ tasks.withType<Test>().configureEach {
 // Full releases carry the same signed .alp installed through the ordinary verifier.
 // An absent optional local input must clear yesterday's assets, never reuse them.
 //
-// 三个官方插件各自独立：缺失某一项只让它自己的入口如实说明「本包未附带」，
+// 官方插件各自独立：缺失某一项只让它自己的入口如实说明「本包未附带」，
 // 不会连带其他插件。只有显式要求（-Poai.requireBundledPlugins=true）时，
 // 任意一项缺失才让构建失败——发布流程正是用它保证不会漏包。
 internal data class BundledPluginSpec(val name: String, val pluginId: String, val wasm: String)
@@ -82,6 +148,9 @@ internal val bundledPlugins = listOf(
     BundledPluginSpec("notifications", "org.openandroidintelligence.notifications", "notifications.wasm"),
     BundledPluginSpec("sms", "org.openandroidintelligence.sms", "sms.wasm"),
     BundledPluginSpec("call-log", "org.openandroidintelligence.call-log", "call_log.wasm"),
+    BundledPluginSpec("screen-reader", "org.openandroidintelligence.screen-reader", "screen_reader.wasm"),
+    BundledPluginSpec("screen-capture", "org.openandroidintelligence.screen-capture", "screen_capture.wasm"),
+    BundledPluginSpec("screen-control", "org.openandroidintelligence.screen-control", "screen_control.wasm"),
 )
 val bundledPluginsDirectory = providers.environmentVariable("OAI_BUNDLED_PLUGINS_DIR").orElse("")
 val requireBundledPlugins = providers.gradleProperty("oai.requireBundledPlugins").map(String::toBoolean).orElse(false)
@@ -178,6 +247,30 @@ check(appVersionCode in 1..2_100_000_000) { "App versionCode 超出 Android 发�
 check(appVersionName.matches(Regex("[0-9A-Za-z.+-]+"))) { "App versionName 格式无效" }
 check(appCommit.isEmpty() || appCommit.matches(Regex("[0-9a-f]{40}"))) { "App 提交信息必须是完整的 Git SHA" }
 
+// Release signing inputs. The `doFirst` guard below must not reference any
+// script-level value: closing over one captures the Kotlin script instance,
+// which the configuration cache refuses to serialize. `Provid`ers are read
+// fresh inside the action instead, so nothing script-owned is captured.
+val releaseStoreFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
+val releaseStorePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
+val releaseKeyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
+val releaseKeyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+
+// Read at configuration time into a plain data holder that the task action
+// copies; the action itself only touches this local snapshot.
+data class ReleaseSigningSnapshot(
+    val keystorePath: String?,
+    val storePassword: String?,
+    val keyAlias: String?,
+    val keyPassword: String?,
+)
+val releaseSigningSnapshot = ReleaseSigningSnapshot(
+    keystorePath = releaseStoreFile?.absolutePath,
+    storePassword = releaseStorePassword,
+    keyAlias = releaseKeyAlias,
+    keyPassword = releaseKeyPassword,
+)
+
 android {
     namespace = "com.openandroidintelligence.mobile"
     defaultConfig {
@@ -207,12 +300,27 @@ android {
         buildConfig = true
         compose = true
     }
+    androidResources {
+        generateLocaleConfig = true
+        // AAPT2 -c 参数要求资源限定符必须带区域前缀 'r' (即 zh-rCN)，而非纯短横线 zh-CN
+        localeFilters += listOf("zh-rCN")
+    }
     signingConfigs {
         create("release") {
-            storeFile = providers.environmentVariable("OAI_RELEASE_KEYSTORE").orNull?.let(::file)
-            storePassword = providers.environmentVariable("OAI_RELEASE_STORE_PASSWORD").orNull
-            keyAlias = providers.environmentVariable("OAI_RELEASE_KEY_ALIAS").orNull
-            keyPassword = providers.environmentVariable("OAI_RELEASE_KEY_PASSWORD").orNull
+            storeFile = releaseStoreFile
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+        // 当 CI 或本地提供了外部统一发行密钥时，将 debug 签名也指向该密钥，
+        // 使得测试版与正式版产物拥有完全一致的签名证书，升级覆盖安装时无需卸载。
+        if (releaseStoreFile != null && releaseStoreFile.isFile) {
+            getByName("debug").apply {
+                storeFile = releaseStoreFile
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
     buildTypes.getByName("release") {
@@ -222,10 +330,22 @@ android {
     testOptions.unitTests.apply {
         isIncludeAndroidResources = true
         all {
-            val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
-            it.systemProperty("user.home", testHome.absolutePath)
-            it.doFirst { testHome.mkdirs() }
+            // Resolve to a plain String: closing over a Project-derived File
+            // captured the script/Project object and made the configuration
+            // cache unstorable.
+            val testHomePath = rootProject.layout.projectDirectory
+                .dir(".gradle/robolectric-home").asFile.absolutePath
+            it.systemProperty("user.home", testHomePath)
+            // Robolectric downloads its android-all runtime into `user.home`.
+            // The directory must exist, or every test fails in
+            // MavenDependencyResolver with FileNotFoundException. Only the plain
+            // String is captured here, so this stays configuration-cache safe.
+            it.doFirst { File(testHomePath).mkdirs() }
         }
+    }
+    if (providers.gradleProperty("oai.testPerformance").orElse("false").get().toBooleanStrict()) {
+        // 性能实验才注册公开的 Robolectric 统计插件，普通门禁不额外开启其统计器。
+        sourceSets.getByName("test").resources.srcDir("src/testPerformance/resources")
     }
 }
 
@@ -238,17 +358,42 @@ androidComponents {
 }
 
 // Fail before producing any release APK/AAB, including direct Gradle builds.
-tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseBundle")) }.configureEach {
-    doFirst {
-        val signing = android.signingConfigs.getByName("release")
-        val keystoreFile = signing.storeFile
-        check(keystoreFile?.isFile == true && !signing.storePassword.isNullOrBlank() &&
-            !signing.keyAlias.isNullOrBlank() && !signing.keyPassword.isNullOrBlank()) {
+//
+// Why a standalone task instead of a `doFirst` guard on the packaging tasks:
+// any lambda declared in this Kotlin script closes over the script instance, and
+// the configuration cache refuses to serialize that. That made
+// `:app:assembleFullRelease` fail to store its cache entry, which broke stable
+// release builds once the cache was enabled globally. A plain task with declared
+// inputs has no script reference and can be cached normally.
+abstract class VerifyReleaseSigning : DefaultTask() {
+    @get:Input
+    @get:Optional
+    abstract val keystorePath: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val storePassword: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val keyAlias: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val keyPassword: Property<String>
+
+    @TaskAction
+    fun verify() {
+        val keystoreFile = keystorePath.orNull?.let { File(it) }
+        check(keystoreFile?.isFile == true && storePassword.orNull?.isNotBlank() == true &&
+            keyAlias.orNull?.isNotBlank() == true && keyPassword.orNull?.isNotBlank() == true) {
             "Release signing requires the four OAI_RELEASE_* environment variables; see apps/android/README.md"
         }
         val keystore = KeyStore.getInstance(KeyStore.getDefaultType())
-        keystoreFile!!.inputStream().use { keystore.load(it, signing.storePassword!!.toCharArray()) }
-        val certificate = checkNotNull(keystore.getCertificate(signing.keyAlias)) { "Release signing certificate missing" }
+        keystoreFile!!.inputStream().use { keystore.load(it, storePassword.get().toCharArray()) }
+        val certificate = checkNotNull(keystore.getCertificate(keyAlias.get())) {
+            "Release signing certificate missing"
+        }
         val digest = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
             .joinToString("") { "%02X".format(it) }
         check(digest != "37D9445FAB11D827B032B84B0739ACB2C33AA8ACE1F319ED20A4CC612624CE33") {
@@ -257,10 +402,25 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
     }
 }
 
+val verifyReleaseSigning = tasks.register<VerifyReleaseSigning>("verifyReleaseSigning") {
+    group = "verification"
+    description = "Reject release packaging without a usable, non-debug signing identity."
+    keystorePath.set(releaseSigningSnapshot.keystorePath)
+    storePassword.set(releaseSigningSnapshot.storePassword)
+    keyAlias.set(releaseSigningSnapshot.keyAlias)
+    keyPassword.set(releaseSigningSnapshot.keyPassword)
+}
+
+tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseBundle")) }.configureEach {
+    dependsOn(verifyReleaseSigning)
+}
+
 dependencies {
+    implementation(project(":ui-resources"))
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))
     implementation(project(":capability-ports"))
+    implementation(project(":control-ports"))
     implementation(project(":notification-control"))
     implementation(project(":gateway-client"))
     implementation(project(":platform-kernel"))
@@ -304,6 +464,8 @@ dependencies {
     testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("junit:junit:4.13.2")

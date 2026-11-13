@@ -43,6 +43,13 @@ export type GatewaySchemaName =
   | "device.request"
   | "device.request.result"
   | "device.request.resultRequest"
+  | "device.caller"
+  | "device.authorizationProgress"
+  | "push.route"
+  | "push.registration"
+  | "push.delivery"
+  | "push.ack"
+  | "push.revoke"
   | "response.success"
   | "response.failure";
 
@@ -107,6 +114,13 @@ const definitions: Record<GatewaySchemaName, readonly [SchemaDocument, string]> 
   "device.request": [deviceRequestDocument as SchemaDocument, "request"],
   "device.request.result": [deviceRequestDocument as SchemaDocument, "result"],
   "device.request.resultRequest": [deviceRequestDocument as SchemaDocument, "resultRequest"],
+  "device.caller": [deviceRequestDocument as SchemaDocument, "caller"],
+  "device.authorizationProgress": [deviceRequestDocument as SchemaDocument, "authorizationProgress"],
+  "push.route": [deviceRequestDocument as SchemaDocument, "endpointRoute"],
+  "push.registration": [deviceRequestDocument as SchemaDocument, "endpointRegistration"],
+  "push.delivery": [deviceRequestDocument as SchemaDocument, "pushDelivery"],
+  "push.ack": [deviceRequestDocument as SchemaDocument, "pushAck"],
+  "push.revoke": [deviceRequestDocument as SchemaDocument, "pushRevoke"],
   "response.success": [envelopeDocument as SchemaDocument, "success"],
   "response.failure": [envelopeDocument as SchemaDocument, "failure"],
 };

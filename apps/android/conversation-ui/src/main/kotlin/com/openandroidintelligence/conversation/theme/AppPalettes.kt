@@ -34,6 +34,9 @@ enum class ThemePalette(
     val neutralChroma: Double = 2.4,
     val tertiaryHue: Double = (hue + 60.0) % 360.0,
 ) {
+    /** 炽橙（图标同款）：温暖醒目的品牌橙色，与 OAI 图标核心原色一致。 */
+    EMBER("炽橙", "OAI 标志性品牌橙色，与应用图标同款配色", hue = 46.0, chroma = 80.0, tertiaryHue = 18.0),
+
     /** 靛蓝：沉稳的蓝紫，接近 Material 3 基准蓝。 */
     INDIGO("靛蓝", "沉稳的蓝紫，适合长时间阅读", hue = 265.0, chroma = 52.0),
 

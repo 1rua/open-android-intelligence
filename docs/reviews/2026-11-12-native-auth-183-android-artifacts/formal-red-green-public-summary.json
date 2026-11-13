@@ -1,0 +1,93 @@
+{
+  "baseline": "7c599ab0d8b85cc6f68a7b5fd15c82bf2aea249d",
+  "task": "Issue183 Android按实际请求代次保留原身份恢复",
+  "formalRed": {
+    "class": "NativeAuthenticationStreamRecoveryTest",
+    "tests": 12,
+    "passed": 3,
+    "failures": 9,
+    "errors": 0,
+    "skipped": 0,
+    "method": "固定7c599既有实际模块编译类，直接编译同一正式新测试"
+  },
+  "formalGreen": {
+    "tests": 12,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "method": "同时编译本分支真实CoreRepo/分类器/AgentSessionClient/GatewayHttpClient与同一正式新测试"
+  },
+  "gradle": {
+    "status": "SUCCESSFUL",
+    "elapsed": "2m5s",
+    "tasks": 448,
+    "executed": 185,
+    "fromCache": 263,
+    "testRows": [
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeAuthenticationStreamRecoveryTest",
+        "tests": 12,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.256",
+        "xmlSha256": "dde1b5a05aae82ea3923bc0d1702b607a312eef601951ed80cc03acf1dda2e2c"
+      },
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeCancelledStreamRecoveryTest",
+        "tests": 5,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.202",
+        "xmlSha256": "80db58c5352378e363bef5469e42d44d5b32cecf333a5f29307d8eadff3541e0"
+      },
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NativeConnectionReliabilityTest",
+        "tests": 41,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.401",
+        "xmlSha256": "e6cd6493c657b41494ea8a4944a3542f67e11090d8b406b6e154cdf4453c77b6"
+      },
+      {
+        "class": "com.openandroidintelligence.mobile.conversations.NegotiationConnectionRecoveryTest",
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.21",
+        "xmlSha256": "b0936cd69825ff1c3300b77f8536dd712789a1357a4acf5f63e5832cfebfd0bc"
+      },
+      {
+        "class": "com.openandroidintelligence.gateway.agents.AgentSessionClientTest",
+        "tests": 36,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.283",
+        "xmlSha256": "ea9437fb0ffeedee7fc800b27de833e2bb5a8a62ec4afc55f318d905cd9ca809"
+      },
+      {
+        "class": "com.openandroidintelligence.gateway.http.GatewaySessionRecoveryTest",
+        "tests": 29,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "seconds": "0.268",
+        "xmlSha256": "c606a9db0a8ac782cd3709761d64ceb7e15cd261e4840569daf1f6497ee7db63"
+      }
+    ],
+    "totalTests": 127,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "externalNetworkCallsInNewTests": 0,
+  "deviceOrServiceOperated": false,
+  "credentialsPrintedOrCommitted": false,
+  "realCoreRestartVerified": false,
+  "fullVerified": false,
+  "temporaryProbeSourceCommitted": false
+}

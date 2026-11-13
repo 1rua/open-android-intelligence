@@ -1,0 +1,164 @@
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> test:fast
+> python3 tools/smart-test.py --level fast
+
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> mvp:lock:check
+> npm run lock:check
+
+npm warn Unknown env config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+npm warn Unknown user config "minimum-release-age". This will stop working in the next major version of npm. See `npm help npmrc` for supported config options.
+
+> lock:check
+> node --experimental-strip-types tools/check-dependency-lock.ts
+
+MVP dependency lock: PASS (8 rows)
+........................................................................ [  5%]
+........................................................................ [ 11%]
+................................................................ss...... [ 17%]
+........................................................................ [ 23%]
+.................................................................. [ 28%]
+........................................................................ [ 34%]
+........................................................................ [ 40%]
+...............................................ssssssss................. [ 46%]
+.....s...F................s........................s.................... [ 52%]
+........................................................................ [ 58%]
+........................................................................ [ 64%]
+........................................................................ [ 70%]
+........................................................................ [ 75%]
+........................................................................ [ 81%]
+........................................................................ [ 87%]
+........................................................................ [ 93%]
+........................................................................ [ 99%]
+.......                                                                  [100%]
+=================================== FAILURES ===================================
+_______ test_probe_succeeds_when_invoked_via_parent_relative_venv_python _______
+
+tmp_path = PosixPath('/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility/.worktrees/hermes-installation-tests/dbc1a08111a1bbf566c80f66')
+
+    def test_probe_succeeds_when_invoked_via_parent_relative_venv_python(tmp_path):
+        """Real Hermes lives at ../hermes relative to Core root; .. in sys.executable must not trip _PROBE."""
+        import venv
+        from oai_core.hermes_installation import _PROBE
+
+        root = tmp_path / "core"
+        manifest = root / "integrations/hermes-session-adapter/plugin.yaml"
+        manifest.parent.mkdir(parents=True, mode=0o700)
+        manifest.write_text("manifest_version: 2\nname: oai-hermes-session-adapter\nversion: 0.2.0\nkind: platform\n")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(mode=0o700)
+        (hermes_home / "config.yaml").write_text("plugins:\n  enabled:\n    - open-android-intelligence-gateway\n")
+        environment = hermes_home / "hermes-agent/venv"
+>       venv.EnvBuilder(with_pip=False, symlinks=False).create(environment)
+
+oai-core/tests/test_hermes_installation.py:651:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+/usr/lib/python3.14/venv/__init__.py:72: in create
+    context = self.ensure_directories(env_dir)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <venv.EnvBuilder object at 0x7f0da0ee8ad0>
+env_dir = '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility/.worktrees/hermes-installation-tests/dbc1a08111a1bbf566c80f66/hermes/hermes-agent/venv'
+
+    def ensure_directories(self, env_dir):
+        """
+        Create the directories for the environment.
+
+        Returns a context object which holds paths in the environment,
+        for use by subsequent logic.
+        """
+
+        def create_if_needed(d):
+            if not os.path.exists(d):
+                os.makedirs(d)
+            elif os.path.islink(d) or os.path.isfile(d):
+                raise ValueError('Unable to create directory %r' % d)
+
+        if os.pathsep in os.fspath(env_dir):
+            raise ValueError(f'Refusing to create a venv in {env_dir} because '
+                             f'it contains the PATH separator {os.pathsep}.')
+        if os.path.exists(env_dir) and self.clear:
+            self.clear_directory(env_dir)
+        context = types.SimpleNamespace()
+        context.env_dir = env_dir
+        context.env_name = os.path.split(env_dir)[1]
+        context.prompt = self.prompt if self.prompt is not None else context.env_name
+        create_if_needed(env_dir)
+        executable = sys._base_executable
+        if not executable:  # see gh-96861
+            raise ValueError('Unable to determine path to the running '
+                             'Python interpreter. Provide an explicit path or '
+                             'check that your PATH environment variable is '
+                             'correctly set.')
+        dirname, exename = os.path.split(os.path.abspath(executable))
+        if sys.platform == 'win32':
+            # Always create the simplest name in the venv. It will either be a
+            # link back to executable, or a copy of the appropriate launcher
+            _d = '_d' if os.path.splitext(exename)[0].endswith('_d') else ''
+            exename = f'python{_d}.exe'
+        context.executable = executable
+        context.python_dir = dirname
+        context.python_exe = exename
+        binpath = self._venv_path(env_dir, 'scripts')
+        libpath = self._venv_path(env_dir, 'purelib')
+
+        # PEP 405 says venvs should create a local include directory.
+        # See https://peps.python.org/pep-0405/#include-files
+        # XXX: This directory is not exposed in sysconfig or anywhere else, and
+        #      doesn't seem to be utilized by modern packaging tools. We keep it
+        #      for backwards-compatibility, and to follow the PEP, but I would
+        #      recommend against using it, as most tooling does not pass it to
+        #      compilers. Instead, until we standardize a site-specific include
+        #      directory, I would recommend installing headers as package data,
+        #      and providing some sort of API to get the include directories.
+        #      Example: https://numpy.org/doc/2.1/reference/generated/numpy.get_include.html
+        incpath = os.path.join(env_dir, 'Include' if os.name == 'nt' else 'include')
+
+        context.inc_path = incpath
+        create_if_needed(incpath)
+        context.lib_path = libpath
+        create_if_needed(libpath)
+        # Issue 21197: create lib64 as a symlink to lib on 64-bit non-OS X POSIX
+        if ((sys.maxsize > 2**32) and (os.name == 'posix') and
+            (sys.platform != 'darwin')):
+            link_path = os.path.join(env_dir, 'lib64')
+            if not os.path.exists(link_path):   # Issue #21643
+>               os.symlink('lib', link_path)
+E               FileNotFoundError: [Errno 2] No such file or directory: 'lib' -> '/mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility/.worktrees/hermes-installation-tests/dbc1a08111a1bbf566c80f66/hermes/hermes-agent/venv/lib64'
+
+/usr/lib/python3.14/venv/__init__.py:199: FileNotFoundError
+=============================== warnings summary ===============================
+tests/test_agent_registration.py::test_registered_core_automatically_creates_and_reuses_private_native_spaces
+  /mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility/integrations/hermes-session-adapter/src/oai_hermes_adapter/bridge.py:317: NotAppKeyWarning: It is recommended to use web.RequestKey instances for keys.
+  https://docs.aiohttp.org/en/stable/web_advanced.html#request-s-storage
+    request["principal"] = SimpleNamespace(account_id=account, device_id=device,
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED oai-core/tests/test_hermes_installation.py::test_probe_succeeds_when_invoked_via_parent_relative_venv_python
+1 failed, 1211 passed, 13 skipped, 1 warning, 6 subtests passed in 171.61s (0:02:51)
+检测到变更文件数量: 10
+  - docs/plans/2026-11-11-dsh-core-compatibility.zh-CN.md
+  - integrations/dsh-session-adapter/README.md
+  - integrations/dsh-session-adapter/adapter.test.js
+  - integrations/dsh-session-adapter/core-contract-fixture.mjs
+  - integrations/dsh-session-adapter/generation.js
+  - integrations/dsh-session-adapter/generation.test.js
+  - integrations/dsh-session-adapter/host-contract.test.js
+  - integrations/dsh-session-adapter/index.js
+  - integrations/dsh-session-adapter/reliability.test.js
+  - oai-core/tests/test_dsh_builtin_contract.py
+=== 智能测试验证计划 [Level: FAST] ===
+影响范围评估: {'is_full_required': False, 'affects_security_or_contract': False, 'affects_oai_core': True, 'affects_configuration': False, 'affects_measurements': False, 'affects_observer': False, 'affects_android_kernel': False, 'affects_hermes': False, 'affects_dsh': True, 'affects_plugins': False, 'affects_android_control': False, 'affects_android_conversation': False, 'affects_android_gateway': False, 'affects_android_app': False, 'affects_android_settings': False, 'affects_android_notifications': False}
+
+--- 阶段 1: 静态安全与契约门禁 ---
+
+[EXEC] npm run mvp:lock:check (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility)
+
+--- 阶段 2: OAI Core 单元测试 ---
+
+[EXEC] /home/djbd/.local/share/venv-oai/bin/python3 -m pytest oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py tools/test_observe_communication.py tools/test_audit_communication.py -q --ignore=oai-core/tests/test_hermes.py --ignore=oai-core/tests/test_hermes_native.py --ignore=oai-core/tests/test_hermes_bridge_heartbeat.py --ignore=oai-core/tests/test_hermes_session_key_recovery.py --ignore=oai-core/tests/test_hermes_plugin_zero_config.py --ignore=oai-core/tests/test_hermes_native_origin.py --ignore=oai-core/tests/test_hermes_interactions.py --ignore=oai-core/tests/test_hermes_approval_prompts.py --ignore=oai-core/tests/test_interaction_pipeline.py --ignore=oai-core/tests/test_structured_tool_history.py --ignore=oai-core/tests/test_native_tool_events.py --ignore=oai-core/tests/test_native_event_sync.py --ignore=oai-core/tests/test_hermes_communication_reliability.py --ignore=oai-core/tests/test_communication_process_recovery.py (cwd: /mnt/data/projects/open-android-intelligence/.worktrees/dsh-core-compatibility)

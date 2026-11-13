@@ -165,76 +165,6 @@ class ToolCallCardTest {
     }
 
     @Test
-    fun hermesInvocationLineParsesAsInvocationOnlyToolCall() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertEquals("", call.command)
-        assertTrue(call.invocationOnly, "Hermes 纯文本工具调用应标记为无参数只有调用事实")
-    }
-
-    @Test
-    fun hermesArgumentsContainingACommaStayInOneCard() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code print(a, b)")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertEquals("print(a, b)", call.command)
-    }
-
-    @Test
-    fun hermesJoinedToolNamesBecomeOneCardPerTool() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code、search_files、read_file")
-
-        assertEquals(3, blocks.size)
-        assertEquals(
-            listOf("execute_code", "search_files", "read_file"),
-            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
-        )
-        assertTrue(blocks.all { (it as TimelineBlock.ToolCallBlock).invocationOnly })
-    }
-
-    @Test
-    fun hermesInvocationWithArgumentsKeepsThemAsCommand() {
-        val blocks = MarkdownParser.parse("调用工具：execute_code({\"sql\":\"select 1\"})")
-
-        assertEquals(1, blocks.size)
-        val call = blocks[0] as TimelineBlock.ToolCallBlock
-        assertEquals("execute_code", call.toolName)
-        assertTrue(call.command.contains("select 1"))
-    }
-
-    @Test
-    fun hermesActivityTextAndInvocationLinesParseIntoNarrativeAndToolCards() {
-        val markdown = """
-            插件状态如下：
-            调用工具：execute_code
-            调用工具：read_file
-        """.trimIndent()
-
-        val blocks = MarkdownParser.parse(markdown)
-        assertTrue(blocks[0] is TimelineBlock.Paragraph)
-        assertEquals("插件状态如下：", (blocks[0] as TimelineBlock.Paragraph).text)
-        assertEquals("execute_code", (blocks[1] as TimelineBlock.ToolCallBlock).toolName)
-        assertEquals("read_file", (blocks[2] as TimelineBlock.ToolCallBlock).toolName)
-        assertTrue((blocks[1] as TimelineBlock.ToolCallBlock).invocationOnly)
-    }
-
-    @Test
-    fun ellipsisTruncatedHermesActivityStillBecomesToolCards() {
-        val blocks = MarkdownParser.parse("Running code import sqlite3 import json conn = sql...\nReading core.py L5510-5549...")
-
-        assertEquals(2, blocks.size)
-        assertEquals(
-            listOf("execute_code", "read_file"),
-            blocks.map { (it as TimelineBlock.ToolCallBlock).toolName },
-        )
-    }
-
-    @Test
     fun ordinaryProseStartingWithReadingIsNotAToolCard() {
         val blocks = MarkdownParser.parse("Reading your question, I found the answer.\nRunning the check next.")
 
@@ -250,23 +180,6 @@ class ToolCallCardTest {
 
         assertEquals(1, blocks.size)
         assertTrue(blocks[0] is TimelineBlock.Paragraph)
-    }
-
-    @Test
-    fun hermesLiveActivityLinesBecomeToolCards() {
-        val markdown = """
-            Running code import sqlite3
-            Searching files for inventory
-            Reading core.py L5510-5549
-        """.trimIndent()
-
-        val blocks = MarkdownParser.parse(markdown)
-        assertEquals(3, blocks.size)
-        val calls = blocks.map { it as TimelineBlock.ToolCallBlock }
-        assertEquals(listOf("execute_code", "search_files", "read_file"), calls.map { it.toolName })
-        assertEquals("import sqlite3", calls[0].command)
-        assertEquals("inventory", calls[1].command)
-        assertTrue(calls.all { it.invocationOnly })
     }
 
     @Test

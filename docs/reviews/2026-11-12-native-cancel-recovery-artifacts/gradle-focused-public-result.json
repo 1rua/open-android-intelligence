@@ -1,0 +1,21 @@
+{
+  "baseline": "2caabfb1206fd93cd0232171f0bf287fdfeea498",
+  "source": "本分支实际生产源码与正式测试",
+  "command": "./gradlew --offline --no-configuration-cache --max-workers=2 -I <既有离线测试配置> :app:testFullDebugUnitTest --tests com.openandroidintelligence.mobile.conversations.NativeCancelledStreamRecoveryTest --console=plain",
+  "workingDirectory": "apps/android",
+  "environment": "JDK21/SDK36、既有可写Gradle缓存与离线Robolectric JAR",
+  "build": "SUCCESSFUL",
+  "buildElapsed": "1m14s",
+  "tasks": {
+    "total": 443,
+    "executed": 177,
+    "fromCache": 266
+  },
+  "xmlSha256": "8e8fe0ff156b6679a6c22d9155c9299b5bd684008f8981cb3ad7db82b0b060dc",
+  "tests": 5,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "testSeconds": "0.206",
+  "realDshOrDeviceE2e": false
+}

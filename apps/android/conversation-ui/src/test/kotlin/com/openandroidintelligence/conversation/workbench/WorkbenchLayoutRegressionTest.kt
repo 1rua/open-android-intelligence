@@ -1,12 +1,31 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
@@ -22,6 +41,7 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.emptyFlow
 import org.junit.After
 import org.junit.Assert.*
@@ -46,6 +66,80 @@ class WorkbenchLayoutRegressionTest {
         }
         compose.runOnIdle { controller.editDraft("1111") }
         compose.onNodeWithContentDescription("发送").assertIsEnabled()
+    }
+
+    @Test fun initializingBlankPageDoesNotClaimThatApprovalCardsAreUnsupported() {
+        val controller = WorkbenchController(scope, EmptyGateway(), object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        }, { ConversationScope("p", "g", "a", "i") }, allowSending = false, restoreLastThread = false)
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {},
+                    connectionHealth = StreamHealth.CONNECTING)
+            }
+        }
+        compose.onNodeWithText("有什么想聊的？").assertIsDisplayed()
+        compose.onNodeWithText("正在连接…", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("该网关不支持审批卡片，请用 /approve 文本命令回复。").assertDoesNotExist()
+        compose.onNodeWithContentDescription("发送").assertIsNotEnabled()
+    }
+
+    @Test fun liveCorePreservesNativeConnectionFailuresAndNormalIdleInTheTopBar() {
+        verifyLiveCoreAndNativeDisplay(1f)
+    }
+
+    @Test fun largeFontUsesTheSameCoreAndNativeConnectionDisplay() {
+        verifyLiveCoreAndNativeDisplay(1.8f)
+    }
+
+    private fun verifyLiveCoreAndNativeDisplay(fontScale: Float) {
+        val nativeHealth = MutableStateFlow(StreamHealth.IDLE)
+        var coreHealth by mutableStateOf<StreamHealth?>(StreamHealth.LIVE)
+        val controller = WorkbenchController(scope, EmptyGateway(), object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        }, { ConversationScope("p", "g", "a", "i") }, streamHealthSource = object : StreamHealthSource {
+            override val streamHealth = nativeHealth
+        })
+        compose.setContent {
+            val density = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(density.density, fontScale)) {
+                MaterialTheme {
+                    WorkbenchScreen(controller, "gateway", {}, {}, {}, {}, {}, onLogout = {},
+                        connectionHealth = coreHealth)
+                }
+            }
+        }
+        listOf(
+            StreamHealth.IDLE to "已连接",
+            StreamHealth.CONNECTING to "正在连接…",
+            StreamHealth.LIVE to "已连接",
+            StreamHealth.RECONNECTING to "重连中…",
+            StreamHealth.FAILED to "通道已断开",
+            StreamHealth.LIVE to "已连接",
+            StreamHealth.IDLE to "已连接",
+        ).forEach { (health, label) ->
+            compose.runOnIdle { nativeHealth.value = health }
+            compose.onNodeWithText("gateway · $label").assertIsDisplayed()
+        }
+        listOf(
+            StreamHealth.CONNECTING to "正在连接…",
+            StreamHealth.RECONNECTING to "重连中…",
+            StreamHealth.FAILED to "通道已断开",
+        ).forEach { (health, label) ->
+            compose.runOnIdle { coreHealth = health; nativeHealth.value = StreamHealth.LIVE }
+            compose.onNodeWithText("gateway · $label").assertIsDisplayed()
+        }
+        compose.runOnIdle { coreHealth = null; nativeHealth.value = StreamHealth.IDLE }
+        compose.onNodeWithText("gateway · 实时通道未建立").assertIsDisplayed()
+        compose.runOnIdle { coreHealth = StreamHealth.LIVE }
+        compose.onNodeWithText("gateway · 已连接").assertIsDisplayed()
+        compose.runOnIdle { assertEquals("展示合成不能改变原生流真值", StreamHealth.IDLE, controller.state.value.streamHealth) }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNodeWithText("在线").assertIsDisplayed()
+        compose.runOnIdle { nativeHealth.value = StreamHealth.RECONNECTING }
+        compose.onNodeWithText("重连中…").assertIsDisplayed()
     }
 
     @Test fun searchFieldGrowsWithFontScaleInsteadOfClippingItsPlaceholder() {
@@ -99,21 +193,229 @@ class WorkbenchLayoutRegressionTest {
             }
         }
 
-        // 即使有 30 条会话撑满列表，固定页脚中的「设置与平台管理」也必须常驻可见，无需滚动
-        val settingsNode = compose.onNodeWithText("设置与平台管理")
+        // 即使有 30 条会话撑满列表，固定页脚中的「设置」也必须常驻可见，无需滚动
+        val settingsNode = compose.onNodeWithText("设置")
         settingsNode.assertIsDisplayed()
         settingsNode.performClick()
         assertTrue("点击设置项必须触发 onOpenSettings", settingsOpened)
-        assertTrue("点击设置项必须触发关闭抽屉 onCloseDrawer", drawerClosed)
+        assertFalse("切换到设置时不能关闭并重新打开抽屉", drawerClosed)
 
-        // 页脚同级的协议版本号与退出登录也必须常驻可见
-        compose.onNodeWithText("Gateway Protocol v2").assertIsDisplayed()
+        // 页脚同级的退出登录也必须常驻可见
         compose.onNodeWithText("退出登录").assertIsDisplayed()
+    }
+
+    @Test
+    fun phoneSwitchesToSettingsWithoutClosingAndVerticalScrollDoesNotDismiss() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
+        var mainMounts = 0
+        var mainDisposals = 0
+        var scrollStateHolder: ScrollState? = null
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                }, header = {
+                    DisposableEffect(Unit) {
+                        mainMounts++
+                        onDispose { mainDisposals++ }
+                    }
+                }, onScrollState = { scrollStateHolder = it })
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertTrue("点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
+        // 手机端全屏展示：设置面板宽度应占满整个可用屏幕宽度（411dp），不再是 320dp 侧栏
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        val scrollState = scrollStateHolder ?: error("ScrollState must be captured")
+        repeat(3) {
+            compose.runOnIdle {
+                runBlocking {
+                    scrollState.scrollTo(scrollState.maxValue)
+                    scrollState.scrollTo(0)
+                }
+            }
+        }
+        compose.waitForIdle()
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue("纵向滚动不能关闭设置", settingsOpen)
+            assertEquals("设置切换不能重建右侧内容", 1, mainMounts)
+            assertEquals("设置切换不能销毁右侧内容", 0, mainDisposals)
+        }
+
+        compose.onNode(hasText("返回会话") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("退出登录").assertIsDisplayed()
+        compose.runOnIdle { assertFalse("返回会话列表时应退出设置", settingsOpen) }
+    }
+
+    @Test
+    fun phoneSettingsSemanticsActionKeepsDrawerOpen() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        val settingsChanges = mutableListOf<Boolean>()
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(controller, settingsOpen, {
+                    settingsChanges += it
+                    settingsOpen = it
+                })
+            }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNodeWithText("设置").performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle {
+            assertTrue("语义点击后设置应保持打开；状态变化：$settingsChanges", settingsOpen)
+        }
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
+        compose.onNodeWithText("测试设置面板").assertIsDisplayed()
+    }
+
+    @Test
+    fun phoneFullscreenSettingsCoversWholeWindowWithoutResidualConversation() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        compose.setContent {
+            MaterialTheme {
+                SidebarWorkbench(
+                    controller,
+                    settingsOpen,
+                    { settingsOpen = it },
+                )
+            }
+        }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+
+        // 手机端全屏设置：宽度必须为 411dp（全部窗口宽度），占满屏幕
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(411.dp)
+        // 验证设置容器存在且为全屏容器
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertWidthIsEqualTo(411.dp)
+        // 返回后退出
+        compose.onNode(hasText("返回会话") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse(settingsOpen) }
+    }
+
+    @Test
+    fun phoneHorizontalDismissClosesSettingsAndSynchronizesItsState() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        compose.setContent {
+            MaterialTheme { SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }) }
+        }
+
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        // 点击返回会话退出设置
+        compose.onNode(hasText("返回会话") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.runOnIdle { assertFalse("关闭设置后状态也必须关闭", settingsOpen) }
+        compose.onNodeWithContentDescription("打开会话抽屉").assertIsDisplayed()
+    }
+
+    @Test
+    @org.robolectric.annotation.Config(qualifiers = "w1200dp-h900dp-160dpi")
+    fun wideSettingsReplaces320dpSidebarWithoutRebuildingMainContent() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        var mainMounts = 0
+        var mainDisposals = 0
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(1000.dp, 800.dp)) {
+                    SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }, header = {
+                        DisposableEffect(Unit) {
+                            mainMounts++
+                            onDispose { mainDisposals++ }
+                        }
+                        Box(Modifier.fillMaxWidth().height(8.dp).testTag("main-content-marker"))
+                    })
+                }
+            }
+        }
+        compose.runOnIdle { controller.editDraft("保留的草稿") }
+        val before = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithText("设置").performClick()
+        compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(320.dp)
+        val after = compose.onNodeWithTag("main-content-marker").fetchSemanticsNode().boundsInRoot
+        assertEquals("设置不能改变右侧位置", before.left, after.left, 1f)
+        assertEquals("设置不能改变右侧宽度", before.width, after.width, 1f)
+        compose.runOnIdle {
+            assertEquals("保留的草稿", controller.state.value.draft)
+            assertEquals("设置切换不能重建会话内容", 1, mainMounts)
+            assertEquals("设置切换不能销毁会话内容", 0, mainDisposals)
+        }
+        compose.onNodeWithText("返回会话").performClick()
+        compose.onNodeWithText("退出登录").assertIsDisplayed()
+    }
+
+    @Test
+    @org.robolectric.annotation.Config(qualifiers = "w1200dp-h900dp-160dpi")
+    fun settingsSubpageAndDraftSurviveWindowBreakpointChanges() {
+        val controller = sidebarController()
+        var settingsOpen by mutableStateOf(false)
+        var windowWidth by mutableStateOf(411.dp)
+        var mainMounts = 0
+        var mainDisposals = 0
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.size(windowWidth, 800.dp)) {
+                    SidebarWorkbench(controller, settingsOpen, { settingsOpen = it }, header = {
+                        DisposableEffect(Unit) {
+                            mainMounts++
+                            onDispose { mainDisposals++ }
+                        }
+                    })
+                }
+            }
+        }
+        compose.runOnIdle { controller.editDraft("跨断点保留") }
+        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.onNode(hasText("进入设置子页") and hasClickAction()).performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.waitForIdle()
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+
+        for (width in listOf(1000.dp, 411.dp, 1000.dp, 411.dp)) {
+            compose.runOnIdle { windowWidth = width }
+            compose.onNodeWithTag("sidebar-test-panel").assertWidthIsEqualTo(if (width >= 840.dp) 320.dp else width)
+            compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+        }
+        compose.onNodeWithText("返回会话").performClick()
+        compose.waitForIdle()
+        compose.onNode(hasText("设置") and hasClickAction())
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
+        compose.onNodeWithText("设置子页状态").assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue("跨断点不能关闭设置", settingsOpen)
+            assertEquals("跨断点保留", controller.state.value.draft)
+            assertEquals("跨断点不能重建会话内容", 1, mainMounts)
+            assertEquals("跨断点不能销毁会话内容", 0, mainDisposals)
+        }
     }
 
     @Test fun failedSendExplainsItselfInsteadOfShowingABareErrorCode() {
         val readable = noticeText("SEND_FAILED:MASTER_KEY_UNAVAILABLE")
         assertTrue("失败提示必须给出可操作说明：$readable", readable.contains("主密钥") && !readable.contains("MASTER_KEY_UNAVAILABLE"))
+        assertTrue(noticeText("STEERING_UNAVAILABLE:CAPABILITY").contains("草稿已保留"))
+        assertTrue(noticeText("STEERING_UNAVAILABLE:ATTACHMENTS").contains("只接受文本"))
+        assertTrue(noticeText("STEERED:CURRENT_TURN").contains("已交给 Agent"))
         assertEquals("已创建新对话", noticeText("已创建新对话"))
     }
 
@@ -124,7 +426,7 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
             override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-                Conversation(ConversationId("conv_streaming"), "新对话", 0)
+                Conversation(ConversationId("conv_streaming"), "", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
@@ -149,8 +451,8 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Welcome screen is displayed initially, no thinking indicator
-        compose.onNodeWithText("从一个想法开始").assertIsDisplayed()
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("有什么想聊的？").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
 
         // Send a draft to enter QUEUED generation state
         compose.runOnIdle {
@@ -159,7 +461,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator must be displayed while QUEUED/RUNNING and no assistant streaming yet
-        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
         compose.onAllNodesWithText("你好").onFirst().assertIsDisplayed()
 
         // Assistant streaming delta arrives
@@ -182,7 +484,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator disappears, streaming indicator and streaming text appear
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
         compose.onNodeWithText("正在输出…").assertIsDisplayed()
         compose.onNodeWithText("助理正在回答中", substring = true).assertIsDisplayed()
 
@@ -206,7 +508,7 @@ class WorkbenchLayoutRegressionTest {
         }
 
         // Thinking indicator remains absent, streaming tag is gone, complete message is displayed
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
         compose.onNodeWithText("正在输出…").assertDoesNotExist()
         compose.onNodeWithText("助理正在回答中，回答完毕。", substring = true).assertIsDisplayed()
     }
@@ -219,7 +521,7 @@ class WorkbenchLayoutRegressionTest {
             override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
             override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
             override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
-                Conversation(ConversationId("conv_stop"), "新对话", 0)
+                Conversation(ConversationId("conv_stop"), "", 0)
             override suspend fun submitMessage(message: OutgoingMessage) =
                 MessageAcceptance("msg_user_1", message.clientMessageId.value)
             override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
@@ -251,7 +553,7 @@ class WorkbenchLayoutRegressionTest {
             controller.editDraft("正在提问")
             controller.sendDraft()
         }
-        compose.onNodeWithText("AI 正在思考").assertIsDisplayed()
+        compose.onNodeWithText("正在思考").assertIsDisplayed()
 
         compose.runOnIdle {
             controller.stopGeneration()
@@ -260,7 +562,7 @@ class WorkbenchLayoutRegressionTest {
             assertEquals(1, cancellationCalls)
             assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
         }
-        compose.onNodeWithText("AI 正在思考").assertDoesNotExist()
+        compose.onNodeWithText("正在思考").assertDoesNotExist()
     }
 
     /**
@@ -300,9 +602,10 @@ class WorkbenchLayoutRegressionTest {
         // 没有活动线程时菜单项存在但不可用：动作在，语义明确，不假装能改。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsNotEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
         compose.onNodeWithContentDescription("更多操作").performClick()
 
-        // Open thread
+        // 打开会话。
         compose.runOnIdle {
             controller.openThread("conv_rename")
         }
@@ -310,6 +613,97 @@ class WorkbenchLayoutRegressionTest {
         // 有活动线程后同一个菜单项变为可用，点击即打开重命名对话框。
         compose.onNodeWithContentDescription("更多操作").performClick()
         compose.onNodeWithText("重命名对话").assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+    }
+
+    @Test
+    // 附件库使用独立弹层窗口，点击坐标需要原生图形模式，与附件选择回归保持一致。
+    @org.robolectric.annotation.GraphicsMode(org.robolectric.annotation.GraphicsMode.Mode.NATIVE)
+    fun overflowKeepsAttachmentLibraryAndSettingsActionsWithoutFloatingAssistant() {
+        val controller = sidebarController()
+        var settingsOpened = false
+        compose.setContent {
+            MaterialTheme {
+                WorkbenchScreen(controller, "gateway", { settingsOpened = true }, {}, {}, {}, {}, onLogout = {})
+            }
+        }
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNodeWithText("浮动助理").assertDoesNotExist()
+        compose.onNode(hasText("设置") and hasAnyAncestor(isPopup())).assertIsDisplayed().assertIsEnabled()
+        compose.onNode(hasText("附件库") and hasAnyAncestor(isPopup())).assertIsDisplayed().assertIsEnabled().performClick()
+        compose.onNodeWithText("还没有选择附件").assertIsDisplayed()
+        compose.onNodeWithContentDescription("关闭附件库").performClick()
+        compose.onNodeWithContentDescription("关闭附件库").assertDoesNotExist()
+
+        compose.onNodeWithContentDescription("更多操作").performClick()
+        compose.onNode(hasText("设置") and hasAnyAncestor(isPopup())).performClick()
+        compose.runOnIdle { assertTrue(settingsOpened) }
+    }
+
+    private fun sidebarController(): WorkbenchController = WorkbenchController(
+        scope,
+        EmptyGateway(),
+        object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) =
+                AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+        },
+        { ConversationScope("p", "g", "a", "i") },
+    )
+
+    @Composable
+    private fun SidebarWorkbench(
+        controller: WorkbenchController,
+        settingsOpen: Boolean,
+        onSettingsChange: (Boolean) -> Unit,
+        header: @Composable () -> Unit = {},
+        onPanelPosition: (Float) -> Unit = {},
+        onScrollState: ((ScrollState) -> Unit)? = null,
+    ) {
+        WorkbenchScreen(
+            controller = controller,
+            gatewayLabel = "gateway",
+            onOpenSettings = { onSettingsChange(true) },
+            onPickCamera = {},
+            onPickGallery = {},
+            onPickDocument = {},
+            onVoiceInput = {},
+            onLogout = {},
+            header = header,
+            settingsOpen = settingsOpen,
+            onSettingsOpenChange = onSettingsChange,
+            settingsPanel = { onClose -> SidebarSettingsFixture(onClose, onPanelPosition, onScrollState) },
+        )
+    }
+
+    @Composable
+    private fun SidebarSettingsFixture(
+        onClose: () -> Unit,
+        onPanelPosition: (Float) -> Unit,
+        onScrollState: ((ScrollState) -> Unit)? = null,
+    ) {
+        var subpageOpen by rememberSaveable { mutableStateOf(false) }
+        val scrollState = rememberScrollState()
+        LaunchedEffect(scrollState) { onScrollState?.invoke(scrollState) }
+        Column(
+            Modifier.fillMaxSize().testTag("sidebar-test-panel")
+                .onGloballyPositioned { onPanelPosition(it.positionInRoot().x) },
+        ) {
+            Text("测试设置面板")
+            if (subpageOpen) {
+                Text("设置子页状态")
+            } else {
+                TextButton(onClick = { subpageOpen = true }) { Text("进入设置子页") }
+            }
+            Column(
+                Modifier.weight(1f).fillMaxWidth()
+                    .testTag("sidebar-test-scroll")
+                    .verticalScroll(scrollState),
+            ) {
+                repeat(40) { Text("设置条目 $it") }
+            }
+            TextButton(onClick = onClose) { Text("返回会话") }
+        }
     }
 
     private fun SemanticsNodeInteraction.textLayoutHeight(): Int {
@@ -321,7 +715,7 @@ class WorkbenchLayoutRegressionTest {
     private class EmptyGateway : ConversationRepository {
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
-        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_test"), "新对话", 0)
+        override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = Conversation(ConversationId("conv_test"), "", 0)
         override suspend fun submitMessage(message: OutgoingMessage) = MessageAcceptance("msg_test", message.clientMessageId.value)
         override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(batch.batchId)
         override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()

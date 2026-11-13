@@ -2,7 +2,15 @@
 
 当前纵切包含：
 
-- `mvp-contract/schemas/v1/`：策略、通知记录/API、助手对话的闭合 schema；
+- `legacy/mvp-contract/schemas/v1/`：策略、通知记录/API、助手对话的闭合 schema（随
+  Tailnet 与历史单体契约解耦归档至 `legacy/`）；
+- `oai-core/`：统一 OAI Core Python 项目。`oai serve` 以一个监听地址同时承载 Android 设备
+  协议、设备 CLI/API/MCP 与原生 Agent 会话，复用固定提交的上游 GatewayCore 设备状态机。
+  本次已实测 `python -m pytest oai-core/tests -q` 63 项通过、DSH 会话桥 vitest 16 项通过，
+  均为协议替身测试；真实宿主联调与 Android 真机验收仍未完成。架构事实见
+  [架构事实基线](../architecture/2026-10-26-oai-core-architecture-baseline.zh-CN.md)。
+- `integrations/dsh-session-adapter/`、`integrations/hermes-session-adapter/`：宿主侧原生
+  会话适配器，只开放 loopback 会话接口供 Core 调用，不注册设备工具，不是手机连接入口。
 - `apps/android/`：双 APK、无系统 VPN 的 userspace Tailnet transport seam、
   通知策略/采集器、生命周期 runtime/AES-GCM outbox，以及 source-only 的封闭 capability-port、
   typed provider-contract 与高风险 control-port 授权边界（不宣称系统数据源/控制后端已实现）；
@@ -16,13 +24,13 @@
   orphan reclaim source contract；不宣称对象存储或真实上传已完成。
 - `apps/android/artifact-ports/`：手机端授权选择、摘要、临时加密副本、提交回执
   与删除顺序的 source-only typed seam；不宣称 SAF、加密实现或设备验证已完成。
-- `apps/android/core-model/AssistantHandoffContracts.kt`：assistant-holder 与主 APK
+- `apps/android/core-model/src/main/kotlin/com/openandroidintelligence/core/model/AssistantHandoffContracts.kt`：assistant-holder 与主 APK
   之间受限的文本/opaque grant typed handoff；默认 gate deny，未实现隐式 IPC。
 - `e2e/mvp/run-smoke.sh`：可在无 SDK 环境运行的跨层 smoke gate；它会把
   真实依赖锁与 Android 设备状态显示为 `PENDING/SKIPPED`。
 - `e2e/mvp/run-readiness.sh`：串联 SDK-free smoke 与 WP-00..WP-10
   artifact audit；`--release` 会对依赖、工具链、设备及 P0a 门禁 fail-closed。
-- `docs/mvp/mvp-dependency-lock.md` 与 `mvp-contract/tools/check-lock.ts`：
+- `docs/mvp/mvp-dependency-lock.md` 与 `legacy/mvp-contract/tools/check-lock.ts`：
   真实依赖的 fail-closed 控制器门禁；OpenClaw 宿主与独立插件仓分列，其他依赖行的
   过期或占位证据仍会阻断整体门禁。
 - `docs/mvp/p0a-gate-decisions.md`：记录已确认的 Task 7 D1–D4 与 Task 9

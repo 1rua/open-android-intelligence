@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.negotiation
 import com.openandroidintelligence.gateway.http.GatewayResponse
 import com.openandroidintelligence.gateway.http.RawHeader
 import com.openandroidintelligence.gateway.http.SignedGatewayRequest
+import com.openandroidintelligence.gateway.auth.GatewayAuthException
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -13,6 +14,14 @@ const val GENERATION_CANCEL_FEATURE = "generation-cancel-v1"
 const val CONVERSATION_MANAGEMENT_FEATURE = "conversation-management-v1"
 /** Optional display metadata; does not change the closed v2 negotiation schema or identity checks. */
 const val AGENT_NAME_HEADER = "X-Open-Android-Intelligence-Agent-Name"
+/** Explicit Core extension marker; legacy Gateways never receive discovery probes. */
+const val NATIVE_AGENT_SESSIONS_HEADER = "X-OAI-Agent-Sessions"
+/** The Core mirrors Android decisions without an additional account capability policy. */
+const val DEVICE_AUTHORIZATION_HEADER = "X-Open-Android-Intelligence-Device-Authorization"
+const val ANDROID_AUTHORIZATION_MODEL = "android-v1"
+/** Optional Core account authentication; legacy Gateways retain their closed schema. */
+const val ACCOUNT_AUTH_HEADER = "X-OAI-Account-Auth"
+const val ACCOUNT_AUTH_VERSION = "v1"
 
 /**
  * 本客户端声明实现、并随协商请求发出的对话面能力位。
@@ -45,6 +54,11 @@ data class NegotiationResult(
     /** Optional pre-auth refresh result replay, negotiated outside the closed JSON schema. */
     val refreshReplaySupported: Boolean = false,
     val agentName: String? = null,
+    val nativeAgentSessions: Boolean = false,
+    /** Missing/unknown acknowledgement disables device publication and execution, not chat. */
+    val androidDeviceAuthorization: Boolean = false,
+    /** Only true when the server explicitly accepts the account-auth extension. */
+    val accountAuthSupported: Boolean = false,
 ) {
     /**
      * 双方都同意可用的对话面能力：客户端声明过的 ∩ 网关确实同意的。
@@ -89,6 +103,18 @@ data class GenerationCancelCapability(val agreed: Boolean) {
         fun fromNegotiation(result: NegotiationResult): GenerationCancelCapability =
             GenerationCancelCapability(agreed = result.generationCancelAgreed)
     }
+}
+
+/** 协商 HTTP 失败保留结构化状态，供凭据恢复与两种事件通道一致分类。 */
+class NegotiationHttpException(val httpStatus: Int, remoteCode: String? = null) : IllegalStateException(
+    if (httpStatus in setOf(406, 409)) "PROTOCOL_INCOMPATIBLE:$httpStatus" else "NEGOTIATION_FAILED:$httpStatus",
+) {
+    val code: String = remoteCode?.takeIf { it.matches(Regex("[A-Z][A-Z0-9_]{0,127}")) }
+        ?: if (httpStatus in setOf(406, 409)) "PROTOCOL_INCOMPATIBLE" else "NEGOTIATION_FAILED"
+    val credentialRefused: Boolean get() = httpStatus in GatewayAuthException.REFUSED_STATUSES ||
+        code in GatewayAuthException.REFUSED_CODES
+    val retryable: Boolean get() = !credentialRefused && code != "PROTOCOL_INCOMPATIBLE" &&
+        (httpStatus in 500..599 || httpStatus in setOf(408, 429))
 }
 
 /**
@@ -140,15 +166,16 @@ class NegotiationClient(
                     RawHeader("Content-Type", "application/json"),
                     RawHeader("Accept", "application/json"),
                     RawHeader(REFRESH_REPLAY_HEADER, "v1"),
+                    RawHeader(ACCOUNT_AUTH_HEADER, ACCOUNT_AUTH_VERSION),
+                    RawHeader(DEVICE_AUTHORIZATION_HEADER, ANDROID_AUTHORIZATION_MODEL),
                 ),
                 body = Json.canonical(Json.of(payload)).toByteArray(Charsets.UTF_8),
             ),
         )
-        if (response.status == 406 || response.status == 409) {
-            throw IllegalStateException("PROTOCOL_INCOMPATIBLE:${response.status}")
-        }
         if (response.status !in 200..299) {
-            throw IllegalStateException("NEGOTIATION_FAILED:${response.status}")
+            val envelope = JsonFields.obj(runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull())
+            val error = JsonFields.obj(JsonFields.field(envelope, "error"))
+            throw NegotiationHttpException(response.status, JsonFields.string(error, "code"))
         }
         val body = JsonFields.obj(
             runCatching { Json.parse(String(response.body, Charsets.UTF_8)) }.getOrNull(),
@@ -201,6 +228,15 @@ class NegotiationClient(
                 com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), REFRESH_REPLAY_HEADER,
             ) == "v1",
             agentName = advertisedAgentName(response.headers),
+            nativeAgentSessions = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                response.headers, NATIVE_AGENT_SESSIONS_HEADER,
+            ) == "1",
+            androidDeviceAuthorization = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                response.headers, DEVICE_AUTHORIZATION_HEADER,
+            ) == ANDROID_AUTHORIZATION_MODEL,
+            accountAuthSupported = com.openandroidintelligence.gateway.http.RawHeaders.single(
+                com.openandroidintelligence.gateway.http.RawHeaders.validate(response.headers), ACCOUNT_AUTH_HEADER,
+            ) == ACCOUNT_AUTH_VERSION,
         )
     }
 

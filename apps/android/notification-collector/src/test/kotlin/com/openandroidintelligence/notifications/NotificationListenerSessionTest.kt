@@ -5,8 +5,13 @@ import com.openandroidintelligence.policy.InMemoryNotificationPolicyPersistence
 import com.openandroidintelligence.policy.PersistentNotificationPolicyAuthority
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.Before
+import org.junit.After
 
 class NotificationListenerSessionTest {
+    @Before fun installRealLoginForSessionTests() { NotificationCollectionAccess.install { true } }
+    @After fun clearLogin() { NotificationCollectionAccess.install { false } }
+
     @Test
     fun connection_and_each_query_reconcile_current_os_notifications_after_a_late_grant() {
         val authority = PersistentNotificationPolicyAuthority(InMemoryNotificationPolicyPersistence())

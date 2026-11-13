@@ -125,9 +125,12 @@ internal fun Modifier.timelineItemRise(fresh: Boolean, reduced: Boolean): Modifi
  * 「回到最新」：用户上滑离开尾部后出现（规格 §6 M13）。
  *
  * 150ms 淡入 + 缩放 0.9→1；减少动态时只做短暂淡化，不做缩放。
+ *
+ * 公开给系统助理界面复用：助理进程没有自己的消息列表实现，只能复用同一个按钮，
+ * 才能让「回到最新」在两个宿主里保持同一套动效与文案。
  */
 @Composable
-internal fun ScrollToLatestButton(
+fun ScrollToLatestButton(
     visible: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,

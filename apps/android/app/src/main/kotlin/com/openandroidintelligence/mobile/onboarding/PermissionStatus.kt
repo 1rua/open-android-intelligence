@@ -34,5 +34,14 @@ enum class PermissionStatus {
      * 或该权限在当前 Android 版本上根本不存在。
      */
     NOT_REQUIRED,
+
+    /**
+     * 当前设备/系统**不支持**这项能力：系统里根本没有可授予的角色或开关。
+     *
+     * 必须与 [DENIED] 区分开：DENIED 还能点「开启」去申请，UNSUPPORTED
+     * 点任何按钮都不会有结果。界面据此只做说明，不渲染操作按钮——
+     * 否则就是需求禁止的「点了没反应」。
+     */
+    UNSUPPORTED,
     ;
 }

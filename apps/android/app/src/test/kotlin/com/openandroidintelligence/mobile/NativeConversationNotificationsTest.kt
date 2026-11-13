@@ -105,6 +105,29 @@ class NativeConversationNotificationsTest {
         assertEquals(1, publications.count { it.second })
     }
 
+    @Test fun anotherReaderCannotReviveAnIdenticalCompletedReplyAfterDismissal() {
+        val publisher = AndroidReplyNotificationPublisher(context, ReplyNotificationSettings(context))
+        coordinator = NativeConversationNotifications(context, scope, { session, alert ->
+            publications += session to alert
+            publisher.update(session, alert)
+        }, now = { clock }, throttleMillis = 0)
+        coordinator.bind("profile", "account")
+        accept(status("delivered", 1))
+        accept(message("conversation.message.completed", "同轮最终回复", 1))
+        accept(status("completed", 2))
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val notification = manager.activeNotifications.single()
+        manager.cancel(notification.tag, notification.id)
+        val count = publications.size
+
+        // 发送流和重连事件页可用不同 eventId 转发同一份已完成正文。
+        accept(message("conversation.message.completed", "同轮最终回复", 1))
+
+        assertTrue("已处理的通知不能被另一读取者的相同终稿重新发布", manager.activeNotifications.isEmpty())
+        assertEquals(count, publications.size)
+        assertEquals(1, publications.count { it.second })
+    }
+
     @Test fun successfulTerminalStopsOngoingEvenWithoutBodyAndLaterBodyDoesNotReopenTask() = runBlocking {
         accept(status("delivered", 1))
         accept(status("completed", 2))
@@ -557,7 +580,8 @@ class NativeConversationNotificationsTest {
         assertTrue(text().endsWith("Later stream ending"))
         publisher.update(running.copy(status = NativeConversationStatus.COMPLETED, latestReply = "Opening line. " + prefix + "Final complete ending"), true)
         assertTrue(text().startsWith("Opening line. "))
-        assertTrue("Final excerpt tail: ${text().takeLast(120)}", text().contains("Final complete ending\n\n$COMPLETE_REPLY_HINT"))
+        val hint = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_excerpt_full_hint)
+        assertTrue("Final excerpt tail: ${text().takeLast(120)}", text().contains("Final complete ending\n\n$hint"))
         assertEquals(TERMINAL_REPLY_EXCERPT_CODE_POINTS, text().codePointCount(0, text().length))
     }
 
@@ -589,6 +613,37 @@ class NativeConversationNotificationsTest {
         delay(100)
         assertTrue("Permission/preference recovery must not replay old terminal notifications", manager.activeNotifications.isEmpty())
     }
+
+    /**
+     * 修订围栏必须带 Agent。
+     *
+     * 两个 Agent 的同名会话完全可能用同一个消息 ID；只按会话比较会让后一家
+     * 更高的修订被前一家判成过期，正文与终态都被丢掉，提醒永远不来。
+     */
+    @Test fun anEqualOrHigherRevisionUnderAnotherAgentIsNotStale() = runBlocking {
+        accept(agentMessage("hermes", "reply-1", "Hermes 回答", 5))
+        accept(agentStatus("hermes", "user-1", "completed", 5))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+
+        // Codex 用同一个会话与消息 ID，但修订从 1 开始：不能被 hermes 的 5 判成过期。
+        accept(agentMessage("codex", "reply-1", "Codex 回答", 1))
+        val codex = coordinator.sessions.value.first { it.target.agentId == "codex" }
+        assertEquals("Codex 回答", codex.latestReply)
+        accept(agentStatus("codex", "user-1", "completed", 1))
+        val finished = coordinator.sessions.value.first { it.target.agentId == "codex" }
+        assertEquals(NativeConversationStatus.COMPLETED, finished.status)
+        assertEquals("Codex 回答", finished.latestReply)
+    }
+
+    private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
+        "conversation.message.completed",
+        """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",
+    )
+
+    private fun agentStatus(agent: String, messageId: String, status: String, revision: Long) = event(
+        "conversation.message.status",
+        """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","clientMessageId":"client-$agent","generationId":"generation","status":"$status","revision":$revision,"errorCode":null}""",
+    )
 
     private fun coordinator() = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert }, now = { clock }, throttleMillis = 40)
     private fun presencePage(vararg ids: String, authoritative: Boolean = true, nextCursor: String? = null) =

@@ -55,6 +55,10 @@ class DeveloperTrustMode(
 
     private val listeners = mutableListOf<(Boolean) -> Unit>()
 
+    /** A write failure does not undo an already applied safety transition. */
+    @Volatile var lastPersistenceSucceeded: Boolean = true
+        private set
+
     fun isEnabled(): Boolean = enabled
 
     /** Returns false when the acknowledgement does not match what the host had to show. */
@@ -84,12 +88,17 @@ class DeveloperTrustMode(
      * transition.
      */
     fun onChange(listener: (Boolean) -> Unit) {
-        listeners += listener
+        observeChanges(listener)
+    }
+
+    fun observeChanges(listener: (Boolean) -> Unit): AutoCloseable {
+        synchronized(listeners) { listeners += listener }
         listener(enabled)
+        return AutoCloseable { synchronized(listeners) { listeners -= listener } }
     }
 
     private fun notifyListeners(value: Boolean) {
-        listeners.toList().forEach { it(value) }
+        synchronized(listeners) { listeners.toList() }.forEach { it(value) }
     }
 
     /**
@@ -97,7 +106,7 @@ class DeveloperTrustMode(
      * 不回滚本次已经发生的开关转换，也不会让调用方看到虚假的失败。
      */
     private fun persist(value: Boolean) {
-        val backend = persistence ?: return
-        runCatching { backend.save(value) }
+        val backend = persistence
+        lastPersistenceSucceeded = backend == null || runCatching { backend.save(value) }.isSuccess
     }
 }

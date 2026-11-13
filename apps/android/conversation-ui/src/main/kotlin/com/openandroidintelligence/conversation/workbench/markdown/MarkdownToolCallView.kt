@@ -1,5 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+
 import android.widget.Toast
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
@@ -96,9 +98,14 @@ fun MarkdownToolCallView(
 
     // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
     // 流已经结束却仍未闭合，就是中断，结果未知。
-    val running = block.isRunning && isStreaming
-    val interrupted = block.isRunning && !isStreaming
-    val failed = !block.isSuccess && !running
+    val nativeStatus = block.executionStatus
+    val running = nativeStatus == NativeExecutionStatus.RUNNING ||
+        nativeStatus == null && block.isRunning && isStreaming
+    val interrupted = nativeStatus == null && block.isRunning && !isStreaming
+    val failed = nativeStatus == NativeExecutionStatus.FAILED ||
+        nativeStatus == null && !block.isSuccess && !running
+    val unknown = nativeStatus == NativeExecutionStatus.UNKNOWN
+    val completed = nativeStatus == NativeExecutionStatus.COMPLETED
     // Hermes 的纯文本「调用工具：xxx」只有调用事实，没有参数/返回值：显示「已调用」，
     // 不把未知结果伪装成「执行成功」。
     val invocationOnly = block.invocationOnly &&
@@ -122,6 +129,7 @@ fun MarkdownToolCallView(
     val statusColor: Color = when {
         running -> MaterialTheme.colorScheme.primary
         interrupted -> stateColors.warning
+        unknown -> stateColors.warning
         failed -> MaterialTheme.colorScheme.error
         invocationOnly -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> stateColors.success
@@ -129,13 +137,16 @@ fun MarkdownToolCallView(
     val statusDescription = when {
         running -> "执行中"
         interrupted -> "执行已中断"
+        unknown -> "结果未知"
         failed -> "执行失败"
         invocationOnly -> "已调用"
+        completed -> "已完成"
         else -> "执行成功"
     }
     val statusIcon: ImageVector = when {
         running -> Icons.Default.PlayArrow
         interrupted -> Icons.Default.Warning
+        unknown -> Icons.Default.Warning
         failed -> Icons.Default.Cancel
         invocationOnly -> Icons.Default.Check
         else -> Icons.Default.CheckCircle
@@ -148,8 +159,10 @@ fun MarkdownToolCallView(
     val statusText = when {
         running -> "执行中"
         interrupted -> "执行已中断 · 结果未知"
+        unknown -> "结果未知"
         failed -> summaryText ?: "执行失败"
         invocationOnly -> "已调用"
+        completed -> "已完成"
         else -> summaryText ?: "执行成功"
     }
     // 只展示真实观察到的耗时：中断/完成的步骤才可能有结算值。
@@ -353,7 +366,11 @@ private fun ToolCallDetails(
                 )
             } else if (!running) {
                 Text(
-                    text = if (block.invocationOnly) "此调用未附带返回值" else "无输出",
+                    text = when {
+                        block.executionStatus == NativeExecutionStatus.UNKNOWN -> "未收到工具结果"
+                        block.invocationOnly -> "此调用未附带返回值"
+                        else -> "无输出"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

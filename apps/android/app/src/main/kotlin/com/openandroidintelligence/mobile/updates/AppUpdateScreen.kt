@@ -5,32 +5,30 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,7 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,11 +51,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.openandroidintelligence.conversation.components.SettingsCardHeader
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.SettingsPresentation
+import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 
 internal const val APP_RELEASES_URL = "https://github.com/1rua/open-android-intelligence/releases"
 
 @Composable
-fun AppUpdateRoute(onBack: () -> Unit) {
+fun AppUpdateRoute(onBack: () -> Unit, presentation: SettingsPresentation = SettingsPresentation.SCREEN) {
     val context = LocalContext.current
     val factory = remember(context.applicationContext) {
         object : ViewModelProvider.Factory {
@@ -77,6 +79,7 @@ fun AppUpdateRoute(onBack: () -> Unit) {
         installed = model.installed,
         state = state,
         onBack = onBack,
+        presentation = presentation,
         onSelectChannel = model::selectChannel,
         onCheck = model::check,
         onOpenRelease = { url ->
@@ -101,6 +104,7 @@ internal fun AppUpdateScreen(
     onSelectChannel: (AppUpdateChannel) -> Unit,
     onCheck: () -> Unit,
     onOpenRelease: (String) -> Unit,
+    presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     openFailed: Boolean = false,
     onOpenFailedShown: () -> Unit = {},
 ) {
@@ -118,21 +122,7 @@ internal fun AppUpdateScreen(
             onOpenFailedShown()
         }
     }
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("应用更新") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
-            )
-        },
-        containerColor = MaterialTheme.colorScheme.surface,
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-    ) { padding ->
+    SettingsPageScaffold(title = "应用更新", presentation = presentation, onBack = onBack) { padding ->
         Box(
             modifier = Modifier
                 .padding(padding)
@@ -154,14 +144,38 @@ internal fun AppUpdateScreen(
                 }
                 SettingsSectionCard {
                     SettingsCardHeader("更新渠道")
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        AppUpdateChannel.entries.forEachIndexed { index, channel ->
-                            SegmentedButton(
-                                selected = state.channel == channel,
-                                onClick = { onSelectChannel(channel) },
-                                shape = SegmentedButtonDefaults.itemShape(index, AppUpdateChannel.entries.size),
-                            ) {
-                                Text(if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版")
+                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                        val compact = maxWidth < Dimensions.DrawerWidth * LocalDensity.current.fontScale
+                        if (compact) {
+                            Column(Modifier.fillMaxWidth().selectableGroup()) {
+                                AppUpdateChannel.entries.forEach { channel ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().selectable(
+                                            selected = state.channel == channel,
+                                            role = Role.RadioButton,
+                                            onClick = { onSelectChannel(channel) },
+                                        ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        RadioButton(selected = state.channel == channel, onClick = null)
+                                        Text(
+                                            text = if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版",
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    }
+                                }
+                            }
+                        } else {
+                            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                                AppUpdateChannel.entries.forEachIndexed { index, channel ->
+                                    SegmentedButton(
+                                        selected = state.channel == channel,
+                                        onClick = { onSelectChannel(channel) },
+                                        shape = SegmentedButtonDefaults.itemShape(index, AppUpdateChannel.entries.size),
+                                    ) {
+                                        Text(if (channel == AppUpdateChannel.STABLE) "正式版" else "预览版")
+                                    }
+                                }
                             }
                         }
                     }
@@ -212,6 +226,7 @@ internal fun AppUpdateScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
         }
     }
 }

@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<journey name="MOD-07: 平台设置与安全控制">
+<journey name="MOD-07: 设置分类与安全控制">
   <description>
-    验证用户打开平台设置界面，调节主题偏好（浅色、深色、跟随系统）、切换动态取色开关与减弱动态效果开关；校验开发者信任模式状态切换和插件紧急熔断交互流程。
+    验证六分类、主题与减少动画、通知偏好和系统权限分离、能力入口、返回顺序及手机/平板布局。本文件描述验收步骤，不代表已执行或通过。
   </description>
   <actions>
-    <action>Click the "设置" action icon in top bar</action>
-    <action>Verify that the "设置与平台管理" screen or bottom sheet is displayed</action>
-    <action>Verify that the theme selection chips "浅色", "深色", "跟随系统" are visible</action>
-    <action>Click the "深色" theme chip</action>
-    <action>Verify that the "深色" chip is selected</action>
-    <action>Click the "减弱动态效果" switch</action>
-    <action>Swipe down on the settings view to locate security controls</action>
-    <action>Verify that "开发者信任模式" or "紧急熔断所有插件" button is visible</action>
-    <action>Click the "返回" icon or close button</action>
-    <action>Verify that the workbench is displayed with the updated settings applied</action>
+    <action>打开“设置”，确认依次显示“外观与交互”“连接与账号”“通知与提醒”“设备能力与授权”“安全与隐私”“高级设置与关于”，首页不直接展示开关。</action>
+    <action>进入“外观与交互”，选择“深色”，确认实际生效；切换动态取色，核对真实色板和“减少动画”。</action>
+    <action>返回首页后进入“通知与提醒”，核对“Agent 任务通知”保存偏好与系统权限独立；系统禁止时不得自动关闭偏好。</action>
+    <action>返回首页进入“设备能力与授权”，确认短信、通知、三项屏幕能力及插件入口均可达；仅查看不得改变授权。</action>
+    <action>进入功能详情再执行系统返回，应先回设备能力分类，再回设置首页；子页返回不提前关闭面板。</action>
+    <action>进入“安全与隐私”，确认真实信任/紧急停止状态与操作记录入口；未经本次明确确认不得执行危险操作。</action>
+    <action>进入“高级设置与关于”，确认消息处理只有一组“合并连续消息”与 0～30 秒滑块、且没有任何“覆盖当前 Core 的设置”入口，更新、引导、构建详情与许可证可达；重看引导不重置已完成状态。</action>
+    <action>手机设置从左向右滑入并完整覆盖窗口，退出向左；平板在原320dp侧栏替换，右侧会话与草稿不变。</action>
+    <action>编辑未保存范围或队列草稿后跨839/840dp断点并返回，确认导航、滚动、草稿及原存储保持不变。</action>
+    <action>字号放大和减少动态效果下重复导航；确认文字可读、操作可达，无重复页面、错误方向或假成功提示。</action>
   </actions>
 </journey>

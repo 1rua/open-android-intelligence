@@ -1,5 +1,7 @@
 # Android MVP skeleton
 
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../../docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
+
 This tree is deliberately production-shaped but does not include a vendored
 Android SDK or Tailscale AAR. The only network seam is
 `PairedBridgeTransport.open(VerifiedPairingTransportBinding)`: callers cannot
@@ -122,29 +124,59 @@ work as reboot-resilient until that reviewed policy decision is made.
 ## 附件导入与账号资料
 
 - 主窗口支持系统 `ACTION_SEND` / `ACTION_SEND_MULTIPLE` 的图片、文档等 `content://` 文件分享。冷启动收到的附件在登录且目标会话选定、历史恢复完成后加入待发送区；没有会话时保留到用户创建或选择会话，旋转屏幕不会重复导入。纯文字或链接分享会明确提示复制后粘贴；`text/plain` 文件仍可作为附件分享。
-- 主窗口、浮动会话面板和原生气泡共用附件选择/上传逻辑。相册支持多选；输入框的系统粘贴支持图片，同时保留普通文字和混合内容中的文字粘贴。
+- 主窗口、浮动会话面板和会话气泡共用附件选择/上传逻辑。相册支持多选；输入框的系统粘贴支持图片，同时保留普通文字和混合内容中的文字粘贴。
 - 所有入口复用现有元数据解析、流式暂存、上传、校验和发送流程。处理期间切换账号、会话或发送消息，会阻止尚未处理的附件进入另一个输入草稿；读取失败的文件不阻断其余文件。
 - 每批最多导入 10 个附件，超出时提示分批操作；每个输入草稿最多容纳 10 个附件，尚在准备中的附件也占用名额，防止多个导入任务绕过上限。系统相册使用相同上限。切换账号或会话时重建输入框的选区、输入法组合和撤销历史。
 - 侧边栏显示真实登录账号与账号名首字符头像。点击头像使用单选系统相册，将缩放至最长边 256px 的图片副本保存到该账号的 AccountManager 公开资料，独立于相册临时 URI 权限，退出或重新登录后保留，移除账号时删除。
 - Agent 状态由工作台的实时通道状态驱动，区分在线、连接中、重连和离线。名称优先使用协商响应的可选 `X-Open-Android-Intelligence-Agent-Name` 头（例如 `DSH`、`Hermes`，1–128 个字符、单行、单个值）；未提供时显示实际 `gatewayIdentity.deploymentId`。名称仅用于展示，不参与身份校验或授权，不更改 v2 JSON Schema 或契约摘要。
 
-## Bundled device plugins
+## Built-in device capabilities
 
-Full APKs can carry three official plugins under `assets/bundled-plugins/`:
-`notifications.alp`, `sms.alp` and `call-log.alp`. These are the existing
-protected WASM plugins, each installed explicitly from plugin settings through
-the normal Ed25519 verifier. Installation leaves them disabled and creates no
-pairing or collection grant. Play builds exclude the assets.
+> **2026-11-08 装配方式变更**：六项官方能力不再以「可安装插件」的身份存在。它们在构建时随 APK
+> 打包，启动时直接从 APK 资源完成校验、注册与运行时加载，不需要用户安装、启用或初始化，
+> 也不出现在插件管理里。是否允许 Agent 使用某项能力，只由「设备能力与授权」中的能力开关、
+> 授权策略与 Android 系统权限决定。规格见
+> [内建设备能力与「设备能力与授权」页面重构](../../docs/superpowers/specs/2026-11-08-builtin-capability-consolidation.md)。
+
+Full APKs carry six official capability packages under `assets/bundled-plugins/`:
+`notifications.alp`, `sms.alp`, `call-log.alp`, `screen-reader.alp`,
+`screen-capture.alp` and `screen-control.alp`. Each one is verified at every
+startup by the same `AlpVerifier` used for third-party packages — manifest shape,
+Ed25519 signature, container limits, ABI and entrypoint — then registered in the
+kernel and enabled.
+
+What that does **not** change:
+
+- Verification strength. A package that fails any check is reported as
+  `不可用` with a diagnosable reason and is never registered.
+- Authorization. Built-in availability is not a device capability grant. Each
+  capability keeps its own switch, authorization mode (default: manual) and
+  Android system permission; requests are still decided locally per request.
+- Isolation. Built-in capabilities run in the same protected WASM runtime with
+  the same budgets, private storage and mediated network rules.
+- Third-party plugins. They keep the existing install, enable, disable, update and
+  uninstall flows.
+
+Nothing is written to `filesDir/plugins/` for built-ins, so an app upgrade can
+never keep loading a stale copy. Leftover directories from older versions that
+used the official IDs are ignored on scan; their contents are left in place.
+
+Play builds exclude the assets. Local source builds may omit
+`OAI_BUNDLED_PLUGINS_DIR`; the affected capabilities then honestly report that
+their package is missing instead of pretending to be usable.
 
 Build the real payloads and sign the packages with a private 32-byte Ed25519
-seed file (one publisher key signs all three):
+seed file (one publisher key signs all six):
 
 ```sh
 cargo +1.90.0 build --locked --target wasm32-unknown-unknown --release \
   --manifest-path plugins/Cargo.toml \
   -p open-android-intelligence-notifications \
   -p open-android-intelligence-sms \
-  -p open-android-intelligence-call-log
+  -p open-android-intelligence-call-log \
+  -p open-android-intelligence-screen-reader \
+  -p open-android-intelligence-screen-capture \
+  -p open-android-intelligence-screen-control
 npm ci --prefix plugin-tooling
 OPEN_ANDROID_INTELLIGENCE_PLUGIN_SIGNING_KEY_FILE=/private/path/plugin-seed.bin \
   npm run build:android-plugins --prefix plugin-tooling -- /tmp/signed-plugins
@@ -158,15 +190,9 @@ Both official publishing workflows require repository secret
 same publisher key across releases. This is separate from APK signing; the public
 debug key and fixture seed cannot serve as a plugin publisher identity. Missing or
 unsafe plugin keys stop publishing. The workflow checks that the final APK contains
-the exact packages produced by the signed build, byte for byte for each of the
-three plugins. PR CI uses an isolated random test author and does not need
+the exact packages produced by the signed build, byte for byte for each of the six
+capabilities. PR CI uses an isolated random test author and does not need
 production secrets.
-
-Local source builds may omit `OAI_BUNDLED_PLUGINS_DIR`; plugin settings then
-explain that a signed `.alp` must be imported. Removing the input also clears any
-previous generated assets. Existing installed providers are never replaced by the
-bundled install buttons; updates keep using the ordinary signed package import
-path.
 
 ## Debug signing
 
@@ -203,17 +229,14 @@ configuration and refuses a certificate matching the checked-in public debug
 identity. No permanent release key is generated by the build.
 
 For GitHub Actions, the repository owner supplies `OAI_RELEASE_KEYSTORE_BASE64`
-and the three password/alias secrets. The workflow writes the decoded keystore
-to the runner's temporary directory with mode 0600. 构建结束后将临时密钥移至
+and the three password/alias secrets. Both the preview release workflow (`dev-release.yml`)
+and the stable release workflow (`release.yml`) reuse these same secrets to sign the APKs with
+the identical certificate identity. As a result, users can upgrade between preview and stable channels
+seamlessly without uninstalling or losing data.
+The workflow writes the decoded keystore to the runner's temporary directory with mode 0600. 构建结束后将临时密钥移至
 runner 临时目录下的 `open-android-intelligence-trash/`，供人工复核。
 The owner must choose and retain the release identity before a formal tag can
 publish successfully.
-
-The release application ID is unchanged. Android will not install a release
-signed by another identity over a previous public-debug installation. An
-in-place update cannot retain its UID and Keystore keys across that identity
-change; an installation/export/re-pair migration policy is still required.
-The build does not uninstall existing apps or erase their data automatically.
 
 ## App 更新发布
 
@@ -225,7 +248,7 @@ The build does not uninstall existing apps or erase their data automatically.
 源码提交、分发类型和渠道；发布前核对 APK 输出信息并验证实际签名。
 包版本提取器支持 Node/RN/Electron、Flutter、Android、iOS 和 Rust/Tauri 配置。
 相同源码的开发预览运行有不同 Tag，但安装版本代码保持不变，不会被更新检测当作新安装版本。
-正式版与开发预览版使用不同签名，不能直接互相覆盖安装。手动 `Android APK Artifact` 工作流只上传 Actions 构建产物，不发布 GitHub Release。
+正式版与开发预览版支持统一签名（通过 CI 配置 `OAI_RELEASE_KEYSTORE_BASE64` 等环境变量），以便无缝覆盖安装。`Android APK Artifact` 工作流在任意分支推送时自动触发并上传 Actions 构建产物，不发布 GitHub Release。
 
 完整字段定义、版本顺序和最小验证命令见
 [`App 更新发布元数据 v1`](../../docs/contracts/app-update-release-v1.md)。
@@ -250,3 +273,19 @@ first network request. A changed deployment or SPKI is refused; the login form
 offers explicit identity reconfirmation after the user checks the administrator's
 change. This clears the old automatic-login credential before password login.
 Automatic acceptance of a rotation proof is not implemented.
+
+## 安装实例全局设备授权
+
+各项设备能力的总开关、每次手动/允许只读/自动允许及被动数据范围由本安装统一保存。
+切换 Core、账号或 Agent、断网或重启不重置；账号私有会话、附件与历史仍分别隔离。
+新能力默认每次手动，短信与通知主动推送分别默认关闭，系统权限仍由 Android 管理。
+
+设置 → 授权管理 → 全局设备能力按单项能力配置；确认卡片和系统通知展示声明的请求方、目的和实际参数。
+临时授权选项为本次或5/30/60分钟，可撤销；确认等待最长5分钟，系统强制同意不能被替代。
+设置 → 授权管理 → 短信与通知主动推送选择独立范围、稳定目标与保留时间。
+本机加密队列默认72小时，逐端消费ACK才完成投递；Android JobScheduler负责有界恢复与维护。
+全账号退出停止采集、执行与推送，配置和有效队列保留；强行停止后需要重新打开应用。
+
+操作与限制见[全局授权指南](../../docs/guides/global-device-authorization.zh-CN.md)，
+真实运行证据见[Terra 报告](../../docs/reviews/2026-11-01-global-device-authorization-terra.zh-CN.md)。
+报告区分单测、模拟器和实体手机；没有通过的项目不作为完成结论。

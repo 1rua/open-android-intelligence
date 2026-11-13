@@ -1,6 +1,5 @@
 package com.openandroidintelligence.gateway.http
 
-import java.io.IOException
 import java.security.MessageDigest
 import java.security.cert.Certificate
 import java.security.cert.X509Certificate
@@ -37,9 +36,7 @@ object SpkiPinning {
             if (certificate !is X509Certificate) continue
             if (spkiSha256PrefixedHex(certificate) in pins || spkiSha256Base64(certificate) in pins) return
         }
-        throw IOException(
-            "PIN_MISMATCH: none of ${certificates.size} certificate(s) matched ${pins.size} pin(s)",
-        )
+        throw GatewaySecurityException("PIN_MISMATCH")
     }
 
     fun spkiSha256Base64(certificate: X509Certificate): String {

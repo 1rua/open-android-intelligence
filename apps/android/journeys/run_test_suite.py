@@ -208,7 +208,7 @@ def execute_mod_07(run_dir):
     actions_res = []
 
     layout = get_layout()
-    settings_btn = search_layout_text(layout, "设置与平台管理")
+    settings_btn = search_layout_text(layout, "设置")
     if settings_btn:
         tap_node(settings_btn[0])
         commands.append("adb shell input tap (settings_btn)")
@@ -218,7 +218,7 @@ def execute_mod_07(run_dir):
     layout = get_layout()
     sheet_title = search_layout_text(layout, "设置")
     actions_res.append({
-        "action": 'Verify that the "设置与平台管理" screen or bottom sheet is displayed',
+        "action": 'Verify that the "设置" screen or bottom sheet is displayed',
         "status": "PASSED" if sheet_title else "FAILED",
         "commands": ["android layout --pretty"]
     })
@@ -261,7 +261,7 @@ def execute_mod_08(run_dir):
     actions_res = []
 
     layout = get_layout()
-    settings_btn = search_layout_text(layout, "设置与平台管理")
+    settings_btn = search_layout_text(layout, "设置")
     if settings_btn:
         tap_node(settings_btn[0])
         time.sleep(1)

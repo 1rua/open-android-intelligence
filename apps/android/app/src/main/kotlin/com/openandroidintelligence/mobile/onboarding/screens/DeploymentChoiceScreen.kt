@@ -39,6 +39,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -51,9 +52,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import androidx.compose.foundation.clickable
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
+import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
  * Agent Gateway 部署状态选择页。
@@ -80,41 +83,12 @@ fun DeploymentChoiceScreen(
             .fillMaxSize()
             .testTag("onboarding-deployment"),
     ) {
-        // ===== 顶部导航 =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = Dimensions.SpaceSmall, vertical = Dimensions.SpaceSmall),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(
-                onClick = onBack,
-                modifier = Modifier.semantics { contentDescription = "返回" },
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Text(
-                text = "GATEWAY SETUP",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 2.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f),
-            )
-            Text(
-                text = "03/04",
-                style = MaterialTheme.typography.labelSmall,
-                letterSpacing = 1.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.width(Dimensions.SpaceSmall))
-        }
-
-        StepRail(activeIndex = 2)
+        OnboardingStepHeader(
+            categoryTitle = "CORE SETUP",
+            stepIndex = 4,
+            totalSteps = 5,
+            onBack = onBack,
+        )
 
         Column(
             modifier = Modifier
@@ -134,7 +108,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceSmall))
             Text(
-                text = "Gateway\n部署好了吗？",
+                text = stringResource(UiR.string.conn_onboarding_deploy_choice_title),
                 fontSize = 30.sp,
                 lineHeight = 34.sp,
                 fontWeight = FontWeight.ExtraBold,
@@ -143,7 +117,7 @@ fun DeploymentChoiceScreen(
             )
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             Text(
-                text = "OAI 需要一个运行在你设备上的 Agent 宿主。若已完成部署，直接进入登录。",
+                text = stringResource(UiR.string.conn_onboarding_deploy_choice_desc),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -151,9 +125,9 @@ fun DeploymentChoiceScreen(
             Spacer(modifier = Modifier.height(Dimensions.SpaceLarge))
             ChoiceCard(
                 index = "A",
-                title = "我已部署",
-                description = "已经装好 Gateway 插件并创建账号。直接连接你的 Gateway。",
-                trailing = "进入登录",
+                title = stringResource(UiR.string.conn_onboarding_deploy_choice_already_deployed),
+                description = stringResource(UiR.string.conn_onboarding_deploy_choice_already_deployed_desc),
+                trailing = stringResource(UiR.string.conn_onboarding_deploy_choice_btn_login),
                 accent = true,
                 onReveal = onAlreadyDeployed,
                 testTag = "onboarding-deploy-done",
@@ -161,9 +135,9 @@ fun DeploymentChoiceScreen(
             Spacer(modifier = Modifier.height(Dimensions.SpaceCompact))
             ChoiceCard(
                 index = "B",
-                title = "我还未部署",
-                description = "查看 Hermes、OpenClaw 与 DSH 的分步部署教程，含可复制的安装命令。",
-                trailing = "查看教程",
+                title = stringResource(UiR.string.conn_onboarding_deploy_choice_not_deployed),
+                description = stringResource(UiR.string.conn_onboarding_deploy_choice_not_deployed_desc),
+                trailing = stringResource(UiR.string.conn_onboarding_deploy_choice_btn_tutorial),
                 accent = false,
                 onClick = onNotDeployed,
                 testTag = "onboarding-deploy-pending",
@@ -187,15 +161,14 @@ fun DeploymentChoiceScreen(
                 Spacer(modifier = Modifier.width(Dimensions.SpaceCompact))
                 Column {
                     Text(
-                        text = "说明",
+                        text = stringResource(UiR.string.conn_onboarding_deploy_choice_notice_label),
                         style = MaterialTheme.typography.labelSmall,
                         letterSpacing = 1.4.sp,
                         color = MaterialTheme.colorScheme.tertiary,
                     )
                     Spacer(modifier = Modifier.height(Dimensions.SpaceTiny))
                     Text(
-                        text = "完成引导不代表 Gateway 已连接。登录成功只说明凭据有效，" +
-                            "真实连接状态始终以「未连接 / 已连接」指示为准。",
+                        text = stringResource(UiR.string.conn_onboarding_deploy_choice_notice_content),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

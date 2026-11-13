@@ -1,0 +1,334 @@
+package com.openandroidintelligence.mobile
+
+import android.app.Application
+import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.kernel.AndroidAuditStore
+import com.openandroidintelligence.kernel.InMemoryAuditSink
+import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
+import com.openandroidintelligence.kernel.PairingGrantStateHolder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import org.junit.After
+import org.junit.Assert.*
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.TimeUnit
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = Application::class)
+class AuthSessionLifecycleTest {
+    private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+    private lateinit var gateway: LoopbackGatewayStub
+    private lateinit var credentialStore: InMemoryCredentialStore
+    private lateinit var deviceKeys: InMemoryDeviceKeySource
+    private lateinit var pairingGrants: PairingGrantStateHolder
+
+    @Before
+    fun setup() {
+        // Keep Robolectric font/native extraction outside the measured login.
+        // The production login deadline below remains three seconds.
+        org.robolectric.nativeruntime.DefaultNativeRuntimeLoader.injectAndLoad()
+        gateway = LoopbackGatewayStub()
+        credentialStore = InMemoryCredentialStore()
+        deviceKeys = InMemoryDeviceKeySource()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        pairingGrants = PairingGrantStateHolder(
+            store = InMemoryPairingGrantStore(),
+            audit = AndroidAuditStore(InMemoryAuditSink()),
+        )
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
+        gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
+        gateway.respond(REFRESH_PATH, REFRESH_BODY)
+        gateway.respond(CONVERSATIONS_PATH, CONVERSATIONS_BODY)
+        gateway.respond(EVENTS_PATH, "", contentType = "text/event-stream")
+    }
+
+    @After
+    fun tearDown() {
+        runtimeScope.cancel()
+        gateway.closed()
+    }
+
+    private fun profileId(user: String = "operator") = "${gateway.baseUrl}#$user"
+
+    private fun runtime(scope: CoroutineScope = runtimeScope) = GatewayRuntime(
+        context = ApplicationProvider.getApplicationContext(),
+        scope = scope,
+        pairingGrants = pairingGrants,
+        credentialStore = credentialStore,
+        deviceKeys = deviceKeys,
+        localDocumentKeyProvider = TestDocumentKeys,
+    )
+
+    /**
+     * T01 & T02: 冷启动时先读取本地状态并进入工作台，网络挂起时不闪现登录页。
+     */
+    @Test
+    fun coldStartWithLocalSessionEntersWorkspaceDirectlyWhileNetworkIsHanging() {
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(rt)
+
+        runtimeScope.cancel()
+        val path = NEGOTIATE_PATH
+        val release = gateway.holdResponse(path, NEGOTIATE_BODY)
+        val newScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val restarted = runtime(newScope)
+            restarted.restoreSessionIfAvailable()
+
+            val localState = restarted.localSessionState.value
+            assertTrue("本地会话存在且有效，应进入 Workspace 呈现本地界面", localState is LocalSessionState.Workspace)
+            assertEquals("operator", (localState as LocalSessionState.Workspace).account.username)
+            assertFalse(localState is LocalSessionState.SignedOut)
+        } finally {
+            release.countDown()
+            newScope.cancel()
+        }
+    }
+
+    @Test
+    fun nativeMirrorKeepsColdStartBlankAndRetainsHistoryForManualOpen() {
+        val original = runtime()
+        original.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(original)
+        val flushed = runtimeScope.launch(Dispatchers.IO) { original.controller.value?.closeAndAwait() }
+        assertTrue(awaitCondition(AWAIT_MILLIS) { flushed.isCompleted })
+        runtimeScope.cancel()
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val profiles = AndroidAccountProfileStore(context)
+        val nativeProfileId = profiles.list().single { it.gatewayBaseUrl == gateway.baseUrl && it.username == "operator" }.localProfileId
+        profiles.saveSelectedAgent(nativeProfileId, "native-agent")
+        val install = context.getSharedPreferences("open_android_intelligence_runtime", 0)
+            .getString("installation_id", null)!!
+        val mirrorScope = com.openandroidintelligence.conversation.ports.ConversationScope(nativeProfileId, gateway.baseUrl, "acc_stub", install)
+        val mirror = com.openandroidintelligence.mobile.conversations.NativeConversationMirror(context, mirrorScope, { "native-agent" }, TestDocumentKeys)
+        mirror.save(com.openandroidintelligence.conversation.state.WorkbenchCheckpoint(
+            threads = listOf(com.openandroidintelligence.conversation.ports.ConversationSummary(
+                com.openandroidintelligence.conversation.model.ConversationId("native-chat"), "native title", 1)),
+            threadId = "native-chat", title = "native title", messages = emptyList(), revisions = emptyMap(),
+            draft = "saved native draft", draftRevision = 3, attachments = emptyList(), submission = null,
+            renamedThreads = emptySet(), eventIds = emptySet()))
+        mirror.close()
+        val release = gateway.holdResponse(REFRESH_PATH, REFRESH_BODY)
+        val resumedScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val restarted = runtime(resumedScope)
+            restarted.restoreSessionIfAvailable()
+            assertTrue("网络恢复尚未放行时必须有空白工作台", awaitCondition(AWAIT_MILLIS) {
+                restarted.controller.value != null
+            })
+            assertNull(restarted.controller.value!!.state.value.activeThreadId)
+            assertEquals("", restarted.controller.value!!.state.value.draft)
+            assertEquals("native-agent", profiles.find(nativeProfileId)!!.selectedAgentId)
+            assertTrue(restarted.phase.value is ConnectionPhase.Initializing)
+            assertNull(restarted.operationNotice.value)
+            restarted.controller.value!!.openThread("native-chat")
+            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
+            val before = gateway.requests.size
+            restarted.onAppForegrounded(); restarted.onNetworkAvailable()
+            assertEquals("saved native draft", restarted.controller.value!!.state.value.draft)
+            assertTrue(gateway.requests.drop(before).none { it.target.endsWith("/messages") || it.target.endsWith("/sessions") })
+        } finally {
+            resumedScope.cancel()
+            release.countDown()
+        }
+    }
+
+    /**
+     * T09 & T10: 离线退出能够立即在本地完成，持久化已退出标记，且断网重启或网络恢复后不能复活。
+     */
+    @Test
+    fun offlineLogoutCompletesLocallyAndPreventsFutureAutoRestore() {
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(rt)
+
+        runtimeScope.cancel()
+        gateway.closed()
+
+        val offlineScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val offline = runtime(offlineScope)
+            offline.restoreSessionIfAvailable()
+            assertTrue(
+                "离线恢复应先呈现本地会话并进入 OfflineMirror；phase=${offline.phase.value}, local=${offline.localSessionState.value}",
+                awaitCondition(RESTORE_AWAIT_MILLIS) { offline.phase.value is ConnectionPhase.OfflineMirror },
+            )
+
+            offline.logout(revokeRefresh = false)
+
+            val localState = offline.localSessionState.value
+            assertTrue("离线登出后本地应立即置为 SignedOut", localState is LocalSessionState.SignedOut)
+            assertTrue(
+                "离线登出的异步清理应关闭工作台；phase=${offline.phase.value}, controller=${offline.controller.value}",
+                awaitCondition(RESTORE_AWAIT_MILLIS) { offline.controller.value == null },
+            )
+            assertNull(offline.controller.value)
+
+            val restarted = runtime(offlineScope)
+            restarted.restoreSessionIfAvailable()
+            assertTrue(
+                "重启恢复后已退出账号必须仍为 SignedOut，不能复活会话；phase=${restarted.phase.value}, local=${restarted.localSessionState.value}",
+                awaitCondition(RESTORE_AWAIT_MILLIS) {
+                    restarted.localSessionState.value is LocalSessionState.SignedOut &&
+                        restarted.phase.value is ConnectionPhase.Disconnected && restarted.controller.value == null
+                },
+            )
+            assertNull(restarted.controller.value)
+        } finally {
+            offlineScope.cancel()
+        }
+    }
+
+    @Test
+    fun accountExtensionWithoutMfaCompletesWithoutShowingAChallenge() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":[],"enrollmentRequired":false}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        awaitConnected(rt)
+        assertTrue(rt.accountLoginStep.value is AccountLoginStep.None)
+        val targets = gateway.targetsOf("POST")
+        assertTrue(targets.contains("/open-android-intelligence/v2/sessions/password/challenge"))
+        assertTrue(targets.contains("/open-android-intelligence/v2/sessions/password/complete"))
+        assertFalse(targets.contains(PASSWORD_PATH))
+        assertFalse(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("otp"))
+    }
+
+    @Test
+    fun accountExtensionWaitsForTheServersSecondFactorAndClearsProof() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":false}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Verification })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        awaitConnected(rt)
+        assertTrue(proof.all { it == '\u0000' })
+        assertTrue(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("\"otp\":\"123456\""))
+    }
+
+    @Test
+    fun accountEnrollmentRequiresUserToSaveRecoveryCodesBeforeLogin() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":true}}"""
+        }
+        gateway.respond("/open-android-intelligence/v2/sessions/mfa/enroll", """{"data":{"enrollmentId":"enroll_1","provisioningUri":"otpauth://totp/test?secret=abc","secret":"abc"}}""")
+        gateway.respond("/open-android-intelligence/v2/sessions/mfa/confirm", """{"data":{"recoveryCodes":["recovery-one","recovery-two"]}}""")
+        gateway.respond("/open-android-intelligence/v2/sessions/password/complete", PASSWORD_BODY)
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Enrollment })
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.RecoveryCodes })
+        assertTrue(proof.all { it == '\u0000' })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+        rt.confirmAccountRecoveryCodesSaved()
+        awaitConnected(rt)
+        assertFalse(gateway.requests.single { it.target.endsWith("/password/complete") }.body.contains("otp"))
+    }
+
+    @Test
+    fun cancelingAnAccountChallengeDropsTheStateWithoutCompletingLogin() {
+        gateway.respond(NEGOTIATE_PATH, NEGOTIATE_BODY, headers = mapOf("X-OAI-Account-Auth" to "v1"))
+        gateway.respond("/open-android-intelligence/v2/sessions/password/challenge") { request ->
+            val sent = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.Json.parse(request.body))!!
+            val installation = com.openandroidintelligence.gateway.schema.JsonFields.obj(com.openandroidintelligence.gateway.schema.JsonFields.field(sent, "installation"))!!
+            val installId = com.openandroidintelligence.gateway.schema.JsonFields.string(installation, "installationId")!!
+            val negotiationId = com.openandroidintelligence.gateway.schema.JsonFields.string(sent, "negotiationId")!!
+            200 to """{"data":{"challengeId":"challenge_1","accountId":"acc_stub","negotiationId":"$negotiationId","installationId":"$installId","purpose":"android-login","expiresAt":"2099-01-01T00:00:00Z","nonce":"nonce_1","methods":["totp","recovery-code"],"enrollmentRequired":false}}"""
+        }
+        val rt = runtime()
+        rt.login(gateway.baseUrl, "operator", "secret".toCharArray())
+        assertTrue(awaitCondition(AWAIT_MILLIS) { rt.accountLoginStep.value is AccountLoginStep.Verification })
+        rt.cancelAccountLogin()
+        assertTrue(rt.accountLoginStep.value is AccountLoginStep.None)
+        assertTrue(rt.phase.value is ConnectionPhase.Disconnected)
+        val proof = "123456".toCharArray()
+        rt.submitAccountLoginProof(proof)
+        assertTrue(proof.all { it == '\u0000' })
+        assertFalse(gateway.targetsOf("POST").any { it.endsWith("/password/complete") })
+    }
+
+    private fun awaitConnected(runtime: GatewayRuntime): GatewayRuntime {
+        val connected = awaitCondition(AWAIT_MILLIS) { runtime.phase.value is ConnectionPhase.Connected }
+        assertTrue("等待登录连接超时：phase=${runtime.phase.value}", connected)
+        return runtime
+    }
+
+    private fun awaitCondition(timeoutMillis: Long, condition: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        while (System.nanoTime() < deadline) {
+            ShadowLooper.idleMainLooper(POLL_MILLIS, TimeUnit.MILLISECONDS)
+            if (condition()) return true
+            Thread.sleep(POLL_MILLIS)
+        }
+        return condition()
+    }
+
+    companion object {
+        private const val AWAIT_MILLIS = 3000L
+        private const val RESTORE_AWAIT_MILLIS = 10_000L
+        private const val POLL_MILLIS = 20L
+        private const val NEGOTIATE_PATH = "/open-android-intelligence/v2/negotiate"
+        private const val PASSWORD_PATH = "/open-android-intelligence/v2/sessions/password"
+        private const val REFRESH_PATH = "/open-android-intelligence/v2/sessions/refresh"
+        private const val CONVERSATIONS_PATH = "/open-android-intelligence/v2/conversations"
+        private const val EVENTS_PATH = "/open-android-intelligence/v2/events"
+
+        private val NEGOTIATE_BODY = """
+            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
+            "features":{"auth":["password","refresh"],"messages":"chat-v1",
+            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
+            "deviceRequests":"risk-queue-v1","conversationUi":[]},
+            "limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,
+            "maxClockSkewSeconds":120},
+            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
+        """.trimIndent()
+
+        private val PASSWORD_BODY = """
+            {"data":{"accountId":"acc_stub","deviceId":"dev_stub","sessionId":"sess_1",
+            "accessToken":"token_1","refreshCredential":"refresh_1","pairingSummary":"stub pairing"}}
+        """.trimIndent()
+
+        private val REFRESH_BODY = """
+            {"data":{"accountId":"acc_stub","deviceId":"dev_stub","sessionId":"sess_2",
+            "accessToken":"token_2","refreshCredential":"refresh_2","pairingSummary":"stub pairing"}}
+        """.trimIndent()
+
+        private val CONVERSATIONS_BODY = """
+            {"protocol":"2.1","data":{"conversations":[]}}
+        """.trimIndent()
+    }
+}

@@ -2,6 +2,10 @@ package com.openandroidintelligence.capability
 
 import android.app.Activity
 import android.content.Intent
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -42,12 +46,14 @@ class MediaProjectionScreenCaptureSourceTest {
             private set
         var closed: Boolean = false
             private set
+        var onGrab: (() -> Unit)? = null
 
         override val isActive: Boolean
             get() = active && !closed
 
         override fun grabFrame(): ScreenCapture? {
             grabCalls++
+            onGrab?.invoke()
             return if (isActive) frame else null
         }
 
@@ -67,6 +73,7 @@ class MediaProjectionScreenCaptureSourceTest {
             private set
         var lastResultData: Intent? = null
             private set
+        var onOpen: (() -> Unit)? = null
 
         override fun hasProjectionService(): Boolean = serviceAvailable
 
@@ -76,6 +83,7 @@ class MediaProjectionScreenCaptureSourceTest {
             openCalls++
             lastResultCode = resultCode
             lastResultData = resultData
+            onOpen?.invoke()
             return session
         }
 
@@ -240,6 +248,94 @@ class MediaProjectionScreenCaptureSourceTest {
         source.release()
         source.release()
         assertFalse(source.isAvailable)
+    }
+
+    @Test
+    fun reAuthorization_closesOldResourcesBeforeOpeningNewSession() {
+        val first = FakeSession(frame())
+        val runtime = FakeRuntime(session = first)
+        val source = MediaProjectionScreenCaptureSource(runtime)
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        runtime.session = FakeSession(frame())
+        runtime.onOpen = { assertTrue(first.closed) }
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+    }
+
+    @Test
+    fun authorizationRuntimeFailure_closesOldSessionAndReturnsFalse() {
+        val first = FakeSession(frame())
+        val runtime = FakeRuntime(session = first)
+        val source = MediaProjectionScreenCaptureSource(runtime)
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        runtime.onOpen = { throw SecurityException("revoked") }
+        assertFalse(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        assertTrue(first.closed)
+        assertFalse(source.isAvailable)
+    }
+
+    @Test
+    fun inactiveOpenedSession_isClosedAndNeverAdvertised() {
+        val session = FakeSession(frame(), startActive = false)
+        val source = MediaProjectionScreenCaptureSource(FakeRuntime(session = session))
+        assertFalse(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        assertTrue(session.closed)
+        assertFalse(source.isAvailable)
+    }
+
+    @Test
+    fun frameRuntimeFailure_returnsNullAndReleasesSession() = runBlocking {
+        val session = FakeSession(frame()).apply {
+            onGrab = { throw IllegalStateException("reader closed") }
+        }
+        val source = MediaProjectionScreenCaptureSource(FakeRuntime(session = session))
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        assertNull(source.capture())
+        assertTrue(session.closed)
+        assertFalse(source.isAvailable)
+    }
+
+    @Test
+    fun systemRevocationBeforeCapture_releasesSession() = runBlocking {
+        val session = FakeSession(frame())
+        val source = MediaProjectionScreenCaptureSource(FakeRuntime(session = session))
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        session.active = false
+        assertNull(source.capture())
+        assertTrue(session.closed)
+    }
+
+    @Test
+    fun releaseDuringCapture_discardsLateFrame() = runBlocking {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val session = FakeSession(frame()).apply {
+            onGrab = { entered.countDown(); check(resume.await(3, TimeUnit.SECONDS)) }
+        }
+        val source = MediaProjectionScreenCaptureSource(FakeRuntime(session = session))
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        val capture = async(kotlinx.coroutines.Dispatchers.Default) { source.capture() }
+        try {
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            source.release()
+        } finally {
+            resume.countDown()
+        }
+        assertNull(capture.await())
+        assertFalse(source.isAvailable)
+    }
+
+    @Test
+    fun cancellationIsPropagatedInsteadOfBecomingCaptureFailure() = runBlocking {
+        val session = FakeSession(frame()).apply { onGrab = { throw CancellationException("cancelled") } }
+        val source = MediaProjectionScreenCaptureSource(FakeRuntime(session = session))
+        assertTrue(source.onAuthorizationResult(Activity.RESULT_OK, authorizedIntent))
+        var cancelled = false
+        try {
+            source.capture()
+        } catch (_: CancellationException) {
+            cancelled = true
+        }
+        assertTrue(cancelled)
     }
 
     // ------------------------------------------------------------------

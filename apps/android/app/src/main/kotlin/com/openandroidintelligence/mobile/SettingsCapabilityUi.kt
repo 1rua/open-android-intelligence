@@ -15,7 +15,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -30,16 +33,6 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 
 /** 操作提示条关闭按钮的 contentDescription，界面测试据此定位。 */
 const val NOTICE_DISMISS_LABEL = "关闭操作提示"
-
-/**
- * 宿主是否接入了真实的屏幕截图来源。
- *
- * 现状：已接入（Wave 1 装配 [com.openandroidintelligence.capability.MediaProjectionScreenCaptureSource]，
- * 经系统授权对话框显式授予后可采集；来源缺失/未授权/采集失败时圈选层
- * [com.openandroidintelligence.conversation.selection.ScreenSelectionOverlay] 仍渲染不可用态）。
- * 若未来撤下来源，把这里改回 false 即恢复如实降级。
- */
-const val SCREENSHOT_SOURCE_WIRED = true
 
 /**
  * 宿主是否装配了通知采集通道。
@@ -57,11 +50,27 @@ fun replyNotificationPresentation(wired: Boolean, systemAllowed: Boolean): Capab
 }
 
 @Composable
-internal fun ConversationBubbleSettingsItem() {
+internal fun ConversationBubbleSettingsItem(refreshKey: Boolean = false) {
     val context = LocalContext.current
+    var refresh by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++
+        }
+        lifecycle.lifecycle.addObserver(observer)
+        onDispose { lifecycle.lifecycle.removeObserver(observer) }
+    }
+    val bubblePreference = androidx.compose.runtime.remember(context, refresh, refreshKey) {
+        context.getSystemService(android.app.NotificationManager::class.java).bubblePreference
+    }
     SettingsNavigationItem(
-        headline = "原生会话气泡",
-        supporting = "在系统中允许气泡，展开后可查看全部历史、管理文件夹并发送附件",
+        headline = "会话气泡",
+        supporting = when (bubblePreference) {
+            android.app.NotificationManager.BUBBLE_PREFERENCE_ALL -> "系统允许全部会话使用气泡"
+            android.app.NotificationManager.BUBBLE_PREFERENCE_SELECTED -> "由 Android 按会话选择是否显示气泡"
+            else -> "系统尚未允许会话气泡，可前往系统设置开启"
+        },
         onClick = {
             val settings = android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_BUBBLE_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -86,7 +95,7 @@ internal fun LiveUpdatesSettingsItem() {
     if (android.os.Build.VERSION.SDK_INT < 36) return
     val context = LocalContext.current
     SettingsNavigationItem(
-        headline = "Android 16 实时活动",
+        headline = "实时任务状态",
         supporting = "允许系统突出显示运行中的 Agent 任务，具体展示位置由设备决定",
         onClick = {
             val settings = ReplyNotificationSettings(context).liveUpdatesSettingsIntent()
@@ -102,26 +111,6 @@ internal fun LiveUpdatesSettingsItem() {
                 }
             }
         },
-    )
-}
-
-/**
- * 设置页「屏幕上下文分析与圈选」条目的呈现结论：
- * 能力可用需要「宿主接入了截图来源」+「网关同意回传圈选结果」+「存在活动配对」
- * 三件事同时成立；缺任何一件，supporting 都要指名缺的是什么。
- */
-fun screenSelectionCapabilityPresentation(
-    grantsBound: Boolean,
-    attachmentStatusAgreed: Boolean?,
-    screenshotSourceWired: Boolean = SCREENSHOT_SOURCE_WIRED,
-): CapabilityPresentation = when {
-    !grantsBound -> CapabilityPresentation(
-        enabled = false,
-        supporting = "未绑定活动配对，授权暂不可用",
-    )
-    else -> screenSelectionPresentation(
-        screenshotSourceWired = screenshotSourceWired,
-        attachmentStatusAgreed = attachmentStatusAgreed,
     )
 }
 
@@ -155,6 +144,7 @@ fun OperationNoticeBanner(
     text: String,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
+    onRetry: (() -> Unit)? = null,
 ) {
     Surface(
         shape = RoundedCornerShape(AppRadius.Medium),
@@ -177,6 +167,7 @@ fun OperationNoticeBanner(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.weight(1f),
             )
+            onRetry?.let { retry -> TextButton(onClick = retry) { Text("重试") } }
             IconButton(onClick = onDismiss) {
                 Icon(
                     imageVector = Icons.Default.Close,
@@ -193,17 +184,21 @@ val negotiatedCapabilityLabels: Map<String, String> = mapOf(
     "agent-command-catalog-v1" to "指令目录",
     "agent-command-new-v1" to "新建对话指令",
     "agent-approval-cards-v1" to "审批卡片",
-    "message-batches-v1" to "消息批量下发",
+    "message-batches-v1" to "批量发送消息",
     "newline-v1" to "换行输入",
     "generation-cancel-v1" to "生成中止",
     "conversation-mirror-v1" to "会话镜像",
-    "attachment-status-v1" to "圈选结果回传",
     "conversation-management-v1" to "会话与文件夹管理",
 )
 
+/** 协商协议仍保留 attachment-status-v1，但它属于内部能力，不单独向用户展示。 */
+private val visibleNegotiatedCapabilityKeys = ConversationUiFeature.CLOSED_SET.filterNot {
+    it == "attachment-status-v1"
+}
+
 /**
- * 「协商能力」分组：把 [ConnectionPhase.Connected] 带回的能力位按契约 §4
- * 的 8 项闭集如实呈现。三种状态各有各的话——
+ * 「协商能力」分组：按契约 §4 接收 [ConnectionPhase.Connected] 的完整能力位，
+ * 但只渲染有用户可见含义的项目。三种状态各有各的话——
  * `true`「已启用」、`false`「本网关不支持」、`null`「未声明」——任何把
  * 未声明折叠成不支持的写法都会把一台可以升级的网关说成已拒绝。
  */
@@ -214,7 +209,7 @@ fun NegotiatedCapabilitiesGroup(
 ) {
     SettingsSectionCard(modifier = modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact)) {
-            ConversationUiFeature.CLOSED_SET.forEachIndexed { index, key ->
+            visibleNegotiatedCapabilityKeys.forEachIndexed { index, key ->
                 if (index > 0) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -228,37 +223,10 @@ fun NegotiatedCapabilitiesGroup(
     }
 }
 
-/** 图标由调用方决定；圈选条目与推送条目只是文案与状态不同。 */
 private fun capabilitySupporting(presentation: CapabilityPresentation): String = presentation.supporting
 
 /**
- * 「屏幕上下文分析与圈选」授权条目。
- *
- * 能力未接入（无截图来源，或网关没有同意回传）时整条禁用：一个打不开也
- * 不会生效的开关，比一个点了没反应的开关更诚实。开关呈现的是本地授权，
- * supporting 呈现的是能力现状，两者不混为一谈。
- */
-@Composable
-fun ScreenSelectionCapabilityItem(
-    checked: Boolean,
-    presentation: CapabilityPresentation,
-    onCheckedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-    icon: ImageVector? = null,
-) {
-    SettingsSwitchItem(
-        headline = "屏幕上下文分析与圈选",
-        supporting = capabilitySupporting(presentation),
-        checked = checked,
-        enabled = presentation.enabled,
-        icon = icon,
-        onCheckedChange = onCheckedChange,
-        modifier = modifier.testTag("screen-selection-capability-item"),
-    )
-}
-
-/**
- * 「系统通知推送」授权条目，降级规则同 [ScreenSelectionCapabilityItem]：
+ * 「系统通知推送」授权条目：
  * 推送通道未装配或会话镜像未协商一致时明确不可用。
  */
 @Composable
@@ -270,7 +238,7 @@ fun NotificationPushCapabilityItem(
     icon: ImageVector? = null,
 ) {
     SettingsSwitchItem(
-        headline = "系统通知推送",
+        headline = "Agent 任务通知",
         supporting = capabilitySupporting(presentation),
         checked = checked,
         enabled = presentation.enabled,
@@ -278,4 +246,23 @@ fun NotificationPushCapabilityItem(
         onCheckedChange = onCheckedChange,
         modifier = modifier.testTag("notification-push-capability-item"),
     )
+}
+
+/** Human-readable next steps for the actual device publication or Android blocking code. */
+internal fun deviceCapabilityReasonLabel(reason: String): String {
+    val code = reason.takeIf { Regex("[A-Z][A-Z0-9_]{0,127}").matches(it) }
+        ?: return "尚未提供可识别的阻塞原因"
+    val description = when (code) {
+        "LOCAL_AUTHORIZATION_CHANGED" -> "本机设置已变化，正在同步最新设置"
+        "PAIRING_BINDING_CHANGED", "DEVICE_SESSION_CHANGED" -> "连接已变化，等待当前连接重新同步"
+        "GRANT_STALE", "CAPABILITY_PUBLICATION_STALE" -> "状态已更新，正在重新读取"
+        "NETWORK_ERROR" -> "网络暂不可用，连接恢复后自动重试"
+        "LOCAL_AUTHORIZATION_STATE_INCOMPLETE", "INSTALLATION_CAPABILITY_MIGRATION_FAILED",
+        "LOCAL_AUTHORIZATION_MODEL_UNSUPPORTED", "LOCAL_AUTHORIZATION_UPDATE_INCOMPLETE", "LOCAL_AUTHORIZATION_AUDIT_FAILED", "LOCAL_AUTHORIZATION_MIGRATION_REQUIRED" ->
+            "无法读取本机授权设置，请检查存储或升级应用后重试"
+        "LOCAL_CAPABILITY_DISABLED" -> "已关闭"
+        "CAPABILITY_DIGEST_MISMATCH", "CAPABILITY_BINDING_INVALID", "PAIRING_INVALID" -> "状态校验未通过，请检查 OAI Core 版本"
+        else -> "当前阻塞原因"
+    }
+    return "$description（$code）"
 }

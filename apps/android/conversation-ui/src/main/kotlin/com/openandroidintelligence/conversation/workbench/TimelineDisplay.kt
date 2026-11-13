@@ -3,6 +3,8 @@ package com.openandroidintelligence.conversation.workbench
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.state.TimelineEntry
 
 /**
@@ -12,26 +14,40 @@ import com.openandroidintelligence.conversation.state.TimelineEntry
 sealed interface TimelineDisplayItem {
     val key: String
 
-    data class Single(val entry: TimelineEntry) : TimelineDisplayItem {
-        /** 单条消息沿用消息自身的 key，宿主的滚动/新鲜项跟踪语义不变。 */
-        override val key: String get() = entry.key
+    /**
+     * LazyColumn 的复用分池标识：同一个 key 的呈现类型变化时（单条消息折叠成执行段），
+     * 必须让 Compose 重建子组合，而不是复用类型已经不匹配的旧节点。
+     */
+    val contentType: String
+
+    data class Single(
+        val entry: TimelineEntry,
+        /** 仅用于列表复用；用户行升级服务端身份时，entry.key 仍保留真实消息 ID。 */
+        override val key: String = entry.key,
+    ) : TimelineDisplayItem {
+        override val contentType: String get() = "single"
     }
 
     data class Execution(val run: AssistantExecutionRun) : TimelineDisplayItem {
-        /** 用段身份而不是最终回答 key：finalEntry 变化时展示项不应被当成新条目。 */
+        /**
+         * 原生步骤用任务与公共来源身份固定段 key，旧 markup 沿用首条消息的 key。
+         * 流式增量与事实行替换成历史来源消息时，展示身份保持稳定。
+         */
         override val key: String get() = run.segmentKey
+
+        override val contentType: String get() = "execution"
     }
 }
 
 /**
- * 一轮助手执行过程的聚合结果。
+ * 一段连续助手执行过程的聚合结果；同一 generation 可有多个展示段。
  *
  * [finalBlocks] 是 [finalEntry] 里「尾部正文之前」的最终回答块；
  * 没有最终正文时为空，宿主不应伪造回答占位。
  */
 data class AssistantExecutionRun(
     /**
-     * 段身份：段内第一条助手消息的 key。
+     * 段身份：原生步骤取任务与公共来源身份，旧 markup 取段内首条消息 key。
      *
      * 聚合面板的展开偏好与 LazyColumn 的展示项 key 用这个字段，而不是随最终回答
      * 变化的 [key]；否则多消息回合里 finalEntry 换成后一条时，面板会被当成新项。
@@ -47,6 +63,8 @@ data class AssistantExecutionRun(
     /** 只有最终回答所在消息仍在流式时，才在最终正文末尾画光标。 */
     val finalEntryIsStreaming: Boolean,
     val hasFinalAnswer: Boolean,
+    /** 宿主明确提供的任务身份，与连续展示段的身份分开保存。 */
+    val generationId: String? = null,
 )
 
 /**
@@ -73,8 +91,9 @@ sealed interface ExecutionStep {
         override val entryKey: String,
         val blockIndex: Int,
         val entryIsStreaming: Boolean,
+        val nativeStepId: String? = null,
     ) : ExecutionStep {
-        override val stepKey: String get() = "$entryKey#$blockIndex"
+        override val stepKey: String get() = nativeStepId?.let { "$entryKey:$it" } ?: "$entryKey#$blockIndex"
     }
 
     data class Narrative(
@@ -101,8 +120,9 @@ internal fun ExecutionStep.isInterruptedStep(): Boolean = when (this) {
  * 时间线展示模型：把连续的助手消息折叠成执行段，其余条目保持单条呈现。
  *
  * 规则严格对齐规格 §3.1：
- * 1. 用户消息、审批行、系统回执行是 [TimelineDisplayItem.Single]，并打断连续助手段；
- * 2. 段内至少有一个思考/工具块，且（已出现尾部正文 或 整段不再流式）才折叠；
+ * 1. 用户消息、审批行、系统回执行打断助手段；已完成的正常回答也关闭当前段，
+ *    后续消息不能再把它降级为过程叙述；
+ * 2. 段内出现明确的思考/工具块即使用统一执行容器，运行中也保持同一展示类型；
  * 3. 普通多条助手消息（无执行块）不聚合；
  * 4. 折叠时 `finalEntry` 取最后一条有尾部正文的助手消息，没有则取段内最后一条；
  * 5. 解析结果按 `entry.key + 文本长度 + 内容 hash` 缓存，上限 [MaxCachedEntries] 条；
@@ -117,80 +137,199 @@ class TimelineDisplayModel(
      */
     private val parsedCache = LinkedHashMap<String, List<TimelineBlock>>(16, 0.75f, true)
 
-    /**
-     * 当前仍在增量的执行段里，是否已经出现过最终正文。
-     *
-     * 只用一段 key：同一时刻只可能有一轮在流式；历史段不需要这个标记。
-     * 这样「片段 → 工具块 → 片段」的多步输出不会在折叠/展开之间来回跳。
-     */
-    private var latchedFinalSegmentKey: String? = null
+    /** 当前会话中无身份冲突的用户行，沿用首次出现的展示键。 */
+    private val userItemKeys = mutableMapOf<String, String>()
 
     /** 当前缓存条数（测试用于验证上限）。 */
     internal val cachedEntryCount: Int get() = parsedCache.size
 
-    /** 纯函数入口：不依赖 Compose，测试可直接驱动折叠矩阵。 */
+    /** 不依赖 Compose，测试可直接驱动展示身份与折叠矩阵。 */
     fun build(
         entries: List<TimelineEntry>,
         generation: GenerationState? = null,
     ): List<TimelineDisplayItem> {
-        if (entries.isEmpty()) return emptyList()
+        if (entries.isEmpty()) {
+            userItemKeys.clear()
+            return emptyList()
+        }
+
+        // 同任务同一步的后续快照只更新首次来源位置，不能跨引导复制卡片。
+        val latestNativeSteps = linkedMapOf<Pair<String, String>, NativeExecutionStep>()
+        val nativeStepSources = mutableMapOf<Pair<String, String>, Int>()
+        entries.forEachIndexed { index, entry ->
+            val generationId = entry.generationId?.takeIf { it.isNotBlank() }
+            if (!isExecutionEligible(entry) || generationId == null) return@forEachIndexed
+            entry.executionSteps.forEach { step ->
+                val identity = generationId to step.stepId
+                val previous = latestNativeSteps[identity]
+                if (previous == null) {
+                    nativeStepSources[identity] = index
+                    latestNativeSteps[identity] = step
+                } else if (step.revision > previous.revision) {
+                    latestNativeSteps[identity] = step.copy(
+                        sourceMessageId = previous.sourceMessageId?.takeIf { it.isNotBlank() } ?: step.sourceMessageId,
+                        occurredAt = previous.occurredAt ?: step.occurredAt,
+                    )
+                }
+            }
+        }
 
         val items = mutableListOf<TimelineDisplayItem>()
-        val segment = mutableListOf<TimelineEntry>()
+        val segment = mutableListOf<EntryAnalysis>()
+        // 只收集实际相邻且 generation 一致的执行源；后续步骤不能提前到引导前。
+        val nativeSegment = mutableListOf<TimelineEntry>()
+
+        fun flushNativeSegment() {
+            if (nativeSegment.isEmpty()) return
+            items += TimelineDisplayItem.Execution(
+                buildNativeRun(requireNotNull(nativeSegment.first().generationId), nativeSegment.toList()),
+            )
+            nativeSegment.clear()
+        }
 
         fun flushSegment() {
             if (segment.isEmpty()) return
-            // 只有最后一段会继续增量；历史段不需要「已开始最终回答」的粘滞状态。
-            val isLastSegment = segment.last().key == entries.last().key
-            items += buildSegment(segment.toList(), isLastSegment, generation)
+            items += buildSegment(segment.toList(), generation)
             segment.clear()
         }
 
-        entries.forEach { entry ->
-            if (isExecutionEligible(entry)) {
-                segment += entry
+        entries.forEachIndexed { index, entry ->
+            if (isExecutionEligible(entry) && !entry.generationId.isNullOrBlank() && entry.executionSteps.isNotEmpty()) {
+                val sourceSteps = entry.executionSteps.distinctBy { it.stepId }.mapNotNull { step ->
+                    val identity = requireNotNull(entry.generationId) to step.stepId
+                    if (nativeStepSources[identity] == index) latestNativeSteps[identity] else null
+                }
+                if (sourceSteps.isNotEmpty()) {
+                    flushSegment()
+                    if (nativeSegment.firstOrNull()?.generationId != entry.generationId) flushNativeSegment()
+                    nativeSegment += entry.copy(executionSteps = sourceSteps)
+                }
+                // 只有重复步骤的事实行不生成新容器；合法正文和附件始终原位保留。
+                if (entry.text.isNotBlank() || entry.attachments.isNotEmpty()) {
+                    flushSegment()
+                    flushNativeSegment()
+                    items += TimelineDisplayItem.Single(entry)
+                }
+            } else if (isExecutionEligible(entry)) {
+                flushNativeSegment()
+                if (segment.isNotEmpty() && segment.last().entry.generationId != entry.generationId) flushSegment()
+                val analysis = analyse(entry)
+                segment += analysis
+                // 已完成且有正常正文的消息就是一个回答边界。后续助手消息即使
+                // 没有用户分隔，也不能把这条回答降级为下一段工具过程的叙述。
+                if ((!entry.isStreaming || generation?.isTerminal() == true) && analysis.finalVisible) flushSegment()
             } else {
+                flushNativeSegment()
                 flushSegment()
                 items += TimelineDisplayItem.Single(entry)
             }
         }
+        flushNativeSegment()
         flushSegment()
-        return items
+        return retainUserItemKeys(items)
+    }
+
+    private fun retainUserItemKeys(items: List<TimelineDisplayItem>): List<TimelineDisplayItem> {
+        val singleUsersByClient = items.filterIsInstance<TimelineDisplayItem.Single>()
+            .filter { it.entry.isUser && it.entry.clientMessageId != null }
+            .groupBy { requireNotNull(it.entry.clientMessageId).value }
+            .filterValues { it.size == 1 }
+        // 不跨缺失行或身份冲突保留别名，也不随历史会话无限积累。
+        userItemKeys.keys.retainAll(singleUsersByClient.keys)
+        val reservedKeys = items.mapTo(hashSetOf()) { it.key }
+        return items.map { item ->
+            if (item !is TimelineDisplayItem.Single || !item.entry.isUser) return@map item
+            val clientId = item.entry.clientMessageId?.value ?: return@map item
+            // 同一 client 对应多行时逐条保留真实键，不能把合法消息交给列表误合并。
+            if (clientId !in singleUsersByClient) return@map item
+            val firstKey = userItemKeys.getOrPut(clientId) { item.key }
+            val key = if (firstKey == item.key || reservedKeys.add(firstKey)) firstKey else item.key
+            // 旧别名若与另一条消息或执行段撞键，退回本行真实键并保持后续帧稳定。
+            userItemKeys[clientId] = key
+            item.copy(key = key)
+        }
+    }
+
+    private fun buildNativeRun(generationId: String, entries: List<TimelineEntry>): AssistantExecutionRun {
+        val latest = linkedMapOf<String, NativeExecutionStep>()
+        entries.forEach { entry -> entry.executionSteps.forEach { step ->
+            val previous = latest[step.stepId]
+            if (previous == null || step.revision > previous.revision) latest[step.stepId] = step
+        } }
+        val segmentKey = entries.first().executionSteps.firstOrNull()?.sourceMessageId
+            ?.takeIf { it.isNotBlank() }?.let { "execution:$generationId:$it" } ?: entries.first().key
+        // 任务状态由明确的 generation 投影提供，不能用本段某一步完成代替任务终态。
+        val generationState = entries.firstNotNullOfOrNull { it.executionGenerationState }
+        val terminalGeneration = generationState?.isTerminal() == true
+        val streamActive = when {
+            terminalGeneration -> false
+            generationState == GenerationState.RUNNING || generationState == GenerationState.QUEUED ||
+                generationState == GenerationState.CANCEL_REQUESTED -> true
+            else -> latest.values.any { it.status == NativeExecutionStatus.RUNNING }
+        }
+        // 步骤身份属于任务，不能随引导前后的展示段变化。
+        val taskKey = "execution:$generationId"
+        val steps = latest.values.mapIndexed { index, step ->
+            // 明确终态压住迟到的运行快照；没有真实结果时仍是未知，不能伪造成功。
+            val status = if (terminalGeneration && step.status == NativeExecutionStatus.RUNNING)
+                NativeExecutionStatus.UNKNOWN else step.status
+            ExecutionStep.ToolCall(
+                block = TimelineBlock.ToolCallBlock(
+                    toolName = step.toolName,
+                    command = step.arguments,
+                    output = step.output,
+                    isSuccess = status != NativeExecutionStatus.FAILED,
+                    isRunning = status == NativeExecutionStatus.RUNNING,
+                    executionStatus = status,
+                ),
+                entryKey = taskKey,
+                blockIndex = index,
+                entryIsStreaming = streamActive && status == NativeExecutionStatus.RUNNING,
+                nativeStepId = step.stepId,
+            )
+        }
+        return AssistantExecutionRun(
+            segmentKey = segmentKey,
+            finalEntry = entries.first(),
+            finalBlocks = emptyList(),
+            steps = steps,
+            stepCount = steps.size,
+            failedStepCount = latest.values.count { it.status == NativeExecutionStatus.FAILED },
+            interrupted = false,
+            isStreaming = streamActive,
+            finalEntryIsStreaming = false,
+            hasFinalAnswer = false,
+            generationId = generationId,
+        )
     }
 
     private fun buildSegment(
-        entries: List<TimelineEntry>,
-        isLastSegment: Boolean,
+        analyses: List<EntryAnalysis>,
         generation: GenerationState?,
     ): List<TimelineDisplayItem> {
-        val analyses = entries.map(::analyse)
+        val entries = analyses.map { it.entry }
         val hasExecutionBlocks = analyses.any { it.executionCount > 0 }
-        val anyFinalVisible = analyses.any { it.finalVisible }
         // 只有明确终态才强制结束流式判定；OUTCOME_UNKNOWN / UNSUPPORTED / IDLE
         // 仍按每条消息的 isStreaming 判断（取消结果未知时可能还有增量到达）。
         // Hermes 的实时快照可能一直停留在 STREAMING，直到切会话重载才变成
         // CONFIRMED；生成已经明确结束时必须允许折叠，不再依赖消息标记。
         val terminalGeneration = generation?.isTerminal() == true
         val streamActive = !terminalGeneration && entries.any { it.isStreaming }
-        val anyStreaming = streamActive
-        val segmentKey = entries.first().key
-        // 一旦这一段出现过最终正文，就不能因为后续又出现一个工具块而把已折叠的
-        // 面板重新展开：展开/收起来回跳比晚一点显示更糟。这个粘滞标记只作用于
-        // 仍在增量的最后一段，历史段由 anyFinalVisible / !anyStreaming 自然覆盖。
-        val stickyFinalStarted = isLastSegment && latchedFinalSegmentKey == segmentKey
-        if (isLastSegment && anyFinalVisible) latchedFinalSegmentKey = segmentKey
-        // Hermes 会逐步发送“调用工具：xxx”占位消息与活动日志；还没有最终正文时
-        // 先把它们逐条显示（用户能看到每张工具卡），等最终回答出现再聚合。
-        // XML/fenced 工具消息保持原有规则：执行段结束即折叠。
-        val hermesProcessSegment = entries.all(::looksLikeHermesProcessEntry)
-        val shouldFold = hasExecutionBlocks &&
-            (anyFinalVisible || stickyFinalStarted ||
-                (!anyStreaming && (!hermesProcessSegment || terminalGeneration)))
-
-        if (!shouldFold) {
-            return entries.map { TimelineDisplayItem.Single(it) }
+        // 明确的执行块从首个流式快照起就在统一容器内；是否已有最终正文只决定回答区域。
+        if (!hasExecutionBlocks) {
+            return entries.map { entry ->
+                TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
+            }
         }
-        return listOf(TimelineDisplayItem.Execution(buildRun(analyses, streamActive)))
+        val run = buildRun(analyses, streamActive)
+        // 既没有可展示步骤、也没有最终正文时，折叠只会得到一个空面板；
+        // 这种边界（工具调用后正文为空 / 流被截断）保持逐条呈现。
+        if (run.steps.isEmpty() && !run.hasFinalAnswer) {
+            return entries.map { entry ->
+                TimelineDisplayItem.Single(if (terminalGeneration) entry.copy(isStreaming = false) else entry)
+            }
+        }
+        return listOf(TimelineDisplayItem.Execution(run))
     }
 
     private fun buildRun(
@@ -222,14 +361,14 @@ class TimelineDisplayModel(
                         block = block,
                         entryKey = analysis.entry.key,
                         blockIndex = index,
-                        entryIsStreaming = analysis.entry.isStreaming,
+                        entryIsStreaming = analysis.entry.isStreaming && streamActive,
                     )
 
                     is TimelineBlock.ToolCallBlock -> ExecutionStep.ToolCall(
                         block = block,
                         entryKey = analysis.entry.key,
                         blockIndex = index,
-                        entryIsStreaming = analysis.entry.isStreaming,
+                        entryIsStreaming = analysis.entry.isStreaming && streamActive,
                     )
 
                     else -> ExecutionStep.Narrative(block = block, entryKey = analysis.entry.key)
@@ -249,16 +388,17 @@ class TimelineDisplayModel(
         val interrupted = steps.any { it.isInterruptedStep() }
 
         return AssistantExecutionRun(
-            segmentKey = "execution_segment:${analyses.first().entry.key}",
+            segmentKey = analyses.first().entry.key,
             finalEntry = finalEntry,
             finalBlocks = if (hasFinalAnswer) finalAnalysis.finalBlocks else emptyList(),
             steps = steps,
             stepCount = stepCount,
             failedStepCount = failedStepCount,
             interrupted = interrupted,
-            isStreaming = analyses.any { it.entry.isStreaming },
+            isStreaming = streamActive,
             finalEntryIsStreaming = finalEntry.isStreaming && streamActive,
             hasFinalAnswer = hasFinalAnswer,
+            generationId = analyses.first().entry.generationId?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -287,7 +427,7 @@ class TimelineDisplayModel(
                 executionCount = 0,
                 tailStartIndex = 0,
                 finalBlocks = emptyList(),
-                finalVisible = entry.text.isNotBlank() && !looksLikeHermesActivityLog(entry.text),
+                finalVisible = entry.text.isNotBlank(),
             )
         }
         return analyseParsed(entry)
@@ -354,9 +494,9 @@ fun rememberTimelineDisplayItems(
     threadId: String? = null,
     generation: GenerationState? = null,
 ): List<TimelineDisplayItem> {
-    // 缓存与粘滞状态都属于一段会话：换会话必须重建，避免跨会话 id 命中/误折叠。
+    // 解析缓存与用户展示身份属于当前会话，换会话时重建。
     val model = remember(threadId) { TimelineDisplayModel() }
-    return remember(entries, generation) { model.build(entries, generation) }
+    return remember(model, entries, generation) { model.build(entries, generation) }
 }
 
 /** 只有明确终态才强制折叠；OUTCOME_UNKNOWN/UNSUPPORTED 仍可能继续输出。 */
@@ -365,65 +505,21 @@ internal fun GenerationState.isTerminal(): Boolean =
         this == GenerationState.FAILED ||
         this == GenerationState.CANCELLED
 
-/** 能进入执行段的消息：既不是用户消息，也不是审批/系统回执行。 */
+/** 只有助手消息或明确的执行事实能进入执行段，审批与系统导航行始终独立。 */
 private fun isExecutionEligible(entry: TimelineEntry): Boolean =
-    !entry.isUser && entry.approval == null && entry.systemThreadId == null
+    !entry.isUser && (entry.sender == "assistant" || entry.executionFact) &&
+        entry.approval == null && entry.systemThreadId == null
 
 /**
  * 廉价预扫描：只有可能包含执行块的消息才需要完整 Markdown 解析。
  *
  * `$ adb` 是普通 bash 围栏升格工具卡的兼容路径；保守地包含它，避免漏掉工具卡。
  */
-/** 廉价预扫描：先做关键字 contains，避免对普通历史逐行跑正则。 */
-private fun mayContainHermesMarkup(text: String): Boolean {
-    if (text.contains("调用工具") || text.contains("工具调用") ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true)
-    ) {
-        return true
-    }
-    val activityKeywords = listOf(
-        "Running code", "Running ", "Searching files", "Searching the web",
-        "Searching past sessions", "Reading ", "Writing ", "Editing ",
-        "Browsing ", "Clicking ", "Typing ", "Generating image", "Generating video",
-        "Generating speech", "Looking at the image", "Listing skills",
-        "Updating skill", "Delegating", "Scheduling", "Asking", "Updating memory",
-        "Updating tasks",
-    )
-    return activityKeywords.any { text.contains(it, ignoreCase = true) } &&
-        MarkdownParser.mayContainHermesToolText(text)
-}
-
-/** 一条助手消息是否属于 Hermes 的工具占位/活动日志（而不是真实最终回答）。 */
-private fun looksLikeHermesProcessEntry(entry: TimelineEntry): Boolean {
-    val text = entry.text
-    if (text.isBlank()) return false
-    return text.contains("调用工具", ignoreCase = true) ||
-        text.contains("工具调用", ignoreCase = true) ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true) ||
-        looksLikeHermesActivityLog(text)
-}
-
-/**
- * Hermes 的工具活动日志（Running code / Searching files / Reading ...）只是过程叙述。
- *
- * 它们没有 XML/围栏标记，但若被当成最终正文，会在第一张工具卡出现时提前折叠成
- * “最终回答是工具日志”的错误形态。整条消息所有行都是活动日志时才视为过程文本。
- */
-internal fun looksLikeHermesActivityLog(text: String): Boolean =
-    MarkdownParser.isHermesActivityOnlyText(text)
-
 internal fun mayContainExecutionMarkup(text: String): Boolean =
-    mayContainHermesMarkup(text) ||
-        text.contains("<think", ignoreCase = true) ||
+    text.contains("<think", ignoreCase = true) ||
         text.contains("<tool_call", ignoreCase = true) ||
         text.contains("```tool_call", ignoreCase = true) ||
         text.contains("```tool:", ignoreCase = true) ||
-        text.contains("调用工具", ignoreCase = true) ||
-        text.contains("工具调用", ignoreCase = true) ||
-        text.contains("Tool call", ignoreCase = true) ||
-        text.contains("Calling tool", ignoreCase = true) ||
         text.contains("\$ adb", ignoreCase = true)
 
 /** 执行块：思考与工具调用。步骤计数、折叠条件都以它为准。 */

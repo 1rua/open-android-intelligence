@@ -143,12 +143,31 @@ class PluginInstallStoreTest {
         assertEquals("1.1.0",store.listInstalled().single().version)
     }
 
-    @Test fun removingADamagedPackageCannotTraverseOrFollowItsSymlinks() {
+    @Test fun removingADamagedPackageCannotTraverseOutsideTheInstallRoot() {
+        val outside = File(store.installRoot.parentFile, "preserved-plugin-traversal-test").apply { mkdirs() }
+        val sentinel = File(outside, "preserved").apply { writeText("keep") }
+        val damaged = File(store.installRoot, "org.example.damaged").apply { mkdirs() }
+        File(damaged, "unreadable-manifest").writeText("synthetic damaged package")
+        store.uninstall("org.example.damaged")
+        assertTrue(!damaged.exists())
+        assertTrue(runCatching { store.uninstall("..") }.isFailure)
+        assertEquals("keep", sentinel.readText())
+    }
+
+    @Test fun removingADamagedPackageCannotFollowItsSymlinks() {
         val outside = File(store.installRoot.parentFile, "preserved-plugin-uninstall-test").apply { mkdirs() }
         val sentinel = File(outside, "preserved").apply { writeText("keep") }
         try {
             val damaged = File(store.installRoot, "org.example.damaged").apply { mkdirs() }
-            java.nio.file.Files.createSymbolicLink(File(damaged, "linked").toPath(), outside.toPath())
+            val link = File(damaged, "linked").toPath()
+            try {
+                java.nio.file.Files.createSymbolicLink(link, outside.toPath())
+            } catch (failure: Exception) {
+                if (failure !is java.nio.file.FileSystemException && failure !is UnsupportedOperationException) throw failure
+                assertTrue(damaged.isDirectory && outside.isDirectory)
+                org.junit.Assume.assumeTrue(
+                    "当前文件系统无法创建符号链接 fixture；未验证跟随链接卸载: ${failure.javaClass.simpleName}", false)
+            }
             store.uninstall("org.example.damaged")
             assertEquals("keep", sentinel.readText())
             assertTrue(!damaged.exists())

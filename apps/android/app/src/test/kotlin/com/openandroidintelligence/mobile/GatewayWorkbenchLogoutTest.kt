@@ -13,6 +13,12 @@ import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,6 +35,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadows.ShadowLooper
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.CoroutineContext
 
 /** 点击 Activity 实际复用的工作台，验证真实 HTTP 登出与失败反馈。 */
 @RunWith(RobolectricTestRunner::class)
@@ -43,6 +53,12 @@ class GatewayWorkbenchLogoutTest {
     private lateinit var credentials: InMemoryCredentialStore
     private val runtimeScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
     private var settingsOpened = false
+    private val connectedNotificationBinding = AtomicReference<NotificationPresenceReconciliationRequest?>()
+    private val connectedObserved = CountDownLatch(1)
+    // 固定在状态发布调用栈内观察，不让 Unconfined 的嵌套事件循环把检查推迟到绑定之后。
+    private val connectedObserverDispatcher = object : CoroutineDispatcher() {
+        override fun dispatch(context: CoroutineContext, block: Runnable) = block.run()
+    }
 
     @Before fun setUp() {
         gateway = LoopbackGatewayStub()
@@ -58,6 +74,13 @@ class GatewayWorkbenchLogoutTest {
             deviceKeys = InMemoryDeviceKeySource(),
             localDocumentKeyProvider = TestDocumentKeys,
         )
+        // 在首次 Connected 的同步观察点读取绑定，防止登录就绪先于通知身份准备完成。
+        runtimeScope.launch(connectedObserverDispatcher, start = CoroutineStart.UNDISPATCHED) {
+            runtime.phase.filterIsInstance<ConnectionPhase.Connected>().take(1).collect {
+                connectedNotificationBinding.set(runtime.nativeConversationNotifications.capturePresenceReconciliation())
+                connectedObserved.countDown()
+            }
+        }
         runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
         val deadline = System.currentTimeMillis() + AWAIT_MILLIS
         while (runtime.phase.value !is ConnectionPhase.Connected && System.currentTimeMillis() < deadline) {
@@ -70,6 +93,14 @@ class GatewayWorkbenchLogoutTest {
     @After fun close() {
         runtimeScope.cancel()
         gateway.closed()
+    }
+
+    @Test fun 首次连接就绪时通知身份必须已经绑定() {
+        assertTrue("必须捕获首次连接就绪的实际观察点", connectedObserved.await(AWAIT_MILLIS, TimeUnit.MILLISECONDS))
+        val binding = requireNotNull(connectedNotificationBinding.get()) { "Connected 发布前必须完成通知账号绑定" }
+        assertEquals(runtime.savedProfiles.value.single().localProfileId, binding.profileId)
+        assertEquals("acc_stub", binding.accountId)
+        postRunningReplyNotification()
     }
 
     @Test fun narrowDrawerLogoutRevokesTheCurrentSession() {
@@ -94,17 +125,10 @@ class GatewayWorkbenchLogoutTest {
         compose.onNodeWithContentDescription("打开会话抽屉").performClick()
         compose.onNodeWithText("退出登录").assertIsDisplayed().performClick()
 
-        awaitRuntimeCondition { runtime.operationNotice.value != null }
-        compose.onNodeWithText("登出未获 Gateway 确认，请检查连接后重试。").assertIsDisplayed()
-        assertTrue("未经确认的退出必须保留当前会话", runtime.phase.value is ConnectionPhase.Connected)
+        awaitRuntimeCondition { runtime.phase.value is ConnectionPhase.Disconnected }
+        // 按照本地优先退出计划，远端503不阻塞本地退出，本地完成登出
+        assertTrue("本地退出完成进入 Disconnected", runtime.phase.value is ConnectionPhase.Disconnected)
         assertFalse(settingsOpened)
-
-        compose.onNodeWithContentDescription(NOTICE_DISMISS_LABEL).performClick()
-        compose.runOnIdle { assertNull(runtime.operationNotice.value) }
-        gateway.respond(LOGOUT_PATH, """{"data":{}}""")
-        compose.onNodeWithContentDescription("打开会话抽屉").performClick()
-        clickLogoutAndAwaitDisconnected()
-        assertEquals(2, gateway.requests.count { it.method == "DELETE" && it.target.startsWith(LOGOUT_PATH) })
     }
 
     @Test fun confirmedLogoutCancelsTheActualOngoingReplyNotification() {

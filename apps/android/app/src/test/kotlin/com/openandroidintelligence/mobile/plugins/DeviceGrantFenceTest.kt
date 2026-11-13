@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
 import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.TestDocumentKeys
 import java.time.Instant
@@ -20,7 +21,79 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk=[34],application=Application::class)
 class DeviceGrantFenceTest {
-    @Test fun aGatewayRejectionOrStalePayloadRemovesTheEncryptedJournalWithoutClaimingOrRepeatingRecovery()=runBlocking {
+    @Test fun aStoredResultCannotLeaveTheDeviceAfterItsLocalAuthorizationRevisionChanges() = runBlocking {
+        val context=ApplicationProvider.getApplicationContext<Application>()
+        val name="local-revision-fence"
+        val journal=EncryptedDocuments(context,"device-execution:$name",TestDocumentKeys)
+        val expires=Instant.now().plusSeconds(60).toString()
+        var lookups=0
+        var mutations=0
+        val transport=object: GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse {
+                if(request.method!="GET") { mutations++;error("STALE_RESULT_MUST_NOT_LEAVE_DEVICE") }
+                lookups++
+                return WireResponse(200,emptyList(),Json.canonical(Json.of(mapOf("protocol" to "2.1",
+                    "data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,
+                        "grantRevision" to 7,"state" to "claimed","expiresAt" to expires,
+                        "caller" to mapOf("agentName" to "授权屏障测试 Agent", "purpose" to "验证撤销后保留敏感结果")))))).toByteArray())
+            }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+        }
+        val trust=DeveloperTrustMode()
+        val host=thirdPartyOnlyHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
+            trust,NativePluginLoader(trust),"install")
+        journal.write("req_old_result",Json.canonical(Json.of(mapOf("stage" to "completed","expiresAt" to expires,
+            "localAuthorizationRevision" to 1,"hostAuthorizationDigest" to executionHostAuthorizationDigest(host),
+            "result" to mapOf("outcome" to "succeeded","data" to mapOf("private" to "withheld-content"))))).toByteArray())
+        val http=GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
+            transport,{ByteArray(64)},InMemoryEventCursorStore())
+        val executionScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        try {
+            val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,name,{7},{true},
+                TestDocumentKeys,localAuthorizationRevision={2L})
+            driver.recoverPending()
+            // 查询会在同一作用域下新建执行任务，单次 children 快照并不包含后续隔离写入。
+            withTimeout(2_000) {
+                while (true) {
+                    val jobs = executionScope.coroutineContext[Job]!!.children.toList()
+                    if (jobs.isEmpty()) break
+                    jobs.joinAll()
+                }
+            }
+            assertEquals(1,lookups)
+            assertEquals(0,mutations)
+            val saved = JsonFields.obj(Json.parse(journal.read("req_old_result")!!.decodeToString()))!!
+            assertEquals("fenced", JsonFields.string(saved, "stage"))
+            assertEquals("LOCAL_AUTHORIZATION_CHANGED", JsonFields.string(saved, "fenceReason"))
+            assertEquals(1L, JsonFields.long(saved, "localAuthorizationRevision"))
+            assertNull(JsonFields.field(saved, "result"))
+            assertFalse(Json.canonical(saved).contains("withheld-content"))
+        } finally { executionScope.cancel() }
+    }
+
+    @Test fun anUnnegotiatedModelCannotLookupClaimOrRecoverADeviceRequest() = runBlocking {
+        val context=ApplicationProvider.getApplicationContext<Application>()
+        var calls=0
+        val transport=object: GatewayByteTransport {
+            override suspend fun execute(request: WireRequest): WireResponse { calls++; error("UNEXPECTED_DEVICE_CALL") }
+            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+        }
+        val trust=DeveloperTrustMode()
+        val host=thirdPartyOnlyHost(context,PairingGrantStateHolder(InMemoryPairingGrantStore(),AndroidAuditStore()),
+            trust,NativePluginLoader(trust),"install")
+        val http=GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
+            transport,{ByteArray(64)},InMemoryEventCursorStore())
+        val executionScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+        try {
+            val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,"unsupported",{7},{true},
+                TestDocumentKeys,authorizationCurrent={false})
+            driver.accept("req_unsupported")
+            driver.recoverPending()
+            assertEquals(0,calls)
+        } finally { executionScope.cancel() }
+    }
+
+    @Test fun aGatewayRejectionOrStalePayloadDurablyFencesTheJournalWithoutClaimingOrRepeatingRecovery()=runBlocking {
         val context=ApplicationProvider.getApplicationContext<Application>()
         for (status in listOf(409,200)) {
             val scopeKey="fence_"+status
@@ -32,21 +105,32 @@ class DeviceGrantFenceTest {
                 override suspend fun execute(request: WireRequest): WireResponse {
                     assertEquals("GET",request.method);lookups++
                     val envelope=if(status==409) mapOf("error" to mapOf("code" to "GRANT_STALE"))
-                        else mapOf("data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,"grantRevision" to 6)))
+                        else mapOf("data" to mapOf("request" to mapOf("deviceId" to "dev","pairingGeneration" to 1,"grantRevision" to 6,
+                            "caller" to mapOf("agentName" to "授权屏障测试 Agent", "purpose" to "验证旧请求不能恢复"))))
                     return WireResponse(status,emptyList(),Json.canonical(Json.of(envelope+("protocol" to "2.1"))).toByteArray())
                 }
                 override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
             }
             val audit=AndroidAuditStore();val grants=PairingGrantStateHolder(InMemoryPairingGrantStore(),audit)
             val trust=DeveloperTrustMode()
-            val host=ProductionPluginHost(context,grants,trust,NativePluginLoader(trust),"install")
+            val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install")
             val http=GatewayHttpClient(GatewayProfile("acct","dev","sess","https://gateway.example"),
                 transport,{ByteArray(64)},InMemoryEventCursorStore())
             val executionScope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
             try {
                 val driver=DeviceExecutionDriver(context,executionScope,http,host,"acct","dev",1,scopeKey,{7},{true},TestDocumentKeys)
-                driver.recoverPending();driver.recoverPending()
-                assertEquals(1,lookups);assertTrue(journal.keys().isEmpty())
+                driver.recoverPending()
+                withTimeout(2_000) {
+                    while (true) {
+                        val jobs = executionScope.coroutineContext[Job]!!.children.toList()
+                        if (jobs.isEmpty()) break
+                        jobs.joinAll()
+                    }
+                }
+                driver.recoverPending()
+                assertEquals(1,lookups)
+                val saved=JsonFields.obj(Json.parse(journal.read("req_old")!!.decodeToString()))
+                assertEquals("fenced",JsonFields.string(saved,"stage"))
             } finally { executionScope.cancel() }
         }
     }

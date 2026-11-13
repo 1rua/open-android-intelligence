@@ -28,6 +28,12 @@ data class WireResponse(
 interface GatewayByteTransport {
     suspend fun execute(request: WireRequest): WireResponse
 
+    /** 回调成功返回后才可开始连接；无法提供更精确边界的实现按整个 execute 保守标记。 */
+    suspend fun execute(request: WireRequest, beforeDispatch: suspend () -> Unit): WireResponse {
+        beforeDispatch()
+        return execute(request)
+    }
+
     /** 字节实现的兼容入口；生产 HTTP 实现直接消费网络流，关闭责任属于传输层。 */
     suspend fun <T> consumeResponse(
         request: WireRequest,
@@ -38,4 +44,7 @@ interface GatewayByteTransport {
     }
 
     fun eventStream(request: WireRequest): Flow<ByteArray>
+
+    /** 已认证事件响应声明的心跳节奏；缺省未知，沿用保守空闲预算。 */
+    fun eventHeartbeatMillis(): Long? = null
 }
