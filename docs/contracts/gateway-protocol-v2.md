@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded_by: 2026-11-13-dsh-remote-architecture-refactor
 date: 2026-08-24
 contract: open-android-intelligence-gateway-protocol
 version: 2.1.0
@@ -305,7 +306,7 @@ refresh 的轮换提交与 HTTP 响应之间可能发生连接中断。为允许
 
 `DELETE /sessions/current` 结束当前 access session；请求 `revokeRefresh=true` 时同时实现“退出登录”。解除配对和删除账号使用独立管理端点，不能由普通会话删除隐式替代。
 
-该登出端点沿用 [已裁定的 Wave 0 D4](../superpowers/plans/2026-09-22-app-settings-gap-remediation-plan.md#d4-delete-sessionscurrent--响应照收事实标准签名裁定豁免)：保留 `Authorization`、Protocol、Account、Device、Session 绑定校验，豁免 Timestamp、Nonce、Signature、Request-Id 和 Idempotency-Key。仅终止已验证的当前会话，不删除配对；其余已认证端点（包括解除配对）仍要求第 6 节的完整签名与幂等规则。这是既有登出兼容边界，不是所有会话管理请求的豁免。
+该登出端点沿用 [已裁定的 Wave 0 D4](../plans/2026-09-22-app-settings-gap-remediation-plan.md#d4-delete-sessionscurrent--响应照收事实标准签名裁定豁免)：保留 `Authorization`、Protocol、Account、Device、Session 绑定校验，豁免 Timestamp、Nonce、Signature、Request-Id 和 Idempotency-Key。仅终止已验证的当前会话，不删除配对；其余已认证端点（包括解除配对）仍要求第 6 节的完整签名与幂等规则。这是既有登出兼容边界，不是所有会话管理请求的豁免。
 
 ## 6. 已认证请求
 
