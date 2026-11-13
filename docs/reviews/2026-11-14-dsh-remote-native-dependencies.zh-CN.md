@@ -78,3 +78,18 @@ ELF 和 APK ZIP 对齐，并运行 16 KiB 环境测试。因此这些结果只�
 
 P0 整体仍被公开委派目标绑定阻塞；原生依赖的静态检查不能解除该阻塞，也不能把 native transport 或
 WebRTC 运行兼容性报告为已验证。
+
+
+## 随包通知与尚未闭合的来源映射
+
+许可证原文现放在 `apps/android/gateway-client/src/main/assets/licenses/remote/`，沿用 Android library
+默认 main asset 合并机制，覆盖 RTCH/串行发送的 DSH MIT、Noise MIT、WebRTC 包装 MIT，以及固定
+包装仓库的 `Licenses/WEBRTC.md`（788,358 字节，包含 WebRTC BSD 和第三方 notices）。
+来源与逐文件 SHA-256 见该目录 `sources.json`；不依赖不会进入 APK 的 `src/test/resources`。
+未修改开源许可证界面及既有文案。
+
+另外保存 WebRTC 官方 `branch-heads/7871` 在本次核查时固定的提交
+`05e02da9d17f5844e84800fa524dd1eb57d7014c` 的 LICENSE、PATENTS、AUTHORS 原文。
+该提交是官方 M150 源码证据，不把它伪称为发布 AAR 已确认的精确 native 构建提交。
+精确 AAR→native 源码映射及最终 APK 资产/通知验证尚未完成，发布许可门禁保持 `UNVERIFIED`；
+仅保存包装 POM 的 BSD 字段不足以解除这一缺口。

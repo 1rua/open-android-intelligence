@@ -1,0 +1,61 @@
+{
+  "licenseAssets": [
+    {
+      "asset": "dsh-remote-MIT.txt",
+      "repository": "liguobao/ds-harness-remote",
+      "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+      "sourcePath": "LICENSE",
+      "bytes": 1080,
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d"
+    },
+    {
+      "asset": "noise-java-MIT.txt",
+      "repository": "signalapp/noise-java",
+      "commit": "9ba25253c93ca3b0ea993efac2e3521e4a98ae33",
+      "sourcePath": "LICENSE.txt",
+      "bytes": 1077,
+      "sha256": "f2c0cc36aa63c383fd1669b63eff210ee8cabb304dd818a9f442d93906eff587"
+    },
+    {
+      "asset": "webrtc-sdk-wrapper-MIT.txt",
+      "repository": "webrtc-sdk/android",
+      "commit": "1d6a68a74162d3f218f9681d49c6b5eef8f02800",
+      "sourcePath": "LICENSE",
+      "bytes": 1068,
+      "sha256": "e6b282fe6c0fb353928923470457f31b44cbab203effd60c0cde4a5bb96c8aec"
+    },
+    {
+      "asset": "webrtc-native-and-third-party.txt",
+      "repository": "webrtc-sdk/android",
+      "commit": "1d6a68a74162d3f218f9681d49c6b5eef8f02800",
+      "sourcePath": "Licenses/WEBRTC.md",
+      "bytes": 788358,
+      "sha256": "d1f9382c6878ac024155fd6d44a5977329108bb8b0a01cea40e4a2f1d7de252e"
+    },
+    {
+      "asset": "webrtc-PATENTS.txt",
+      "repository": "webrtc.googlesource.com/src",
+      "commit": "05e02da9d17f5844e84800fa524dd1eb57d7014c",
+      "sourcePath": "PATENTS",
+      "bytes": 1388,
+      "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145"
+    },
+    {
+      "asset": "webrtc-AUTHORS.txt",
+      "repository": "webrtc.googlesource.com/src",
+      "commit": "05e02da9d17f5844e84800fa524dd1eb57d7014c",
+      "sourcePath": "AUTHORS",
+      "bytes": 7977,
+      "sha256": "0d111130ece163ae3d65918344ebdbdba5072135c0447eed1d71804753e1b9cd"
+    },
+    {
+      "asset": "webrtc-LICENSE.txt",
+      "repository": "webrtc.googlesource.com/src",
+      "commit": "05e02da9d17f5844e84800fa524dd1eb57d7014c",
+      "sourcePath": "LICENSE",
+      "bytes": 1511,
+      "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482"
+    }
+  ],
+  "patentsStatus": "原文已随资产分发；官方branch-heads/7871固定提交来源，发布AAR与该native源码提交的精确映射尚未验证"
+}

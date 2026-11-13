@@ -162,3 +162,23 @@ WebRTC 缓存产物已补核对，详见[原生依赖记录](2026-11-14-dsh-remo
 AAR/POM 摘要、minAPI 21、四 ABI、64 位 `0x4000` / 32 位 `0x1000` LOAD 段对齐，以及包装 MIT/原生 BSD
 许可分层可记为静态证据；APK、native 加载、16 KiB 运行与真实通道仍未验证。精确运行依赖用于后续
 真实 DataChannel adapter，不解除 P0 整体阻塞。
+
+
+### ce0cccbf 正常权限副本门禁
+
+原工作区私有目录安全测试失败后，实测新建并 chmod 0700 的目录在 FUSE 下显示 0777，而 `/tmp`
+同样操作显示 0700。未修改安全校验；从本地 Git 建立 tracked clean、HEAD 相同的 ce0cccbf 验证副本，
+复用既有 Node 24.18/JDK21/SDK/Gradle/npm 缓存执行：
+
+```sh
+npm run test:fast -- --since 12094e684e4bd6d4270513d54b6ef35437536552
+npm run test:pr -- --since 12094e684e4bd6d4270513d54b6ef35437536552
+```
+
+Fast 通过（51.86 秒）。PR 运行至 Android 模块后失败（302.23 秒），唯一报告失败 task 为
+`conversation-data:testDebugUnitTest`，其中 5 个 Hermes HTTP 测试因副本未指定已有
+`HERMES_PLUGIN_ROOT` 而报 `HERMES_FIXTURE_MISSING`；这是验证环境漏接，不能归因于产品回归。
+PR 前序的 Core 配置关联测试 266 项、DSH 旧适配器 147 项与 Remote 双探针通过。
+已写 XML 的 Android 模块中，domain 64、capability-ports 67、control-ports 38、screen-control 41 均无失败。
+后续先补齐既有固定插件/SDK/contract 环境，只复测失败模块，再决定最终提交完整 PR 门禁。
+该记录只属于 ce0cccbf，不代替后续身份/传输集成后的验证。
