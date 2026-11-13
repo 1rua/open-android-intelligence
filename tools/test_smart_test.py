@@ -471,3 +471,4 @@ def test_control_ports_remote_change_executes_gateway_and_conversation_pr_tasks(
     assert ":gateway-client:testDebugUnitTest" in tasks
     assert ":conversation-data:testDebugUnitTest" in tasks
     assert ":conversation-ui:testDebugUnitTest" in tasks
+    assert ":app:testFullDebugUnitTest" in tasks

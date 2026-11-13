@@ -128,6 +128,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             # gateway-client 消费控制域类型；其测试及上层会话装配均须跟随。
             impact["affects_android_gateway"] = True
             impact["affects_android_conversation"] = True
+            impact["affects_android_app"] = True
         if f.startswith("oai-core/"):
             impact["affects_oai_core"] = True
         if "hermes" in f or f in {
