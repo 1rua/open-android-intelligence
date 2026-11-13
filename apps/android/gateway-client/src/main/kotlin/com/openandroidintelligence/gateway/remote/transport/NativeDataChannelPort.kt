@@ -5,13 +5,18 @@ import org.webrtc.PeerConnection
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-/** 原生 JNI 的内存与生命周期适配；回调返回前复制收到的 ByteBuffer。 */
+/** 原生回调内复制并串行交付，不再积累一份无界接收队列；native 销毁交给独立清理执行器。 */
 class NativeDataChannelPort internal constructor(
     private val handle: NativeDataChannelHandle,
     override val identity: RtcChannelIdentity,
+    private val callbacks: Executor = newCallbackExecutor(),
 ) : RtcDataChannelPort {
     private val nativeLock = Any()
+    private val callbackLock = Any()
     private val closed = AtomicBoolean(false)
     private val listener = AtomicReference<RtcDataChannelPort.Observer?>(null)
     override val label: String = handle.label
@@ -27,18 +32,20 @@ class NativeDataChannelPort internal constructor(
     }
 
     override fun observe(observer: RtcDataChannelPort.Observer?) {
+        listener.set(observer)
+        // 取消订阅只切断本地交付；native observer 在 close 的异步清理中注销。
+        if (observer == null) return
         synchronized(nativeLock) {
             if (closed.get()) {
+                listener.set(null)
                 if (observer != null) fail("RTC_CLOSED")
                 return
             }
-            listener.set(observer)
-            if (observer == null) handle.observe(null)
-            else handle.observe(object : NativeDataChannelHandle.Observer {
+            handle.observe(object : NativeDataChannelHandle.Observer {
                 override fun onStateChanged() {
                     if (closed.get()) return
                     val current = try { handle.state } catch (_: Exception) { RtcChannelState.CLOSED }
-                    listener.get()?.onStateChanged(identity, current)
+                    dispatch { it.onStateChanged(identity, current) }
                 }
 
                 override fun onMessage(data: ByteBuffer) {
@@ -47,11 +54,11 @@ class NativeDataChannelPort internal constructor(
                     val view = data.asReadOnlyBuffer()
                     val bytes = ByteArray(view.remaining())
                     view.get(bytes)
-                    if (!closed.get()) listener.get()?.onMessage(identity, bytes)
+                    dispatch { it.onMessage(identity, bytes) }
                 }
 
                 override fun onBufferedAmountChanged() {
-                    if (!closed.get()) listener.get()?.onBufferedAmountChanged(identity)
+                    dispatch { it.onBufferedAmountChanged(identity) }
                 }
             })
         }
@@ -63,12 +70,33 @@ class NativeDataChannelPort internal constructor(
     }
 
     override fun close() {
-        synchronized(nativeLock) {
-            if (!closed.compareAndSet(false, true)) return
-            listener.set(null)
-            try { handle.observe(null) } finally {
-                try { handle.close() } finally { handle.dispose() }
+        if (!closed.compareAndSet(false, true)) return
+        listener.set(null)
+        callbacks.execute {
+            synchronized(nativeLock) {
+                try { handle.observe(null) } finally {
+                    try { handle.close() } finally {
+                        try { handle.dispose() } finally { (callbacks as? ExecutorService)?.shutdown() }
+                    }
+                }
             }
+        }
+    }
+
+    private fun dispatch(action: (RtcDataChannelPort.Observer) -> Unit) {
+        if (closed.get()) return
+        try {
+            synchronized(callbackLock) {
+                if (!closed.get()) listener.get()?.let(action)
+            }
+        } catch (_: Exception) {
+            close()
+        }
+    }
+
+    companion object {
+        private fun newCallbackExecutor(): ExecutorService = Executors.newSingleThreadExecutor { task ->
+            Thread(task, "oai-remote-datachannel").apply { isDaemon = true }
         }
     }
 }

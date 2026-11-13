@@ -1,3 +1,8 @@
+/*
+ * 基于 ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7 的 packages/webrtc/src/serial-send.ts。
+ * Copyright (c) 2026 DSH Remote contributors，MIT 许可。
+ * 完整许可见 gateway-client/src/test/resources/dsh-remote/LICENSE.upstream。
+ */
 package com.openandroidintelligence.gateway.remote.transport
 
 import kotlinx.coroutines.CompletableDeferred
@@ -23,6 +28,7 @@ class SerialSend : AutoCloseable {
                 tail = next
                 bytes += payloadBytes
                 count += 1
+                next.invokeOnCompletion { synchronized(lock) { bytes -= payloadBytes; count -= 1 } }
             }
         }
         try {
@@ -34,7 +40,6 @@ class SerialSend : AutoCloseable {
             synchronized(lock) { if (closed) fail("RTC_CLOSED") }
             return send()
         } finally {
-            synchronized(lock) { bytes -= payloadBytes; count -= 1 }
             // 等待中的调用取消时仍要保留前驱关系，不能使后面的消息越过正在发送的消息。
             if (ticket.previous.isCompleted) ticket.done.complete(Unit)
             else ticket.previous.invokeOnCompletion { ticket.done.complete(Unit) }

@@ -9,7 +9,7 @@ data class RtcChannelIdentity(val binding: RemoteConnectionBinding, val generati
 
 enum class RtcChannelState { CONNECTING, OPEN, CLOSING, CLOSED }
 
-/** 已建立或正在建立的数据通道；SDP、ICE 和路径选择由上层协商负责。 */
+/** 已建立或正在建立的数据通道；实现须复制接收字节并串行回调，SDP、ICE 和选路由上层负责。 */
 interface RtcDataChannelPort : AutoCloseable {
     val identity: RtcChannelIdentity
     val label: String

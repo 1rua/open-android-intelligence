@@ -80,4 +80,19 @@ class SerialSendTest {
         assertTrue(runCatching { queue.run(1) { } }.exceptionOrNull() is RtcTransportException)
         queue.close()
     }
+
+    @Test
+    fun 取消的排队项在前驱完成前保留额度以防无界依赖链() = runTest {
+        val queue = SerialSend()
+        val gate = CompletableDeferred<Unit>()
+        val first = launch { queue.run(1) { gate.await() } }
+        runCurrent()
+        val waiting = List(255) { launch { queue.run(0) { } } }
+        runCurrent()
+        waiting.forEach { it.cancelAndJoin() }
+        assertTrue(runCatching { queue.run(0) { } }.exceptionOrNull() is RtcTransportException)
+        gate.complete(Unit); first.join()
+        assertEquals(1, queue.run(0) { 1 })
+        queue.close()
+    }
 }

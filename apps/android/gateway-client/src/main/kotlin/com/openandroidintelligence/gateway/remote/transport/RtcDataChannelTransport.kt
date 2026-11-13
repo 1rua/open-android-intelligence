@@ -145,6 +145,7 @@ class RtcDataChannelTransport(
                     currentCoroutineContext().ensureActive()
                     requireOpen()
                     if (!port.sendBinary(frame)) fail("RTC_SEND_REJECTED")
+                    currentCoroutineContext().ensureActive()
                 }
                 synchronized(lock) { sentBytes += ciphertext.size }
             }

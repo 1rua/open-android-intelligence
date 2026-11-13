@@ -3,12 +3,13 @@ package com.openandroidintelligence.gateway.remote.transport
 import org.junit.Assert.*
 import org.junit.Test
 import java.nio.ByteBuffer
+import java.util.concurrent.Executor
 
 class NativeDataChannelPortTest {
     @Test
     fun native接收回调内复制且不改变原Buffer位置() {
         val handle = Handle()
-        val port = NativeDataChannelPort(handle, FakeRtcPort().identity)
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { it.run() })
         var received: ByteArray? = null
         port.observe(object : RtcDataChannelPort.Observer {
             override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { }
@@ -27,7 +28,7 @@ class NativeDataChannelPortTest {
     @Test
     fun close先注销再关闭释放且旧native回调被拒绝() {
         val handle = Handle()
-        val port = NativeDataChannelPort(handle, FakeRtcPort().identity)
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { it.run() })
         var messages = 0
         port.observe(object : RtcDataChannelPort.Observer {
             override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { }
@@ -46,7 +47,7 @@ class NativeDataChannelPortTest {
     @Test
     fun send返回native结果且只发送binary字节() {
         val handle = Handle()
-        val port = NativeDataChannelPort(handle, FakeRtcPort().identity)
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { it.run() })
         assertTrue(port.sendBinary(byteArrayOf(1, 2)))
         assertArrayEquals(byteArrayOf(1, 2), handle.sent)
         handle.accept = false
@@ -62,6 +63,28 @@ class NativeDataChannelPortTest {
         assertEquals(-1, init.maxRetransmitTimeMs)
         assertFalse(init.negotiated)
         assertEquals(-1, init.id)
+    }
+
+    @Test
+    fun native关闭标记立即生效而注销释放在独立清理任务执行() {
+        val queued = mutableListOf<Runnable>()
+        val handle = Handle()
+        val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { queued += it })
+        var count = 0
+        port.observe(object : RtcDataChannelPort.Observer {
+            override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { }
+            override fun onMessage(identity: RtcChannelIdentity, bytes: ByteArray) { count++ }
+            override fun onBufferedAmountChanged(identity: RtcChannelIdentity) { }
+        })
+        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(1)))
+        assertEquals(1, count)
+        port.close()
+        assertEquals(1, queued.size)
+        assertEquals(listOf("observe"), handle.steps)
+        handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(2)))
+        assertEquals(1, count)
+        queued.single().run()
+        assertEquals(listOf("observe", "unregister", "close", "dispose"), handle.steps)
     }
 
     private class Handle : NativeDataChannelHandle {
