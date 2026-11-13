@@ -216,3 +216,86 @@ node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools
 同一 Store 的进程内撤销不能被扩写为跨重启完整撤销保证。P1 不是实现完成。
 传输只提供已协商 PeerConnection 的真实 DataChannel 窄适配、RTCH/串行/背压/关闭与加密归属，
 尚无登录信令、ICE/TURN/Relay 选路和 App 生产装配，真实双向握手及设备互操作保持未验证/环境阻塞。
+
+
+### 当前上游刷新不能解除 P0
+
+只读核对 main `25a81da11b667be8f61a8d3f676615d7ff38fd18`，相对固定上游 ahead 15；
+目标选择、Gateway 契约/分发和 ACP 投影/流五个关键文件的 blob 均与固定版本相同。
+详细时间、blob 与最小公开接口需求见[上游缺口记录](2026-11-14-dsh-remote-upstream-target-binding-gap.zh-CN.md)。
+本次不改 pin、不建上游 issue。允许升级也不表示当前存在已安全解决的版本，P0 与全量任务仍保持阻塞/未完成。
+
+
+## 本批基础切片最终收口
+
+最终被测源码为 `9a76e5c8e2688854e319ba48478ed1b3682f82e0`，比较基线为
+`12094e684e4bd6d4270513d54b6ef35437536552`。随后提交只追加文档，不更改运行源码，
+不因文档 HEAD 不同重复全量编译。机器可读结果见[最终验证清单](2026-11-14-dsh-remote-foundation-validation.json)。
+
+新增身份修复拒绝孤立 UTF-16 代理项，并使用 REPORT 模式 UTF-8 编码 AAD/存储键；规范 origin 保持
+ASCII、Locale.ROOT 和端口上界。`RemoteIdentityTest` 最终 26 项通过，包含合法代理对保留与不同账号键隔离。
+Host 首片仅纯控制主体/任务/请求/产物作用域、类型化操作和严格 JSON/CLI 解析；精确大数摘要与 Unicode
+回归 11 项通过。没有实现 Session V3 服务、任务路由器、持久执行账本或生产执行器装配。
+
+### 最终实际门禁
+
+在同 SHA、已跟踪源码无差异的正常权限副本，复用现有 Node 24.18.0、JDK21、Android SDK、npm/Gradle
+缓存和固定历史夹具，执行原入口：
+
+```sh
+npm run test:fast -- --since 12094e684e4bd6d4270513d54b6ef35437536552
+npm run test:pr -- --since 12094e684e4bd6d4270513d54b6ef35437536552
+```
+
+Fast `PASS`（40.77 秒）。PR 在纠正测试 bundle 输入后 `PASS`（275.29 秒）。App 使用项目已有
+`oai.testParallelForks=4`，保持 `forkEvery=1`、原 heap/JIT、独立类进程及完全相同测试集合；
+没有改测试源码、减少覆盖或跳过失败用例。PR 最后 App 调用 443 actionable tasks 中 25 执行、418 up-to-date；
+测试任务实际执行，编译大量复用缓存。Fast 的 Gradle 只含 noVpnSurfaceCheck。
+
+| 最终 Android XML 套件 | 测试数 | 失败 | 错误 | 跳过 |
+| --- | --- | --- | --- | --- |
+| control-ports | 41 | 0 | 0 | 0 |
+| capability-ports | 67 | 0 | 0 | 0 |
+| screen-control | 41 | 0 | 0 | 0 |
+| device-primitives | 55 | 0 | 0 | 0 |
+| conversation-domain | 64 | 0 | 0 | 0 |
+| conversation-ui | 926 | 0 | 0 | 0 |
+| conversation-data | 61 | 0 | 0 | 0 |
+| gateway-client | 618 | 0 | 0 | 0 |
+| app FullDebug | 1890 | 0 | 0 | 1 |
+| 合计 | 3763 | 0 | 0 | 1 |
+
+实际执行通过 3762 项；唯一跳过是 `BuiltInCapabilitiesTest.aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason`，
+该方法用 `assumeTrue(!BuildConfig.ALLOW_RUNTIME_PLUGINS)` 限定 Play 渠道，在 Full 中不适用。
+本批没有执行 Play 全套或 Full 发布门禁。Python 配置/安装/卸载/CoreConfig/smart-test 合并套件 275 项通过；
+Remote Node 双探针 11 项通过。196 项 CI/路由 targeted 检查另有通过记录，不与上述含重叠的 275 项再相加；
+同样不重复累计早期 focused、固定向量内部轮次或失败后重跑。
+
+### 环境纠错与证据限制
+
+旧 ca9c1ee4 PR 已取消，不能当作通过；9a76e5c8 的第一次完整 PR 为 1890 App 项中 1 失败/1 跳过，
+具体为 `NotificationCapabilityHttpTest` 的 `Configured notification bundle missing from APK assets`。
+原因是 OAI_BUNDLED_PLUGINS_DIR 指向带版本名的旧 .alp 文件，而 StageBundledPlugins 要求
+notifications.alp 等六个固定名称。使用现有 `build:android-plugins` 流程、同源码/现有真实 WASM
+和隔离随机测试作者生成正确六包，逐包核对 ID 与 WASM 字节；临时签名私钥未输出/入库并安全移入回收区。
+先定向复测通知 HTTP 类 2 项通过（17.12 秒），再跑最终完整 PR。这个修正只改变测试输入，不改变业务实现。
+另一个副本输入 plugins/target 缺失已经相对链接到既有产物；先定向 AdditionalDeviceConnectionsTest 14 项通过。
+
+验证副本的 main assets 合并目录已包含六个 bundle 和七份 Remote 许可证原文，后者 SHA 逐份一致；
+这属于资产合并证明，未构建/安装正式 APK，不替代发布通知与 ABI/16KiB 设备验证。
+日志保留现有 nullable/deprecated 与 Robolectric SQLite CloseGuard 警告；它们没有导致最终门禁失败，
+也不据此宣称已完成资源泄漏专项审查。
+
+### 最终独立评审及后续入口
+
+`final_standards_review` 与 `final_spec_review` 分别以不继承开发上下文的方式只读审查
+`12094e68...9a76e5c8`，最终均 PASS，无剩余具体 P1/P2。身份、传输与控制解析的局部 fresh 安全复审
+已关闭各自已复现缺陷；这些审查不替代真实设备、Host、部署或后续功能实现。
+
+当前交付只是 P0/P1 基础切片可评审，PR #190 保持 Draft，#187/#188/#189 保持 open，阶段大项不勾为完成。
+应用生产入口仍使用旧 Core 链路；新 Noise/身份/DataChannel/控制类型/解析基础尚未接入生产会话/控制装配。
+P0 上游目标绑定硬阻塞仍在；生产 Keystore/AtomicFile/跨进程锁/HTTP、信令/RTC 选路、Session V3、
+执行账本、屏幕 SoM/收敛/overlay/急停、现有 UI 接线、Bridge/Stdio MCP 与旧依赖退出均未完成。
+用户明确稍后提供专用环境，本轮不进行真机测试、不占日常 Host 连接；全量迁移与设备/后端/部署验收未完成。
+后续按 #187 分阶段继续；上游缺口及最小公开接口需求见[缺口记录](2026-11-14-dsh-remote-upstream-target-binding-gap.zh-CN.md)，
+本次不改 pin、不向上游发送 issue 或消息。所有 worktree 保留，PR 合并后的清理由后续按安全规则处理。
