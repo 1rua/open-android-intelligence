@@ -736,8 +736,9 @@ def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     "tools/remote/fixtures/dsh-remote/client-runtime.ts",
     "tools/remote/fixtures/dsh-remote/source.json",
 ])
-def test_fixed_remote_probe_routes_to_dsh_lane(impact, path):
+def test_fixed_remote_probe_routes_to_remote_lane(impact, path):
     result = impact.classify([("M", path)])
-    assert result["lanes"]["dsh"]
+    assert result["lanes"]["remote"]
+    assert not result["lanes"]["dsh"]
     assert not result["unknown"]
     assert not result["full_required"]
