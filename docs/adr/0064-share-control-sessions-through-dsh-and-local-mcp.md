@@ -17,6 +17,8 @@ issue: 185
 原生 remote_send_message 最终调用 session/prompt，因此手机须实现真实工作区、会话目录、
 状态、历史及文件读取接口；不能只拦截一个并不存在的同名网络 RPC。
 session/create 返回独立任务会话，不能每次将固定 control-bus 当作新会话返回。
+control-bus 同时支持按可信拥有者/request_id 隔离的单步调用，多步工具调用显式复用同一
+taskSessionId/snapshotId。首次 MCP 读树或截图可以真实建任务，动作不得缺少任务时暗中新建。
 
 ## 取舍
 
@@ -32,6 +34,12 @@ Bridge 串行管理委派目标及观察，报告选择副作用；用户手动�
 
 ## 后果
 
-电脑桥复用现有本机服务并限制操作、调用来源和认证；不向外部 Agent 分发设备私钥或 Remote token。
-手机控制任务需要持久防重回执、私有文件作用域和取消/未知结果语义；“薄壳”仅描述 Stdio 转接职责，
+电脑桥复用现有 WebServer 的本机受限路由并限制操作、调用来源和认证，不新建 HTTP/WS 监听；
+不向外部 Agent 分发设备私钥或 Remote token。
+手机控制任务的消息、树、截图和结果正文仅内存保留；重启不恢复、不回放或续做。持久层仅
+保存 owner/request/task/op/参数摘要/execution/state/取消关联与旧任务失效标记。
+当前 control-bus 的只读 request.status 可查询原最小回执，正文未保留时明确返回
+resultAvailable:false，不恢复旧任务或伪造正文。临时 artifact 同样不在重启后恢复。
+正常聊天镜像、主动推送队列和定时任务仍按各自功能加密持久。
+手机控制任务需要最小持久防重回执、私有文件作用域和取消/未知结果语义；“薄壳”仅描述 Stdio 转接职责，
 不表示整个通道、身份、审批与执行状态都无状态。实现和验收要求见[总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)。

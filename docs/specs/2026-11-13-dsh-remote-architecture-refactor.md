@@ -13,6 +13,11 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 运行验收待进行。** 本次 issue #185 只交付文档，不能据此宣称新通道或任一 Agent 已可用。
 代码事实基线为 `dev@a7dbe3fc8f59a6f01deec101489c705c1e878661`。
 
+后续实施从 `dev@12094e684e4bd6d4270513d54b6ef35437536552` 启动，按
+[分阶段计划](../plans/2026-11-14-dsh-remote-migration-plan.zh-CN.md)与
+[验收台账](../reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)推进；关联全量跟踪 #187、P0 #188、P1 #189。
+实施启动不改变此处任何运行验收状态。
+
 术语见 [CONTEXT](../../CONTEXT.md)，固定上游证据及能力差距见
 [事实基线](../architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)，
 手机操作的请求、回执和文件接口见[控制契约](../contracts/oai-control-rpc-v1.md)。
@@ -194,7 +199,13 @@ Harness 使用 Typert Remote / Session V3，Codex 使用 codex.app.*，ACP 使�
 Virtual Host 对外声明真实实现的最小 Harness carrier，工作区为 `phone-capabilities`。
 `control-bus` 是常驻入口，`session/create` 返回新的独立任务会话 ID，不把固定总线冒充新会话。
 任务会话接收类型化 RPC 或同义 CLI 简写，按 request_id 返回结构化执行结果。
-每个会话的目录、历史、运行状态和结果必须真实产生；全局会话 idle 不能替代具体请求终态。
+每个会话的目录、内存历史、运行状态和结果必须真实产生；全局会话 idle 不能替代具体请求终态。
+`control-bus` 支持按可信 owner/request 隔离的单步快调；多步任务真实 create。控制任务消息、
+Prompt、树、截图和结果正文仅在当前进程内存中，重启不恢复任务、不回放、不续做。持久层只保留
+owner/request/task/op/参数摘要/execution/state/取消关联等最小防重事实；旧任务失效标记不等于
+恢复其可执行状态。正常聊天镜像、主动推送队列与定时任务仍按各自功能加密持久。
+重启后经当前总线发送只读 `request.status` 查询原最小回执，原 task ID 仅核对归属，
+正文未保留返回 `resultAvailable:false`，不伪造原结果。
 
 原生 DSH 的 remote_send_message 是电脑端工具，最终调用 session/prompt，不是同名网络 RPC。
 手机需实现工具依赖的 workspace/session 发现、列表、follow/page、create/prompt/cancel，
@@ -216,6 +227,8 @@ remote_agent_delegate 使用各后端实际接口，串行切换电脑 DSH 当�
 Bridge 将目标切换、创建/发送和观察生命周期作为一项委派管理，不能让并发委派互相改选目标。
 返回可查询任务标识；审批等待保持待处理，不自动批准。用户手动改选、旧投影被销毁或连接失效后，
 停止依赖旧目标的新写入，按实际证据返回已完成、已取消或结果未知；不得自动抢回工作区或重放任务。
+MCP 首次读树/截图可 create 并返回 taskSessionId，后续显式携带原 taskSessionId/snapshotId；
+不为每次工具调用暗中新建任务，也不以全局“最近任务”选路。
 MCP 调用退出不等于撤销已执行副作用，取消必须映射到明确的原任务。按请求取消使用带
 targetRequestId 的 request.cancel，由手机原子核对；原生 session/cancel 仅表示整任务取消，不能误停同任务下一请求。
 
