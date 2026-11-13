@@ -143,3 +143,9 @@ node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools
 
 因此 P0 的跨后端/ACP 委派保持 `BLOCKED`。安全可行的局部范围只能是不可切换目标、已登记 Session、同 Host/backend/session 的同步调用；
 ACP/Codex 跨 workspace 委派和依赖后验状态检查的写入必须拒绝，不能用 private hooks、隐式全局目标或后验关闭信号绕过。
+
+### P1 控制账本身份范围阻塞
+
+独立 Spec 审查指出，当前 `conversation-domain` Remote 类型只能表达聊天端点/活跃连接：`EndpointKey`、`SessionOwner` 与 `RemoteFileRef` 尚未共同表达控制契约要求的 Remote Server origin、双方设备身份、本机授权代际、task/request 及 artifact scope。
+
+因此现有聊天类型不得直接复用于控制账本、`request.status` 或文件读取授权。P1/P3 必须新增或明确独立的 `RemotePrincipal`、`TaskScope`、`ArtifactScope`（或等价不可混淆类型），并以 owner+request_id 做持久防重键；重连后同一可信 owner 才能查询原 task，其他同账号设备、旧连接或缺少授权代际的请求一律拒绝。未补齐前，未绑定 owner 的控制请求、旧 task 查询和 artifact 读取保持安全拒绝，不能把当前 domain 首片标成控制面完成。
