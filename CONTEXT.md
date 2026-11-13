@@ -1,523 +1,209 @@
-# open-android-intelligence 领域语境
+# open-android-intelligence 领域词汇
 
-open-android-intelligence 让 Android 设备通过 OAI Core 接受多个 Agent 的合法请求，由 Android 客户端独立决定本机数据与设备操作的许可。产品包括 Android 宿主、可安装设备插件、OAI Core 和各 Agent 的原生会话适配器。
+本词汇表描述已确认的 DSH Remote 目标架构；它不表示运行时代码已经切换，代码状态以[架构重构规格](docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)及其实施基线为准。
 
-设备能力授权术语遵循 [ADR-0059](docs/adr/0059-android-is-the-sole-device-capability-authority.md) 与[全局授权规格](docs/superpowers/specs/2026-11-01-global-device-authorization.md)；Core 管理与设备路由见 [ADR-0060](docs/adr/0060-authenticated-core-management-and-account-routing.md)。
-
-## Android 端
+## Android 安全边界
 
 **Android 宿主（Android Host）**:
-始终安装的 Android 产品入口，向用户提供 Gateway 连接与对话，以及由用户明确选择的附件上传；它同时承载手机端的本地信任边界。
-_Avoid_: App 本体、能力合集、Device Bridge 客户端
+安装在手机上的 open-android-intelligence 产品，负责本机交互、身份持有和设备权限裁决。
+_Avoid_: 电脑主机、设备插件、能力合集
 
 **平台内核（Platform Kernel）**:
-Android 宿主中不可卸载的本地权威，管理设备身份、插件生命周期、权限授予、隔离、审计和紧急停用；在受保护模式下，它是插件能力的最终裁决者，但它本身不提供短信、通知、控制等设备业务能力。
-_Avoid_: 核心插件、超级插件
-
-**设备插件（Device Plugin）**:
-由用户安装、启用或停用的扩展单元，为手机增加一组边界明确的数据、操作或连接能力；任何人都可以制作和分发设备插件，受保护模式中的插件不能自行扩大用户授予的权限。
-_Avoid_: 内置功能、Gradle 模块、无限权限插件
+Android 宿主内不可卸载的本机安全权威，负责插件身份、运行隔离、能力许可、审计和紧急停用。
+_Avoid_: 核心插件、Remote 服务、AgentBackend
 
 **受保护模式（Protected Mode）**:
-Android 宿主的默认安全状态，仅运行能够被平台内核强制限制的 App 内插件；平台内核对插件的身份、能力和数据访问保持最终控制。
-_Avoid_: 普通模式、官方插件模式
+由平台内核约束插件能力的默认运行模式；插件只能使用明确授予的本机能力。
+_Avoid_: 普通模式、官方插件模式、开发者信任模式
 
 **开发者信任模式（Developer Trust Mode）**:
-用户一次明确开启后允许当前及以后安装的同进程原生插件作为宿主可信代码运行、接管原生界面且无需逐包再次确认的高级状态；宿主不再承诺隔离它们对现有权限、数据、界面或应用内确认的访问与影响。
-_Avoid_: 开发者选项、调试模式、沙箱模式
+用户明确启用后，把原生插件视为宿主可信代码的运行模式；平台内核不再承诺这些代码受插件沙箱约束。
+_Avoid_: 调试模式、受保护模式、插件授权
 
-**原生插件（Native Plugin）**:
-在 Android 宿主进程中执行 Kotlin、Java、DEX 或本机代码的设备插件；它与宿主共享 Android 安全身份，可以通过版本化原生扩展接管宿主界面，只能在开发者信任模式中安装和运行。
-_Avoid_: 沙箱插件、受限插件
-
-**原生界面接管（Native UI Takeover）**:
-原生插件在开发者信任模式中通过宿主支持的版本化扩展替换或修改主导航、对话、附件、助理界面、主题或动画的能力；使用该能力表示插件已被视为宿主可信代码，而不是受保护界面贡献。
-_Avoid_: 受保护界面、WebView 页面、反射补丁
+**设备插件（Device Plugin）**:
+为 Android 宿主提供边界明确的数据或设备操作能力的可扩展单元；安装和启用插件本身不授予其访问用户数据的许可。
+_Avoid_: Android 模块、AgentBackend、无限权限插件
 
 **受保护插件（Protected Plugin）**:
-在受保护模式中运行的 WASM 设备插件，其配置与界面由宿主根据声明渲染；它只能调用平台内核明确导出的能力，并受时间、内存、存储、网络和并发限额约束。
-_Avoid_: 原生插件、WebView 插件、无限资源插件
+在受保护模式中运行、只能调用平台内核所授能力的插件。
+_Avoid_: 原生插件、可信代码、WebView 插件
+
+**插件沙箱（Plugin Sandbox）**:
+受保护插件与宿主其他代码之间的隔离边界；它限制插件执行范围，但不替代平台内核的本机授权。
+_Avoid_: Android 系统权限、原生代码信任、Agent 隔离
+
+**原生插件（Native Plugin）**:
+以宿主可信代码身份运行并可使用宿主原生扩展能力的设备插件，只能在开发者信任模式中运行。
+_Avoid_: 受保护插件、沙箱插件、第三方能力
+
+**原生界面接管（Native UI Takeover）**:
+原生插件在开发者信任模式中替换或扩展 Android 宿主产品界面的能力；它不属于受保护插件可获得的界面扩展。
+_Avoid_: 受保护界面贡献、插件卡片、WebView 页面
 
 **插件作者密钥（Plugin Author Key）**:
-插件作者自行持有、用于标识插件来源和连续更新关系的签名身份；用户首次信任该密钥，后续更换密钥必须重新确认。
-_Avoid_: 官方批准、代码安全证明、插件 ID
+由插件作者控制、用于标识插件发布来源与更新连续性的密码学身份。
+_Avoid_: 官方批准、插件 ID、代码安全证明
 
 **插件身份（Plugin Identity）**:
-命名空间插件 ID 与插件作者密钥共同组成的稳定身份；同名但作者密钥不同的插件彼此独立，不共享更新、数据或授权。
+由插件命名空间与作者密钥共同确定的身份；同名但作者密钥不同的插件是不同主体。
 _Avoid_: 插件 ID、版本号、文件摘要
 
 **插件能力（Plugin Capability）**:
-设备插件以作者命名空间定义并通过版本化结构描述的一项功能；它可以自由扩展，但不能重新定义平台内核拥有的安全原语。
-_Avoid_: 全局短名称、Android 权限、自然语言工具描述
-
-**内核安全原语（Kernel Security Primitive）**:
-由平台内核固定定义并评定风险的敏感基础操作，例如附件读取、网络访问、后台任务、短信、屏幕或设备控制；插件只能请求使用，不能修改其含义或风险等级。
-_Avoid_: 插件自定义能力、通配权限、可覆盖风险标签
-
-**宿主能力包络（Host Capability Envelope）**:
-当前 Android 宿主版本通过 Manifest 与平台内核实际提供的权限、系统组件和内核安全原语集合；运行时插件可以自由组合包络内能力，但不能凭空增加包络外的 Android 能力。
-_Avoid_: 无限 Android API、插件权限清单、未来能力承诺
-
-**Companion 插件（Companion Plugin）**:
-以独立 Android package 安装、为宿主能力包络之外的权限、系统组件或隔离需求提供能力的设备插件；它通过平台内核控制的进程间接口参与 open-android-intelligence，而不是直接向 Gateway 暴露权限。
-_Avoid_: 第二宿主、独立 Agent 客户端、权限旁路
-
-**Companion 作者绑定（Companion Author Binding）**:
-插件包作者签名对 companion package name 与 Android 签名证书的明确绑定；宿主以真实安装证书核对该绑定，而不把 package name 当作作者身份。
-_Avoid_: 同名 package、宿主同签名要求、未验证 APK
-
-**Companion 操作令牌（Companion Operation Token）**:
-平台内核为一次具体 companion 操作签发的短期、单用途授权，绑定调用双方身份、Gateway 配对、插件与能力版本、参数摘要、期限和一次性随机数。
-_Avoid_: 长期 IPC 密钥、通用令牌、package name 授权
+插件向宿主声明的一项用户可识别功能；它不能自行定义或扩大平台内核拥有的安全权限。
+_Avoid_: Android 权限、内核原语、自然语言工具名
 
 **插件包（Plugin Package）**:
-包含插件清单、运行载荷、能力请求、资源预算、兼容范围、文件摘要和作者签名的确定性安装产物；源码仓库是开发来源，不是可直接执行的正式插件包。
-_Avoid_: Git 仓库、未固定下载目录、裸 WASM
-
-**能力依赖（Capability Dependency）**:
-插件对某项版本化能力的需求，而不是对另一个插件内部代码或文件的依赖；能力提供者缺失时，必需依赖阻止启用，可选依赖触发明确降级。
-_Avoid_: 插件代码导入、隐式依赖、授权继承
-
-**能力提供者选择（Capability Provider Selection）**:
-平台内核为一项能力选择实际设备插件的路由决定；手机统一保存提供者选择；切换提供者不继承旧作者的敏感许可，也不新增远端许可或重复配对 grant。
-_Avoid_: 同时调用全部插件、自动继承授权、全局唯一实现
-
-**受控网络访问（Mediated Network Access）**:
-受保护插件通过平台内核代理发起的 HTTPS 访问，受声明域名、方法、用途和用户授权约束；它不向插件提供原始 socket、任意 DNS 或忽略证书错误的能力。
-_Avoid_: 直接联网、原始 socket、Gateway 配对通道
-
-**插件私有存储（Plugin Private Store）**:
-由平台内核提供并执行配额的加密数据空间；插件代码与静态资源可以手机级共享，但可变数据以插件身份、Gateway 账号和 Android 安装实例的组合隔离，插件不能读取其他组合的空间，卸载时默认删除。
-_Avoid_: 共享账号数据目录、任意文件路径、跨作者同名数据
-
-**本地账号资料（Local Account Profile）**:
-Android 为曾登录的 Gateway 账号保存的非秘密显示名、Gateway 地址、证书信任和登录配置；它允许用户快速切换账号，但不等于活动会话、账号密码或设备授权。
-_Avoid_: 保存的密码、登录会话、Gateway 账号副本
-
-**账号刷新凭据（Account Refresh Credential）**:
-Gateway 在首次密码验证后签发给一个账号与一个 Android 安装实例的可轮换、可撤销秘密，用于应用重启和账号切换时自动恢复登录；保存它不自动授予后台同步或设备插件能力。
-_Avoid_: 保存的账号密码、永久令牌、配对私钥
-
-**资源预算（Resource Budget）**:
-插件为执行时间、内存、存储、网络、并发和后台频率声明的需求范围；平台内核拥有硬上限，用户可以在上限内批准或收紧。
-_Avoid_: 作者配额、无限资源、性能建议
-
-**插件安装（Plugin Installation）**:
-让某个设备插件的内容出现在手机上的动作；安装不代表插件已经启用，也不代表任何 Gateway 已获得使用权限。
-_Avoid_: 启用、授权、授予 Android 权限
-
-**插件启用（Plugin Enablement）**:
-用户允许一个已安装设备插件在 Android 宿主中工作的手机级状态；启用使插件能够接受请求，新能力默认每次手动，具体执行受全局能力策略、系统权限、数据范围和必要系统同意约束。
-_Avoid_: 安装、配对授权
-
-**插件运行状态（Plugin Operational State）**:
-插件从发现、下载、验证、安装、停用到启用的明确生命周期状态，以及等待批准、缺少依赖、不兼容、隔离、回滚和卸载等非运行状态。
-_Avoid_: 已安装即运行、布尔启用标志、尽力加载
-
-**连接插件（Transport Plugin）**:
-为 Android 宿主增加一种到达 Gateway 的网络路径的设备插件；它只改变连通方式，不替代设备身份、配对或应用层授权。
-_Avoid_: 授权插件、身份提供方、默认 Tailscale
-
-**Tailscale Companion 插件（Tailscale Companion Plugin）**:
-以独立 Companion APK 承载 tsnet 原生网络栈的可选连接插件；它默认不安装、不启用，只为同一个 HTTPS Gateway 提供网络路径，不持有 Gateway 凭据。
-_Avoid_: 默认传输、App 内核网络、TLS 信任替代品
-
-**官方参考插件（First-party Reference Plugin）**:
-由 open-android-intelligence 项目签名发布、用于证明开放插件契约可实现的普通设备插件；它不享有隐藏能力、默认启用或绕过授权的特权。
-_Avoid_: 内置功能、系统插件、强制安装
-
-## Agent 端
-
-**Gateway**:
-属于单个 Gateway 账号的逻辑 open-android-intelligence 通信入口；一台手机可以保存多个 Gateway，一个 Gateway 可以配对多台手机，而同一部署可以承载多个彼此隔离的 Gateway。
-_Avoid_: 物理插件进程、共享租户、独立 Device Bridge
-
-**Gateway 部署（Gateway Deployment）**:
-承载 Gateway 适配器或原生会话接入的一套物理运行单元；无论入口由宿主内的适配器提供还是由 OAI Core 这类独立进程提供，它都可以承载多个账号，但不允许账号之间共享逻辑 Gateway 状态。
-_Avoid_: 逻辑 Gateway、用户账号、中央 Bridge
-
-**Gateway 账号（Gateway Account）**:
-由 Gateway 部署所有者创建或邀请、用于标识一个 Agent 用户的稳定逻辑身份；每个账号拥有一个独立逻辑 Gateway，用户名只是可变显示与登录名，不作为隔离主键。
-_Avoid_: 用户名、设备身份、公开自注册用户
-
-**OAI Core**:
-一个独立可安装、独立运行的统一服务进程，用同一个监听地址承载连接认证、设备绑定、能力发现、协议验证、请求路由与多个 Agent 宿主的原生会话接入；它不拥有额外的设备能力授权权威。
-_Avoid_: Gateway Core、Core 服务、统一网关
-
-**Gateway Core**:
-OAI Core 设备协议状态机的历史来源与跨宿主一致性规范，源自提交 `b64dda00a0de9ff1a95a375dcf92f62b5a1027b3`，覆盖配对、设备协议、消息可靠性、附件生命周期和审计语义；当前唯一运行实现位于仓库的 `oai_core.gateway`，不运行时依赖 Hermes 插件。旧实现中的账号级能力许可不属于目标授权规则。
-_Avoid_: 通用宿主插件、共享二进制、Docker Bridge
-
-**Gateway 适配器（Gateway Adapter）**:
-安装到特定 Agent 宿主、提供协议接入或会话桥接的宿主插件；不拥有额外设备能力授权权威。Hermes、DSH 及第三方适配器均遵循 Android 本地授权与 Core 统一设备调用规则。旧独立 Gateway 的兼容范围需单独验证，仅会话接入形态不注册设备工具或设备调度器。
-_Avoid_: 单一跨宿主二进制、Bridge 客户端
-
-**原生会话适配器（Session Adapter）**:
-Gateway 适配器的一种形态，只把某个 Agent 宿主自己拥有的会话接入统一服务进程，不为该宿主注册任何设备工具或设备授权。它的价值在于让不同 Agent 的会话出现在同一个入口里，而对话内容始终留在宿主侧。
-_Avoid_: 设备适配器、聊天后端、会话镜像
-
-**会话接入范围（Session Scope）**:
-声明一个被接入的 Agent 实例按什么边界隔离其会话，只有账号隔离与部署共享两种取值；以账号密码建立会话身份的宿主必须选择账号隔离，不得以部署整体为名让不同账号看到彼此会话。
-_Avoid_: 可见范围、共享级别、设备授权范围
-
-**设备协议面（Device Protocol Surface）**:
-Android 设备沿用既有配对、认证、签名与设备事件语义到达服务进程所经过的接口面；它是手机作为最终授权者的那条通道，不承载原生会话读写。
-_Avoid_: 设备调用面、原生会话面、聊天通道
-
-**设备调用面（Device Invocation Surface）**:
-已认证账号通过命令行、接口或工具请求设备能力的入口；目标设备须属于该账号，设备能力的最终许可仍由 Android 决定。
-_Avoid_: 设备协议面、管理员入口、设备能力授权
-
-**原生会话面（Native Session Surface）**:
-宿主原生 Agent 会话的列举、读取、创建、发送与生命周期操作所经过的接口面；它不接受设备身份或账号覆盖，也不因会话可见而给出任何设备授权。
-_Avoid_: 聊天路由、设备协议面、Gateway 对话线程
-
-**原生会话（Native Session）**:
-由 Agent 宿主拥有并维护的真实会话，OAI 一侧只按宿主声明的能力读写它，不另建、不缓存也不合并出第二份聊天历史；会话的编辑、删除与生成状态以宿主为唯一权威。
-_Avoid_: 对话线程、本地对话镜像、Gateway 会话副本
-
-**原生操作回执（Native Operation Receipt）**:
-一次原生会话写操作完成后留下的幂等凭据，只记录请求摘要与该次管理动作的结果，用于重复请求返回同一答案、未知结果不猜测成功；它不包含聊天正文。
-_Avoid_: 消息记录、对话历史副本、审计正文
-
-**部署共享会话（Deployment-Shared Session）**:
-同一部署内经认证的各个账号共同可见的原生会话，用于让协作者看到同一个 Agent 的对话；共享的只有会话可见性，任何账号的设备授权、配对与凭据都不随之共享或继承。
-_Avoid_: 共享设备授权、跨账号 Gateway、团队租户
-
-**会话请求预算（Session Request Budget）**:
-原生会话面接受的一次请求的体积上限，即紧凑后的 UTF-8 JSON 必须严格小于一 MiB；超限请求在记录回执或开始流式输出之前被明确拒绝，因此不会留下结果未知的操作。
-_Avoid_: 附件大小限制、Gateway 消息上限、内存配额
-
-**账号级调用凭据（Account-scoped Invocation Credential）**:
-标识已认证 Core 账号及其登录会话的设备调用凭据；登录时不预选设备，具体请求仍须验证目标设备归属和配对关系。
-_Avoid_: Android 配对私钥、管理员授权、共享会话桥令牌
-
-**旧设备限定凭据（Legacy Device-bound Credential）**:
-兼容旧版调用时仍绑定原账号、设备和配对代次的凭据；它不会因新账号级登录规则自动扩大范围。
-_Avoid_: 账号级调用凭据、默认设备、管理员授权
-
-**Core 管理员（Core Administrator）**:
-经 Core 账号认证后有权管理实例配置、账号和安全策略的角色；它不因此获得其他账号的设备或会话内容。
-_Avoid_: root、系统用户、设备所有者
-
-**管理员本机恢复码（Local Administrator Recovery Code）**:
-预先登记、仅用于服务器本机恢复管理员访问的一次性证明，与普通账号二次验证备用码分开。
-_Avoid_: 账号密码、普通 MFA 备用码、设备密钥
-
-**设备路由目标（Device Routing Target）**:
-在已认证账号允许的设备中为一次请求选定的 Android 设备；请求接受后目标保持不变，离线不改投。
-_Avoid_: 登录身份、设备能力许可、设备名称
-
-**旧 Bridge（Legacy Bridge）**:
-被 Gateway Protocol v2 与宿主内 Gateway 适配器取代的独立 Docker/systemd Device Bridge；迁移期间仅作为既有安全语义、存储逻辑、测试和 tsnet 证据的冻结来源，不再获得新功能。
-_Avoid_: Gateway Core、兼容层、继续部署的生产服务
-
-**Gateway 所有者（Gateway Owner）**:
-拥有并控制一个逻辑 Gateway 及其全部配对设备、数据、配置和审计记录的唯一 Gateway 账号。
-_Avoid_: 部署操作员、共享管理员、用户名
-
-**账号登录会话（Account Login Session）**:
-证明当前 Core 账号身份的可撤销会话；CLI 登录无需预先指定设备，Android 的设备会话还包含已验证的安装实例与配对上下文。
-_Avoid_: 保存的密码、默认设备、全局设备授权
-
-**配对（Pairing）**:
-一个 Android 安装实例与一个账号所属逻辑 Gateway 之间独立建立的信任关系；所有连接方式先确定账号，每个配对隔离连接身份、消息、附件和传输状态；设备能力策略属于 Android 安装实例。
-_Avoid_: 登录、网络连通、全局设备注册
-
-**账号设备会话（Account Device Session）**:
-一个 Android 安装实例登录某个 Gateway 账号后建立的独立设备上下文；即使多个设备使用同一账号，它们也不共享设备 ID、安装实例策略或审计身份；同一安装内的账号共享本地能力策略。
-_Avoid_: 账号会话、共享设备、IP 身份
-
-**退出登录（Logout）**:
-结束一个本地账号的登录会话并撤销其账号刷新凭据，同时保留本地账号资料与锁定的本地对话镜像以便日后重新登录。
-_Avoid_: 移除本地账号、解除配对、删除 Gateway 账号
-
-**移除本地账号（Local Account Removal）**:
-退出登录并从当前手机移除该账号的本地资料、对话镜像、媒体缓存、插件账号数据和缓存；它不删除服务端账号，也不代表其他设备解除配对。
-_Avoid_: 退出登录、解除配对、删除 Gateway 账号
-
-**解除配对（Unpairing）**:
-终止一个 Android 安装实例与一个 Gateway 之间信任关系的动作；它立即撤销访问并销毁该配对的密钥、待处理消息、未保存附件、本地对话镜像和媒体缓存。
-_Avoid_: 断开连接、停用 Gateway、退出对话
-
-**删除 Gateway 账号（Gateway Account Deletion）**:
-经明确确认后删除一个逻辑 Gateway 及其全部设备、刷新凭据、配对、队列、附件、Agent 对话历史和本地账号状态的动作；它不同于手机上的退出或本地移除。
-_Avoid_: 退出登录、移除本地账号、解除单台设备配对
-
-**账号凭据重置（Account Credential Reset）**:
-由 Gateway 部署操作员在本机发起的密码重置或一次性邀请流程；重置撤销该账号的刷新凭据，既有配对密钥可按是否疑似泄露选择保留或全部撤销。
-_Avoid_: 公开邮件找回、匿名自助恢复、静默保留全部会话
-
-**配对授权（Pairing Grant）**:
-已废弃的按配对保存的设备能力许可；它不参与现行能力裁决，连接与请求绑定版本也不构成能力许可。
-_Avoid_: Gateway 账号能力开关、认证替代物、默认跨账号授权
-
-**活动 Gateway（Active Gateway）**:
-用户当前选择作为对话目标的 Gateway；保存或配对一个 Gateway 不会使它自动成为活动 Gateway。
-_Avoid_: 默认 Gateway、唯一 Gateway
-
-**对话线程（Conversation Thread）**:
-只属于一个 Gateway 的连续对话边界；Android 的本地线程标识可绑定一个宿主会话，但不同 Gateway 的线程不得合并或继承彼此上下文。
-_Avoid_: 全局聊天、跨 Gateway 会话、配对
-
-**最近打开对话线程（Last Opened Conversation Thread）**:
-Android 宿主为每个 Gateway 保存的、最近一次由用户明确打开、切换或成功发送消息的对话线程选择；后台事件和认证会话不会改变它。
-_Avoid_: 最近 Gateway 认证会话、最新后台事件、全局默认线程
-
-**Agent 对话会话（Agent Conversation Session）**:
-Agent 宿主拥有并与一个 open-android-intelligence 对话线程绑定的对话运行上下文；接入的宿主可以是消息型适配器宿主，也可以只提供原生会话接入。它不等于 Gateway 账号登录会话，也不作为 Android 的认证身份。
-_Avoid_: Gateway sessionId、账号登录会话、设备会话、原生会话面
-
-**Agent 命令目录（Agent Command Catalog）**:
-当前 Agent 按 Gateway 和语言声明、由该 Gateway 全部对话线程共用的版本化斜杠命令及展示说明集合；Android 用它帮助用户发现命令，但目录本身不授予任何设备能力。
-_Avoid_: Android 权限目录、插件授权、远程界面代码
-
-**Agent 斜杠命令（Agent Slash Command）**:
-由 Android 作为用户消息原样传递、并由 Agent 解析的斜杠前缀文本；Android 可以展示目录和结构化结果，但不解释命令业务语义或把它直接映射为设备操作。
-_Avoid_: App 本地命令、设备自动化 DSL、插件权限
-
-**新建对话（Create Conversation）**:
-由原生会话面的创建入口或用户主动发送的 Agent `/new` 命令建立的不继承原对话上下文的新对话线程与 Agent 对话会话；App 新建按钮请求的是该 Agent 宿主自己的原生会话创建能力，宿主未声明支持时该入口不可用，它不改变 Gateway 账号登录会话、配对或插件授权。
-_Avoid_: 重新登录、重置 Gateway sessionId、删除旧对话、Gateway 聊天创建接口
-
-**本地对话镜像（Local Conversation Mirror）**:
-Android 按 Gateway、账号和安装实例隔离保存的完整加密对话持久副本，可供离线阅读并跟随 Agent 端编辑或删除更新；跨设备长期权威仍属于 Agent 工作状态。
-_Avoid_: 第二权威、Gateway 正文仓库、Android 云备份
-
-**本地媒体缓存（Local Media Cache）**:
-Android 默认随已同步会话保存的账号隔离附件原件，采用私有加密持久存储，不按 TTL 或固定缓存配额自动淘汰；它与上传草稿暂存、用户下载到系统公共目录的普通文件分别管理。空间不足明确提示，退出锁定，解除配对或移除账号按范围清理私有原件；已公开下载仍由用户管理（ADR 0053）。
-_Avoid_: 永久附件仓库、附件暂存区、无限缓存
-
-**本地发送单元（Local Send Atom）**:
-用户每次明确点击发送所产生的一段消息内容，保留稳定的客户端身份及已分配的远端消息身份、顺序和状态；它可以成为一个消息合并批次的成员，但不会因聚合而失去自身记录。
-_Avoid_: 输入框编辑、Agent turn、匿名文本片段
-
-**消息合并批次（Message Merge Batch）**:
-同一对话线程中在消息防抖窗口内形成的一组普通文本本地发送单元；各成员身份、顺序和状态继续保留，Agent 只接收一次有序聚合输入，任何斜杠命令或含附件的发送单元都不进入该批次。
-_Avoid_: 单条消息、隐式并发生成、跨对话批次
-
-**消息防抖策略（Message Debounce Policy）**:
-Android 控制普通文本消息合并窗口的本地交互设置，包括时长、后续消息是否延长窗口和最长等待；设置按 Gateway 可覆盖且只影响新批次，不进入 Agent 命令语义。
-_Avoid_: 输入法防抖、Gateway 重试、Agent 排队策略
-
-**Agent 生成运行（Agent Generation Run）**:
-Agent 为一个聚合消息、普通消息或命令执行的一次可识别生成过程，拥有独立 `generationId` 和明确终态；同一对话线程只运行一个，后续批次按顺序等待。
-_Avoid_: Agent 对话会话、助手消息、SSE 连接、配对或连接 generation
-
-**Agent 消息投递状态（Agent Message Delivery State）**:
-Gateway 对已接受消息记录其排队、送达 Agent、完成或失败状态，并通过关联消息 ID 的事件通知 Android；HTTP 接受只表示 Gateway 已保存消息，不代表 Agent 已收到媒体。
-_Avoid_: 用 HTTP accepted 代表 Agent 已接收、静默丢弃失败
-
-**待提交意图（Pending Submission Intent）**:
-用户针对当前对话草稿明确确认的一次性发送意图，绑定提交时冻结的文本和附件快照；全部附件验证后它只发送一次，取消、编辑、移除、替换或新增附件都会使它失效。
-_Avoid_: 选择附件、自动后台发送、已接受消息
-
-**附件快照（Attachment Snapshot）**:
-提交时冻结的有序附件引用及其已确认内容元数据；快照中的附件必须全部验证成功，任一失败都会阻止整条消息。
-_Avoid_: 当前附件列表、部分发送、动态引用
-
-**本地附件临时暂存（Local Attachment Staging）**:
-Android 为当前草稿短期保留的加密附件字节，普通附件可在重启后由用户手动重试；它不属于本地对话镜像或本地媒体缓存，屏幕选区附件不会从中恢复。
-_Avoid_: 本地媒体缓存、永久附件库、系统 Uri
-
-**后台同步授权（Background Sync Grant）**:
-已废弃的按配对和插件保存的后台数据许可；现行短信、通知主动推送由安装实例保存独立的范围和接收端点白名单。
-_Avoid_: 配对、默认同步、全局同步
-
-**Gateway 协议状态（Gateway Protocol State）**:
-Gateway 为维持设备关系与可靠通信而保存的状态，包括配对、消息去重、待处理消息、附件生命周期、操作回执和审计记录。
-_Avoid_: 对话历史、Agent 记忆、Bridge 数据库
-
-**设备正文暂存（Device Content Staging）**:
-Gateway 为排队并向 Agent 宿主交付通知、短信、联系人或传感器等正文而进行的短期保存；宿主确认接收或期限到期后删除，不形成长期设备内容仓库。
-_Avoid_: 设备数据湖、长期索引、Agent 记忆
-
-**Gateway 主密钥（Gateway Master Key）**:
-用于保护 Gateway 敏感数据库字段与附件暂存内容、但不与被保护数据一同导出的本地秘密；优先由宿主秘密存储提供，否则在首次使用时自动生成权限受限的专用密钥文件（可由部署者指定路径），每个账号由它派生独立密钥。仅会话宿主使用自己的独立密钥，不复用设备 Core 的主密钥。
-_Avoid_: TLS 私钥、用户密码、数据库内密钥
-
-**附件暂存区（Attachment Staging Store）**:
-Gateway 在附件完整校验并交付 Agent 宿主前使用的加密临时存储；宿主确认接收、上传失败、配对解除或期限到期都会触发删除。
-_Avoid_: Agent 长期附件库、公开上传目录、永久文件仓库
-
-**Gateway 迁移模式（Gateway Migration Mode）**:
-Gateway 暂停对外入口、以事务迁移协议状态并验证后再恢复服务的维护状态；失败时恢复旧版本，不允许半迁移数据库继续接收设备请求。
-_Avoid_: 在线就地修改、可携带备份、尽力迁移
-
-**Agent 工作状态（Agent Working State）**:
-Agent 宿主自己拥有的对话、任务、模型运行和长期记忆状态；OAI 不复制它作为第二份历史，也不把它当作设备配对、防重放或设备审计的权威来源。
-_Avoid_: Gateway 协议状态、设备授权状态、本地对话镜像
-
-**Gateway Protocol v2**:
-Android 宿主与 Agent 内 Gateway 之间的新一代版本化设备协议；它复用既有安全语义，但不兼容以独立 Device Bridge 为中心的旧网络接口。
-_Avoid_: Bridge Protocol v1、旧 Bridge 兼容层
-
-**协议协商（Protocol Negotiation）**:
-Android 与 Gateway 在连接开始时确定共同支持的协议、认证、消息、附件、事件游标和能力版本；主版本或未知高风险语义不兼容时拒绝连接。
-_Avoid_: 尽力兼容、请求内扩权、虚报功能
-
-**私有证书信任（Private Certificate Trust）**:
-用户首次确认私有 CA 或自签名 Gateway 的证书或公钥指纹后建立的固定 TLS 信任；公钥变化需要轮换证明或重新确认。
-_Avoid_: 忽略证书错误、Tailscale 免验证、首次静默信任
-
-**不安全开发连接（Insecure Development Connection）**:
-仅用于本地或明确测试地址、真正忽略 TLS 身份错误的受限连接；它持续显示警告，并禁止密码、附件、后台同步、设备插件和敏感数据。
-_Avoid_: 私有证书信任、生产 HTTPS、临时忽略错误
-
-**明文网关连接（Plaintext Gateway Connection）**:
-用户显式输入 `http://` 地址所建立的未加密连接；它没有可核验的 Gateway 身份，因此必须持续显示未加密警告，声明了 TLS 指纹的账号不得降级使用，界面也不得把它表述为已固定或已核验的身份。
-_Avoid_: 私有证书信任、不安全开发连接、等同 HTTPS
-
-**Gateway 事件流（Gateway Event Stream）**:
-Gateway 通过 HTTPS 持续发送流式回复和设备事件的有序通道；Android 使用事件游标从断点恢复，而不是假定连接永久在线。
-_Avoid_: 永久在线、WebSocket 权威通道、无界重放
-
-**附件流式交付（Streamed Attachment Delivery）**:
-Android 与 Gateway 以账号隔离的加密暂存和有界缓冲流式传输用户明确选择的附件；Gateway 核对实际长度和摘要以确认字节完整性，但不设业务字节上限或 MIME allowlist，格式与可处理大小由 Agent 决定。
-_Avoid_: 整文件常驻内存、Gateway 内容判断、将底层资源故障伪装成大小上限
-
-**可迁移 Gateway 备份（Portable Gateway Backup）**:
-用户导出的 Gateway 配置、插件清单和非敏感数据集合；它不包含活动配对私钥、未执行命令或未确认队列，恢复后设备必须重新配对。
-_Avoid_: 数据库快照、Gateway 身份克隆、活动授权备份
-
-**重新配对迁移（Re-pair Migration）**:
-从旧 Bridge 迁入 Gateway Protocol v2 时只导入非敏感配置和插件清单，并为每台设备重新建立身份与授权的迁移方式；旧配对密钥、队列和数据库身份不进入新系统。
-_Avoid_: 身份克隆、Bridge v1 兼容、静默授权继承
-
-**账号隔离目录（Account Isolation Directory）**:
-一个 Gateway 账号专属的 SQLite 数据库、主密钥来源、附件暂存、队列和审计边界；适配器只在账号间共享代码，不共享协议状态或密钥。
-_Avoid_: 共享数据库行过滤、文件名前缀隔离、部署目录
-
-**Gateway 暴露方式（Gateway Exposure Mode）**:
-Gateway Protocol v2 获得 HTTPS 入口的部署选择，包括宿主已有路由、本机监听配合反向代理，或用户显式配置证书的直接监听；OAI Core 属于最后这一类由自己持有监听地址的形态。三者不得改变设备协议与认证语义。
-_Avoid_: 独立 Bridge、默认公网监听、协议变体
-
-**宿主兼容范围（Host Compatibility Range）**:
-Gateway 适配器经过测试并声明可运行的 Hermes 或 OpenClaw 宿主与插件 API 版本区间；超出区间时 Gateway 保持数据只读并拒绝对外服务。
-_Avoid_: 尽力兼容、仅最低版本、忽略警告启动
-
-**协议功能协商（Protocol Feature Negotiation）**:
-Android 与 Gateway 在会话开始时固定双方共同支持的协议、认证、消息、附件、事件游标和能力版本；主版本或未知高风险语义不兼容时拒绝连接。
-_Avoid_: 运行时猜测、单方能力声明、静默降级
-
-**插件生命周期状态（Plugin Lifecycle State）**:
-插件从发现、下载、验证、安装、启用到隔离、等待本地安全批准、回滚或卸载的明确状态；安装不等于启用，启用后能力仍需安装实例策略裁决，新能力默认每次手动。
-_Avoid_: 已安装即授权、半启用、隐式恢复
-
-**身份轮换（Identity Rotation）**:
-Gateway、设备、插件作者、Companion 或 TLS 身份在保持可验证连续性的前提下更换密钥的过程；疑似泄露触发立即撤销与重新建立信任，而不是平滑轮换。
-_Avoid_: 覆盖密钥、静默换证、泄露恢复
-
-**待处理设备请求（Pending Device Request）**:
-手机离线时由 Gateway 暂存、等待手机重新验证后处理的有期限请求；高权限临时会话不得成为待处理请求。
-_Avoid_: 离线命令执行、永久任务、授权快照
-
-**最小审计记录（Minimal Audit Record）**:
-不含消息、短信或附件正文，仅说明主体、时间、动作和结果的审计条目；默认保留三十天，用户可以立即清除。
-_Avoid_: 内容副本、Agent 记忆、永久日志
-
-**Android 权威审计（Android Authoritative Audit）**:
-由手机记录并作为本机插件执行、权限裁决、用户确认和 Companion 调用事实来源的最小审计；它与 Gateway 审计使用关联 ID 对应，但不上传到中央遥测服务。
-_Avoid_: Gateway 请求日志、中央遥测、消息正文
-
-**Gateway 权威审计（Gateway Authoritative Audit）**:
-由每个逻辑 Gateway 记录并作为账号认证、设备请求、协议投递和服务端管理动作事实来源的最小审计；它与 Android 审计相互关联但不能替代本机事实。
-_Avoid_: Android 权限日志、中央日志仓库、Agent 对话历史
-
-**可见核心界面（Visible Core UI）**:
-Android 宿主在受保护模式中固定提供的账号与 Gateway、对话和附件界面；开发者信任模式中的原生界面接管可以替换这些产品界面，但不属于平台内核的隔离承诺。
-_Avoid_: 插件门户首页、能力合集、动态顶级导航
-
-**助理会话界面（Assistant Session Surface）**:
-Android 宿主在用户经系统助理入口明确唤起后提供的临时对话界面；它绑定当前活动 Gateway 与对话线程，不等同于常驻跨应用悬浮层。
-_Avoid_: 主 App 全屏对话、常驻悬浮窗、系统 Gemini 界面
-
-**助理系统入口（Assistant System Entry）**:
-Android 宿主以用户选择的默认数字助理身份向 Android 系统提供的受限入口；系统角色只表示用户如何唤起助理，不等于 Gateway 配对、插件授权或屏幕内容外发许可。
-_Avoid_: 授权来源、Gateway 登录、插件入口
-
-**助理停靠球（Assistant Dock）**:
-同一助理会话界面的最小化状态，保留恢复当前输入草稿与对话上下文的入口；助理会话结束时它随之失效。
-_Avoid_: 常驻悬浮球、独立 Overlay、全局快捷入口
-
-**屏幕选区附件（Screen Selection Attachment）**:
-用户在当前助理会话中从系统允许提供的屏幕图像里主动圈选、确认加入当前对话草稿的一次性图片附件；它不是 Agent 请求的屏幕读取或屏幕控制授权。
-_Avoid_: 自动截图、后台屏幕读取、屏幕控制授权
-
-**助理附件草稿（Assistant Attachment Draft）**:
-用户在助理浮层内主动选择的本地文件在发送前于客户端形成的草稿记录；它随发送或会话交接转移所有权，关闭浮层且未交接时按临时内容回收。
-_Avoid_: 自动上传、后台附件同步、Agent 请求的文件读取
-
-**助理会话交接（Assistant Handoff）**:
-用户从助理浮层进入主 App 时，把当前对话、未发送草稿与附件草稿一并交给主 App 的一次性操作；失败时浮层与草稿都必须保留，不得静默丢弃。
-_Avoid_: 后台会话复制、双份会话、隐式重发消息
-
-**对话动作槽（Conversation Action Slot）**:
-Android 宿主在当前对话界面中为已启用且已授权的受保护插件保留的受控扩展位置；动作得到展示不等于插件已获执行授权，原生界面接管不受该槽位约束。
-_Avoid_: 动态顶级导航、插件门户首页、授权替代物
-
-**平台管理界面（Platform Management UI）**:
-Android 设置中用于管理插件、权限、安全、审计和开发者信任模式的内核界面；受保护插件只能以声明扩展，原生插件可以修改产品界面，但宿主仍保留先于插件加载的安全恢复与紧急停用入口。
-_Avoid_: 无恢复入口的界面接管、WebView 管理台、插件拥有的紧急停用
-
-**Gateway 管理入口（Gateway Management Surface）**:
-服务端用于账号、配置、安全和服务管理的入口；Core 全局写操作要求经认证的 Core 管理员，不构成设备能力授权。
-_Avoid_: 系统用户权限、仅本机确认、设备调用凭据
-
-**密钥轮换证明（Key Rotation Proof）**:
-由旧信任材料对新密钥或证书作出的连续性声明；它减少重新建立身份的歧义，但敏感作者或证书变化仍可要求用户确认。
-_Avoid_: 静默换钥、泄露后平滑轮换、仅配置更新
-
-**Gateway 临时正文（Gateway Transient Content）**:
-为排队、传输和交付 Agent 宿主而短暂存在于 Gateway 的设备或附件正文；宿主确认接收或期限到期后删除，不进入 Gateway 长期检索、记忆或索引。
-_Avoid_: 同步数据仓库、Agent 长期内容、Bridge 副本
-
-**会话自动标题策略（Automatic Conversation Title Policy）**:
-在用户提交首条非空发送单元时由端侧即时生成临时标题，并可在首轮往返后由 Agent 建议标题自动替换的机制；用户手动重命名后获得永久权威，任何后续 Agent 标题不得自动覆盖。
-_Avoid_: 强制固定标题、全局无差别覆盖、延迟命名
-
-**思维链卡片（Thought Chain Card）**:
-在对话时间线中承载大模型深度推理与中间思考过程的可折叠容器组件；流式输出阶段默认展开呈现动态光标与状态，思考完成或生成结束后自动折叠，保持主回答内容整洁。
-_Avoid_: 裸标签泄露、不可折叠长文本、全屏浮层
-
-**工具调用卡片（Tool Call Card）**:
-在对话时间线中以结构化形式呈现 Agent 调用外部插件或系统命令的复合卡片，包含工具名称标识、参数代码块、执行状态与可折叠返回值。
-_Avoid_: 普通代码块降级、无状态指令、隐藏日志
-
-**命令补全悬浮窗（Command Autocomplete Popup）**:
-用户在消息编辑器中键入斜杠前缀时浮动于输入框正上方的交互层，提供来自 Gateway 目录与内置兜底目录的快捷指令筛选、参数提示与精准补全填入。
-_Avoid_: 挤占时间线列表、阻塞式对话框、全屏菜单
-
-## 全局设备授权
-
-**安装实例能力策略（Installation Capability Policy）**:
-同一 Android 安装内每项能力的总开关、授权模式与数据范围，独立于 Core、账号和 Agent。
-_Avoid_: 配对授权、Core grant、账号能力开关
-
-**设备访问关系（Device Access Binding）**:
-可信调用凭据与目标 Android 设备之间经验证的可访问关系；它决定请求是否能抵达设备，能力执行仍由 App 决定。
-_Avoid_: Agent 自报名称、能力许可、会话可见权限
+带有可验证作者身份、能力声明和可执行内容的可分发插件单元。
+_Avoid_: 源码仓库、裸运行载荷、已授予权限
+
+**本机能力策略（Local Capability Policy）**:
+由 Android 用户控制、限定本机能力是否可用以及可访问范围的策略；它独立于 Remote 登录身份和 Agent 会话。
+_Avoid_: Remote 账号授权、设备发现、Agent 请求同意
+
+**主动设备推送（Proactive Device Delivery）**:
+用户允许 Android 按本机选定的数据范围，把短信或通知主动交给指定的 Agent 端点；它与 Agent 按需读取设备数据是不同的许可。
+_Avoid_: 被动查询、默认同步、Remote 账号授权
 
 **能力授权模式（Capability Authorization Mode）**:
-每次手动、允许只读、自动允许三种本地策略；模式只在已启用能力和系统许可范围内生效。
-_Avoid_: 系统权限、插件安装、免除系统同意
+本机用户对能力选择逐次手动批准或在已允许范围内免逐次确认的规则；敏感操作仍须本机手动确认。
+_Avoid_: Android 系统权限、插件启用、自动扩大许可
 
-**临时能力许可（Temporary Capability Approval）**:
-用户针对设备能力、操作类型和数据范围批准的有期限许可，在合法请求间共享，可随时撤销。
-_Avoid_: Agent 身份、跨范围授权、配对 grant
+**设备发现（Device Discovery）**:
+Remote 账号识别同一账号下可联系设备的过程；发现设备本身不代表该设备授予了任何能力。
+_Avoid_: 能力授权、登录凭据、同账号设备许可
 
-**主动推送授权（Proactive Delivery Consent）**:
-用户独立选择短信或通知范围及可验证接收端点的本地许可，与被动读取模式分开。
-_Avoid_: 被动查询授权、会话订阅、后台配对 grant
+**紧急停用（Kill Switch）**:
+用户立即停止本机受控能力执行并撤销相关活动许可的安全动作。
+_Avoid_: 普通断开连接、卸载插件、服务端账号停用
 
-**Agent 接收端点（Agent Receiver Endpoint）**:
-Core 注册并验证路由绑定的稳定投递目标，只有 App 白名单选中后才能接收相应敏感事件。
-_Avoid_: Agent 声明名称、账号昵称、匿名订阅
+## Remote 与 Agent 身份
 
-**通知应用范围（Notification App Scope）**:
-用户从本机应用列表中搜索、正选或反选形成的通知来源集合，分别用于被动采集和主动推送；空集合表示不接收任何应用的通知。
-_Avoid_: 手填包名、空集合等于全部、查询与推送共用许可
+**Remote 服务（RemoteServer）**:
+承载账号登录、设备发现和远程控制请求的服务端；它可以是官方服务，也可以是兼容协议的自托管服务。
+_Avoid_: Android 宿主、AgentBackend、旧协议服务
 
-**短信范围（SMS Scope）**:
-用户在全部、关键词或电话号码之间选择的短信过滤条件，新配置默认全部；被动查询与主动推送分别保存，推送是否开启由独立总开关决定。
-_Avoid_: 发件人地址输入、范围等于推送开关、空条件过滤等于全部
+**Remote 账号（Remote Account）**:
+用户在一个 Remote 服务上的身份；Android 同一时刻以一个 Remote 账号作为活动远程身份。
+_Avoid_: Host 身份、AgentEndpoint、设备能力许可
+
+**设备身份（DeviceIdentity）**:
+Remote 服务用于识别并寻址某台 Android 设备的身份；它只表示设备主体，不代替本机能力策略。
+_Avoid_: Android 安装配置、用户账号、Agent 身份
+
+**主机（Host）**:
+运行 DSH 并向 Remote 账号提供可控工作区的电脑或其他计算主机；此处的“主机”与 Android 宿主是不同主体。
+_Avoid_: Android Host、Remote 服务、AgentBackend
+
+**Agent 后端（AgentBackend）**:
+由 DSH 主机提供的 Agent 执行环境；不同后端可以拥有不同的会话、模型与工作区能力。
+_Avoid_: Remote 服务、Android 插件、模型名称
+
+**Agent 端点（AgentEndpoint）**:
+用户可选择的扁平 Agent 调用目标，用于把请求路由到一个可用的 Agent 后端及其工作区；目标之间不隐含父子关系。
+_Avoid_: 嵌套后端层级、设备身份、会话 ID
+
+**主动客户端身份（RemoteClient）**:
+登录 Remote 账号后由 Android 建立、代表本机主动发现设备并发起控制的独立身份；它可以独立于被控身份休眠。
+_Avoid_: VirtualHost、Android 宿主、AgentEndpoint
+
+**虚拟主机身份（VirtualHost）**:
+登录 Remote 账号后由 Android 建立、代表本机作为被控端接受合法控制请求的身份；默认只允许被控。
+_Avoid_: 电脑主机、RemoteClient、后台 Agent
+
+## 会话与消息
+
+**原生会话（NativeSession）**:
+由 Agent 后端拥有的真实会话；会话内容和生成状态以该后端为权威，模型与思考强度选项取决于该会话实际提供的能力。
+_Avoid_: Remote 登录会话、Android 本地历史副本、服务端会话线程
+
+**消息（Message）**:
+属于一个 NativeSession 的用户输入、Agent 回复或执行结果；各后端差异由会话能力表达，不改变消息属于哪个会话。
+_Avoid_: 独立设备请求、附件本体、Agent 账号
+
+**会话投影（SessionProjection）**:
+Android 为呈现和操作一个 NativeSession 而维护的本地视图状态；它不是另一份会话权威。
+_Avoid_: 第二会话、独立聊天历史、RemoteClient
+
+**附件草稿（Attachment Draft）**:
+用户在消息发送前选定并仍可编辑的附件集合；草稿转入提交后，其内容和顺序固定。
+_Avoid_: 已提交附件、后台收集内容、系统文件授权
+
+**原子附件提交（Atomic Attachment Submission）**:
+一次消息提交中，文本与选定附件作为一个整体被接受或拒绝；不得悄悄丢弃部分附件后仍报告完整成功。
+_Avoid_: 部分发送、隐式重试、上传完成即发送
+
+## 手机控制与屏幕语义
+
+**控制工作区（ControlWorkspace）**:
+当前接受手机控制任务的 DSH 工作区；来自原生入口和 MCP 的调用都遵循同一个工作区归属。
+_Avoid_: Android 宿主、Agent 会话、账号资料
+
+**控制总线（ControlBus）**:
+Android VirtualHost 持续提供的设备控制入口，负责把合法请求交给本机执行能力。
+_Avoid_: Android UI 导航、RemoteClient、电脑 AgentBackend
+
+**控制执行器（ControlExecutor）**:
+原生 DSH 请求与经本机桥接的 MCP 请求共用的确定性控制执行能力；它遵循同一工作区归属和本机许可。
+_Avoid_: 各 Agent 独立的设备执行器、模型推理、第二授权权威
+
+**控制任务会话（ControlTaskSession）**:
+为一次独立控制任务创建的执行上下文；它与常驻控制总线分开，任务之间不共享隐式执行状态。
+_Avoid_: NativeSession、Remote 登录会话、常驻总线
+
+**操作回执（OperationReceipt）**:
+对一个已接收控制操作的结果记录，用于让调用方确认该操作已完成、被拒绝或仍无法判定。
+_Avoid_: 聊天消息、授权凭据、执行日志正文
+
+**结果未知（OutcomeUnknown）**:
+操作可能已经产生外部影响，但当前没有足够证据确认结果的状态；它不能被当作成功，也不能据此盲目重做。
+_Avoid_: 失败、成功、可安全重试
+
+**本机桥接（LocalBridge）**:
+电脑上的 MCP 入口与 DSH 控制总线之间的进程内连接，使外部 Agent 复用 DSH 的设备通道和授权边界。
+_Avoid_: Android Companion、独立 Relay 服务、第二控制通道
+
+**Agent 委派（AgentDelegation）**:
+一个 Agent 请求另一个实际可用 Agent 后端完成工作的行为；同一 DSH 主机上的委派可能串行切换共享工作区。
+_Avoid_: 模型切换、虚构端点、Remote 账号切换
+
+**屏幕观察（ScreenObservation）**:
+在本机许可范围内取得的当前屏幕结构或图像事实；观察结果不授予后续操作权限。
+_Avoid_: 屏幕控制、持久屏幕历史、授权回执
+
+**语义节点（SemanticNode）**:
+无障碍界面树中描述可见控件及其语义属性的节点。
+_Avoid_: 像素区域、永久控件 ID、通用目标句柄
+
+**快照绑定目标（SnapshotBoundTarget）**:
+与一次屏幕观察及其界面状态相绑定的操作目标；界面状态改变后，旧目标不能直接沿用。
+_Avoid_: 永久节点引用、跨页面定位、可盲目重放目标
+
+**标记集（Set-of-Mark, SoM）**:
+屏幕观察中用于明确指出候选目标及其语义的标注集合，供用户或 Agent 形成可核验的操作意图。
+_Avoid_: 任意坐标集合、截图权限、自动点击
+
+**界面稳定（UiSettled）**:
+界面在一次操作后进入可继续观察或判断的稳定状态；尚未稳定时，后续动作不得假定上一动作已产生预期界面。
+_Avoid_: 操作成功回执、固定等待时长、动作重试
+
+**无障碍确认（AccessibilityConfirmation）**:
+通过 Android 无障碍界面向用户呈现并取得的本机操作确认；远程请求不能伪造这项用户决定。
+_Avoid_: Agent 同意、账号登录、系统权限授予
+
+**锁屏边界（Lock-screen Boundary）**:
+设备锁定时，只允许本机明确授予后台访问的数据能力；屏幕观察、截图和屏幕控制均不可用。
+_Avoid_: 锁屏绕过、无障碍授权等同解锁、后台屏幕访问
+
+## 默认助理
+
+**默认助理入口（Default Assistant Entry）**:
+用户通过 Android 系统选择的助理身份唤起 Android 宿主的入口；系统角色只决定唤起方式，不授予屏幕或插件能力。
+_Avoid_: Remote 账号、默认 Agent、屏幕许可
+
+**助理会话（Assistant Session）**:
+由默认助理入口唤起、可承载临时对话草稿与附件的 Android 会话界面。
+_Avoid_: NativeSession、常驻控制总线、系统 LLM
+
+**助理交接（Assistant Handoff）**:
+用户把助理会话中的当前对话意图、草稿和附件交给 Android 主会话界面的动作；交接结果必须明确，不得静默丢失草稿。
+_Avoid_: 后台复制、隐式发送、第二份历史
