@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.facade
 import com.openandroidintelligence.control.ScreenAction
 import com.openandroidintelligence.control.remote.ControlOperation
 import com.openandroidintelligence.control.remote.ControlRequestException
+import com.openandroidintelligence.gateway.schema.Json
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -49,5 +50,85 @@ class ControlRequestParserTest {
         assertEquals(ControlOperation.Status("request-00000001", "task-a"), status.operation)
         val plugin = ControlRequestParser.parse("""plugin.invoke --request-id request-00000001 {"pluginId":"sms","capabilityId":"sms.query:v1","method":"query","params":{"content":false,"filter":[1,null]}}""")
         assertEquals(setOf("content", "filter"), (plugin.operation as ControlOperation.PluginInvoke).params.values.keys)
+    }
+
+    @Test
+    fun 每个操作必要参数缺失或类型错误均在执行前拒绝() {
+        val required = mapOf(
+            "ui.tap" to mapOf("snapshotId" to "s", "nodeId" to "12"),
+            "ui.long_press" to mapOf("snapshotId" to "s", "nodeId" to "12"),
+            "ui.swipe" to mapOf("snapshotId" to "s", "x" to 1, "y" to 2, "endX" to 3, "endY" to 4),
+            "ui.drag" to mapOf("snapshotId" to "s", "x" to 1, "y" to 2, "endX" to 3, "endY" to 4),
+            "ui.input_text" to mapOf("snapshotId" to "s", "nodeId" to "12", "text" to ""),
+            "ui.scroll" to mapOf("snapshotId" to "s", "nodeId" to "12", "direction" to "forward"),
+            "ui.global_action" to mapOf("snapshotId" to "s", "globalAction" to "back"),
+            "ui.launch_app" to mapOf("snapshotId" to "s", "packageName" to "example.app"),
+            "plugin.invoke" to mapOf("pluginId" to "sms", "capabilityId" to "sms.query:v1", "method" to "query", "params" to emptyMap<String, Any>()),
+            "request.status" to mapOf("targetRequestId" to "request-00000001", "targetTaskSessionId" to "task-a"),
+            "request.cancel" to mapOf("targetRequestId" to "request-00000001"),
+        )
+        required.forEach { (op, args) ->
+            fun parse(values: Map<String, Any>) = ControlRequestParser.parse(Json.canonical(Json.of(
+                mapOf("request_id" to "request-00000001", "op" to op, "args" to values))))
+            assertEquals(op, parse(args).operation.wireName)
+            args.keys.forEach { field ->
+                assertThrows("$op 缺 $field", ControlRequestException::class.java) { parse(args - field) }
+                assertThrows("$op 错类型 $field", ControlRequestException::class.java) { parse(args + (field to true)) }
+            }
+        }
+        assertEquals("ui.dump_tree", ControlRequestParser.parse("ui.dump_tree --request-id request-00000001 {}").operation.wireName)
+        assertEquals("ui.capture_som", ControlRequestParser.parse("ui.capture_som --request-id request-00000001 {}").operation.wireName)
+        assertThrows(ControlRequestException::class.java) {
+            ControlRequestParser.parse("ui.swipe --request-id request-00000001 {\"snapshotId\":\"s\",\"x\":1.5,\"y\":2,\"endX\":3,\"endY\":4}")
+        }
+    }
+
+    @Test
+    fun 执行同义默认值和数字编码产生同一摘要但操作类型仍隔离() {
+        fun parse(op: String, args: String) = ControlRequestParser.parse("$op --request-id request-00000001 $args")
+        val defaults = com.openandroidintelligence.control.ScreenReadQuery()
+        assertEquals(parse("ui.dump_tree", "{}").parameterDigest, parse("ui.dump_tree", Json.canonical(Json.of(mapOf(
+            "operation" to defaults.operation, "maxNodes" to defaults.maxNodes, "maxDepth" to defaults.maxDepth, "maxBytes" to defaults.maxBytes,
+        )))).parameterDigest)
+        val duration = ScreenAction.LongPress(nodeId = "12").durationMs
+        assertEquals(parse("ui.long_press", """{"snapshotId":"s","nodeId":"12"}""").parameterDigest,
+            parse("ui.long_press", """{"snapshotId":"s","nodeId":"12","durationMs":$duration}""").parameterDigest)
+        assertEquals(parse("ui.tap", """{"snapshotId":"s","x":1,"y":2}""").parameterDigest,
+            parse("ui.tap", """{"snapshotId":"s","x":1.0,"y":2e0}""").parameterDigest)
+        assertNotEquals(parse("ui.tap", """{"snapshotId":"s","nodeId":"12"}""").parameterDigest,
+            parse("ui.long_press", """{"snapshotId":"s","nodeId":"12"}""").parameterDigest)
+    }
+
+    @Test
+    fun 现有原生静态参数约束在解析时拒绝且不伪造屏幕上界() {
+        val invalid = listOf(
+            """ui.tap --request-id request-00000001 {"snapshotId":"s","x":-1,"y":2}""",
+            """ui.long_press --request-id request-00000001 {"snapshotId":"s","nodeId":"12","durationMs":0}""",
+            """ui.drag --request-id request-00000001 {"snapshotId":"s","x":1,"y":2,"endX":3,"endY":4,"durationMs":3001}""",
+            """ui.dump_tree --request-id request-00000001 {"operation":"other"}""",
+            """ui.dump_tree --request-id request-00000001 {"maxNodes":-1}""",
+            """ui.launch_app --request-id request-00000001 {"snapshotId":"s","packageName":"../app"}""",
+        )
+        invalid.forEach { assertThrows(ControlRequestException::class.java) { ControlRequestParser.parse(it) } }
+        val input = Json.canonical(Json.of(mapOf("request_id" to "request-00000001", "op" to "ui.input_text",
+            "args" to mapOf("snapshotId" to "s", "nodeId" to "12", "text" to "a".repeat(4097)))))
+        assertThrows(ControlRequestException::class.java) { ControlRequestParser.parse(input) }
+        assertEquals(Int.MAX_VALUE, ((ControlRequestParser.parse(
+            """ui.tap --request-id request-00000001 {"snapshotId":"s","x":2147483647,"y":2}""").operation as ControlOperation.Screen).action as ScreenAction.Click).x)
+    }
+
+    @Test
+    fun 精确插件数字与Unicode参数不能因摘要编码合并() {
+        fun plugin(value: String) = ControlRequestParser.parse("""plugin.invoke --request-id request-00000001 {"pluginId":"p","capabilityId":"p:v1","method":"m","params":{"value":$value}}""")
+        val numbers = listOf("9223372036854775807", "9223372036854775808", "9223372036854775809", "100000000000000000000")
+        assertEquals(4, numbers.map { plugin(it).parameterDigest }.distinct().size)
+        assertEquals(numbers, numbers.map { ((plugin(it).operation as ControlOperation.PluginInvoke).params.values.getValue("value")
+            as com.openandroidintelligence.control.remote.ControlValue.Number).value })
+        assertEquals(plugin("1000").parameterDigest, plugin("1e3").parameterDigest)
+        assertEquals(plugin("1e-999999").parameterDigest, plugin("10e-1000000").parameterDigest)
+        assertThrows(ControlRequestException::class.java) { plugin("\"\\ud800\"") }
+        assertThrows(ControlRequestException::class.java) { plugin("{\"\\ud800\":1}") }
+        assertNotNull(plugin("\"?\"").parameterDigest)
+        assertNotNull(plugin("\"\\ud83d\\ude00\"").parameterDigest)
     }
 }

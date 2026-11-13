@@ -3,6 +3,7 @@ package com.openandroidintelligence.control.remote
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.URI
+import java.nio.CharBuffer
 import java.security.MessageDigest
 import java.util.Locale
 
@@ -38,6 +39,7 @@ data class RemoteControlPrincipal(
 ) {
     init {
         require(listOf(accountId, controllerDeviceId, hostDeviceId).all { it.isNotEmpty() }) { "CONTROL_PRINCIPAL_INVALID" }
+        listOf(accountId, controllerDeviceId, hostDeviceId).forEach(::strictUtf8)
         require(listOf(controllerKeyFingerprint, hostKeyFingerprint).all { it.matches(Regex("sha256:[0-9a-f]{64}")) }) {
             "CONTROL_PRINCIPAL_KEY_INVALID"
         }
@@ -58,6 +60,7 @@ data class ControlAccessBinding(
 ) {
     init {
         require(authorizationEpoch >= 0 && connectionGeneration >= 0 && connectionId.isNotEmpty()) { "CONTROL_ACCESS_INVALID" }
+        strictUtf8(connectionId)
     }
 }
 
@@ -67,8 +70,12 @@ data class ControlTaskScope(
     val authorizationEpoch: Long,
     val processEpoch: String,
 ) {
-    init { require(taskSessionId.isNotEmpty() && processEpoch.isNotEmpty() && authorizationEpoch >= 0) { "CONTROL_TASK_INVALID" } }
+    init {
+        require(taskSessionId.isNotEmpty() && processEpoch.isNotEmpty() && authorizationEpoch >= 0) { "CONTROL_TASK_INVALID" }
+        strictUtf8(taskSessionId); strictUtf8(processEpoch)
+    }
 
+    /** 仅校验任务访问；活跃审批还必须精确核对原 ControlAccessBinding 的连接及代次。 */
     fun permits(access: ControlAccessBinding, currentProcessEpoch: String): Boolean =
         principal == access.principal && authorizationEpoch == access.authorizationEpoch && processEpoch == currentProcessEpoch
 }
@@ -84,7 +91,10 @@ data class ControlRequestScope(val task: ControlTaskScope, val requestId: String
 }
 
 data class ControlArtifactScope(val request: ControlRequestScope, val artifactId: String, val version: String) {
-    init { require(artifactId.isNotEmpty() && version.isNotEmpty()) { "CONTROL_ARTIFACT_INVALID" } }
+    init {
+        require(artifactId.isNotEmpty() && version.isNotEmpty()) { "CONTROL_ARTIFACT_INVALID" }
+        strictUtf8(artifactId); strictUtf8(version)
+    }
     fun permits(access: ControlAccessBinding, task: ControlTaskScope, processEpoch: String): Boolean =
         request.task == task && task.permits(access, processEpoch)
 }
@@ -94,7 +104,7 @@ private fun scopeDigest(domain: String, values: List<String>): String {
     val bytes = ByteArrayOutputStream().use { buffer ->
         DataOutputStream(buffer).use { output ->
             (listOf(domain) + values).forEach { value ->
-                val encoded = value.toByteArray(Charsets.UTF_8)
+                val encoded = strictUtf8(value)
                 output.writeInt(encoded.size)
                 output.write(encoded)
             }
@@ -103,3 +113,8 @@ private fun scopeDigest(domain: String, values: List<String>): String {
     }
     return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 }
+
+private fun strictUtf8(value: String): ByteArray = try {
+    val encoded = Charsets.UTF_8.newEncoder().encode(CharBuffer.wrap(value))
+    ByteArray(encoded.remaining()).also(encoded::get)
+} catch (_: Exception) { throw ControlRequestException("CONTROL_UNICODE_INVALID") }

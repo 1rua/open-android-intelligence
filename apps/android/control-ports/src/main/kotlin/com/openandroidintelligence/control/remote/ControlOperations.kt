@@ -23,7 +23,18 @@ sealed interface ControlOperation {
 
     data class DumpTree(val query: ScreenReadQuery) : ControlOperation { override val wireName = "ui.dump_tree" }
     data object CaptureSom : ControlOperation { override val wireName = "ui.capture_som" }
-    data class Screen(val snapshotId: String, val action: ScreenAction, override val wireName: String) : ControlOperation
+    data class Screen(val snapshotId: String, val action: ScreenAction) : ControlOperation {
+        override val wireName: String get() = when (action) {
+            is ScreenAction.Click -> "ui.tap"
+            is ScreenAction.LongPress -> "ui.long_press"
+            is ScreenAction.Swipe -> "ui.swipe"
+            is ScreenAction.Drag -> "ui.drag"
+            is ScreenAction.SetText -> "ui.input_text"
+            is ScreenAction.Scroll -> "ui.scroll"
+            is ScreenAction.Global -> "ui.global_action"
+            is ScreenAction.LaunchApp -> "ui.launch_app"
+        }
+    }
     data class PluginInvoke(val pluginId: String, val capabilityId: String, val method: String, val params: ControlValue.Object) : ControlOperation {
         override val wireName = "plugin.invoke"
     }

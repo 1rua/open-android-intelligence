@@ -12,8 +12,13 @@ class ControlScopesTest {
         val next = access.copy(authorizationEpoch = 2, connectionId = "connection-b", connectionGeneration = 2)
         assertEquals(key.storageKey, ControlRequestKey(next.principal, key.requestId).storageKey)
         listOf(principal.copy(controllerDeviceId = "other-client"), principal.copy(hostDeviceId = "other-phone"),
-            principal.copy(accountId = "other-account"), principal.copy(controllerKeyFingerprint = "sha256:" + "b".repeat(64)))
+            principal.copy(accountId = "other-account"), principal.copy(origin = ControlOrigin.fromCanonical("https://other.example")),
+            principal.copy(controllerKeyFingerprint = "sha256:" + "b".repeat(64)), principal.copy(hostKeyFingerprint = "sha256:" + "d".repeat(64)))
             .forEach { assertNotEquals(key.storageKey, ControlRequestKey(it, key.requestId).storageKey) }
+        val taskA = ControlTaskScope(principal, "task-a", 1, "process-a")
+        val taskB = taskA.copy(taskSessionId = "task-b")
+        // 仅证明类型不会通过换任务绕开去重键；任务冲突由后续原子账本判定。
+        assertEquals(ControlRequestScope(taskA, key.requestId).key, ControlRequestScope(taskB, key.requestId).key)
         assertNotEquals(principal.copy(accountId = "a|b", controllerDeviceId = "c").storageKey,
             principal.copy(accountId = "a", controllerDeviceId = "b|c").storageKey)
     }
@@ -37,6 +42,11 @@ class ControlScopesTest {
             .forEach { assertThrows(ControlRequestException::class.java) { ControlOrigin.fromCanonical(it) } }
         assertEquals("https://xn--bcher-kva.example", ControlOrigin.fromCanonical("https://xn--bcher-kva.example").value)
         assertEquals("https://[2001:db8::1]", ControlOrigin.fromCanonical("https://[2001:db8::1]").value)
+        assertThrows(ControlRequestException::class.java) { principal().copy(accountId = "\ud800") }
+        assertThrows(ControlRequestException::class.java) { principal().copy(controllerDeviceId = "\ud800") }
+        assertThrows(ControlRequestException::class.java) { principal().copy(hostDeviceId = "\ud800") }
+        assertThrows(ControlRequestException::class.java) { ControlTaskScope(principal(), "\ud800", 1, "process-a") }
+        assertNotEquals(principal().copy(accountId = "?").storageKey, principal().storageKey)
     }
 
     private fun principal() = RemoteControlPrincipal(ControlOrigin.fromCanonical("https://remote.example"), "account", "client", "phone",
