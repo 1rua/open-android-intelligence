@@ -77,7 +77,9 @@ class NativeDataChannelPort internal constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        listener.set(null)
+        val observer = listener.getAndSet(null)
+        // 输入校验等端口自身失败也必须让载体离线，不能只释放 native 而留下 OPEN 投影。
+        try { observer?.onStateChanged(identity, RtcChannelState.CLOSED) } catch (_: Exception) { }
         callbacks.execute {
             synchronized(nativeLock) {
                 try { handle.observe(null) } finally {

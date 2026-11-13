@@ -92,8 +92,9 @@ class NativeDataChannelPortTest {
         val handle = Handle()
         val port = NativeDataChannelPort(handle, FakeRtcPort().identity, Executor { it.run() })
         val received = mutableListOf<ByteArray>()
+        val states = mutableListOf<RtcChannelState>()
         port.observe(object : RtcDataChannelPort.Observer {
-            override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { }
+            override fun onStateChanged(identity: RtcChannelIdentity, state: RtcChannelState) { states += state }
             override fun onMessage(identity: RtcChannelIdentity, bytes: ByteArray) { received += bytes }
             override fun onBufferedAmountChanged(identity: RtcChannelIdentity) { }
         })
@@ -103,6 +104,7 @@ class NativeDataChannelPortTest {
         handle.listener!!.onMessage(ByteBuffer.wrap(byteArrayOf(0xc3.toByte(), 0x28)), false)
         assertEquals(1, received.size)
         assertEquals(RtcChannelState.CLOSED, port.state)
+        assertEquals(listOf(RtcChannelState.CLOSED), states)
     }
 
     private class Handle : NativeDataChannelHandle {
