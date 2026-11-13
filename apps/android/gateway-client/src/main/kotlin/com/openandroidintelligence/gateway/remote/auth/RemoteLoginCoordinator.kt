@@ -49,30 +49,50 @@ class RemoteLoginCoordinator(
         require(clientIdentity.deviceId != hostIdentity.deviceId && !clientIdentity.publicKey.contentEquals(hostIdentity.publicKey)) {
             "REMOTE_ROLE_IDENTITIES_MUST_DIFFER"
         }
-        val client = registerOne(RemoteIdentityScope(origin, accountId, RemoteRole.CLIENT), clientIdentity, accountToken)
-        val host = registerOne(RemoteIdentityScope(origin, accountId, RemoteRole.HOST), hostIdentity, accountToken)
+        val ticket = try { store.beginRegistration(origin, accountId) }
+        catch (_: RemoteCredentialCleanupException) {
+            return RemoteLoginResult(accountId, failed(RemoteRole.CLIENT, "REMOTE_CREDENTIAL_CLEANUP_FAILED"),
+                failed(RemoteRole.HOST, "REMOTE_CREDENTIAL_CLEANUP_FAILED"))
+        }
+        val client = registerOne(ticket, RemoteIdentityScope(origin, accountId, RemoteRole.CLIENT), clientIdentity, accountToken)
+        val host = if (client.errorCode == "REMOTE_REGISTRATION_SUPERSEDED") failed(RemoteRole.HOST, "REMOTE_REGISTRATION_SUPERSEDED")
+            else registerOne(ticket, RemoteIdentityScope(origin, accountId, RemoteRole.HOST), hostIdentity, accountToken)
+        try { store.requireRegistrationCurrent(ticket) }
+        catch (_: RemoteRegistrationSupersededException) {
+            return RemoteLoginResult(accountId, failed(RemoteRole.CLIENT, "REMOTE_REGISTRATION_SUPERSEDED"),
+                failed(RemoteRole.HOST, "REMOTE_REGISTRATION_SUPERSEDED"))
+        }
         return RemoteLoginResult(accountId, client, host)
     }
 
     private suspend fun registerOne(
+        ticket: RemoteRegistrationTicket,
         scope: RemoteIdentityScope,
         identity: RemoteStaticIdentity,
         accountToken: RemoteAccountAuthorizationToken,
     ): RemoteRoleRegistration {
         val role = scope.role
         return try {
+            store.requireRegistrationCurrent(ticket)
             val credential = registrar.registerAccountRole(scope, identity, accountToken)
+            store.requireRegistrationCurrent(ticket)
             if (!identity.sameIdentity(credential.identity)) {
-                return RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_REGISTERED_IDENTITY_MISMATCH")
+                return failed(role, "REMOTE_REGISTERED_IDENTITY_MISMATCH")
             }
-            val saved = store.save(scope, credential)
+            val saved = store.commitRegistration(ticket, scope, credential)
             RemoteRoleRegistration(role, RemoteRoleRegistrationState.REGISTERED, saved)
+        } catch (_: RemoteRegistrationSupersededException) {
+            failed(role, "REMOTE_REGISTRATION_SUPERSEDED")
+        } catch (_: RemoteRegistrationPeerPinMismatchException) {
+            failed(role, "REMOTE_PEER_PIN_MISMATCH")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_ROLE_REGISTRATION_FAILED")
+            failed(role, "REMOTE_ROLE_REGISTRATION_FAILED")
         }
     }
+
+    private fun failed(role: RemoteRole, code: String) = RemoteRoleRegistration(role, RemoteRoleRegistrationState.FAILED, errorCode = code)
 }
 
 sealed interface RemoteTokenRotationResult {

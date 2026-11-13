@@ -12,6 +12,9 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -102,6 +105,125 @@ class RemoteIdentityTest {
         assertEquals("REMOTE_REGISTERED_IDENTITY_MISMATCH", result.client.errorCode)
         assertEquals(RemoteRoleRegistrationState.REGISTERED, result.host.state)
         assertNull(fixture.store().load(clientScope))
+    }
+
+    @Test
+    fun 挂起注册后退出不能重建Client也不能继续注册Host() = runBlocking {
+        val fixture = Fixture()
+        val store = fixture.store()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val registeredRoles = mutableListOf<RemoteRole>()
+        val coordinator = RemoteLoginCoordinator(store, registrar { scope, identity ->
+            registeredRoles += scope.role
+            if (scope.role == RemoteRole.CLIENT) { entered.complete(Unit); release.await() }
+            RemoteRoleCredential(identity, tokens())
+        })
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.registerRoles(origin, "account-a", accountToken(), credential(clientId).identity, credential(hostId).identity)
+        }
+        entered.await()
+        store.clear(clientScope)
+        release.complete(Unit)
+        val result = pending.await()
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", result.client.errorCode)
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", result.host.errorCode)
+        assertEquals(listOf(RemoteRole.CLIENT), registeredRoles)
+        assertNull(store.load(clientScope))
+        assertNull(store.load(hostScope))
+    }
+
+    @Test
+    fun 挂起Client后重新登录旧回执不能覆盖新身份或继续注册Host() = runBlocking {
+        val fixture = Fixture()
+        val store = fixture.store()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val calls = mutableListOf<Pair<RemoteRole, Long>>()
+        val coordinator = RemoteLoginCoordinator(store, registrar { scope, identity ->
+            calls += scope.role to identity.generation
+            if (scope.role == RemoteRole.CLIENT && identity.generation == 1L) { entered.complete(Unit); release.await() }
+            RemoteRoleCredential(identity, tokens(identity.generation.toInt()))
+        })
+        val old = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.registerRoles(origin, "account-a", accountToken(), credential(clientId).identity, credential(hostId).identity)
+        }
+        entered.await()
+        val fresh = coordinator.registerRoles(origin, "account-a", accountToken(), credential(clientId, 2).identity, credential(hostId, 2).identity)
+        release.complete(Unit)
+        val expired = old.await()
+        assertEquals(RemoteRoleRegistrationState.REGISTERED, fresh.client.state)
+        assertEquals(RemoteRoleRegistrationState.REGISTERED, fresh.host.state)
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", expired.client.errorCode)
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", expired.host.errorCode)
+        assertFalse(calls.contains(RemoteRole.HOST to 1L))
+        assertEquals(2L, store.load(clientScope)!!.identity.generation)
+        assertEquals(2L, store.load(hostScope)!!.identity.generation)
+    }
+
+    @Test
+    fun 同身份重复注册空pin回执保留已有信任且更新token() = runBlocking {
+        val fixture = Fixture()
+        val store = fixture.store()
+        val local = credential(clientId).pin(RemotePeerPin(RemoteRole.HOST, RemoteDeviceId(hostId), ByteArray(32) { 7 }))
+        store.save(clientScope, local)
+        val result = RemoteLoginCoordinator(store, registrar { _, identity -> RemoteRoleCredential(identity, tokens(2)) })
+            .registerRoles(origin, "account-a", accountToken(), local.identity, credential(hostId).identity)
+        assertEquals(RemoteRoleRegistrationState.REGISTERED, result.client.state)
+        assertEquals(tokens(2), store.load(clientScope)!!.tokens)
+        store.load(clientScope)!!.requirePeerPin(RemoteRole.HOST, RemoteDeviceId(hostId), ByteArray(32) { 7 })
+    }
+
+    @Test
+    fun 同身份重复注册冲突pin回执拒绝整个角色更新() = runBlocking {
+        val fixture = Fixture()
+        val store = fixture.store()
+        val local = store.save(clientScope, credential(clientId).pin(RemotePeerPin(RemoteRole.HOST, RemoteDeviceId(hostId), ByteArray(32) { 7 })))
+        val result = RemoteLoginCoordinator(store, registrar { scope, identity ->
+            RemoteRoleCredential(identity, tokens(2), if (scope.role == RemoteRole.CLIENT)
+                listOf(RemotePeerPin(RemoteRole.HOST, RemoteDeviceId(hostId), ByteArray(32) { 8 })) else emptyList())
+        }).registerRoles(origin, "account-a", accountToken(), local.identity, credential(hostId).identity)
+        assertEquals("REMOTE_PEER_PIN_MISMATCH", result.client.errorCode)
+        assertEquals(RemoteRoleRegistrationState.REGISTERED, result.host.state)
+        assertEquals(local.revision, store.load(clientScope)!!.revision)
+        assertEquals(local.tokens, store.load(clientScope)!!.tokens)
+        store.load(clientScope)!!.requirePeerPin(RemoteRole.HOST, RemoteDeviceId(hostId), ByteArray(32) { 7 })
+    }
+
+    @Test
+    fun 账号退出第二角色清理失败仍撤销旧回执与两角色使用且禁止继续注册() = runBlocking {
+        val fixture = Fixture()
+        val store = fixture.store()
+        val oldClient = store.save(clientScope, credential(clientId))
+        store.save(hostScope, credential(hostId))
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val calls = mutableListOf<RemoteRole>()
+        val coordinator = RemoteLoginCoordinator(store, registrar { scope, identity ->
+            calls += scope.role
+            entered.complete(Unit)
+            release.await()
+            RemoteRoleCredential(identity, tokens(2))
+        })
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            coordinator.registerRoles(origin, "account-a", accountToken(), credential(clientId).identity, credential(hostId).identity)
+        }
+        entered.await()
+        fixture.persistence.failClearKeys += hostScope.storageKey
+        val failure = assertThrows(RemoteCredentialCleanupException::class.java) { store.clearAccount(origin, "account-a") }
+        assertEquals("REMOTE_CREDENTIAL_CLEANUP_FAILED", failure.message)
+        assertNotNull(fixture.persistence.values[hostScope.storageKey])
+        assertNull(store.load(clientScope))
+        assertNull(store.load(hostScope))
+        assertNull(store.rotateTokens(clientScope, oldClient, oldClient.copy(tokens = tokens(2))))
+        val blocked = coordinator.registerRoles(origin, "account-a", accountToken(), credential(clientId).identity, credential(hostId).identity)
+        assertEquals("REMOTE_CREDENTIAL_CLEANUP_FAILED", blocked.client.errorCode)
+        assertEquals("REMOTE_CREDENTIAL_CLEANUP_FAILED", blocked.host.errorCode)
+        release.complete(Unit)
+        val expired = pending.await()
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", expired.client.errorCode)
+        assertEquals("REMOTE_REGISTRATION_SUPERSEDED", expired.host.errorCode)
+        assertEquals(listOf(RemoteRole.CLIENT), calls)
     }
 
     @Test
@@ -292,12 +414,16 @@ class RemoteIdentityTest {
     private class MemoryPersistence : RemoteIdentityPersistence {
         val values = linkedMapOf<String, ByteArray>()
         var failWrites = false
+        val failClearKeys = mutableSetOf<String>()
         override fun read(scopeKey: String): ByteArray? = values[scopeKey]?.copyOf()
         override fun writeAtomic(scopeKey: String, value: ByteArray) {
             if (failWrites) error("含敏感上游正文的写入失败")
             values[scopeKey] = value.copyOf()
         }
-        override fun clear(scopeKey: String) { values.remove(scopeKey) }
+        override fun clear(scopeKey: String) {
+            if (scopeKey in failClearKeys) error("清理失败不得泄露凭据")
+            values.remove(scopeKey)
+        }
     }
     /** 只验证存储边界确实交付 AAD；这不是 Android Keystore 的生产实现。 */
     private class TestProtector : RemoteIdentityProtector {

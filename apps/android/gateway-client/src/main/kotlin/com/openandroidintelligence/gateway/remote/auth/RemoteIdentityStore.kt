@@ -29,6 +29,12 @@ interface RemoteIdentityProtector {
 
 class RemoteIdentityLockedException : IllegalStateException("REMOTE_IDENTITY_LOCKED")
 class RemoteIdentityCorruptedException : IllegalStateException("REMOTE_IDENTITY_CORRUPTED")
+class RemoteRegistrationSupersededException : IllegalStateException("REMOTE_REGISTRATION_SUPERSEDED")
+class RemoteRegistrationPeerPinMismatchException : IllegalStateException("REMOTE_PEER_PIN_MISMATCH")
+class RemoteCredentialCleanupException : IllegalStateException("REMOTE_CREDENTIAL_CLEANUP_FAILED")
+
+/** 仅由同一 Store 创建和验证；实例身份即本轮授权代次，不随凭据清空后重用。 */
+class RemoteRegistrationTicket internal constructor(internal val origin: String, internal val accountId: String)
 
 /**
  * 按 origin、账号和角色独立保存一份凭据。登录到另一个 origin 不会读到旧身份，
@@ -40,9 +46,50 @@ class RemoteIdentityStore(
     private val protector: RemoteIdentityProtector,
     private val codec: RemoteIdentityRecordCodec = RemoteIdentityRecordCodec,
 ) {
+    private var activeRegistration: RemoteRegistrationTicket? = null
+    private val revokedScopes = mutableSetOf<String>()
+    private val pendingAccountCleanup = mutableSetOf<Pair<String, String>>()
+
+    /** 新登录或切换账号/origin 撤销旧票据，但不清除任何已有凭据或对端 pin。 */
+    @Synchronized
+    fun beginRegistration(origin: String, accountId: String): RemoteRegistrationTicket {
+        RemoteIdentityScope(origin, accountId, RemoteRole.CLIENT)
+        activeRegistration = null
+        if ((origin to accountId) in pendingAccountCleanup) throw RemoteCredentialCleanupException()
+        return RemoteRegistrationTicket(origin, accountId).also { activeRegistration = it }
+    }
+
+    @Synchronized
+    fun requireRegistrationCurrent(ticket: RemoteRegistrationTicket) {
+        if (activeRegistration !== ticket) throw RemoteRegistrationSupersededException()
+    }
+
+    /** 回执提交、撤销票据和本地 pin 合并使用同一把锁，旧回执不能在退出后重新落盘。 */
+    @Synchronized
+    fun commitRegistration(ticket: RemoteRegistrationTicket, scope: RemoteIdentityScope, credential: RemoteRoleCredential): RemoteRoleCredential {
+        requireRegistrationCurrent(ticket)
+        if (scope.origin != ticket.origin || scope.accountId != ticket.accountId) throw RemoteRegistrationSupersededException()
+        val current = load(scope)
+        var merged = credential.copy(peers = current?.peers ?: emptyList())
+        credential.peers.forEach { peer ->
+            val known = merged.peers.firstOrNull { it.peerRole == peer.peerRole && it.peerDeviceId == peer.peerDeviceId }
+            if (known != null && !known.matches(peer.publicKey)) throw RemoteRegistrationPeerPinMismatchException()
+            merged = merged.pin(peer)
+        }
+        return save(scope, merged)
+    }
+
+    /** App 的退出和切换生命周期须调用此入口；本切片尚未连接到产品界面。 */
+    @Synchronized
+    fun invalidateAccount(origin: String, accountId: String) {
+        val active = activeRegistration
+        if (active?.origin == origin && active.accountId == accountId) activeRegistration = null
+    }
+
     @Synchronized
     fun load(scope: RemoteIdentityScope): RemoteRoleCredential? {
         val key = scope.storageKey
+        if (key in revokedScopes) return null
         val ciphertext = persistence.read(key) ?: return null
         if (!protector.hasKey(key)) throw RemoteIdentityLockedException()
         val plaintext = try { protector.open(key, ciphertext, scope.authenticatedData()) }
@@ -60,6 +107,7 @@ class RemoteIdentityStore(
         try {
             val ciphertext = protector.seal(key, plaintext, scope.authenticatedData())
             persistence.writeAtomic(key, ciphertext)
+            revokedScopes.remove(key)
         } finally {
             plaintext.fill(0)
         }
@@ -75,7 +123,30 @@ class RemoteIdentityStore(
     }
 
     @Synchronized
-    fun clear(scope: RemoteIdentityScope) = persistence.clear(scope.storageKey)
+    fun clear(scope: RemoteIdentityScope) {
+        invalidateAccount(scope.origin, scope.accountId)
+        revokedScopes += scope.storageKey
+        persistence.clear(scope.storageKey)
+    }
+
+    /**
+     * 先在进程内同时撤销两角色，再分别清理持久化记录；任一失败均报告未完成清理。
+     * 跨重启仍需生产适配持久化撤销标记，本入口不宣称两个文件删除具有磁盘事务性。
+     */
+    @Synchronized
+    fun clearAccount(origin: String, accountId: String) {
+        val scopes = RemoteRole.entries.map { RemoteIdentityScope(origin, accountId, it) }
+        invalidateAccount(origin, accountId)
+        revokedScopes += scopes.map { it.storageKey }
+        pendingAccountCleanup += origin to accountId
+        var failed = false
+        scopes.forEach { scope ->
+            try { persistence.clear(scope.storageKey) }
+            catch (_: Exception) { failed = true }
+        }
+        if (failed) throw RemoteCredentialCleanupException()
+        pendingAccountCleanup -= origin to accountId
+    }
 }
 
 /**
