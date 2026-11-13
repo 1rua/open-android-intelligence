@@ -93,7 +93,7 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 2026-11-14 使用 Node 24.18.0 执行：
 
 ```sh
-node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
+node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
 ```
 
 11 项通过（目标绑定 8 项、原始 ACP 投影 3 项）。证据源码与 SHA 锁见

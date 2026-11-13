@@ -334,7 +334,7 @@ jobs:
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
       - name: 固定 Remote 公开目标绑定探针
-        run: node --experimental-vm-modules --test tools/remote/target-binding.test.mjs
+        run: node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
 
   # --- Android -------------------------------------------------------------
   android-setup:

@@ -419,10 +419,13 @@ def test_remote_probe_runs_and_propagates_failure(level):
 
     def execute(command, **kwargs):
         commands.append(command)
-        return 23 if "tools/remote/target-binding.test.mjs" in command else 0
+        return 23 if "tools/remote/projection-scope.test.mjs" in command else 0
 
     runner.run_command = execute
-    impact = runner.analyze_impact(["tools/remote/target-binding.test.mjs"])
+    impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
     assert runner.execute_strategy(level, impact) == 23
-    assert commands[-1] == ["node", "--experimental-vm-modules", "--test", "tools/remote/target-binding.test.mjs"]
+    assert commands[-1] == [
+        "node", "--experimental-vm-modules", "--test",
+        "tools/remote/target-binding.test.mjs", "tools/remote/projection-scope.test.mjs",
+    ]
     assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)

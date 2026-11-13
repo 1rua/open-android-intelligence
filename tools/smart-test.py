@@ -344,8 +344,8 @@ def execute_strategy(
         hermes_env = os.environ.copy()
         sdk_candidates = [
             os.environ.get("HERMES_SDK_ROOT"),
+            str(REPO_ROOT / ".toolchains/hermes-sdk-75b083e"),
             str(REPO_ROOT.parents[1] / ".toolchains/hermes-sdk-75b083e"),
-            "/mnt/data/projects/open-android-intelligence/.toolchains/hermes-sdk-75b083e",
         ]
         sdk_root = next((c for c in sdk_candidates if c and Path(c).is_dir()), None)
         base_paths = [str(REPO_ROOT / 'oai-core/src'), str(REPO_ROOT / 'integrations/hermes-session-adapter/src')]
@@ -385,7 +385,10 @@ def execute_strategy(
     # 固定 Remote 的公开接口探针独立于旧 Core 适配器，用同一命令接入本地与 CI。
     if impact.get("affects_remote") or level == "full":
         print("\n--- 固定 Remote 公开目标绑定探针 ---")
-        ret = run_command(["node", "--experimental-vm-modules", "--test", "tools/remote/target-binding.test.mjs"])
+        ret = run_command([
+            "node", "--experimental-vm-modules", "--test",
+            "tools/remote/target-binding.test.mjs", "tools/remote/projection-scope.test.mjs",
+        ])
         if ret != 0:
             return ret
 

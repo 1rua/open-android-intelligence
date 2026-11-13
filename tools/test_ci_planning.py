@@ -732,6 +732,7 @@ def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
 
 @pytest.mark.parametrize("path", [
     "tools/remote/target-binding.test.mjs",
+    "tools/remote/projection-scope.test.mjs",
     "tools/remote/fixtures/dsh-remote/client-runtime.ts",
     "tools/remote/fixtures/dsh-remote/source.json",
 ])

@@ -15,6 +15,8 @@ node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools
 `LICENSE` 保留上游 MIT 文本及 `Copyright (c) 2026 DSH Remote contributors`；
 上游源码中的原始注释与版权原样保留。来源为
 `liguobao/ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7`。
+这些 fixture 是固定上游源码快照，不是本仓库新编写的生产代码；为保证逐字节来源校验，
+其英文注释按上游原样保留，不作为本仓库中文注释规范新增的生产代码。
 
 ## 已证明与限制
 
