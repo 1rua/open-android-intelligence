@@ -40,4 +40,11 @@
     <string name="remote_guide_authorization_title">核对本机能力与授权</string>
     <string name="remote_guide_authorization_body">对话连接和手机能力授权分别生效。在设置中按需开启能力与 Android 系统权限，敏感操作仍需在手机上确认。</string>
     <string name="remote_guide_verify">电脑在线、目标工作区可选且对话连接就绪。手机能力的可用状态以本机设置中的真实状态为准。</string>
+    <string name="remote_avatar_picker_unavailable">无法打开系统相册</string>
+    <string name="remote_bubble_connecting">正在连接 Remote…</string>
+    <string name="remote_bubble_select_workspace">请在应用中选择此会话所属的 Agent 与工作区</string>
+    <string name="remote_bubble_disconnected">Remote 尚未连接，请在应用中连接后重试</string>
+    <string name="remote_backup_workspace_missing">会话排序未导入：本机还没有对应 Remote 工作区。</string>
+    <string name="remote_backup_origin_saved">连接地址已保存为登录页默认值；已登录的账号不受影响。</string>
+    <string name="remote_backup_old_agent_ignored">旧 Agent 选择不适用于 Remote 工作区。</string>
 </resources>

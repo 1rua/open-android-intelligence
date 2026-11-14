@@ -72,7 +72,7 @@ class PhoneRemoteRpcHostHandler(
                     } catch (_: CancellationException) { throw CancellationException() }
                     catch (_: Exception) {
                         connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.stream.closed", Json.of(mapOf("streamId" to streamId,
-                            "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to "手机任务观察已失效。", "details" to emptyMap<String, Any>())))), epoch, true, content = false))
+                            "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to router.strings.streamUnavailable, "details" to emptyMap<String, Any>())))), epoch, true, content = false))
                     } finally { connection.streams.remove(streamId, job) }
                 }
                 if (connection.streams.putIfAbsent(streamId, job) != null) { job.cancel(); throw ControlRequestException("CONTROL_STREAM_CONFLICT") }
@@ -94,7 +94,7 @@ class PhoneRemoteRpcHostHandler(
     }
     override fun close() { connections.values.forEach { connection -> connection.closed.value = true; connection.streams.values.forEach(Job::cancel) }; connections.clear() }
     private suspend fun business(call: suspend () -> JsonValue): JsonValue = try { Json.of(mapOf("ok" to true, "value" to call())) }
-    catch (failure: ControlRequestException) { Json.of(mapOf("ok" to false, "error" to mapOf("code" to failure.code, "message" to "手机控制请求被拒绝。", "details" to emptyMap<String, Any>()))) }
+    catch (failure: ControlRequestException) { Json.of(mapOf("ok" to false, "error" to mapOf("code" to failure.code, "message" to router.strings.requestRejected, "details" to emptyMap<String, Any>()))) }
     private fun exact(fields: Map<String, JsonValue>, keys: Set<String>) { if (fields.keys != keys) throw ControlRequestException("CONTROL_PARAMETERS_INVALID") }
     private fun text(fields: Map<String, JsonValue>, name: String) = (fields[name] as? JsonValue.JString)?.value?.takeIf { it.isNotEmpty() }
         ?: throw ControlRequestException("CONTROL_PARAMETERS_INVALID")

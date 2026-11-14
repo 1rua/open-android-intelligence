@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.ui.resources.R as UiR
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -78,7 +79,7 @@ internal fun rememberRemoteAccountAvatarPicker(runtime: RemoteRuntime): AccountA
         if (!state.saving && state.pendingProfileId == null) {
             state.pendingProfileId = owner
             try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-            catch (_: Exception) { state.pendingProfileId = null; Toast.makeText(context, "无法打开系统相册", Toast.LENGTH_SHORT).show() }
+            catch (_: Exception) { state.pendingProfileId = null; Toast.makeText(context, context.getString(UiR.string.remote_avatar_picker_unavailable), Toast.LENGTH_SHORT).show() }
         }
     })
     return AccountAvatarPicker(image, pick)

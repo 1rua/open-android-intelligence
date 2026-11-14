@@ -1,5 +1,6 @@
 package com.openandroidintelligence.mobile
 
+import com.openandroidintelligence.ui.resources.R as UiR
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -7,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -159,9 +161,9 @@ private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotif
     if (!valid) {
         val message = when {
             target == null -> "会话链接无效"
-            connection.busy -> "正在连接 Remote…"
-            connection.account != null -> "请在应用中选择此会话所属的 Agent 与工作区"
-            else -> "Remote 尚未连接，请在应用中连接后重试"
+            connection.busy -> stringResource(UiR.string.remote_bubble_connecting)
+            connection.account != null -> stringResource(UiR.string.remote_bubble_select_workspace)
+            else -> stringResource(UiR.string.remote_bubble_disconnected)
         }
         BubbleUnavailable(message, onClose)
         return

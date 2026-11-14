@@ -12,6 +12,8 @@
 # 否则规划测试会报错。
 
 [core]
+RemoteLocalEntryPointsTest
+RemoteRuntimeTest
 AccountAvatarTest
 AccountSwitchPersistenceFailureTest
 AdditionalDeviceConnectionsTest
@@ -118,6 +120,7 @@ SettingsShortcutsTest
 SmsBackgroundConsentTest
 
 [conversations]
+RemoteReasoningMirrorTest
 CodexNativeCancellationTest
 CoreAgentCommandCatalogRepositoryTest
 CoreAgentConversationRepositoryTest
@@ -146,6 +149,9 @@ NativeRecoveryOwnershipTest
 NegotiationConnectionRecoveryTest
 
 [plugins]
+RemoteBackgroundAuthorityTest
+SmsSendOutcomeHostBusTest
+SmsSendPluginHostTest
 BuiltInCapabilitiesTest
 BundledPluginsTest
 CapabilityAuthorizationControlsTest
@@ -170,6 +176,7 @@ ScreenExecutionErrorsTest
 SmsPassiveScopeSettingsTest
 
 [push-notifications]
+RemoteCompletionNotificationTest
 AccessibilityServiceWiringTest
 DeviceAuthorizationCopyTest
 DevicePushCycleTest

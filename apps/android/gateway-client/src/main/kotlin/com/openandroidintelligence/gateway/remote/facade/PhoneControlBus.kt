@@ -15,6 +15,7 @@ class PhoneControlBus(
     private val coroutineScope: CoroutineScope,
     private val ledger: ControlMetadataLedger,
     private val executor: PhoneControlExecutor,
+    val strings: PhoneFacadeStrings,
     val processEpoch: String = UUID.randomUUID().toString(),
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
@@ -58,7 +59,7 @@ class PhoneControlBus(
         bus(access)
         tasks.values.filter { it.scope.permits(access, processEpoch) }.map { task ->
             val metadata = ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == task.scope.taskSessionId } }
-            Json.of(mapOf("sessionId" to task.scope.taskSessionId, "title" to if (task.scope.taskSessionId == "control-bus") "手机控制总线" else "手机控制任务",
+            Json.of(mapOf("sessionId" to task.scope.taskSessionId, "title" to if (task.scope.taskSessionId == "control-bus") strings.busTitle else strings.taskTitle,
                 "running" to metadata.any { !it.state.terminal }, "blank" to task.records.isEmpty(), "updatedAt" to task.createdAt,
                 "projections" to mapOf("values" to projections(metadata))))
         }
@@ -399,7 +400,7 @@ class PhoneControlBus(
     private fun minimal(row: ControlRequestMetadata, available: Boolean): Map<String, Any?> = mapOf(
         "request_id" to row.requestId, "taskSessionId" to row.taskSessionId, "state" to row.state.wire,
         "execution" to mapOf("status" to row.execution.wire), "resultAvailable" to available,
-        "error" to row.errorCode?.let { mapOf("code" to it, "message" to "手机执行请求未能完成，请核对本机状态。") })
+        "error" to row.errorCode?.let { mapOf("code" to it, "message" to strings.requestFailed) })
     private fun fail(code: String): Nothing = throw ControlRequestException(code)
 }
 

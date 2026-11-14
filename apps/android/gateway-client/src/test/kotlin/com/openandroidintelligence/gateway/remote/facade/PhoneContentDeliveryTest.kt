@@ -52,7 +52,7 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun emergencyStopDeniesCompletedBodyFilesAndIncrementsButKeepsReceiptFacts() = runTest {
-        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor); val router = PhoneVirtualHostRouter(bus)
+        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val router = PhoneVirtualHostRouter(bus)
         val taskId = bus.create(access); bus.submit(access, taskId, request()); runCurrent()
         assertTrue(Json.canonical(router.route(access, "session/page", page(taskId))).contains(SECRET))
         assertEquals(SECRET, bus.artifact(access, taskId, "private-image").bytes.decodeToString())
@@ -73,7 +73,7 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun originalConnectionCannotDeliverBufferedSecretAfterEmergencyStop() = runTest {
-        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor)
+        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
         val handler = PhoneRemoteRpcHostHandler(this, PhoneVirtualHostRouter(bus)) { access }
         val taskId = bus.create(access); val release = CompletableDeferred<Unit>(); val frames = mutableListOf<String>()
         var terminal: Throwable? = null
@@ -94,7 +94,7 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun bufferedEventsRecheckCurrentAuthorizationAtDelivery() = runTest {
-        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor)
+        val executor = Executor(); val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings)
         val handler = PhoneRemoteRpcHostHandler(this, PhoneVirtualHostRouter(bus)) {
             if (!executor.current) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
             access

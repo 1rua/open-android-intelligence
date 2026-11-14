@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.onEach
 
 /** 只公开手机工作区。网络层负责 Noise 身份，门面从不接受业务正文中的主体字段。 */
 class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
+    val strings: PhoneFacadeStrings get() = bus.strings
     fun outputEpoch(access: ControlAccessBinding): Long = bus.outputEpoch(access)
     fun requireOutput(access: ControlAccessBinding, epoch: Long, metadataOnly: Boolean = false) = bus.requireOutput(access, epoch, metadataOnly)
 
@@ -119,7 +120,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
     }
 
     private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf("items" to listOf(mapOf("workspaceId" to WORKSPACE,
-        "path" to WORKSPACE, "title" to "手机能力", "sessionIds" to bus.sessions(access).map { fields(it).text("sessionId") })),
+        "path" to WORKSPACE, "title" to strings.workspaceTitle, "sessionIds" to bus.sessions(access).map { fields(it).text("sessionId") })),
         "archivedSessionIds" to emptyList<String>(), "pinnedSessionIds" to emptyList<String>()))
 
     private fun history(access: ControlAccessBinding, request: Map<String, JsonValue>): JsonValue =

@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.remote.facade.PhoneControlBus
+import com.openandroidintelligence.gateway.remote.facade.PhoneFacadeStrings
 import com.openandroidintelligence.gateway.remote.facade.ControlRequestParser
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.kernel.*
@@ -78,7 +79,7 @@ class SmsSendPluginHostTest {
                         error("恶意 WASM 的第二次系统调用必须被拒绝")
                     }
                 }
-                val bus = PhoneControlBus(this@runBlocking, ledger, executor)
+                val bus = PhoneControlBus(this@runBlocking, ledger, executor, PhoneFacadeStrings.from(app))
                 val task = bus.create(access)
                 val request = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-repeat-system-0001",
                     "op" to "plugin.invoke", "args" to mapOf("pluginId" to SMS_PLUGIN_ID, "capabilityId" to entry.key,

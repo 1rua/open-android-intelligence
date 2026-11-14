@@ -454,7 +454,7 @@ class SettingsBackupCoordinator(
             val scopes = remote.localOrganizationScopes().associateBy { remoteOrganizationProfile(it) to it.gatewayId }
             section.organizations.forEach { entry ->
                 val local = scopes[entry.profileId to entry.agentId]
-                if (local == null) skipped += "会话排序未导入：本机还没有对应 Remote 工作区。"
+                if (local == null) skipped += context.getString(UiR.string.remote_backup_workspace_missing)
                 else {
                     remote.updateLocalOrganization(local, ConversationOrganization(sortMode = ConversationSortMode.entries.first { it.wireValue == entry.sortMode },
                         customOrder = entry.customOrder, folders = entry.folders.map { ConversationFolder(it.folderId, it.name) }, assignments = entry.assignments))
@@ -508,7 +508,7 @@ class SettingsBackupCoordinator(
         remoteRuntime?.let { remote ->
             remote.saveLoginOrigin(section.gatewayUrl)
             applied += section.summary()
-            deferred += "连接地址已保存为登录页默认值；已登录的账号不受影响。"
+            deferred += context.getString(UiR.string.remote_backup_origin_saved)
             return
         }
         if (LoginGatewayPrefill.read(context) != section.gatewayUrl) {
@@ -516,7 +516,7 @@ class SettingsBackupCoordinator(
                 throw IllegalStateException("PREFERRED_GATEWAY_PERSISTENCE_FAILED")
             }
             applied += section.summary()
-            deferred += "连接地址已保存为登录页默认值；已登录的账号不受影响。"
+            deferred += context.getString(UiR.string.remote_backup_origin_saved)
         } else {
             applied += section.summary() + "（本机已是该值）"
         }
@@ -529,7 +529,7 @@ class SettingsBackupCoordinator(
     ) {
         section ?: return
         if (section.selectedByProfile.isEmpty()) return
-        if (remoteRuntime != null) { skipped += "旧 Agent 选择不适用于 Remote 工作区。"; return }
+        if (remoteRuntime != null) { skipped += context.getString(UiR.string.remote_backup_old_agent_ignored); return }
         val local = profiles.list().associateBy { backupProfileKey(it.localProfileId) }
         var written = 0
         var missing = 0
@@ -756,7 +756,7 @@ class SettingsBackupCoordinator(
                 }
             }
             organizations.forEach { previous ->
-                attempt("会话排序") {
+                attempt(context.getString(UiR.string.conv_browser_sort_cd)) {
                     val store = organizationStore(previous.scope)
                     val current = store.read(previous.agentId)
                     if (current != previous.organization) {
@@ -765,7 +765,7 @@ class SettingsBackupCoordinator(
                 }
             }
             remoteOrganizations.forEach { (local, organization) ->
-                attempt("会话排序") { remoteRuntime?.updateLocalOrganization(local, organization) }
+                attempt(context.getString(UiR.string.conv_browser_sort_cd)) { remoteRuntime?.updateLocalOrganization(local, organization) }
             }
             attempt("会话列表刷新") {
                 runtimeRefresh?.refreshThreads()

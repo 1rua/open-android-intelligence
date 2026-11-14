@@ -33,7 +33,7 @@ class RemotePhoneControlComposition(
     private val metadataKeys = AndroidKeystoreOutboxKeyProvider("oai_remote_control_metadata_v1")
     private val ledger = ControlMetadataStore(AesGcmEncryptedBlobStore(FileEncryptedOutboxPersistence(metadataFile),
         if (metadataFile.exists()) metadataKeys.existing() ?: error("CONTROL_LEDGER_KEY_UNAVAILABLE") else metadataKeys.getOrCreate()))
-    val bus = PhoneControlBus(scope, ledger, this)
+    val bus = PhoneControlBus(scope, ledger, this, PhoneFacadeStrings.from(context))
     val router = PhoneVirtualHostRouter(bus)
     private val stopObserver = PhoneLocalControlUiRegistry.observeEmergencyStop {
         stopPhone()

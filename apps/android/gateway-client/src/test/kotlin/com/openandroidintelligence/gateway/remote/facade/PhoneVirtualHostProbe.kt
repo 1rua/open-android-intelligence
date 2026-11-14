@@ -28,7 +28,7 @@ object PhoneVirtualHostProbe {
             override fun capabilities(access: ControlAccessBinding) = ControlValue.Object(emptyMap())
         }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val router = PhoneVirtualHostRouter(PhoneControlBus(scope, ledger, executor))
+        val router = PhoneVirtualHostRouter(PhoneControlBus(scope, ledger, executor, phoneFacadeTestStrings))
         val access = ControlAccessBinding(RemoteControlPrincipal(ControlOrigin.fromCanonical("https://probe.invalid"), "isolated-account", "probe-controller",
             "probe-phone", "sha256:" + "a".repeat(64), "sha256:" + "b".repeat(64)), 1, "probe-connection", 1)
         val rpcScope = RemoteRpcConnectionScope("https://probe.invalid", "isolated-account", "probe-phone", "probe-controller", "probe-connection", 1)

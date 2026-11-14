@@ -6,6 +6,7 @@ import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.gateway.remote.facade.ControlRequestParser
 import com.openandroidintelligence.gateway.remote.facade.PhoneControlBus
+import com.openandroidintelligence.gateway.remote.facade.PhoneFacadeStrings
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -78,7 +79,7 @@ class SmsSendOutcomeHostBusTest {
                         return phonePluginResult(entry, Json.parse(output.decodeToString()))
                     }
                 }
-                val bus = PhoneControlBus(this@runBlocking, firstLedger, executor)
+                val bus = PhoneControlBus(this@runBlocking, firstLedger, executor, PhoneFacadeStrings.from(app))
                 val task = bus.create(access)
                 val request = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-outcome-request-01",
                     "op" to "plugin.invoke", "args" to mapOf("pluginId" to SMS_PLUGIN_ID, "capabilityId" to entry.key,
@@ -111,7 +112,7 @@ class SmsSendOutcomeHostBusTest {
                 withTimeout(5_000) { replay.forEach { it.join() } }
                 assertEquals(1, systemSends); assertEquals(1, confirmations)
                 val restoredLedger = ledger()
-                val restarted = PhoneControlBus(this@runBlocking, restoredLedger, executor)
+                val restarted = PhoneControlBus(this@runBlocking, restoredLedger, executor, PhoneFacadeStrings.from(app))
                 assertStatus(restarted, "sms-status-restart-01", false)
                 assertThrows(ControlRequestException::class.java) { restarted.create(access, task) }
                 assertEquals(row.state, restoredLedger.transaction { it.getValue(row.key).state })

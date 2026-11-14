@@ -33,7 +33,7 @@ class PhoneControlBusTest {
     }
 
     @Test fun repeatAndTaskConflictNeverRepeatProvider() = runTest {
-        val ledger = Ledger(); val executor = Executor(); val bus = PhoneControlBus(this, ledger, executor)
+        val ledger = Ledger(); val executor = Executor(); val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
         val task = bus.create(access()); val original = request("original-request-0001")
         bus.submit(access(), task, original); runCurrent()
         bus.submit(access(), task, original); runCurrent()
@@ -54,7 +54,7 @@ class PhoneControlBusTest {
                 return super.execute(context, operation)
             }
         }
-        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("awaiting-request-0001")); runCurrent(); assertTrue(entered.isCompleted)
         bus.submit(access(), task, cancel("cancel-request-00001", "awaiting-request-0001")); runCurrent()
         assertTrue(Json.canonical(bus.receipt(access(), task, "awaiting-request-0001")).contains("cancelled"))
@@ -65,7 +65,7 @@ class PhoneControlBusTest {
     }
 
     @Test fun sameAccountDifferentDeviceCannotReadTasksOrArtifacts() = runTest {
-        val bus = PhoneControlBus(this, Ledger(), Executor()); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), Executor(), phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("isolated-request-001")); runCurrent()
         assertThrows(ControlRequestException::class.java) { bus.history(access("other-device"), task) }
         assertThrows(ControlRequestException::class.java) { bus.receipt(access("other-device"), task, "isolated-request-001") }
@@ -76,7 +76,7 @@ class PhoneControlBusTest {
         val executor = object : Executor() {
             override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation) = PhoneControlResult(ControlValue.Object(emptyMap()))
         }
-        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("missing-fence-000001")); runCurrent()
         val result = Json.canonical(bus.receipt(access(), task, "missing-fence-000001"))
         assertTrue(result.contains("CONTROL_EXECUTION_FENCE_REQUIRED")); assertFalse(result.contains("\"state\":\"completed\""))
@@ -92,7 +92,7 @@ class PhoneControlBusTest {
                 return PhoneControlResult(ControlValue.Object(emptyMap()))
             }
         }
-        val bus = PhoneControlBus(this, ledger, executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings); val task = bus.create(access())
         val request = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-repeated-effect-01",
             "op" to "plugin.invoke", "args" to mapOf("pluginId" to "org.openandroidintelligence.sms",
                 "capabilityId" to "org.openandroidintelligence.sms.send@1.0.0", "method" to "send",
@@ -116,7 +116,7 @@ class PhoneControlBusTest {
                 return PhoneControlResult(ControlValue.Object(emptyMap()))
             }
         }
-        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("ordinary-repeat-0001")); runCurrent()
         assertTrue(Json.canonical(bus.receipt(access(), task, "ordinary-repeat-0001")).contains("completed"))
     }
@@ -133,7 +133,7 @@ class PhoneControlBusTest {
                     completion = if (sms) PhoneControlCompletion.SMS_SEND_OUTCOME_UNKNOWN else PhoneControlCompletion.SUCCEEDED)
             }
         }
-        val bus = PhoneControlBus(this, ledger, executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings); val task = bus.create(access())
         val sms = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-unknown-result-01",
             "op" to "plugin.invoke", "args" to mapOf("pluginId" to "org.openandroidintelligence.sms",
                 "capabilityId" to "org.openandroidintelligence.sms.send@1.0.0", "method" to "send",
@@ -154,9 +154,9 @@ class PhoneControlBusTest {
     }
 
     @Test fun restartedBusCannotRecreateOldTaskAndStatusPublishesAssistantRecord() = runTest {
-        val ledger = Ledger(); val bus = PhoneControlBus(this, ledger, Executor()); val task = bus.create(access())
+        val ledger = Ledger(); val bus = PhoneControlBus(this, ledger, Executor(), phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("persisted-request-001")); runCurrent()
-        val restarted = PhoneControlBus(this, ledger, Executor())
+        val restarted = PhoneControlBus(this, ledger, Executor(), phoneFacadeTestStrings)
         assertThrows(ControlRequestException::class.java) { restarted.create(access(), task) }
         val status = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "status-request-00001", "op" to "request.status",
             "args" to mapOf("targetRequestId" to "persisted-request-001", "targetTaskSessionId" to task)))))
@@ -166,7 +166,7 @@ class PhoneControlBusTest {
     }
 
     @Test fun v3CursorIsLastInclusiveSequenceAndPageKeepsLastRecord() = runTest {
-        val bus = PhoneControlBus(this, Ledger(), Executor()); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), Executor(), phoneFacadeTestStrings); val task = bus.create(access())
         val empty = bus.history(access(), task) as com.openandroidintelligence.gateway.schema.JsonValue.JObject
         assertEquals(com.openandroidintelligence.gateway.schema.JsonValue.JNumber("-1"), empty.fields.toMap()["cursor"])
         bus.submit(access(), task, request("cursor-request-00001")); runCurrent()
@@ -184,7 +184,7 @@ class PhoneControlBusTest {
                 context.awaitingConfirmation(true); never.await(); return super.execute(context, operation)
             }
         }
-        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(access())
         bus.submit(access(), task, request("kill-request-0000001")); runCurrent(); bus.emergencyStop(); runCurrent()
         assertTrue(Json.canonical(bus.receipt(access(), task, "kill-request-0000001")).contains("cancelled"))
         assertThrows(ControlRequestException::class.java) { bus.submit(access(), task, request("kill-request-0000002")) }
