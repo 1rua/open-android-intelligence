@@ -23,6 +23,22 @@ P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换
 以下历史证据保留其原 SHA、命令和当时结论；其中后台委派阻塞已被本次范围决定取代，
 不能继续作为当前阻塞，也不能把旧探针视为新客户端手动切换验收。
 
+## 稳定候选线性集成检查点（2026-11-14）
+
+PR #190 本轮保留 Draft，已将固定 Runtime 与手机候选重放到 `d57194ed`；原 Runtime
+`1953344f`、手机 `cb626070` 及正在编辑的短信/定时/UI 工作区均保持原样。整合后的候选源码点为
+`5d6b06c8`，没有夹带未提交源码。此处只确认线性集成与补丁等价，不声明同 SHA Android 回归通过。
+
+| 原候选补丁 | 线性集成补丁 | 等价核对 |
+| --- | --- | --- |
+| `8d546dc5`、`1953344f` | `634dfe97`、`7f63c15d` | `git range-diff` 均为 `=`；稳定 patch-id 分别为 `8e5622a5d663dc0f4dd02b603363336ac77d66cc`、`99d51c54b4eeff66ef885eab7bf31a57155ae2c2` |
+| `fbe2a125`、`2ae67caa`、`d7aaa450`、`931e16d5`、`cb626070` | `7cdeb433`、`5e174284`、`c92b6384`、`7c78ce8a`、`5d6b06c8` | `git range-diff` 五项均为 `=` |
+| `31e42fa2`、`a7993373`、`889a4ed8` | 已在 foundation/runtime 中存在 | `git cherry` 标记 `-`；前两项重放时跳过重复内容，第三项由 rebase 自动跳过 |
+
+`git diff --check` 通过；`python3 -m pytest tools/test_ci_planning.py tools/test_smart_test.py -q` 197 项通过（1.49 秒）。下表中 Runtime 17 项、手机 ContentDelivery/Bus 10 项仍引用原候选执行证据，
+本轮未重复启动 Gradle；同一整合 SHA 的 Android 回归仍待进行。定时本机查询正在接入加密活动账号、
+固定控制者与 Host 身份及本机后台授权，不能把主动推送的远端 ACK 缺口当作定时查询阻塞。
+
 ## 当前实现候选与验证边界（2026-11-14 更新）
 
 当前继续跟踪 #187/#188/#189 与实现收口 #192，PR #190 保持 Draft。下列为不同隔离工作区的候选证据，
