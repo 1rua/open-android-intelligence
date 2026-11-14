@@ -13,9 +13,18 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import android.os.SystemClock
 
 /** Android 原生屏幕执行器，任务快照、SoM 与动作都共用同一真实 backend。 */
-class NativePhoneScreen(private val context: Context, private val backend: ScreenBackend = AndroidScreenBackend(context)) : NativePhoneScreenPort {
+class NativePhoneScreen internal constructor(
+    private val context: Context,
+    private val backend: ScreenBackend,
+    private val frameSource: SomFrameSource,
+) : NativePhoneScreenPort {
+    constructor(context: Context, backend: ScreenBackend = AndroidScreenBackend(context)) :
+        this(context, backend, AndroidSomFrameSource(context))
     private data class Snapshot(val task: ControlTaskScope, val screen: ScreenSnapshot)
     private val snapshots = ConcurrentHashMap<String, Snapshot>()
     @Volatile private var stopped = false
@@ -55,49 +64,55 @@ class NativePhoneScreen(private val context: Context, private val backend: Scree
         }
     }
     private suspend fun captureSom(request: PhoneExecutionContext, revalidate: () -> Unit): PhoneControlResult {
-        // window 取帧是 Android 34 起唯一有明确排除无障碍胶囊保证的系统路径。
-        if (Build.VERSION.SDK_INT < 34) throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
-        val snapshot = withContext(Dispatchers.Main.immediate) { backend.read(ScreenReadQuery(maxNodes = 512, maxDepth = 32)) }
+        val query = ScreenReadQuery(maxNodes = 512, maxDepth = 32)
+        val snapshot = withContext(Dispatchers.Main.immediate) { backend.read(query) }
         if (snapshot.truncated) throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
-        request.beforeDispatch(); guard(revalidate)
-        val captured = AndroidAccessibilityScreenshotRuntime(context, snapshot.activeWindowId ?: throw ControlRequestException("SCREEN_WINDOW_UNAVAILABLE")).takeScreenshot()
-        val frame = (captured as? ScreenCaptureOutcome.Success)?.capture ?: throw ControlRequestException("SCREEN_CAPTURE_FAILED")
-        val current = withContext(Dispatchers.Main.immediate) { backend.read(ScreenReadQuery(maxNodes = 512, maxDepth = 32)) }
-        if (current.revision != snapshot.revision || current.display != snapshot.display) throw ControlRequestException("SNAPSHOT_STALE")
-        return withContext(Dispatchers.Default) {
-        val png = frame.pngBytes()
-        val bitmap = try { BitmapFactory.decodeByteArray(png, 0, png.size) ?: throw ControlRequestException("SCREEN_CAPTURE_ENCODING_FAILED") } finally { png.fill(0) }
-        var mutable: Bitmap? = null
-        try {
-        val bounds = snapshot.windows.firstOrNull { it.id == snapshot.activeWindowId }?.bounds ?: throw ControlRequestException("SCREEN_WINDOW_UNAVAILABLE")
-        if (bitmap.width != bounds.right - bounds.left || bitmap.height != bounds.bottom - bounds.top) throw ControlRequestException("SCREEN_CAPTURE_GEOMETRY_MISMATCH")
-        mutable = bitmap.copy(Bitmap.Config.ARGB_8888, true) ?: throw ControlRequestException("SCREEN_CAPTURE_ENCODING_FAILED")
-        val mapping = mutableListOf<Map<String, Any>>()
-            val canvas = Canvas(mutable)
-            val redaction = Paint().apply { color = Color.BLACK; style = Paint.Style.FILL }
-            snapshot.nodes.filter { it.password }.forEach { node -> canvas.drawRect(
-                (node.bounds.left - bounds.left).toFloat(), (node.bounds.top - bounds.top).toFloat(),
-                (node.bounds.right - bounds.left).toFloat(), (node.bounds.bottom - bounds.top).toFloat(), redaction) }
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.RED; style = Paint.Style.STROKE; strokeWidth = 3f; textSize = 24f }
-            snapshot.nodes.filter { it.windowId == snapshot.activeWindowId && !it.password && it.enabled && (it.clickable || it.editable || it.scrollable || it.longClickable) }.forEach { node ->
-                val b = node.bounds
-                if (b.left >= bounds.left && b.top >= bounds.top && b.right <= bounds.right && b.bottom <= bounds.bottom && b.right > b.left && b.bottom > b.top) {
-                    val label = mapping.size + 1; canvas.drawRect((b.left - bounds.left).toFloat(), (b.top - bounds.top).toFloat(), (b.right - bounds.left).toFloat(), (b.bottom - bounds.top).toFloat(), paint)
-                    canvas.drawText(label.toString(), (b.left - bounds.left).toFloat(), (b.top - bounds.top + 24).toFloat(), paint)
-                    mapping += mapOf("label" to label, "nodeId" to node.nodeId)
-                }
+        val localUi = PhoneLocalControlUiRegistry.current
+        val protection = withContext(Dispatchers.Main.immediate) { localUi?.captureProtection() }
+        if (Build.VERSION.SDK_INT < 34 && (localUi == null || protection?.ready != true || protection.display != snapshot.display))
+            throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
+        suspend fun finalGuard() {
+            currentCoroutineContext().ensureActive()
+            guard(revalidate)
+            val current = withContext(Dispatchers.Main.immediate) { backend.read(query) }
+            if (current != snapshot) throw ControlRequestException("SNAPSHOT_STALE")
+            if (Build.VERSION.SDK_INT < 34) {
+                val now = withContext(Dispatchers.Main.immediate) { localUi?.captureProtection() }
+                if (PhoneLocalControlUiRegistry.current !== localUi || now != protection || now?.ready != true)
+                    throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
             }
-            val bytes = ByteArrayOutputStream().use { out -> if (!mutable.compress(Bitmap.CompressFormat.WEBP_LOSSLESS, 100, out)) throw ControlRequestException("SCREEN_CAPTURE_ENCODING_FAILED"); out.toByteArray() }
-            guard(revalidate)
-            val artifactId = UUID.randomUUID().toString()
-            val version = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-            val finalSnapshot = withContext(Dispatchers.Main.immediate) { backend.read(ScreenReadQuery(maxNodes = 512, maxDepth = 32)) }
-            if (finalSnapshot.revision != snapshot.revision || finalSnapshot.display != snapshot.display) throw ControlRequestException("SNAPSHOT_STALE")
-            guard(revalidate)
-            PhoneControlResult(objectValue(snapshotMap(request.scope.task, snapshot) + mapOf("mapping" to mapping,
-                "semanticNodeCount" to snapshot.nodes.size, "markedNodeCount" to mapping.size, "coverage" to if (mapping.isEmpty()) "no_nodes" else "partial",
-                "imageOffsetX" to bounds.left, "imageOffsetY" to bounds.top)), listOf(ControlArtifact(artifactId, "image/webp", version, bytes)))
-        } finally { mutable?.recycle(); bitmap.recycle() }
+        }
+        request.beforeDispatch(); guard(revalidate)
+        val requestedAt = SystemClock.uptimeMillis()
+        val frame = frameSource.capture(snapshot)
+        return frame.use {
+            finalGuard()
+            if (frame.capturedAtUptimeMs < requestedAt || frame.capturedAtUptimeMs > SystemClock.uptimeMillis())
+                throw ControlRequestException("SCREEN_CAPTURE_STALE_FRAME")
+            if (!frame.overlayExcluded && (protection?.ready != true || frame.capturedAtUptimeMs < protection.changedAtUptimeMs))
+                throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+            val pendingEncoding = java.util.concurrent.atomic.AtomicReference<SomRenderedImage?>()
+            var published = false
+            try {
+                val rendered = withContext(Dispatchers.Default) {
+                    currentCoroutineContext().ensureActive()
+                    SomImageRenderer.render(snapshot, frame, if (frame.overlayExcluded) emptyList() else requireNotNull(protection).maskedRegions)
+                        .also { pendingEncoding.set(it) }
+                }
+                finalGuard()
+                val artifactId = UUID.randomUUID().toString()
+                val version = MessageDigest.getInstance("SHA-256").digest(rendered.bytes).joinToString("") { "%02x".format(it) }
+                val result = PhoneControlResult(objectValue(snapshotMap(request.scope.task, snapshot) + mapOf(
+                    "mapping" to rendered.mapping, "semanticNodeCount" to snapshot.nodes.size,
+                    "markedNodeCount" to rendered.mapping.size,
+                    "coverage" to if (rendered.mapping.isEmpty()) "no_nodes" else "partial",
+                    "imageOffsetX" to frame.capturedBounds.left, "imageOffsetY" to frame.capturedBounds.top)),
+                    listOf(ControlArtifact(artifactId, "image/webp", version, rendered.bytes)))
+                currentCoroutineContext().ensureActive()
+                guard(revalidate)
+                published = true
+                result
+            } finally { pendingEncoding.getAndSet(null)?.let { if (!published) it.bytes.fill(0) } }
         }
     }
     private fun snapshotMap(task: ControlTaskScope, screen: ScreenSnapshot): Map<String, Any?> {

@@ -1,6 +1,16 @@
 package com.openandroidintelligence.control.remote
 
 import com.openandroidintelligence.control.ScreenBounds
+import com.openandroidintelligence.control.ScreenDisplay
+
+/** 仅本机窗口拥有者发布；代次及历史安全带在服务存活期间不回退、不清空。 */
+data class LocalUiCaptureProtection(
+    val generation: Long,
+    val display: ScreenDisplay,
+    val changedAtUptimeMs: Long,
+    val maskedRegions: List<ScreenBounds>,
+    val ready: Boolean,
+)
 
 /** 仅手机本机服务实现；远端协议没有批准、隐藏或停止胶囊的调用入口。 */
 interface PhoneLocalControlUi {
@@ -9,6 +19,8 @@ interface PhoneLocalControlUi {
     suspend fun finish(requestId: String)
     fun emergencyStop()
     val protectedBounds: ScreenBounds?
+    /** 缺少可核验的窗口几何时返回 null；整屏截图必须拒绝，不能把它理解为没有浮层。 */
+    fun captureProtection(): LocalUiCaptureProtection? = null
 }
 
 object PhoneLocalControlUiRegistry {
