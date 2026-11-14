@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.remote.facade.PhoneControlBus
+import com.openandroidintelligence.gateway.remote.facade.ControlRequestParser
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.kernel.*
 import javax.crypto.spec.SecretKeySpec
@@ -83,7 +84,8 @@ class SmsSendPluginHostTest {
                     "op" to "plugin.invoke", "args" to mapOf("pluginId" to SMS_PLUGIN_ID, "capabilityId" to entry.key,
                         "method" to "send", "params" to parameters)))))
                 bus.submit(access, task, request)
-                withTimeout(5_000) { coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                val active = coroutineContext[Job]!!.children.toList()
+                withTimeout(5_000) { active.forEach { it.join() } }
                 assertEquals(1, confirmations)
                 assertEquals(2, primitiveCalls)
                 assertEquals(1, systemSends)
@@ -97,7 +99,8 @@ class SmsSendPluginHostTest {
                 assertEquals(ControlRequestState.OUTCOME_UNKNOWN, restored.state)
                 assertFalse(row.toString().contains("不得重复发送的正文"))
                 bus.submit(access, task, request)
-                withTimeout(5_000) { coroutineContext[Job]!!.children.toList().forEach { it.join() } }
+                val replay = coroutineContext[Job]!!.children.toList()
+                withTimeout(5_000) { replay.forEach { it.join() } }
                 assertEquals(1, confirmations); assertEquals(1, systemSends)
             } finally { connection.close() }
         } finally {
