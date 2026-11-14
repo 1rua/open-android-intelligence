@@ -229,19 +229,19 @@
     <string name="conn_toast_download_recovery_failed">未完成的下载恢复失败，已保留恢复记录，可在附件卡片重试。</string>
 
     <!-- 首次引导与部署教程 (Onboarding) -->
-    <string name="conn_onboarding_deploy_choice_title">OAI 服务器\n部署好了吗？</string>
-    <string name="conn_onboarding_deploy_choice_desc">手机只连接一个 OAI 服务器，由服务器接入不同智能助手。若已完成部署，直接进入登录。</string>
-    <string name="conn_onboarding_deploy_choice_already_deployed">我已部署</string>
-    <string name="conn_onboarding_deploy_choice_already_deployed_desc">已启动 OAI 服务端并创建 OAI 账号。使用同一个服务端地址登录。</string>
+    <string name="conn_onboarding_deploy_choice_title">准备连接\nDSH Remote</string>
+    <string name="conn_onboarding_deploy_choice_desc">使用 Remote 账号登录，发现你的电脑，再手动选择后端与工作区。</string>
+    <string name="conn_onboarding_deploy_choice_already_deployed">准备登录</string>
+    <string name="conn_onboarding_deploy_choice_already_deployed_desc">已有 Remote 账号，电脑上的 DSH Remote 已使用同一账号登录。</string>
     <string name="conn_onboarding_deploy_choice_btn_login">进入登录</string>
-    <string name="conn_onboarding_deploy_choice_not_deployed">我还未部署</string>
-    <string name="conn_onboarding_deploy_choice_not_deployed_desc">查看 OAI 服务端安装、账号创建与启动步骤，也保留兼容指南。</string>
+    <string name="conn_onboarding_deploy_choice_not_deployed">先看连接指引</string>
+    <string name="conn_onboarding_deploy_choice_not_deployed_desc">了解 Remote 登录、电脑发现、工作区选择与本机授权。</string>
     <string name="conn_onboarding_deploy_choice_btn_tutorial">查看教程</string>
     <string name="conn_onboarding_deploy_choice_notice_label">说明</string>
-    <string name="conn_onboarding_deploy_choice_notice_content">暂不提供统一云端服务，需连接自托管服务器</string>
-    <string name="conn_onboarding_guide_btn_deployed">部署完毕，进入登录</string>
+    <string name="conn_onboarding_deploy_choice_notice_content">默认连接 dsh.r2049.cn；兼容的自托管 Remote 地址也可使用。</string>
+    <string name="conn_onboarding_guide_btn_deployed">了解完毕，进入登录</string>
     <string name="conn_onboarding_guide_hint_incomplete">未完成？可稍后在设置中重新查看</string>
-    <string name="conn_onboarding_guide_title_format">%1$s 部署教程</string>
+    <string name="conn_onboarding_guide_title_format">%1$s 连接指引</string>
     <string name="conn_onboarding_guide_open_repo_format">打开官方仓库 %1$s</string>
     <string name="conn_onboarding_guide_repo_label">官方仓库</string>
     <string name="conn_onboarding_guide_verified_preview">验证通过的样子</string>

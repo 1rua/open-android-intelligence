@@ -42,8 +42,8 @@
     <string name="settings_backup_restore">备份与恢复</string>
     <string name="settings_backup_restore_desc">导出或导入本机设置，换机与重装后无需逐项重配</string>
     <string name="settings_help_feedback">帮助与反馈</string>
-    <string name="settings_tutorial">新手引导与部署教程</string>
-    <string name="settings_tutorial_desc">查看 Gateway 部署教程与权限说明</string>
+    <string name="settings_tutorial">新手引导与连接指引</string>
+    <string name="settings_tutorial_desc">查看 Remote 连接指引与权限说明</string>
     <string name="settings_docs">项目文档</string>
     <string name="settings_issues">问题与反馈</string>
     <string name="settings_about_oai">关于 OAI</string>

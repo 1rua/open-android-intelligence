@@ -27,4 +27,17 @@
     <string name="remote_voice_restart_after_switch">对话已切换，请重新开始录音</string>
     <string name="remote_voice_wait">当前对话暂不能发送语音，请等待处理完成后重试</string>
     <string name="remote_conversation_not_ready">对话尚未就绪</string>
+    <string name="remote_guide_tagline">使用 Remote 账号连接电脑，再手动选择 Host、后端与工作区。</string>
+    <string name="remote_guide_chip_account">Remote 账号</string>
+    <string name="remote_guide_chip_host">Host 发现</string>
+    <string name="remote_guide_chip_authorization">本机授权</string>
+    <string name="remote_guide_login_title">登录 Remote</string>
+    <string name="remote_guide_login_body">使用 Remote 服务地址、邮箱和密码登录。默认服务为 dsh.r2049.cn，也可以填写兼容的自托管 Remote 服务地址。</string>
+    <string name="remote_guide_discovery_title">发现已登录的电脑</string>
+    <string name="remote_guide_discovery_body">电脑上的 DSH Remote 使用同一个 Remote 账号登录并保持在线。手机登录后刷新电脑列表，再选择要连接的 Host。</string>
+    <string name="remote_guide_workspace_title">手动选择后端与工作区</string>
+    <string name="remote_guide_workspace_body">连接电脑后，从实际发现的后端和工作区中选择目标。切换 Host、后端或工作区由你主动操作，不会自动创建其他会话。</string>
+    <string name="remote_guide_authorization_title">核对本机能力与授权</string>
+    <string name="remote_guide_authorization_body">对话连接和手机能力授权分别生效。在设置中按需开启能力与 Android 系统权限，敏感操作仍需在手机上确认。</string>
+    <string name="remote_guide_verify">电脑在线、目标工作区可选且对话连接就绪。手机能力的可用状态以本机设置中的真实状态为准。</string>
 </resources>

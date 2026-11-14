@@ -69,17 +69,17 @@ import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHe
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.mobile.onboarding.components.TerminalBlockView
 import com.openandroidintelligence.mobile.onboarding.components.halftone
-import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorial
-import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
+import com.openandroidintelligence.mobile.onboarding.data.RemoteTutorial
+import com.openandroidintelligence.mobile.onboarding.data.RemoteTutorials
 import com.openandroidintelligence.mobile.onboarding.data.TutorialStep
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
- * Gateway 部署教程页。
+ * Remote 连接指引页。
  *
- * 三套教程共用同一套模板（Tab → 名称/定位/元数据 → 分步卡片 → 官方仓库），
- * 差异只在 [GatewayTutorial] 数据里。新增一个 Agent 宿主不需要改这个文件。
+ * 连接指引沿用同一套模板（Tab → 名称/定位/元数据 → 分步卡片 → 官方仓库），
+ * 差异只在 [RemoteTutorial] 数据里。新增一个 Agent 宿主不需要改这个文件。
  *
  * 步骤卡片刻意做成「编号 + 标题 + 说明 + 可复制的终端框 + 验证提示」的固定结构：
  * - 编号与左侧竖线把多步串成一条可执行路径；
@@ -87,14 +87,14 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
  * - 验证提示回答「我怎么知道我成了」，避免用户执行完不知道对错。
  */
 @Composable
-fun GatewayGuideScreen(
+fun RemoteGuideScreen(
     selectedGatewayId: String,
     onSelectGateway: (String) -> Unit,
     onDone: (RevealOrigin) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val tutorial = GatewayTutorials.byId(selectedGatewayId)
+    val tutorial = RemoteTutorials.byId(androidx.compose.ui.platform.LocalContext.current, selectedGatewayId)
     val uriHandler = LocalUriHandler.current
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
@@ -104,7 +104,7 @@ fun GatewayGuideScreen(
             .testTag("onboarding-guide"),
     ) {
         OnboardingStepHeader(
-            categoryTitle = "CORE & AGENTS GUIDE",
+            categoryTitle = "REMOTE GUIDE",
             stepIndex = 5,
             totalSteps = 5,
             onBack = onBack,
@@ -119,7 +119,7 @@ fun GatewayGuideScreen(
                 .padding(top = Dimensions.SpaceSmall, bottom = Dimensions.SpaceCompact),
             horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
-            GatewayTutorials.ALL.forEach { item ->
+            RemoteTutorials.all(androidx.compose.ui.platform.LocalContext.current).forEach { item ->
                 GatewayTab(
                     tutorial = item,
                     selected = item.id == tutorial.id,
@@ -163,7 +163,7 @@ fun GatewayGuideScreen(
             }
         }
 
-        // ===== 主操作：部署完毕进入登录 =====
+        // ===== 主操作：了解完毕进入登录 =====
         var doneOrigin by remember { mutableStateOf<RevealOrigin?>(null) }
         Column(
             modifier = Modifier
@@ -212,7 +212,7 @@ fun GatewayGuideScreen(
 /** 一个 Gateway 的 Tab：选中态实底 + 强调色小圆点。 */
 @Composable
 private fun GatewayTab(
-    tutorial: GatewayTutorial,
+    tutorial: RemoteTutorial,
     selected: Boolean,
     onClick: () -> Unit,
 ) {
@@ -262,7 +262,7 @@ private fun GatewayTab(
 /** 教程正文：名称 → 定位 → 元数据 chip → 分步卡片 → 官方仓库。 */
 @Composable
 private fun TutorialBody(
-    tutorial: GatewayTutorial,
+    tutorial: RemoteTutorial,
     onOpenRepository: () -> Unit,
 ) {
     Column(

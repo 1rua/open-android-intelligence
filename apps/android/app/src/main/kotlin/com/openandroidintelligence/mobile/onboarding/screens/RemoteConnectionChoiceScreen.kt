@@ -59,11 +59,11 @@ import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
- * Agent Gateway 部署状态选择页。
+ * Remote 连接准备页。
  *
  * 只有两条路，且**不要求已部署的用户再读一遍教程**：
- * - A「我已部署」→ 直接触发按钮展开转场，随后进入登录；
- * - B「我还未部署」→ 进入三套 Gateway 的部署教程。
+ * - A「准备登录」→ 直接触发按钮展开转场，随后进入登录；
+ * - B「先看连接指引」→ 进入 Remote 登录与发现指引。
  *
  * 卡片在按下时底部有一条 2dp 强调线从 0 展开到 100%：这是「可点」的
  * 空间反馈，也把视线引向即将发生的转场起点。
@@ -72,7 +72,7 @@ import com.openandroidintelligence.ui.resources.R as UiR
  *   几何在这里采集而不是在转场里猜：只有按钮自己知道它在窗口里的真实位置。
  */
 @Composable
-fun DeploymentChoiceScreen(
+fun RemoteConnectionChoiceScreen(
     onAlreadyDeployed: (RevealOrigin) -> Unit,
     onNotDeployed: () -> Unit,
     onBack: () -> Unit,
@@ -84,7 +84,7 @@ fun DeploymentChoiceScreen(
             .testTag("onboarding-deployment"),
     ) {
         OnboardingStepHeader(
-            categoryTitle = "CORE SETUP",
+            categoryTitle = "REMOTE SETUP",
             stepIndex = 4,
             totalSteps = 5,
             onBack = onBack,
@@ -101,7 +101,7 @@ fun DeploymentChoiceScreen(
                 .padding(top = Dimensions.SpaceSmall),
         ) {
             Text(
-                text = "DEPLOYMENT",
+                text = "CONNECTION",
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 2.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

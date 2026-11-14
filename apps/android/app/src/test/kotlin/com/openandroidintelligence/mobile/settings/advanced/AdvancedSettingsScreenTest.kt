@@ -51,7 +51,7 @@ class AdvancedSettingsScreenTest {
         compose.onNodeWithText("关于 OAI").performScrollTo().assertExists()
         compose.runOnIdle { assertEquals(0, updates) }
         compose.onNodeWithText("应用更新").performScrollTo().performClick()
-        compose.onNodeWithText("新手引导与部署教程").performScrollTo().performClick()
+        compose.onNodeWithText("新手引导与连接指引").performScrollTo().performClick()
         compose.onNodeWithText("构建详情").performScrollTo().performClick()
         compose.onNodeWithText("开源许可证").performScrollTo().performClick()
         compose.onNodeWithText("备份与恢复").performScrollTo().performClick()
