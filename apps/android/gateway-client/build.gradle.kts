@@ -1,9 +1,17 @@
+import java.util.Properties
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
 }
 
+val remoteAppVersion = providers.fileContents(rootProject.layout.projectDirectory.file("app/version.properties")).asText.map { text ->
+    Properties().apply { load(text.reader()) }.getProperty("versionName")
+}
+
 android {
+    buildFeatures { buildConfig = true }
+    defaultConfig { buildConfigField("String", "OAI_REMOTE_CLIENT_VERSION", "\"${remoteAppVersion.get()}+oai.android\"") }
     namespace = "com.openandroidintelligence.gateway.client"
     defaultConfig { testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions.unitTests.all {
