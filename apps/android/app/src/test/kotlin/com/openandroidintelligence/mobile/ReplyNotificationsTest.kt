@@ -376,6 +376,35 @@ class ReplyNotificationsTest {
         assertTrue(posts.isNotEmpty())
     }
 
+    @Test fun `类型化完成等待同轮次正文和终态且持久围栏阻止重放`() {
+        fun reply(generation: String = "generation", completed: Boolean = true) = notificationReply(clock,
+            profile = "profile-a", account = "account-a", generation = generation, completed = completed)
+        fun success(generation: String = "generation") = notificationStatus(clock,
+            profile = "profile-a", account = "account-a", generation = generation)
+        observer().accept(reply(completed = false))
+        observer().accept(success())
+        assertTrue(posts.isEmpty())
+        observer().accept(reply("other"))
+        assertTrue(posts.isEmpty())
+        observer().accept(reply())
+        assertEquals(1, posts.size)
+        observer().accept(reply())
+        observer().accept(success())
+        assertEquals(1, posts.size)
+        assertEquals("endpoint", posts.single().first.agentId)
+        assertEquals("generation", posts.single().second)
+    }
+
+    @Test fun `类型化完成拒绝其他账号与资料身份`() {
+        val observer = observer()
+        observer.accept(notificationReply(clock, profile = "other-profile", account = "account-a"))
+        observer.accept(notificationStatus(clock, profile = "profile-a", account = "account-a"))
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "other-account"))
+        assertTrue(posts.isEmpty())
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "account-a"))
+        assertEquals(1, posts.size)
+    }
+
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE), "profile-a", "account-a", post, { clock },
     )

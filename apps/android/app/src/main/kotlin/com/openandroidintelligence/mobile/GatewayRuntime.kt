@@ -2564,9 +2564,9 @@ class GatewayRuntime(
          */
         fun publishNativeNotification(agentId: String, event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent) {
             if (activeHttpClient !== http || sessionJob !== ownedJob) return
-            com.openandroidintelligence.mobile.conversations.nativeNotificationFrame(
-                accountId = session.accountId, agentId = agentId, event = event,
-            )?.let { frame -> nativeConversationNotifications.accept(profileId, session.accountId, frame) }
+            com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                profileId = profileId, accountId = session.accountId, endpointId = agentId, event = event,
+            )?.let { input -> nativeConversationNotifications.accept(input) }
         }
 
         // 工作台持有固定 Agent 身份的仓库；切换选择不会改变已开始提交的接收者。

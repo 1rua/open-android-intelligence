@@ -635,6 +635,54 @@ class NativeConversationNotificationsTest {
         assertEquals("Codex 回答", finished.latestReply)
     }
 
+    @Test fun `类型化输入隔离同名端点和重放事件并保留附件提醒`() {
+        val time = clock
+        val first = notificationReply(time, endpoint = "host-a", eventId = "same-body")
+        val second = notificationReply(time, endpoint = "host-b", eventId = "same-body",
+            parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                com.openandroidintelligence.conversation.model.AttachmentDraftId("attachment"), "报告.pdf", "application/pdf", 12, null)))
+        coordinator.accept(first)
+        coordinator.accept(notificationStatus(time, endpoint = "host-a", eventId = "same-status"))
+        coordinator.accept(second)
+        coordinator.accept(notificationStatus(time, endpoint = "host-b", eventId = "same-status"))
+        assertEquals(2, publications.count { it.second })
+        assertEquals(setOf("host-a", "host-b"), publications.filter { it.second }.map { it.first.target.agentId }.toSet())
+        assertEquals(context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_attachment_placeholder),
+            coordinator.sessions.value.single { it.target.agentId == "host-b" }.latestReply)
+        val beforeReplay = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        coordinator.accept(first)
+        coordinator.accept(second)
+        coordinator.accept(notificationStatus(time, endpoint = "host-a"))
+        coordinator.accept(notificationStatus(time, endpoint = "host-b"))
+        assertEquals(beforeReplay, publications.size)
+    }
+
+    @Test fun `类型化输入不借用其他账号端点和轮次的正文并遵守删除围栏`() {
+        val time = clock
+        coordinator.accept(notificationReply(time, account = "other-account"))
+        coordinator.accept(notificationReply(time, profile = "other-profile"))
+        assertTrue(coordinator.sessions.value.isEmpty())
+        coordinator.accept(notificationReply(time, generation = "old"))
+        coordinator.accept(notificationStatus(time + 2, generation = "new"))
+        assertTrue(publications.none { it.second })
+        coordinator.accept(notificationReply(time + 1, generation = "new"))
+        assertEquals(1, publications.count { it.second })
+        val delete = com.openandroidintelligence.mobile.conversations.nativeNotificationInput("profile", "account", "endpoint",
+            com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ConversationsChanged("delete", time + 3,
+                ConversationId("conversation"), deleted = true))!!
+        coordinator.accept(delete)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        val count = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        coordinator.accept(notificationReply(time + 4, generation = "later"))
+        coordinator.accept(notificationStatus(time + 5, generation = "later"))
+        assertEquals(count, publications.size)
+        assertTrue(coordinator.sessions.value.isEmpty())
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

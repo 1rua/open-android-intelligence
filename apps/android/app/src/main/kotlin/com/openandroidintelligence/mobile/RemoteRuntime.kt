@@ -233,16 +233,16 @@ class RemoteRuntime(
             val active = AtomicReference<String?>(null)
             val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent) { key, event ->
                 mirror.commitNativeEvents(listOf(event))
-                nativeNotificationFrame(local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(local.profileId, local.accountId, it)
+                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
+                    nativeConversationNotifications.accept(it)
                 }
             }
             repository = repo; ownerAttachments = attachments; ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
             surfaceRepository = { surfaceActive -> RemoteConversationRepository(carrier, confirmed, ownedScope, surfaceActive::get,
                 attachments::promptContent) { key, event ->
                 mirror.commitNativeEvents(listOf(event))
-                nativeNotificationFrame(local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(local.profileId, local.accountId, it)
+                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
+                    nativeConversationNotifications.accept(it)
                 }
             } }
             nativeConversationNotifications.bind(local.profileId, local.accountId)

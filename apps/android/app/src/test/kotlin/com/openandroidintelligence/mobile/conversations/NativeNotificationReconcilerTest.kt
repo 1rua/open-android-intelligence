@@ -12,6 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import com.openandroidintelligence.mobile.NativeConversationNotifications
+import com.openandroidintelligence.mobile.accept
 import com.openandroidintelligence.mobile.NativeConversationStatus
 import com.openandroidintelligence.mobile.replyCompletionPreferences
 import org.junit.After

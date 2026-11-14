@@ -287,7 +287,7 @@ class RemoteRuntimeTest {
                 "accountId" to JsonValue.JString(local.accountId),
                 "occurredAt" to JsonValue.JString(java.time.Instant.now().toString()),
                 "payload" to JsonValue.JObject(listOf(
-                    "agentId" to JsonValue.JString(local.gatewayId), "conversationId" to JsonValue.JString("same:reply"),
+                    "agentId" to JsonValue.JString(local.gatewayId), "conversationId" to JsonValue.JString("same.reply"),
                     "generationId" to JsonValue.JString("gen"), "messageId" to JsonValue.JString(if (complete) "user" else "reply"),
                     "sender" to JsonValue.JString("assistant"), "text" to JsonValue.JString("运行回复"),
                     "clientMessageId" to JsonValue.JString("request"), "errorCode" to JsonValue.JNull,

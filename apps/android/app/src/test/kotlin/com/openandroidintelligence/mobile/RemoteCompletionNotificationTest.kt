@@ -9,7 +9,7 @@ import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
-import com.openandroidintelligence.mobile.conversations.nativeNotificationFrame
+import com.openandroidintelligence.mobile.conversations.nativeNotificationInput
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import org.junit.Assert.*
@@ -60,7 +60,7 @@ class RemoteCompletionNotificationTest {
             override suspend fun selectModel(sessionId: String, selection: RemoteModelSelection) = selection
         }
         val repository = RemoteConversationRepository(carrier, workspace, scope, { local }, onEvent = { _, event ->
-            nativeNotificationFrame("account", "endpoint", event)?.let { notifications.accept("profile", "account", it) }
+            nativeNotificationInput("profile", "account", "endpoint", event)?.let(notifications::accept)
         })
         try {
             repository.timeline(local, PageRequest())
