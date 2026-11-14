@@ -276,7 +276,9 @@ class RemoteRuntimeTest {
 
     private fun postReply(eventId: String, complete: Boolean) {
         val local = runtime.controller.value!!.localConversationScope
-        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, replyFrame(local, eventId, complete))
+        val frame = replyFrame(local, eventId, complete)
+        assertNotNull("测试帧必须通过生产解码器", com.openandroidintelligence.conversation.data.GatewayEventDecoder.decode(frame))
+        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, frame)
     }
     private fun replyFrame(local: com.openandroidintelligence.conversation.ports.ConversationScope, eventId: String, complete: Boolean) =
         com.openandroidintelligence.gateway.events.GatewayEvent(eventId,
@@ -284,7 +286,8 @@ class RemoteRuntimeTest {
             Json.canonical(Json.of(mapOf("accountId" to local.accountId, "occurredAt" to java.time.Instant.now().toString(),
                 "payload" to mapOf("agentId" to local.gatewayId, "conversationId" to "same:reply", "generationId" to "gen",
                     "messageId" to if (complete) "user" else "reply", "sender" to "assistant", "text" to "运行回复",
-                    "clientMessageId" to "request", "status" to if (complete) "completed" else "delivered", "revision" to if (complete) 2 else 1)))))
+                    "clientMessageId" to "request", "errorCode" to null,
+                    "status" to if (complete) "completed" else "delivered", "revision" to if (complete) 2 else 1)))))
 
     private fun remoteBackup(policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
         com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort()): com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator {
