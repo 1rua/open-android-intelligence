@@ -33,6 +33,8 @@ test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和�
     const listed = await client.listTools();
     assert.ok(listed.tools.length >= 15); assert.ok(listed.tools.every(tool => tool.name.startsWith('android_')));
     assert.ok(!listed.tools.some(tool => tool.name.includes('delegate') || tool.name.includes('rpc')));
+    assert.ok(listed.tools.some(tool => tool.name === 'android_read_delivery'));
+    assert.ok(listed.tools.some(tool => tool.name === 'android_ack_delivery'));
     const status = await client.callTool({ name: 'android_bridge_status', arguments: {} });
     assert.equal(status.structuredContent.phoneOnly, true);
     const fixed = { hostId: 'phone-1', backend: 'harness', workspaceId: 'phone-capabilities' };
@@ -44,6 +46,11 @@ test('真实 Stdio SDK tools/list 与 tools/call 严格保持 android 命名和�
     const cancellation = calls.filter(call => call.operation === 'remote_send_message').at(-1);
     assert.equal(cancellation.args.sessionId, 'task-explicit'); assert.equal(JSON.parse(cancellation.args.message).op, 'request.cancel');
     assert.ok(!calls.some(call => call.operation === 'remote_interrupt_session'));
+    await client.callTool({ name: 'android_read_delivery', arguments: { ...fixed, request_id: 'delivery-read-000001',
+      deliveryId: `delivery_${'1'.repeat(32)}`, eventId: `push_${'2'.repeat(64)}`, token: 't'.repeat(43), payloadDigest: `sha256:${'3'.repeat(64)}` } });
+    const deliveryCall = calls.filter(call => call.operation === 'remote_send_message').at(-1);
+    assert.equal(JSON.parse(deliveryCall.args.message).op, 'push.read_delivery');
+    assert.equal(deliveryCall.args.sessionId, 'task-explicit');
     assert.ok(calls.every(call => (call.args.targets ?? [call.args]).every(target => target.backend === 'harness' && target.workspaceId === 'phone-capabilities')));
   } finally { await client.close(); await registration.close(); await new Promise(resolve => http.close(resolve)); }
 });

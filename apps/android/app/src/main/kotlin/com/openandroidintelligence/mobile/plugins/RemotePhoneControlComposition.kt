@@ -78,6 +78,18 @@ class RemotePhoneControlComposition(
 
     override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
         val connection = connection(context.access)
+        if (operation is ControlOperation.Delivery) {
+            val app=this.context.applicationContext as? com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
+                ?: fail("PUSH_RUNTIME_UNAVAILABLE")
+            val push=app.devicePush ?: fail("PUSH_RUNTIME_UNAVAILABLE")
+            connection(context.access)
+            context.beforeDispatch()
+            val result=push.delivery(context.access,operation)
+            connection(context.access)
+            return PhoneControlResult(value(result) as ControlValue.Object,requireContentAccess={
+                connection(context.access);push.requireDeliveryContent(context.access,operation)
+            })
+        }
         if (operation is ControlOperation.DumpTree || operation is ControlOperation.Screen || operation == ControlOperation.CaptureSom)
             return executeNative(context, connection, operation)
         val id = "remote-${UUID.randomUUID()}"

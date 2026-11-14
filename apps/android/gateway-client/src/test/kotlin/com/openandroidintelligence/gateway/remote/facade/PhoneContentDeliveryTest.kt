@@ -25,13 +25,16 @@ class PhoneContentDeliveryTest {
     }
     private class Executor : PhoneControlExecutor {
         var current = true
+        var contentCurrent = true
         override fun requireCurrentAccess(access: ControlAccessBinding) {
             if (!current) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
         }
         override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
             context.beforeDispatch()
             return PhoneControlResult(ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))),
-                listOf(ControlArtifact("private-image", "image/webp", "version", SECRET.toByteArray())))
+                listOf(ControlArtifact("private-image", "image/webp", "version", SECRET.toByteArray())),requireContentAccess={
+                    if (!contentCurrent) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
+                })
         }
         override fun cancel(scope: ControlRequestScope) {}
         override fun capabilities(access: ControlAccessBinding): ControlValue.Object {
@@ -70,6 +73,17 @@ class PhoneContentDeliveryTest {
         assertTrue(statusReply.contains("\"state\":\"completed\"")); assertFalse(statusReply.contains(SECRET))
         val metadataPage = Json.canonical(router.route(access, "session/page", page("control-bus")))
         assertTrue(metadataPage.contains("content-status-000001")); assertFalse(metadataPage.contains(SECRET))
+    }
+
+    @Test fun 消费或本机推送撤销后历史流与产物不能重新交付旧正文()=runTest {
+        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor)
+        val task=bus.create(access);bus.submit(access,task,request());runCurrent()
+        assertTrue(Json.canonical(bus.history(access,task)).contains(SECRET))
+        executor.contentCurrent=false
+        denied("PUSH_DELIVERY_REVOKED") { bus.history(access,task) }
+        denied("PUSH_DELIVERY_REVOKED") { bus.eventsSince(access,task,-1) }
+        denied("PUSH_DELIVERY_REVOKED") { bus.artifact(access,task,"private-image") }
+        assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
     }
 
     @Test fun originalConnectionCannotDeliverBufferedSecretAfterEmergencyStop() = runTest {

@@ -15,7 +15,8 @@ class PhoneRemoteRpcHostHandler(
     private val router: PhoneVirtualHostRouter,
     private val authenticatedAccess: (RemoteRpcConnectionScope) -> ControlAccessBinding,
 ) : RemoteRpcHostHandler, AutoCloseable {
-    private data class PendingEvent(val event: RemoteRpcEvent, val epoch: Long, val metadataOnly: Boolean, val content: Boolean = true)
+    private data class PendingEvent(val event: RemoteRpcEvent, val epoch: Long, val metadataOnly: Boolean, val content: Boolean = true,
+        val requireContent: () -> Unit = {})
     private class Connection(val scope: RemoteRpcConnectionScope) {
         val events = MutableSharedFlow<PendingEvent>(extraBufferCapacity = 128)
         val streams = ConcurrentHashMap<String, Job>()
@@ -40,6 +41,7 @@ class PhoneRemoteRpcHostHandler(
             if (authenticatedAccess(scope) != access) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
             if (pending.content) router.requireOutput(access, pending.epoch, pending.metadataOnly)
             else router.outputEpoch(access)
+            if (pending.content) pending.requireContent()
             pending.event
         }
     }
@@ -67,7 +69,9 @@ class PhoneRemoteRpcHostHandler(
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
                             connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf("streamId" to streamId,
-                                "hasValue" to true, "value" to value))), epoch, metadataOnly))
+                                "hasValue" to true, "value" to value))), epoch, metadataOnly,requireContent={
+                                    router.requireStreamContent(access,text(fields,"endpoint"),fields.getValue("payload"))
+                                }))
                         }
                     } catch (_: CancellationException) { throw CancellationException() }
                     catch (_: Exception) {

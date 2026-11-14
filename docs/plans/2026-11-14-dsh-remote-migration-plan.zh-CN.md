@@ -82,3 +82,33 @@ Android API 34 窗口截图与较低 API/MediaProjection 分别验收，不能�
 用户明确“稍后提供，先不进行真机测试”。本轮不进行真机测试、不占用日常 Host 账号/连接；
 专用手机、Host、origin、后端和连接方式待提供。此限制不阻止独立代码和自动化工作，
 相关真实握手、四路径、锁屏/overlay、后端挂载及部署验收保持 BLOCKED/UNVERIFIED。
+
+## 主动推送适配边界（2026-11-14）
+
+固定上游 Server `ea1c0925` 的 `apps/server/src/gateway.ts` 在 hello 时替换同 deviceId 的 Control WS，
+`connect.request` 又关闭同 Client 的旧 link；本仓固定源码位于 `tools/remote-server/fixtures`，最新公开
+`25a81da1` 仍保留同样的单 Client link 规则。不能增加第三个设备身份绕过双角色模型，也不能把本机
+`tunnels` Map 当作服务端已支持同 Client 多活动目标。Host 的 ACP/Codex 绑定按 connectionId 隔离，
+但本次主动推送只借当前已选 endpoint 和明确 session，不后台切换 workspace、不新建会话或连接。
+
+实现复用本机采集、独立开关、范围与白名单、加密队列、撤销和 JobScheduler。新目标保存 origin、
+活动账号/持久 epoch、本机 Client 身份及公钥、目标 Host/pin、手机 Virtual Host/pin、backend、
+workspaceId 和 sessionId。任何字段不匹配的目标保持 UNAVAILABLE，不改投当前聊天；因此当前切片
+不宣称跨 Host 的完整后台多目标唤醒，上游单 link 缺口另行讨论，不维护上游分叉。
+
+主动通知先将 opaque deliveryId、事件身份、摘要、短不可猜 token 哈希与期限写入同一加密队列防重栅栏，
+正文只保留一份。token 仅送入确切目标 session，发现列表不返回它。prompt accepted、turn completed
+均不是 CONSUMED；桌面 Agent 必须经手机 `android_read_delivery` 读取，再经 `android_ack_delivery`
+确认同一事件/摘要，读取时固定真实来访主体，ACK 需要相同主体、当前账号代次及本机白名单仍有效。
+不能凭同账号推断投递 Host 与来访 Client 两个角色的关联。ACK 与正文清理在同一加密提交完成，重复
+ACK 返回原元数据；未知投递不自动重发。撤销、过期、退出、切换目标、ACK 先于 prompt 回执及崩溃恢复
+均需定向回归，未验证前不标记完整可靠推送完成。
+
+## 最后旧生产依赖退出工作包
+
+主动推送切片验证后，按真实引用清单退出旧 Core/Gateway：`package.json` 的 test/typecheck/conformance、
+App Gradle 的旧 Core/Hermes fixture 输入、CI 的 oai-core 工作流及任务、smart-test/impact 选择器与脚本、
+插件清单的旧 gatewayProtocol 兼容声明分别收口。先区分新 Remote 正在使用的中立 JSON/Schema 设施，
+迁移或保留这些真实依赖；不能因目录名为 gateway-client 就删除整个模块。主 App/Settings/教程的旧
+consumer 与 CI/工具链退出分别由写者负责，隔离改动后再做最终 Fast/PR。旧文件只按安全移动规则退役，
+禁止永久删除；此工作包和可靠推送受限多目标能力均未因前序稳定切片通过而自动完成。

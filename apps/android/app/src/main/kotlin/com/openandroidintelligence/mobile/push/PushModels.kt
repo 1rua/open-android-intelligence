@@ -8,12 +8,17 @@ data class PushEndpoint(
     val accountScope: String,
     val endpointId: String,
     val generation: Long,
+    val remoteTarget: RemotePushTarget? = null,
 ) {
     init {
         listOf(coreInstanceId, accountScope, endpointId).forEach {
             require(it.isNotBlank() && it.length <= 256) { "PUSH_ENDPOINT_INVALID" }
         }
         require(generation > 0) { "PUSH_ENDPOINT_GENERATION_INVALID" }
+        if (remoteTarget != null) require(coreInstanceId == remoteTarget.origin && accountScope == remoteTarget.accountId &&
+            endpointId == com.openandroidintelligence.gateway.schema.Json.sha256(remoteTarget.encode()) && generation == remoteTarget.accountEpoch+1) {
+            "PUSH_REMOTE_ENDPOINT_MISMATCH"
+        }
     }
 }
 
@@ -228,4 +233,5 @@ internal data class PushStoredState(
     val smsCursor: PushSmsCursor? = null,
     // Retried independently of login, enabled capabilities, and the sensitive-content queue.
     val revocations: Map<PushEndpoint, Set<String>> = emptyMap(),
+    val remoteReceipts: Map<String, RemotePushReceiptRecord> = emptyMap(),
 )

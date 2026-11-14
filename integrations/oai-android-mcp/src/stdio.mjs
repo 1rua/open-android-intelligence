@@ -31,6 +31,9 @@ register('android_request_status', '查询请求回执', '从当前 control-bus 
 register('android_request_result', '读取当前任务结果', '读取当前进程仍存在的原任务结构化结果；正文失效时不会恢复或重放请求。', z.object({ ...task, targetRequestId: requestId }), 'request_result');
 register('android_cancel_request', '取消指定请求', '仅取消原 taskSessionId 内的 targetRequestId；不会取消同任务其他请求。', z.object({ ...task, request_id: requestId, targetRequestId: requestId }), 'cancel', undefined, false);
 register('android_read_artifact', '读取任务产物', '经原生受限文件面下载同一任务的 artifactId。', z.object({ ...task, artifactId: z.string().regex(/^[A-Za-z0-9_-]+$/u) }), 'read_artifact');
+const delivery = { ...fixed, request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u) };
+register('android_read_delivery', '读取已投递事件', '仅凭确切目标会话收到的收件token读取手机加密队列事件；读取不会确认消费，手机独立推送许可与白名单仍须有效。', z.object(delivery), 'delivery', value => ({ ...value, acknowledge: false }));
+register('android_ack_delivery', '确认消费事件', '确认已处理同一deliveryId、eventId和payloadDigest；手机原子清理正文，重复确认仅返回原元数据。', z.object(delivery), 'delivery', value => ({ ...value, acknowledge: true }), false);
 const snapshot = z.string().min(1);
 function control(name, title, op, args, optionalTask = false, readOnly = false) {
   register(name, title, `${title}。后续调用必须保留明确的 taskSessionId 与 snapshotId，本机确认不会由远端自动回答。`,

@@ -39,6 +39,8 @@ data class PhoneControlResult(
     val artifacts: List<ControlArtifact> = emptyList(),
     val ui: ControlValue.Object? = null,
     val completion: PhoneControlCompletion = PhoneControlCompletion.SUCCEEDED,
+    /** 敏感正文仅内存保存；回读历史、流和产物时也必须重新复核本机许可。 */
+    val requireContentAccess: (() -> Unit)? = null,
 )
 
 data class ControlArtifact(val id: String, val mimeType: String, val version: String, val bytes: ByteArray)

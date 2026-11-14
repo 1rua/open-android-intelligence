@@ -41,6 +41,10 @@ sealed interface ControlOperation {
     }
     data class Status(val targetRequestId: String, val targetTaskSessionId: String) : ControlOperation { override val wireName = "request.status" }
     data class Cancel(val targetRequestId: String) : ControlOperation { override val wireName = "request.cancel" }
+    class Delivery(val deliveryId: String,val eventId: String,val token: String,val payloadDigest: String,val acknowledge: Boolean) : ControlOperation {
+        override val wireName get()=if (acknowledge) "push.ack_delivery" else "push.read_delivery"
+        override fun toString()="Delivery(deliveryId=$deliveryId,acknowledge=$acknowledge)"
+    }
 }
 
 /** 规范参数摘要覆盖操作及完整 args，正文只保留于活跃请求内存，不进入元数据账本。 */

@@ -172,6 +172,8 @@ class OpenAndroidIntelligenceApplication : Application() {
             }
         }
 
+        devicePush = DevicePushComposition(this,installId).also { it.start() }
+
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped

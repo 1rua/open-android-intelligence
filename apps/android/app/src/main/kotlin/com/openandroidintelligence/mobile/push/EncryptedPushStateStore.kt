@@ -58,8 +58,8 @@ class EncryptedPushStateStore(
             require(installationId.isNotBlank() && installationId.length <= 512)
             val digest = MessageDigest.getInstance("SHA-256").digest(installationId.toByteArray())
                 .joinToString("") { "%02x".format(it) }
-            val file = File(context.noBackupFilesDir, "device-push-v1/$digest.bin")
-            val alias = "oai_device_push_v1_$digest"
+            val file = File(context.noBackupFilesDir, "device-push-remote-v1/$digest.bin")
+            val alias = "oai_device_push_remote_v1_$digest"
             if (file.isFile) {
                 val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 if (!keys.containsAlias(alias)) throw PushStateUnavailable()
@@ -77,7 +77,7 @@ class EncryptedPushStateStore(
 internal object PushStateCodec {
     fun encode(state: PushStoredState): ByteArray = ByteArrayOutputStream().use { bytes ->
         DataOutputStream(bytes).use { out ->
-            out.writeInt(4)
+            out.writeInt(5)
             out.text(state.installationId)
             out.writeLong(state.revision)
             out.writeLong(state.observedAtEpochMs)
@@ -108,6 +108,11 @@ internal object PushStateCodec {
                 out.writeInt(ids.size)
                 ids.forEach { out.text(it) }
             }
+            out.writeInt(state.remoteReceipts.size)
+            state.remoteReceipts.values.forEach { receipt ->
+                out.text(receipt.deliveryId); out.endpoint(receipt.endpoint); out.text(receipt.eventId)
+                out.text(receipt.payloadDigest); out.text(receipt.tokenHash); out.writeLong(receipt.expiresAt); out.writeBoolean(receipt.consumed);out.optional(receipt.readerKey);out.text(receipt.dispatchState)
+            }
         }
         bytes.toByteArray()
     }
@@ -116,7 +121,7 @@ internal object PushStateCodec {
         require(bytes.size <= MAX_PUSH_STATE_BYTES)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt()
-            check(version in 1..4)
+            check(version in 1..5)
             val installation = input.text(2_048)
             val revision = input.nonnegative()
             val observed = input.nonnegative()
@@ -139,7 +144,7 @@ internal object PushStateCodec {
                 check(kind == PushKind.SMS || proof.isEmpty())
                 val targets = linkedMapOf<PushEndpoint, String?>()
                 repeat(input.count(MAX_PUSH_ENDPOINTS)) {
-                    val target = input.endpoint()
+                    val target = input.endpoint(version)
                     check(!targets.containsKey(target))
                     targets[target] = input.optional()
                 }
@@ -158,7 +163,7 @@ internal object PushStateCodec {
             if (version >= 3) {
                 var totalIds = 0
                 repeat(input.count(MAX_PUSH_REVOCATION_ROUTES)) {
-                    val endpoint = input.endpoint()
+                    val endpoint = input.endpoint(version)
                     check(endpoint !in revocations)
                     val ids = List(input.count(MAX_PUSH_REVOCATION_IDS)) { input.text(128) }
                     totalIds += ids.size
@@ -167,8 +172,16 @@ internal object PushStateCodec {
                     revocations[endpoint] = ids.toSet()
                 }
             }
+            val receipts=linkedMapOf<String,RemotePushReceiptRecord>()
+            if (version >= 5) repeat(input.count(MAX_PUSH_REVOCATION_IDS)) {
+                val id=input.text(128); val endpoint=input.endpoint(version); val event=input.text(128)
+                val receipt=RemotePushReceiptRecord(id,endpoint,event,input.text(128),input.text(128),input.nonnegative(),input.readBoolean(),input.optional(),input.text(32))
+                check(id !in receipts && endpoint.remoteTarget != null)
+                check(receipt.dispatchState in setOf("prepared","dispatched","accepted","outcome_unknown"))
+                receipts[id]=receipt
+            }
             check(input.available() == 0 && events.all { it.event.eventId in seen })
-            PushStoredState(installation, revision, observed, config, events, seen, expired, revoked, capacity, smsCursor, revocations)
+            PushStoredState(installation, revision, observed, config, events, seen, expired, revoked, capacity, smsCursor, revocations,receipts)
         }
     }
 
@@ -190,7 +203,7 @@ internal object PushStateCodec {
     }
 
     private fun DataInputStream.config(version: Int): PushConfiguration {
-        val notifications = NotificationPushSettings(readBoolean(), NotificationPushScope(notificationPackages(), readBoolean()), endpoints())
+        val notifications = NotificationPushSettings(readBoolean(), NotificationPushScope(notificationPackages(), readBoolean()), endpoints(version))
         val smsEnabled = readBoolean()
         val senders = strings()
         val allSenders = readBoolean()
@@ -199,18 +212,24 @@ internal object PushStateCodec {
         val mode = if (version >= 4) SmsScopeMode.valueOf(text(64))
             else if (allSenders) SmsScopeMode.ALL else SmsScopeMode.PHONE_NUMBERS
         val keywords = if (version >= 4) strings() else emptySet()
-        val sms = SmsPushSettings(smsEnabled, SmsPushScope(senders, allSenders, content, mode, keywords), endpoints())
+        val sms = SmsPushSettings(smsEnabled, SmsPushScope(senders, allSenders, content, mode, keywords), endpoints(version))
         return PushConfiguration(notifications, sms, readInt(), readInt(), readInt())
     }
 
     private fun DataOutputStream.endpoint(value: PushEndpoint) {
         text(value.coreInstanceId); text(value.accountScope); text(value.endpointId); writeLong(value.generation)
+        writeBoolean(value.remoteTarget != null)
+        value.remoteTarget?.let { text(com.openandroidintelligence.gateway.schema.Json.canonical(it.encode())) }
     }
-    private fun DataInputStream.endpoint() = PushEndpoint(text(1_024), text(1_024), text(1_024), readLong())
+    private fun DataInputStream.endpoint(version: Int): PushEndpoint {
+        val core=text(1_024);val account=text(1_024);val id=text(1_024);val generation=readLong()
+        val remote=if (version >= 5 && readBoolean()) RemotePushTarget.decode(com.openandroidintelligence.gateway.schema.Json.parse(text(16_384))) else null
+        return PushEndpoint(core,account,id,generation,remote)
+    }
     private fun DataOutputStream.endpoints(value: Set<PushEndpoint>) {
         writeInt(value.size); value.forEach { endpoint(it) }
     }
-    private fun DataInputStream.endpoints() = List(count(MAX_PUSH_ENDPOINTS)) { endpoint() }.toSet().also {
+    private fun DataInputStream.endpoints(version: Int) = List(count(MAX_PUSH_ENDPOINTS)) { endpoint(version) }.toSet().also {
         check(it.size <= MAX_PUSH_ENDPOINTS)
     }
     private fun DataOutputStream.strings(value: Set<String>) { writeInt(value.size); value.forEach { text(it) } }

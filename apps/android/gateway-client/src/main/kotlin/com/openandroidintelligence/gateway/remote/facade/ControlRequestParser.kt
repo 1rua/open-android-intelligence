@@ -98,6 +98,13 @@ object ControlRequestParser {
         "request.cancel" -> {
             a.exact(setOf("targetRequestId")); ControlOperation.Cancel(requestId(a.text("targetRequestId")))
         }
+        "push.read_delivery", "push.ack_delivery" -> {
+            a.exact(setOf("deliveryId","eventId","token","payloadDigest"))
+            val delivery=a.text("deliveryId");val event=a.text("eventId");val token=a.text("token");val digest=a.text("payloadDigest")
+            if (!Regex("delivery_[0-9a-f]{32}").matches(delivery) || !Regex("push_[0-9a-f]{64}").matches(event) ||
+                !Regex("[A-Za-z0-9_-]{43}").matches(token) || !Regex("sha256:[0-9a-f]{64}").matches(digest)) fail("CONTROL_PARAMETERS_INVALID")
+            ControlOperation.Delivery(delivery,event,token,digest,op == "push.ack_delivery")
+        }
         else -> fail("CONTROL_OPERATION_UNSUPPORTED")
     }
 
@@ -139,6 +146,8 @@ object ControlRequestParser {
             "method" to operation.method, "params" to fromControl(operation.params))
         is ControlOperation.Status -> mapOf("targetRequestId" to operation.targetRequestId, "targetTaskSessionId" to operation.targetTaskSessionId)
         is ControlOperation.Cancel -> mapOf("targetRequestId" to operation.targetRequestId)
+        is ControlOperation.Delivery -> mapOf("deliveryId" to operation.deliveryId,"eventId" to operation.eventId,
+            "token" to operation.token,"payloadDigest" to operation.payloadDigest)
     }
 
     private fun fromControl(value: ControlValue): JsonValue = when (value) {

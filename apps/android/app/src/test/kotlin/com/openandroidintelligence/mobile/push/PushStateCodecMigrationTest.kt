@@ -37,7 +37,7 @@ class PushStateCodecMigrationTest {
             assertEquals(before.configuration, after.configuration)
             assertTrue(after.revocations.isEmpty())
             val upgraded = AesGcmEncryptedBlobStore(memory, key).readPlaintext()!!
-            try { assertEquals(4, DataInputStream(ByteArrayInputStream(upgraded)).readInt()) }
+            try { assertEquals(5, DataInputStream(ByteArrayInputStream(upgraded)).readInt()) }
             finally { upgraded.fill(0) }
         }
     }
@@ -58,7 +58,7 @@ class PushStateCodecMigrationTest {
         assertEquals(before.seen, after.seen)
         assertEquals(expectedRevocations, after.revocations)
         assertEquals(PushRevocation(other, expectedRevocations.getValue(other)), runtime.pendingRevocations().single())
-        assertEquals(4, java.io.DataInputStream(java.io.ByteArrayInputStream(PushStateCodec.encode(after))).readInt())
+        assertEquals(5, java.io.DataInputStream(java.io.ByteArrayInputStream(PushStateCodec.encode(after))).readInt())
         clock.epoch += PUSH_HOUR_MS
         clock.elapsed += PUSH_HOUR_MS
         runtime.maintain()
@@ -76,7 +76,7 @@ class PushStateCodecMigrationTest {
             assertTrue(decoded.configuration.sms.scope.senderAddresses.isEmpty())
             assertEquals(decoded, PushStateCodec.decode(PushStateCodec.encode(decoded)))
         }
-        val future = PushStateCodec.encode(PushStoredState("future")).apply { this[3] = 5 }
+        val future = PushStateCodec.encode(PushStoredState("future")).apply { this[3] = 6 }
         assertThrows(IllegalStateException::class.java) { PushStateCodec.decode(future) }
     }
 
@@ -103,7 +103,7 @@ class PushStateCodecMigrationTest {
             assertEquals(committed, reopened.load())
             val upgraded = AesGcmEncryptedBlobStore(memory, key).readPlaintext()!!
             try {
-                assertEquals(4, DataInputStream(ByteArrayInputStream(upgraded)).readInt())
+                assertEquals(5, DataInputStream(ByteArrayInputStream(upgraded)).readInt())
             } finally { upgraded.fill(0) }
         }
     }
@@ -136,7 +136,7 @@ class PushStateCodecMigrationTest {
             },
             "invalid package UTF-8" to valid.copyOf().also { it[itemOffset] = 0x80.toByte() },
             "truncated state tail" to valid.copyOf(valid.size - 1),
-            "future version" to withInt(0, 5),
+            "future version" to withInt(0, 6),
         )
         for ((label, bytes) in malformed) {
             assertThrows(label, Exception::class.java) { PushStateCodec.decode(bytes) }

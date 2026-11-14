@@ -116,7 +116,11 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             }
             else -> fail("METHOD_NOT_FOUND")
         }
-        }.onEach { requireOutput(access, epoch, metadataOnly) }
+        }.onEach { requireOutput(access, epoch, metadataOnly);requireStreamContent(access,method,input) }
+    }
+
+    fun requireStreamContent(access: ControlAccessBinding,method: String,input: JsonValue) {
+        if (method == "session/follow") bus.requireTaskContent(access,sessionId(request(carrierArgs(input))))
     }
 
     private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf("items" to listOf(mapOf("workspaceId" to WORKSPACE,

@@ -49,7 +49,7 @@ def main() -> int:
     dependencies = [stdlib, coroutines, artifact("junit/junit", "4.13.2"),
                     artifact("org.hamcrest/hamcrest-core", "1.3"),
                     toolchains / "android-sdk/platforms/android-36/android.jar"]
-    for module in (("gateway-client", "encrypted-store", "core-model", "policy-engine") if notification_sources else ("gateway-client", "encrypted-store", "core-model")):
+    for module in (("gateway-client", "encrypted-store", "core-model", "policy-engine") if notification_sources else ("gateway-client", "encrypted-store", "core-model", "control-ports")):
         jar = repo / f"apps/android/{module}/build/intermediates/runtime_library_classes_jar/debug/bundleLibRuntimeToJarDebug/classes.jar"
         if not jar.is_file():
             # Shared worktrees compile their current sources here; support jars are read-only.
@@ -68,15 +68,16 @@ def main() -> int:
     else:
         source = repo / "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push"
         tests = Path(__file__).resolve().parent
-        sources = [source / name for name in ("PushModels.kt", "EncryptedPushStateStore.kt", "DevicePushRuntime.kt", "DevicePushCycle.kt", "GatewayPushTransport.kt")]
+        sources = [source / name for name in ("PushModels.kt", "EncryptedPushStateStore.kt", "DevicePushRuntime.kt", "DevicePushCycle.kt", "GatewayPushTransport.kt", "RemotePushTarget.kt", "RemotePushTransport.kt")]
         sources.append(repo / "apps/android/platform-kernel/src/main/kotlin/com/openandroidintelligence/kernel/SmsScope.kt")
+        sources.append(repo / "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/ControlScopes.kt")
         # The picker DTO lives beside UI. Read its exact declaration, without a behavior stub.
         declaration = next(line for line in (source / "PushSettingsScreen.kt").read_text().splitlines()
                            if line.startswith("data class PushEndpointOption("))
         dto = output / "PushEndpointOption.kt"
         dto.write_text("package com.openandroidintelligence.mobile.push\n" + declaration + "\n")
         sources.append(dto)
-        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "DevicePushCycleTest", "PushStateCodecMigrationTest", "NotificationPushScopePersistenceTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest"]
+        test_classes = ["DevicePushRuntimeTest", "GatewayPushTransportTest", "PushRevocationTest", "DevicePushCycleTest", "PushStateCodecMigrationTest", "NotificationPushScopePersistenceTest", "PushEndpointAvailabilityTest", "SmsPushScopeTest", "RemotePushTransportTest"]
         sources.extend(tests / f"{name}.kt" for name in test_classes)
         test_package = "com.openandroidintelligence.mobile.push."
     compiled = output / "classes"

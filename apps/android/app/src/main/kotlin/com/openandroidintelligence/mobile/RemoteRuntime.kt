@@ -132,6 +132,43 @@ class RemoteRuntime(
     val connectedProfileId: String? get() = state.value.account?.let { profileId(it.origin) }
     val connectedAgentName: String? get() = state.value.endpoints.firstOrNull { it.endpoint.key == state.value.selected }?.endpoint?.displayName
 
+    /** 只借当前已认证端点和明确会话，不创建连接、不选工作区，也不创建对话。 */
+    fun borrowPushSession(): com.openandroidintelligence.mobile.push.RemotePushSession? {
+        val borrowed=channel ?: return null
+        val ownedRepository=repository ?: return null
+        val selected=state.value.selected ?: return null
+        val thread=controller.value?.state?.value?.activeThreadId ?: return null
+        val sessionId=runCatching { RemoteLocalIds.decode(thread) }.getOrNull() ?: return null
+        val identity=com.openandroidintelligence.mobile.push.RemotePushIdentity(context)
+        val peer=runCatching { accountRuntime.authenticatedPeer(borrowed.scope.connectionId) }.getOrNull() ?: return null
+        val target=runCatching { identity.target(peer,selected.backendId.value,selected.workspaceId,sessionId) }.getOrNull() ?: return null
+        val label=state.value.endpoints.firstOrNull { it.endpoint.key == selected }?.endpoint?.displayName ?: return null
+        fun current(): Boolean = channel === borrowed && repository === ownedRepository && state.value.selected == selected &&
+            controller.value?.state?.value?.activeThreadId == thread && accountRuntime.account.value?.let {
+                it.origin == target.origin && it.accountId == target.accountId && it.epoch == target.accountEpoch
+            } == true && runCatching { accountRuntime.authenticatedPeer(borrowed.scope.connectionId) == peer }.getOrDefault(false) && identity.isCurrent(target)
+        if (!current()) return null
+        return object : com.openandroidintelligence.mobile.push.RemotePushSession {
+            override val target=target
+            override val label="$label · $sessionId"
+            override fun isCurrent()=current()
+            override suspend fun notify(requestId: String,text: String,beforeSend: () -> Unit) {
+                fun checkCurrent() { beforeSend(); check(current()) { "PUSH_SESSION_CHANGED" } }
+                val guarded=object : RemoteRpcChannel by borrowed {
+                    override suspend fun invoke(method: String,params: JsonValue.JObject,requestId: String,timeoutMs: Long): JsonValue {
+                        checkCurrent()
+                        val result=borrowed.invoke(method,params,requestId,timeoutMs)
+                        checkCurrent();return result
+                    }
+                }
+                val carrier=carriers(guarded).firstOrNull { it.backend == selected.backendId.value } ?: error("PUSH_BACKEND_UNAVAILABLE")
+                checkCurrent()
+                carrier.prompt(sessionId,requestId,listOf(Json.of(mapOf("type" to "text","text" to text))))
+                checkCurrent()
+            }
+        }
+    }
+
     private fun access(connection: RemoteRpcConnectionScope): ControlAccessBinding {
         val peer = accountRuntime.authenticatedPeer(connection.connectionId)
         check(peer.scope == connection && peer.role == RemoteRole.HOST) { "REMOTE_HOST_BINDING_MISMATCH" }

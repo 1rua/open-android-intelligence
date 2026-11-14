@@ -29,6 +29,7 @@ class PhoneControlBus(
         val jobs = mutableMapOf<String, Job>()
         val access = mutableMapOf<String, ControlAccessBinding>()
         val artifacts = mutableMapOf<String, Pair<String, ControlArtifact>>()
+        val contentChecks = mutableMapOf<String,() -> Unit>()
         var revision = 0L
     }
     private val lock = Any()
@@ -174,6 +175,7 @@ class PhoneControlBus(
                     finish(access, task, request.requestId)
                     return
                 }
+                result.requireContentAccess?.let { check -> check();task.contentChecks[request.requestId]=check }
                 val artifacts = result.artifacts.map { artifact ->
                     require(Regex("[A-Za-z0-9_-]+").matches(artifact.id)) { "CONTROL_ARTIFACT_INVALID" }
                     task.artifacts[artifact.id] = request.requestId to artifact.copy(bytes = artifact.bytes.copyOf())
@@ -297,8 +299,10 @@ class PhoneControlBus(
         executor.requireCurrentAccess(access)
         val row = find(access, taskId, requestId)
         val task = tasks[key(access, taskId)]
-        val fields = minimal(row, !stopped && task?.results?.containsKey(requestId) == true).toMutableMap()
-        if (!stopped) (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
+        val contentCurrent=runCatching { task?.contentChecks?.get(requestId)?.invoke();true }.getOrDefault(false)
+        val available=!stopped && contentCurrent && task?.results?.containsKey(requestId) == true
+        val fields = minimal(row, available).toMutableMap()
+        if (available) (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
         Json.of(fields)
     }
 
@@ -307,6 +311,7 @@ class PhoneControlBus(
         requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
         require(maxMessages in 1..50) { "CONTROL_PAGE_LIMIT_INVALID" }
+        task.contentChecks.values.forEach { it() }
         val cursor = task.records.size.toLong() - 1
         val through = throughSeq ?: cursor
         require(through in -1..cursor && (beforeSeq == null || beforeSeq in 0..(through + 1))) { "CONTROL_CURSOR_INVALID" }
@@ -323,6 +328,7 @@ class PhoneControlBus(
     fun artifact(access: ControlAccessBinding, taskId: String, artifactId: String): ControlArtifact = synchronized(lock) {
         requireOutput(access, deliveryEpoch)
         val task = task(access, taskId)
+        task.contentChecks.values.forEach { it() }
         val found = task.artifacts[artifactId]?.second ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
         found.copy(bytes = found.bytes.copyOf())
     }
@@ -330,8 +336,13 @@ class PhoneControlBus(
     fun eventsSince(access: ControlAccessBinding, taskId: String, seq: Long): List<JsonValue> = synchronized(lock) {
         requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
+        task.contentChecks.values.forEach { it() }
         if (seq !in -1 until task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
         task.records.drop((seq + 1).toInt()).toList()
+    }
+
+    fun requireTaskContent(access: ControlAccessBinding,taskId: String) = synchronized(lock) {
+        task(access,taskId).contentChecks.values.forEach { it() }
     }
 
     private fun task(access: ControlAccessBinding, id: String): Task {

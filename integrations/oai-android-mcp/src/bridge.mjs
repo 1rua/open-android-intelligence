@@ -16,6 +16,7 @@ const inputs = {
   cancel: binding.extend({ targetRequestId: requestId, request_id: requestId }),
   read_artifact: binding.extend({ artifactId: z.string().regex(/^[A-Za-z0-9_-]+$/u) }),
   request_result: binding.extend({ targetRequestId: requestId }),
+  delivery: target.extend({ request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u), acknowledge: z.boolean() }),
 };
 const operations = new Set(['ui.dump_tree', 'ui.capture_som', 'ui.tap', 'ui.long_press', 'ui.swipe', 'ui.input_text',
   'ui.global_action', 'ui.scroll', 'ui.drag', 'ui.launch_app', 'plugin.invoke']);
@@ -53,6 +54,11 @@ export class PhoneMcpBridge {
     }
     await this.#target(args, signal);
     const fixed = { hostId: args.hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
+    if (operation === 'delivery') {
+      const created = await this.#tool('remote_create_session', { ...fixed, operationId: randomUUID() }, signal);
+      if (created.status !== 'accepted' || !created.sessionId) throw new Error('PHONE_TASK_CREATE_UNCERTAIN');
+      return this.#send(fixed, created.sessionId, { request_id: args.request_id, op: args.acknowledge ? 'push.ack_delivery' : 'push.read_delivery', args: { deliveryId: args.deliveryId, eventId: args.eventId, token: args.token, payloadDigest: args.payloadDigest } }, signal);
+    }
     if (operation === 'read_artifact') return this.#tool('remote_download_file', { ...fixed, sessionId: args.taskSessionId, path: `artifacts/${args.artifactId}` }, signal);
     if (operation === 'capabilities') return this.#send(fixed, 'control-bus', { request_id: randomUUID(), op: 'phone.capabilities', args: {} }, signal);
     if (operation === 'request_result') return this.#readResult(fixed, args.taskSessionId, args.targetRequestId, signal);
