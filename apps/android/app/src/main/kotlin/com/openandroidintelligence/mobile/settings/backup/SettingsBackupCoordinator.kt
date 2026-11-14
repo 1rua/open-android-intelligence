@@ -9,7 +9,7 @@ import com.openandroidintelligence.conversation.theme.ThemePalette
 import com.openandroidintelligence.core.model.NotificationDeliveryMode
 import com.openandroidintelligence.core.model.NotificationFieldAccess
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
-import com.openandroidintelligence.gateway.http.GatewayEndpoint
+import com.openandroidintelligence.mobile.ServiceAddress
 import com.openandroidintelligence.mobile.LocalProfile
 import com.openandroidintelligence.mobile.LocalProfileStore
 import com.openandroidintelligence.mobile.AppearancePreferences
@@ -217,9 +217,9 @@ class SettingsBackupCoordinator(
             profiles.list().firstOrNull()?.serviceUrl,
         )
         val url = candidates.filterNotNull()
-            .firstOrNull { it.isNotBlank() && GatewayEndpoint.parse(it) != null }
+            .firstOrNull { it.isNotBlank() && ServiceAddress.parse(it) != null }
             ?: return null
-        // 地址里可能带着 user-info（`https://alice:secret@core.example`）：`GatewayEndpoint.parse`
+        // 地址里可能带着 user-info（`https://alice:secret@core.example`）：`ServiceAddress.parse`
         // 只校验 scheme 与 host，会原样接受。备份是明文的便携文件，绝不能把它写出去；
         // 去不掉就整节不导出——宁可少迁移一项，也不能泄漏凭据。
         return credentialFreeGateway(url)?.let(::ConnectionSection)
@@ -886,7 +886,7 @@ internal fun credentialFreeGateway(url: String): String? = runCatching {
         uri.scheme, null, uri.host, uri.port, uri.path, uri.query, uri.fragment,
     ).toString()
     // 重建后必须仍是被同一个解析器接受的地址，否则说明这条 URL 的形状我们理解错了。
-    if (GatewayEndpoint.parse(rebuilt) == null) null else rebuilt
+    if (ServiceAddress.parse(rebuilt) == null) null else rebuilt
 }.getOrNull()
 
 /** 档案 ID 在备份文件里只以 SHA-256 出现：文件无法反推出账号名。 */

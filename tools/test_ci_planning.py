@@ -146,7 +146,7 @@ def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
 
 
 @pytest.mark.parametrize("path", [
-    "gateway-contract/schema/device.json",
+    "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/ControlRequest.kt",
     "apps/android/gradle.properties",
     "apps/android/build.gradle.kts",
     "apps/android/app/build.gradle.kts",
@@ -162,7 +162,7 @@ def test_security_and_build_config_paths_run_everything(impact, path):
 
 
 def test_core_security_paths_widen_the_matrix(impact):
-    result = impact.classify([("M", "oai-core/src/oai_core/gateway/transport.py")])
+    result = impact.classify([("M", "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/remote/security/AuthGate.kt")])
     assert result["full_required"] is True
 
 
@@ -218,10 +218,10 @@ def test_app_sections_narrow_to_the_touched_domain(impact):
         {"android-device"},
     ),
     (
-        "onboarding/data/GatewayTutorials.kt",
+        "onboarding/data/RemoteTutorials.kt",
         {"core", "settings"},
-        ["GatewayTutorialsTest"],
-        {"android-gateway"},
+        ["RemoteTutorialsTest"],
+        {"android-device"},
     ),
     (
         "onboarding/motion/ButtonRevealTransition.kt",
@@ -386,7 +386,7 @@ def test_executable_manifests_are_not_documentation(impact):
     """The app regression manifest and fixture requirements control tests."""
     for path in (
         "apps/android/ci/app-regression.txt",
-        "apps/android/ci/hermes-fixture-requirements.txt",
+        "tools/remote-source-integrity.ts",
     ):
         result = impact.classify([("M", path)])
         assert result["full_required"] is True, path

@@ -3,7 +3,7 @@ package com.openandroidintelligence.mobile.plugins
 import android.content.Context
 import com.openandroidintelligence.plugin.ui.*
 import com.openandroidintelligence.gateway.schema.Json
-import com.openandroidintelligence.gateway.http.*
+import com.openandroidintelligence.network.HttpsResourceClient
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.plugin.pkg.*
@@ -868,7 +868,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val builtIn = builtInSurfaces[call.identity.pluginId] ?: return null
         val usage = EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
         return MediatedNetworkProxy(NetworkAllowlist(builtIn.surface.networkHosts, emptySet(), emptyMap()),
-            gatewayMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+            httpsMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
     }
 
     private fun installedNetworkProxy(call: KernelCallContext): MediatedNetworkProxy {
@@ -884,16 +884,19 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             }.toMap()
             val usage=EncryptedDocuments(context,"plugin-network-usage:${call.identity}:${call.accountId}:${call.pairingId}")
             return MediatedNetworkProxy(NetworkAllowlist(verified.security.surface.networkHosts,methods,byHost),
-                gatewayMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
+                httpsMediatedTransport(call), call.budget.maxDailyNetworkBytes, usageStore = encryptedNetworkUsageStore(usage))
         } finally { verified.stagedDirectory.deleteRecursively() }
     }
 
-    private fun gatewayMediatedTransport(call: KernelCallContext): MediatedTransport = object : MediatedTransport {
+    private fun httpsMediatedTransport(call: KernelCallContext): MediatedTransport = object : MediatedTransport {
         override fun exchange(request: MediatedRequest): MediatedResponse = runBlocking {
-            val transport = GatewayTransport(GatewayProfile("plugin","plugin","plugin","https://${request.host}"),maximumResponseBytes=minOf(request.maximumResponseBytes.toLong(),call.budget.maxOutputBytes/2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
-            val result = withTimeout(call.budget.maxInvocationMillis) { transport.execute(WireRequest(request.method,request.pathAndQuery,
-                request.headers.map { RawHeader(it.key,it.value) },request.body ?: ByteArray(0))) }
-            MediatedResponse(result.status,result.headers.associate { it.name to it.value },result.body)
+            val result = withTimeout(call.budget.maxInvocationMillis) {
+                HttpsResourceClient().exchange("https://${request.host}${request.pathAndQuery}", request.method,
+                    request.headers.map { it.key to it.value }, request.body ?: ByteArray(0),
+                    maximumBytes = minOf(request.maximumResponseBytes.toLong(), call.budget.maxOutputBytes / 2)
+                        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            }
+            MediatedResponse(result.status,result.headers.toMap(),result.body)
         }
     }
 

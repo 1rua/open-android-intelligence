@@ -3,11 +3,6 @@ package com.openandroidintelligence.mobile
 import com.openandroidintelligence.conversation.ports.AttachmentContentSource
 import com.openandroidintelligence.conversation.ports.LocalAttachmentSelection
 import com.openandroidintelligence.encrypted.store.EncryptedAttachmentStagingStore
-import com.openandroidintelligence.gateway.http.GatewayProfile
-import com.openandroidintelligence.gateway.http.GatewayRequestBody
-import com.openandroidintelligence.gateway.http.GatewayTransport
-import com.openandroidintelligence.gateway.http.RawHeader
-import com.openandroidintelligence.gateway.http.WireRequest
 import java.io.InputStream
 import java.security.MessageDigest
 import java.util.Base64
@@ -23,7 +18,7 @@ class AttachmentStreamEndToEndTest {
     @get:Rule val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun pickerStyleStreamStagesEncryptedAndUploadsExactBytesAtOneTwentyFiveAndFiftyMib() = runBlocking {
+    fun pickerStreamStagesEncryptedAndReopensExactBytesAtOneTwentyFiveAndFiftyMib() = runBlocking {
         val store = EncryptedAttachmentStagingStore(
             directory = temporaryFolder.root,
             key = SecretKeySpec(ByteArray(32) { (it + 11).toByte() }, "AES"),
@@ -43,39 +38,19 @@ class AttachmentStreamEndToEndTest {
             assertEquals(size, staged.sizeBytes)
             assertEquals(expectedDigest, staged.sha256Hex)
 
-            val capture = LoopbackStreamingGatewayStub()
-            capture.use { stub ->
-                val body = GatewayRequestBody(
-                    contentLength = staged.sizeBytes,
-                    sha256Hex = staged.sha256Hex,
-                    openStream = { store.openStream(staged.id) },
-                )
-                val digestHeader = "sha-256=" + Base64.getEncoder().encodeToString(staged.sha256Hex.hexBytes())
-                val response = GatewayTransport(
-                    GatewayProfile("account-1", "device-1", "session-1", stub.baseUrl),
-                ).execute(
-                    WireRequest(
-                        method = "PUT",
-                        target = "/open-android-intelligence/v2/attachments/att_$index/content",
-                        headers = listOf(
-                            RawHeader("Content-Length", size.toString()),
-                            RawHeader("Digest", digestHeader),
-                        ),
-                        streamBody = body,
-                    ),
-                )
-                assertEquals(200, response.status)
-                val observed = stub.awaitRequest()
-                assertEquals(size, observed.contentLength)
-                assertEquals(size, observed.bodyLength)
-                assertEquals(expectedDigest, observed.bodySha256Hex)
-                assertEquals(1, observed.headers.count { it.startsWith("Content-Length:", ignoreCase = true) })
-                assertEquals(size.toString(), observed.headers.single { it.startsWith("Content-Length:", ignoreCase = true) }.substringAfter(':').trim())
-                assertEquals(
-                    "sha-256=" + Base64.getEncoder().encodeToString(expectedDigest.hexBytes()),
-                    observed.headers.single { it.startsWith("Digest:", ignoreCase = true) }.substringAfter(':').trim(),
-                )
+            val digest = MessageDigest.getInstance("SHA-256")
+            var observed = 0L
+            store.openStream(staged.id).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                    observed += count
+                }
             }
+            assertEquals(size, observed)
+            assertEquals(expectedDigest, digest.digest().toHex())
             store.delete(staged.id)
         }
     }

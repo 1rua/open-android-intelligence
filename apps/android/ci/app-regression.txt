@@ -22,7 +22,6 @@ AndroidApiCompatibilityTest
 AndroidAttachmentDownloadsTest
 AppUpdateCheckerTest
 ApplicationCompositionTest
-ApprovalAuditBridgeTest
 ArchitectureBoundaryTest
 AssistantAttachmentDraftCoordinatorHandoffTest
 AssistantAttachmentWrapperRegistrationTest
@@ -43,7 +42,6 @@ EncryptedHistoryMediaCacheTest
 EncryptedMirrorRecoveryTest
 EncryptedSendAtomRecoveryTest
 GatewayNetworkMonitorTest
-GatewayWorkbenchLogoutTest
 IndependentConnectionDiscoveryTest
 InputPlatformRegressionTest
 LiveUpdateNotificationsTest
@@ -72,10 +70,10 @@ SharedConversationDeliveryTest
 SqliteConversationMigrationTest
 TemporaryApprovalCopyTest
 TrustModePersistenceTest
-WorkbenchConnectionHealthTest
 WorkbenchNavigationTest
 
 [settings]
+RemoteTutorialsTest
 AdvancedSettingsScreenTest
 AppUpdateScreenTest
 AppUpdateViewModelTest
@@ -86,7 +84,6 @@ CapabilityCatalogTest
 CapabilitySettingsTest
 CapabilityStateTest
 CapabilityTemporaryApprovalsTest
-GatewayTutorialsTest
 MessageProcessingSettingsTest
 NotificationScopeOwnershipTest
 OnboardingStateTest
@@ -111,13 +108,10 @@ SmsSendPluginHostTest
 BuiltInCapabilitiesTest
 BundledPluginsTest
 CapabilityAuthorizationControlsTest
-CapabilityPublisherTest
 ClientCapabilityAuthorizationTest
 DeviceCapabilityBlockTest
 DeviceCapabilityPermissionsTest
 DeviceCapabilitySyncStateTest
-DeviceExecutionRecoveryTest
-DeviceGrantFenceTest
 LegacyOfficialCopyIsNeverLoadedTest
 NotificationAccessSettingsTest
 PluginCapabilityRiskTest
@@ -127,23 +121,21 @@ PluginManagementScreenTest
 PluginPackageInputTest
 ProductionPluginHostTest
 ScreenCaptureGrantRoutingTest
-ScreenExecutionErrorsTest
 SmsPassiveScopeSettingsTest
 
 [push-notifications]
+RemotePushTransportTest
 RemotePushRecipientAuthorizationTest
 RemoteCompletionNotificationTest
 AccessibilityServiceWiringTest
 DeviceAuthorizationCopyTest
 DevicePushCycleTest
 DevicePushRuntimeTest
-GatewayPushTransportTest
 InstalledNotificationAppCacheTest
 InstalledNotificationAppsTest
 NotificationCollectionScreenTest
 NotificationPushScopePersistenceTest
 NotificationPushScopeSettingsTest
-PushEndpointAvailabilityTest
 PushRevocationTest
 PushSettingsScreenTest
 PushStateCodecMigrationTest

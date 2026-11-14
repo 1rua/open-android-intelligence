@@ -1,6 +1,6 @@
 package com.openandroidintelligence.mobile.plugins
 
-import com.openandroidintelligence.gateway.http.*
+import com.openandroidintelligence.network.HttpsResourceClient
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.plugin.pkg.*
 import java.net.URI
@@ -11,8 +11,7 @@ object RemotePluginSource {
     private fun fetch(url: String,pins: Set<String>): ByteArray = runBlocking {
         val uri = URI(url)
         require(uri.scheme == "https" && uri.host != null && uri.userInfo == null && uri.fragment == null && (uri.port == -1 || uri.port == 443)) { "SOURCE_NOT_HTTPS" }
-        val transport = GatewayTransport(GatewayProfile("package","package","package","https://${uri.host}",pins))
-        val result = transport.execute(WireRequest("GET",(uri.rawPath.takeIf { it.isNotEmpty() } ?: "/") + (uri.rawQuery?.let { "?$it" } ?: "")))
+        val result = HttpsResourceClient().exchange(url, pins = pins, maximumBytes = 32 * 1024 * 1024)
         require(result.status == 200 && result.body.size <= 32*1024*1024) { "SOURCE_FETCH_FAILED" }
         result.body
     }

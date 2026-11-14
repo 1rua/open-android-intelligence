@@ -88,3 +88,12 @@ def test_default_ci_uses_only_measured_optimization():
     assert inputs["app-jit"] == "${{ inputs.app-jit || 'startup' }}"
     assert inputs["app-jvm-mode"] == "${{ inputs.app-jvm-mode || 'isolated' }}"
     assert inputs["app-gc"] == "${{ inputs.app-gc || 'default' }}"
+
+
+def test_remote_tutorials_keep_normal_coverage_without_unreviewed_reuse():
+    tasks = planner()
+    selected = tasks.read_regression_manifest()
+    assert "RemoteTutorialsTest" in selected
+    reused = tasks.read_jvm_reuse_manifest()
+    assert "com.openandroidintelligence.mobile.onboarding.GatewayTutorialsTest" not in reused
+    assert "com.openandroidintelligence.mobile.onboarding.RemoteTutorialsTest" not in reused

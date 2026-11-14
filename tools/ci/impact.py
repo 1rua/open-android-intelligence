@@ -41,7 +41,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # A match here widens the matrix to everything: these changes can invalidate any
 # lane's assumptions, so narrowing by "which file changed" would be unsound.
 SECURITY_OR_CONTRACT_PREFIXES = (
-    "gateway-contract/",
+    "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/",
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/remote/security/",
     "apps/android/gradle/mvp-forbidden-surfaces.gradle.kts",
     "apps/android/gradle/wrapper/",
     "apps/android/gradle.properties",
@@ -71,7 +72,6 @@ SECURITY_OR_CONTRACT_PATHS = {
     ".github/workflows/release-gate.yml",
     "apps/android/ci/app-regression.txt",
     "apps/android/ci/app-jvm-reuse.txt",
-    "apps/android/ci/hermes-fixture-requirements.txt",
 }
 
 # Module lane -> app-test section. Modules without an entry are cross-cutting and

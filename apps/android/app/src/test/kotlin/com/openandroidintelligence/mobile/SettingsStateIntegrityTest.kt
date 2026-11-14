@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.events.EventStreamStatus
 import com.openandroidintelligence.mobile.settings.SettingsCategory
 import com.openandroidintelligence.mobile.settings.settingsOwner
 import org.junit.Assert.*

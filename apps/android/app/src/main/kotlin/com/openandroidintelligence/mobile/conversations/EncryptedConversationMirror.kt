@@ -20,6 +20,9 @@ import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvi
 import java.io.File
 import java.util.UUID
 
+/** 本机镜像身份沿用既有安全字符范围；该约束不依赖网络协议或登录。 */
+private val MIRROR_ID_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
+
 /** 加密范围包含 Gateway 身份；不同宿主的同名账号不会共用文档。 */
 class EncryptedConversationMirror(context: Context, private val scope: ConversationScope,
     keyProvider:com.openandroidintelligence.encrypted.store.AesGcmKeyProvider?=null,
@@ -69,7 +72,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             else -> error("MIRROR_CORRUPTED")
         }
         return PendingConversationManagementOperation(str(value,"requestId").also {
-            check(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
+            check(MIRROR_ID_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
         }, intent)
     }
     private fun pendingManagementOperation(id: String): PendingConversationManagementOperation? =
@@ -746,7 +749,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
     fun saveCursor(accountId: String,cursor: String) {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        require(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
+        require(MIRROR_ID_ALPHABET.matches(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
         documents.transaction { documents.write("cursor",encode(mapOf("value" to cursor))) }
     }
     fun clearCursor(accountId: String) {

@@ -16,14 +16,12 @@ com.openandroidintelligence.mobile.WorkbenchNavigationTest
 com.openandroidintelligence.mobile.assistant.AssistantBridgeServiceTest
 com.openandroidintelligence.mobile.assistant.AssistantClientScopeTest
 com.openandroidintelligence.mobile.conversations.NativeNotificationBridgeTest
-com.openandroidintelligence.mobile.onboarding.GatewayTutorialsTest
 com.openandroidintelligence.mobile.onboarding.OnboardingStateTest
 com.openandroidintelligence.mobile.onboarding.PermissionCatalogTest
 com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealGeometryTest
 com.openandroidintelligence.mobile.plugins.DeviceCapabilityBlockTest
 com.openandroidintelligence.mobile.plugins.PluginCapabilityRiskTest
 com.openandroidintelligence.mobile.plugins.PluginPackageInputTest
-com.openandroidintelligence.mobile.plugins.ScreenExecutionErrorsTest
 com.openandroidintelligence.mobile.push.PushStateCodecMigrationTest
 com.openandroidintelligence.mobile.screen.AccessibilityServiceWiringTest
 com.openandroidintelligence.mobile.screen.DeviceAuthorizationCopyTest
@@ -40,7 +38,6 @@ com.openandroidintelligence.mobile.settings.capabilities.CapabilityStateTest
 # 这些类仅使用 Robolectric 管理的 Android 权限、Intent、AccountManager、
 # ContentResolver、SharedPreferences 或每例独立的内存审计对象。
 com.openandroidintelligence.mobile.AndroidApiCompatibilityTest
-com.openandroidintelligence.mobile.ApprovalAuditBridgeTest
 com.openandroidintelligence.mobile.ContentResolverAttachmentSourceTest
 com.openandroidintelligence.mobile.InputPlatformRegressionTest
 com.openandroidintelligence.mobile.NativeNotificationRoutingTest

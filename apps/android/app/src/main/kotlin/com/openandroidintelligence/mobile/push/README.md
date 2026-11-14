@@ -89,35 +89,13 @@ ACK清理原子提交，未知结果不重发通知，缓冲历史与结果交�
 - 主动推送继续使用独立的 observer/runtime 范围和登录核验，不取决于被动 MANUAL 批准。
 - 使用普通 Application 的通知 HTTP 测试也要显式安装测试登录回调，并在结束时恢复默认拒绝。
 
-不启动 Gradle验证当前通知 service/session/source 编译与纯 JVM 行为：
-
-```sh
-python3 apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/run_push_unit_tests.py --notification-sources
-```
-
-证据写入 `apps/android/notification-collector/build/source-standalone-verification/`，不写 Gradle 报告。测试覆盖退出后不执行 raw factory、正文提取/系统快照期间退出不交付、登录恢复、门槛异常及主动/被动策略独立；不执行系统服务生命周期或 Manifest 验收。
-
 ## 验证与边界
 
-不启动 Gradle、只复用已有工具链及编译好的支持模块，可从仓库根运行：
-
-```sh
-python3 apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/run_push_unit_tests.py
-```
-
-该脚本重新编译当前 runtime/codec/transport 和 JVM 测试，输出到 `apps/android/app/build/push-standalone-verification/`，不修改 Gradle 测试报告。它不执行 Compose、Android 系统事件源或真机测试。
-
-真实 Core HTTP 撤回顺序测试：
-
-```sh
-PYTHONPATH=oai-core/src ../../.toolchains/approval-python/bin/python -m pytest -q \
-  -c oai-core/pyproject.toml \
-  apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/test_core_push_revocation.py
-```
-
-此命令复用仓库现有的真实 Core、签名客户端、隔离账号及接收端测试基础设施，不使用设备个人数据，也不能替代 Android 到 Core 的整机验收。Python 路径是当前工作树相对既有工具链的位置。
-
-撤回协议还必须阻止“撤回先到、原投递后到”重新暂存正文：Core 需为明确撤回的事件 ID 留有界撤销标记，并在实际提交前校验。该条件由独立顺序测试验证；是否通过必须看最新测试输出，不能仅凭 HTTP 撤回返回成功宣称完成。
+推送使用独立 Remote 连接与手机接收确认，不再依赖旧 Core `/v2/push`。
+PR 的 `push-notifications` 分组实际执行 `RemotePushTransportTest`、
+`RemotePushRecipientAuthorizationTest`、`RemotePushAuthorizationProtocolTest` 与持久队列测试。
+手机接收端、授权撤销、确认签名和丢失确认后的重投分别使用生产入口验证。
+完整测试由 `npm run test:pr` / `npm run test:full` 选择；隔离回归不代表真实 Host 或手机设备已验收。
 
 系统时钟回拨和进程重启不会直接清空未确认队列，也不会重写原事件的到期时间。
-运行期按单调时间与持久观察锚维护过期，重投保留原事件与内容摘要；实际长期断电与跨重启时钟漂移仍受Android可观察时钟限制。
+运行期按单调时间与持久观察锚维护过期，重投保留原事件与内容摘要；实际长期断电与跨重启时钟漂移仍受 Android 可观察时钟限制。

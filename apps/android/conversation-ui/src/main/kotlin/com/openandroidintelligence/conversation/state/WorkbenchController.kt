@@ -22,9 +22,8 @@ import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
 import com.openandroidintelligence.conversation.workbench.readOriginalBytes
-import com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
-import com.openandroidintelligence.gateway.http.EventSessionRejectedException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Deferred
@@ -4660,7 +4659,7 @@ class WorkbenchController(
                         false
                     } else {
                         update { it.copy(notice = "EVENTS_FAILED:${errorCodeOf(cause)}") }
-                        if (cause is EventSessionRejectedException || cause is SessionRecoveryPausedException) {
+                        if (remoteObservationExpired(cause)) {
                             false
                         } else {
                             delay(1000L)
@@ -4671,7 +4670,7 @@ class WorkbenchController(
                 .catch { cause ->
                     // The client already attempted authenticated recovery. Keep
                     // the workbench and wait for a new session or explicit wakeup.
-                    if (cause !is EventSessionRejectedException && cause !is SessionRecoveryPausedException) throw cause
+                    if (!remoteObservationExpired(cause)) throw cause
                 }
                 .collect { event ->
                     var retryingCommit = false
@@ -6244,3 +6243,8 @@ class WorkbenchController(
         const val MAX_APPROVAL_CARDS = 32
     }
 }
+
+
+/** 账号拒绝与设备连接撤销都停止当前订阅；不会在界面层清空账号或凭据。 */
+private fun remoteObservationExpired(failure: Throwable): Boolean = failure is RemoteRpcException &&
+    failure.code in setOf("ACCOUNT_AUTH_REQUIRED", "TOKEN_EXPIRED", "AUTH_INVALID", "DEVICE_REVOKED", "CONNECTION_REPLACED")
