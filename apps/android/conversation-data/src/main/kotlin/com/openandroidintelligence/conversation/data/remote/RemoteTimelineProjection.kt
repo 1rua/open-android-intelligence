@@ -12,6 +12,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private val clock: () -> Long = System::currentTimeMillis,
     private val mediaReference: ((String, JsonValue, RemoteMediaRevision) -> MessagePart.Attachment?)? = null,
     private val persistentMessageSequence: Boolean = true,
+    private val matchStartedGenerationToSubmission: Boolean = true,
 ) {
     val rows = linkedMapOf<String, TimelineMessage>()
     var generationId: String? = null
@@ -26,6 +27,27 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private var lastSeq: Long? = null
     data class TerminalReceipt(val generationId: String, val state: GenerationState, val occurredAt: Long)
     private val terminals = mutableMapOf<String, TerminalReceipt>()
+    // 临时提交身份只能升级为本轮真实身份，不能在下一轮重新指向当前任务。
+    private val generationAliases = mutableMapOf<String, String>()
+    // 仅标识 beginTurn 建立的本地等待窗口，不授权使用通知中的原生身份。
+    var submittedGenerationId: String? = null
+        private set
+    fun resolveGeneration(id: String): String = generationAliases[id] ?: id
+    fun isUnconfirmedGeneration(id: String): Boolean = generationAliases[id] == id
+    fun bindSubmittedGeneration(localId: String, nativeId: String) {
+        val previous = generationAliases[localId]
+        check(previous == null || previous == localId || previous == nativeId) { "REMOTE_GENERATION_MISMATCH" }
+        generationAliases[localId] = nativeId
+        terminals[localId]?.let { receipt -> terminals.putIfAbsent(nativeId, receipt.copy(generationId = nativeId)) }
+        if (generationId == localId) confirmGeneration(nativeId)
+    }
+    fun cancellationGeneration(expectedId: String): String? {
+        val resolved = resolveGeneration(expectedId)
+        return resolved.takeIf {
+            it == generationId && terminals[it] == null && generationState in setOf(
+                GenerationState.QUEUED, GenerationState.RUNNING, GenerationState.OUTCOME_UNKNOWN)
+        }
+    }
     fun terminal(id: String): TerminalReceipt? = terminals[id]
     private data class Source(val historical: Boolean, val time: Long, val historyRead: Long? = null) {
         fun id(value: String) = if (historical) "history:$value" else value
@@ -69,15 +91,19 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     }
 
     fun beginTurn(localRequestId: String) {
+        generationAliases.putIfAbsent(localRequestId, localRequestId)
+        submittedGenerationId = localRequestId
         generationId = localRequestId
         generationState = GenerationState.QUEUED
         resetAcpTurnContent()
     }
     fun confirmGeneration(id: String) {
         val previous = generationId
+        if (previous != id && previous != submittedGenerationId) submittedGenerationId = null
         // 只有本地 request 身份等待远端回执时才做身份迁移；新一轮真实 turn
         // 不能继承上一轮已经记录的终态。
-        if (previous?.startsWith("request:") == true && previous != id) {
+        if (matchStartedGenerationToSubmission && previous != null && isUnconfirmedGeneration(previous) && previous != id) {
+            generationAliases[previous] = id
             terminals[previous]?.let { receipt ->
                 terminals.putIfAbsent(id, receipt.copy(generationId = id))
             }

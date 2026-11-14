@@ -28,7 +28,9 @@ class RemoteConversationRepository(
     private val projections = ConcurrentHashMap<String, RemoteTimelineProjection>()
     private val follows = ConcurrentHashMap<String, Job>()
     private val ready = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
-    private data class PendingTurn(val message: OutgoingMessage, val members: List<ClientMessageId>, var generation: String)
+    private enum class IdentityResolution { PROMPT_FINISHED, TURN_ENDED }
+    private data class PendingTurn(val message: OutgoingMessage, val members: List<ClientMessageId>, var generation: String,
+        val identityReady: CompletableDeferred<IdentityResolution>)
     private val pending = ConcurrentHashMap<String, LinkedHashMap<String, PendingTurn>>()
     private val batchMembers = ConcurrentHashMap<String, List<ClientMessageId>>()
     private val models = ConcurrentHashMap<String, RemoteModelSelection>()
@@ -38,10 +40,10 @@ class RemoteConversationRepository(
     override val streamHealth: Flow<StreamHealth> = health
     private val failure = MutableStateFlow<String?>(null)
     override val streamFailure: Flow<String?> = failure
-    private val currentGeneration = MutableStateFlow<String?>(null)
-    override val generationId: StateFlow<String?> = currentGeneration
-    private val currentState = MutableStateFlow(GenerationState.IDLE)
-    override val generationState: StateFlow<GenerationState> = currentState
+    private val generation = RemoteGenerationState()
+    override val generationSnapshot: StateFlow<GenerationSnapshot> = generation.snapshot
+    override val generationId: StateFlow<String?> = generation.generationId
+    override val generationState: StateFlow<GenerationState> = generation.generationState
     private val approvals = ConcurrentHashMap<String, Pair<String, String>>()
     private val held = ConcurrentHashMap<String, LinkedHashMap<String, OutgoingMessage>>()
 
@@ -49,11 +51,12 @@ class RemoteConversationRepository(
     private fun current() {
         check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
     }
-    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness") }
-    fun activeConversationChanged() {
-        val projection = activeConversationId()?.let(projections::get)
-        currentGeneration.value = projection?.generationId
-        currentState.value = projection?.generationState ?: GenerationState.IDLE
+    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex") }
+    fun activeConversationChanged() = generation.publish {
+        val id = activeConversationId()
+        val projection = id?.let(projections::get)
+        projection?.let { synchronized(it) { GenerationSnapshot(it.generationId, it.generationState, id) } }
+            ?: GenerationSnapshot(null, GenerationState.IDLE, id)
     }
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
         current()
@@ -104,7 +107,17 @@ class RemoteConversationRepository(
                             return@collect
                         }
                         val target = projection(id)
-                        val decoded = synchronized(target) { target.accept(frame) }
+                        val (decoded, ended) = synchronized(target) {
+                            val decoded = target.accept(frame)
+                            val ended = target.terminalGeneration?.takeIf { it.first == target.generationId }
+                                ?.let { it.first to target.submittedGenerationId }
+                            decoded to ended
+                        }
+                        if (ended != null) pending[id]?.let { turns -> synchronized(turns) {
+                            turns.values.filter { turn -> turn.generation == ended.first ||
+                                "request:${turn.message.clientMessageId.value}" == ended.second }
+                                .forEach { it.identityReady.complete(IdentityResolution.TURN_ENDED) }
+                        } }
                         target.clientRequestId?.let { request -> pending[id]?.let { turns -> synchronized(turns) {
                             turns[request]?.let { turn -> target.generationId?.let { turn.generation = it } }
                         } } }
@@ -157,11 +170,15 @@ class RemoteConversationRepository(
         }
         if (content.isEmpty()) throw RemoteSessionException("INVALID_MESSAGE")
         val localGeneration = "request:${message.clientMessageId.value}"
-        val turn = PendingTurn(message, batchMembers.remove(message.clientMessageId.value) ?: listOf(message.clientMessageId), localGeneration)
+        val turn = PendingTurn(message, batchMembers.remove(message.clientMessageId.value) ?: listOf(message.clientMessageId),
+            localGeneration, CompletableDeferred(lifetime))
         val turns = pending.computeIfAbsent(conversationId) { linkedMapOf() }
         synchronized(turns) { check(turns.putIfAbsent(message.clientMessageId.value, turn) == null) { "REMOTE_SUBMISSION_ALREADY_PENDING" } }
-        if (projection(conversationId).generationState !in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN))
-            projection(conversationId).beginTurn(localGeneration)
+        val target = projection(conversationId)
+        synchronized(target) {
+            if (target.generationState !in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN))
+                target.beginTurn(localGeneration)
+        }
         activeConversationChanged()
         scope.launch {
             try {
@@ -172,10 +189,8 @@ class RemoteConversationRepository(
                     throw RemoteSessionException("REMOTE_PROMPT_NOT_ACCEPTED")
                 }
                 turn.generation = nativeGeneration
-                val target = projection(conversationId)
-                synchronized(target) {
-                    if (target.generationId == localGeneration) target.confirmGeneration(nativeGeneration)
-                }
+                synchronized(target) { target.bindSubmittedGeneration(localGeneration, nativeGeneration) }
+                turn.identityReady.complete(IdentityResolution.PROMPT_FINISHED)
                 if (synchronized(turns) { turns[message.clientMessageId.value] !== turn }) return@launch
                 turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("accepted:${member.value}", clock(),
                     ConversationId(conversationId), message.clientMessageId.value, member, AgentMessageStatus.DELIVERED, 1, null, nativeGeneration)) }
@@ -198,7 +213,11 @@ class RemoteConversationRepository(
                         PendingDelivery(member, ConversationId(conversationId), message.text, message.attachmentIds.size,
                             PendingDeliveryState.OUTCOME_UNKNOWN, failure.value, localGeneration))) }
                 }
-            } finally { activeConversationChanged() }
+            } finally {
+                // 身份等待依赖原 prompt 的成功、失败和超时；连接关闭由父任务直接取消。
+                turn.identityReady.complete(IdentityResolution.PROMPT_FINISHED)
+                activeConversationChanged()
+            }
         }
         return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, localGeneration,
             message.delivery, authoritative = false)
@@ -263,7 +282,35 @@ class RemoteConversationRepository(
     override suspend fun cancelGeneration(conversationId: String, generationId: String, requestId: String): CancelGenerationResult {
         current()
         if (SessionCapability.CANCEL !in carrier.capabilities) return CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
-        carrier.interrupt(RemoteLocalIds.decode(conversationId), projection(conversationId).generationId ?: generationId)
+        val target = projection(conversationId)
+        val identity = synchronized(target) {
+            // Codex 的 start 通知不含 clientRequestId，只有本次 prompt 回执可以绑定临时身份。
+            // 允许已显示真实 turn 的同轮临时请求继续等待，但绝不借用该 turn 发中断。
+            val unresolved = target.isUnconfirmedGeneration(generationId)
+            if (!unresolved || carrier.backend != "codex") {
+                target.cancellationGeneration(generationId) ?: throw RemoteSessionException("STALE_GENERATION")
+            } else if (target.generationState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING, GenerationState.OUTCOME_UNKNOWN)) {
+                throw RemoteSessionException("STALE_GENERATION")
+            }
+            unresolved
+        }
+        if (carrier.backend == "codex" && identity) {
+            val turns = pending[conversationId] ?: throw RemoteSessionException("STALE_GENERATION")
+            val request = synchronized(turns) { turns[generationId.removePrefix("request:")] }
+                ?: throw RemoteSessionException("STALE_GENERATION")
+            if (request.identityReady.await() == IdentityResolution.TURN_ENDED) throw RemoteSessionException("STALE_GENERATION")
+            current()
+        }
+        val nativeGeneration = synchronized(target) {
+            if (carrier.backend == "codex" && target.isUnconfirmedGeneration(generationId)) {
+                if (target.generationState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING, GenerationState.OUTCOME_UNKNOWN))
+                    throw RemoteSessionException("STALE_GENERATION")
+                return CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN, "REMOTE_GENERATION_UNCONFIRMED")
+            }
+            target.cancellationGeneration(generationId) ?: throw RemoteSessionException("STALE_GENERATION")
+        }
+        // 此处到载体调用之间没有挂起；仅 session/cancel 的后端不提供服务端原子轮次比较。
+        carrier.interrupt(RemoteLocalIds.decode(conversationId), nativeGeneration)
         current()
         return CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)
     }
@@ -286,6 +333,7 @@ class RemoteConversationRepository(
         return carrier.selectModel(RemoteLocalIds.decode(sessionId), selection).also { current(); models[sessionId] = it }
     }
     suspend fun close() {
+        generation.close()
         lifetime.cancelAndJoin()
         health.value = StreamHealth.IDLE
         approvals.clear()

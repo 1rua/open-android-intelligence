@@ -31,6 +31,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
@@ -1698,9 +1699,17 @@ class WorkbenchController(
         loadCatalog()
         observeStreamHealth()
         recoverKnownMedia()
-        (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.let { source ->
-            generationJob=workScope.launch { source.collect { generation ->
-                val generationId = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
+        (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.let { tracker ->
+            val source = tracker.generationSnapshot ?: tracker.generationState?.let { states ->
+                // 无同帧来源的仓储保持原状态订阅，不推断身份变化对应的终态。
+                states.map { generation ->
+                    com.openandroidintelligence.conversation.ports.GenerationSnapshot(tracker.generationId.value, generation)
+                }
+            }
+            generationJob=source?.let { snapshots -> workScope.launch { snapshots.collect { snapshot ->
+                if (tracker.generationSnapshot != null && snapshot.conversationId != activeThreadId) return@collect
+                val generation = snapshot.state
+                val generationId = snapshot.generationId
                 observeGenerationIdentity(generationId)
                 val pending = requestedCancellations[activeThreadId to (generationId ?: lastObservedGenerationId)]
                     ?.takeIf { it.factRevision == generationFactRevision }
@@ -1718,7 +1727,7 @@ class WorkbenchController(
                     if (executionSettled && (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
                         next.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch))) else next
                 }
-            } }
+            } } }
         }
     }
 
@@ -4221,7 +4230,10 @@ class WorkbenchController(
         val threadId = activeThreadId ?: return
         val epoch = threadEpoch
         val tracker = repository as? com.openandroidintelligence.conversation.ports.GenerationTracker
-        val generationId = tracker?.generationId?.value
+        val generationSnapshot = tracker?.generationSnapshot
+        val capturedSnapshot = generationSnapshot?.value
+        if (generationSnapshot != null && capturedSnapshot?.conversationId != threadId) return
+        val generationId = capturedSnapshot?.generationId ?: if (generationSnapshot == null) tracker?.generationId?.value else null
         if (generationId == null) {
             update { it.copy(notice = "STOP_UNAVAILABLE:NO_GENERATION") }
             return
@@ -4248,8 +4260,11 @@ class WorkbenchController(
             catch (cause: Exception) { notice = errorCodeOf(cause) }
             finally {
                 requestedCancellations.remove(key)
-                val currentId = tracker.generationId.value
+                val currentSnapshot = tracker?.generationSnapshot
+                val currentValue = currentSnapshot?.value
+                val currentId = currentValue?.generationId ?: if (currentSnapshot == null) tracker?.generationId?.value else null
                 if (!closed && activeThreadId == threadId && threadEpoch == epoch &&
+                    (currentSnapshot == null || currentValue?.conversationId == threadId) &&
                     (currentId == null || currentId == generationId) && generationFactRevision == pending.factRevision) {
                     val receipt = pending.terminalReceipt
                     val confirmed = key in cancelledGenerations

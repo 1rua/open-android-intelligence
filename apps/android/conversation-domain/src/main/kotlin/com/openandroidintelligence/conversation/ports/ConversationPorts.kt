@@ -657,9 +657,13 @@ interface ConversationMirrorStore {
  * server issued. Until an event carries it there is nothing to cancel, and the
  * UI must say so rather than invent an id or pretend the stop succeeded.
  */
+/** 同一次来源更新中的轮次身份和状态，界面不得从两个独立流拼接终态。 */
+data class GenerationSnapshot(val generationId: String?, val state: GenerationState, val conversationId: String? = null)
+
 interface GenerationTracker {
     val generationId: kotlinx.coroutines.flow.StateFlow<String?>
     val generationState:kotlinx.coroutines.flow.StateFlow<GenerationState>? get()=null
+    val generationSnapshot: kotlinx.coroutines.flow.StateFlow<GenerationSnapshot>? get()=null
 }
 
 data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,

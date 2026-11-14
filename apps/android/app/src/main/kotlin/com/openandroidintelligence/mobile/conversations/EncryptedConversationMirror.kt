@@ -985,6 +985,7 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     private var lastStreamingPersistAtNanos: Long? = null
     override val generationId get()=(delegate as GenerationTracker).generationId
     override val generationState get()=(delegate as GenerationTracker).generationState
+    override val generationSnapshot get()=(delegate as GenerationTracker).generationSnapshot
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {
