@@ -23,7 +23,9 @@ import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
@@ -58,7 +60,7 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         val items = mutableListOf<RemoteHostDevice>(); val cursors = mutableSetOf<String>(); var cursor: String? = null
         do {
             val suffix = if (cursor == null) "" else "&cursor=${encode(cursor)}"
-            val page = request("GET", "/api/v1/devices?role=host&limit=100$suffix", accessToken).objectValue()
+            val page = request("GET", "/api/v1/devices?limit=50$suffix", accessToken).objectValue()
             items += page.arrayValue("items").map { host(it.objectValue()) }
             if (items.map { it.deviceId }.distinct().size != items.size) throw RemoteRpcException("INVALID_MESSAGE")
             cursor = page.optionalText("nextCursor")
@@ -98,7 +100,16 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         }.build()
         val response = http.newCall(request).await()
         return response.use {
-            val bytes = it.body?.bytes() ?: throw RemoteRpcException("INVALID_MESSAGE")
+            if (it.code == 204 && method == "DELETE") return@use JsonValue.JNull
+            val bytes = it.body?.byteStream()?.use { input ->
+                val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
+                while (true) {
+                    val count = input.read(buffer); if (count < 0) break
+                    if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            } ?: throw RemoteRpcException("INVALID_MESSAGE")
             val parsed = try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
             if (!it.isSuccessful) {
                 val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
@@ -121,18 +132,19 @@ internal suspend fun Call.await(): Response = suspendCancellableCoroutine { cont
     enqueue(object : Callback {
         override fun onFailure(call: Call, e: IOException) { if (continuation.isActive) continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED")) }
         override fun onResponse(call: Call, response: Response) {
-            if (continuation.isActive) continuation.resume(response) else response.close()
+            if (continuation.isActive) continuation.resume(response, onCancellation = { _, value, _ -> value.close() }) else response.close()
         }
     })
 }
 
 fun normalizeRemoteOrigin(value: String): String {
-    val uri = try { URI(value.trim()) } catch (_: Exception) { throw RemoteRpcException("REMOTE_ORIGIN_INVALID") }
-    val host = uri.host?.lowercase(Locale.ROOT) ?: throw RemoteRpcException("REMOTE_ORIGIN_INVALID")
-    val privateHttp = host == "localhost" || host == "127.0.0.1" || host == "[::1]" ||
-        host.startsWith("10.") || host.startsWith("192.168.") || Regex("172\\.(1[6-9]|2[0-9]|3[01])\\..*").matches(host)
-    require(uri.scheme == "https" || uri.scheme == "http" && privateHttp) { "REMOTE_HTTPS_REQUIRED" }
-    require(uri.rawUserInfo == null && uri.rawPath.orEmpty() in setOf("", "/") && uri.rawQuery == null && uri.rawFragment == null && uri.port in -1..65535)
-    val port = uri.port.takeUnless { it == -1 || it == if (uri.scheme == "https") 443 else 80 }
-    return "${uri.scheme}://$host${port?.let { ":$it" }.orEmpty()}"
+    val url = try { value.trim().toHttpUrl() } catch (_: Exception) { throw RemoteRpcException("REMOTE_ORIGIN_INVALID") }
+    val host = url.host
+    val ipv4 = host.split('.').mapNotNull { part -> part.toIntOrNull()?.takeIf { it in 0..255 } }
+    val privateIpv4 = ipv4.size == 4 && (ipv4[0] == 10 || ipv4[0] == 127 || ipv4[0] == 192 && ipv4[1] == 168 ||
+        ipv4[0] == 172 && ipv4[1] in 16..31)
+    val privateIpv6 = ':' in host && (host == "::1" || host.startsWith("fc", true) || host.startsWith("fd", true))
+    require(url.isHttps || host == "localhost" || privateIpv4 || privateIpv6) { "REMOTE_HTTPS_REQUIRED" }
+    require(url.username.isEmpty() && url.password.isEmpty() && url.encodedPath == "/" && url.query == null && url.fragment == null)
+    return url.newBuilder().encodedPath("").build().toString().removeSuffix("/")
 }

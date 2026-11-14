@@ -78,6 +78,20 @@ internal class RemoteRtcPeer(
             value.optionalText("candidate") ?: "")
         synchronized(pendingIce) { if (!remoteReady.isCompleted) pendingIce += candidate else peer.addIceCandidate(candidate) }
     }
+    suspend fun selectedTransport(): String = withTimeout(5_000) { suspendCancellableCoroutine { continuation ->
+        peer.getStats { report ->
+            val stats = report.statsMap.values
+            val selectedId = stats.firstOrNull { it.type == "transport" }?.members?.get("selectedCandidatePairId") as? String
+            val pair = selectedId?.let(report.statsMap::get) ?: stats.firstOrNull {
+                it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true
+            }
+            val local = (pair?.members?.get("localCandidateId") as? String)?.let(report.statsMap::get)
+            val remote = (pair?.members?.get("remoteCandidateId") as? String)?.let(report.statsMap::get)
+            val selected = if (local?.members?.get("candidateType") == "relay" || remote?.members?.get("candidateType") == "relay") "turn"
+                else if (local?.members?.get("candidateType") == "host" && remote?.members?.get("candidateType") == "host") "lan" else "p2p"
+            if (continuation.isActive) continuation.resume(selected)
+        }
+    } }
     suspend fun awaitOpen() = withTimeout(15_000) { opened.await() }
     private fun flushIce() { synchronized(pendingIce) { remoteReady.complete(Unit); pendingIce.forEach(peer::addIceCandidate); pendingIce.clear() } }
     private fun adopt(channel: DataChannel) {

@@ -22,6 +22,10 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** 读路径只取已有密钥；缺失或失效时失败，不重新生成密钥掩盖损坏。 */
 class AndroidRemoteIdentityProtector : RemoteIdentityProtector {
@@ -67,10 +71,17 @@ class RemoteCredentialVault(
     private val atomic = AtomicFile(File(directory, "remote-credentials.bin"))
     private val lockFile = File(directory, "remote-credentials.lock")
     private val monitor = monitors.computeIfAbsent(lockFile.canonicalPath) { Any() }
+    private val transactionMutex = transactions.computeIfAbsent(lockFile.canonicalPath) { Mutex() }
     private val master = "credential-vault"
     private val aad = "oai-remote-credential-vault/v1".encodeToByteArray()
 
     constructor(context: Context) : this(File(context.noBackupFilesDir, "remote"), AndroidRemoteIdentityProtector())
+
+    suspend fun <T> credentialTransaction(block: suspend () -> T): T = transactionMutex.withLock {
+        withContext(Dispatchers.IO) {
+            RandomAccessFile(File(directory, "remote-refresh.lock"), "rw").use { file -> file.channel.lock().use { block() } }
+        }
+    }
 
     override fun read(scopeKey: String): ByteArray? = locked {
         val state = load()
@@ -85,6 +96,7 @@ class RemoteCredentialVault(
         // 以原子替换提交清空，不删除文件；旧角色即使恢复进程也读不到旧密文。
         save(state.copy(records = state.records - scopeKey))
     }
+    fun requireEpoch(expected: Long) = locked { check(load().epoch == expected) { "REMOTE_AUTHORIZATION_SUPERSEDED" } }
     fun activeAccount(): RemoteActiveAccount? = locked { load().active }
     fun revokeActive(): Long = locked {
         val state = load(); val next = Math.addExact(state.epoch, 1)
@@ -125,5 +137,5 @@ class RemoteCredentialVault(
     private fun <T> locked(block: () -> T): T = synchronized(monitor) {
         RandomAccessFile(lockFile, "rw").use { file -> file.channel.lock().use { block() } }
     }
-    companion object { private val monitors = ConcurrentHashMap<String, Any>() }
+    companion object { private val monitors = ConcurrentHashMap<String, Any>(); private val transactions = ConcurrentHashMap<String, Mutex>() }
 }

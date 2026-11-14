@@ -16,7 +16,7 @@ internal class RemoteSocket(
     private val relayData: Boolean = false,
     private val onFailure: (String) -> Unit,
 ) {
-    val frames = Channel<RemoteControlFrame>(Channel.UNLIMITED)
+    val frames = Channel<RemoteControlFrame>(128)
     private val opened = CompletableDeferred<Unit>()
     @Volatile private var closed = false
     @Volatile var limits = RemoteFrameLimits()
@@ -31,6 +31,7 @@ internal class RemoteSocket(
         }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) { fail("INVALID_MESSAGE") }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { fail("TRANSPORT_CLOSED") }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason); fail("TRANSPORT_CLOSED") }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { fail(when (code) {
             4002 -> "AUTH_INVALID"; 4003 -> "CONNECTION_REPLACED"; 4004 -> "DEVICE_REVOKED"; else -> "TRANSPORT_CLOSED"
         }) }

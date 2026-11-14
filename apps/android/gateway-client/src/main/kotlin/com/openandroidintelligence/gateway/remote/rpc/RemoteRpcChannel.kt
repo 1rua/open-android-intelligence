@@ -25,6 +25,7 @@ data class RemoteRpcEvent(val event: String, val data: JsonValue)
 interface RemoteRpcChannel {
     val scope: RemoteRpcConnectionScope
     val capabilities: Set<String>
+    val workspaceTypes: List<JsonValue.JObject> get() = emptyList()
     val events: Flow<RemoteRpcEvent>
 
     suspend fun invoke(
@@ -45,4 +46,9 @@ interface RemoteRpcHostHandler {
 }
 
 /** 仅保留固定错误码，服务端原始错误文本可能包含业务内容。 */
-class RemoteRpcException(val code: String) : IllegalStateException(code)
+enum class RemoteDeliveryOutcome { NOT_SENT, REJECTED, UNKNOWN }
+
+class RemoteRpcException(
+    val code: String,
+    val deliveryOutcome: RemoteDeliveryOutcome = RemoteDeliveryOutcome.REJECTED,
+) : IllegalStateException(code)
