@@ -160,6 +160,19 @@ class PhoneControlBus(
                 if (old.state.terminal) return
                 requireOutput(access, deliveryEpoch)
                 if (!old.executionFence) fail("CONTROL_EXECUTION_FENCE_REQUIRED")
+                if (result.completion == PhoneControlCompletion.SMS_SEND_OUTCOME_UNKNOWN) {
+                    val operation = request.operation as? ControlOperation.PluginInvoke
+                    if (operation?.pluginId != "org.openandroidintelligence.sms" ||
+                        operation.capabilityId.substringBefore('@') != "org.openandroidintelligence.sms.send") {
+                        fail("SMS_EXECUTION_SCOPE_REQUIRED")
+                    }
+                    // 仅保留已消费的执行事实，不发布正文、产物或成功终态，也不返还发送许可。
+                    update(access, task.scope.taskSessionId, request.requestId) { it.copy(
+                        state = ControlRequestState.OUTCOME_UNKNOWN, execution = ControlExecutionStatus.UNKNOWN,
+                        errorCode = "SMS_SEND_OUTCOME_UNKNOWN") }
+                    finish(access, task, request.requestId)
+                    return
+                }
                 val artifacts = result.artifacts.map { artifact ->
                     require(Regex("[A-Za-z0-9_-]+").matches(artifact.id)) { "CONTROL_ARTIFACT_INVALID" }
                     task.artifacts[artifact.id] = request.requestId to artifact.copy(bytes = artifact.bytes.copyOf())

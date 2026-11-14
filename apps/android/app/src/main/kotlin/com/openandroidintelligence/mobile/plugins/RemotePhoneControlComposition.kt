@@ -109,7 +109,7 @@ class RemotePhoneControlComposition(
                 context.parameterDigest, isBackground(), beforeSystemEffect = context.consumeSmsSendEffect) }
             revalidate()
             val result = Json.parse(output.decodeToString())
-            return PhoneControlResult((value(result) as? ControlValue.Object) ?: ControlValue.Object(mapOf("value" to value(result))))
+            return phonePluginResult(entry, result)
         } finally {
             activeRequests.remove(context.scope)
             PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey)
@@ -159,6 +159,17 @@ class RemotePhoneControlComposition(
         !androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
     override fun close() { stopObserver.close(); kernelStopObserver.close(); connections.values.forEach { it.registration.close() }; connections.clear() }
     private fun fail(code: String): Nothing = throw ControlRequestException(code)
+}
+
+/** 仅已验证短信发送能力的未知结果可升级为控制未知终态；读取和其他插件保持原语义。 */
+internal fun phonePluginResult(entry: VerifiedCapability, result: JsonValue): PhoneControlResult {
+    val smsUnknown = entry.identity.pluginId == SMS_PLUGIN_ID &&
+        entry.id == "org.openandroidintelligence.sms.send" && entry.primitives == setOf("kernel.sms.send") &&
+        JsonFields.string(JsonFields.obj(result), "status") == "outcome_unknown"
+    return PhoneControlResult(
+        (value(result) as? ControlValue.Object) ?: ControlValue.Object(mapOf("value" to value(result))),
+        completion = if (smsUnknown) PhoneControlCompletion.SMS_SEND_OUTCOME_UNKNOWN else PhoneControlCompletion.SUCCEEDED,
+    )
 }
 
 private fun value(value: JsonValue): ControlValue = when (value) {

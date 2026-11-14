@@ -31,10 +31,14 @@ interface ControlMetadataLedger {
     fun <T> transaction(change: (MutableMap<String, ControlRequestMetadata>) -> T): T
 }
 
+/** 由可信手机执行器给出的终态；插件的任意 JSON 字段不能直接决定控制账本。 */
+enum class PhoneControlCompletion { SUCCEEDED, SMS_SEND_OUTCOME_UNKNOWN }
+
 data class PhoneControlResult(
     val result: ControlValue.Object,
     val artifacts: List<ControlArtifact> = emptyList(),
     val ui: ControlValue.Object? = null,
+    val completion: PhoneControlCompletion = PhoneControlCompletion.SUCCEEDED,
 )
 
 data class ControlArtifact(val id: String, val mimeType: String, val version: String, val bytes: ByteArray)

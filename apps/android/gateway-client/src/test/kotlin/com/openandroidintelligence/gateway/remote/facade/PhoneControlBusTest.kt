@@ -121,6 +121,38 @@ class PhoneControlBusTest {
         assertTrue(Json.canonical(bus.receipt(access(), task, "ordinary-repeat-0001")).contains("completed"))
     }
 
+    @Test fun typedSmsUnknownRetainsOnlyMetadataAndOrdinaryPluginStatusDoesNotChangeCompletion() = runTest {
+        val ledger = Ledger()
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                val sms = (operation as ControlOperation.PluginInvoke).pluginId == "org.openandroidintelligence.sms"
+                if (sms) context.consumeSmsSendEffect() else context.beforeDispatch()
+                calls += context.scope.requestId
+                return PhoneControlResult(ControlValue.Object(mapOf("status" to ControlValue.Text("outcome_unknown"))),
+                    artifacts = if (sms) listOf(ControlArtifact("unknown-file", "text/plain", "1", "私密产物".encodeToByteArray())) else emptyList(),
+                    completion = if (sms) PhoneControlCompletion.SMS_SEND_OUTCOME_UNKNOWN else PhoneControlCompletion.SUCCEEDED)
+            }
+        }
+        val bus = PhoneControlBus(this, ledger, executor); val task = bus.create(access())
+        val sms = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-unknown-result-01",
+            "op" to "plugin.invoke", "args" to mapOf("pluginId" to "org.openandroidintelligence.sms",
+                "capabilityId" to "org.openandroidintelligence.sms.send@1.0.0", "method" to "send",
+                "params" to mapOf("subscriptionId" to 2, "recipient" to "+15550001", "text" to "私密正文"))))))
+        bus.submit(access(), task, sms); runCurrent()
+        val row = ledger.rows.values.single { it.requestId == sms.requestId }
+        assertTrue(row.executionFence)
+        assertEquals(ControlRequestState.OUTCOME_UNKNOWN, row.state)
+        assertEquals(ControlExecutionStatus.UNKNOWN, row.execution)
+        val receipt = Json.canonical(bus.receipt(access(), task, sms.requestId))
+        assertTrue(receipt.contains("\"resultAvailable\":false"))
+        assertFalse(receipt.contains("\"result\":"))
+        assertThrows(ControlRequestException::class.java) { bus.artifact(access(), task, "unknown-file") }
+        bus.submit(access(), task, sms); runCurrent(); assertEquals(1, executor.calls.size)
+        val ordinary = request("ordinary-json-status-01")
+        bus.submit(access(), task, ordinary); runCurrent()
+        assertEquals(ControlRequestState.COMPLETED, ledger.rows.values.single { it.requestId == ordinary.requestId }.state)
+    }
+
     @Test fun restartedBusCannotRecreateOldTaskAndStatusPublishesAssistantRecord() = runTest {
         val ledger = Ledger(); val bus = PhoneControlBus(this, ledger, Executor()); val task = bus.create(access())
         bus.submit(access(), task, request("persisted-request-001")); runCurrent()
