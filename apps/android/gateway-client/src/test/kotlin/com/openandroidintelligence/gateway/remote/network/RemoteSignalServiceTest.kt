@@ -46,7 +46,8 @@ class RemoteSignalServiceTest {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val frame = RemoteControlCodec.decode(text.encodeToByteArray())
                 when (frame.type) {
-                    "hello" -> { assertEquals(client.deviceId.value, frame.payload.requiredText("deviceId")); webSocket.send(text(ack())) }
+                    "hello" -> { assertEquals(client.deviceId.value, frame.payload.requiredText("deviceId"));
+                        assertEquals(com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION, frame.payload.requiredText("clientVersion")); webSocket.send(text(ack())) }
                     "connect.request" -> webSocket.send(text(control("connect.accepted", obj("connectionId" to binding.connectionId))))
                     "transport.selected" -> assertEquals("relay", frame.payload.requiredText("transport"))
                     "secure.handshake" -> {
@@ -122,4 +123,59 @@ class RemoteSignalServiceTest {
             assertEquals("real-owner", seen.await().accountId); assertEquals(binding.clientDeviceId, seen.await().clientDeviceId)
         } finally { service.close(); parent.cancel(); server.shutdown(); secure.close() }
     }
+    @Test fun Host一个连接计数器异常只关闭该隧道而保留其他连接() = runBlocking {
+        val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val clients = (1..2).map { RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString())) }
+        val bindings = clients.mapIndexed { index, client -> RemoteConnectionBinding("connection-$index", host.deviceId.value, client.deviceId.value) }
+        val secure = clients.mapIndexed { index, client -> RemoteSecureChannel(NoiseIkChannel.create(NoiseRole.CLIENT_INITIATOR, bindings[index], client.privateKeyCopy(), host.publicKey)) }
+        val result = CompletableDeferred<JsonValue>(); val handshakes = mutableSetOf<Int>(); var outgoing = 0L
+        val server = MockWebServer()
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val frame = RemoteControlCodec.decode(text.encodeToByteArray())
+                fun send(type: String, payload: JsonValue.JObject) { webSocket.send(text(control(type, payload))) }
+                when (frame.type) {
+                    "hello" -> {
+                        webSocket.send(text(ack()))
+                        bindings.forEachIndexed { index, binding -> send("connect.incoming", obj("connectionId" to binding.connectionId,
+                            "clientDeviceId" to binding.clientDeviceId, "clientIdentityKey" to RemoteBase64Url.encode(clients[index].publicKey),
+                            "authorization" to "account", "preferredTransports" to listOf("relay"))) }
+                    }
+                    "connect.accepted" -> {
+                        val index = bindings.indexOfFirst { it.connectionId == frame.payload.requiredText("connectionId") }
+                        val binding = bindings[index]
+                        send("transport.selected", obj("connectionId" to binding.connectionId, "targetDeviceId" to binding.hostDeviceId, "transport" to "relay"))
+                        webSocket.send(text(secure[index].writeHandshakeFrame(UUID.randomUUID().toString(), System.currentTimeMillis())))
+                    }
+                    "secure.handshake" -> {
+                        val index = bindings.indexOfFirst { it.connectionId == frame.payload.requiredText("connectionId") }
+                        secure[index].readHandshakeFrame(frame); handshakes += index
+                        if (handshakes.size == 2) {
+                            val bad = secure[0].encryptMessage(business("bad", "rpc.request", obj("method" to "harness.transport.describe", "params" to obj()))).single()
+                            send("relay", obj("connectionId" to bindings[0].connectionId, "targetDeviceId" to host.deviceId.value, "counter" to 1,
+                                "ciphertext" to RemoteBase64Url.encode(bad)))
+                            val good = secure[1].encryptMessage(business("good", "rpc.request", obj("method" to "harness.transport.describe", "params" to obj()))).single()
+                            send("relay", obj("connectionId" to bindings[1].connectionId, "targetDeviceId" to host.deviceId.value, "counter" to 0,
+                                "ciphertext" to RemoteBase64Url.encode(good)))
+                        }
+                    }
+                    "relay" -> {
+                        val index = bindings.indexOfFirst { it.connectionId == frame.payload.requiredText("connectionId") }
+                        val value = secure[index].decryptMessage(RemoteBase64Url.decode(frame.payload.requiredText("ciphertext"))) ?: return
+                        if (index == 1) result.complete(RemoteWireJson.decode(value))
+                    }
+                }
+            }
+        }))
+        server.start(); val api = RemoteServerApi(server.url("/").toString().removeSuffix("/")); val parent = CoroutineScope(SupervisorJob()+Dispatchers.Default)
+        val peers = clients.associate { client -> client.deviceId.value to RemoteAuthorizedPeer(RemoteHostDevice(client.deviceId.value, "客户端", "linux", "member", true), RemoteRole.CLIENT, client.publicKey) }
+        val handler = object : RemoteRpcHostHandler {
+            override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj("healthy" to true)
+            override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
+        }
+        val service = RemoteSignalService(context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST), RemoteRoleCredential(host, token()), {}, { id, _ -> peers.getValue(id) }, handler)
+        try { service.startHost(); assertEquals("good", withTimeout(3000) { result.await() }.objectValue().value("payload").objectValue().requiredText("requestId")) }
+        finally { service.close(); parent.cancel(); server.shutdown(); secure.forEach { it.close() } }
+    }
+
 }

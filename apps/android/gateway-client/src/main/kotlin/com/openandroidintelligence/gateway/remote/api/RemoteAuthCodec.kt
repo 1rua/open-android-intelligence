@@ -61,7 +61,7 @@ object RemoteAuthCodec {
                 "role" to role.wireValue,
                 "platform" to "android",
                 "identityKey" to java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(identity.publicKey),
-                "clientVersion" to "oai-android",
+                "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION,
             ),
         ))), bearer)
     }

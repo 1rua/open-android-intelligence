@@ -58,6 +58,7 @@ class RemoteServerApiTest {
             api.revoke("a".repeat(16))
             val registrations = fixture.requests.filter { it.first == "/api/v1/devices/register" }
             assertEquals(2, registrations.size); assertTrue(registrations.all { it.second == "Bearer ${"l".repeat(16)}" })
+            assertTrue(registrations.all { it.third.objectValue().value("device").objectValue().requiredText("clientVersion") == com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION })
             assertEquals(setOf("client", "host"), registrations.map { it.third.objectValue().value("device").objectValue().requiredText("role") }.toSet())
             assertEquals(6, fixture.requests.size)
         }

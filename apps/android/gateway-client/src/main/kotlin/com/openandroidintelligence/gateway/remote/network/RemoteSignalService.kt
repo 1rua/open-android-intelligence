@@ -65,8 +65,19 @@ internal class RemoteSignalService(
             try {
                 control.awaitOpen(); requireCurrent()
                 sendControl("hello", obj("role" to identityScope.role.wireValue, "deviceId" to credential.identity.deviceId.value,
-                    "accessToken" to credential.tokens.accessToken, "protocols" to listOf(1), "capabilities" to offered.toList(), "clientVersion" to "oai-android"))
-                for (frame in control.frames) { lastReceived = System.currentTimeMillis(); requireCurrent(); handle(frame) }
+                    "accessToken" to credential.tokens.accessToken, "protocols" to listOf(1), "capabilities" to offered.toList(), "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION))
+                for (frame in control.frames) {
+                    lastReceived = System.currentTimeMillis(); requireCurrent()
+                    try { handle(frame) }
+                    catch (failure: Exception) {
+                        val connectionId = frame.payload.optionalText("connectionId")
+                        val tunnel = connectionId?.let(tunnels::get)
+                        if (identityScope.role == RemoteRole.HOST && connectionId != null) {
+                            // 已认证Client的坏隧道数据不能终止Host上其他Client；未知旧连接同样只丢弃该归属。
+                            tunnel?.fail((failure as? RemoteRpcException)?.code ?: "INVALID_MESSAGE")
+                        } else throw failure
+                    }
+                }
             } catch (_: CancellationException) { fail("CLIENT_CLOSED") }
             catch (failure: RemoteRpcException) { fail(failure.code) }
             catch (_: Exception) { fail("TRANSPORT_CLOSED") }
@@ -203,9 +214,14 @@ internal class RemoteSignalService(
             }
             carrierReady.complete(Unit)
         }
-        private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = RemoteRtcPeer(context, binding, connectionScope.generation, worker,
-            try { api.iceServers(credential.tokens.accessToken, id) } catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
-            sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
+        private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = try {
+            RemoteRtcPeer(context, binding, connectionScope.generation, worker,
+                try { api.iceServers(credential.tokens.accessToken, id) } catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
+                sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
+            }
+        } catch (_: LinkageError) {
+            // 原生库缺失或ABI不可加载属于传输不可用，必须走已协商Relay而不是留下悬挂握手。
+            throw RemoteRpcException("RTC_UNAVAILABLE")
         }
         suspend fun signal(type: String, payload: JsonValue.JObject) = rtcSignals.withLock {
             if (terminal != null || selected == "relay") return@withLock
