@@ -410,7 +410,7 @@ class ProductionPluginHostTest {
                 checkpoints.clear()
                 // Exercise the same serialization and target resolution used after an OS restart.
                 val restored=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.parse(Json.canonical(Json.of(record))))!!
-                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test",nowMillis = 999_999L) { state,result ->
+                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test",testBackgroundBinding(grants.state.value!!.revision,"acct_host"),nowMillis = 999_999L) { state,result ->
                     checkpoints+=state
                     if(state=="succeeded") assertTrue(Json.canonical(result!!).contains("timer-result"))
                 }
@@ -427,7 +427,7 @@ class ProductionPluginHostTest {
             assertEquals(1,calls)
             host.grant(entry.identity.pluginId,false)
             assertNotNull(runCatching { host.scheduledTarget(call,args) }.exceptionOrNull())
-            run(metadata);assertEquals(listOf("executing","failed"),checkpoints);assertEquals(1,calls)
+            run(metadata);assertEquals(listOf("authorization_expired"),checkpoints);assertEquals(1,calls)
         } finally {
             KernelPrimitiveRegistry.unregister(provider)
             if(previousProvider!=null) KernelPrimitiveRegistry.register(previousProvider)

@@ -349,9 +349,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         } finally { nativeInFlight.remove(pluginId); crashPreferences.edit().remove("loading:$pluginId").commit() }
     }
     private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding?,
-        val scope: CapabilityRequestScope, val remote: RemoteCapabilityBinding? = null) {
-        val accountId get() = remote?.access?.principal?.accountId ?: requireNotNull(binding).accountId
-        val ownerId get() = remote?.id ?: requireNotNull(binding).pairingId
+        val scope: CapabilityRequestScope, val remote: RemoteCapabilityBinding? = null,
+        val background: RemoteBackgroundBinding? = null) {
+        val accountId get() = background?.principal?.accountId ?: remote?.access?.principal?.accountId ?: requireNotNull(binding).accountId
+        val ownerId get() = background?.id ?: remote?.id ?: requireNotNull(binding).pairingId
     }
     private val activeAuthorization = ThreadLocal<ActiveAuthorization>()
 
@@ -456,7 +457,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val active = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
         if (active.requestId != session.correlationId || (active.remote == null && active.scope != authorizationScope(entry, Json.parse(input.decodeToString()))))
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
-        if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote, active.scope.parametersSha256)
+        if (active.background != null) requireBackgroundAuthorization(entry, Json.parse(input.decodeToString()), active.background)
+        else if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote, active.scope.parametersSha256)
         else requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
     }
 
@@ -499,7 +501,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
 
     private fun invocationAuthorizationCurrent(invocation: ActiveAuthorization, requestId: String): Boolean =
-        if (invocation.remote != null) {
+        if (invocation.background != null) {
+            val entry = capabilityForAuthorizationScope(invocation.scope)
+            entry != null && backgroundAuthorizationCurrent(entry, invocation.background)
+        } else if (invocation.remote != null) {
             val entry = capabilityForAuthorizationScope(invocation.scope)
             entry != null && invocation.remote.isCurrent() && grants.authorization.evaluate(invocation.remote.requestKey(requestId),
                 invocation.scope, capabilityPolicy(entry.identity.pluginId, entry.key).let { policy ->
@@ -529,6 +534,53 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         return capabilityPolicy(entry.identity.pluginId, entry.key)
     }
     fun remoteEmergencyStopped(): Boolean = kernel.isEmergencyStopped()
+
+    /** 定时任务只能继承当前真实 Remote 调用的稳定主体，业务 JSON 不能自报拥有者。 */
+    fun remoteBackgroundSubject(call: KernelCallContext): RemoteBackgroundSubject {
+        val active = activeAuthorization.get() ?: throw CapabilityDenied("REMOTE_BACKGROUND_CONTEXT_REQUIRED")
+        val remote = active.remote ?: throw CapabilityDenied("REMOTE_BACKGROUND_CONTEXT_REQUIRED")
+        check(active.requestId == call.session.correlationId && active.accountId == call.accountId && active.ownerId == call.pairingId &&
+            remote.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        return RemoteBackgroundSubject(remote.access.principal, remote.access.authorizationEpoch,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"))
+    }
+
+    private fun backgroundAuthorizationCurrent(entry: VerifiedCapability, binding: RemoteBackgroundBinding): Boolean {
+        val local = grants.state.value ?: return false
+        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
+        val grant = local.asKernelGrant()
+        return binding.isCurrent() && local.revision == binding.localGrantRevision && local.localError == null &&
+            isEnabled(entry.identity.pluginId) && !kernel.isEmergencyStopped() && entry.risk == "read" &&
+            policy.enabled && policy.mode in setOf(CapabilityAuthorizationMode.READ_ONLY, CapabilityAuthorizationMode.AUTOMATIC) &&
+            grant.backgroundSync && grant.permits("kernel.background.run") &&
+            grant.permits(identityGrantKey(entry.identity, "kernel.background.run"))
+    }
+
+    private fun requireBackgroundAuthorization(entry: VerifiedCapability, parameters: JsonValue, binding: RemoteBackgroundBinding) {
+        if (!backgroundAuthorizationCurrent(entry, binding) || !CapabilitySchemaValidator.accepts(entry.schema, parameters))
+            throw CapabilityDenied("REMOTE_BACKGROUND_AUTHORIZATION_CHANGED")
+    }
+
+    fun backgroundInvocationAllowed(entry: VerifiedCapability, parameters: JsonValue, binding: RemoteBackgroundBinding): Boolean =
+        entries(entry.identity.pluginId).contains(entry) && backgroundAuthorizationCurrent(entry,binding) &&
+            CapabilitySchemaValidator.accepts(entry.schema,parameters)
+
+    /** 用真实内核执行本机只读定时查询；没有旧配对、网络恢复或临时批准继承。 */
+    fun invokeBackground(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteBackgroundBinding): ByteArray {
+        requireBackgroundAuthorization(entry, parameters, binding)
+        val registration = grants.attachRemoteBackground(binding)
+        val previous = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters), background = binding))
+        return try {
+            val result = kernel.invoke(entry.identity, binding.principal.accountId, binding.id, entry.key,
+                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, true, correlationId)).output
+            requireBackgroundAuthorization(entry, parameters, binding)
+            result
+        } finally {
+            if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous)
+            registration.close()
+        }
+    }
     fun emergencyStopFromPhone(): Int = kernel.emergencyStop("phone-local-emergency-stop")
     fun observeEmergencyStop(listener: (Boolean) -> Unit): AutoCloseable = kernel.observeEmergencyStop(listener)
 
