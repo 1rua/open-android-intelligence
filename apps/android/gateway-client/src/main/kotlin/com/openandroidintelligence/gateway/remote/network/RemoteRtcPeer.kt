@@ -85,8 +85,12 @@ internal class RemoteRtcPeer(
             val pair = selectedId?.let(report.statsMap::get) ?: stats.firstOrNull {
                 it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true
             }
-            val local = (pair?.members?.get("localCandidateId") as? String)?.let(report.statsMap::get)
-            val remote = (pair?.members?.get("remoteCandidateId") as? String)?.let(report.statsMap::get)
+            if (pair == null) {
+                if (continuation.isActive) continuation.resumeWithException(RemoteRpcException("RTC_SELECTED_PAIR_UNAVAILABLE"))
+                return@getStats
+            }
+            val local = (pair.members?.get("localCandidateId") as? String)?.let(report.statsMap::get)
+            val remote = (pair.members?.get("remoteCandidateId") as? String)?.let(report.statsMap::get)
             val selected = if (local?.members?.get("candidateType") == "relay" || remote?.members?.get("candidateType") == "relay") "turn"
                 else if (local?.members?.get("candidateType") == "host" && remote?.members?.get("candidateType") == "host") "lan" else "p2p"
             if (continuation.isActive) continuation.resume(selected)

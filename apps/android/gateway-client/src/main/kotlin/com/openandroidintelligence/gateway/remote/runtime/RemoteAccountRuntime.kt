@@ -39,6 +39,7 @@ class RemoteAccountRuntime(
     private var api: RemoteServerApi? = null
     private var host: RemoteSignalService? = null
     private val clients = mutableSetOf<RemoteSignalService>()
+    private val selectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val peers = ConcurrentHashMap<String, AuthenticatedRemotePeer>()
 
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult {
@@ -84,6 +85,7 @@ class RemoteAccountRuntime(
     }
     suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
         val active = current(); val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
+        val selection = selectionGeneration.incrementAndGet()
         // 同一 Client 设备的 Control WS 只能拥有一个活动选择；新选择先结束旧观察。
         synchronized(clients) { clients.forEach { it.close() }; clients.clear() }
         peers.entries.removeIf { it.value.role == RemoteRole.CLIENT }
@@ -94,24 +96,26 @@ class RemoteAccountRuntime(
             { vault.requireCurrent(active) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
             onAuthenticatedPeer = { peers[it.scope.connectionId] = it },
             onPeerClosed = { peers.remove(it.connectionId) },
-            onClosed = { if (mutableAccount.value == active) mutableState.value = RemoteAccountConnectionState.DISCONNECTED })
+            onClosed = { if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.DISCONNECTED })
         synchronized(clients) { clients += service }
         return try {
             val channel = service.connect(peer)
             val profile = probeCapabilities(channel)
-            vault.requireCurrent(active); mutableState.value = RemoteAccountConnectionState.CONNECTED
+            vault.requireCurrent(active)
+            if (selectionGeneration.get() != selection) { channel.close(); throw RemoteRpcException("CONNECTION_REPLACED") }
+            mutableState.value = RemoteAccountConnectionState.CONNECTED
             object : RemoteRpcChannel by channel {
                 override val capabilities = profile.capabilities
                 override val workspaceTypes = profile.workspaceTypes
                 override suspend fun close() {
                     channel.close(); service.close(); peers.remove(channel.scope.connectionId)
                     synchronized(clients) { clients -= service }
-                    if (mutableAccount.value == active) mutableState.value = RemoteAccountConnectionState.READY
+                    if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.READY
                 }
             }
         } catch (failure: Exception) {
             service.close(); synchronized(clients) { clients -= service }
-            if (mutableAccount.value == active) mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+            if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.DISCONNECTED
             throw failure
         }
     }
@@ -120,6 +124,7 @@ class RemoteAccountRuntime(
     private fun revokeLocal() {
         // 持久撤销先于任何网络清理；写盘失败不报告退出成功。
         val old = vault.activeAccount()
+        selectionGeneration.incrementAndGet()
         vault.revokeActive()
         mutableAccount.value = null; mutableState.value = RemoteAccountConnectionState.SIGNED_OUT
         host?.close(); host = null; mutableHostState.value = RemoteHostConnectionState.STOPPED

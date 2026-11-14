@@ -39,16 +39,21 @@ class RemoteRpcSession(
     private var closedCode: String? = null
     private var lastEventSeq: Long? = null
     private val incoming = Channel<ByteArray>(128)
-    private val messageSubscription = transport.onMessage { bytes ->
-        if (!incoming.trySend(bytes.copyOf()).isSuccess) terminate("TRANSPORT_CLOSED")
-    }
-    private val closeSubscription = transport.onClose(::terminate)
+    private var messageSubscription: AutoCloseable? = null
+    private var closeSubscription: AutoCloseable? = null
     override val events: Flow<RemoteRpcEvent> = flow {
         val channel = Channel<RemoteRpcEvent>(128)
         synchronized(lock) { closedCode?.let { throw RemoteRpcException(it) }; subscribers += channel }
         try { for (event in channel) emit(event) } finally { synchronized(lock) { subscribers -= channel }; channel.cancel() }
     }
     init {
+        val receive = transport.onMessage { bytes ->
+            if (!incoming.trySend(bytes.copyOf()).isSuccess) terminate("TRANSPORT_CLOSED")
+        }
+        messageSubscription = receive
+        val closed = transport.onClose(::terminate)
+        closeSubscription = closed
+        if (closedCode != null) { receive.close(); closed.close() }
         worker.launch {
             try { for (bytes in incoming) handle(bytes) }
             catch (_: CancellationException) { throw CancellationException() }
@@ -144,10 +149,10 @@ class RemoteRpcSession(
         }
         val failure = RemoteRpcException(code)
         pendingCopy.forEach { it.result.completeExceptionally(RemoteRpcException(code, if (it.sent) RemoteDeliveryOutcome.UNKNOWN else RemoteDeliveryOutcome.NOT_SENT)) }; subscriberCopy.forEach { it.close(failure) }
-        incoming.close(); messageSubscription.close(); closeSubscription.close(); lifetime.cancel()
+        incoming.close(); messageSubscription?.close(); closeSubscription?.close(); lifetime.cancel()
         cleanupScope.launch(NonCancellable) { transport.close() }
     }
     override suspend fun close() {
-        terminate("CLIENT_CLOSED"); messageSubscription.close(); closeSubscription.close(); transport.close()
+        terminate("CLIENT_CLOSED"); messageSubscription?.close(); closeSubscription?.close(); transport.close()
     }
 }

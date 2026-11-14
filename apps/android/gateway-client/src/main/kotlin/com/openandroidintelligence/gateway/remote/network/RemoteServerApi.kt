@@ -146,5 +146,5 @@ fun normalizeRemoteOrigin(value: String): String {
     val privateIpv6 = ':' in host && (host == "::1" || host.startsWith("fc", true) || host.startsWith("fd", true))
     require(url.isHttps || host == "localhost" || privateIpv4 || privateIpv6) { "REMOTE_HTTPS_REQUIRED" }
     require(url.username.isEmpty() && url.password.isEmpty() && url.encodedPath == "/" && url.query == null && url.fragment == null)
-    return url.newBuilder().encodedPath("").build().toString().removeSuffix("/")
+    return url.newBuilder().encodedPath("/").build().toString().removeSuffix("/")
 }

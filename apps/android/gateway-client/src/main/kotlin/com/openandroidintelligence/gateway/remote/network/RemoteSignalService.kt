@@ -90,7 +90,7 @@ internal class RemoteSignalService(
                     }
                 }
                 if (identityScope.role == RemoteRole.CLIENT) sendControl("connect.request", obj("hostDeviceId" to target!!.device.deviceId,
-                    "preferredTransports" to listOf("lan", "p2p", "turn", "relay")))
+                    "preferredTransports" to listOf("lan", "p2p", "turn", "relay").filter { "transport.$it" in negotiated }))
             }
             "connect.accepted" -> {
                 if (identityScope.role != RemoteRole.CLIENT || !ready.isCompleted) throw RemoteRpcException("INVALID_MESSAGE")
@@ -192,6 +192,9 @@ internal class RemoteSignalService(
         }
         suspend fun selectHostTransport(transport: String) {
             if (selected != null) throw RemoteRpcException("CONNECTION_REPLACED")
+            val preferred = (assignment.fields.firstOrNull { it.first == "preferredTransports" }?.second as? JsonValue.JArray)
+                ?.items?.mapNotNull { (it as? JsonValue.JString)?.value } ?: listOf("lan", "p2p", "turn", "relay")
+            if (transport !in preferred || "transport.$transport" !in negotiated) throw RemoteRpcException("TRANSPORT_NOT_NEGOTIATED")
             selected = transport
             if (transport == "relay") { rtcPeer?.close(); rtcPeer = null; rtc = null; attachRelay() }
             else {
@@ -201,7 +204,7 @@ internal class RemoteSignalService(
             carrierReady.complete(Unit)
         }
         private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = RemoteRtcPeer(context, binding, connectionScope.generation, worker,
-            api.iceServers(credential.tokens.accessToken, id), turnOnly) { type, fields ->
+            try { api.iceServers(credential.tokens.accessToken, id) } catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
             sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
         }
         suspend fun signal(type: String, payload: JsonValue.JObject) = rtcSignals.withLock {
