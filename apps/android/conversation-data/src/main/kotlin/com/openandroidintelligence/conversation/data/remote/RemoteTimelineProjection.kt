@@ -249,10 +249,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     "userMessage" -> upsert(item, "user", false, null, source)
                     "reasoning", "plan" -> {
                         val id = item.requiredText("id")
-                        val content = codexContent.getOrPut(id) { AssistantContent() }
+                        val completeText = codexItemText(item)
+                        val content = if (completeText != null) {
+                            // 完整条目是该 item 的权威快照，替换增量内容，不能重复拼接。
+                            AssistantContent().also { snapshot ->
+                                snapshot.append("reasoning", completeText)
+                                codexContent[id] = snapshot
+                            }
+                        } else codexContent.getOrPut(id) { AssistantContent() }
                         if (method == "item/completed") content.finish()
-                        val text = (item.array("summary").orEmpty() + item.array("content").orEmpty()).mapNotNull { it.text("text") }.joinToString("")
-                        if (text.isNotEmpty() && id !in rows) content.append("reasoning", text)
                         upsertContent(id, content, source, method == "item/started")
                     }
                     else -> execution(item, item.text("id") ?: "tool:${++liveSequence}", source, method == "item/completed")
@@ -357,6 +362,17 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     }
 
     private fun contentText(value: JsonValue): String = value.array("content").orEmpty().mapNotNull { if (it.text("type") == "text") it.text("text") else null }.joinToString("")
+
+    /** 与固定上游的 itemText/textArray 一致，完整正文优先于摘要。 */
+    private fun codexItemText(item: JsonValue): String? {
+        item.text("text")?.let { return it }
+        item.text("content")?.let { return it }
+        val content = item.array("content") ?: item.array("input")
+        content?.mapNotNull { part -> (part as? JsonValue.JString)?.value ?: part.text("text") ?: part.text("content") }
+            ?.takeIf { it.isNotEmpty() }?.let { return it.joinToString("\n") }
+        return item.array("summary")?.takeIf { parts -> parts.all { it is JsonValue.JString } }
+            ?.joinToString("\n") { (it as JsonValue.JString).value }
+    }
 
     private fun execution(value: JsonValue, eventId: String, source: Source, completed: Boolean): List<VerifiedConversationEvent> {
         val id = value.text("callId") ?: value.text("toolCallId") ?: value.text("id") ?: eventId
