@@ -47,4 +47,5 @@
     <string name="remote_backup_workspace_missing">会话排序未导入：本机还没有对应 Remote 工作区。</string>
     <string name="remote_backup_origin_saved">连接地址已保存为登录页默认值；已登录的账号不受影响。</string>
     <string name="remote_backup_old_agent_ignored">旧 Agent 选择不适用于 Remote 工作区。</string>
+    <string name="push_remote_target_identity">主机：%1$s\n后端：%2$s · 工作区：%3$s\n会话：%4$s</string>
 </resources>

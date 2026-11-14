@@ -16,7 +16,7 @@ const inputs = {
   cancel: binding.extend({ targetRequestId: requestId, request_id: requestId }),
   read_artifact: binding.extend({ artifactId: z.string().regex(/^[A-Za-z0-9_-]+$/u) }),
   request_result: binding.extend({ targetRequestId: requestId }),
-  delivery: target.extend({ taskSessionId: id.optional(), request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u), acknowledge: z.boolean() }),
+  delivery: target.extend({ taskSessionId: id.optional(), resume: z.boolean().optional(), request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u), acknowledge: z.boolean() }),
 };
 const operations = new Set(['ui.dump_tree', 'ui.capture_som', 'ui.tap', 'ui.long_press', 'ui.swipe', 'ui.input_text',
   'ui.global_action', 'ui.scroll', 'ui.drag', 'ui.launch_app', 'plugin.invoke']);
@@ -55,9 +55,10 @@ export class PhoneMcpBridge {
     await this.#target(args, signal);
     const fixed = { hostId: args.hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
     if (operation === 'delivery') {
-      const request = { request_id: args.request_id, op: args.acknowledge ? 'push.ack_delivery' : 'push.read_delivery', args: { deliveryId: args.deliveryId, eventId: args.eventId, token: args.token, payloadDigest: args.payloadDigest } };
-      // 重启后调用者带回原taskSessionId，仅查询原任务；不会重新受理读取或ACK。
-      return this.#dispatch(fixed, args.taskSessionId, request, signal, args.taskSessionId !== undefined);
+      const request = { request_id: args.request_id, op: args.acknowledge ? 'push.ack_delivery' : 'push.read_delivery', args: { deliveryId: args.deliveryId, eventId: args.eventId, payloadDigest: args.payloadDigest } };
+      // 任务ID只确定归属；新request_id的ACK可以复用读取任务。恢复必须显式只查询。
+      if (args.resume && !args.taskSessionId) throw new Error('TASK_SESSION_REQUIRED');
+      return this.#dispatch(fixed, args.taskSessionId, request, signal, args.resume === true);
     }
     if (operation === 'read_artifact') return this.#tool('remote_download_file', { ...fixed, sessionId: args.taskSessionId, path: `artifacts/${args.artifactId}` }, signal);
     if (operation === 'capabilities') return this.#send(fixed, 'control-bus', { request_id: randomUUID(), op: 'phone.capabilities', args: {} }, signal);

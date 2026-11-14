@@ -119,6 +119,40 @@ class PhoneControlOverlayTest {
         } finally { overlay.close() }
     }
 
+    @Test fun 首次推送收件绑定显示可信主体和精确目标且合成点击不能批准() = runTest {
+        val service=Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val overlay=PhoneControlOverlay(service)
+        try {
+            val fields=mapOf("controllerDeviceId" to "desktop-client","controllerKeyFingerprint" to "sha256:client-pin",
+                "origin" to "https://remote.example","accountId" to "owner","hostDeviceId" to "target-host",
+                "hostKeyFingerprint" to "sha256:host-pin","backend" to "codex","workspaceId" to "workspace-42","sessionId" to "session-77")
+            val parameters=com.openandroidintelligence.gateway.schema.Json.canonical(com.openandroidintelligence.gateway.schema.Json.of(fields))
+            val waiting=async { overlay.confirm("push-recipient-owner","push.bind_recipient",parameters) };runCurrent()
+            val confirmation=view(overlay)
+            val title=(confirmation.getChildAt(0) as TextView).text.toString()
+            val detail=((confirmation.getChildAt(1) as ScrollView).getChildAt(0) as TextView).text.toString()
+            assertTrue(title.contains("授权此设备读取这个目标的推送"))
+            fields.values.forEach { assertTrue(detail.contains(it)) }
+            assertTrue(detail.contains("不代表已证明请求来自该会话"))
+            val params=confirmation.layoutParams as android.view.WindowManager.LayoutParams
+            assertEquals(android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,params.type)
+            assertTrue(params.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0)
+            val allow=confirmation.getChildAt(2) as Button
+            allow.performClick();runCurrent();assertFalse(waiting.isCompleted)
+            press(allow);runCurrent();assertTrue(waiting.await())
+            overlay.finish("push-recipient-owner")
+        } finally { overlay.close() }
+    }
+
+    @Test fun 推送收件确认缺少真实目标详情时拒绝建立窗口() = runTest {
+        val service=Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val overlay=PhoneControlOverlay(service)
+        try {
+            assertFalse(overlay.confirm("push-missing","push.bind_recipient","{}"))
+            assertNull(overlay.protectedBounds)
+        } finally { overlay.close() }
+    }
+
     @Test fun smsWithoutLocalParametersCannotCreateAnApprovalWindow() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
         val overlay = PhoneControlOverlay(service)

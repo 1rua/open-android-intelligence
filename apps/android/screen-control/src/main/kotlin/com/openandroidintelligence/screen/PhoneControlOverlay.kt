@@ -115,8 +115,16 @@ class PhoneControlOverlay(
                     JsonFields.int(parameters, "subscriptionId") ?: return@withContext false,
                     JsonFields.string(parameters, "text")?.take(240) ?: return@withContext false,
                     JsonFields.string(parameters, "text")?.length ?: return@withContext false)
+            } else if (capability == "push.bind_recipient") {
+                val parameters=localParameters?.let { JsonFields.obj(Json.parse(it)) } ?: return@withContext false
+                val keys=listOf("controllerDeviceId","controllerKeyFingerprint","origin","accountId","hostDeviceId",
+                    "hostKeyFingerprint","backend","workspaceId","sessionId")
+                val values=keys.map { JsonFields.string(parameters,it) ?: return@withContext false }
+                service.getString(R.string.remote_phone_push_recipient_confirmation,*values.toTypedArray())
             } else null
-            show(service.getString(R.string.remote_phone_confirm, capability), pending, detail)
+            val title=if (capability == "push.bind_recipient") service.getString(R.string.remote_phone_push_recipient_title)
+                else service.getString(R.string.remote_phone_confirm,capability)
+            show(title,pending,detail)
             val allowed = withTimeoutOrNull(5 * 60_000) { pending.await() } ?: false
             decision = null
             if (allowed && !stopped) {

@@ -5,4 +5,6 @@
     <string name="remote_phone_deny">拒绝</string>
     <string name="remote_phone_stop">立即停止</string>
     <string name="remote_phone_sms_confirmation">收件人：%1$s\nSIM 订阅：%2$d\n正文预览（共 %4$d 字）：\n%3$s</string>
+    <string name="remote_phone_push_recipient_title">授权此设备读取这个目标的推送</string>
+    <string name="remote_phone_push_recipient_confirmation">来访设备：%1$s\n设备公钥指纹：%2$s\n服务：%3$s\n账号：%4$s\n目标主机：%5$s\n主机公钥指纹：%6$s\n后端：%7$s\n工作区：%8$s\n会话：%9$s\n\n批准后，此设备可按手机现有推送范围自动读取该目标的后续推送。来访设备与目标主机的关联由你在本机授权，不代表已证明请求来自该会话。更改推送授权后需重新确认。</string>
 </resources>

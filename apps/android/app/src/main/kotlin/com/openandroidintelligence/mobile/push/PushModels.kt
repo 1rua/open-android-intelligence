@@ -7,16 +7,16 @@ data class PushEndpoint(
     val coreInstanceId: String,
     val accountScope: String,
     val endpointId: String,
-    val generation: Long,
+    val generation: Long?,
     val remoteTarget: RemotePushTarget? = null,
 ) {
     init {
         listOf(coreInstanceId, accountScope, endpointId).forEach {
             require(it.isNotBlank() && it.length <= 256) { "PUSH_ENDPOINT_INVALID" }
         }
-        require(generation > 0) { "PUSH_ENDPOINT_GENERATION_INVALID" }
+        require(if (remoteTarget == null) generation != null && generation > 0 else generation == null) { "PUSH_ENDPOINT_GENERATION_INVALID" }
         if (remoteTarget != null) require(coreInstanceId == remoteTarget.origin && accountScope == remoteTarget.accountId &&
-            endpointId == com.openandroidintelligence.gateway.schema.Json.sha256(remoteTarget.encode()) && generation == remoteTarget.accountEpoch+1) {
+            endpointId == com.openandroidintelligence.gateway.schema.Json.sha256(remoteTarget.encode())) {
             "PUSH_REMOTE_ENDPOINT_MISMATCH"
         }
     }
@@ -143,7 +143,8 @@ enum class EndpointVerification { VALID, UNAVAILABLE, REVOKED }
 
 internal fun PushEndpoint.replaces(previous: PushEndpoint): Boolean =
     coreInstanceId == previous.coreInstanceId && accountScope == previous.accountScope &&
-        endpointId == previous.endpointId && generation > previous.generation
+        remoteTarget == null && previous.remoteTarget == null && endpointId == previous.endpointId &&
+        generation != null && previous.generation != null && generation > previous.generation
 
 /**
  * Authenticated Core adapter, implemented by the production composition root.
@@ -204,6 +205,7 @@ data class PushDeliveryResult(
 )
 
 internal const val MAX_PUSH_ENDPOINTS = 32
+internal const val MAX_PUSH_RECIPIENTS = MAX_PUSH_ENDPOINTS * 2
 internal const val MAX_PUSH_SEEN_EVENTS = 16_384
 internal const val MAX_PUSH_EVENT_BYTES = 64 * 1_024
 internal const val PUSH_HOUR_MS = 3_600_000L
@@ -234,4 +236,6 @@ internal data class PushStoredState(
     // Retried independently of login, enabled capabilities, and the sensitive-content queue.
     val revocations: Map<PushEndpoint, Set<String>> = emptyMap(),
     val remoteReceipts: Map<String, RemotePushReceiptRecord> = emptyMap(),
+    val remoteRecipients: Map<PushEndpoint,RemotePushRecipientBinding> = emptyMap(),
+    val authorizationGeneration: Long = 0,
 )

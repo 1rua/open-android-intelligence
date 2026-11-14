@@ -77,7 +77,7 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun 消费或本机推送撤销后历史流与产物不能重新交付旧正文()=runTest {
-        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor)
+        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor,phoneFacadeTestStrings)
         val task=bus.create(access);bus.submit(access,task,request());runCurrent()
         assertTrue(Json.canonical(bus.history(access,task)).contains(SECRET))
         executor.contentCurrent=false
@@ -90,7 +90,7 @@ class PhoneContentDeliveryTest {
     }
 
     @Test fun 只失效一个请求时controlBus回执能力与同任务其他请求仍可读()=runTest {
-        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor)
+        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor,phoneFacadeTestStrings)
         val task=bus.create(access)
         val first=request("content-old-000001");val second=request("content-new-000001")
         bus.submit(access,task,first);runCurrent();bus.submit(access,task,second);runCurrent()

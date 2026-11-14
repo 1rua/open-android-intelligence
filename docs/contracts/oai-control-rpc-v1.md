@@ -88,6 +88,29 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
 | `plugin.invoke` | `pluginId`、版本化 `capabilityId`、`method`、`params`；按已验证 `.alp` 声明与内核端口执行 | 以下数据工具及通用已授权插件调用 |
 | `request.status` | `targetRequestId`、`targetTaskSessionId`；经当前 control-bus 查询该可信拥有者的原最小回执，不恢复旧任务 | `android_request_status` |
 | `request.cancel` | `targetRequestId`；仅取消同一任务内该可信拥有者的指定请求，返回原请求的真实状态 | `android_cancel_request` |
+| `push.read_delivery` | `deliveryId`、`eventId`、`payloadDigest`；首次本机确认绑定实际收件主体与精确目标，读取不等于消费 | `android_read_delivery` |
+| `push.ack_delivery` | 相同三个引用；仅已读取的同一可信主体确认，原子清理该端点正文 | `android_ack_delivery` |
+
+主动推送的普通 `session/prompt` 只携带非秘密事件引用，不携带 bearer、正文或可转授凭证。
+引用和摘要是定位/完整性信息，本身不授权；接口拒绝 token、自报账号、收件人及目标身份字段。
+首次 `push.read_delivery` 经手机既有 `TYPE_ACCESSIBILITY_OVERLAY` 展示认证通道的实际来访
+Client ID/公钥指纹，以及手机已保存的目标 Host/pin、backend、workspaceId 和 sessionId。
+用户本机明确授权“此设备读取这个目标的推送”后，原子加密保存完整目标到该主体的绑定。
+此确认建立授权关系，不声称证明来访 Client 来自目标 Host 或目标会话；同账号、手机自己的
+Client 身份、公开引用及首次来访均不产生授权。已有绑定不能由另一主体抢占或静默替换。
+
+后续同目标按现有独立推送开关、范围、白名单和系统权限自动取件；授权前后和正文/历史/流出队
+都复核账号代次、Host/pin、当前认证连接、本机配置授权代次与急停。推送配置、账号或身份变化
+以及急停使旧许可失效；正常手动切换当前聊天不撤销已选目标，也不把旧队列改投新会话。
+ACK 必须来自已实际读取原事件的同一主体，精确匹配事件与摘要；ACK 与正文清理同一加密提交，
+重复 ACK 只返回原元数据。prompt 受理、turn 结束和模型回复均不是消费确认；未知结果不自动重发通知。
+
+
+本机收件绑定采用两阶段持久提交：候选`pending`不授信，保存候选后复核原认证连接和本机授权代次；
+随后与本机撤销/配置/账号变更同锁串行的`active`加密提交，是批准生效点。候选后崩溃、写失败或
+复核失败，重启仍拒绝取件并允许重新本机确认，不依赖后续回滚写入恢复安全。成功提交的许可可在
+正常重启后保留；提交后的外部断连由每次访问的当前连接检查拒绝，不宣称与网络断连跨系统原子。
+短信与通知分别允许32个目标，持久收件绑定按合法并集最多64个读取和写入，不缩小用户配置。
 
 滚动、拖动、启动应用和时长参数来自现有
 [屏幕端口](../../apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/ScreenContracts.kt)，

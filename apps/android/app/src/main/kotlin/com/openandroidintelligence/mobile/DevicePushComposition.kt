@@ -51,6 +51,10 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         })
     }.getOrElse { issue.value = "PUSH_ENCRYPTED_STATE_UNAVAILABLE"; null }
     private val transport = runtime?.let { RemotePushTransport(it,app.remoteRuntime::borrowPushSession,identity::isCurrent) }
+    private val recipientAuthorizer=runtime?.let(::RemotePushRecipientAuthorizer)
+    private val emergencyObserver=com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.observeEmergencyStop {
+        runtime?.revokeRemoteRecipients()
+    }
 
     private fun synchronizeLogin(): Boolean {
         val account=runCatching { identity.active() }.getOrNull()
@@ -60,7 +64,25 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
                 observedAccount=account
             }
         }
+        runtime?.invalidateRemoteRecipients(identity::isCurrent)
         return account != null
+    }
+
+    suspend fun authorizeDelivery(access: com.openandroidintelligence.control.remote.ControlAccessBinding,
+        operation: com.openandroidintelligence.control.remote.ControlOperation.Delivery,
+        requireConnection: () -> Unit,awaitingConfirmation: (Boolean) -> Unit,
+        confirmLocally: suspend (String) -> Boolean) {
+        check(synchronizeLogin()) { "PUSH_AUTHORIZATION_CHANGED" }
+        val local=runtime ?: error("PUSH_RUNTIME_UNAVAILABLE")
+        val target=local.remoteReceipt(operation.deliveryId)?.endpoint?.remoteTarget ?: error("PUSH_DELIVERY_NOT_FOUND")
+        fun current() {
+            // 此检查会在runtime锁内调用，不能再取composition锁或同步登录状态。
+            requireConnection()
+            check(!app.kernel.isEmergencyStopped() && identity.accepts(access,target)) { "PUSH_AUTHORIZATION_CHANGED" }
+            check(local.remoteDeliveryEnabled(operation,access.principal)) { "PUSH_AUTHORIZATION_CHANGED" }
+        }
+        recipientAuthorizer?.authorize(access,operation,::current,awaitingConfirmation,confirmLocally)
+            ?: error("PUSH_RUNTIME_UNAVAILABLE")
     }
 
     /** 读取与ACK是手机能力，仍受本机独立推送开关、范围、白名单、系统权限和急停控制。 */
@@ -71,13 +93,13 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         val receipt=local.remoteReceipt(operation.deliveryId) ?: error("PUSH_DELIVERY_NOT_FOUND")
         val target=receipt.endpoint.remoteTarget ?: error("PUSH_REMOTE_TARGET_REQUIRED")
         check(identity.accepts(access,target)) { "PUSH_ACCOUNT_BINDING_MISMATCH" }
-        val reader=access.principal.storageKey
+        fun current() { check(!app.kernel.isEmergencyStopped() && identity.accepts(access,target)) { "PUSH_AUTHORIZATION_CHANGED" } }
         val result=if (operation.acknowledge) {
-            local.acknowledgeRemoteDelivery(operation.deliveryId,operation.eventId,operation.token,operation.payloadDigest,reader)
+            local.acknowledgeRemoteDelivery(operation.deliveryId,operation.eventId,operation.payloadDigest,access.principal,::current)
             com.openandroidintelligence.gateway.schema.Json.of(mapOf("deliveryId" to operation.deliveryId,"eventId" to operation.eventId,
                 "payloadDigest" to operation.payloadDigest,"state" to "consumed"))
         } else {
-            val payload=local.readRemoteDelivery(operation.deliveryId,operation.eventId,operation.token,operation.payloadDigest,reader)
+            val payload=local.readRemoteDelivery(operation.deliveryId,operation.eventId,operation.payloadDigest,access.principal,::current)
             com.openandroidintelligence.gateway.schema.Json.of(mapOf("deliveryId" to operation.deliveryId,"eventId" to operation.eventId,
                 "payloadDigest" to operation.payloadDigest,"state" to "accepted","payload" to com.openandroidintelligence.gateway.schema.Json.parse(payload)))
         }
@@ -88,21 +110,20 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
 
     fun requireDeliveryContent(access: com.openandroidintelligence.control.remote.ControlAccessBinding,
         operation: com.openandroidintelligence.control.remote.ControlOperation.Delivery) {
-        if (operation.acknowledge) {
-            check(!app.kernel.isEmergencyStopped() && synchronizeLogin()) { "PUSH_AUTHORIZATION_CHANGED" }
-        } else delivery(access,operation)
+        check(!app.kernel.isEmergencyStopped() && synchronizeLogin()) { "PUSH_AUTHORIZATION_CHANGED" }
+        val local=runtime ?: error("PUSH_RUNTIME_UNAVAILABLE")
+        val target=local.remoteReceipt(operation.deliveryId)?.endpoint?.remoteTarget ?: error("PUSH_DELIVERY_NOT_FOUND")
+        check(identity.accepts(access,target)) { "PUSH_ACCOUNT_BINDING_MISMATCH" }
+        local.requireRemoteDeliveryContent(operation,access.principal)
     }
 
     fun deliveryPolicy(access: com.openandroidintelligence.control.remote.ControlAccessBinding,
         operation: com.openandroidintelligence.control.remote.ControlOperation.Delivery): com.openandroidintelligence.kernel.NativePushDeliveryPolicy {
         val local=runtime ?: return com.openandroidintelligence.kernel.NativePushDeliveryPolicy("unavailable",false)
-        val snapshot=local.snapshot()
-        val receipt=local.remoteReceipt(operation.deliveryId)
-        val target=receipt?.endpoint?.remoteTarget
+        val target=local.remoteReceipt(operation.deliveryId)?.endpoint?.remoteTarget
         return com.openandroidintelligence.kernel.NativePushDeliveryPolicy(local.authorizationDigest(),
             !app.kernel.isEmergencyStopped() && synchronizeLogin() && target != null && identity.accepts(access,target) &&
-                (receipt.consumed || snapshot.configuration.let { receipt.endpoint in it.sms.endpoints && it.sms.enabled ||
-                    receipt.endpoint in it.notifications.endpoints && it.notifications.enabled }))
+                local.remoteDeliveryEnabled(operation,access.principal))
     }
 
     private val notificationObserver = object : DevicePushNotificationObserver {
@@ -173,6 +194,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
     }
 
     fun close() {
+        emergencyObserver.close()
         scope.cancel()
         smsObserver?.let { app.contentResolver.unregisterContentObserver(it) }
         smsObserver = null
@@ -196,7 +218,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
             moreSmsPages=DevicePushSourcesRegistry.current?.let { captureSmsPage(local,it,::synchronizeLogin) } ?: false
         }
         val remote=transport ?: return@withLock true
-        // 本机撤销清除精确token与记录；没有上传正文的远端缓冲，不再调用旧Core清理接口。
+        // 本机撤销清除收件许可与记录；没有上传正文的远端缓冲，不再调用旧Core清理接口。
         runDevicePushCycle(local,remote,remote::revoke,{}, { false },
             onRevocationFailure={ issue.value="PUSH_REVOCATION_DELIVERY_PENDING" })
         pushCycleComplete(local.maintain(),moreSmsPages)

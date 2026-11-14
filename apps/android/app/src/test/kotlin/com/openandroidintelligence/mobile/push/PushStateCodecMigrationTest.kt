@@ -37,7 +37,7 @@ class PushStateCodecMigrationTest {
             assertEquals(before.configuration, after.configuration)
             assertTrue(after.revocations.isEmpty())
             val upgraded = AesGcmEncryptedBlobStore(memory, key).readPlaintext()!!
-            try { assertEquals(5, DataInputStream(ByteArrayInputStream(upgraded)).readInt()) }
+            try { assertEquals(6, DataInputStream(ByteArrayInputStream(upgraded)).readInt()) }
             finally { upgraded.fill(0) }
         }
     }
@@ -58,7 +58,7 @@ class PushStateCodecMigrationTest {
         assertEquals(before.seen, after.seen)
         assertEquals(expectedRevocations, after.revocations)
         assertEquals(PushRevocation(other, expectedRevocations.getValue(other)), runtime.pendingRevocations().single())
-        assertEquals(5, java.io.DataInputStream(java.io.ByteArrayInputStream(PushStateCodec.encode(after))).readInt())
+        assertEquals(6, java.io.DataInputStream(java.io.ByteArrayInputStream(PushStateCodec.encode(after))).readInt())
         clock.epoch += PUSH_HOUR_MS
         clock.elapsed += PUSH_HOUR_MS
         runtime.maintain()
@@ -76,7 +76,7 @@ class PushStateCodecMigrationTest {
             assertTrue(decoded.configuration.sms.scope.senderAddresses.isEmpty())
             assertEquals(decoded, PushStateCodec.decode(PushStateCodec.encode(decoded)))
         }
-        val future = PushStateCodec.encode(PushStoredState("future")).apply { this[3] = 6 }
+        val future = PushStateCodec.encode(PushStoredState("future")).apply { this[3] = 7 }
         assertThrows(IllegalStateException::class.java) { PushStateCodec.decode(future) }
     }
 
@@ -103,7 +103,7 @@ class PushStateCodecMigrationTest {
             assertEquals(committed, reopened.load())
             val upgraded = AesGcmEncryptedBlobStore(memory, key).readPlaintext()!!
             try {
-                assertEquals(5, DataInputStream(ByteArrayInputStream(upgraded)).readInt())
+                assertEquals(6, DataInputStream(ByteArrayInputStream(upgraded)).readInt())
             } finally { upgraded.fill(0) }
         }
     }
@@ -136,7 +136,7 @@ class PushStateCodecMigrationTest {
             },
             "invalid package UTF-8" to valid.copyOf().also { it[itemOffset] = 0x80.toByte() },
             "truncated state tail" to valid.copyOf(valid.size - 1),
-            "future version" to withInt(0, 6),
+            "future version" to withInt(0, 7),
         )
         for ((label, bytes) in malformed) {
             assertThrows(label, Exception::class.java) { PushStateCodec.decode(bytes) }
@@ -155,12 +155,92 @@ class PushStateCodecMigrationTest {
         }
     }
 
+    @Test fun 安装级存储复用原文件和原Keystore别名而不创建Remote空库() {
+        val location=pushStateLocation(java.io.File("no-backup"),"legacy-installation")
+        val digest=java.security.MessageDigest.getInstance("SHA-256").digest("legacy-installation".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        assertEquals(java.io.File("no-backup","device-push-v1/$digest.bin"),location.file)
+        assertEquals("oai_device_push_v1_$digest",location.keyAlias)
+    }
+
+    @Test fun v5旧未确认正文和回执升级后保留但不继承历史令牌授权() {
+        val memory=InMemoryOutboxPersistence()
+        AesGcmEncryptedBlobStore(memory,key).writePlaintext(legacyRemoteV5())
+        val store=EncryptedPushStateStore("legacy-remote",memory,key)
+        val old=store.load()
+        assertEquals("legacy-secret",old.events.single().event.payloadJson)
+        assertEquals("delivery_old",old.events.single().targets.values.single())
+        val receipt=old.remoteReceipts.getValue("delivery_old")
+        assertFalse(receipt.consumed);assertNull(receipt.readerKey)
+        assertEquals("old-reader",receipt.legacyReaderKey)
+        assertEquals("sha256:"+"a".repeat(64),receipt.legacyTokenHash)
+        assertNull(receipt.endpoint.generation)
+        assertEquals(old.configuration.notifications.endpoints.single(),receipt.endpoint)
+        store.save(old.revision,old)
+        assertEquals(old.copy(revision=old.revision+1),EncryptedPushStateStore("legacy-remote",memory,key).load())
+    }
+
+    @Test fun Remote目标没有公开端点租约且账号代次不能冒充generation() {
+        val target=remoteTarget()
+        assertNull(target.endpoint().generation)
+        assertNull(target.copy(accountEpoch=Long.MAX_VALUE).endpoint().generation)
+        assertThrows(IllegalArgumentException::class.java) { target.endpoint().copy(generation=target.accountEpoch+1) }
+        assertThrows(IllegalArgumentException::class.java) { endpoint.copy(generation=null) }
+        assertFalse(target.endpoint().replaces(target.endpoint()))
+    }
+
+    @Test fun 短信通知合法目标并集33到64个收件绑定保存重开后仍可继续写入() {
+        for (count in listOf(33,64)) {
+            val targets=(0 until count).map { remoteTarget().copy(sessionId="session-$it").endpoint() }
+            val config=PushConfiguration(
+                notifications=NotificationPushSettings(true,NotificationPushScope(setOf("test.app")),targets.take(32).toSet()),
+                sms=SmsPushSettings(true,SmsPushScope(),targets.drop(32).toSet()))
+            val bindings=targets.associateWith { RemotePushRecipientBinding("a".repeat(64),"sha256:"+"b".repeat(64)) }
+            val memory=InMemoryOutboxPersistence()
+            val store=EncryptedPushStateStore("recipient-union-$count",memory,key)
+            val saved=store.save(0,PushStoredState("recipient-union-$count",configuration=config,remoteRecipients=bindings))
+            val reopened=EncryptedPushStateStore("recipient-union-$count",memory,key)
+            assertEquals(saved,reopened.load())
+            val continued=reopened.save(saved.revision,saved.copy(capacityRejections=1))
+            assertEquals(continued,EncryptedPushStateStore("recipient-union-$count",memory,key).load())
+            assertEquals(count,continued.remoteRecipients.size)
+        }
+    }
+
+    private fun remoteTarget()=RemotePushTarget("https://remote.example","account",3,"phone-client","sha256:"+"1".repeat(64),
+        "desktop-host","sha256:"+"2".repeat(64),"phone-host","sha256:"+"3".repeat(64),"harness","workspace","session")
+
+    /** 冻结旧v5布局，不能调用当前编码器生成兼容性夹具。 */
+    private fun legacyRemoteV5(): ByteArray=ByteArrayOutputStream().use { bytes ->
+        DataOutputStream(bytes).use { out ->
+            fun text(value:String) { val data=value.toByteArray();out.writeInt(data.size);out.write(data) }
+            fun route() { val target=remoteTarget();text(target.origin);text(target.accountId)
+                text(com.openandroidintelligence.gateway.schema.Json.sha256(target.encode()));out.writeLong(4)
+                out.writeBoolean(true);text(com.openandroidintelligence.gateway.schema.Json.canonical(target.encode())) }
+            out.writeInt(5);text("legacy-remote");out.writeLong(9);out.writeLong(clock.epoch)
+            out.writeBoolean(true);out.writeInt(1);text("test.app");out.writeBoolean(true);out.writeInt(1);route()
+            out.writeBoolean(false);out.writeInt(0);out.writeBoolean(true);out.writeBoolean(true)
+            text("ALL");out.writeInt(0);out.writeInt(0)
+            out.writeInt(72);out.writeInt(1000);out.writeInt(4*1024*1024)
+            repeat(3) {out.writeLong(0)}
+            out.writeInt(1);text(eventId);out.writeInt(PushKind.NOTIFICATION.ordinal)
+            out.writeLong(clock.epoch);out.writeLong(clock.epoch+PUSH_HOUR_MS);text("legacy-secret")
+            out.writeLong(clock.epoch+PUSH_HOUR_MS);out.writeInt(0);out.writeInt(1);route()
+            out.writeBoolean(true);text("delivery_old")
+            out.writeBoolean(false);out.writeInt(1);text(eventId);out.writeLong(clock.epoch+PUSH_HOUR_MS)
+            out.writeInt(0);out.writeInt(1)
+            text("delivery_old");route();text(eventId);text("sha256:"+"b".repeat(64));text("sha256:"+"a".repeat(64))
+            out.writeLong(clock.epoch+PUSH_HOUR_MS);out.writeBoolean(false);out.writeBoolean(true);text("old-reader");text("accepted")
+        }
+        bytes.toByteArray()
+    }
+
     /** Exact prior binary layouts; deliberately independent of the current encoder. */
     private fun legacy(version: Int, allSenders: Boolean = true, pendingRevocation: Boolean = false,
                        notificationPackages: Set<String> = emptySet()): ByteArray = ByteArrayOutputStream().use { bytes ->
         DataOutputStream(bytes).use { output ->
             fun text(value: String) { val encoded = value.toByteArray(); output.writeInt(encoded.size); output.write(encoded) }
-            fun route(value: PushEndpoint) { text(value.coreInstanceId); text(value.accountScope); text(value.endpointId); output.writeLong(value.generation) }
+            fun route(value: PushEndpoint) { text(value.coreInstanceId); text(value.accountScope); text(value.endpointId); output.writeLong(value.generation!!) }
             output.writeInt(version)
             text("legacy-installation")
             output.writeLong(9)

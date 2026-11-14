@@ -36,7 +36,7 @@ class RemotePushIdentity(context: Context) {
         vault.requireCurrent(active);true
     }.getOrDefault(false)
 
-    /** 来访Client与投递Host是两套角色，不能由同账号推断关联；收件token提供精确会话能力。 */
+    /** 这里只核对手机账号与Virtual Host；桌面收件主体须另经本机明确批准绑定完整目标。 */
     fun accepts(access: ControlAccessBinding,target: RemotePushTarget): Boolean = isCurrent(target) &&
         access.authorizationEpoch == target.accountEpoch && access.principal.origin.value == target.origin &&
         access.principal.accountId == target.accountId && access.principal.hostDeviceId == target.phoneHostDeviceId &&

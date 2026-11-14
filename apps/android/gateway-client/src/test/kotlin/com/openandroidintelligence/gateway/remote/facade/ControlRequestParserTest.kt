@@ -18,6 +18,15 @@ class ControlRequestParserTest {
         assertEquals("$(echo text);|", ((json.operation as ControlOperation.Screen).action as ScreenAction.SetText).text)
     }
 
+    @Test fun 推送接口仅接受公开引用而拒绝令牌或自报收件主体() {
+        val args=mapOf("deliveryId" to "delivery_"+"1".repeat(32),"eventId" to "push_"+"2".repeat(64),"payloadDigest" to "sha256:"+"3".repeat(64))
+        fun parse(fields: Map<String,String>)=ControlRequestParser.parse(Json.canonical(Json.of(mapOf(
+            "request_id" to "delivery-read-000001","op" to "push.read_delivery","args" to fields))))
+        assertTrue(parse(args).operation is ControlOperation.Delivery)
+        assertThrows(ControlRequestException::class.java) { parse(args+("token" to "legacy-bearer")) }
+        assertThrows(ControlRequestException::class.java) { parse(args+("controllerDeviceId" to "another-device")) }
+    }
+
     @Test
     fun 未知字段自报身份重复键自然语言和Shell后缀均拒绝() {
         listOf(

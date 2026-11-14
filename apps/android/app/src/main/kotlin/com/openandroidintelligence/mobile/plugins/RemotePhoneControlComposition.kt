@@ -83,15 +83,20 @@ class RemotePhoneControlComposition(
             val app=this.context.applicationContext as? com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
                 ?: fail("PUSH_RUNTIME_UNAVAILABLE")
             val push=app.devicePush ?: fail("PUSH_RUNTIME_UNAVAILABLE")
-            connection(context.access)
-            val result=pushKernel.execute(connection.binding,{ push.deliveryPolicy(context.access,operation) },context.beforeDispatch) {
-                push.delivery(context.access,operation)
-            }
-            connection(context.access)
-            return PhoneControlResult(value(result) as ControlValue.Object,requireContentAccess={
-                connection(context.access);push.requireDeliveryContent(context.access,operation)
-            })
+            try {
+                push.authorizeDelivery(context.access,operation,{ connection(context.access) },context.awaitingConfirmation) { parameters ->
+                    confirmLocally(context.scope.key.storageKey,"push.bind_recipient",parameters)
+                }
+                val result=pushKernel.execute(connection.binding,{ push.deliveryPolicy(context.access,operation) },context.beforeDispatch) {
+                    push.delivery(context.access,operation)
+                }
+                connection(context.access)
+                return PhoneControlResult(value(result) as ControlValue.Object,requireContentAccess={
+                    connection(context.access);push.requireDeliveryContent(context.access,operation)
+                })
+            } finally { PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey) }
         }
+
         if (operation is ControlOperation.DumpTree || operation is ControlOperation.Screen || operation == ControlOperation.CaptureSom)
             return executeNative(context, connection, operation)
         val id = "remote-${UUID.randomUUID()}"

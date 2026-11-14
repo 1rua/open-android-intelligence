@@ -16,6 +16,23 @@
 通过 `android_request_status` 查询最小持久回执，或 `android_cancel_request` 精确取消原请求。
 停止观察、Stdio 退出和本机 HTTP 超时均不代表手机请求已取消。
 
+`android_read_delivery` 与 `android_ack_delivery` 的工具参数是固定手机目标，加上
+`request_id`、可选 `taskSessionId`/`resume`、`deliveryId`、`eventId` 和 `payloadDigest`；不接受 token 或自报主体。
+`taskSessionId`只指定原手机任务，新ACK使用新request_id并可复用读取任务；它不表示恢复旧请求。
+同进程重试相同request_id只查询不重发。桥重启或结果未知时优先使用已有`android_request_result`；
+也可传原taskSessionId、原request_id与`resume:true`只查询，即使未找到结果也不发送业务请求。
+默认`resume:false`表示首次提交新的业务请求，不能拿它重试未知副作用。
+普通推送 prompt 只含公开引用，不能据此直接读取。首次取件由手机本机可信确认展示实际来访
+Client/pin 与手机已保存的精确目标 Host/pin/backend/workspace/session，批准后绑定此目标的实际收件主体。
+确认表示用户授予该设备访问目标推送的许可，不表示已证明该 Client 来自目标会话。
+后续同主体按手机已有独立推送授权自动取件；配置、账号、身份变化和急停需要重新授权，
+正常手动切换当前聊天不改投旧事件。
+
+读取不会确认消费。处理完事件后调用 `android_ack_delivery`，由手机核对同主体、事件和摘要，
+原子清理该端点正文；重复 ACK 仅返回元数据。prompt受理、模型完成、MCP超时均不是消费确认，
+未知结果不自动重发通知。正文/历史/流回读仍受当前手机授权控制；该机制不创建电脑workspace，
+不提供后台跨workspace派发，也不新增服务监听。
+
 短信发送及 SoM 仅在手机真实提供者、授权和本机确认落实后可用；当前缺少的能力返回明确错误。
 `npm test` 使用真实 MCP SDK Stdio 客户端检验列工具与调用；平台数据使用隔离替身，不能作为真机验收。
 

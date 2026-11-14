@@ -152,7 +152,7 @@ class RemoteRuntime(
             override val target=target
             override val label="$label · $sessionId"
             override fun isCurrent()=current()
-            override suspend fun notify(requestId: String,text: String,beforeSend: () -> Unit) {
+            override suspend fun notifyReference(requestId: String,reference: com.openandroidintelligence.mobile.push.RemotePushReference,beforeSend: () -> Unit) {
                 fun checkCurrent() { beforeSend(); check(current()) { "PUSH_SESSION_CHANGED" } }
                 val guarded=object : RemoteRpcChannel by borrowed {
                     override suspend fun invoke(method: String,params: JsonValue.JObject,requestId: String,timeoutMs: Long): JsonValue {
@@ -163,7 +163,7 @@ class RemoteRuntime(
                 }
                 val carrier=carriers(guarded).firstOrNull { it.backend == selected.backendId.value } ?: error("PUSH_BACKEND_UNAVAILABLE")
                 checkCurrent()
-                carrier.prompt(sessionId,requestId,listOf(Json.of(mapOf("type" to "text","text" to text))))
+                carrier.prompt(sessionId,requestId,listOf(Json.of(mapOf("type" to "text","text" to Json.canonical(reference.encode())))))
                 checkCurrent()
             }
         }

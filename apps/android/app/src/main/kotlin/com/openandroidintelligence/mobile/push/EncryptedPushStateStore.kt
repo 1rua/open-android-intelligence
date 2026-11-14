@@ -56,10 +56,11 @@ class EncryptedPushStateStore(
         /** One runtime per installation; existing unreadable data never triggers a replacement key. */
         fun fromContext(context: Context, installationId: String): EncryptedPushStateStore {
             require(installationId.isNotBlank() && installationId.length <= 512)
-            val digest = MessageDigest.getInstance("SHA-256").digest(installationId.toByteArray())
-                .joinToString("") { "%02x".format(it) }
-            val file = File(context.noBackupFilesDir, "device-push-remote-v1/$digest.bin")
-            val alias = "oai_device_push_remote_v1_$digest"
+            val location = pushStateLocation(context.noBackupFilesDir, installationId)
+            // Remote target 是路由身份的升级；本机 Push 配置、队列和未确认回执仍属于同一安装数据。
+            // 复用既有路径与 Keystore alias，版本化正文由 PushStateCodec 显式升级。
+            val file = location.file
+            val alias = location.keyAlias
             if (file.isFile) {
                 val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
                 if (!keys.containsAlias(alias)) throw PushStateUnavailable()
@@ -77,7 +78,7 @@ class EncryptedPushStateStore(
 internal object PushStateCodec {
     fun encode(state: PushStoredState): ByteArray = ByteArrayOutputStream().use { bytes ->
         DataOutputStream(bytes).use { out ->
-            out.writeInt(5)
+            out.writeInt(6)
             out.text(state.installationId)
             out.writeLong(state.revision)
             out.writeLong(state.observedAtEpochMs)
@@ -111,8 +112,17 @@ internal object PushStateCodec {
             out.writeInt(state.remoteReceipts.size)
             state.remoteReceipts.values.forEach { receipt ->
                 out.text(receipt.deliveryId); out.endpoint(receipt.endpoint); out.text(receipt.eventId)
-                out.text(receipt.payloadDigest); out.text(receipt.tokenHash); out.writeLong(receipt.expiresAt); out.writeBoolean(receipt.consumed);out.optional(receipt.readerKey);out.text(receipt.dispatchState)
+                out.text(receipt.payloadDigest); out.writeLong(receipt.expiresAt); out.writeBoolean(receipt.consumed);out.optional(receipt.readerKey);out.text(receipt.dispatchState)
+                out.optional(receipt.legacyTokenHash); out.optional(receipt.legacyReaderKey)
+                out.writeInt(receipt.kind?.ordinal ?: -1)
             }
+            // 短信和通知各有32个合法目标，收件绑定覆盖二者并集。
+            require(state.remoteRecipients.size <= MAX_PUSH_RECIPIENTS)
+            out.writeInt(state.remoteRecipients.size)
+            state.remoteRecipients.forEach { (endpoint,binding) ->
+                out.endpoint(endpoint);out.text(binding.principalKey);out.text(binding.configurationDigest);out.writeBoolean(binding.active)
+            }
+            out.writeLong(state.authorizationGeneration)
         }
         bytes.toByteArray()
     }
@@ -121,7 +131,7 @@ internal object PushStateCodec {
         require(bytes.size <= MAX_PUSH_STATE_BYTES)
         return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             val version = input.readInt()
-            check(version in 1..5)
+            check(version in 1..6)
             val installation = input.text(2_048)
             val revision = input.nonnegative()
             val observed = input.nonnegative()
@@ -175,13 +185,32 @@ internal object PushStateCodec {
             val receipts=linkedMapOf<String,RemotePushReceiptRecord>()
             if (version >= 5) repeat(input.count(MAX_PUSH_REVOCATION_IDS)) {
                 val id=input.text(128); val endpoint=input.endpoint(version); val event=input.text(128)
-                val receipt=RemotePushReceiptRecord(id,endpoint,event,input.text(128),input.text(128),input.nonnegative(),input.readBoolean(),input.optional(),input.text(32))
+                val digest=input.text(128)
+                // v5 的哈希曾对应进入普通聊天历史的 bearer；读取旧布局但不继承收件许可。
+                val legacyToken=if (version == 5) input.text(128) else null
+                val expires=input.nonnegative(); val consumed=input.readBoolean()
+                val reader=input.optional(); val dispatch=input.text(32)
+                val receipt=RemotePushReceiptRecord(id,endpoint,event,digest,expires,consumed,
+                    if (version == 5) null else reader,dispatch,
+                    if (version >= 6) input.optional() else legacyToken,
+                    if (version >= 6) input.optional() else reader,
+                    if (version >= 6) input.readInt().let { if (it == -1) null else PushKind.entries[it] }
+                    else events.firstOrNull { it.event.eventId == event }?.event?.kind)
                 check(id !in receipts && endpoint.remoteTarget != null)
                 check(receipt.dispatchState in setOf("prepared","dispatched","accepted","outcome_unknown"))
                 receipts[id]=receipt
             }
+            val recipients=linkedMapOf<PushEndpoint,RemotePushRecipientBinding>()
+            if (version >= 6) repeat(input.count(MAX_PUSH_RECIPIENTS)) {
+                val endpoint=input.endpoint(version)
+                val principal=input.text(128);val digest=input.text(128)
+                check(endpoint.remoteTarget != null && endpoint !in recipients && Regex("[0-9a-f]{64}").matches(principal) &&
+                    Regex("sha256:[0-9a-f]{64}").matches(digest))
+                recipients[endpoint]=RemotePushRecipientBinding(principal,digest,input.readBoolean())
+            }
+            val authorizationGeneration=if (version >= 6) input.nonnegative() else 0
             check(input.available() == 0 && events.all { it.event.eventId in seen })
-            PushStoredState(installation, revision, observed, config, events, seen, expired, revoked, capacity, smsCursor, revocations,receipts)
+            PushStoredState(installation, revision, observed, config, events, seen, expired, revoked, capacity, smsCursor, revocations,receipts,recipients,authorizationGeneration)
         }
     }
 
@@ -217,14 +246,16 @@ internal object PushStateCodec {
     }
 
     private fun DataOutputStream.endpoint(value: PushEndpoint) {
-        text(value.coreInstanceId); text(value.accountScope); text(value.endpointId); writeLong(value.generation)
+        text(value.coreInstanceId); text(value.accountScope); text(value.endpointId); writeLong(value.generation ?: 0)
         writeBoolean(value.remoteTarget != null)
         value.remoteTarget?.let { text(com.openandroidintelligence.gateway.schema.Json.canonical(it.encode())) }
     }
     private fun DataInputStream.endpoint(version: Int): PushEndpoint {
         val core=text(1_024);val account=text(1_024);val id=text(1_024);val generation=readLong()
         val remote=if (version >= 5 && readBoolean()) RemotePushTarget.decode(com.openandroidintelligence.gateway.schema.Json.parse(text(16_384))) else null
-        return PushEndpoint(core,account,id,generation,remote)
+        // Remote 没有公开端点租约；v5 的账号代次加一只作为旧布局读取，不再伪装租约。
+        if (version >= 6 && remote != null) check(generation == 0L)
+        return PushEndpoint(core,account,id,if (remote != null) null else generation,remote)
     }
     private fun DataOutputStream.endpoints(value: Set<PushEndpoint>) {
         writeInt(value.size); value.forEach { endpoint(it) }
@@ -257,4 +288,13 @@ internal object PushStateCodec {
     }
     private fun DataInputStream.count(max: Int) = readInt().also { check(it in 0..max) }
     private fun DataInputStream.nonnegative() = readLong().also { check(it >= 0) }
+}
+
+/** 安装级配置和队列的固定位置；Remote 路由变化不能创建新的空库。 */
+internal data class PushStateLocation(val file: File, val keyAlias: String)
+internal fun pushStateLocation(noBackupFilesDir: File, installationId: String): PushStateLocation {
+    require(installationId.isNotBlank() && installationId.length <= 512)
+    val digest=MessageDigest.getInstance("SHA-256").digest(installationId.toByteArray())
+        .joinToString("") { "%02x".format(it) }
+    return PushStateLocation(File(noBackupFilesDir,"device-push-v1/$digest.bin"),"oai_device_push_v1_$digest")
 }
