@@ -420,7 +420,7 @@ class TimelineDisplayModel(
      * 而普通消息只有在所属执行段真的需要折叠时才需要完整块（叙述内容）。
      */
     private fun analyse(entry: TimelineEntry): EntryAnalysis {
-        if (!mayContainExecutionMarkup(entry.text)) {
+        if (entry.reasoning.isEmpty() && !mayContainExecutionMarkup(entry.text)) {
             return EntryAnalysis(
                 entry = entry,
                 blocks = null,
@@ -462,10 +462,10 @@ class TimelineDisplayModel(
     private fun parseEntry(entry: TimelineEntry): List<TimelineBlock> {
         // 缓存 key 包含文本长度与内容 hash：流式过程中同长度内容被改写时不会命中旧结果，
         // 同时保留「文本长度变化才重解析」的规格语义（规格 §3.1 第 8 条）。
-        val cacheKey = "${entry.key}@${entry.text.length}@${entry.text.hashCode()}"
+        val cacheKey = "${entry.key}@${entry.text.length}@${entry.text.hashCode()}@${entry.reasoning.hashCode()}"
         parsedCache[cacheKey]?.let { return it }
 
-        val blocks = runCatching { parse(entry.text) }
+        val blocks = runCatching { structuredTimelineBlocks(entry, parse) }
             .getOrElse { listOf(TimelineBlock.Paragraph(entry.text)) }
             .ifEmpty { listOf(TimelineBlock.Paragraph(entry.text)) }
 
@@ -483,6 +483,21 @@ class TimelineDisplayModel(
         /** 解析缓存上限：够覆盖一屏多的历史消息，又不会随会话无限增长。 */
         const val MaxCachedEntries = 128
     }
+}
+
+/** 上游思考块直接进入既有执行卡片，正文继续使用原 Markdown 解析与来源偏移。 */
+internal fun structuredTimelineBlocks(entry: TimelineEntry, parse: (String) -> List<TimelineBlock> = MarkdownParser::parse): List<TimelineBlock> {
+    if (entry.reasoning.isEmpty()) return parse(entry.text)
+    val blocks = mutableListOf<TimelineBlock>()
+    var offset = 0
+    entry.reasoning.sortedBy { it.bodyOffset }.forEach { reasoning ->
+        val next = reasoning.bodyOffset.coerceIn(offset, entry.text.length)
+        if (next > offset) blocks += parse(entry.text.substring(offset, next))
+        blocks += TimelineBlock.ThoughtBlock(reasoning.text, reasoning.complete)
+        offset = next
+    }
+    if (offset < entry.text.length) blocks += parse(entry.text.substring(offset))
+    return blocks
 }
 
 /**

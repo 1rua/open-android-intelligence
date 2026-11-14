@@ -18,6 +18,7 @@ class RemoteConversationRepository(
     private val parentScope: CoroutineScope,
     private val activeConversationId: () -> String?,
     private val attachmentContent: suspend (String, String) -> List<JsonValue> = { _, _ -> throw RemoteSessionException("REMOTE_ATTACHMENT_UNAVAILABLE") },
+    private val clock: () -> Long = System::currentTimeMillis,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
@@ -47,7 +48,7 @@ class RemoteConversationRepository(
     private fun current() {
         check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
     }
-    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it) }
+    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock) }
     fun activeConversationChanged() {
         val projection = activeConversationId()?.let(projections::get)
         currentGeneration.value = projection?.generationId
@@ -143,7 +144,7 @@ class RemoteConversationRepository(
         if (message.delivery == MessageDeliveryMode.QUEUE && projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED)) {
             val queue = held.computeIfAbsent(conversationId) { linkedMapOf() }
             synchronized(queue) { queue[message.clientMessageId.value] = message.copy(delivery = MessageDeliveryMode.NORMAL) }
-            publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("queue:${message.clientMessageId.value}", 0,
+            publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("queue:${message.clientMessageId.value}", clock(),
                 PendingDelivery(message.clientMessageId, ConversationId(conversationId), message.text, message.attachmentIds.size, PendingDeliveryState.QUEUED)))
             return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, delivery = MessageDeliveryMode.QUEUE, authoritative = false)
         }
@@ -163,14 +164,20 @@ class RemoteConversationRepository(
             try {
                 val result = carrier.prompt(RemoteLocalIds.decode(conversationId), message.clientMessageId.value, content, models[conversationId])
                 current()
-                val nativeGeneration = result.at("turn")?.text("id") ?: result.text("generationId") ?: localGeneration
+                val nativeGeneration = result.at("turn")?.text("id") ?: result.text("generationId") ?: turn.generation
                 if (result.flag("accepted") == false) {
                     throw RemoteSessionException("REMOTE_PROMPT_NOT_ACCEPTED")
                 }
                 turn.generation = nativeGeneration
-                if (projection(conversationId).generationId == localGeneration) projection(conversationId).confirmGeneration(nativeGeneration)
-                turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("accepted:${member.value}", 0,
+                val target = projection(conversationId)
+                synchronized(target) {
+                    if (target.generationId == localGeneration) target.confirmGeneration(nativeGeneration)
+                }
+                if (synchronized(turns) { turns[message.clientMessageId.value] !== turn }) return@launch
+                turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("accepted:${member.value}", clock(),
                     ConversationId(conversationId), message.clientMessageId.value, member, AgentMessageStatus.DELIVERED, 1, null, nativeGeneration)) }
+                // 流可先于 RPC 回执完成；用持久到本连接结束的终态事实再次核对，而不是重启该轮。
+                settlePending(conversationId, target)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
                 // 已发出的 mutation 没有回执时保持原提交身份，不能画成可盲目重发的确定失败。
@@ -179,12 +186,12 @@ class RemoteConversationRepository(
                     cause is RemoteSessionException && cause.code == "REMOTE_PROMPT_NOT_ACCEPTED"
                 if (rejected) {
                     synchronized(turns) { turns.remove(message.clientMessageId.value) }
-                    turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("rejected:${member.value}", 0,
+                    turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("rejected:${member.value}", clock(),
                         ConversationId(conversationId), message.clientMessageId.value, member, AgentMessageStatus.FAILED,
                         2, AgentMessageErrorCode.AGENT_REQUEST_FAILED, localGeneration)) }
                 } else {
                     if (projection(conversationId).generationId == localGeneration) projection(conversationId).markUnknown()
-                    turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("unknown:${member.value}", 0,
+                    turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("unknown:${member.value}", clock(),
                         PendingDelivery(member, ConversationId(conversationId), message.text, message.attachmentIds.size,
                             PendingDeliveryState.OUTCOME_UNKNOWN, failure.value, localGeneration))) }
                 }
@@ -195,19 +202,25 @@ class RemoteConversationRepository(
     }
     private suspend fun settlePending(id: String, target: RemoteTimelineProjection) {
         val turns = pending[id] ?: return
-        val terminal = target.terminalGeneration ?: return
-        val entries = synchronized(turns) { turns.values.filter { it.generation == terminal.first } }
+        val entries = synchronized(turns) { turns.values.mapNotNull { turn ->
+            synchronized(target) { target.terminal(turn.generation) }?.let { turn to it }
+        } }
         if (entries.isEmpty()) return
-        val status = when (terminal.second) {
-            GenerationState.COMPLETED -> AgentMessageStatus.COMPLETED
-            GenerationState.FAILED -> AgentMessageStatus.FAILED
-            else -> return
-        }
-        entries.forEach { entry ->
-            synchronized(turns) { turns.remove(entry.message.clientMessageId.value) }
-            entry.members.forEach { member -> publish(id, VerifiedConversationEvent.MessageStatus("terminal:${member.value}", 0, ConversationId(id),
+        entries.forEach { (entry, terminal) ->
+            if (synchronized(turns) { turns.remove(entry.message.clientMessageId.value) } !== entry) return@forEach
+            if (terminal.state == GenerationState.CANCELLED) {
+                publish(id, VerifiedConversationEvent.GenerationCancelled("cancelled:${entry.message.clientMessageId.value}", terminal.occurredAt,
+                    terminal.generationId, ConversationId(id)))
+                return@forEach
+            }
+            val status = when (terminal.state) {
+                GenerationState.COMPLETED -> AgentMessageStatus.COMPLETED
+                GenerationState.FAILED -> AgentMessageStatus.FAILED
+                else -> return@forEach
+            }
+            entry.members.forEach { member -> publish(id, VerifiedConversationEvent.MessageStatus("terminal:${member.value}", terminal.occurredAt, ConversationId(id),
                 entry.message.clientMessageId.value, member, status, 2, if (status == AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_REQUEST_FAILED else null,
-                terminal.first)) }
+                terminal.generationId)) }
         }
         retryPendingDeliveries(id)
     }

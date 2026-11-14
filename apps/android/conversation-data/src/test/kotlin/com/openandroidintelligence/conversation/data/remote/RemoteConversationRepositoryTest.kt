@@ -91,6 +91,14 @@ class RemoteConversationRepositoryTest {
         projection.accept(row(2, "旧正文"), history = true)
         assertEquals("新正文", (projection.rows.getValue("same-message").parts.single() as MessagePart.Text).value)
     }
+    @Test fun `无序号实时流之后的迟到历史不能覆盖当前正文`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj(
+            "threadId" to "hermes:相同/session", "itemId" to "same-message", "delta" to "实时正文")))
+        projection.accept(obj("type" to "event", "event" to obj("seq" to 2, "type" to "assistant/message",
+            "data" to obj("message" to obj("id" to "same-message", "content" to listOf(obj("type" to "text", "text" to "旧历史"))))))), history = true)
+        assertEquals("实时正文", (projection.rows.getValue("same-message").parts.single() as MessagePart.Text).value)
+    }
     @Test fun `ACP受理in_progress保持运行直到真实prompt_completed`() = runTest {
         val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
         val carrier = Carrier(workspace)
@@ -145,5 +153,61 @@ class RemoteConversationRepositoryTest {
     @Test fun `时间单位由各后端协议确定不能按数值大小猜测`() {
         assertEquals(5L, millis(obj("time" to 5), "time"))
         assertEquals(5_000L, secondsMillis(obj("time" to 5), "time"))
+    }
+
+    @Test fun `Codex真实终态先于发送回执仍结算批次全部成员`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.submitBatch(local, MessageBatch("batch", listOf(OutgoingMessage(ClientMessageId("first"), "一"), OutgoingMessage(ClientMessageId("second"), "二"))))
+        runCurrent()
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "T"))))
+        carrier.frames.emit(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to "hermes:相同/session", "itemId" to "reply", "delta" to "答案")))
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "T", "status" to "completed"))))
+        runCurrent()
+        response.complete(obj("turn" to obj("id" to "T")))
+        runCurrent()
+        val completed = observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().filter { it.status == AgentMessageStatus.COMPLETED }
+        assertEquals(setOf("first", "second"), completed.map { it.clientMessageId.value }.toSet())
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertTrue(completed.all { it.occurredAt > 0 })
+        assertTrue(observed.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().all { it.occurredAt > 0 && it.message.timestamp > 0 })
+        repo.close()
+    }
+
+    @Test fun `ACP终态先到受理回执不能恢复为运行中`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("request"), "一")); runCurrent()
+        carrier.frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to "hermes:相同/session",
+            "update" to obj("sessionUpdate" to "agent_message_chunk", "content" to obj("type" to "text", "text" to "答案")))))
+        carrier.frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to "hermes:相同/session",
+            "update" to obj("sessionUpdate" to "prompt_completed", "stopReason" to "end_turn"))))
+        runCurrent()
+        response.complete(obj("accepted" to true, "stopReason" to "in_progress")); runCurrent()
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertEquals(1, observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().count { it.status == AgentMessageStatus.COMPLETED })
+        repo.close()
+    }
+
+    @Test fun `ACP终态先到且回执补充turn身份时仍结算为终态`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("request"), "一")); runCurrent()
+        carrier.frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to "hermes:相同/session",
+            "update" to obj("sessionUpdate" to "prompt_completed", "stopReason" to "end_turn"))))
+        runCurrent()
+        response.complete(obj("accepted" to true, "turn" to obj("id" to "native-turn"), "stopReason" to "in_progress")); runCurrent()
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertEquals(1, observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().count { it.status == AgentMessageStatus.COMPLETED })
+        repo.close()
     }
 }

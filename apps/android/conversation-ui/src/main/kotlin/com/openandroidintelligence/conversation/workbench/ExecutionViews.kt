@@ -61,7 +61,7 @@ fun AssistantMessageContent(
     presentations: StreamingPresentationRegistry? = null,
 ) {
     val text = entry.text
-    if (text.isBlank()) {
+    if (text.isBlank() && entry.reasoning.isEmpty()) {
         when {
             entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true) -> StreamingCursor(
                 modifier = modifier.padding(vertical = Dimensions.SpaceTiny),
@@ -79,15 +79,15 @@ fun AssistantMessageContent(
         return
     }
 
-    if (!mayContainExecutionMarkup(text)) {
+    if (entry.reasoning.isEmpty() && !mayContainExecutionMarkup(text)) {
         StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
             MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
         }
         return
     }
 
-    val blocks = remember(text) {
-        runCatching { MarkdownParser.parse(text) }
+    val blocks = remember(text, entry.reasoning) {
+        runCatching { structuredTimelineBlocks(entry) }
             .getOrElse { listOf(TimelineBlock.Paragraph(text)) }
     }
 

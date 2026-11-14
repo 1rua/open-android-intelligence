@@ -128,6 +128,7 @@ data class TimelineEntry(
     val executionGenerationState: GenerationState? = null,
     /** UI 临时来源；历史装载重新建立快照基线，不进入 checkpoint。 */
     val presentation: StreamPresentationMetadata? = null,
+    val reasoning: List<com.openandroidintelligence.conversation.model.MessageReasoning> = emptyList(),
 )
 
 data class WorkbenchUiState(
@@ -5569,6 +5570,7 @@ class WorkbenchController(
             executionSteps = message.executionSteps,
             localPlaceholder = message.localPlaceholder,
             presentation = presentationOf(message),
+            reasoning = message.reasoning,
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
