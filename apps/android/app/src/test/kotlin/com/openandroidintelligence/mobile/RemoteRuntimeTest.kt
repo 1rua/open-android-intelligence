@@ -283,11 +283,16 @@ class RemoteRuntimeTest {
     private fun replyFrame(local: com.openandroidintelligence.conversation.ports.ConversationScope, eventId: String, complete: Boolean) =
         com.openandroidintelligence.gateway.events.GatewayEvent(eventId,
             if (complete) "conversation.message.status" else "conversation.message.delta",
-            Json.canonical(Json.of(mapOf("accountId" to local.accountId, "occurredAt" to java.time.Instant.now().toString(),
-                "payload" to mapOf("agentId" to local.gatewayId, "conversationId" to "same:reply", "generationId" to "gen",
-                    "messageId" to if (complete) "user" else "reply", "sender" to "assistant", "text" to "运行回复",
-                    "clientMessageId" to "request", "errorCode" to null,
-                    "status" to if (complete) "completed" else "delivered", "revision" to if (complete) 2 else 1)))))
+            Json.canonical(com.openandroidintelligence.gateway.schema.JsonValue.JObject(listOf(
+                "accountId" to JsonValue.JString(local.accountId),
+                "occurredAt" to JsonValue.JString(java.time.Instant.now().toString()),
+                "payload" to JsonValue.JObject(listOf(
+                    "agentId" to JsonValue.JString(local.gatewayId), "conversationId" to JsonValue.JString("same:reply"),
+                    "generationId" to JsonValue.JString("gen"), "messageId" to JsonValue.JString(if (complete) "user" else "reply"),
+                    "sender" to JsonValue.JString("assistant"), "text" to JsonValue.JString("运行回复"),
+                    "clientMessageId" to JsonValue.JString("request"), "errorCode" to JsonValue.JNull,
+                    "status" to JsonValue.JString(if (complete) "completed" else "delivered"),
+                    "revision" to JsonValue.JNumber(if (complete) "2" else "1")))))))
 
     private fun remoteBackup(policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
         com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort()): com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator {
