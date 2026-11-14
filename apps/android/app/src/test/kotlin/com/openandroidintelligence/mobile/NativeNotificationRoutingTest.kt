@@ -2,7 +2,6 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.events.GatewayEvent
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -76,13 +75,12 @@ class NativeNotificationRoutingTest {
         generation: String,
         status: String? = null,
         text: String = "",
-    ): GatewayEvent {
+    ): NativeNotificationInput? {
         val payload = if (type == "conversation.message.status") {
             """{"agentId":"$agent","conversationId":"conv-a","messageId":"user-1","clientMessageId":"client-1","generationId":"$generation","status":"$status","revision":2,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}"""
         } else {
             """{"agentId":"$agent","conversationId":"conv-a","messageId":"reply-1","sender":"assistant","parts":[{"type":"text","text":"$text"}],"text":"$text","timestamp":1,"revision":1,"generationId":"$generation"}"""
         }
-        return GatewayEvent("frame-${++sequence}", type,
-            """{"accountId":"account","occurredAt":"${Instant.ofEpochMilli(clock)}","payload":$payload}""")
+        return notificationFact("profile", "account", "frame-${++sequence}", clock, type, payload)
     }
 }

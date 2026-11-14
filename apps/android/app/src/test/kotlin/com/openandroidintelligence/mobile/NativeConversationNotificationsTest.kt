@@ -10,7 +10,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.ConversationSummary
-import com.openandroidintelligence.gateway.events.GatewayEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -348,9 +347,8 @@ class NativeConversationNotificationsTest {
             coordinator = coordinator()
             coordinator.bind("profile", "account")
             publications.clear()
-            val staleBody = frame.data.replace(Regex("\"occurredAt\":\"[^\"]+\""), "\"occurredAt\":\"${Instant.ofEpochMilli(clock - 600_000)}\"")
-            accept(frame.copy(data = staleBody))
-            assertTrue("The first historical ${frame.event} must not publish", publications.isEmpty())
+            accept(requireNotNull(frame).at(clock - 600_000))
+            assertTrue("首条历史事实不能发布通知", publications.isEmpty())
             assertTrue(coordinator.sessions.value.isEmpty())
             assertEquals(clock, preferences.getLong("first-enabled-at", 0L))
         }
@@ -465,7 +463,7 @@ class NativeConversationNotificationsTest {
             try {
                 original.bind("profile", "account")
                 original.accept("profile", "account", delta)
-                assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(delta.id!!)))
+                assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(requireNotNull(delta).eventId)))
                 try {
                     original.accept("profile", "account", terminal)
                     fail("Terminal publication must simulate process death before accept's trailing metadata flush")
@@ -478,8 +476,8 @@ class NativeConversationNotificationsTest {
             }
 
             val snapshotAtPublication = terminalSnapshots.single()
-            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(delta.id!!)))
-            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(terminal.id!!)))
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(requireNotNull(delta).eventId)))
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(requireNotNull(terminal).eventId)))
             assertEquals(1L, snapshotAtPublication["realtime.revision." + replyDigest("body\u0000conversation\u0000reply")])
             assertTrue(snapshotAtPublication.containsKey("realtime.terminal." + replyDigest("conversation\u0000generation")))
 
@@ -727,15 +725,15 @@ class NativeConversationNotificationsTest {
     private fun coordinator() = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert }, now = { clock }, throttleMillis = 40)
     private fun presencePage(vararg ids: String, authoritative: Boolean = true, nextCursor: String? = null) =
         ConversationPage(ids.map { ConversationSummary(ConversationId(it), it, clock) }, nextCursor, authoritative = authoritative)
-    private fun accept(event: GatewayEvent) = coordinator.accept("profile", "account", event)
+    private fun accept(input: NativeNotificationInput?) { input?.let(coordinator::accept) }
     private fun message(type: String, text: String, revision: Long, generation: String? = "generation", sender: String = "assistant", messageId: String = "reply", channel: String? = null) = event(type,
         """{"conversationId":"conversation","messageId":"$messageId",${generationField(generation)}"sender":"$sender","parts":[{"type":"text","text":"$text"}],"revision":$revision${channel?.let { ",\"channel\":\"$it\"" }.orEmpty()}}""")
     private fun status(status: String, revision: Long, generation: String? = "generation") = event("conversation.message.status",
         """{"conversationId":"conversation","messageId":"user-${generation ?: "legacy"}","clientMessageId":"client-${generation ?: "legacy"}",${generationField(generation)}"status":"$status","revision":$revision,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
-    private fun event(type: String, payload: String): GatewayEvent {
+    private fun event(type: String, payload: String): NativeNotificationInput? {
         clock++
-        return GatewayEvent("realtime-${++sequence}", type, """{"accountId":"account","occurredAt":"${Instant.ofEpochMilli(clock)}","payload":$payload}""")
+        return notificationFact("profile", "account", "realtime-${++sequence}", clock, type, payload)
     }
 
     private class RealtimeCountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
