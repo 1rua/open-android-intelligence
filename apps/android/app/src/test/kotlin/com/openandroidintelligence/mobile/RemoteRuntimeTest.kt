@@ -8,6 +8,7 @@ import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
+import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.network.*
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.remote.runtime.*
@@ -57,6 +58,13 @@ class RemoteRuntimeTest {
     private suspend fun ready(workspace: String) {
         if (runtime.state.value.account == null) runtime.restoreSessionIfAvailable().join()
         runtime.select(endpoint(workspace)).join()
+        val rpc = connection.channels.last()
+        val peer = connection.authenticatedPeer(rpc.scope.connectionId)
+        assertEquals("主动聊天连接保留完整连接作用域", rpc.scope, peer.scope)
+        assertEquals("主动聊天连接的角色是本机客户端", RemoteRole.CLIENT, peer.role)
+        assertSame("同一连接的认证身份保持稳定", peer, connection.authenticatedPeer(rpc.scope.connectionId))
+        val fingerprint = Regex("sha256:[a-f0-9]{64}")
+        assertTrue("本机和宿主指纹均使用真实传输格式", fingerprint.matches(peer.localFingerprint) && fingerprint.matches(peer.peerFingerprint))
         eventually { runtime.controller.value?.state?.value?.activeThreadId == RemoteLocalIds.encode("same:原生/session") }
     }
     private suspend fun eventually(check: () -> Boolean) = withTimeout(5_000) { while (!check()) delay(10) }
@@ -324,11 +332,19 @@ class RemoteRuntimeTest {
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
         val channels = mutableListOf<Rpc>()
+        private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
         override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult = error("本测试只恢复已认证账号")
         override suspend fun restore() = RemoteActiveAccount("https://remote.example", "account", 1).also { account.value = it }
         override suspend fun listHosts() = listOf(RemoteHostDevice("host", "电脑", "linux", "membership", true))
-        override suspend fun connect(hostDeviceId: String): RemoteRpcChannel = Rpc(channels.size + 1).also { channels += it }
-        override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer = error("本测试不允许受控入站")
+        override suspend fun connect(hostDeviceId: String): RemoteRpcChannel = Rpc(channels.size + 1).also {
+            channels += it
+            // 主动聊天使用本机客户端角色；夹具仍保留完整认证绑定和正式指纹格式。
+            peers[it.scope.connectionId] = AuthenticatedRemotePeer(
+                it.scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.CLIENT)
+        }
+        override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer =
+            peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
+        fun releasePeer(connectionId: String) { peers.remove(connectionId) }
         override suspend fun logout() { account.value = null }
     }
     private inner class Rpc(generation: Int) : RemoteRpcChannel {
@@ -357,7 +373,10 @@ class RemoteRuntimeTest {
             }
             return Json.of(mapOf("ok" to true, "value" to value))
         }
-        override suspend fun close() { closed = true }
+        override suspend fun close() {
+            closed = true
+            connection.releasePeer(scope.connectionId)
+        }
     }
     private fun catalog(name: String): JsonValue = Json.of(mapOf("groups" to listOf(mapOf("id" to "provider", "models" to listOf(mapOf("id" to "model", "name" to name)))),
         "current" to mapOf("provider" to "provider", "model" to "model")))
