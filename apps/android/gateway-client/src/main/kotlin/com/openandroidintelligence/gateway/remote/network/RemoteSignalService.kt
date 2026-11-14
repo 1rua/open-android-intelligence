@@ -182,6 +182,7 @@ internal class RemoteSignalService(
         private val messages = linkedSetOf<(ByteArray) -> Unit>(); private val closures = linkedSetOf<(String) -> Unit>()
         private val carrierReady = CompletableDeferred<Unit>()
         private val rtcAvailable = CompletableDeferred<RemoteRtcPeer>()
+        private var rtcDisabled = false
         private var rtcPeer: RemoteRtcPeer? = null
         private var rtc: com.openandroidintelligence.gateway.remote.transport.RtcDataChannelTransport? = null
         private var relaySocket: RemoteSocket? = null
@@ -224,15 +225,22 @@ internal class RemoteSignalService(
             throw RemoteRpcException("RTC_UNAVAILABLE")
         }
         suspend fun signal(type: String, payload: JsonValue.JObject) = rtcSignals.withLock {
-            if (terminal != null || selected == "relay") return@withLock
-            when (type) {
-                "signal.offer" -> { val current = rtcPeer ?: createRtc(false).also { rtcPeer = it; rtcAvailable.complete(it) }; current.acceptOffer(payload.requiredText("sdp")) }
-                "signal.answer" -> rtcPeer?.acceptAnswer(payload.requiredText("sdp")) ?: throw RemoteRpcException("RTC_UNAVAILABLE")
-                "signal.ice" -> {
-                    // Offer 和 ICE 各自异步到达；同一隧道保留尚未设置 remote SDP 的候选。
-                    val current = rtcPeer ?: createRtc(false).also { rtcPeer = it; rtcAvailable.complete(it) }
-                    current.acceptIce(payload.value("candidate").objectValue())
+            if (terminal != null || selected == "relay" || rtcDisabled) return@withLock
+            try {
+                when (type) {
+                    "signal.offer" -> { val current = rtcPeer ?: createRtc(false).also { rtcPeer = it; rtcAvailable.complete(it) }; current.acceptOffer(payload.requiredText("sdp")) }
+                    "signal.answer" -> rtcPeer?.acceptAnswer(payload.requiredText("sdp")) ?: throw RemoteRpcException("RTC_UNAVAILABLE")
+                    "signal.ice" -> {
+                        // Offer 和 ICE 各自异步到达；同一隧道保留尚未设置 remote SDP 的候选。
+                        val current = rtcPeer ?: createRtc(false).also { rtcPeer = it; rtcAvailable.complete(it) }
+                        current.acceptIce(payload.value("candidate").objectValue())
+                    }
                 }
+            } catch (failure: RemoteRpcException) {
+                if (identityScope.role != RemoteRole.HOST || selected != null || failure.code !in setOf("RTC_UNAVAILABLE", "RTC_SDP_FAILED", "RTC_CLOSED")) throw failure
+                // Host本地RTC不可用只结束该候选；等待Client选择合法Relay，不伪造上游未定义的signal.error。
+                rtcDisabled = true; rtcPeer?.close(); rtcPeer = null; rtc = null
+                rtcAvailable.completeExceptionally(RemoteRpcException("RTC_UNAVAILABLE"))
             }
         }
         private suspend fun attachRelay() {

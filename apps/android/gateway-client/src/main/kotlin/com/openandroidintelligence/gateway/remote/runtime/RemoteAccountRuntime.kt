@@ -110,6 +110,10 @@ class RemoteAccountRuntime(
         vault.requireCurrent(active)
         if (selectionGeneration.get() != selection) throw RemoteRpcException("CONNECTION_REPLACED", RemoteDeliveryOutcome.NOT_SENT)
     }
+    /** 代次判断和状态发布必须共用选择锁，旧回调不能在新选择发布后覆盖它。 */
+    private fun publishSelectionState(active: RemoteActiveAccount, selection: Long, state: RemoteAccountConnectionState) = synchronized(selectionLock) {
+        if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = state
+    }
     private suspend fun connectSelected(active: RemoteActiveAccount, server: RemoteServerApi, hostDeviceId: String, selection: Long): RemoteRpcChannel {
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
         val credential = credential(active, RemoteRole.CLIENT)
@@ -126,7 +130,7 @@ class RemoteAccountRuntime(
                     requireSelection(active, selection); peers[authenticated.scope.connectionId] = authenticated
                 } },
                 onPeerClosed = { peers.remove(it.connectionId) },
-                onClosed = { if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.DISCONNECTED })
+                onClosed = { publishSelectionState(active, selection, RemoteAccountConnectionState.DISCONNECTED) })
             synchronized(clients) { clients += service }
             // UNDISPATCHED 让创建 Control WS 与最后的代际核对处于同一选择锁内。
             opening = scope.async(start = CoroutineStart.UNDISPATCHED) { service.connect(peer) }
@@ -143,12 +147,12 @@ class RemoteAccountRuntime(
                 override suspend fun close() {
                     channel.close(); service.close(); peers.remove(channel.scope.connectionId)
                     synchronized(clients) { clients -= service }
-                    if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.READY
+                    publishSelectionState(active, selection, RemoteAccountConnectionState.READY)
                 }
             }
         } catch (failure: Exception) {
             opening.cancel(); service.close(); synchronized(clients) { clients -= service }
-            if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+            publishSelectionState(active, selection, RemoteAccountConnectionState.DISCONNECTED)
             throw failure
         }
     }
