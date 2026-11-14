@@ -130,7 +130,13 @@ class PhoneControlOverlayTest {
 
     @Test fun protectionHistoryRetainsOldTopBandAndRejectsShadowOrTransformChanges() = runTest {
         val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
-        val overlay = PhoneControlOverlay(service)
+        val real = service.getSystemService(android.view.WindowManager::class.java)
+        val window = object : android.view.WindowManager by real {
+            // Robolectric 的服务 WindowManager 没有真实显示配置；本测试明确供给系统几何形状。
+            override fun getMaximumWindowMetrics() = android.view.WindowMetrics(android.graphics.Rect(0, 0, 400, 800),
+                android.view.WindowInsets.Builder().build())
+        }
+        val overlay = PhoneControlOverlay(service, window)
         try {
             val waiting = async { overlay.confirm("capture-history", "ui.capture_som") }; runCurrent()
             org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
