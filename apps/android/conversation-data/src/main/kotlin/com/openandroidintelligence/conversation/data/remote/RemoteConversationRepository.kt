@@ -19,6 +19,7 @@ class RemoteConversationRepository(
     private val activeConversationId: () -> String?,
     private val attachmentContent: suspend (String, String) -> List<JsonValue> = { _, _ -> throw RemoteSessionException("REMOTE_ATTACHMENT_UNAVAILABLE") },
     private val clock: () -> Long = System::currentTimeMillis,
+    private val mediaSource: RemoteAuthenticatedMediaSource? = null,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
 ) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
@@ -48,7 +49,7 @@ class RemoteConversationRepository(
     private fun current() {
         check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
     }
-    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock) }
+    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness") }
     fun activeConversationChanged() {
         val projection = activeConversationId()?.let(projections::get)
         currentGeneration.value = projection?.generationId
@@ -58,7 +59,7 @@ class RemoteConversationRepository(
         current()
         val result = carrier.sessions(workspace, page)
         current()
-        result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it }
+        result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it; mediaSource?.confirmSession(it.id) }
         return ConversationPage(result.items.map { ConversationSummary(ConversationId(RemoteLocalIds.encode(it.id)), it.title, it.updatedAt, it.archived) }, result.nextCursor)
     }
     override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
@@ -67,16 +68,18 @@ class RemoteConversationRepository(
         current()
         val localId = RemoteLocalIds.encode(created.id)
         rows[localId] = created
+        mediaSource?.confirmSession(created.id)
         return Conversation(ConversationId(localId), created.title, created.createdAt)
     }
     override suspend fun readConversation(conversationId: String): Conversation? = rows[conversationId]?.let { Conversation(ConversationId(conversationId), it.title, it.createdAt) }
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
         current()
         ensureFollow(conversationId)
+        val mediaRead = mediaSource?.beginHistoryRead()
         val result = carrier.history(RemoteLocalIds.decode(conversationId), page)
         current()
         val target = projection(conversationId)
-        val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true) } }
+        val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
         projected.forEach { rememberApproval(conversationId, it) }
         activeConversationChanged()
         val pageIds = result.records.mapNotNull { record ->

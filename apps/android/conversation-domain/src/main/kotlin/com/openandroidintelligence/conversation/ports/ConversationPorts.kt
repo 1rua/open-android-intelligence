@@ -663,12 +663,36 @@ interface GenerationTracker {
 }
 
 data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,
-    val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long)
+    val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long,
+    val sourceVersion: String? = null)
 /** 正文权威提交后产生的媒体变更；没有单条修订的删除是永久屏障。 */
 data class HistoricalMediaTransition(val conversationId: String, val messageId: String, val revision: Long?,
     val attachmentIds: List<String>, val deleted: Boolean) {
     init { require(revision == null || revision >= 0); require(deleted || revision != null) }
 }
+/** 内容身份与已确认修订水位分离；只有同一修订域的水位才能比较。 */
+data class HistoricalMediaReferenceState(val contentVersion: String, val revisionDomain: String? = null, val highestRevision: Long? = null)
+
+/** 已认证的原件数据源；只解析服务端确认的附件引用，不接收任意 URL 或文件路径。 */
+interface HistoricalMediaSource {
+    fun checkCurrent()
+    /** 已认证历史引用的内容版本；补全下载数据不会改变版本。 */
+    fun referenceVersion(conversationId: String, attachmentId: String): String? = null
+    fun referenceState(conversationId: String, attachmentId: String): HistoricalMediaReferenceState? =
+        referenceVersion(conversationId, attachmentId)?.let { HistoricalMediaReferenceState(it) }
+    /** 已确认引用自带的完整性；缺少摘要时不能借此认领已有原件。 */
+    fun knownMetadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata? = null
+    fun observeReferenceVersions(observer: (String, String, String) -> Unit): AutoCloseable = AutoCloseable {}
+    /** 与新引用提交共用围栏，旧原件不能跨过更新后再发布。 */
+    fun <T> withReferenceVersion(conversationId: String, attachmentId: String, expected: String?, commit: () -> T): T {
+        check(referenceVersion(conversationId, attachmentId) == expected) { "REMOTE_MEDIA_REFERENCE_CHANGED" }
+        return commit()
+    }
+    /** 上游未声明摘要时 sha256 为空；持久缓存必须在完整读取后计算真实摘要。 */
+    suspend fun metadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata
+    suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (InputStream) -> Unit)
+}
+
 interface HistoricalMediaPort {
     /** 只从已持久消息的明确长度及摘要恢复旧原件，默认不认领未知来源。 */
     suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean = false

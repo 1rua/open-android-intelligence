@@ -10,6 +10,8 @@ import java.util.Base64
 /** 每个仓储实例只持有一个 Endpoint，原生消息 ID 无需通过字符串猜测后端。 */
 internal class RemoteTimelineProjection(private val sessionId: String, private val nativeSessionId: String = RemoteLocalIds.decode(sessionId),
     private val clock: () -> Long = System::currentTimeMillis,
+    private val mediaReference: ((String, JsonValue, RemoteMediaRevision) -> MessagePart.Attachment?)? = null,
+    private val persistentMessageSequence: Boolean = true,
 ) {
     val rows = linkedMapOf<String, TimelineMessage>()
     var generationId: String? = null
@@ -25,7 +27,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     data class TerminalReceipt(val generationId: String, val state: GenerationState, val occurredAt: Long)
     private val terminals = mutableMapOf<String, TerminalReceipt>()
     fun terminal(id: String): TerminalReceipt? = terminals[id]
-    private data class Source(val historical: Boolean, val time: Long) {
+    private data class Source(val historical: Boolean, val time: Long, val historyRead: Long? = null) {
         fun id(value: String) = if (historical) "history:$value" else value
     }
     private data class ContentBlock(val kind: String, val text: StringBuilder = StringBuilder(), var complete: Boolean = false)
@@ -94,19 +96,19 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     }
     fun markUnknown() { generationState = GenerationState.OUTCOME_UNKNOWN }
 
-    fun accept(value: JsonValue, history: Boolean = false): List<VerifiedConversationEvent> {
-        return accept(value, history, clock())
+    fun accept(value: JsonValue, history: Boolean = false, historyRead: Long? = null): List<VerifiedConversationEvent> {
+        return accept(value, history, clock(), historyRead)
     }
 
-    private fun accept(value: JsonValue, history: Boolean, receivedAt: Long): List<VerifiedConversationEvent> {
+    private fun accept(value: JsonValue, history: Boolean, receivedAt: Long, historyRead: Long? = null): List<VerifiedConversationEvent> {
         if (!history) terminalGeneration = null
-        val source = Source(history, if (history) 0 else receivedAt)
+        val source = Source(history, if (history) 0 else receivedAt, historyRead)
         if (value.text("type") == "snapshot") {
-            val events = value.requiredArray("records").flatMap { accept(it, history = true, receivedAt) }.toMutableList()
+            val events = value.requiredArray("records").flatMap { accept(it, history = true, receivedAt, historyRead) }.toMutableList()
             value.number("cursor")?.let { cursor -> if (lastSeq == null || cursor > lastSeq!!) lastSeq = cursor }
             value.at("assistantStream")?.let { snapshot ->
-                snapshot.array("entries")?.forEach { entry -> events += assistantSnapshot(entry, Source(true, 0)) }
-                snapshot.at("message")?.let { message -> events += upsert(message, "assistant", true, null, Source(true, 0)) }
+                snapshot.array("entries")?.forEach { entry -> events += assistantSnapshot(entry, Source(true, 0, historyRead)) }
+                snapshot.at("message")?.let { message -> events += upsert(message, "assistant", true, null, Source(true, 0, historyRead)) }
             }
             return events
         }
@@ -123,7 +125,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 if (seq != lastSeq!! + 1) throw RemoteSessionException("REMOTE_HISTORY_GAP")
             }
             if (seq != null && !history) lastSeq = seq
-            return durable(event, Source(history, event.number("time")?.takeIf { it > 0 } ?: source.time))
+            return durable(event, Source(history, event.number("time")?.takeIf { it > 0 } ?: source.time, historyRead))
         }
         value.text("method")?.let { return nativeFrame(it, value.at("params") ?: obj(), source) }
         return emptyList()
@@ -311,7 +313,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val completed = generationState == GenerationState.COMPLETED
             if (completed) content?.finish()
             val confirmed = message.copy(state = "CONFIRMED", contentRevision = ++revision,
-                parts = content?.let { contentParts(it.json()) } ?: message.parts,
+                parts = content?.let { contentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead)) } ?: message.parts,
                 reasoning = content?.let { reasoning(it.json(), !completed) } ?: message.reasoning.map { if (completed) it.copy(complete = true) else it })
             rows[message.id] = confirmed
             VerifiedConversationEvent.TimelineUpsert(source.id("$eventId:${message.id}"), source.time, revision, confirmed)
@@ -323,9 +325,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         return upsert(obj("id" to id, "content" to content.json()), "assistant", streaming, null, source)
     }
 
-    private fun contentParts(blocks: List<JsonValue>): List<MessagePart> = blocks.mapNotNull { block -> when (block.text("type")) {
+    private fun contentParts(blocks: List<JsonValue>, mediaRevision: RemoteMediaRevision): List<MessagePart> = blocks.mapNotNull { block -> when (block.text("type")) {
         "text" -> MessagePart.Text(block.text("text").orEmpty())
         "image", "file" -> {
+            if (mediaReference != null) return@mapNotNull mediaReference.invoke(sessionId, block, mediaRevision)
             val ref = block.text("id") ?: block.text("path") ?: block.text("url") ?: block.at("source")?.text("url")
             ref?.let { MessagePart.Attachment(AttachmentDraftId(RemoteLocalIds.encode(it)), block.text("name").orEmpty(), block.text("mimeType").orEmpty()) }
         }
@@ -345,11 +348,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, source: Source, messageGeneration: String? = generationId): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
-        if (seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
-        if (source.historical && rowHistorical[id] == false) return emptyList()
+        if (persistentMessageSequence && seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
+        if (source.historical && source.historyRead == null && rowHistorical[id] == false) return emptyList()
         if (seq != null) rowSequences[id] = seq
         val blocks = message.array("content").orEmpty()
-        val parts = contentParts(blocks)
+        val parts = contentParts(blocks, RemoteMediaRevision(id, seq, source.historical, source.historyRead))
             .ifEmpty { message.text("text")?.let { listOf(MessagePart.Text(it)) }.orEmpty() }
         val clientId = message.at("source")?.text("rpcId")?.let(::ClientMessageId)
         val row = TimelineMessage(id, role, parts, source.time, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),

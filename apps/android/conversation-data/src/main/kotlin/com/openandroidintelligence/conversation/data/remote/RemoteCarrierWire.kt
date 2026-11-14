@@ -120,7 +120,7 @@ internal class RemoteCarrierWire(private val rpc: RemoteRpcChannel, private val 
     companion object {
         private const val DIRECT_BYTES = 2 * 1024 * 1024
         private const val CHUNK_BYTES = 512 * 1024
-        private const val MAX_BYTES = 288 * 1024 * 1024
+        internal const val MAX_BYTES = 288 * 1024 * 1024
         private fun chunks(bytes: Int) = (bytes + CHUNK_BYTES - 1) / CHUNK_BYTES
     }
 }

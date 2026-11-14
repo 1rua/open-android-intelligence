@@ -10,8 +10,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
-import com.openandroidintelligence.gateway.events.EventCursorStore
-import com.openandroidintelligence.gateway.http.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror
@@ -260,29 +258,19 @@ class RevisionedMediaRecoveryTest {
     private fun scopeKey()=Json.canonical(Json.of(listOf(scope.profileId,scope.gatewayId,scope.accountId,scope.installId)))
     private fun sha(value:String)=MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
     private fun cache(beforeMetadata:suspend ()->Unit = {}): EncryptedHistoryMediaCache {
-        val transport = object : GatewayByteTransport {
-            override suspend fun execute(request: WireRequest): WireResponse {
-                if (request.target.endsWith("/metadata?format=stream-v1")) beforeMetadata()
-                val data = if (request.target.endsWith("/cache-grant?format=stream-v1")) mapOf("grantId" to "G".repeat(43))
-                else mapOf("metadata" to mapOf("conversationId" to "conversation", "attachmentId" to "attachment",
-                    "filename" to "原始附件.bin", "mediaType" to "application/octet-stream", "sizeBytes" to original.size,
-                    "sha256" to "sha256:" + MessageDigest.getInstance("SHA-256").digest(original).joinToString("") { "%02x".format(it) },
-                    "remoteAvailable" to true))
-                return WireResponse(200, emptyList(), Json.canonical(Json.of(mapOf("data" to data))).toByteArray())
+        val source = object : HistoricalMediaSource {
+            override fun checkCurrent() = Unit
+            override suspend fun metadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata {
+                beforeMetadata()
+                check(conversationId == "conversation" && attachmentId == "attachment")
+                return HistoricalMediaMetadata(conversationId, attachmentId, "原始附件.bin", "application/octet-stream", original.size.toLong(),
+                    "sha256:" + MessageDigest.getInstance("SHA-256").digest(original).joinToString("") { "%02x".format(it) }, true, original.size.toLong())
             }
-            override suspend fun <T> consumeResponse(request: WireRequest, consume: suspend (Int, List<RawHeader>, InputStream) -> T): T =
-                ByteArrayInputStream(original).use { consume(200, listOf(RawHeader("Content-Type", "application/octet-stream"),
-                    RawHeader("X-Open-Android-Intelligence-Media-Format", "stream-v1")), it) }
-            override fun eventStream(request: WireRequest): Flow<ByteArray> = emptyFlow()
+            override suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (InputStream) -> Unit) {
+                ByteArrayInputStream(original).use(consume)
+            }
         }
-        val cursors = object : EventCursorStore {
-            override fun load(accountId: String): String? = null
-            override fun save(accountId: String, cursor: String) = Unit
-            override fun clear(accountId: String) = Unit
-        }
-        val http = GatewayHttpClient(GatewayProfile(scope.accountId, "device", "session", scope.gatewayId, accessToken = "test"),
-            transport, { ByteArray(64) }, cursors)
-        return EncryptedHistoryMediaCache(context, scope, http, key)
+        return EncryptedHistoryMediaCache(context, scope, source, key)
     }
 
     private class Host(private val events: List<VerifiedConversationEvent>) : ConversationRepository {

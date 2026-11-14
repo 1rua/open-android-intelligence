@@ -80,6 +80,7 @@ class RemoteRuntime(
     private var ownerAttachments: RemoteAttachmentCoordinator? = null
     private var ownerMirror: EncryptedConversationMirror? = null
     private var ownerMedia: EncryptedHistoryMediaCache? = null
+    private var ownerMediaSource: RemoteAuthenticatedMediaSource? = null
     private var ownerConversationScope: ConversationScope? = null
     private val assistantControllers = ConcurrentHashMap<String, WorkbenchController>()
     private val assistantPresence = ConcurrentHashMap<String, Pair<String?, Boolean>>()
@@ -262,13 +263,20 @@ class RemoteRuntime(
             val ownedScope = CoroutineScope(scope.coroutineContext + owner)
             val local = conversationScope(endpoint.endpoint.key)
             val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local, localDocumentKeyProvider) }
-            val media = EncryptedHistoryMediaCache(context, local, keyProvider = localDocumentKeyProvider)
+            val mediaAccount = accountRuntime.account.value ?: error("ACCOUNT_AUTH_REQUIRED")
+            val mediaPeer = accountRuntime.authenticatedPeer(next.scope.connectionId)
+            val mediaSource = RemoteAuthenticatedMediaSource(carrier, confirmed) {
+                owner.isActive && channel === next && accountRuntime.account.value == mediaAccount &&
+                    runCatching { accountRuntime.authenticatedPeer(next.scope.connectionId) == mediaPeer }.getOrDefault(false)
+            }
+            ownerMediaSource = mediaSource
+            val media = EncryptedHistoryMediaCache(context, local, source = mediaSource, keyProvider = localDocumentKeyProvider)
             val stagingKey = endpointId(endpoint.endpoint.key)
             val staging = EncryptedAttachmentStagingStore(File(context.noBackupFilesDir, "remote-attachment-staging/$stagingKey"),
                 (localDocumentKeyProvider ?: AndroidKeystoreOutboxKeyProvider("remote_attachment_$stagingKey")).getOrCreate(), stagingKey, persistent = true)
-            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging, EncryptedAttachmentRecovery(context, local, localDocumentKeyProvider))
+            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging, EncryptedAttachmentRecovery(context, local, localDocumentKeyProvider), mediaSource)
             val active = AtomicReference<String?>(null)
-            val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent) { key, event ->
+            val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent, mediaSource = mediaSource) { key, event ->
                 mirror.commitNativeEvents(listOf(event))
                 nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
                     nativeConversationNotifications.accept(it)
@@ -276,7 +284,7 @@ class RemoteRuntime(
             }
             repository = repo; ownerAttachments = attachments; ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
             surfaceRepository = { surfaceActive -> RemoteConversationRepository(carrier, confirmed, ownedScope, surfaceActive::get,
-                attachments::promptContent) { key, event ->
+                attachments::promptContent, mediaSource = mediaSource) { key, event ->
                 mirror.commitNativeEvents(listOf(event))
                 nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
                     nativeConversationNotifications.accept(it)
@@ -368,6 +376,8 @@ class RemoteRuntime(
         nativeConversationNotifications.leave(); mutableState.value = RemoteWorkspaceState()
     } }
     private suspend fun retire() {
+        ownerMediaSource?.close(); ownerMediaSource = null
+        ownerMedia?.retireConnection()
         synchronized(backgroundOwnership) { ownerActive = false; keepAlive.stop() }
         workObserver?.cancelAndJoin(); workObserver = null
         mutableController.value?.closeAndAwait(); mutableController.value = null

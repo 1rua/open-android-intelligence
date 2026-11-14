@@ -16,6 +16,7 @@ class RemoteAttachmentCoordinator(
     private val scope: CoroutineScope,
     private val staging: LocalAttachmentStagingStore,
     private val recovery: AttachmentDraftRecoveryStore,
+    private val mediaSource: RemoteAuthenticatedMediaSource? = null,
 ) : AttachmentDraftCoordinator {
     private val drafts = ConcurrentHashMap<String, AttachmentDraft>()
     private val content = ConcurrentHashMap<String, StagedAttachmentContent>()
@@ -105,7 +106,7 @@ class RemoteAttachmentCoordinator(
             val bytes = withContext(Dispatchers.IO) { staging.openStream(staged.id).use { it.readBytes() } }
             try {
                 val base64 = Base64.getEncoder().encodeToString(bytes)
-                return listOf(if (carrier.backend == "codex") obj("type" to "image", "url" to "data:${draft.mediaType};base64,$base64")
+                return listOf(if (carrier.backend == "codex") obj("type" to "image", "mediaType" to draft.mediaType, "data" to base64)
                     else obj("type" to "image", "mimeType" to draft.mediaType, "data" to base64))
             } finally { bytes.fill(0) }
         }
@@ -143,6 +144,7 @@ class RemoteAttachmentCoordinator(
             val result = rpc.invoke("workspace.upload.commit", obj("sessionId" to publicSession, "uploadId" to upload))
             if (result.number("bytes") != staged.sizeBytes || result.text("name") != draft.filename) throw RemoteSessionException("REMOTE_UPLOAD_INVALID")
             val path = result.requiredText("path")
+            mediaSource?.submitted(localConversationId, draftId, path, draft.filename, draft.mediaType, staged.sizeBytes, "sha256:${staged.sha256Hex}")
             committed = true
             return listOf(obj("type" to "text", "text" to path))
         } finally {
