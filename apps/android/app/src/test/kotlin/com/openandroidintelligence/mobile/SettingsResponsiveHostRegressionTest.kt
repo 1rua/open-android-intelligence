@@ -87,7 +87,7 @@ class SettingsResponsiveHostRegressionTest {
                         com.openandroidintelligence.conversation.workbench.WorkbenchScreen(
                             controller = controller,
                             gatewayLabel = "https://gateway.example.com",
-                            onOpenSettings = {}, onPickCamera = {}, onPickGallery = {},
+                            onOpenSettings = {}, onLogout = {}, onPickCamera = {}, onPickGallery = {},
                             onPickDocument = {}, onVoiceInput = {},
                             settingsOpen = true,
                             settingsPanel = { _ ->
