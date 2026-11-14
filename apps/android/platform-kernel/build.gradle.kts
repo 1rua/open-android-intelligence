@@ -11,6 +11,7 @@ dependencies {
     // Exported as `api` because plugin identity appears in the kernel's own
     // signatures and runtimes implementing `PluginRuntime` must see it.
     api(project(":plugin-package"))
+    implementation(project(":control-ports"))
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
