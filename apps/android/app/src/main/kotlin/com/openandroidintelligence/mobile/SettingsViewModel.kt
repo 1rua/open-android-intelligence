@@ -149,6 +149,7 @@ class SettingsViewModel(
     private val environment: PlatformSettingsEnvironment,
     private val runtime: GatewayRuntime? = null,
     externalScope: CoroutineScope? = null,
+    private val remoteRuntime: RemoteRuntime? = null,
 ) : ViewModel() {
 
     internal val settingsEnvironment get() = environment
@@ -190,8 +191,8 @@ class SettingsViewModel(
         _trustModeEnabled,
         _emergencyStopped,
         _stoppedCount,
-        runtime?.replyNotifications?.enabled ?: MutableStateFlow(false),
-        runtime?.replyNotifications?.allowed ?: MutableStateFlow(false),
+        remoteRuntime?.replyNotifications?.enabled ?: runtime?.replyNotifications?.enabled ?: MutableStateFlow(false),
+        remoteRuntime?.replyNotifications?.allowed ?: runtime?.replyNotifications?.allowed ?: MutableStateFlow(false),
     ) { trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed ->
         ControlSettings(trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed)
     }
@@ -249,7 +250,7 @@ class SettingsViewModel(
             auditEvents = base.auditEvents,
             operationNotice = operations.first,
             isRefreshingSession = operations.second,
-            replyNotificationsWired = runtime != null,
+            replyNotificationsWired = remoteRuntime != null || runtime != null,
             replyNotificationsEnabled = control.replyEnabled,
             replyNotificationsAllowed = control.replyAllowed,
             nativeAgentsState = nativeAgentsState,
@@ -338,12 +339,12 @@ class SettingsViewModel(
     }
 
     fun setNotificationsGrant(enabled: Boolean): Boolean {
-        val saved = runtime?.replyNotifications?.setEnabled(enabled) == true
+        val saved = (remoteRuntime?.replyNotifications ?: runtime?.replyNotifications)?.setEnabled(enabled) == true
         if (!saved) {
             _localError.value = "通知偏好未能保存，请检查手机存储后重试。"
             return false
         }
-        if (enabled) runtime?.nativeConversationNotifications?.refreshActive()
+        if (enabled) (remoteRuntime?.nativeConversationNotifications ?: runtime?.nativeConversationNotifications)?.refreshActive()
         return true
     }
 
@@ -354,11 +355,11 @@ class SettingsViewModel(
     fun retryConnection() { runtime?.retryConnection() }
 
     fun refreshReplyNotificationPermission() {
-        runtime?.replyNotifications?.refreshPermission()
+        (remoteRuntime?.replyNotifications ?: runtime?.replyNotifications)?.refreshPermission()
         runtime?.nativeConversationNotifications?.refreshActive()
     }
-    fun shouldRequestReplyNotificationPermission(): Boolean = runtime?.replyNotifications?.shouldRequestPermission() == true
-    fun markReplyNotificationPermissionRequested() { runtime?.replyNotifications?.markPermissionRequested() }
+    fun shouldRequestReplyNotificationPermission(): Boolean = (remoteRuntime?.replyNotifications ?: runtime?.replyNotifications)?.shouldRequestPermission() == true
+    fun markReplyNotificationPermissionRequested() { (remoteRuntime?.replyNotifications ?: runtime?.replyNotifications)?.markPermissionRequested() }
 
     fun enableTrustMode(
         acknowledgementText: String = DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT,

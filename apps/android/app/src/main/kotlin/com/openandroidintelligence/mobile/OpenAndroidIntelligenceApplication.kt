@@ -84,26 +84,30 @@ class OpenAndroidIntelligenceApplication : Application() {
         )
     }
     val gatewayRuntime: GatewayRuntime by gatewayRuntimeOwner
+    private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val remoteRuntime: RemoteRuntime by lazy {
+        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants, confirmLocally = { _, _, _ -> false })
+    }
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
     private val gatewayNetworkMonitor by lazy {
         GatewayNetworkMonitor(
             context = this,
-            onAvailable = { gatewayRuntime.onNetworkAvailable() },
-            onLost = { gatewayRuntime.onNetworkLost() },
-            onRouteChanged = { gatewayRuntime.onNetworkAvailable(routeChanged = true) },
+            onAvailable = { remoteRuntime.onNetworkAvailable() },
+            onLost = { remoteRuntime.onNetworkLost() },
+            onRouteChanged = { remoteRuntime.onNetworkAvailable(routeChanged = true) },
         )
     }
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */
     internal fun onBackgroundSessionRestarted() {
-        gatewayRuntime.onBackgroundSessionRestarted()
+        remoteRuntime.onBackgroundSessionRestarted()
         gatewayNetworkMonitor.start()
     }
 
     internal fun onBackgroundSessionStopped() {
-        if (gatewayRuntimeOwner.isInitialized()) gatewayRuntime.onBackgroundSessionStopped()
+        remoteRuntime.onBackgroundSessionStopped()
     }
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
@@ -168,7 +172,6 @@ class OpenAndroidIntelligenceApplication : Application() {
             }
         }
 
-        devicePush = DevicePushComposition(this, installId).also { it.start() }
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped
@@ -179,11 +182,11 @@ class OpenAndroidIntelligenceApplication : Application() {
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayNetworkMonitor.start()
-                    gatewayRuntime.onAppForegrounded()
+                    remoteRuntime.onAppForegrounded()
                     devicePush?.onVisibilityChanged(true)
                 }
                 override fun onStop(owner: LifecycleOwner) {
-                    gatewayRuntime.onAppBackgrounded()
+                    remoteRuntime.onAppBackgrounded()
                     devicePush?.onVisibilityChanged(false)
                 }
             },

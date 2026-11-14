@@ -84,6 +84,7 @@ internal fun SettingsNavHost(
     modifier: Modifier,
     presentation: SettingsPresentation,
     onRequestScreenCaptureAuthorization: () -> Unit,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val nav = rememberNavController()
@@ -236,7 +237,8 @@ internal fun SettingsNavHost(
                     onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
             }
             composable(SettingsRoutes.GATEWAY) {
-                ConnectionSettingsScreen(uiState, presentation, ::back,
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back)
+                else ConnectionSettingsScreen(uiState, presentation, ::back,
                     onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) },
                     onSelectAgent = viewModel::selectAgent, onRefreshAgents = viewModel::refreshAgents,
                     onSelectAccount = viewModel::selectSavedAccount, onManageAccounts = { manageAccounts() },

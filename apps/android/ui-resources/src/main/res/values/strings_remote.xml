@@ -1,0 +1,13 @@
+<resources>
+    <string name="remote_connection_title">Remote 连接</string>
+    <string name="remote_service_address">Remote 服务地址</string>
+    <string name="remote_account_email">邮箱</string>
+    <string name="remote_account_password">密码</string>
+    <string name="remote_login">登录</string>
+    <string name="remote_hosts">Host 主机</string>
+    <string name="remote_refresh_hosts">刷新主机列表</string>
+    <string name="remote_workspaces">Agent 与工作区</string>
+    <string name="remote_select_model">选择模型</string>
+    <string name="remote_select_effort">思考强度</string>
+    <string name="remote_local_settings">本机设置</string>
+</resources>

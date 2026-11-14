@@ -17,6 +17,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private var revision = 0L
     private var lastSeq: Long? = null
     private val attempts = mutableMapOf<String, StringBuilder>()
+    private val rowSequences = mutableMapOf<String, Long>()
     private val acpText = StringBuilder()
     private var acpMessageId: String? = null
     private var liveSequence = 0L
@@ -190,6 +191,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, time: Long = 0): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
+        if (seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
+        if (seq != null) rowSequences[id] = seq
         val parts = message.array("content")?.mapNotNull { block -> when (block.text("type")) {
             "text" -> MessagePart.Text(block.text("text") ?: "")
             "image", "file" -> {

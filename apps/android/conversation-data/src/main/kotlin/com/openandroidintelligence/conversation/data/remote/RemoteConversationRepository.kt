@@ -37,6 +37,7 @@ class RemoteConversationRepository(
     private val currentState = MutableStateFlow(GenerationState.IDLE)
     override val generationState: StateFlow<GenerationState> = currentState
     private val approvals = ConcurrentHashMap<String, Pair<String, String>>()
+    private val held = ConcurrentHashMap<String, LinkedHashMap<String, OutgoingMessage>>()
 
     init { require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" } }
     private fun current() {
@@ -73,7 +74,7 @@ class RemoteConversationRepository(
         val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true) } }
         projected.forEach { rememberApproval(conversationId, it) }
         activeConversationChanged()
-        return TimelinePage(projected.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().map { it.message },
+        return TimelinePage(synchronized(target) { target.rows.values.toList() },
             result.nextCursor, result.revision)
     }
     private suspend fun ensureFollow(id: String) {
@@ -127,6 +128,13 @@ class RemoteConversationRepository(
         current()
         ensureFollow(conversationId)
         if (message.delivery == MessageDeliveryMode.STEER) return steerMessage(conversationId, message)
+        if (message.delivery == MessageDeliveryMode.QUEUE && projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED)) {
+            val queue = held.computeIfAbsent(conversationId) { linkedMapOf() }
+            synchronized(queue) { queue[message.clientMessageId.value] = message.copy(delivery = MessageDeliveryMode.NORMAL) }
+            publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("queue:${message.clientMessageId.value}", 0,
+                PendingDelivery(message.clientMessageId, ConversationId(conversationId), message.text, message.attachmentIds.size, PendingDeliveryState.QUEUED)))
+            return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, delivery = MessageDeliveryMode.QUEUE, authoritative = false)
+        }
         val content = buildList {
             if (message.text.isNotEmpty()) add(obj("type" to "text", "text" to message.text))
             message.attachmentIds.forEach { addAll(attachmentContent(conversationId, it)) }
@@ -173,14 +181,28 @@ class RemoteConversationRepository(
         publish(id, VerifiedConversationEvent.MessageStatus("terminal:${entry.first.value}", 0, ConversationId(id),
             entry.first.value, entry.first, status, 2, if (status == AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_REQUEST_FAILED else null,
             target.generationId ?: entry.second))
+        retryPendingDeliveries(id)
     }
     override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance =
         submitBatch(batch.clientConversationId ?: activeConversationId() ?: throw RemoteSessionException("CONVERSATION_REQUIRED"), batch)
     override suspend fun submitBatch(conversationId: String, batch: MessageBatch): BatchAcceptance {
-        if (batch.messages.size != 1) throw RemoteSessionException("MESSAGE_BATCHES_UNSUPPORTED")
-        val result = submitMessage(conversationId, batch.messages.single())
-        return BatchAcceptance(batch.batchId, mapOf(batch.messages.single().clientMessageId.value to result.messageId), result.generationId, result.authoritative)
+        if (batch.messages.isEmpty()) throw RemoteSessionException("INVALID_MESSAGE")
+        val first = batch.messages.first()
+        val combined = first.copy(text = batch.messages.joinToString("\n") { it.text },
+            attachmentIds = batch.messages.flatMap { it.attachmentIds })
+        val result = submitMessage(conversationId, combined)
+        return BatchAcceptance(batch.batchId, batch.messages.associate { it.clientMessageId.value to result.messageId }, result.generationId, result.authoritative)
     }
+    override suspend fun pendingDeliveries(conversationId: String): List<PendingDelivery> = held[conversationId]?.let { queue ->
+        synchronized(queue) { queue.values.map { PendingDelivery(it.clientMessageId, ConversationId(conversationId), it.text, it.attachmentIds.size, PendingDeliveryState.QUEUED) } }
+    }.orEmpty()
+    override suspend fun retryPendingDeliveries(conversationId: String) {
+        if (projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN)) return
+        val queue = held[conversationId] ?: return
+        val next = synchronized(queue) { queue.entries.firstOrNull()?.also { queue.remove(it.key) }?.value } ?: return
+        submitMessage(conversationId, next)
+    }
+    override suspend fun retryAllPendingDeliveries() { held.keys.toList().forEach { retryPendingDeliveries(it) } }
     override suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
         current()
         if (SessionCapability.STEER !in carrier.capabilities || message.attachmentIds.isNotEmpty()) throw RemoteSessionException("STEERING_UNSUPPORTED")
