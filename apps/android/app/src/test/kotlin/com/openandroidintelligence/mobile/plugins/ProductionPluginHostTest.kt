@@ -390,7 +390,11 @@ class ProductionPluginHostTest {
             val trust=DeveloperTrustMode()
             val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_host")
             host.installStore.installRoot.deleteRecursively()
-            host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0"))
+            // 自定义读取入口明确声明只读原语；不能把整包调度写权限误当成后台查询许可。
+            val readDeclaration=Json.of(mapOf("provides" to listOf(mapOf("id" to "org.openandroidintelligence.sms.fetch",
+                "version" to "2.0.0","schema" to "schemas/sms.json")),"depends" to emptyList<Any>(),
+                "kernelPrimitives" to listOf("kernel.sms.read","kernel.store.read","kernel.store.keys","kernel.background.run"))) as com.openandroidintelligence.gateway.schema.JsonValue.JObject
+            host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0",capabilityDeclaration=readDeclaration))
             val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),
                 host.runtimes,audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
