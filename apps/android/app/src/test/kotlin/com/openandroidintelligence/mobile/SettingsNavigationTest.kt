@@ -13,13 +13,19 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.mobile.plugins.thirdPartyOnlyHost
 import com.openandroidintelligence.mobile.settings.notifications.NotificationSettingsScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import com.openandroidintelligence.ui.resources.R as UiR
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
@@ -29,20 +35,40 @@ class SettingsNavigationTest {
     @Test fun eachCategoryReturnsBeforeClosingTheSettingsRoot() {
         var closes = 0
         lateinit var dispatcher: OnBackPressedDispatcher
+        val context = ApplicationProvider.getApplicationContext<Application>()
         val environment = environment()
-        compose.setContent {
-            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
-            MaterialTheme { SettingsScreen(environment, { closes++ }) }
-        }
-        listOf("外观与交互", "连接与账号", "通知与提醒", "设备能力与授权", "安全与隐私", "高级设置与关于").forEach { category ->
-            compose.onNodeWithText(category).performScrollTo().performClick()
-            compose.onNodeWithText(category).assertIsDisplayed()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val host = thirdPartyOnlyHost(context, environment.pairingGrants, environment.trustMode,
+            NativePluginLoader(environment.trustMode), "settings-navigation-test")
+        val runtime = RemoteRuntime(context, scope, host, environment.pairingGrants)
+        try {
+            compose.setContent {
+                dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+                MaterialTheme {
+                    SettingsScreen(environment, { closes++ }, runtime = runtime.localSettings, remoteRuntime = runtime)
+                }
+            }
+            listOf("外观与交互", "连接与账号", "通知与提醒", "设备能力与授权", "安全与隐私", "高级设置与关于").forEach { category ->
+                compose.onNodeWithText(category).performScrollTo().performClick()
+                val pageTitle = if (category == "连接与账号") context.getString(UiR.string.remote_connection_title) else category
+                try {
+                    compose.onNodeWithText(pageTitle).assertIsDisplayed()
+                } catch (failure: AssertionError) {
+                    throw AssertionError("打开分类「$category」后页面标题「$pageTitle」未显示", failure)
+                }
+                if (category == "连接与账号") {
+                    compose.onNodeWithText(context.getString(UiR.string.remote_client_role)).assertIsDisplayed()
+                    compose.onNodeWithText(context.getString(UiR.string.remote_role_signed_out)).assertIsDisplayed()
+                    compose.onNodeWithText(context.getString(UiR.string.remote_host_role)).assertIsDisplayed()
+                    compose.onNodeWithText(context.getString(UiR.string.remote_role_stopped)).assertIsDisplayed()
+                }
+                compose.runOnIdle { dispatcher.onBackPressed() }
+                compose.onNodeWithText("设置").assertIsDisplayed()
+                assertEquals("分类「$category」返回时应保留设置根页面", 0, closes)
+            }
             compose.runOnIdle { dispatcher.onBackPressed() }
-            compose.onNodeWithText("设置").assertIsDisplayed()
-            assertEquals(0, closes)
-        }
-        compose.runOnIdle { dispatcher.onBackPressed() }
-        assertEquals(1, closes)
+            assertEquals(1, closes)
+        } finally { scope.cancel() }
     }
 
     @Test fun notificationPreferenceRemainsCheckedWhenAndroidBlocksIt() {
