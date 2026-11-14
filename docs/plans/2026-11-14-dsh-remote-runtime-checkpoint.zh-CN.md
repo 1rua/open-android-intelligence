@@ -6,9 +6,9 @@ MCP 仅公开 android_*，目标为手机 OAI Virtual Host/phone-capabilities；
 
 | 所有者 | 独立工作区与分支 | 独占范围 | 已交付与下一入口 |
 | --- | --- | --- | --- |
-| 集成/运行时 | `.worktrees/dsh-remote-foundation` / `feature/dsh-remote-foundation`；`.worktrees/dsh-remote-client-runtime` / `feature/dsh-remote-client-runtime` | docs、共享 Gradle/package/CI；gateway-client remote 的 authproduction/network/runtime/rpc | foundation 依赖点 `35791d91`；范围 `4109ee73`、接口 `32e9adf6`、依赖 `b951230f`/`b14d5327`；运行时首片 `545d22ea` 已编译，后续修正与定向测试进行中 |
-| 会话/界面 | `.worktrees/dsh-remote-session-ui` / `feature/dsh-remote-session-ui` | conversation-data/domain/ui、App Remote 选择与主入口 | 首片 `7e64e80a`；三 carrier 定向 4 项通过，App 生产接线与原能力保留继续实施 |
-| 手机/桥 | `.worktrees/dsh-remote-phone-mcp` / `feature/dsh-remote-phone-mcp` | 手机控制账本/执行器/Session facade、纯手机 MCP/桥 | 稳定片 `d7aaa450`；原生工具至 Kotlin Router 的隔离互通及 MCP stdio 通过；原生屏幕/收敛/overlay 与生产 handler 装配继续实施 |
+| 集成/运行时 | `.worktrees/dsh-remote-foundation` / `feature/dsh-remote-foundation`；`.worktrees/dsh-remote-client-runtime` / `feature/dsh-remote-client-runtime` | docs、共享 Gradle/package/CI；gateway-client remote 的 authproduction/network/runtime/rpc | foundation 当前共享点 `a9c185e3`；范围 `4109ee73`、接口 `32e9adf6`、依赖 `b951230f`/`b14d5327`；运行时候选 `8d546dc5` 15 项通过并冻结待定点复审 |
+| 会话/界面 | `.worktrees/dsh-remote-session-ui` / `feature/dsh-remote-session-ui` | conversation-data/domain/ui、App Remote 选择与主入口 | 候选 `0a3672e7`；前轮 App 211+data13 通过，最新最小复验进行中，旧本机消费迁移待继续 |
+| 手机/桥 | `.worktrees/dsh-remote-phone-mcp` / `feature/dsh-remote-phone-mcp` | 手机控制账本/执行器/Session facade、纯手机 MCP/桥 | 候选 `931e16d5`；Overlay3/Kernel3/Bus7+Appcompile 通过，MCP2及原工具18字节产物 probe 通过；API31–33 SoM/真机待验 |
 
 分支曾互相 cherry-pick 共享接口。集成时先固定各所有者最终提交及必要测试，再逐支 rebase 到 foundation；
 等价补丁应跳过，保持原 PR 的普通线性推进，不强制推送、不恢复旧文档或重复接口。

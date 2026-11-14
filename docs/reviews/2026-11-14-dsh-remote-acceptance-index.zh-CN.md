@@ -23,6 +23,35 @@ P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换
 以下历史证据保留其原 SHA、命令和当时结论；其中后台委派阻塞已被本次范围决定取代，
 不能继续作为当前阻塞，也不能把旧探针视为新客户端手动切换验收。
 
+## 当前实现候选与验证边界（2026-11-14 更新）
+
+当前继续跟踪 #187/#188/#189 与实现收口 #192，PR #190 保持 Draft。下列为不同隔离工作区的候选证据，
+尚未线性整合到同一最终 SHA，不能累加为整条生产链路通过。旧章节保留其当时提交与结论；后台委派的
+历史阻塞已被当前范围取消，不能再阻塞本项目。
+
+| 候选 | 已验证范围 | 未验证或后续工作 |
+| --- | --- | --- |
+| Runtime `8d546dc575cc160307fe0eef2ae8401ae783087d` | 原入口 focused 15 项通过（50 秒）：固定 Server 3、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0 | 定点独立复审待进行；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
+| UI `0a3672e7814b2ab56be60433916c0af384a628e1` | 前轮 App 211 项、conversation-data 13 项通过；其中含测试后补充，本候选正在执行 App 编译与 RemoteRuntime 4 项最小复验 | 多候选整合后按实际新 SHA 回归；推送、定时、插件管理与旧 Gateway 生产消费尚待迁移 |
+| 手机 `931e16d53291fac05936ac3452142e368be70611` | 候选回归 Overlay 3、NativeKernel 3、Bus 7 及 App 编译通过，1 分 50 秒；失败/错误/跳过均 0 | API 31–33 SoM 尚未交付；API 34+ 实现未做真机像素/焦点/锁屏验收 |
+| MCP/原生工具 | 最新 MCP 官方客户端/stdio 2 项通过；固定原生工具至 Kotlin facade 的发现、建任务、发送、读回及 18 字节 artifact 下载通过 | 18 字节测试产物不证明真实截图/SoM 下载；实际 DSH 插件加载、原生 MCP 挂载与设备能力未验 |
+
+Runtime 的三项独立审查问题已形成失败回归后修复：旧非法版本 `oai-android` 的固定 Server 负例
+不转发 Relay 选择并会替换旧 Client；现在 hello 与注册 descriptor 共用从本项目 version.properties
+生成的真实 `2.2.1+oai.android`。该值表示 OAI 自身版本，不冒充 DSH 版本。独立 Node 版本策略 1 项通过。
+旧选择授权迟到曾在真实 AccountRuntime/HTTP 门控场景再次打开 WS；现取消旧 connect，并在每次等待恢复后、
+建 WS 和发布身份/状态前核对同一选择代次。坏 Relay counter 曾使另一个 Host Client 超时；先由隔离 WS
+复现，再由固定未改 Server 转发 counter=1 的真实 Noise Client 验证只终止该 connectionId。
+
+首次真实 Server 红色结果同时受到版本声明与 JVM 缺少 WebRTC 原生库影响，不能全部归因为 SemVer。
+原生加载的 LinkageError 已转为明确 RTC_UNAVAILABLE，进入双方已协商的 Relay 降级；本地 Relay 通过不证明
+原生 RTC 或四种网络路径可用。固定服务端源码 11 份 SHA 与 MIT 来源核对通过，不维护上游分叉。
+
+手机前轮 NativeScreen 4、Quiet 3、Backend 16 项通过，但该次共 25 项中 Overlay 有 1 项失败；
+候选随后定向复验 Overlay 3 与 Kernel/Bus，未重复执行所有前轮测试，因此不能把两轮拼成同 SHA 全量通过。
+原始日志留在临时环境，仓库仅保留本台账与可运行回归。测试复用现有 Node 24.18.0/JDK21/Android SDK/Gradle 缓存，
+本轮不做真机、不使用日常 Host；短信发送、可靠推送确认、定时与生产旧依赖退役仍是剩余实现范围。
+
 ## 环境与证据分层
 
 用户确认稍后提供专用手机与 Host，先不进行真机测试；不占用日常 Host 账号、会话或连接。
