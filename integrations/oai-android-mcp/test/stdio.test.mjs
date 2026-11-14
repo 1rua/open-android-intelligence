@@ -70,3 +70,34 @@ test('桥路由复核 bearer、已有 Host/Origin 校验和账号代际', async 
   }
   await registration.close();
 });
+
+test('收件请求同进程超时和受理重试复用原任务且重启显式恢复只查询', async () => {
+  const calls = []; let creates = 0; let timeout = true;
+  const runtime = {
+    async discoverToolWorkspaces() { return { workspaces: [{ backend: 'harness', workspaceId: 'phone-capabilities' }] }; },
+    async runSessionTool(operation, args) {
+      calls.push({ operation, args });
+      if (operation === 'remote_create_session') return { status: 'accepted', sessionId: `task-${++creates}` };
+      if (operation === 'remote_send_message') return { status: 'accepted' };
+      if (operation === 'remote_wait_sessions' && timeout) { timeout = false; throw new Error('WAIT_TIMEOUT'); }
+      if (operation === 'remote_read_session') return { status: 'running', records: [] };
+      return {};
+    },
+  };
+  const authority = { snapshot: () => 'epoch' };
+  const bridge = new PhoneMcpBridge(runtime, authority);
+  const args = { hostId: 'phone', backend: 'harness', workspaceId: 'phone-capabilities', request_id: 'delivery-retry-00001',
+    deliveryId: `delivery_${'1'.repeat(32)}`, eventId: `push_${'2'.repeat(64)}`, token: 't'.repeat(43), payloadDigest: `sha256:${'3'.repeat(64)}`, acknowledge: false };
+  await assert.rejects(bridge.call('delivery', args), error => error.message === 'WAIT_TIMEOUT' && error.taskSessionId === 'task-1');
+  const retried = await bridge.call('delivery', args);
+  assert.equal(retried.taskSessionId, 'task-1');
+  assert.equal((await bridge.call('delivery', args)).taskSessionId, 'task-1');
+  assert.equal(creates, 1);
+  assert.equal(calls.filter(call => call.operation === 'remote_send_message').length, 1);
+  await assert.rejects(bridge.call('delivery', { ...args, token: 'x'.repeat(43) }), /REQUEST_ID_CONFLICT/u);
+  const restarted = new PhoneMcpBridge(runtime, authority);
+  const recovered = await restarted.call('delivery', { ...args, taskSessionId: 'task-1' });
+  assert.equal(recovered.taskSessionId, 'task-1');
+  assert.equal(creates, 1);
+  assert.equal(calls.filter(call => call.operation === 'remote_send_message').length, 1);
+});

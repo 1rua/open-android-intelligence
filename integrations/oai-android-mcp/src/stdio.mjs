@@ -16,12 +16,12 @@ if (!bearer) throw new Error('BRIDGE_BEARER_REQUIRED');
 async function bridge(operation, args) {
   const response = await fetch(new URL(`${BRIDGE_PREFIX}/${operation}`, base), { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000), headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` }, body: JSON.stringify(args) });
   if (!response.ok) throw new Error('BRIDGE_AUTHORIZATION_REJECTED');
-  const result = await response.json(); if (!result.ok) throw new Error(result.error?.code ?? 'BRIDGE_CALL_FAILED'); return result.value;
+  const result = await response.json(); if (!result.ok) throw Object.assign(new Error(result.error?.code ?? 'BRIDGE_CALL_FAILED'), { taskSessionId: result.error?.taskSessionId }); return result.value;
 }
 function register(name, title, description, schema, operation, map = value => value, readOnly = true) {
   server.registerTool(name, { title, description, inputSchema: schema.strict(), annotations: { readOnlyHint: readOnly, destructiveHint: !readOnly, idempotentHint: readOnly, openWorldHint: true } }, async args => {
     try { const output = await bridge(operation, map(args)); return { content: [{ type: 'text', text: JSON.stringify(output) }], structuredContent: output }; }
-    catch (error) { return { isError: true, content: [{ type: 'text', text: `手机工具失败：${error instanceof Error ? error.message : 'UNKNOWN'}。请查询原 request_id，勿自动重发副作用。` }] }; }
+    catch (error) { return { isError: true, ...(typeof error?.taskSessionId === 'string' ? { structuredContent: { taskSessionId: error.taskSessionId, state: 'outcome_unknown' } } : {}), content: [{ type: 'text', text: `手机工具失败：${error instanceof Error ? error.message : 'UNKNOWN'}。请查询原 request_id，勿自动重发副作用。` }] }; }
   });
 }
 register('android_bridge_status', '手机桥状态', '读取当前 DSH 本机手机桥是否可用。', z.object({}), 'status');
@@ -31,7 +31,7 @@ register('android_request_status', '查询请求回执', '从当前 control-bus 
 register('android_request_result', '读取当前任务结果', '读取当前进程仍存在的原任务结构化结果；正文失效时不会恢复或重放请求。', z.object({ ...task, targetRequestId: requestId }), 'request_result');
 register('android_cancel_request', '取消指定请求', '仅取消原 taskSessionId 内的 targetRequestId；不会取消同任务其他请求。', z.object({ ...task, request_id: requestId, targetRequestId: requestId }), 'cancel', undefined, false);
 register('android_read_artifact', '读取任务产物', '经原生受限文件面下载同一任务的 artifactId。', z.object({ ...task, artifactId: z.string().regex(/^[A-Za-z0-9_-]+$/u) }), 'read_artifact');
-const delivery = { ...fixed, request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u) };
+const delivery = { ...fixed, taskSessionId: id.optional(), request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u) };
 register('android_read_delivery', '读取已投递事件', '仅凭确切目标会话收到的收件token读取手机加密队列事件；读取不会确认消费，手机独立推送许可与白名单仍须有效。', z.object(delivery), 'delivery', value => ({ ...value, acknowledge: false }));
 register('android_ack_delivery', '确认消费事件', '确认已处理同一deliveryId、eventId和payloadDigest；手机原子清理正文，重复确认仅返回原元数据。', z.object(delivery), 'delivery', value => ({ ...value, acknowledge: true }), false);
 const snapshot = z.string().min(1);

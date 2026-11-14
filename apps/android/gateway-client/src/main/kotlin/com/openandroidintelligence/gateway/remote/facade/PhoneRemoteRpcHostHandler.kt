@@ -16,7 +16,7 @@ class PhoneRemoteRpcHostHandler(
     private val authenticatedAccess: (RemoteRpcConnectionScope) -> ControlAccessBinding,
 ) : RemoteRpcHostHandler, AutoCloseable {
     private data class PendingEvent(val event: RemoteRpcEvent, val epoch: Long, val metadataOnly: Boolean, val content: Boolean = true,
-        val requireContent: () -> Unit = {})
+        val sanitizeContent: (JsonValue) -> JsonValue = { it })
     private class Connection(val scope: RemoteRpcConnectionScope) {
         val events = MutableSharedFlow<PendingEvent>(extraBufferCapacity = 128)
         val streams = ConcurrentHashMap<String, Job>()
@@ -41,8 +41,12 @@ class PhoneRemoteRpcHostHandler(
             if (authenticatedAccess(scope) != access) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
             if (pending.content) router.requireOutput(access, pending.epoch, pending.metadataOnly)
             else router.outputEpoch(access)
-            if (pending.content) pending.requireContent()
-            pending.event
+            if (!pending.content) pending.event else {
+                val fields=pending.event.data as? JsonValue.JObject
+                if (fields == null) pending.event else pending.event.copy(data=JsonValue.JObject(fields.fields.map { (key,value) ->
+                    key to if (key == "value") pending.sanitizeContent(value) else value
+                }))
+            }
         }
     }
 
@@ -69,8 +73,8 @@ class PhoneRemoteRpcHostHandler(
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
                             connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf("streamId" to streamId,
-                                "hasValue" to true, "value" to value))), epoch, metadataOnly,requireContent={
-                                    router.requireStreamContent(access,text(fields,"endpoint"),fields.getValue("payload"))
+                                "hasValue" to true, "value" to value))), epoch, metadataOnly,sanitizeContent={ output ->
+                                    router.sanitizeStreamContent(access,text(fields,"endpoint"),fields.getValue("payload"),output)
                                 }))
                         }
                     } catch (_: CancellationException) { throw CancellationException() }

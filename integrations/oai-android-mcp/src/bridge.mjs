@@ -16,7 +16,7 @@ const inputs = {
   cancel: binding.extend({ targetRequestId: requestId, request_id: requestId }),
   read_artifact: binding.extend({ artifactId: z.string().regex(/^[A-Za-z0-9_-]+$/u) }),
   request_result: binding.extend({ targetRequestId: requestId }),
-  delivery: target.extend({ request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u), acknowledge: z.boolean() }),
+  delivery: target.extend({ taskSessionId: id.optional(), request_id: requestId, deliveryId: z.string().regex(/^delivery_[0-9a-f]{32}$/u), eventId: z.string().regex(/^push_[0-9a-f]{64}$/u), token: z.string().regex(/^[A-Za-z0-9_-]{43}$/u), payloadDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/u), acknowledge: z.boolean() }),
 };
 const operations = new Set(['ui.dump_tree', 'ui.capture_som', 'ui.tap', 'ui.long_press', 'ui.swipe', 'ui.input_text',
   'ui.global_action', 'ui.scroll', 'ui.drag', 'ui.launch_app', 'plugin.invoke']);
@@ -55,9 +55,9 @@ export class PhoneMcpBridge {
     await this.#target(args, signal);
     const fixed = { hostId: args.hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
     if (operation === 'delivery') {
-      const created = await this.#tool('remote_create_session', { ...fixed, operationId: randomUUID() }, signal);
-      if (created.status !== 'accepted' || !created.sessionId) throw new Error('PHONE_TASK_CREATE_UNCERTAIN');
-      return this.#send(fixed, created.sessionId, { request_id: args.request_id, op: args.acknowledge ? 'push.ack_delivery' : 'push.read_delivery', args: { deliveryId: args.deliveryId, eventId: args.eventId, token: args.token, payloadDigest: args.payloadDigest } }, signal);
+      const request = { request_id: args.request_id, op: args.acknowledge ? 'push.ack_delivery' : 'push.read_delivery', args: { deliveryId: args.deliveryId, eventId: args.eventId, token: args.token, payloadDigest: args.payloadDigest } };
+      // 重启后调用者带回原taskSessionId，仅查询原任务；不会重新受理读取或ACK。
+      return this.#dispatch(fixed, args.taskSessionId, request, signal, args.taskSessionId !== undefined);
     }
     if (operation === 'read_artifact') return this.#tool('remote_download_file', { ...fixed, sessionId: args.taskSessionId, path: `artifacts/${args.artifactId}` }, signal);
     if (operation === 'capabilities') return this.#send(fixed, 'control-bus', { request_id: randomUUID(), op: 'phone.capabilities', args: {} }, signal);
@@ -70,21 +70,39 @@ export class PhoneMcpBridge {
     }
     if (!operations.has(args.request.op)) throw new Error('CONTROL_OPERATION_UNSUPPORTED');
     if (!args.taskSessionId && !['ui.dump_tree', 'ui.capture_som'].includes(args.request.op)) throw new Error('TASK_SESSION_REQUIRED');
-    const fingerprint = createHash('sha256').update(JSON.stringify([fixed, args.taskSessionId ?? null, args.request])).digest('hex');
-    const key = args.request.request_id;
+    return this.#dispatch(fixed, args.taskSessionId, args.request, signal);
+  }
+  async #dispatch(fixed, taskSessionId, request, signal, resume = false) {
+    const fingerprint = createHash('sha256').update(JSON.stringify([fixed, request])).digest('hex');
+    const key = request.request_id;
     const old = this.#ledger.get(key);
-    if (old) { if (old.fingerprint !== fingerprint) throw new Error('REQUEST_ID_CONFLICT'); return old.pending; }
-    // 仅当前进程保存受理关联；手机持久账本才是执行与防重权威。
-    const entry = { fingerprint, taskSessionId: args.taskSessionId, pending: undefined };
+    if (old) {
+      if (old.fingerprint !== fingerprint || (taskSessionId !== undefined && old.taskSessionId !== taskSessionId)) throw new Error('REQUEST_ID_CONFLICT');
+      if (old.pending) return old.pending;
+      if (!old.taskSessionId) throw new Error('PHONE_TASK_CREATE_UNCERTAIN');
+      return this.#observe(fixed, old, key, signal);
+    }
+    // 仅当前进程保存关联；重启使用返回的taskSessionId和既有状态/结果查询契约。
+    const entry = { fingerprint, taskSessionId, pending: undefined };
+    this.#ledger.set(key, entry);
     entry.pending = (async () => {
+      if (resume) return this.#readResult(fixed, entry.taskSessionId, key, signal);
       if (!entry.taskSessionId) {
         const created = await this.#tool('remote_create_session', { ...fixed, operationId: randomUUID() }, signal);
         if (created.status !== 'accepted' || !created.sessionId) throw new Error('PHONE_TASK_CREATE_UNCERTAIN');
         entry.taskSessionId = created.sessionId;
       }
-      return this.#send(fixed, entry.taskSessionId, args.request, signal);
+      try { return await this.#send(fixed, entry.taskSessionId, request, signal); }
+      catch (error) {
+        // 关联已固定，等待超时不丢失它；用原任务查询或取消，不重发副作用。
+        throw Object.assign(error, { taskSessionId: entry.taskSessionId });
+      }
     })();
-    this.#ledger.set(key, entry); return entry.pending;
+    try { return await entry.pending; } finally { entry.pending = undefined; }
+  }
+  async #observe(fixed, entry, request_id, signal) {
+    entry.pending = this.#readResult(fixed, entry.taskSessionId, request_id, signal);
+    try { return await entry.pending; } finally { entry.pending = undefined; }
   }
   async #send(fixed, taskSessionId, request, signal) {
     const receipt = await this.#tool('remote_send_message', { ...fixed, sessionId: taskSessionId,
@@ -140,7 +158,7 @@ export function registerPhoneMcpRoute({ webServer, connection, bridge, bearer = 
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, value }));
     } catch (error) {
       const code = error instanceof z.ZodError ? 'BRIDGE_INPUT_INVALID' : error instanceof Error && /^[A-Z0-9_]+$/u.test(error.message) ? error.message : 'BRIDGE_CALL_FAILED';
-      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: { code, message: '手机工具调用失败，请核对授权与原请求状态。' } }));
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: { code, message: '手机工具调用失败，请核对授权与原请求状态。', ...(typeof error?.taskSessionId === 'string' ? { taskSessionId: error.taskSessionId } : {}) } }));
     }
   } });
   return { bearer, close: async () => { bridge.close(); token.fill(0); await dispose(); } };

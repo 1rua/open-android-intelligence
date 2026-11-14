@@ -26,6 +26,7 @@ class PhoneContentDeliveryTest {
     private class Executor : PhoneControlExecutor {
         var current = true
         var contentCurrent = true
+        val contentCurrentByRequest = mutableMapOf<String, Boolean>()
         override fun requireCurrentAccess(access: ControlAccessBinding) {
             if (!current) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
         }
@@ -33,7 +34,7 @@ class PhoneContentDeliveryTest {
             context.beforeDispatch()
             return PhoneControlResult(ControlValue.Object(mapOf("secret" to ControlValue.Text(SECRET))),
                 listOf(ControlArtifact("private-image", "image/webp", "version", SECRET.toByteArray())),requireContentAccess={
-                    if (!contentCurrent) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
+                    if (!contentCurrent || contentCurrentByRequest[context.scope.key.requestId] == false) throw ControlRequestException("PUSH_DELIVERY_REVOKED")
                 })
         }
         override fun cancel(scope: ControlRequestScope) {}
@@ -84,6 +85,21 @@ class PhoneContentDeliveryTest {
         denied("PUSH_DELIVERY_REVOKED") { bus.eventsSince(access,task,-1) }
         denied("PUSH_DELIVERY_REVOKED") { bus.artifact(access,task,"private-image") }
         assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
+    }
+
+    @Test fun 只失效一个请求时controlBus回执能力与同任务其他请求仍可读()=runTest {
+        val executor=Executor();val bus=PhoneControlBus(this,Ledger(),executor)
+        val task=bus.create(access)
+        val first=request("content-old-000001");val second=request("content-new-000001")
+        bus.submit(access,task,first);runCurrent();bus.submit(access,task,second);runCurrent()
+        executor.contentCurrentByRequest["content-old-000001"] = false
+        val oldReceipt=Json.canonical(bus.receipt(access,task,"content-old-000001"))
+        assertTrue(oldReceipt.contains("resultAvailable\":false"));assertFalse(oldReceipt.contains(SECRET))
+        val newReceipt=Json.canonical(bus.receipt(access,task,"content-new-000001"))
+        assertTrue(newReceipt.contains(SECRET));assertTrue(newReceipt.contains("resultAvailable\":true"))
+        val control=Json.canonical(bus.history(access,"control-bus"))
+        assertTrue(control.contains("content-old-000001"));assertTrue(control.contains("content-new-000001"))
+        assertFalse(control.contains(SECRET))
     }
 
     @Test fun originalConnectionCannotDeliverBufferedSecretAfterEmergencyStop() = runTest {

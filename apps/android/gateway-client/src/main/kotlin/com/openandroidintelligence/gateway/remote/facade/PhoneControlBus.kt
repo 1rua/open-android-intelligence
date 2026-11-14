@@ -2,6 +2,7 @@ package com.openandroidintelligence.gateway.remote.facade
 
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.util.UUID
 import kotlinx.coroutines.*
@@ -299,8 +300,8 @@ class PhoneControlBus(
         executor.requireCurrentAccess(access)
         val row = find(access, taskId, requestId)
         val task = tasks[key(access, taskId)]
-        val contentCurrent=runCatching { task?.contentChecks?.get(requestId)?.invoke();true }.getOrDefault(false)
-        val available=!stopped && contentCurrent && task?.results?.containsKey(requestId) == true
+        val hasContent=task == null || contentCurrent(task,requestId)
+        val available=!stopped && hasContent && task?.results?.containsKey(requestId) == true
         val fields = minimal(row, available).toMutableMap()
         if (available) (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
         Json.of(fields)
@@ -311,7 +312,6 @@ class PhoneControlBus(
         requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
         require(maxMessages in 1..50) { "CONTROL_PAGE_LIMIT_INVALID" }
-        task.contentChecks.values.forEach { it() }
         val cursor = task.records.size.toLong() - 1
         val through = throughSeq ?: cursor
         require(through in -1..cursor && (beforeSeq == null || beforeSeq in 0..(through + 1))) { "CONTROL_CURSOR_INVALID" }
@@ -320,7 +320,7 @@ class PhoneControlBus(
             beforeSeq == null || seq.raw.toLong() < beforeSeq
         }
         Json.of(mapOf("type" to "snapshot", "header" to mapOf("version" to 3, "id" to taskId, "createdAt" to task.createdAt,
-            "cwd" to "phone-capabilities", "isSeeded" to false), "cursor" to through, "nextTurn" to task.turn + 1, "records" to matching.takeLast(maxMessages),
+            "cwd" to "phone-capabilities", "isSeeded" to false), "cursor" to through, "nextTurn" to task.turn + 1, "records" to matching.takeLast(maxMessages).map { sanitizeRecord(access,task,it) },
             "hasMore" to (matching.size > maxMessages), "assistantStream" to mapOf("revision" to task.revision),
             "projections" to mapOf("asOfSeq" to cursor, "values" to projections(ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == taskId } }))))
     }
@@ -328,21 +328,66 @@ class PhoneControlBus(
     fun artifact(access: ControlAccessBinding, taskId: String, artifactId: String): ControlArtifact = synchronized(lock) {
         requireOutput(access, deliveryEpoch)
         val task = task(access, taskId)
-        task.contentChecks.values.forEach { it() }
-        val found = task.artifacts[artifactId]?.second ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
+        val (requestId,found) = task.artifacts[artifactId] ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
+        if (!contentCurrent(task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
         found.copy(bytes = found.bytes.copyOf())
     }
 
     fun eventsSince(access: ControlAccessBinding, taskId: String, seq: Long): List<JsonValue> = synchronized(lock) {
         requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
-        task.contentChecks.values.forEach { it() }
         if (seq !in -1 until task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
-        task.records.drop((seq + 1).toInt()).toList()
+        task.records.drop((seq + 1).toInt()).map { sanitizeRecord(access,task,it) }
     }
 
-    fun requireTaskContent(access: ControlAccessBinding,taskId: String) = synchronized(lock) {
-        task(access,taskId).contentChecks.values.forEach { it() }
+    /** 每条记录只受自身请求许可约束；失效正文擦除为最小回执，不封锁同任务的新元数据。 */
+    private fun contentCurrent(task: Task,id: String): Boolean {
+        val check=task.contentChecks[id] ?: return true
+        if (runCatching(check).isSuccess) return true
+        task.results.remove(id)
+        task.artifacts.entries.filter { it.value.first == id }.forEach { (artifactId,artifact) ->
+            artifact.second.bytes.fill(0);task.artifacts.remove(artifactId)
+        }
+        return false
+    }
+
+    private fun sanitizeRecord(access: ControlAccessBinding,task: Task,record: JsonValue): JsonValue {
+        val root=record as? JsonValue.JObject ?: return record
+        val event=JsonFields.obj(JsonFields.field(root,"event")) ?: return record
+        val data=JsonFields.obj(JsonFields.field(event,"data")) ?: return record
+        val id=JsonFields.string(data,"request_id") ?: return record
+        if (contentCurrent(task,id)) return record
+        val row=find(access,task.scope.taskSessionId,id)
+        val receipt=Json.canonical(Json.of(minimal(row,false)))
+        val safeData=mapOf("request_id" to id,"message" to mapOf("id" to id,"role" to "assistant",
+            "content" to listOf(mapOf("type" to "text","text" to receipt))))
+        return Json.of(mapOf("type" to "event","event" to mapOf("seq" to JsonFields.field(event,"seq"),
+            "time" to JsonFields.field(event,"time"),"type" to "assistant/message","data" to safeData)))
+    }
+
+    /** 组装后和缓冲出队时再次逐条脱敏，不能依赖组装入口时的旧许可。 */
+    fun sanitizeContent(access: ControlAccessBinding,taskId: String,value: JsonValue): JsonValue = synchronized(lock) {
+        val task=task(access,taskId)
+        val objectValue=value as? JsonValue.JObject ?: return@synchronized value
+        val records=JsonFields.array(JsonFields.field(objectValue,"records"))
+        if (records != null) return@synchronized JsonValue.JObject(objectValue.fields.map { (key,item) ->
+            key to if (key == "records") JsonValue.JArray(records.items.map { sanitizeRecord(access,task,it) }) else item
+        })
+        val id=JsonFields.string(objectValue,"request_id")
+        if (id != null && !contentCurrent(task,id)) {
+            // 流式块不再携带旧text；后续新的projection、ACK与能力结果照常可达。
+            return@synchronized Json.of(mapOf("type" to "projection","key" to "execution",
+                "value" to executionProjection(ledger.transaction { rows -> rows.values.filter {
+                    it.ownerKey == access.principal.storageKey && it.taskSessionId == taskId
+                } })))
+        }
+        sanitizeRecord(access,task,value)
+    }
+
+    fun requireArtifactContent(access: ControlAccessBinding,taskId: String,artifactId: String) = synchronized(lock) {
+        val task=task(access,taskId)
+        val requestId=task.artifacts[artifactId]?.first ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
+        if (!contentCurrent(task,requestId)) fail("CONTROL_ARTIFACT_UNAVAILABLE")
     }
 
     private fun task(access: ControlAccessBinding, id: String): Task {

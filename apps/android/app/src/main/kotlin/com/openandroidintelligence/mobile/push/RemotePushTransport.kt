@@ -43,8 +43,16 @@ class RemotePushTransport(
         return poll(delivery,dispatch.receipt.deliveryId,stillAuthorized)
     }
     override suspend fun poll(delivery: PushDelivery,deliveryId: String,stillAuthorized: () -> Boolean): PushReceipt {
+        val target=delivery.endpoint.remoteTarget ?: error("PUSH_REMOTE_TARGET_REQUIRED")
+        fun requireCurrent() {
+            val queuedAuthorized=stillAuthorized()
+            if (!identityCurrent(target) || (!queuedAuthorized && !runtime.consumedReceiptCurrent(delivery,deliveryId)))
+                throw CancellationException("PUSH_AUTHORIZATION_CHANGED")
+        }
+        requireCurrent()
         val record=runtime.remoteReceipt(deliveryId) ?: return PushReceipt(delivery.endpoint,delivery.event.eventId,deliveryId,PushReceiptState.RETRY)
         check(record.endpoint == delivery.endpoint && record.eventId == delivery.event.eventId) { "PUSH_RECEIPT_SCOPE_MISMATCH" }
+        requireCurrent()
         return PushReceipt(record.endpoint,record.eventId,record.deliveryId,
             if (record.consumed) PushReceiptState.CONSUMED else PushReceiptState.ACCEPTED)
     }

@@ -267,6 +267,14 @@ class DevicePushRuntime(
         checkHealthy();state.remoteReceipts[deliveryId]?.takeIf { it.expiresAt > now() }
     }
 
+    /** 消费已移除队列行，但回执交付仍须服从当前账号、系统权限、范围与目标白名单。 */
+    internal fun consumedReceiptCurrent(delivery: PushDelivery,deliveryId: String): Boolean = synchronized(lock) {
+        healthy && loggedIn && accountPermits(delivery.endpoint) && systemAccess.isGranted(delivery.event.kind) &&
+            delivery.endpoint in endpoints(state.configuration,delivery.event.kind) && now() < delivery.event.expiresAtEpochMs &&
+            permitsQueued(QueuedPushEvent(delivery.event,mapOf(delivery.endpoint to deliveryId)),state.configuration) &&
+            state.remoteReceipts[deliveryId]?.let { it.consumed && it.endpoint == delivery.endpoint && it.eventId == delivery.event.eventId } == true
+    }
+
     internal fun remoteDispatchState(deliveryId: String,next: String) = synchronized(lock) {
         checkHealthy()
         require(next in setOf("dispatched","accepted","outcome_unknown"))
@@ -412,9 +420,8 @@ class DevicePushRuntime(
         ) return AttemptOutcome.RETRY
         return synchronized(lock) {
             // 接收者可能在prompt RPC回执之前已经消费；正文已经原子清理，不能要求旧队列行仍存在。
-            if (receipt.state == PushReceiptState.CONSUMED && state.remoteReceipts[receipt.deliveryId]?.let {
-                    it.consumed && it.endpoint == delivery.endpoint && it.eventId == delivery.event.eventId && accountPermits(it.endpoint)
-                } == true) return@synchronized AttemptOutcome.ACKNOWLEDGED
+            if (receipt.state == PushReceiptState.CONSUMED && epoch == loginEpoch &&
+                consumedReceiptCurrent(delivery,receipt.deliveryId)) return@synchronized AttemptOutcome.ACKNOWLEDGED
             if (!authorized(delivery, epoch)) return@synchronized AttemptOutcome.SKIPPED
             val queued = state.events.first { it.event.eventId == delivery.event.eventId }
             val targets = queued.targets.toMutableMap()

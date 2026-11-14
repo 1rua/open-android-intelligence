@@ -8,7 +8,7 @@ import java.util.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.map
 
 /** 只公开手机工作区。网络层负责 Noise 身份，门面从不接受业务正文中的主体字段。 */
 class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
@@ -60,7 +60,15 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
         }
         // 文件拷贝和 JSON 组装也可能跨越撤销；返回前复核，不能只在读取入口核对一次。
         requireOutput(access, epoch, metadataOnly)
-        return result
+        return when (method) {
+            "session/page", "session/history" -> bus.sanitizeContent(access,sessionId(request(args)),result)
+            "workspaceFiles/stat", "workspaceFiles/readBytes" -> {
+                val fileRequest=request(args)
+                bus.requireArtifactContent(access,fileSession(fileRequest),fileRequest.text("path").substringAfter('/'))
+                result
+            }
+            else -> result
+        }
     }
 
     /** 每个订阅自行记录 cursor，取消订阅只停止观察，不取消手机请求。 */
@@ -96,14 +104,14 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
                                 val seq = event.number("seq")!!
                                 val data = fields(event.getValue("data"))
                                 val attempt = "phone:$sessionId:$seq"
-                                emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf("type" to "start", "attemptId" to attempt,
+                                emit(Json.of(mapOf("type" to "assistant-stream", "request_id" to data.text("request_id"), "frame" to mapOf("type" to "start", "attemptId" to attempt,"request_id" to data.text("request_id"),
                                     "revision" to ++revision, "startedAfterSeq" to seq - 1, "turn" to (data.number("turn") ?: 0), "step" to 1))))
                                 val chunks = (data["stream"] as? JsonValue.JArray)?.items.orEmpty()
-                                chunks.forEachIndexed { index, chunk -> emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf(
-                                    "type" to "chunk", "attemptId" to attempt, "revision" to ++revision, "index" to index,
+                                chunks.forEachIndexed { index, chunk -> emit(Json.of(mapOf("type" to "assistant-stream", "request_id" to data.text("request_id"), "frame" to mapOf(
+                                    "type" to "chunk", "attemptId" to attempt,"request_id" to data.text("request_id"), "revision" to ++revision, "index" to index,
                                     "time" to event.getValue("time"), "chunk" to (fields(chunk)["chunk"] ?: chunk))))) }
                                 emit(row)
-                                emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf("type" to "end", "attemptId" to attempt,
+                                emit(Json.of(mapOf("type" to "assistant-stream", "request_id" to data.text("request_id"), "frame" to mapOf("type" to "end", "attemptId" to attempt,"request_id" to data.text("request_id"),
                                     "revision" to ++revision, "index" to chunks.size,
                                     "outcome" to mapOf("kind" to "committed", "eventType" to "assistant/message", "seq" to seq)))))
                             } else emit(row)
@@ -116,12 +124,11 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             }
             else -> fail("METHOD_NOT_FOUND")
         }
-        }.onEach { requireOutput(access, epoch, metadataOnly);requireStreamContent(access,method,input) }
+        }.map { value -> requireOutput(access, epoch, metadataOnly);sanitizeStreamContent(access,method,input,value) }
     }
 
-    fun requireStreamContent(access: ControlAccessBinding,method: String,input: JsonValue) {
-        if (method == "session/follow") bus.requireTaskContent(access,sessionId(request(carrierArgs(input))))
-    }
+    fun sanitizeStreamContent(access: ControlAccessBinding,method: String,input: JsonValue,value: JsonValue): JsonValue =
+        if (method == "session/follow") bus.sanitizeContent(access,sessionId(request(carrierArgs(input))),value) else value
 
     private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf("items" to listOf(mapOf("workspaceId" to WORKSPACE,
         "path" to WORKSPACE, "title" to strings.workspaceTitle, "sessionIds" to bus.sessions(access).map { fields(it).text("sessionId") })),
@@ -131,8 +138,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
         bus.history(access, sessionId(request), request.number("beforeSeq"), request.number("throughSeq"), request.number("maxMessages")?.toInt() ?: 50)
 
     private fun file(access: ControlAccessBinding, method: String, request: Map<String, JsonValue>): JsonValue {
-        val session = request["scope"]?.let(::fields)?.let { sessionId(it) }
-            ?: request["workspaceFileScopeId"]?.let { (it as? JsonValue.JString)?.value } ?: sessionId(request)
+        val session = fileSession(request)
         val path = request.text("path")
         if (!Regex("artifacts/[A-Za-z0-9_-]+").matches(path)) fail("CONTROL_ARTIFACT_PATH_INVALID")
         val artifact = bus.artifact(access, session, path.substringAfter('/'))
@@ -148,6 +154,9 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
         return Json.of(mapOf("path" to path, "absolutePath" to absolutePath, "bytes" to artifact.bytes.size, "version" to artifact.version, "offset" to offset,
             "data" to Base64.getEncoder().encodeToString(artifact.bytes.copyOfRange(offset.toInt(), end)), "eof" to (end == artifact.bytes.size), "nextOffset" to end))
     }
+
+    private fun fileSession(request: Map<String,JsonValue>): String = request["scope"]?.let(::fields)?.let { sessionId(it) }
+        ?: request["workspaceFileScopeId"]?.let { (it as? JsonValue.JString)?.value } ?: sessionId(request)
 
     private fun carrierArgs(input: JsonValue): Map<String, JsonValue> {
         val root = fields(input)
