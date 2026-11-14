@@ -171,7 +171,7 @@ LANES = (
     "core",          # oai-core Python suite (3.11 + 3.12)
     "hermes",        # optional Session Adapter + native Hermes SDK
     "dsh",           # DSH Node bridge
-    "remote",        # 固定 Remote 公开目标探针
+    "remote",        # 固定 ACP 投影关闭风险观察
     "android-device",       # device primitives, local authorization
     "android-platform",     # platform kernel recovery
     "android-notifications",  # settings/notification policy/encrypted state
@@ -325,7 +325,7 @@ def classify_path(
         return True
 
     if path.startswith("tools/remote/"):
-        # 固定 Remote 探针独立于旧 DSH Session Adapter lane。
+        # 固定 ACP 投影观察独立于旧 DSH Session Adapter lane。
         lanes["remote"] = True
         return True
 

@@ -1,38 +1,19 @@
-# 固定 Remote 公开目标绑定探针
+# 固定 ACP 投影关闭风险观察
 
-本目录提供 P0 的隔离执行证据，不连接真实 Remote 账号、Host、手机或后端。
+本目录保留固定上游 ACP 投影的三项隔离观察，不连接真实账号、Host、手机或后端。
+它不是本客户端发布阻塞，也不证明新客户端的手动 workspace/对话切换已经通过验收。
+后台跨 workspace Agent 委派已从本客户端范围取消；原目标绑定探针及其专属快照已安全移入忽略回收区。
 
 ```sh
-node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
+node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
 ```
 
-使用仓库规定的 Node 24.18.0。探针以 Node 自带 TypeScript 类型擦除与 VM 模块执行
-`fixtures/dsh-remote` 中未修改的固定上游源码；不重写目标选择、公开状态和分发算法。
-只为网络、后端投影和未使用的外部依赖提供测试替身，并且通过公开的
-`ctx.dshRemoteClient`/`ctx.typertGateway` 操作，不读取或修改运行时私有字段。
+使用 Node 24.18.0，通过 Node 类型擦除与 VM 模块执行 `fixtures/dsh-remote/acp` 的固定上游原文，
+只替换后端连接、会话内容和标题展示。`source.json` 记录来源、固定提交与 SHA-256，运行前逐份核对。
+来源为 `liguobao/ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7`；
+`LICENSE` 保留原 MIT 文本。固定原文中的英文注释保留，不作为本仓库新增生产代码。
 
-`source.json` 记录固定仓库/commit/路径/SHA-256，所有来源文件运行前核对摘要。
-`LICENSE` 保留上游 MIT 文本及 `Copyright (c) 2026 DSH Remote contributors`；
-上游源码中的原始注释与版权原样保留。来源为
-`liguobao/ds-harness-remote@ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7`。
-这些 fixture 是固定上游源码快照，不是本仓库新编写的生产代码；为保证逐字节来源校验，
-其英文注释按上游原样保留，不作为本仓库中文注释规范新增的生产代码。
-
-## 已证明与限制
-
-- `invoke/stream` 同步捕获当前分发目标；派发后改选不将该次请求重定向到新目标。
-- 只在开始前查询 status，随后存在异步间隙，会将相同 Session ID 的写入发给改选后的 Host。
-  测试明确复现这一反例，不把“测试通过”解释为该用法安全。
-- 状态最终检查与 invoke 之间没有异步间隙，可以保护该同步派发点的 Host 绑定；
-  后验结果检查只能拒收失效观察，不能证明没有执行副作用。
-- 同 Host、同 backend 换 workspace 并消费临时选择后，公开 status 可能完全一致。
-  仅靠 status 不能证明 workspace 代际，生产 Bridge 必须拒绝缺少该证明的写入。
-- 原始 ACP 投影在 `session/prompt` 中按当前选中 workspace 注册未知 Session，未校验请求内的旧
-  workspaceId；同名 Session ID 可被当前 workspace 接收。发送前没有公开的 workspace/session scope
-  原子租约，Bridge 不得把 prompt 内 scope 当作已验证归属。
-- 原始 workspace follow 使用可缓冲队列；关闭后队列中已有 baseline/upsert 仍可读出，关闭只终止后续
-  等待。真实投影的缓冲事件排空、关闭时点、原生 Session ID 还原、公开流所有者绑定仍待专门
-  互操作证据。不能把旧流关闭通知的后验检查当作派发前原子租约。
-
-当前 P0 的跨后端目标归属门禁保持未通过；原生原子 expectedTarget/租约接口并不存在。
-本探针不访问 private hooks，也不据此扩写上游支持范围。真实 DSH 加载与各后端行为单列未验证。
+观察事实为：原始 ACP prompt 不用旧 workspaceId 阻止同名 Session 命中当前 workspace；
+workspace follow 关闭后仍可能读到关闭前缓冲的 baseline/upsert。客户端手动切换应据此使用独立连接、
+连接代际与旧流取消排空，并由实际客户端测试证明迟到事件不会更新新目标。
+本目录的三项只维护这些上游事实，不扩展为后台委派接口、target lease 要求或额外发布门禁。

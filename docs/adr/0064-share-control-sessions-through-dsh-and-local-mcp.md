@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-13
-implementation_status: not_started
+implementation_status: in_progress
 acceptance_status: pending
 issue: 185
 ---
@@ -27,9 +27,11 @@ taskSessionId/snapshotId。首次 MCP 读树或截图可以真实建任务，动
 选择 DSH 进程内桥后，Stdio 层保持无独立 Remote 身份与任务存储，代价是外部 Agent 控机时电脑须运行
 DSH 和桥插件，并通过其原生配置挂载 MCP。这个本机桥不是被废弃的服务端会话适配器。
 
-现有公开通道接口不能无副作用地对任意 Codex/ACP 目标后台选路。
-用户接受全部后端委派串行切换电脑 DSH 当前工作区，因此采用公开选择接口，不依赖 private hooks 或上游分叉。
-Bridge 串行管理委派目标及观察，报告选择副作用；用户手动改选或连接失效后不自动抢回、不重放写操作。
+2026-11-14 范围调整：MCP 只公开 `android_*`，目标限于手机 OAI Virtual Host 的
+`phone-capabilities`。本客户端取消后台跨 workspace Agent 委派；调度属于上游，
+公开 target lease 不再是本客户端或本地桥的实现与发布前置。
+正常多 Host、DSH/Codex/ACP workspace 与对话的手动切换完整保留，采用独立连接与连接代际、
+旧流取消排空及迟到结果拒绝保证归属；不能以不支持后台委派为由限制切换。
 审批仍由真实拥有者处理，不能把 MCP 连接、同账号关系或会话 idle 当成批准或任务成功。
 
 ## 后果

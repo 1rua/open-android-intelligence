@@ -396,12 +396,12 @@ def execute_strategy(
         if ret != 0:
             return ret
 
-    # 固定 Remote 的公开接口探针独立于旧 Core 适配器，用同一命令接入本地与 CI。
+    # 固定 ACP 投影观察独立于旧 Core，不作为后台委派放行门禁。
     if impact.get("affects_remote") or level == "full":
-        print("\n--- 固定 Remote 公开目标绑定探针 ---")
+        print("\n--- 固定 ACP 投影关闭风险观察 ---")
         ret = run_command([
             "node", "--experimental-vm-modules", "--test",
-            "tools/remote/target-binding.test.mjs", "tools/remote/projection-scope.test.mjs",
+            "tools/remote/projection-scope.test.mjs",
         ])
         if ret != 0:
             return ret

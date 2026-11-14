@@ -14,6 +14,15 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 `VERIFIED` 只适用于已记录命令、版本、场景和证据的具体断言；`BLOCKED` 表示已明确的环境/能力阻塞；
 `UNVERIFIED` 表示未取得所需证据。文档入库不提升运行状态。
 
+## 当前范围（2026-11-14）
+
+用户取消本客户端后台跨 workspace Agent 委派；MCP 只公开 android_*，目标仅手机
+OAI Virtual Host 的 phone-capabilities。#191 按范围取消关闭，target lease 及公开委派目标绑定不再是
+P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换完整保留，
+必须以独立连接/代际、旧流取消排空及迟到结果拒绝实现并验证。
+以下历史证据保留其原 SHA、命令和当时结论；其中后台委派阻塞已被本次范围决定取代，
+不能继续作为当前阻塞，也不能把旧探针视为新客户端手动切换验收。
+
 ## 环境与证据分层
 
 用户确认稍后提供专用手机与 Host，先不进行真机测试；不占用日常 Host 账号、会话或连接。
@@ -34,11 +43,11 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 | 阶段 | 跟踪 | 必需门禁 | 状态 |
 | --- | --- | --- | --- |
-| P0 | #188 | 契约增量、Noise/协议向量、依赖许可/ABI、公开目标绑定探针 | UNVERIFIED |
+| P0 | #188 | 契约增量、Noise/协议向量、依赖许可/ABI | UNVERIFIED |
 | P1 | #189 | 双身份、原生通道、最小真实 Session V3 与未改 remote_* 双向链路 | UNVERIFIED；真实环境 BLOCKED |
 | P2 | #187 后续子项 | Harness/Codex/ACP 数据面及现有聊天/附件/审批/助理回归 | UNVERIFIED |
 | P3 | #187 后续子项 | 最小账本、原生执行、SoM、收敛、overlay、锁屏与敏感确认 | UNVERIFIED；物理设备 BLOCKED |
-| P4 | #187 后续子项 | 进程内 Bridge/Stdio MCP、双入口和跨后端无误投 | UNVERIFIED；真实 Host BLOCKED |
+| P4 | #187 后续子项 | 进程内 Bridge/Stdio MCP、手机双入口、android_* 白名单与任务无误投 | UNVERIFIED；真实 Host BLOCKED |
 | P5 | #187 后续子项 | 功能覆盖、旧依赖退出、Fast/PR/Full、独立评审与发布矩阵 | UNVERIFIED |
 
 ## REM 需求矩阵
@@ -61,7 +70,7 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 | REM-14 | P3 | overlay 无焦点冲突/截图泄漏/远程自批准，锁屏与急停 | UNVERIFIED；设备 BLOCKED |
 | REM-15 | P1/P3 | 默认手动、范围只读、后台独立、敏感强制确认与撤销 | UNVERIFIED |
 | REM-16 | P0/P1/P3 | 原子最小账本、崩溃/取消/交付竞态、旧任务不恢复、status 查询 | UNVERIFIED |
-| REM-17 | P0/P4 | Stdio/进程内桥、已有路由无新监听、全部真实后端串行委派 | UNVERIFIED |
+| REM-17 | P0/P4 | Stdio/进程内桥、已有路由无新监听、仅手机 android_* 工具 | UNVERIFIED |
 | REM-18 | P5 | 生产/构建/安装/CI/测试/插件工具链退出旧 Core/契约/adapter | UNVERIFIED |
 | REM-19 | P2/P3/P5 | 聊天/助理/附件/通知/定时/主动推送/发送/插件/镜像/导出覆盖 | UNVERIFIED |
 | REM-20 | P0–P5 | 需求、实现、本地自动化、模拟器、设备、部署证据独立可追溯 | UNVERIFIED |
@@ -78,7 +87,7 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 | 本机门禁 | READ/CAPTURE/CONTROL 分开、排队后/派发前/交付前复核、权限撤销、锁屏、急停与 Shizuku 不绕过 |
 | overlay | 第三方输入焦点保留、树/截图无确认内容、节点/坐标拒绝命中胶囊；API34 窗口截图与较低 API/MediaProjection 分验 |
 | Bridge/MCP | 错误 bearer/Host/Origin、登出/切 origin/卸载失效、无新监听、Stdio stdout 纯协议、重启查原回执 |
-| 公开委派 | 同 sessionId 跨 Host、选择后/调用前切换、在途流关闭、目标代际与结果归属、断线不重投、不抢回工作区 |
+| 手动切换 | 正常多 Host/DSH/Codex/ACP workspace/对话切换；独立连接与代际、旧流取消排空、迟到结果拒绝、未知写入不重投 |
 | 功能保真 | 默认助理生命周期、附件迟到交接、模型拒绝/切换、推送接收确认、定时恢复、离线媒体、导出与旧服务管理退役 |
 
 ## 证据记录

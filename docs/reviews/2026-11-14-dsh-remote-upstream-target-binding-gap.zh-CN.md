@@ -1,12 +1,16 @@
 ---
-status: blocked
+status: superseded
 issue: 188
 fixed_upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 observed_upstream_commit: 25a81da11b667be8f61a8d3f676615d7ff38fd18
 observed_at: 2026-11-14T02:30:47+08:00
 ---
 
-# 公开委派目标绑定的上游缺口
+# 公开委派目标绑定的历史上游缺口
+
+> 2026-11-14 已被用户范围决定取代：本客户端取消后台跨 workspace Agent 委派，
+> MCP 仅公开手机 android_*；#191 按范围取消关闭。本文保留当时的源码事实和探针证据，
+> target lease 不再是 P0/P4/P5 或发布前置，不能据此限制正常手动切 workspace/对话。
 
 本记录补充[验收台账](2026-11-14-dsh-remote-acceptance-index.zh-CN.md)中 P0 跨后端委派阻塞。
 只读核对固定上游与本次观察到的 main；不改变 pin、不维护分叉、不新建上游 issue，也不扩张成所有上游文件的安全审查。

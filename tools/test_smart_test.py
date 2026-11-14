@@ -413,7 +413,7 @@ def test_remote_documents_do_not_trigger_legacy_adapters(path):
 
 
 @pytest.mark.parametrize("level", ["fast", "pr", "full"])
-def test_remote_probe_runs_and_propagates_failure(level):
+def test_acp_projection_observation_runs_and_propagates_failure(level):
     runner = load_runner()
     commands = []
 
@@ -426,7 +426,7 @@ def test_remote_probe_runs_and_propagates_failure(level):
     assert runner.execute_strategy(level, impact) == 23
     assert commands[-1] == [
         "node", "--experimental-vm-modules", "--test",
-        "tools/remote/target-binding.test.mjs", "tools/remote/projection-scope.test.mjs",
+        "tools/remote/projection-scope.test.mjs",
     ]
     assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
 

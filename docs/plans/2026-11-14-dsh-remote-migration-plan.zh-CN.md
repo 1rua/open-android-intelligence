@@ -23,6 +23,8 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 - `control-bus` 可单步调用；独立多步任务真实 create。控制消息、树、截图和结果正文仅内存，重启不恢复、不回放、不续做。
 - 最小持久账本仅 owner/request/task/op/参数摘要/execution/state/取消关联；旧任务 owner/失效标记仅防重与查询，不恢复业务 Session。
 - 只读 `request.status` 经当前总线查询原最小回执，原回执放本次查询 result；正文未保留时 `resultAvailable:false`。
+- MCP 仅公开 `android_*`，目标仅 OAI Virtual Host 的 `phone-capabilities`；后台跨 workspace 调度归上游，#191 取消，不是本项目阻塞。
+- 用户正常手动切换多 Host、DSH/Codex/ACP workspace 与对话完整保留；独立连接/代际、旧流取消排空保护结果归属。
 - MCP 首次读树/截图可 create 并返回 taskSessionId，后续显式携带 taskSessionId/snapshotId；动作缺任务不得暗中新建。
 - 正常聊天镜像、主动推送队列与短信定时任务继续按既有功能加密持久。不迁移旧数据，不发布双协议兼容版本。
 - 保留现有聊天组件结构和既有功能；旧 Core 服务专属管理随服务退役。旧文件只安全移入忽略的 `.worktrees/trash/`，由用户最终清理。
@@ -31,21 +33,21 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 | 阶段 | 实施内容 | 退出条件 |
 | --- | --- | --- |
-| P0 契约与可行性验证 | 控制契约增量、需求/测试矩阵；成熟 Noise 实现、WebRTC 依赖与固定公开目标绑定探针 | 密码/协议向量、依赖版本/许可/ABI 记录、公开委派目标归属证明；未具备证据不得记通过 |
+| P0 契约与可行性验证 | 控制契约增量、需求/测试矩阵；成熟 Noise 实现、WebRTC 依赖与协议向量 | 密码/协议向量、依赖版本/许可/ABI 记录；未具备证据不得记通过 |
 | P1 原生通信与最小 Virtual Host | Noise、登录双身份、信令、RTC/Relay、分块/背压/撤销/重连、真实 Session V3 门面 | Kotlin Client→桌面 Host 与反向真实握手/RPC；未修改 remote_* 完成发现、建任务、发送、等待、读回、下载及真实已授权只读能力 |
 | P2 多后端会话与现有界面接线 | Harness/Codex/ACP 独立数据面；App、助理、通知、附件镜像与最小连接/端点/模型选择 | 既有聊天、附件、审批、助理回归；各后端真实模型/历史/流/附件/审批/中断，不经旧 Core |
 | P3 控机安全与完整 Host | 原子最小账本、内核裁决、树/快照/SoM、400ms 静默/3000ms 截止、overlay/急停、WASM 离散能力及真实短信发送 | 并发归属、崩溃/取消不重复；真机锁屏、焦点、撤销、截图排除确认界面与紧急停止 |
-| P4 Bridge 与 Stdio MCP | DSH 进程内桥、既有 WebServer 受限 loopback 路由、运行期 bearer/固定操作/委派账本、公开串行工作区委派 | 两种真实控机入口；各真实可用后端目标失效后不误投、不重放，不泄露 Remote 凭据 |
+| P4 Bridge 与 Stdio MCP | DSH 进程内桥、既有 WebServer 受限 loopback 路由、运行期 bearer、android_* 白名单与手机任务/回执 | 两种真实手机控机入口；手机目标/任务隔离、失效不重放，不泄露 Remote 凭据 |
 | P5 功能覆盖、旧依赖退出与发布 | 推送确认、定时、离线、默认助理、导出；退出 Core/contract/adapters 及安装/build/CI/fixture/插件工具链消费 | REM-18/19 完整覆盖、干净包无旧依赖、Fast/PR/Full、设备/网络/后端矩阵及独立双轴评审 |
 
-P0 先冻结共享接口；P1 后 P2/P3 可以并行；P4 依赖 P3 与 P0 公开接口门禁；P5 等全部必需退出条件完成。
+P0 先冻结共享接口；P1 后 P2/P3 可以并行；P4 依赖 P3 与手机公开控制接口；P5 等全部必需退出条件完成。
 阶段推进不代表发布兼容两套协议的版本。全部必需项完成才可报告全量迁移完成。
 
 ## 并行职责与共享文件
 
 | 工作包 | 独占范围 | 交付与依赖 |
 | --- | --- | --- |
-| 集成与契约 | docs、共享 Gradle/依赖、CI/测试路由；电脑公开目标归属探针 | 汇总 issue/PR、固定版本与验收台账，独占共享文件，整合前 rebase |
+| 集成与契约 | docs、共享 Gradle/依赖、CI/测试路由 | 汇总 issue/PR、固定版本与验收台账，独占共享文件，整合前 rebase |
 | 协议与密码 | gateway-client 的 remote/protocol、remote/crypto 与相关测试/固定向量 | 不修改共享 Gradle；成熟实现通过固定 Noise/协议正反向量，保留许可来源 |
 | 会话领域与门面 | conversation-domain 新端点/会话模型与最小控制门面独立代码及测试 | 先提供不依赖旧 Core 的可信身份、任务/请求类型与真实状态投影；不得假造后端能力 |
 
@@ -56,8 +58,8 @@ P0 先冻结共享接口；P1 后 P2/P3 可以并行；P4 依赖 P3 与 P0 公�
 
 - Noise 候选：`org.signal.forks:noise-java:0.1.1`；先记录许可、固定向量、API/ABI 与 Android 兼容验证。不得手写密码状态机。
 - WebRTC 候选：`io.github.webrtc-sdk:android:150.7871.04`；先核实产物、许可/传递依赖/ABI，再接原生通道。未使用前不预置运行依赖。
-- 电脑桥只通过固定上游公开 `ctx.dshRemoteClient` 与 `ctx.typertGateway`；验证 invoke/stream 捕获目标的时点、切换后的旧流关闭及相同 sessionId 跨 Host 归属。
-- 串行委派允许切换桌面工作区；用户改选立即令旧观察失效，不自动抢回或向新目标续发。无法证明目标绑定时安全拒绝，不能访问私有对象绕过。
+- 电脑桥只复用固定上游公开手机通道；仅支持 OAI Virtual Host/phone-capabilities，不向任意 Agent 后台选路。
+- 正常聊天手动切换按独立连接、代际与旧流取消排空保护；历史 ACP 投影风险观察不替代本客户端回归，不再要求后台 target lease。
 - 本地隔离 fixture/探针只能证明对应代码边界，不能替代实际 DSH 插件加载、已登录通道和各真实后端验收。
 
 ## 状态、取消与安全验证

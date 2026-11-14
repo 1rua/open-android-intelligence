@@ -335,7 +335,7 @@ jobs:
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
   remote:
-    name: Fixed Remote target binding
+    name: Fixed ACP projection observation
     needs: changes
     if: needs.changes.outputs.runs_remote == 'true'
     runs-on: ubuntu-latest
@@ -350,8 +350,8 @@ jobs:
           node-version: '24.18.0'
           cache: npm
 
-      - name: 固定 Remote 公开目标与 ACP 投影探针
-        run: node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools/remote/projection-scope.test.mjs
+      - name: 固定 ACP 投影关闭风险观察
+        run: node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
 
   # --- Android -------------------------------------------------------------
   android-setup:

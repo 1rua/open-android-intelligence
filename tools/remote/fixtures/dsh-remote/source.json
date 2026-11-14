@@ -3,29 +3,9 @@
   "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
   "files": [
     {
-      "upstreamPath": "packages/plugin/src/typert-gateway-switch.ts",
-      "fixture": "typert-gateway-switch.ts",
-      "sha256": "7b7f55fda0f72ec15448e96454dd5cae49b3d4b866299c535d3aeca5eb1330a7"
-    },
-    {
-      "upstreamPath": "packages/plugin/src/client-runtime.ts",
-      "fixture": "client-runtime.ts",
-      "sha256": "5805fa01e0bc68d7bb11f95155f70bc1c0708ca37d2065da8c5e229f0ad0cc2d"
-    },
-    {
-      "upstreamPath": "packages/plugin/src/typert-gateway-contract.ts",
-      "fixture": "typert-gateway-contract.ts",
-      "sha256": "ee5ac26bf88f4a3a2ee25a867bb26b130536eb671dba174a95dbcf68bd8add30"
-    },
-    {
       "upstreamPath": "LICENSE",
       "fixture": "LICENSE",
       "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d"
-    },
-    {
-      "upstreamPath": "packages/plugin/src/client-control.ts",
-      "fixture": "client-control.ts",
-      "sha256": "5ab344f183cbfd9c800e9e5e1660b29b0092fe06b2b9507750acc22535f97c9a"
     },
     {
       "upstreamPath": "packages/plugin/src/acp/virtual-harness.ts",

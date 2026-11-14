@@ -291,7 +291,7 @@ Typert 外层 requestId、Remote message ID 和 connectionId 保留各自传输�
 Assistant 记录保留可完整读取的 request_id、执行结论和文件引用；不能截断 JSON 后仍声称
 已返回完整树。MCP 与原生入口都能继续按 artifact scope 取得完整结果。
 
-## 6. 本机 Bridge、MCP 与跨 Agent 委派
+## 6. 本机 Bridge 与手机 MCP
 
 Bridge 是安装在电脑 DSH 进程内的 OAI 适配插件。Stdio MCP 由各 Agent 启动，
 只调用 Bridge；不读出 Remote 私钥/token，不另建账号、穿透、Relay 或手机执行器。
@@ -308,38 +308,21 @@ HTTP Host/Origin 校验不因“本机调用”关闭；无浏览器 Origin 的 
 RPC 等待中断后仍能用同一标识查状态。`request_status` 通过当前 control-bus 的
 `session/prompt` 发送 `request.status`，原 task ID 只核对原回执归属；旧任务不必且不得恢复。
 `read_artifact` 不接受任意文件路径。
-接口只接受本契约操作或下述委派操作，不提供任意 namespace/method 代理。
+接口只接受本契约的手机操作，不提供任意 namespace/method 代理或后台 Agent 委派。
 所有 MCP Android 工具映射到上述操作；另暴露 `android_request_status` 和
 `android_cancel_request`，保证审批等待、长任务和未知结果可以继续查询与停止。
 Android 的 Bridge `cancel` 根据原回执确定任务与 `targetRequestId`，通过同一任务的
 session/prompt 发送 `request.cancel` 信封；原生 remote_interrupt_session 仍采用整任务语义。
 两者不能混用，也不能通过“先查请求再 session/cancel”的客户端竞态模拟精确取消。
-跨 Agent 委派的持久回执由 Bridge 保存，绑定同一活动账号、完整目标、任务与参数摘要；
-手机请求仍以手机账本为执行权威。Bridge 恢复后不能因本地没有上游内存回执就重发已受理
-委派，未知结果保留未知。MCP 子进程不持有这些权威状态，进程重启后通过 Bridge 查询。
+MCP 只暴露 `android_*`，发现与选择的目标仅为 OAI Virtual Host 的 `phone-capabilities`；
+Bridge 不保存或派发后台跨 workspace 的 Agent 任务。手机账本仍是手机请求执行、防重和取消的权威。
+MCP 子进程不持有执行权威状态，进程重启后经 Bridge 查询最小回执；未知写入不得自动重发。
 
-Bridge 的目标不是官方独立 SDK。固定上游版本提供进程内 `dshRemoteClient.runSessionTool`
-及当前 `typertGateway.invoke/stream`；没有公开的不改变当前选择的任意后台通道租用接口。
-本方案不访问 private hooks，不 fork 上游，按以下已经确认的边界实施：
-
-1. 手机任务经原生 Harness 会话工具兼容门面进入同一执行器。
-2. `remote_agent_delegate` 显式接收 `endpointId` 和任务文本/已支持附件，目标只来自当前
-   账号已授权且真实就绪的 AgentEndpoint；backend 不可用时失败，不换另一个 Agent。
-3. Bridge 串行取得桌面工作区选择权，使用公开的 Host/工作区选择接口切换当前 DSH 目标，
-   再通过该目标的 Typert 投影调用真实创建、Prompt、观察和取消。覆盖 Harness、Codex 与
-   已就绪 ACP 后端，但不把仅支持 Harness 的 `runSessionTool` 谎称支持全部 backend。
-4. 持有选择权期间不自动切回旧工作区；用户已接受桌面当前工作区发生切换的副作用。
-   用户手动切换、退出、账号/Host/后端代际变化时，在途调用立即失效并释放选择权，
-   未发送的请求拒绝，已发送且结果未明的请求保留未知，禁止向新目标续发或自动重放。
-   目标已经开始的 Agent 任务不因观察失效而被虚报为取消，不自动抢回旧选择。
-   每次调用前后都以公开状态/事件确认目标绑定；无法证明当前目标时拒绝调用，不猜测选路。
-5. 委派回执绑定完整目标、原生 Session/Thread、任务和 request_id。后端审批保留原生
-   单次审批契约；待审批时返回需要人工处理，不自动允许，也不把本机 Bridge token 当作审批。
-
-`remote_agent_delegate` 的 `action` 为 `start`、`status` 或 `cancel`：start 接收稳定
-request_id、endpointId 与任务内容，返回任务句柄；status/cancel 使用该句柄查询或取消原委派。
-Bridge 按回执种类区分 Android 精确请求取消与 Agent 原生任务取消；委派取消只发送给已验证的
-原后端 Session/Thread。目标绑定失效时明确返回未知或无法取消，不向电脑当前新工作区发送取消。
+跨 workspace 后台调度属于上游，不作为本客户端 P0/P4 或发布的前置条件。
+正常聊天中用户可随时手动切换 Host、DSH/Codex/ACP workspace 与对话。
+客户端对每个选择建立独立连接或连接代际，切换时取消并排空旧 stream/pending-open，
+拒绝旧结果更新新目标；已发送而结果未明的写入保持未知，不能重放、改投或自动抢回选择。
+这类手动切换的本地保护必须由客户端实际实现与回归证明，不由历史后台委派探针替代。
 
 各 Agent 通过电脑端原生配置挂载 Stdio MCP。上游 Remote ACP 的 `session/new/load`
 固定使用 `mcpServers:[]`，不能声称可从手机会话参数注入 MCP。
@@ -375,5 +358,5 @@ MCP 首次 `android_get_ui_tree` 或截图调用可以真实创建任务，并�
   超时、持续动画及读树失败保留动作真实结果，超时不触发重试。
 - Bridge 错误 bearer、非本地/跨源请求、登出、Server 切换与旧进程凭据失效均拒绝；
   外部 Agent 的 MCP 实际加载经过各后端验证，不以空 mcpServers 创建成功代替挂载验收。
-- 全部真实可用后端的串行委派、手动切桌面工作区、后端替换、审批、取消与断线均核对
-  目标和回执；未完成的后端或传输路径逐项标记，不声明整体通过。
+- MCP 工具白名单仅含 android_*，拒绝非手机 Host、其他 workspace 和任意 Agent 调用；
+  正常聊天的 Host/workspace/对话手动切换核对独立连接、代际、旧流取消排空及迟到结果拒绝。
