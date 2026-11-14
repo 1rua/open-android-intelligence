@@ -96,7 +96,7 @@ class RemoteConversationRepositoryTest {
         projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj(
             "threadId" to "hermes:相同/session", "itemId" to "same-message", "delta" to "实时正文")))
         projection.accept(obj("type" to "event", "event" to obj("seq" to 2, "type" to "assistant/message",
-            "data" to obj("message" to obj("id" to "same-message", "content" to listOf(obj("type" to "text", "text" to "旧历史"))))))), history = true)
+            "data" to obj("message" to obj("id" to "same-message", "content" to listOf(obj("type" to "text", "text" to "旧历史")))))), history = true)
         assertEquals("实时正文", (projection.rows.getValue("same-message").parts.single() as MessagePart.Text).value)
     }
     @Test fun `ACP受理in_progress保持运行直到真实prompt_completed`() = runTest {
