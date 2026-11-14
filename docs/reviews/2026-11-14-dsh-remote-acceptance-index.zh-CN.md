@@ -50,7 +50,7 @@ PR #190 本轮保留 Draft，已将固定 Runtime、手机与 UI 候选线性整
 | 候选 | 已验证范围 | 未验证或后续工作 |
 | --- | --- | --- |
 | Runtime `1953344f7a21a02813e0461316d083dc3118fdf8` | 原入口 focused 17 项通过（51 秒）：固定 Server 5、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0。原 `8d546dc5` 的 15 项为前轮证据 | 原两项 P2 已独立定点关闭；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
-| UI `526ab9d83ef68a2f5472f7f6f12c0523c63eaab0` → `ba07ead0` | 原候选 fresh 16 项通过，原五项 P2 已独立关闭；前轮 App 211 项、conversation-data 13 项及 RemoteRuntime 4 项保留原 SHA 证据 | `ba07ead0` 之上的本机授权入口、设置组织与备份接线正在独立 UI 工作区修改，待测试；新整合 SHA 回归待进行 |
+| UI `526ab9d83ef68a2f5472f7f6f12c0523c63eaab0` → `ba07ead0` | 原候选 fresh 16 项通过，原五项 P2 已独立关闭；前轮 App 211 项、conversation-data 13 项及 RemoteRuntime 4 项保留原 SHA 证据 | 本机入口/组织/备份固定 `d941520b` 已独立审查关闭且关联 33 项同 SHA 通过；三个补丁 `c63de8fe`/`28ceb748`/`d941520b` 等价重放为 `e1678254`/`adaf398e`/`48d2ff8f`，无冲突；onboarding 后续源码仍在原 UI 工作区独立推进，新整合 SHA 回归待进行 |
 | 手机 `931e16d53291fac05936ac3452142e368be70611` | 候选回归 Overlay 3、NativeKernel 3、Bus 7 及 App 编译通过，1 分 50 秒；失败/错误/跳过均 0 | API 31–33 SoM 尚未交付；API 34+ 实现未做真机像素/焦点/锁屏验收 |
 | MCP/原生工具 | 最新 MCP 官方客户端/stdio 2 项通过；固定原生工具至 Kotlin facade 的发现、建任务、发送、读回及 18 字节 artifact 下载通过 | 18 字节测试产物不证明真实截图/SoM 下载；实际 DSH 插件加载、原生 MCP 挂载与设备能力未验 |
 
@@ -81,7 +81,7 @@ Runtime 的三项独立审查问题已形成失败回归后修复：旧非法版
 
 ## 本轮仍在推进的切片
 
-- 短信 `5308`：系统副作用前再次核对原语、参数与授权的 P1 回归正在验证，待独立定点关闭；不因前轮发送通过而提前关闭。
+- 短信 `3e591a6f` 原独立审查已关闭，线性集成至 `af15eece`：`1518efd6` → `36a9e0a0`、`5308e4c0` → `fe753ff5`、`88db4a1c` → `e99472ce`、`3e591a6f` → `af15eece`。首项实际冲突仅 `ActiveAuthorization` 合并，显式同时保留 Remote/background 身份与 SMS beforeSystemEffect/inputSha256；后三项补丁等价。`af15eece` 同 SHA App 编译、Host 2、Outcome 2、Timer 6 共 10 项通过（5 分 32 秒，失败/错误/跳过均 0），输入为本 snapshot 源码构建的 SMS/通知 WASM，不覆盖共享产物。
 - 定时 `a9944772` 已通过 fresh 审查（无 P1/P2）并线性集成：`009ebbc4` → `a5a9ae14`、`e95fc9d7` → `cc0c6519`、`a9944772` → `72dc84cb`，三项 `git range-diff` 均为 `=`。账号/固定身份四项与后台内核投影两项在 `009ebbc4` 通过；匹配源码 WASM 后 App 35 项中 29 项在该 SHA 通过，fixture-only 修复后原六项在 `a9944772` 通过（3 分 52 秒，失败/错误/跳过均 0）。组合覆盖 41 项，不声称同一轮或新整合 SHA 全绿。
 - 定时输入：新 snapshot 初次缺少 `plugins/target` WASM，按固定 `009ebbc4` 源码执行 `cargo build --offline --locked --release --target wasm32-unknown-unknown --manifest-path plugins/Cargo.toml -p open-android-intelligence-sms -p open-android-intelligence-notifications`，复用根 Cargo/Rustup 缓存且不覆盖短信工作区产物。短信/通知 WASM SHA256 分别为 `3258848d25687ba17055565c93f56fc0e1bd88745c334c7de0f962c7288d93f7`、`018722c38ea2a583a123270c2c4fba972fe167ebed50a27cccb6fc8f9b1dedb9`。App 使用 `:app:testFullDebugUnitTest --tests ...ClientCapabilityAuthorizationTest --tests ...ProductionPluginHostTest`；六项复验只选 `*storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets*`，沿用根 JDK21/SDK/Gradle/Robolectric 缓存、固定 Hermes 夹具、`--offline --max-workers=2`。
 - 剩余实现与门禁：API 31–33 SoM、可靠主动推送、旧 Core/Gateway 的生产代码/工具链/CI 消费退出、最终 Fast/PR。真机本轮明确不做，不把这些未完成项泛化成所有切片均无进展。
