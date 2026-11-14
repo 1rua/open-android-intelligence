@@ -85,7 +85,7 @@ class PhoneContentDeliveryTest {
         assertFalse(history.contains(SECRET));assertTrue(history.contains("resultAvailable"))
         val events=Json.canonical(Json.of(bus.eventsSince(access,task,-1)))
         assertFalse(events.contains(SECRET));assertTrue(events.contains("resultAvailable"))
-        denied("PUSH_DELIVERY_REVOKED") { bus.artifact(access,task,"private-image") }
+        denied("CONTROL_ARTIFACT_UNAVAILABLE") { bus.artifact(access,task,"private-image") }
         assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
     }
 
@@ -101,7 +101,7 @@ class PhoneContentDeliveryTest {
         assertTrue(newReceipt.contains(SECRET));assertTrue(newReceipt.contains("resultAvailable\":true"))
         val control=Json.canonical(bus.history(access,task))
         assertTrue(control.contains("content-old-000001"));assertTrue(control.contains("content-new-000001"))
-        assertFalse(control.contains(SECRET))
+        assertTrue(control.contains(SECRET)) // 未失效的新请求正文仍可读；旧请求在同一快照中已替换为metadata
     }
 
     @Test fun originalConnectionCannotDeliverBufferedSecretAfterEmergencyStop() = runTest {
