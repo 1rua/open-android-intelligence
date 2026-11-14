@@ -328,7 +328,7 @@ def classify_path(
         lanes["remote"] = True
         return True
 
-    if path.startswith("tools/remote/"):
+    if path.startswith(("tools/remote/", "tools/remote-server/")):
         # 固定 ACP 投影观察独立于旧 DSH Session Adapter lane。
         lanes["remote"] = True
         return True

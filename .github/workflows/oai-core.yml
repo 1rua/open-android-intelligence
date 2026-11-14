@@ -350,6 +350,12 @@ jobs:
           node-version: '24.18.0'
           cache: npm
 
+      - name: 安装固定Remote服务端隔离依赖
+        run: npm ci --prefix tools/remote-server --prefer-offline --no-audit --fund=false
+
+      - name: 固定服务端OAI版本协商回归
+        run: npm test --prefix tools/remote-server
+
       - name: 固定 ACP 投影关闭风险观察
         run: node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
 

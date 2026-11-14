@@ -108,7 +108,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         if f.startswith("integrations/oai-android-mcp/"):
             impact["affects_phone_mcp"] = True
             continue
-        if f.startswith("tools/remote/"):
+        if f.startswith(("tools/remote/", "tools/remote-server/")):
             impact["affects_remote"] = True
             continue
         if f in {"tools/observe-communication.py", "tools/test_observe_communication.py",
@@ -413,6 +413,9 @@ def execute_strategy(
             "node", "--experimental-vm-modules", "--test",
             "tools/remote/projection-scope.test.mjs",
         ])
+        if ret != 0:
+            return ret
+        ret = run_command(["npm", "test", "--prefix", "tools/remote-server"])
         if ret != 0:
             return ret
 
