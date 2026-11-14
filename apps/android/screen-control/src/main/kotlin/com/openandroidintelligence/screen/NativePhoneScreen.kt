@@ -65,10 +65,14 @@ class NativePhoneScreen internal constructor(
     }
     private suspend fun captureSom(request: PhoneExecutionContext, revalidate: () -> Unit): PhoneControlResult {
         val query = ScreenReadQuery(maxNodes = 512, maxDepth = 32)
+        val localUi = PhoneLocalControlUiRegistry.current
+        val protection = withContext(Dispatchers.Main.immediate) {
+            if (Build.VERSION.SDK_INT < 34) localUi?.awaitCaptureProtection(request.scope.key.storageKey)
+            else localUi?.captureProtection()
+        }
+        currentCoroutineContext().ensureActive(); guard(revalidate)
         val snapshot = withContext(Dispatchers.Main.immediate) { backend.read(query) }
         if (snapshot.truncated) throw ControlRequestException("SCREEN_REDACTION_UNPROVABLE")
-        val localUi = PhoneLocalControlUiRegistry.current
-        val protection = withContext(Dispatchers.Main.immediate) { localUi?.captureProtection() }
         if (Build.VERSION.SDK_INT < 34 && (localUi == null || protection?.ready != true || protection.display != snapshot.display))
             throw ControlRequestException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
         suspend fun finalGuard() {

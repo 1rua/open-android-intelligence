@@ -20,6 +20,10 @@ import com.openandroidintelligence.control.ScreenDisplay
 import android.os.SystemClock
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import com.openandroidintelligence.control.remote.ControlRequestException
 
 /** 无障碍胶囊不获取键盘焦点；触摸来源检查只是辅助，远端端口另行保护整个胶囊区域。 */
 class PhoneControlOverlay(
@@ -36,6 +40,7 @@ class PhoneControlOverlay(
     private var historyDisplay: ScreenDisplay? = null
     private var historyBottom = 0
     private var geometryProvable = true
+    private val protectionChanges = MutableStateFlow(0L)
     // 新窗口等待首个布局时先拒绝全部远端坐标，不能留下 bounds 尚未发布的注入窗口。
     override val protectedBounds: ScreenBounds? get() = if (protecting) bounds ?: ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE) else null
     @Suppress("DEPRECATION")
@@ -61,7 +66,27 @@ class PhoneControlOverlay(
             if (historyBottom > 0) listOf(ScreenBounds(0, 0, display.widthPixels, historyBottom)) else emptyList(),
             geometryProvable && historyDisplay == display && (!protecting || bounds != null))
     }
-    private fun changedProtection() { protectionGeneration++; changedAt = SystemClock.uptimeMillis() }
+    override suspend fun awaitCaptureProtection(requestId: String): LocalUiCaptureProtection = withContext(Dispatchers.Main.immediate) {
+        val ownedView = view ?: throw ControlRequestException("SCREEN_LOCAL_UI_NOT_READY")
+        var result: LocalUiCaptureProtection? = null
+        val ready = withTimeoutOrNull(CAPTURE_LAYOUT_TIMEOUT_MS) {
+            combine(protectionChanges, PhoneLocalControlUiRegistry.changes) { local, owner -> local to owner }.first {
+                currentCoroutineContext().ensureActive()
+                if (stopped || PhoneLocalControlUiRegistry.current !== this@PhoneControlOverlay ||
+                    activeId != requestId || view !== ownedView || !protecting) {
+                    throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+                }
+                result = captureProtection()?.takeIf { it.ready }
+                result != null
+            }
+            result
+        }
+        ready ?: throw ControlRequestException("SCREEN_LOCAL_UI_LAYOUT_TIMEOUT")
+    }
+    private fun changedProtection() {
+        protectionGeneration++; changedAt = SystemClock.uptimeMillis()
+        protectionChanges.value = protectionGeneration
+    }
     @Suppress("DEPRECATION")
     private fun currentDisplay(): ScreenDisplay? = try {
         val metrics = manager.maximumWindowMetrics.bounds
@@ -124,7 +149,7 @@ class PhoneControlOverlay(
             try { hide() } finally { activeId = null; if (queue.isLocked) queue.unlock() }
         }
     }
-    override fun emergencyStop() { stopped = true; decision?.complete(false); stopNative(); PhoneLocalControlUiRegistry.notifyEmergencyStop() }
+    override fun emergencyStop() { stopped = true; changedProtection(); decision?.complete(false); stopNative(); PhoneLocalControlUiRegistry.notifyEmergencyStop() }
     private fun stopNative() { com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop(); ScreenHostRegistry.current?.revoke() }
     private fun show(title: String, pending: CompletableDeferred<Boolean>?, detail: String? = null) {
         changedProtection()
@@ -170,14 +195,15 @@ class PhoneControlOverlay(
         setOnClickListener { if (physicalDown) action(); physicalDown = false }
     }
     private fun hide(clearProtection: Boolean = true) {
-        changedProtection()
         if (clearProtection) protecting = false
         bounds = null
         val old = view; view = null
+        changedProtection()
         old?.let { if (it.isAttachedToWindow) manager.removeViewImmediate(it) }
     }
     override fun close() {
         stopped = true; decision?.complete(false); stopNative(); hide()
         if (PhoneLocalControlUiRegistry.current === this) PhoneLocalControlUiRegistry.current = null
     }
+    companion object { internal const val CAPTURE_LAYOUT_TIMEOUT_MS = 2_000L }
 }
