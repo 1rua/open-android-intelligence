@@ -10,8 +10,8 @@ import com.openandroidintelligence.core.model.NotificationDeliveryMode
 import com.openandroidintelligence.core.model.NotificationFieldAccess
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.gateway.http.GatewayEndpoint
-import com.openandroidintelligence.gateway.account.AccountProfile
-import com.openandroidintelligence.mobile.AndroidAccountProfileStore
+import com.openandroidintelligence.mobile.LocalProfile
+import com.openandroidintelligence.mobile.LocalProfileStore
 import com.openandroidintelligence.mobile.AppearancePreferences
 import com.openandroidintelligence.mobile.AppearanceSettings
 import com.openandroidintelligence.mobile.LoginGatewayPrefill
@@ -100,7 +100,7 @@ fun localRuntimeRefresh(runtime: com.openandroidintelligence.mobile.LocalSetting
 class SettingsBackupCoordinator(
     private val context: Context,
     private val appearance: AppearancePreferences,
-    private val profiles: AndroidAccountProfileStore,
+    private val profiles: LocalProfileStore,
     private val grants: PairingGrantStateHolder,
     private val pluginHost: ProductionPluginHost?,
     private val replyNotifications: ReplyNotificationSettings?,
@@ -214,7 +214,7 @@ class SettingsBackupCoordinator(
         }
         val candidates = sequenceOf(
             LoginGatewayPrefill.read(context),
-            profiles.list().firstOrNull()?.gatewayBaseUrl,
+            profiles.list().firstOrNull()?.serviceUrl,
         )
         val url = candidates.filterNotNull()
             .firstOrNull { it.isNotBlank() && GatewayEndpoint.parse(it) != null }
@@ -228,7 +228,7 @@ class SettingsBackupCoordinator(
     private fun currentAgents(): AgentsSection? {
         if (remoteRuntime != null) return null
         val selected = profiles.list().mapNotNull { profile ->
-            val agent = profile.selectedAgentId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val agent = profile.selectedEndpointId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             backupProfileKey(profile.localProfileId) to agent
         }.toMap()
         return selected.takeIf { it.isNotEmpty() }?.let(::AgentsSection)
@@ -535,8 +535,8 @@ class SettingsBackupCoordinator(
         var missing = 0
         section.selectedByProfile.forEach { (key, agentId) ->
             val profile = local[key] ?: run { missing++; return@forEach }
-            if (profile.selectedAgentId == agentId) return@forEach
-            profiles.saveSelectedAgent(profile.localProfileId, agentId)
+            if (profile.selectedEndpointId == agentId) return@forEach
+            profiles.saveSelectedEndpoint(profile.localProfileId, agentId)
             written++
         }
         if (written > 0) {
@@ -727,7 +727,7 @@ class SettingsBackupCoordinator(
                 }
             }
             attempt("Agent 选择") {
-                agents.forEach { (profileId, agentId) -> profiles.saveSelectedAgent(profileId, agentId) }
+                agents.forEach { (profileId, agentId) -> profiles.saveSelectedEndpoint(profileId, agentId) }
             }
             attempt("应用更新") {
                 check(appUpdates.readChannel() == updates || appUpdates.writeChannel(updates)) {
@@ -785,7 +785,7 @@ class SettingsBackupCoordinator(
         notificationsEnabled = replyNotifications?.enabled?.value,
         debounce = DebouncePreferences(context).snapshot(),
         preferredGateway = LoginGatewayPrefill.read(context),
-        agents = if (remoteRuntime == null) profiles.list().associate { it.localProfileId to it.selectedAgentId } else emptyMap(),
+        agents = if (remoteRuntime == null) profiles.list().associate { it.localProfileId to it.selectedEndpointId } else emptyMap(),
         updates = appUpdates.readChannel(),
         notificationCollection = runCatching { notificationPolicy.snapshot() }.getOrNull(),
         capabilityPolicies = grants.state.value?.capabilityPolicies.orEmpty(),
@@ -822,9 +822,9 @@ class SettingsBackupCoordinator(
         return prefs.getString(KEY_INSTALL, null)?.takeIf { it.isNotBlank() }
     }
 
-    private fun scopeFor(profile: AccountProfile, installId: String): ConversationScope? {
+    private fun scopeFor(profile: LocalProfile, installId: String): ConversationScope? {
         val accountId = profiles.binding(profile.localProfileId)?.accountId ?: return null
-        return ConversationScope(profile.localProfileId, profile.gatewayBaseUrl, accountId, installId)
+        return ConversationScope(profile.localProfileId, profile.serviceUrl, accountId, installId)
     }
 
     private fun organizationStore(scope: ConversationScope) =

@@ -28,7 +28,7 @@ import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
-import com.openandroidintelligence.mobile.AndroidAccountProfileStore
+import com.openandroidintelligence.mobile.LocalProfileStore
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.ReplyNotificationSettings
 import com.openandroidintelligence.mobile.SettingsPresentation
@@ -260,7 +260,7 @@ private fun backupCoordinator(
         SettingsBackupCoordinator(
             context = context.applicationContext,
             appearance = app.appearancePreferences,
-            profiles = AndroidAccountProfileStore(context.applicationContext),
+            profiles = LocalProfileStore(context.applicationContext),
             grants = app.pairingGrants,
             pluginHost = app.pluginHost,
             // 有运行时就用它的实例（导入后能立即刷新界面）；没有运行时则直接读同一份

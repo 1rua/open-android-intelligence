@@ -159,12 +159,11 @@ def test_android_ci_covers_connection_account_and_settings_regressions():
         if line.strip() and not line.strip().startswith(("#", "["))
     }
     required = {
-        "ColdStartConnectionTest",
-        "AccountSwitchPersistenceFailureTest",
+        "RemoteRuntimeTest",
+        "RemoteLocalEntryPointsTest",
         "IndependentConnectionDiscoveryTest",
-        "AdditionalDeviceConnectionsTest",
         "SettingsViewModelTest",
-        "NativeEventDeletionPersistenceTest",
+        "LocalProfileStoreTest",
     }
     assert required <= selected
 
@@ -176,7 +175,7 @@ def test_android_ci_covers_connection_account_and_settings_regressions():
     planner.loader.exec_module(android_tasks)
     play_arguments = android_tasks.play_args()
     assert play_arguments[0] == ":app:testPlayDebugUnitTest"
-    assert any("ColdStartConnectionTest" in argument for argument in play_arguments)
+    assert any("RemoteRuntimeTest" in argument for argument in play_arguments)
 
 
 @pytest.mark.parametrize("path", ["docs/plans/dsh-remote.md", "docs/reviews/hermes-remote.md"])

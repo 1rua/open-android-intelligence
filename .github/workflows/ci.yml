@@ -99,50 +99,6 @@ jobs:
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
 
-      # HermesHttpInteropTest preserves historical /conversations HTTP behavior.
-      # Keep this fixed old fixture isolated from the new Core package: this
-      # compatibility lane does not prove the new Core/Android deployment.
-      - name: Checkout the historical Hermes HTTP fixture
-        uses: actions/checkout@v4
-        with:
-          repository: 1rua/hermes-android-gateway
-          ref: ebe527da2426dd25877dd335786e80cf85d1cdde
-          path: .hermes-gateway-plugin
-
-      - name: Resolve the Android fixture OpenClaw pin
-        id: android-openclaw-pin
-        run: |
-          revision=$(python3 -c "import json;print(json.load(open('openclaw-plugin-pin.json'))['revision'])")
-          echo "revision=$revision" >> "$GITHUB_OUTPUT"
-
-      - name: Check out the Android fixture OpenClaw plugin
-        uses: actions/checkout@v4
-        with:
-          repository: 1rua/openclaw-gateway-plugin
-          ref: ${{ steps.android-openclaw-pin.outputs.revision }}
-          path: .openclaw-gateway-plugin
-
-      - name: Check out the pinned Hermes native SDK
-        uses: actions/checkout@v4
-        with:
-          repository: NousResearch/hermes-agent
-          ref: 75b083e9399115b12513385252811f09c3503c90
-          path: .toolchains/hermes-native-sdk
-
-      - name: Set up Python for the Gateway fixture
-        uses: actions/setup-python@v5
-        with:
-          # The interpreter Hermes Agent ships, matching the plugin runtime.
-          python-version: "3.11"
-
-      # Only the archived HTTP fixture can import this environment. The current
-      # Android 旧HTTP用例尚有独立夹具消费，待该消费者迁移后再退出。
-      - name: Install the historical HTTP fixture in an isolated virtualenv
-        run: |
-          python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
-          "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install .hermes-gateway-plugin \
-            aiohttp PyYAML==6.0.3 httpx==0.28.1 python-dotenv==1.2.4 psutil==7.2.2
-
       # 编译产物是多个 app 测试的输入；缓存 workspace 避免每次全量重编。
       - name: Cache the Rust plugin workspace
         uses: actions/cache@v4
@@ -187,14 +143,8 @@ jobs:
         working-directory: apps/android
         env:
           LC_ALL: C.UTF-8
-          HERMES_PLUGIN_ROOT: ${{ github.workspace }}/.hermes-gateway-plugin
-          HERMES_SDK_ROOT: ${{ github.workspace }}/.toolchains/hermes-native-sdk
-          # This repository owns the contract; the plugin is pointed at it
-          # rather than fetching its own pinned copy during a test run.
-          OPEN_ANDROID_GATEWAY_CONTRACT_ROOT: ${{ github.workspace }}/gateway-contract
         run: |
           chmod +x gradlew
-          export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
           # `check` 已展开到 :app:testFullDebugUnitTest 与
           # :app:testPlayDebugUnitTest（实测 dry-run 两者都在图里），
           # 再显式列一遍只会重复声明同一个任务。

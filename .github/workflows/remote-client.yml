@@ -366,10 +366,6 @@ jobs:
         with:
           lane: android-conversation
           test-parallel-forks: '1'
-          # conversation-data's HermesHttpInteropTest drives the real Python
-          # HTTP fixture; it fails closed when the fixture is absent, so this
-          # lane must provision it rather than filter the test out.
-          hermes-fixtures: 'true'
 
   android-gateway:
     name: Android Gateway Client
@@ -431,11 +427,6 @@ jobs:
           app-performance: 'true'
           # 手动性能对照只读取同一份既有缓存，避免先结束的样本替后一个写热缓存。
           gradle-cache-read-only: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
-          # These app tests drive the real Python gateway fixture:
-          # AndroidAttachmentContentTypeTest, HermesHistoryMediaHttpTest and
-          # plugins/NotificationCapabilityHttpTest. They fail closed when the
-          # fixture is absent, so the lane must provision it.
-          hermes-fixtures: 'true'
 
   android-play:
     name: Android Play Variant

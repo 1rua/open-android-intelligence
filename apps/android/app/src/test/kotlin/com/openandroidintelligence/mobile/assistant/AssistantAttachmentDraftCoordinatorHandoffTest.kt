@@ -25,8 +25,7 @@ import org.junit.Test
  * 交接要求「先迁移成功再关闭浮层」：主 App 接管附件后，浮层关闭不能把这份附件连同
  * 暂存文件一起丢弃。`disown` 只摘除认领，底层 delegate 的暂存/上传任务仍归主 App。
  *
- * 包装器的创建与登记已合并到 `GatewayRuntime` 的同一处（两种 Gateway 分支都走同一
- * 辅助函数），因此不再需要「跨实例把草稿收进另一个包装器」的 `adopt`。
+ * 包装器的创建与登记由 `RemoteRuntime` 的独立助手会话持有，因此不再需要「跨实例把草稿收进另一个包装器」的 `adopt`。
  */
 class AssistantAttachmentDraftCoordinatorHandoffTest {
 

@@ -73,17 +73,7 @@ class OpenAndroidIntelligenceApplication : Application() {
      */
     val emergencyStoppedCount = kotlinx.coroutines.flow.MutableStateFlow(0)
 
-    /** 进程级连接运行时：登录、协商、会话建立与工作台装配。 */
-    private val gatewayRuntimeOwner = lazy {
-        GatewayRuntime(
-            context = this,
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-            pairingGrants = pairingGrants,
-            auditStore = auditStore,
-            pluginHost = pluginHost,
-        )
-    }
-    val gatewayRuntime: GatewayRuntime by gatewayRuntimeOwner
+    /** 进程级 Remote 连接运行时。 */
     private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val remoteRuntime: RemoteRuntime by lazy {
         RemoteRuntime(this, remoteScope, pluginHost, pairingGrants)

@@ -37,7 +37,6 @@ internal fun notificationStatus(
     VerifiedConversationEvent.MessageStatus(eventId, time, ConversationId("conversation"), "user", ClientMessageId("client"),
         status, revision, null, generation)))
 
-
 /** 测试直接创建领域事实，避免为了通知状态机启动已退休的 Gateway 编解码。 */
 internal fun notificationFact(
     profile: String,

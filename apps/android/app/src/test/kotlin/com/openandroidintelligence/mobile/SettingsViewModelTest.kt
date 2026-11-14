@@ -2,7 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.mobile.LocalProfile
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode

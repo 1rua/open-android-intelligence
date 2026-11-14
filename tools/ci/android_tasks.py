@@ -94,13 +94,11 @@ PLAY_TESTS = [
     "--tests=CapabilityPublisherTest",
     "--tests=ApplicationCompositionTest",
     "--tests=AndroidApiCompatibilityTest",
-    "--tests=CoreAgentConversationRepositoryTest",
-    "--tests=ColdStartConnectionTest",
-    "--tests=AccountSwitchPersistenceFailureTest",
+    "--tests=RemoteRuntimeTest",
+    "--tests=RemoteLocalEntryPointsTest",
+    "--tests=LocalProfileStoreTest",
     "--tests=IndependentConnectionDiscoveryTest",
-    "--tests=AdditionalDeviceConnectionsTest",
     "--tests=SettingsViewModelTest",
-    "--tests=NativeEventDeletionPersistenceTest",
 ]
 
 

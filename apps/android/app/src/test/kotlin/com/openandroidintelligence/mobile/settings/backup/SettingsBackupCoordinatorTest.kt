@@ -9,7 +9,8 @@ import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
 import com.openandroidintelligence.kernel.CapabilityPolicy
 import com.openandroidintelligence.kernel.PairingGrantStateHolder
 import com.openandroidintelligence.kernel.SmsScopeMode
-import com.openandroidintelligence.mobile.AndroidAccountProfileStore
+import com.openandroidintelligence.mobile.LocalProfileBinding
+import com.openandroidintelligence.mobile.LocalProfileStore
 import com.openandroidintelligence.mobile.AppearancePreferences
 import com.openandroidintelligence.mobile.LoginGatewayPrefill
 import com.openandroidintelligence.mobile.ReplyNotificationSettings
@@ -48,7 +49,7 @@ class SettingsBackupCoordinatorTest {
     }
 
     private lateinit var appearance: AppearancePreferences
-    private lateinit var profiles: AndroidAccountProfileStore
+    private lateinit var profiles: LocalProfileStore
     private lateinit var grants: PairingGrantStateHolder
     private lateinit var updates: AppUpdatePreferences
     private lateinit var notifications: ReplyNotificationSettings
@@ -59,7 +60,7 @@ class SettingsBackupCoordinatorTest {
         context.getSharedPreferences("open_android_intelligence_runtime", 0).edit()
             .putString("installation_id", INSTALL_ID).commit()
         appearance = AppearancePreferences(context)
-        profiles = AndroidAccountProfileStore(context)
+        profiles = LocalProfileStore(context)
         grants = PairingGrantStateHolder(com.openandroidintelligence.kernel.InMemoryPairingGrantStore(), AndroidAuditStore())
         updates = AppUpdatePreferences(context, AppUpdateChannel.PREVIEW)
         notifications = ReplyNotificationSettings(context)
@@ -84,8 +85,8 @@ class SettingsBackupCoordinatorTest {
         }
     }
 
-    private fun profilesOrNull(): AndroidAccountProfileStore? =
-        runCatching { AndroidAccountProfileStore(context) }.getOrNull()
+    private fun profilesOrNull(): LocalProfileStore? =
+        runCatching { LocalProfileStore(context) }.getOrNull()
 
     private fun coordinator(
         policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
@@ -195,8 +196,8 @@ class SettingsBackupCoordinatorTest {
     @Test
     fun conversationOrganizationForKnownAccountAndAgentIsApplied() {
         profiles.save(
-            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", "http://core.example", "alice", ""),
-            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
+            com.openandroidintelligence.mobile.LocalProfile("profile_a", "http://core.example", "alice", ""),
+            LocalProfileBinding("account_a", "device_a"),
         )
         val scope = ConversationScope("profile_a", "http://core.example", "account_a", installId())
         NativeLocalPartitions(context, scope, key).register("hermes")
@@ -288,8 +289,8 @@ class SettingsBackupCoordinatorTest {
         // 老版本升级上来的用户没有偏好里的 prefill，但账号已经存了地址：不能因此导出缺节。
         LoginGatewayPrefill.clear(context)
         profiles.save(
-            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", "http://legacy.example", "alice", ""),
-            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
+            com.openandroidintelligence.mobile.LocalProfile("profile_a", "http://legacy.example", "alice", ""),
+            LocalProfileBinding("account_a", "device_a"),
         )
         val exported = coordinator().export()
         assertTrue(exported.json.contains("legacy.example"))
@@ -622,8 +623,8 @@ class SettingsBackupCoordinatorTest {
     @Test
     fun aMissingInstallIdSkipsConversationOrganizationInsteadOfInventingOne() {
         profiles.save(
-            com.openandroidintelligence.gateway.account.AccountProfile("profile_a", "http://core.example", "alice", ""),
-            AndroidAccountProfileStore.Binding("account_a", "device_a", "session_a", 1),
+            com.openandroidintelligence.mobile.LocalProfile("profile_a", "http://core.example", "alice", ""),
+            LocalProfileBinding("account_a", "device_a"),
         )
         context.getSharedPreferences("open_android_intelligence_runtime", 0).edit().clear().commit()
         val text = backupWith(

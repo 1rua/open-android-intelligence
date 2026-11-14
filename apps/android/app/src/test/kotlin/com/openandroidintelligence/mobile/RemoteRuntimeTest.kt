@@ -2,6 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
@@ -160,7 +161,7 @@ class RemoteRuntimeTest {
         val audit = AndroidAuditStore(InMemoryAuditSink())
         val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
         val backup = com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator(
-            context, AppearancePreferences(context), AndroidAccountProfileStore(context), grants, null,
+            context, AppearancePreferences(context), LocalProfileStore(context), grants, null,
             runtime.replyNotifications, null, null,
             com.openandroidintelligence.mobile.updates.AppUpdatePreferences(context, com.openandroidintelligence.mobile.updates.AppUpdateChannel.PREVIEW),
             com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort(), keyProvider = key, remoteRuntime = runtime)
@@ -242,7 +243,7 @@ class RemoteRuntimeTest {
         assertTrue(connection.channels.all { it.closed })
         assertTrue(runtime.nativeConversationNotifications.sessions.value.isEmpty())
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
-        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, replyFrame(local, "late", false))
+        runtime.nativeConversationNotifications.accept(replyFrame(local, "late", false))
         runtime.onAppBackgrounded()
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
     }
@@ -257,7 +258,7 @@ class RemoteRuntimeTest {
         runtime.onAppBackgrounded()
         ready("two")
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
-        runtime.nativeConversationNotifications.accept(old.profileId, old.accountId, replyFrame(old, "late", false))
+        runtime.nativeConversationNotifications.accept(replyFrame(old, "late", false))
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
     }
 
@@ -276,29 +277,28 @@ class RemoteRuntimeTest {
 
     private fun postReply(eventId: String, complete: Boolean) {
         val local = runtime.controller.value!!.localConversationScope
-        val frame = replyFrame(local, eventId, complete)
-        assertNotNull("测试帧必须通过生产解码器", com.openandroidintelligence.conversation.data.GatewayEventDecoder.decode(frame))
-        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, frame)
+        runtime.nativeConversationNotifications.accept(replyFrame(local, eventId, complete))
     }
-    private fun replyFrame(local: com.openandroidintelligence.conversation.ports.ConversationScope, eventId: String, complete: Boolean) =
-        com.openandroidintelligence.gateway.events.GatewayEvent(eventId,
-            if (complete) "conversation.message.status" else "conversation.message.delta",
-            Json.canonical(com.openandroidintelligence.gateway.schema.JsonValue.JObject(listOf(
-                "accountId" to JsonValue.JString(local.accountId),
-                "occurredAt" to JsonValue.JString(java.time.Instant.now().toString()),
-                "payload" to JsonValue.JObject(listOf(
-                    "agentId" to JsonValue.JString(local.gatewayId), "conversationId" to JsonValue.JString("same.reply"),
-                    "generationId" to JsonValue.JString("gen"), "messageId" to JsonValue.JString(if (complete) "user" else "reply"),
-                    "sender" to JsonValue.JString("assistant"), "text" to JsonValue.JString("运行回复"),
-                    "clientMessageId" to JsonValue.JString("request"), "errorCode" to JsonValue.JNull,
-                    "status" to JsonValue.JString(if (complete) "completed" else "delivered"),
-                    "revision" to JsonValue.JNumber(if (complete) "2" else "1")))))))
+    private fun replyFrame(local: ConversationScope, eventId: String, complete: Boolean): NativeNotificationInput {
+        val fact = if (complete) VerifiedConversationEvent.MessageStatus(eventId, System.currentTimeMillis(),
+            com.openandroidintelligence.conversation.model.ConversationId("same.reply"), "user",
+            com.openandroidintelligence.conversation.model.ClientMessageId("request"), AgentMessageStatus.COMPLETED, 2, null, "gen")
+        else VerifiedConversationEvent.TimelineUpsert(eventId, System.currentTimeMillis(), 1,
+            TimelineMessage("reply", "assistant", listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("运行回复")),
+                System.currentTimeMillis(), "STREAMING", com.openandroidintelligence.conversation.model.ConversationId("same.reply"), generationId = "gen"))
+        val input = requireNotNull(com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+            local.profileId, local.accountId, local.gatewayId, fact))
+        assertSame("生产桥必须直接接纳并保留可信事实", fact, input.event)
+        assertEquals(local.profileId, input.target.profileId)
+        assertEquals(local.gatewayId, input.endpointId)
+        return input
+    }
 
     private fun remoteBackup(policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
         com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort()): com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator {
         val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink()))
         return com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator(
-            context, AppearancePreferences(context), AndroidAccountProfileStore(context), grants, null,
+            context, AppearancePreferences(context), LocalProfileStore(context), grants, null,
             runtime.replyNotifications, null, null,
             com.openandroidintelligence.mobile.updates.AppUpdatePreferences(context, com.openandroidintelligence.mobile.updates.AppUpdateChannel.PREVIEW),
             policy, keyProvider = key, remoteRuntime = runtime)

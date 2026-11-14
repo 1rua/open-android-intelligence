@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.callbackFlow
  * 登录页的 Core 地址预填。
  *
  * 只保存一个地址字符串，不保存账号、密码或任何凭据：它的用途仅仅是「换机后
- * 不用再手输一遍服务器地址」。它与 [GatewayRuntime] 里的 `last_gateway_url`
+ * 不用再手输一遍服务器地址」。它与 Remote 连接状态 里的 `last_gateway_url`
  * 刻意分开——后者属于会话恢复路径，登出或解除配对会被清理；这里的东西在
  * 用户显式改地址或被设置导入覆盖之前一直保留。
  */

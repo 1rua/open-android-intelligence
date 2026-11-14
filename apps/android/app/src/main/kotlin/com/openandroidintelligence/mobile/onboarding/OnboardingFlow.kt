@@ -439,7 +439,7 @@ private fun manifestPermissionToEntryId(permission: String): String? = when (per
  * 转场期间显示的品牌标识。
  *
  * 只画「信号缝线 + 字标 + 一句说明」这三样登录页本来就有的东西，
- * 不复制登录表单——表单属于既有 [GatewayLoginScreen]，引导流程不重复实现。
+ * 不复制登录表单——表单属于既有 Remote 连接页，引导流程不重复实现。
  * 它由 [ButtonRevealTransition] 裁剪在扩展面内，所以视觉上是随展开一起长出来的。
  */
 @Composable

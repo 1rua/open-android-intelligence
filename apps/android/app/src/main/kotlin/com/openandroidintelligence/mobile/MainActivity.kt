@@ -88,7 +88,7 @@ import com.openandroidintelligence.mobile.screen.ScreenControlConfirmationDialog
  *
  * 遵循严格的平台架构准则：
  * 1. 彻底清除任何假数据与死界面占位；
- * 2. 状态全量交由 GatewayRuntime 与领域层驱动；
+ * 2. 状态全量交由 RemoteRuntime 与领域层驱动；
  * 3. 严格遵循 Material Design 3 规范与品牌设计令牌（外观偏好含深浅、动态取色、减少动态）；
  * 4. 接入原生相机快照、系统图片选择器与 SAF 文档选择器，走真实三步附件上传链路。
  *

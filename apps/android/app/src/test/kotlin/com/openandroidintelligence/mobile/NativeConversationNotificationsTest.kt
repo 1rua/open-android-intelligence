@@ -462,10 +462,10 @@ class NativeConversationNotificationsTest {
             }, now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
             try {
                 original.bind("profile", "account")
-                original.accept("profile", "account", delta)
+                original.accept(requireNotNull(delta))
                 assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(requireNotNull(delta).eventId)))
                 try {
-                    original.accept("profile", "account", terminal)
+                    original.accept(requireNotNull(terminal))
                     fail("Terminal publication must simulate process death before accept's trailing metadata flush")
                 } catch (failure: IllegalStateException) {
                     assertSame(crash, failure)
@@ -487,8 +487,8 @@ class NativeConversationNotificationsTest {
                 now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
             try {
                 restarted.bind("profile", "account")
-                restarted.accept("profile", "account", delta)
-                restarted.accept("profile", "account", terminal)
+                restarted.accept(requireNotNull(delta))
+                restarted.accept(requireNotNull(terminal))
                 assertTrue("A completed terminal must not replay a running notification after a crash", replayPublications.none { it.isRunning })
                 assertTrue(restarted.sessions.value.none { it.isRunning })
             } finally {

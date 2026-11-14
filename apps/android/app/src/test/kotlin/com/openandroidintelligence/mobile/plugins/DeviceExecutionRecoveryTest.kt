@@ -12,7 +12,6 @@ import com.openandroidintelligence.kernel.*
 import com.openandroidintelligence.mobile.BuildConfig
 import com.openandroidintelligence.mobile.SharedPreferencesPairingGrantStore
 import com.openandroidintelligence.mobile.TestDocumentKeys
-import com.openandroidintelligence.mobile.recoverPlatformSnapshot
 import java.io.IOException
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
@@ -238,26 +237,6 @@ class DeviceExecutionRecoveryTest {
             assertTrue(transport.claims.isEmpty())
             assertEquals(0, transport.invocations.get())
             assertNotNull(journal.read("req_previous_revision"))
-            assertTrue(failures.isEmpty())
-        }
-    }
-
-    @Test fun snapshotJournalsAllNotificationsBeforeReturningItsBaselineEvenWhenLookupsAreBlocked() = runBlocking {
-        fixture("snapshot_notification_journal") { driver, transport, journal, scope, failures, _ ->
-            val ids = listOf("req_snapshot_blocked", "req_snapshot_next")
-            transport.snapshotIds = ids + ids.first()
-            transport.onLookup = { awaitCancellation() }
-            val contextHttp = GatewayHttpClient(GatewayProfile("acct", "dev", "sess", "https://gateway.example"),
-                transport, { ByteArray(64) }, InMemoryEventCursorStore())
-            val baseline = withTimeout(1_000) {
-                recoverPlatformSnapshot(contextHttp, {}, driver::enqueue, driver::recoverPending)
-            }
-            assertEquals("evt_durable_baseline", baseline)
-            assertEquals(ids.toSet(), journal.keys())
-            assertTrue(transport.claims.isEmpty())
-            assertEquals(0, transport.invocations.get())
-            ids.forEach(driver::cancel)
-            awaitJobs(scope)
             assertTrue(failures.isEmpty())
         }
     }

@@ -197,7 +197,7 @@ private val visibleNegotiatedCapabilityKeys = ConversationUiFeature.CLOSED_SET.f
 }
 
 /**
- * 「协商能力」分组：按契约 §4 接收 [ConnectionPhase.Connected] 的完整能力位，
+ * 「协商能力」分组：按契约 §4 接收 已连接状态 的完整能力位，
  * 但只渲染有用户可见含义的项目。三种状态各有各的话——
  * `true`「已启用」、`false`「本网关不支持」、`null`「未声明」——任何把
  * 未声明折叠成不支持的写法都会把一台可以升级的网关说成已拒绝。
