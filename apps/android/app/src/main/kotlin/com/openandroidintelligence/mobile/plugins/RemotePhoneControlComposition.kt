@@ -106,7 +106,7 @@ class RemotePhoneControlComposition(
             revalidate()
             if (entry.id != "org.openandroidintelligence.sms.send") context.beforeDispatch()
             val output = runInterruptible(Dispatchers.IO) { pluginHost.invokeRemote(entry, parameters, id, connection.binding,
-                context.parameterDigest, isBackground(), beforeSystemEffect = context.beforeDispatch) }
+                context.parameterDigest, isBackground(), beforeSystemEffect = context.consumeSmsSendEffect) }
             revalidate()
             val result = Json.parse(output.decodeToString())
             return PhoneControlResult((value(result) as? ControlValue.Object) ?: ControlValue.Object(mapOf("value" to value(result))))

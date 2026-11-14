@@ -47,6 +47,8 @@ data class PhoneExecutionContext(
     val beforeDispatch: () -> Unit,
     /** 只投影手机本机确认事实，不向远端提供可回答的审批句柄。 */
     val awaitingConfirmation: (Boolean) -> Unit,
+    /** 短信专用：持久消费本请求唯一发送权；不能复用可重复的普通执行检查。 */
+    val consumeSmsSendEffect: () -> Unit = { throw ControlRequestException("SMS_EXECUTION_FENCE_REQUIRED") },
 )
 
 interface PhoneControlExecutor {

@@ -46,7 +46,8 @@ internal object TestAlpPackages {
     /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
     fun compiledSmsPackage(queryCapabilityId: String = "org.openandroidintelligence.sms.query", queryVersion: String = "1.0.0",
         author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(), version: String = "1.0.0",
-        capabilityDeclaration: JsonValue.JObject? = null, pluginId: String = "org.openandroidintelligence.sms"): ByteArray {
+        capabilityDeclaration: JsonValue.JObject? = null, pluginId: String = "org.openandroidintelligence.sms",
+        payloadOverride: ByteArray? = null): ByteArray {
         var root = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
         while (!File(root, "plugins/sms/manifest.json").isFile) {
             root = root.parentFile ?: error("Repository root unavailable")
@@ -75,7 +76,7 @@ internal object TestAlpPackages {
                 else -> value
             }
         })).toByteArray()
-        val content = listOf("payload/sms.wasm" to File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes()) +
+        val content = listOf("payload/sms.wasm" to (payloadOverride ?: File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes())) +
             listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel", "sms-send").map { name ->
                 "schemas/$name.json" to File(root, "plugins/schemas/$name.json").readBytes()
             }

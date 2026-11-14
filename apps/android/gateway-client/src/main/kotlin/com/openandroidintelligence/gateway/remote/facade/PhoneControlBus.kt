@@ -136,7 +136,25 @@ class PhoneControlBus(
                     }
                     event(task, if (waiting) "approval/asked" else "approval/decided", mapOf("id" to "local-${request.requestId}",
                         "request_id" to request.requestId, "localOnly" to true))
-                } }), request.operation)
+                } }, consumeSmsSendEffect = {
+                    synchronized(lock) {
+                        requireOutput(access, deliveryEpoch)
+                        if (task.frozen) fail("CONTROL_TASK_CANCELLED")
+                        val operation = request.operation as? ControlOperation.PluginInvoke
+                        if (operation?.pluginId != "org.openandroidintelligence.sms" ||
+                            operation.capabilityId != "org.openandroidintelligence.sms.send@1.0.0") {
+                            fail("SMS_EXECUTION_SCOPE_REQUIRED")
+                        }
+                        ledger.transaction { rows ->
+                            val old = rows.getValue("${access.principal.storageKey}:${request.requestId}")
+                            if (old.state.terminal) fail("CONTROL_REQUEST_CANCELLED")
+                            // 栅栏本身就是持久消费事实；第二次回调不能把 RUNNING 再解释成新许可。
+                            if (old.executionFence) fail("SMS_EFFECT_ALREADY_CONSUMED")
+                            rows[old.key] = old.copy(state = ControlRequestState.RUNNING, executionFence = true)
+                        }
+                        changed()
+                    }
+                }), request.operation)
             synchronized(lock) {
                 val old = find(access, task.scope.taskSessionId, request.requestId)
                 if (old.state.terminal) return

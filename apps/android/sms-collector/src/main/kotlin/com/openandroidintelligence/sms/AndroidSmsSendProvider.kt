@@ -53,8 +53,8 @@ class AndroidSmsManagerPort(
                 if (segment !in received.indices) return
                 val fresh = synchronized(received) {
                     if (received[segment]) false else {
-                    received[segment] = true
-                    true
+                        received[segment] = true
+                        true
                     }
                 }
                 if (!fresh) return
@@ -85,6 +85,7 @@ class AndroidSmsManagerPort(
             @Suppress("DEPRECATION")
             manager.sendMultipartTextMessage(recipient, null, ArrayList(parts), sentIntents, null)
         } catch (failure: Throwable) {
+            sentIntents.forEach { it.cancel() }
             runCatching { context.unregisterReceiver(receiver) }
             throw failure
         }

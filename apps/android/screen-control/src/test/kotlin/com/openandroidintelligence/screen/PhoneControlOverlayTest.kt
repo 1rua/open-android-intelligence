@@ -5,6 +5,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -83,6 +85,46 @@ class PhoneControlOverlayTest {
             val second = async { overlay.confirm("owner-after-failure", "ui.tap") }; runCurrent()
             assertNotNull(view(overlay)); assertFalse(second.isCompleted)
             overlay.emergencyStop(); runCurrent(); assertFalse(second.await())
+        } finally { overlay.close() }
+    }
+
+    @Test fun smsConfirmationShowsLocalRecipientSubscriptionAndPreviewInSecureNonFocusableWindow() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val overlay = PhoneControlOverlay(service)
+        try {
+            val body = "仅本机显示的短信".repeat(40)
+            val parameters = com.openandroidintelligence.gateway.schema.Json.canonical(
+                com.openandroidintelligence.gateway.schema.Json.of(mapOf("subscriptionId" to 7,
+                    "recipient" to "+15550000777", "text" to body)))
+            val waiting = async { overlay.confirm("sms-local-owner", "org.openandroidintelligence.sms.send", parameters) }
+            runCurrent()
+            val confirmation = view(overlay)
+            val detail = ((confirmation.getChildAt(1) as ScrollView).getChildAt(0) as TextView).text.toString()
+            assertTrue(detail.contains("+15550000777"))
+            assertTrue(detail.contains("7"))
+            assertTrue(detail.contains(body.length.toString()))
+            assertTrue(detail.contains(body.take(240)))
+            assertFalse(detail.contains(body))
+            assertNotNull(overlay.protectedBounds)
+            val params = confirmation.layoutParams as android.view.WindowManager.LayoutParams
+            assertTrue(params.flags and android.view.WindowManager.LayoutParams.FLAG_SECURE != 0)
+            assertTrue(params.flags and android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE != 0)
+            val allow = confirmation.getChildAt(2) as Button
+            allow.performClick(); runCurrent(); assertFalse(waiting.isCompleted)
+            press(allow); runCurrent(); assertTrue(waiting.await())
+            val executing = view(overlay)
+            assertFalse((executing.getChildAt(0) as TextView).text.toString().contains(body.take(240)))
+            overlay.finish("sms-local-owner"); runCurrent()
+            assertNull(overlay.protectedBounds)
+        } finally { overlay.close() }
+    }
+
+    @Test fun smsWithoutLocalParametersCannotCreateAnApprovalWindow() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val overlay = PhoneControlOverlay(service)
+        try {
+            assertFalse(overlay.confirm("sms-missing-detail", "org.openandroidintelligence.sms.send"))
+            assertNull(overlay.protectedBounds)
         } finally { overlay.close() }
     }
 }

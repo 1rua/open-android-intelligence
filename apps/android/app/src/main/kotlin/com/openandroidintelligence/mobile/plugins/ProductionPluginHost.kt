@@ -410,7 +410,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             else -> com.openandroidintelligence.kernel.DeviceOperation.WRITE
         }, Json.sha256(parameters))
 
-    private val smsConfirmations = ConcurrentHashMap<String, String>()
+    private class SmsConfirmation(val subscriptionBinding: String) {
+        val effectConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
+    }
+    private val smsConfirmations = ConcurrentHashMap<String, SmsConfirmation>()
 
     private fun smsConfirmationKey(requestId: String, entry: VerifiedCapability, parameters: JsonValue): String =
         digestName(requestId) + ":" + digestName(entry.key + "\u0000" + Json.sha256(parameters))
@@ -422,18 +425,27 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())
             ?: throw CapabilityDenied("SMS_SUBSCRIPTION_UNAVAILABLE")
         if (smsConfirmations.size >= 512) throw CapabilityDenied("SMS_CONFIRMATION_CAPACITY_EXCEEDED")
-        val old = smsConfirmations.putIfAbsent(smsConfirmationKey(requestId, entry, parameters), binding)
-        if (old != null && old != binding) throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+        val old = smsConfirmations.putIfAbsent(smsConfirmationKey(requestId, entry, parameters), SmsConfirmation(binding))
+        if (old != null && old.subscriptionBinding != binding) throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
     }
 
     private fun requireSmsSubscription(requestId: String, entry: VerifiedCapability, parameters: JsonValue) {
         if (entry.id != "org.openandroidintelligence.sms.send") return
         val expected = smsConfirmations[smsConfirmationKey(requestId, entry, parameters)]
             ?: throw CapabilityDenied("SMS_CONFIRMATION_REQUIRED")
-        if (expected != KernelPrimitiveRegistry.provider("kernel.sms.send")
+        if (expected.subscriptionBinding != KernelPrimitiveRegistry.provider("kernel.sms.send")
                 ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())) {
             throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
         }
+    }
+
+    /** 一次本机确认最多进入一次系统发送；系统结果未知也绝不返还许可。 */
+    private fun consumeSmsEffect(requestId: String, entry: VerifiedCapability, parameters: JsonValue, persistFence: (() -> Unit)?) {
+        val confirmation = smsConfirmations[smsConfirmationKey(requestId, entry, parameters)]
+            ?: throw CapabilityDenied("SMS_CONFIRMATION_REQUIRED")
+        val fence = persistFence ?: throw CapabilityDenied("SMS_EXECUTION_FENCE_REQUIRED")
+        if (!confirmation.effectConsumed.compareAndSet(false, true)) throw CapabilityDenied("SMS_EFFECT_ALREADY_CONSUMED")
+        fence()
     }
 
     fun requestAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
@@ -804,8 +816,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                                     ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
                                 requireSmsSubscription(invocation.remote?.requestKey(invocation.requestId) ?: invocation.requestId,
                                     entry, Json.parse(localInput.decodeToString()))
-                                invocation.beforeSystemEffect?.invoke()
-                                    ?: throw CapabilityDenied("SMS_EXECUTION_FENCE_REQUIRED")
+                                consumeSmsEffect(invocation.remote?.requestKey(invocation.requestId) ?: invocation.requestId,
+                                    entry, Json.parse(localInput.decodeToString()), invocation.beforeSystemEffect)
                             }
                         }),localInput)
                 }

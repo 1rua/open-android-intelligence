@@ -82,6 +82,45 @@ class PhoneControlBusTest {
         assertTrue(result.contains("CONTROL_EXECUTION_FENCE_REQUIRED")); assertFalse(result.contains("\"state\":\"completed\""))
     }
 
+    @Test fun smsEffectConsumesThePersistedFenceOnceAndKeepsUnknownAfterSecondAttempt() = runTest {
+        val ledger = Ledger()
+        var effects = 0
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.consumeSmsSendEffect(); effects++
+                context.consumeSmsSendEffect(); effects++
+                return PhoneControlResult(ControlValue.Object(emptyMap()))
+            }
+        }
+        val bus = PhoneControlBus(this, ledger, executor); val task = bus.create(access())
+        val request = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-repeated-effect-01",
+            "op" to "plugin.invoke", "args" to mapOf("pluginId" to "org.openandroidintelligence.sms",
+                "capabilityId" to "org.openandroidintelligence.sms.send@1.0.0", "method" to "send",
+                "params" to mapOf("subscriptionId" to 2, "recipient" to "+15550001", "text" to "私密短信"))))))
+        bus.submit(access(), task, request); runCurrent()
+        assertEquals(1, effects)
+        val row = ledger.rows.values.single { it.requestId == request.requestId }
+        assertTrue(row.executionFence)
+        assertEquals(ControlRequestState.OUTCOME_UNKNOWN, row.state)
+        assertEquals(ControlExecutionStatus.UNKNOWN, row.execution)
+        assertEquals("SMS_EFFECT_ALREADY_CONSUMED", row.errorCode)
+        bus.submit(access(), task, request); runCurrent()
+        assertEquals(1, effects)
+        assertFalse(ledger.rows.values.any { it.toString().contains("私密短信") })
+    }
+
+    @Test fun ordinaryDispatchCheckRemainsRepeatableForExistingReadAndNativeProviders() = runTest {
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.beforeDispatch(); context.beforeDispatch()
+                return PhoneControlResult(ControlValue.Object(emptyMap()))
+            }
+        }
+        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        bus.submit(access(), task, request("ordinary-repeat-0001")); runCurrent()
+        assertTrue(Json.canonical(bus.receipt(access(), task, "ordinary-repeat-0001")).contains("completed"))
+    }
+
     @Test fun restartedBusCannotRecreateOldTaskAndStatusPublishesAssistantRecord() = runTest {
         val ledger = Ledger(); val bus = PhoneControlBus(this, ledger, Executor()); val task = bus.create(access())
         bus.submit(access(), task, request("persisted-request-001")); runCurrent()
