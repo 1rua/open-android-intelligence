@@ -467,4 +467,3 @@ internal fun replyCompletionPreferences(context: Context, profileId: String, acc
     context.getSharedPreferences("agent-reply-completions-" + replyDigest("$profileId\u0000$accountId"), Context.MODE_PRIVATE)
 
 internal fun replyAccountGroup(profileId: String, accountId: String) = "agent-replies." + replyDigest("$profileId\u0000$accountId")
-
