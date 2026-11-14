@@ -40,7 +40,6 @@ export type PluginManifest = {
       };
   compatibility: {
     androidHost: string;
-    gatewayProtocol: string;
   };
   capabilities: {
     provides: CapabilityDeclaration[];
@@ -120,7 +119,6 @@ export const MINIMAL_MANIFEST: PluginManifest = {
   },
   compatibility: {
     androidHost: ">=2.0.0 <3.0.0",
-    gatewayProtocol: ">=2.0 <3.0",
   },
   capabilities: {
     provides: [],

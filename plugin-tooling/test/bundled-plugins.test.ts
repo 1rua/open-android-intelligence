@@ -40,8 +40,9 @@ const EXPECTED = [
       "kernel.scheduler.read",
       "kernel.scheduler.cancel",
       "kernel.background.run",
+      "kernel.sms.send",
     ],
-    schemas: ["sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json"],
+    schemas: ["sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json", "sms-send.json"],
   },
   {
     directory: "call-log",
@@ -76,7 +77,7 @@ async function setupFakeRepository(): Promise<string> {
       abiModule(),
     );
   }
-  for (const schema of ["notifications.json", "sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json", "call-log.json", "screen-read.json", "screen-capture.json", "screen-control.json"]) {
+  for (const schema of ["notifications.json", "sms.json", "sms-schedule.json", "sms-job-status.json", "sms-cancel.json", "sms-send.json", "call-log.json", "screen-read.json", "screen-capture.json", "screen-control.json"]) {
     await writeFile(join(root, "plugins/schemas", schema), await readFile(join(sourceRoot, "plugins/schemas", schema)));
   }
   return root;
