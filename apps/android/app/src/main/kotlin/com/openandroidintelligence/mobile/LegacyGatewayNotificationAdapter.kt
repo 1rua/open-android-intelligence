@@ -38,3 +38,29 @@ internal fun isPublicAssistantPayload(payload: JsonValue.JObject): Boolean =
 
 private val LEGACY_NOTIFICATION_EVENTS = setOf("conversation.message.delta", "conversation.message.completed",
     "conversation.message.status", "conversation.generation.cancelled", "conversation.title.updated", "conversation.updated", "conversation.deleted")
+
+/** 仅旧回读入口转换时间线；共享通知状态机不再消费旧协议类型。 */
+internal fun NativeConversationNotifications.reconcile(
+    expected: NotificationReconciliationRequest,
+    currentGeneration: Pair<String, String>?,
+    messages: List<com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage>,
+): Boolean = reconcile(expected, currentGeneration, messages.map { it.notificationTimelineMessage(expected.session.target.conversationId) })
+
+internal fun com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage.notificationTimelineMessage(
+    conversationId: String,
+): com.openandroidintelligence.conversation.ports.TimelineMessage = com.openandroidintelligence.conversation.ports.TimelineMessage(
+    id = messageId,
+    sender = sender,
+    parts = parts.map { part ->
+        when (part) {
+            is com.openandroidintelligence.gateway.conversations.MessagePart.Text -> com.openandroidintelligence.conversation.model.MessagePart.Text(part.text)
+            is com.openandroidintelligence.gateway.conversations.MessagePart.AttachmentRef -> com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                com.openandroidintelligence.conversation.model.AttachmentDraftId(part.attachmentId), part.filename, part.mediaType, part.sizeBytes, part.sha256)
+        }
+    },
+    timestamp = timestamp ?: 0L,
+    state = state,
+    conversationId = com.openandroidintelligence.conversation.model.ConversationId(conversationId),
+    clientMessageId = clientMessageId?.let { com.openandroidintelligence.conversation.model.ClientMessageId(it) },
+    contentRevision = contentRevision,
+)

@@ -683,6 +683,37 @@ class NativeConversationNotificationsTest {
         assertTrue(coordinator.sessions.value.isEmpty())
     }
 
+    @Test fun `领域快照补正文只确认结束不能冒充成功提醒`() {
+        coordinator.accept(notificationStatus(clock, status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED))
+        coordinator.requestReconciliation()
+        val request = coordinator.reconciliationRequests().single()
+        val body = (notificationReply(clock, text = "快照最终正文").event as
+            com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert).message
+        assertTrue(coordinator.reconcile(request, null, listOf(body)))
+        assertEquals("快照最终正文", coordinator.sessions.value.single().latestReply)
+        assertEquals(NativeConversationStatus.ENDED, coordinator.sessions.value.single().status)
+        assertTrue("读取历史终稿不能补发成功通知", publications.none { it.second })
+    }
+
+    @Test fun `领域附件快照沿用占位与读取期间的代次围栏`() {
+        coordinator.accept(notificationStatus(clock, status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED))
+        coordinator.requestReconciliation()
+        val oldRequest = coordinator.reconciliationRequests().single()
+        coordinator.accept(notificationReply(clock + 1, text = "更新的实时正文", completed = false))
+        val attachment = (notificationReply(clock, parts = listOf(
+            com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                com.openandroidintelligence.conversation.model.AttachmentDraftId("snapshot-file"), "报告.pdf", "application/pdf", 5, null)
+        )).event as com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert).message
+        assertFalse("读取期间的事件更新使旧快照失效", coordinator.reconcile(oldRequest, null, listOf(attachment)))
+        assertEquals("更新的实时正文", coordinator.sessions.value.single().latestReply)
+        coordinator.requestReconciliation()
+        assertTrue(coordinator.reconcile(coordinator.reconciliationRequests().single(), null,
+            listOf(attachment.copy(timestamp = clock + 2, contentRevision = 2))))
+        assertEquals(context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_attachment_placeholder),
+            coordinator.sessions.value.single().latestReply)
+        assertTrue(publications.none { it.second })
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

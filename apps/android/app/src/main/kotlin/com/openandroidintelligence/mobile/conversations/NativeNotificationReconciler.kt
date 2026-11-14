@@ -3,8 +3,11 @@ package com.openandroidintelligence.mobile.conversations
 import com.openandroidintelligence.gateway.agents.AgentSessionException
 import com.openandroidintelligence.gateway.agents.CoreAgent
 import com.openandroidintelligence.gateway.agents.NativeAgentMessage
-import com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage
-import com.openandroidintelligence.gateway.conversations.MessagePart
+import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.AttachmentDraftId
+import com.openandroidintelligence.conversation.model.ClientMessageId
+import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.mobile.NativeConversationNotifications
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
@@ -65,16 +68,16 @@ internal class NativeNotificationReconciler(
     }
 }
 
-/** 原生历史 ⇄ 通知核对使用的平台时间线形状；只搬运字段，不做任何推断。 */
-internal fun NativeAgentMessage.toTimelineMessage(conversationId: String): GatewayTimelineMessage =
-    GatewayTimelineMessage(
-        messageId = id,
+/** 原生历史转为通知核对使用的领域时间线；只搬运字段，不做任何推断。 */
+internal fun NativeAgentMessage.toTimelineMessage(conversationId: String): TimelineMessage =
+    TimelineMessage(
+        id = id,
         sender = role.lowercase(),
         parts = buildList {
             if (text.isNotEmpty()) add(MessagePart.Text(text))
             attachments.forEach { attachment ->
-                add(MessagePart.AttachmentRef(
-                    attachmentId = attachment.id,
+                add(MessagePart.Attachment(
+                    draftId = AttachmentDraftId(attachment.id),
                     filename = attachment.filename,
                     mediaType = attachment.mediaType,
                     sizeBytes = attachment.sizeBytes,
@@ -82,9 +85,10 @@ internal fun NativeAgentMessage.toTimelineMessage(conversationId: String): Gatew
                 ))
             }
         },
-        timestamp = occurredAtOf(createdAt),
+        timestamp = occurredAtOf(createdAt) ?: 0L,
+        conversationId = ConversationId(conversationId),
         state = state ?: "CONFIRMED",
-        clientMessageId = clientMessageId,
+        clientMessageId = clientMessageId?.let(::ClientMessageId),
         contentRevision = contentRevision,
     )
 

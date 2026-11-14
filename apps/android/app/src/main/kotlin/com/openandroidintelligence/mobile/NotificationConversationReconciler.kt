@@ -50,7 +50,7 @@ internal class NotificationConversationReconciler(
                     if (generationBefore == generationAfter) {
                         // accept() also advances a per-conversation revision. An
                         // event arriving during any HTTP read invalidates this pass.
-                        notifications.reconcile(request, generationAfter, messages.values.toList())
+                        notifications.reconcile(request, generationAfter, messages.values.map { it.notificationTimelineMessage(conversationId) })
                     }
                 }
             } catch (failure: CancellationException) {

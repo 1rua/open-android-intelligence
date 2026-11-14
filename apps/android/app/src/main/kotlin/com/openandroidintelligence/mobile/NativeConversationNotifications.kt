@@ -6,8 +6,7 @@ import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
-import com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage
-import com.openandroidintelligence.gateway.conversations.MessagePart as WireMessagePart
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -262,7 +261,7 @@ internal class NativeConversationNotifications(
     @Synchronized fun reconcile(
         expected: NotificationReconciliationRequest,
         currentGeneration: Pair<String, String>?,
-        messages: List<GatewayTimelineMessage>,
+        messages: List<TimelineMessage>,
     ): Boolean {
         val before = expected.session
         val target = before.target
@@ -271,29 +270,29 @@ internal class NativeConversationNotifications(
         if (current != before) return false
         val key = RoundKey(target, before.generationId)
         val observed = replies[key]
-        val userIndex = userMessages[key]?.let { id -> messages.indexOfLast { it.messageId == id && it.sender == "user" } } ?: -1
-        val replyIndex = observed?.let { reply -> messages.indexOfLast { it.messageId == reply.messageId && it.sender == "assistant" } } ?: -1
+        val userIndex = userMessages[key]?.let { id -> messages.indexOfLast { it.id == id && it.sender == "user" } } ?: -1
+        val replyIndex = observed?.let { reply -> messages.indexOfLast { it.id == reply.messageId && it.sender == "assistant" } } ?: -1
         val first = when {
             userIndex >= 0 -> userIndex + 1
             replyIndex >= 0 -> replyIndex
-            else -> messages.indexOfFirst { (it.timestamp ?: 0L) >= (startedAt[key] ?: Long.MAX_VALUE) }
+            else -> messages.indexOfFirst { it.timestamp >= (startedAt[key] ?: Long.MAX_VALUE) }
         }
         val finalReply = if (first < 0) null else messages.drop(first).takeWhile { it.sender != "user" }
             .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
         val snapshotCompleted = finalReply?.state?.uppercase() in setOf("CONFIRMED", "COMPLETED")
-        val snapshotText = finalReply?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-            ?.ifBlank { if (finalReply.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+        val snapshotText = finalReply?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
+            ?.ifBlank { if (finalReply.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
         val snapshotRevision = finalReply?.contentRevision
         val canApplyBody = finalReply != null && !snapshotText.isNullOrBlank() && when {
             observed == null -> true
-            finalReply.messageId != observed.messageId -> replyIndex >= 0 && messages.indexOf(finalReply) >= replyIndex ||
-                (finalReply.timestamp ?: 0L) > observed.occurredAt
+            finalReply.id != observed.messageId -> replyIndex >= 0 && messages.indexOf(finalReply) >= replyIndex ||
+                finalReply.timestamp > observed.occurredAt
             snapshotRevision != null && snapshotRevision != observed.revision -> snapshotRevision > observed.revision
             else -> snapshotCompleted && !observed.completed || snapshotText.length >= observed.text.length
         }
         if (canApplyBody) {
-            replies[key] = ReplySnapshot(finalReply!!.messageId, snapshotText!!, finalReply.contentRevision ?: observed?.revision ?: 0L,
-                maxOf(finalReply.timestamp ?: 0L, observed?.occurredAt ?: 0L), completed = snapshotCompleted)
+            replies[key] = ReplySnapshot(finalReply!!.id, snapshotText!!, finalReply.contentRevision ?: observed?.revision ?: 0L,
+                maxOf(finalReply.timestamp, observed?.occurredAt ?: 0L), completed = snapshotCompleted)
         }
         if (currentGeneration == null) {
             // Idle attests only that work ended. It cannot distinguish a
@@ -346,14 +345,14 @@ internal class NativeConversationNotifications(
                 val newerUsers = if (anchorIndex >= 0) messages.drop(anchorIndex + 1).filter { it.sender == "user" } else emptyList()
                 if (newerUsers.size == 1) {
                     val user = newerUsers.single()
-                    userMessages[remoteKey] = user.messageId
-                    user.timestamp?.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
+                    userMessages[remoteKey] = user.id
+                    user.timestamp.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
                     val body = messages.drop(messages.indexOf(user) + 1).takeWhile { it.sender != "user" }
                         .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
-                    val text = body?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-                        ?.ifBlank { if (body.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+                    val text = body?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
+                        ?.ifBlank { if (body.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
                     if (body != null && !text.isNullOrBlank()) {
-                        replies[remoteKey] = ReplySnapshot(body.messageId, text, body.contentRevision ?: 0L, body.timestamp ?: 0L,
+                        replies[remoteKey] = ReplySnapshot(body.id, text, body.contentRevision ?: 0L, body.timestamp,
                             completed = body.state.uppercase() in setOf("CONFIRMED", "COMPLETED"))
                     }
                 }
