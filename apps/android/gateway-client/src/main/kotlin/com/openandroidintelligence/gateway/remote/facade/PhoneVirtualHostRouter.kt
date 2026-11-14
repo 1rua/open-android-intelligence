@@ -8,12 +8,17 @@ import java.util.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.onEach
 
 /** 只公开手机工作区。网络层负责 Noise 身份，门面从不接受业务正文中的主体字段。 */
 class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
+    fun outputEpoch(access: ControlAccessBinding): Long = bus.outputEpoch(access)
+    fun requireOutput(access: ControlAccessBinding, epoch: Long, metadataOnly: Boolean = false) = bus.requireOutput(access, epoch, metadataOnly)
+
     suspend fun route(access: ControlAccessBinding, method: String, input: JsonValue): JsonValue {
+        val epoch = outputEpoch(access)
         val args = carrierArgs(input)
-        return when (method) {
+        val result = when (method) {
             "harness.transport.describe" -> Json.of(mapOf("capabilities" to listOf("harness.remote.v3")))
             "workspace/list" -> workspace(access)
             "session/list" -> Json.of(mapOf("items" to bus.sessions(access)))
@@ -47,10 +52,24 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             "phone/capabilities" -> bus.capabilities(access)
             else -> fail("METHOD_NOT_FOUND")
         }
+        val metadataOnly = when (method) {
+            "session/page", "session/history", "session/projections" -> sessionId(request(args)) == "control-bus"
+            "workspaceFiles/stat", "workspaceFiles/readBytes", "phone/capabilities" -> false
+            else -> true
+        }
+        // 文件拷贝和 JSON 组装也可能跨越撤销；返回前复核，不能只在读取入口核对一次。
+        requireOutput(access, epoch, metadataOnly)
+        return result
     }
 
     /** 每个订阅自行记录 cursor，取消订阅只停止观察，不取消手机请求。 */
-    fun stream(access: ControlAccessBinding, method: String, input: JsonValue): Flow<JsonValue> = flow {
+    fun metadataStream(method: String, input: JsonValue): Boolean = method in setOf("workspace/follow", "session/control") ||
+        method == "session/follow" && sessionId(request(carrierArgs(input))) == "control-bus"
+
+    fun stream(access: ControlAccessBinding, method: String, input: JsonValue): Flow<JsonValue> {
+        val epoch = outputEpoch(access)
+        val metadataOnly = metadataStream(method, input)
+        return flow {
         val args = carrierArgs(input)
         when (method) {
             "workspace/follow" -> bus.changes.collect { emit(Json.of(mapOf("type" to "baseline", "value" to workspace(access)))) }
@@ -96,6 +115,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             }
             else -> fail("METHOD_NOT_FOUND")
         }
+        }.onEach { requireOutput(access, epoch, metadataOnly) }
     }
 
     private fun workspace(access: ControlAccessBinding): JsonValue = Json.of(mapOf("items" to listOf(mapOf("workspaceId" to WORKSPACE,

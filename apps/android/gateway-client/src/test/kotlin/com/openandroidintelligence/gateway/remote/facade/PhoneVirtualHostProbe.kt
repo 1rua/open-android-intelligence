@@ -16,6 +16,9 @@ object PhoneVirtualHostProbe {
             }
         }
         val executor = object : PhoneControlExecutor {
+            override fun requireCurrentAccess(access: ControlAccessBinding) {
+                check(access.principal.accountId == "isolated-account")
+            }
             override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
                 context.beforeDispatch()
                 return PhoneControlResult(ControlValue.Object(mapOf("snapshotId" to ControlValue.Text("probe-snapshot"),

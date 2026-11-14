@@ -50,6 +50,8 @@ data class PhoneExecutionContext(
 )
 
 interface PhoneControlExecutor {
+    /** 仅核对当前可信连接；本机急停不使合法主体失去最小回执查询权。 */
+    fun requireCurrentAccess(access: ControlAccessBinding)
     suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult
     fun cancel(scope: ControlRequestScope)
     fun capabilities(access: ControlAccessBinding): ControlValue.Object

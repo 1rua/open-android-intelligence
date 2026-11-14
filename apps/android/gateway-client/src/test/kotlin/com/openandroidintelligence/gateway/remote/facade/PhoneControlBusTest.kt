@@ -22,6 +22,7 @@ class PhoneControlBusTest {
     private fun cancel(id: String, target: String) = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to id,
         "op" to "request.cancel", "args" to mapOf("targetRequestId" to target)))))
     private open class Executor : PhoneControlExecutor {
+        override fun requireCurrentAccess(access: ControlAccessBinding) = Unit
         val calls = mutableListOf<String>()
         override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
             context.beforeDispatch(); calls += context.scope.requestId

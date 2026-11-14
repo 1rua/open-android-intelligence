@@ -72,6 +72,10 @@ class RemotePhoneControlComposition(
                 "reason" to (NativePhoneScreenRegistry.current?.availability() ?: if (NativePhoneScreenRegistry.current == null) "SCREEN_PROVIDER_UNAVAILABLE" else null))))) as ControlValue.Object
     }
 
+    override fun requireCurrentAccess(access: ControlAccessBinding) {
+        if (connections[access]?.binding?.isCurrent() != true) fail("REMOTE_AUTHORIZATION_CHANGED")
+    }
+
     override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
         val connection = connection(context.access)
         if (operation is ControlOperation.DumpTree || operation is ControlOperation.Screen || operation == ControlOperation.CaptureSom)

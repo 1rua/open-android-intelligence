@@ -33,10 +33,12 @@ class PhoneControlBus(
     private val lock = Any()
     private val tasks = linkedMapOf<String, Task>()
     private var stopped = false
+    private var deliveryEpoch = 0L
     private val version = MutableStateFlow(0L)
     val changes: StateFlow<Long> get() = version
 
     fun create(access: ControlAccessBinding, taskId: String = UUID.randomUUID().toString()): String = synchronized(lock) {
+        executor.requireCurrentAccess(access)
         if (stopped) fail("LOCAL_EMERGENCY_STOP")
         require(taskId != "control-bus") { "CONTROL_TASK_INVALID" }
         val task = Task(ControlTaskScope(access.principal, taskId, access.authorizationEpoch, processEpoch), currentTimeMillis())
@@ -52,6 +54,7 @@ class PhoneControlBus(
     }
 
     fun sessions(access: ControlAccessBinding): List<JsonValue> = synchronized(lock) {
+        executor.requireCurrentAccess(access)
         bus(access)
         tasks.values.filter { it.scope.permits(access, processEpoch) }.map { task ->
             val metadata = ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == task.scope.taskSessionId } }
@@ -61,9 +64,21 @@ class PhoneControlBus(
         }
     }
 
-    fun capabilities(access: ControlAccessBinding): JsonValue = controlJson(executor.capabilities(access))
+    fun capabilities(access: ControlAccessBinding): JsonValue = synchronized(lock) {
+        requireOutput(access, deliveryEpoch)
+        controlJson(executor.capabilities(access))
+    }
+
+    /** 排队的输出绑定本机交付代次；急停前已排队的数据不能转移到急停后的观察流。 */
+    fun outputEpoch(access: ControlAccessBinding): Long = synchronized(lock) { executor.requireCurrentAccess(access); deliveryEpoch }
+
+    fun requireOutput(access: ControlAccessBinding, expectedEpoch: Long, metadataOnly: Boolean = false) = synchronized(lock) {
+        executor.requireCurrentAccess(access)
+        if (deliveryEpoch != expectedEpoch || stopped && !metadataOnly) fail("LOCAL_EMERGENCY_STOP")
+    }
 
     fun submit(access: ControlAccessBinding, taskId: String, request: ParsedControlRequest): JsonValue = synchronized(lock) {
+        executor.requireCurrentAccess(access)
         val task = task(access, taskId)
         if (request.operation == ControlOperation.Capabilities) {
             val result = Json.of(mapOf("request_id" to request.requestId, "taskSessionId" to taskId, "state" to "completed",
@@ -97,6 +112,7 @@ class PhoneControlBus(
         val requestScope = ControlRequestScope(task.scope, request.requestId)
         try {
             synchronized(lock) {
+                requireOutput(access, deliveryEpoch)
                 val old = find(access, task.scope.taskSessionId, request.requestId)
                 if (old.state.terminal) return
                 task.activeRequestId = request.requestId
@@ -105,6 +121,7 @@ class PhoneControlBus(
             val result = executor.execute(PhoneExecutionContext(requestScope, access, request.parameterDigest,
                 beforeDispatch = {
                     synchronized(lock) {
+                        requireOutput(access, deliveryEpoch)
                         if (task.frozen) fail("CONTROL_TASK_CANCELLED")
                         ledger.transaction { rows ->
                             val old = rows.getValue("${access.principal.storageKey}:${request.requestId}")
@@ -123,6 +140,7 @@ class PhoneControlBus(
             synchronized(lock) {
                 val old = find(access, task.scope.taskSessionId, request.requestId)
                 if (old.state.terminal) return
+                requireOutput(access, deliveryEpoch)
                 if (!old.executionFence) fail("CONTROL_EXECUTION_FENCE_REQUIRED")
                 val artifacts = result.artifacts.map { artifact ->
                     require(Regex("[A-Za-z0-9_-]+").matches(artifact.id)) { "CONTROL_ARTIFACT_INVALID" }
@@ -182,7 +200,7 @@ class PhoneControlBus(
         val old = find(access, op.targetTaskSessionId, op.targetRequestId)
         val active = tasks[key(access, op.targetTaskSessionId)]
         val result = Json.of(mapOf("request_id" to request.requestId, "taskSessionId" to "control-bus", "state" to "completed",
-            "execution" to mapOf("status" to "succeeded"), "result" to minimal(old, active?.results?.containsKey(old.requestId) == true)))
+            "execution" to mapOf("status" to "succeeded"), "result" to minimal(old, !stopped && active?.results?.containsKey(old.requestId) == true)))
         // 查询自身不再递归写持久历史，但须可由原生 Session 读取该结构化答案。
         event(task, "assistant/message", mapOf("request_id" to request.requestId,
             "message" to mapOf("id" to request.requestId, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to Json.canonical(result)))),
@@ -191,6 +209,7 @@ class PhoneControlBus(
     }
 
     fun cancelTask(access: ControlAccessBinding, taskId: String): JsonValue = synchronized(lock) {
+        executor.requireCurrentAccess(access)
         if (taskId == "control-bus") fail("CONTROL_BUS_CANNOT_CANCEL")
         val task = task(access, taskId)
         task.frozen = true
@@ -205,7 +224,9 @@ class PhoneControlBus(
 
     /** 本机急停不依赖远端连接仍有效，先冻结全部任务并阻止尚未进入端口的请求。 */
     fun emergencyStop() = synchronized(lock) {
+        if (stopped) return@synchronized
         stopped = true
+        deliveryEpoch++
         val pending = ledger.transaction { rows -> rows.values.filter { !it.state.terminal }.map { old ->
             old.copy(state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
                 execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
@@ -213,6 +234,12 @@ class PhoneControlBus(
         } }
         tasks.values.forEach { task ->
             task.frozen = true
+            task.artifacts.values.forEach { it.second.bytes.fill(0) }
+            task.artifacts.clear()
+            task.results.clear()
+            task.records.clear()
+            task.activeRequestId = null
+            task.revision++
             pending.filter { it.ownerKey == task.scope.principal.storageKey && it.taskSessionId == task.scope.taskSessionId }.forEach { row ->
                 executor.cancel(ControlRequestScope(task.scope, row.requestId)); task.jobs[row.requestId]?.cancel()
             }
@@ -235,14 +262,17 @@ class PhoneControlBus(
     }
 
     fun receipt(access: ControlAccessBinding, taskId: String, requestId: String): JsonValue = synchronized(lock) {
+        executor.requireCurrentAccess(access)
         val row = find(access, taskId, requestId)
         val task = tasks[key(access, taskId)]
-        val fields = minimal(row, task?.results?.containsKey(requestId) == true).toMutableMap()
-        (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
+        val fields = minimal(row, !stopped && task?.results?.containsKey(requestId) == true).toMutableMap()
+        if (!stopped) (task?.results?.get(requestId) as? JsonValue.JObject)?.fields?.forEach { fields[it.first] = it.second }
         Json.of(fields)
     }
 
     fun history(access: ControlAccessBinding, taskId: String, beforeSeq: Long? = null, throughSeq: Long? = null, maxMessages: Int = 50): JsonValue = synchronized(lock) {
+        // 急停后只有新 control-bus 的只读状态答案可见；旧正文已清除，原任务历史继续拒绝。
+        requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
         require(maxMessages in 1..50) { "CONTROL_PAGE_LIMIT_INVALID" }
         val cursor = task.records.size.toLong() - 1
@@ -259,12 +289,14 @@ class PhoneControlBus(
     }
 
     fun artifact(access: ControlAccessBinding, taskId: String, artifactId: String): ControlArtifact = synchronized(lock) {
+        requireOutput(access, deliveryEpoch)
         val task = task(access, taskId)
         val found = task.artifacts[artifactId]?.second ?: fail("CONTROL_ARTIFACT_UNAVAILABLE")
         found.copy(bytes = found.bytes.copyOf())
     }
 
     fun eventsSince(access: ControlAccessBinding, taskId: String, seq: Long): List<JsonValue> = synchronized(lock) {
+        requireOutput(access, deliveryEpoch, metadataOnly = taskId == "control-bus")
         val task = task(access, taskId)
         if (seq !in -1 until task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
         task.records.drop((seq + 1).toInt()).toList()
@@ -301,6 +333,7 @@ class PhoneControlBus(
         }; changed()
     }
     private fun finish(access: ControlAccessBinding, task: Task, id: String) {
+        if (stopped || runCatching { executor.requireCurrentAccess(access) }.isFailure) return
         val complete = receipt(access, task.scope.taskSessionId, id)
         val fullText = Json.canonical(complete)
         val text = if (fullText.length <= 12_000) fullText else {

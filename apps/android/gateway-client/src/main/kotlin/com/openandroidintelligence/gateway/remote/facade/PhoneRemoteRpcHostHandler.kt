@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.schema.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 
 /** 固定上游 Harness carrier；每条连接独占观察流，关闭只结束观察而不取消手机任务。 */
@@ -14,8 +15,9 @@ class PhoneRemoteRpcHostHandler(
     private val router: PhoneVirtualHostRouter,
     private val authenticatedAccess: (RemoteRpcConnectionScope) -> ControlAccessBinding,
 ) : RemoteRpcHostHandler, AutoCloseable {
+    private data class PendingEvent(val event: RemoteRpcEvent, val epoch: Long, val metadataOnly: Boolean, val content: Boolean = true)
     private class Connection(val scope: RemoteRpcConnectionScope) {
-        val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 128)
+        val events = MutableSharedFlow<PendingEvent>(extraBufferCapacity = 128)
         val streams = ConcurrentHashMap<String, Job>()
         val closed = MutableStateFlow(false)
     }
@@ -28,10 +30,17 @@ class PhoneRemoteRpcHostHandler(
     }
     override fun events(scope: RemoteRpcConnectionScope): Flow<RemoteRpcEvent> {
         val connection = connection(scope)
+        val access = authenticatedAccess(scope)
         return channelFlow {
-            val collector = launch { connection.events.collect { authenticatedAccess(scope); send(it) } }
+            val collector = launch { connection.events.collect { send(it) } }
             connection.closed.first { it }
             collector.cancel()
+        }.buffer(Channel.RENDEZVOUS).map { pending ->
+            // 复核放在无额外缓冲的最终出队处，慢消费者等待期间不获得旧正文的发送权。
+            if (authenticatedAccess(scope) != access) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
+            if (pending.content) router.requireOutput(access, pending.epoch, pending.metadataOnly)
+            else router.outputEpoch(access)
+            pending.event
         }
     }
 
@@ -50,18 +59,20 @@ class PhoneRemoteRpcHostHandler(
                     !fields.keys.containsAll(setOf("streamId", "endpoint", "payload")) || fields["transferFrames"] == JsonValue.JBool(true))
                     throw ControlRequestException("CONTROL_PARAMETERS_INVALID")
                 val streamId = text(fields, "streamId")
+                val epoch = router.outputEpoch(access)
+                val metadataOnly = router.metadataStream(text(fields, "endpoint"), fields.getValue("payload"))
                 lateinit var job: Job
                 job = coroutineScope.launch(start = CoroutineStart.LAZY) {
                     try {
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
-                            connection.events.emit(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf("streamId" to streamId,
-                                "hasValue" to true, "value" to value))))
+                            connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.frame", Json.of(mapOf("streamId" to streamId,
+                                "hasValue" to true, "value" to value))), epoch, metadataOnly))
                         }
                     } catch (_: CancellationException) { throw CancellationException() }
                     catch (_: Exception) {
-                        connection.events.emit(RemoteRpcEvent("harness.remote.stream.closed", Json.of(mapOf("streamId" to streamId,
-                            "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to "手机任务观察已失效。", "details" to emptyMap<String, Any>())))))
+                        connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.stream.closed", Json.of(mapOf("streamId" to streamId,
+                            "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to "手机任务观察已失效。", "details" to emptyMap<String, Any>())))), epoch, true, content = false))
                     } finally { connection.streams.remove(streamId, job) }
                 }
                 if (connection.streams.putIfAbsent(streamId, job) != null) { job.cancel(); throw ControlRequestException("CONTROL_STREAM_CONFLICT") }
