@@ -17,6 +17,7 @@ internal object PluginCapabilityRisk {
             "org.openandroidintelligence.sms.schedule" -> setOf("kernel.scheduler.set", "kernel.background.run")
             "org.openandroidintelligence.sms.job-status" -> setOf("kernel.scheduler.read")
             "org.openandroidintelligence.sms.cancel" -> setOf("kernel.scheduler.cancel")
+            "org.openandroidintelligence.sms.send" -> setOf("kernel.sms.send")
             "org.openandroidintelligence.notifications.query" -> reads + "kernel.notifications.read"
             "org.openandroidintelligence.call-log.query" -> reads + "kernel.call-log.read"
             else -> return declared

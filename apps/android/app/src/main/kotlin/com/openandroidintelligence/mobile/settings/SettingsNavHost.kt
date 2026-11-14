@@ -84,8 +84,10 @@ internal fun SettingsNavHost(
     modifier: Modifier,
     presentation: SettingsPresentation,
     onRequestScreenCaptureAuthorization: () -> Unit,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val localRuntime = viewModel.localSettingsRuntime
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val context = LocalContext.current
@@ -236,7 +238,8 @@ internal fun SettingsNavHost(
                     onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
             }
             composable(SettingsRoutes.GATEWAY) {
-                ConnectionSettingsScreen(uiState, presentation, ::back,
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back)
+                else ConnectionSettingsScreen(uiState, presentation, ::back,
                     onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) },
                     onSelectAgent = viewModel::selectAgent, onRefreshAgents = viewModel::refreshAgents,
                     onSelectAccount = viewModel::selectSavedAccount, onManageAccounts = { manageAccounts() },
@@ -247,18 +250,18 @@ internal fun SettingsNavHost(
             composable(SettingsRoutes.CONNECTION_DETAILS) { ConnectionDiagnosticsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.REMINDERS) { NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications) }
             composable(SettingsRoutes.PAIRING) {
-                DeviceCapabilitiesScreen(environment, runtime, presentation, ::back,
+                DeviceCapabilitiesScreen(environment, localRuntime, presentation, ::back,
                     onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.CAPABILITY, arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType })) { destination ->
                 CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.SCREEN_CAPABILITY) {
                 CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
             }
             composable(SettingsRoutes.PLUGINS) {
@@ -292,15 +295,15 @@ internal fun SettingsNavHost(
             }
             composable(SettingsRoutes.AUDIT_LOG) { AuditSettingsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.ADVANCED) {
-                AdvancedSettingsScreen(runtime, presentation, ::back,
+                AdvancedSettingsScreen(localRuntime, presentation, ::back,
                     onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
                     onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
-                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() })
+                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() }, remoteRuntime = remoteRuntime)
             }
             composable(SettingsRoutes.APP_UPDATES) { AppUpdateRoute(onBack = ::back, presentation = presentation) }
             composable(SettingsRoutes.BUILD_DETAILS) { BuildDetailsScreen(presentation, ::back) }
             composable(SettingsRoutes.LICENSES) { OpenSourceNoticesScreen(presentation, ::back) }
-            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back) }
+            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back, remoteRuntime) }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }

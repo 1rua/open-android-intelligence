@@ -254,6 +254,24 @@ class ScreenBackendTest {
         java.util.UUID.randomUUID().toString(), System.currentTimeMillis() + 60_000L, {},
     ) { execute(expectedRevision, action, beforeDispatch) }
 
+    @Test fun remoteNodeCoordinateAndCrossingGestureCannotHitLocalApprovalArea() = runTest {
+        val localUi = object : com.openandroidintelligence.control.remote.PhoneLocalControlUi {
+            override val protectedBounds = ScreenBounds(0, 0, 50, 50)
+            override suspend fun confirm(requestId: String, capability: String, localParameters: String?) = false
+            override suspend fun executing(requestId: String) {}
+            override suspend fun finish(requestId: String) {}
+            override fun emergencyStop() {}
+        }
+        com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current = localUi
+        try {
+            val runtime = FakeRuntime(); val backend = AndroidScreenBackend(runtime); val revision = backend.read().revision
+            fails("SCREEN_LOCAL_UI_PROTECTED") { backend.executeLeased(revision, ScreenAction.Click("w1:0")) }
+            fails("SCREEN_LOCAL_UI_PROTECTED") { backend.executeLeased(revision, ScreenAction.Click(x = 20, y = 20)) }
+            fails("SCREEN_LOCAL_UI_PROTECTED") { backend.executeLeased(revision, ScreenAction.Swipe(0, 75, 100, 0)) }
+            assertTrue(runtime.effects.isEmpty())
+        } finally { com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current = null }
+    }
+
     private suspend fun fails(code: String, action: suspend () -> Unit) {
         try { action(); fail("expected $code") }
         catch (failure: ScreenOperationException) { assertEquals(code, failure.code) }

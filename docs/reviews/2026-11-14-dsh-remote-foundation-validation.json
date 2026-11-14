@@ -1,0 +1,136 @@
+{
+  "codeSha": "9a76e5c8e2688854e319ba48478ed1b3682f82e0",
+  "modules": [
+    {
+      "module": "control-ports",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 3,
+      "tests": 41,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "capability-ports",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 8,
+      "tests": 67,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "screen-control",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 4,
+      "tests": 41,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "device-primitives",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 3,
+      "tests": 55,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "conversation-domain",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 12,
+      "tests": 64,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "conversation-ui",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 102,
+      "tests": 926,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "conversation-data",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 8,
+      "tests": 61,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "gateway-client",
+      "task": "testDebugUnitTest",
+      "xmlFiles": 58,
+      "tests": 618,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "skips": []
+    },
+    {
+      "module": "app",
+      "task": "testFullDebugUnitTest",
+      "xmlFiles": 170,
+      "tests": 1890,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "skips": [
+        "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest.aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason"
+      ]
+    }
+  ],
+  "python": {
+    "suite": "configuration/install/uninstall/CoreConfig/smart-test",
+    "tests": 275,
+    "failures": 0
+  },
+  "remoteNode": {
+    "tests": 11,
+    "failures": 0
+  },
+  "ciRoutingFocused": {
+    "tests": 196,
+    "failures": 0
+  },
+  "androidTotals": {
+    "tests": 3763,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1
+  },
+  "executionNotes": [
+    "App保持forkEvery=1、heap不变，现有maxParallelForks属性=4",
+    "PR最后模块调用443任务=25executed418up-to-date；测试任务实际执行，编译多来自缓存",
+    "不重复计入早期focused/失败重跑/固定向量内部次数",
+    "唯一Full跳过项为Play专属BuiltInCapabilities断言"
+  ],
+  "fast": {
+    "seconds": 40.77,
+    "result": "PASS"
+  },
+  "pr": {
+    "seconds": 275.29,
+    "result": "PASS"
+  },
+  "fixtureConfiguration": {
+    "hermesPlugin": "ebe527da2426dd25877dd335786e80cf85d1cdde",
+    "hermesSdk": "75b083e9399115b12513385252811f09c3503c90",
+    "bundles": "项目build:android-plugins生成的6个固定名称真实同源WASM包，隔离测试作者",
+    "normalPermissionsCopy": true
+  }
+}

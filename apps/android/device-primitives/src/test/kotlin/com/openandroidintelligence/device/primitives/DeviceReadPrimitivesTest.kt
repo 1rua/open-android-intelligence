@@ -13,6 +13,34 @@ import org.junit.Test
 class DeviceReadPrimitivesTest {
     private val context = LocalGrantContext("verified.plugin", "account", "pairing", "request-id")
 
+    @Test
+    fun sms_send_rechecks_permission_and_final_system_effect_fence() = runBlocking {
+        var permission = false
+        var fenceChecks = 0
+        val primitive = SmsSendPrimitive(
+            sender = AndroidSmsSendProvider {
+                object : SmsSendPort {
+                    override fun divideMessage(text: String) = listOf("secret")
+                    override fun sendMultipartTextMessage(recipient: String, parts: List<String>, beforeSystemEffect: SmsSendBeforeSystemEffect, callback: SmsSegmentCallback): AutoCloseable {
+                    beforeSystemEffect.check()
+                        callback.onResult(0, android.app.Activity.RESULT_OK)
+                        return AutoCloseable { }
+                    }
+                }
+            },
+            beforeSystemEffect = { _, _ -> fenceChecks++ },
+            permissionGranted = { permission },
+        )
+        assertThrows(CapabilityDenied::class.java) { runBlocking { primitive.invoke(context, "{}".encodeToByteArray()) } }
+        permission = true
+        val result = primitive.invoke(
+            context,
+            "{\"subscriptionId\":2,\"recipient\":\"+15550001\",\"text\":\"secret\"}".encodeToByteArray(),
+        )
+        assertEquals("sent", JsonFields.string(JsonFields.obj(Json.parse(result.decodeToString())), "status"))
+        assertEquals(1, fenceChecks)
+    }
+
     @Test fun notification_readiness_distinguishes_os_permission_local_policy_and_listener_connection() {
         val (authority, collector) = notifications(granted = false)
         var permission = false

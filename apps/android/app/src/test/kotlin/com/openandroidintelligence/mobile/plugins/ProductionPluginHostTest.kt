@@ -390,7 +390,13 @@ class ProductionPluginHostTest {
             val trust=DeveloperTrustMode()
             val host=thirdPartyOnlyHost(context,grants,trust,NativePluginLoader(trust),"install_host")
             host.installStore.installRoot.deleteRecursively()
-            host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0"))
+            // 自定义读取入口明确声明只读原语；不能把整包调度写权限误当成后台查询许可。
+            val readDeclaration=Json.of(mapOf("provides" to listOf(mapOf("id" to "org.openandroidintelligence.sms.fetch",
+                "version" to "2.0.0","schema" to "schemas/sms.json")),"depends" to emptyList<Any>(),
+                "kernelPrimitives" to listOf("kernel.sms.read","kernel.store.read","kernel.store.keys","kernel.background.run").map {
+                    mapOf("id" to it,"version" to "1.0.0","purpose" to "定时任务的本机只读查询")
+                })) as com.openandroidintelligence.gateway.schema.JsonValue.JObject
+            host.installStore.install(TestAlpPackages.compiledSmsPackage("org.openandroidintelligence.sms.fetch","2.0.0",capabilityDeclaration=readDeclaration))
             val kernel=PluginKernel(HostEnvelope(host.hostCapabilities),PhoneLimits(host.phoneCapabilities),
                 host.runtimes,audit,trust,host.nativeLoader,host.selector,{grants.currentKernelGrant(it)},mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
             host.attach(kernel)
@@ -410,7 +416,7 @@ class ProductionPluginHostTest {
                 checkpoints.clear()
                 // Exercise the same serialization and target resolution used after an OS restart.
                 val restored=com.openandroidintelligence.gateway.schema.JsonFields.obj(Json.parse(Json.canonical(Json.of(record))))!!
-                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test",nowMillis = 999_999L) { state,result ->
+                PluginJobScheduler.executeStoredInvocation(host,restored,"job_test",testBackgroundBinding(grants.state.value!!.revision,"acct_host"),nowMillis = 999_999L) { state,result ->
                     checkpoints+=state
                     if(state=="succeeded") assertTrue(Json.canonical(result!!).contains("timer-result"))
                 }
@@ -427,7 +433,7 @@ class ProductionPluginHostTest {
             assertEquals(1,calls)
             host.grant(entry.identity.pluginId,false)
             assertNotNull(runCatching { host.scheduledTarget(call,args) }.exceptionOrNull())
-            run(metadata);assertEquals(listOf("executing","failed"),checkpoints);assertEquals(1,calls)
+            run(metadata);assertEquals(listOf("authorization_expired"),checkpoints);assertEquals(1,calls)
         } finally {
             KernelPrimitiveRegistry.unregister(provider)
             if(previousProvider!=null) KernelPrimitiveRegistry.register(previousProvider)

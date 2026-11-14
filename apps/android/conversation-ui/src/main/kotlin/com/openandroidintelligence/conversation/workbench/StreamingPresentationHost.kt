@@ -54,6 +54,9 @@ private class StreamingReplySource {
         }
         return start
     }
+
+    fun start(entry: TimelineEntry): Int = maxOf(start(entry.text), entry.reasoning.lastOrNull()?.bodyOffset
+        ?.coerceIn(0, entry.text.length) ?: 0)
 }
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
@@ -101,17 +104,19 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
     internal fun isBaseline(entry: TimelineEntry): Boolean = frameFor(entry) == null
 
     internal fun frameFor(entry: TimelineEntry): StreamingPresentationFrame? {
+        // 思考块不参与回答正文的字素推进和触觉反馈，来源坐标仍以未拼接的正文为准。
+        if (entry.reasoning.any { !it.complete }) return null
         // 临时首帧投影也必须订阅已提交进度；否则组合只读普通字段，首个 accept 后
         // frame 的变化没有订阅者，正文会停在空投影而调度器仍在后台推进。
         val committed = frame
         if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
         if (currentIdentity == ReplyIdentity(entry) || currentIdentity?.isUpgrade(entry) == true) {
-            val start = source.start(entry.text)
+            val start = source.start(entry)
             return if (committed != null && committed.sourceStart != start) committed.copy(sourceStart = start) else committed
         }
         if (!canStart(entry)) return null
         // accept 在组合提交后运行；先给新 LIVE 一个仅含旧前缀的投影，首帧不能闪现整段全文。
-        return StreamingPresentationFrame(baselineText(entry), active = true, sourceStart = source.start(entry.text))
+        return StreamingPresentationFrame(baselineText(entry), active = true, sourceStart = source.start(entry))
     }
 
     internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long, generation: GenerationState? = null) {
@@ -153,7 +158,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val ownedTerminal = generation?.isTerminal() == true && generationOwner?.let {
             it == ReplyIdentity(incoming) || it.isUpgrade(incoming)
         } == true
-        sourceStart = source.start(incoming.text)
+        sourceStart = source.start(incoming)
         val advance = state.update(incoming.text, metadata.revision, metadata.origin,
             incoming.isStreaming && !scopedTerminal && !ownedTerminal, now, revealFromOffset = sourceStart)
         publish(state, advance)
@@ -192,6 +197,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         !entry.executionFact && entry.approval == null && entry.systemThreadId == null
 
     private fun canStart(entry: TimelineEntry): Boolean {
+        if (entry.reasoning.any { !it.complete }) return false
         if (!eligible(entry) || entry.presentation?.origin != StreamPresentationOrigin.LIVE) return false
         val previous = observationFor(entry) ?: return entry.text.isNotEmpty()
         return entry.presentation.revision >= previous.revision && previous.isPrefixOf(entry)
@@ -329,7 +335,7 @@ internal fun StreamingReplyBody(
     // 取原始进度而非可能仍等待后台解析的 renderFrame，避免解析完成后补播旧范围。
     val mountedBatch = remember(registry, entry.key) { frame?.batchId ?: 0L }
     val receivedSource = remember(entry.key) { StreamingReplySource() }
-    val sourceStart = if (finalOnly) frame?.sourceStart ?: receivedSource.start(entry.text) else 0
+    val sourceStart = if (finalOnly) frame?.sourceStart ?: receivedSource.start(entry) else 0
     val prefix = frame?.text ?: entry.text
     val displayed = prefix.drop(sourceStart)
     val document = rememberStreamingMarkdownDocument(displayed)

@@ -1,0 +1,86 @@
+{
+  "recordedDate": "2026-11-14",
+  "inspectionScope": "静态缓存产物核验，不含APK打包、native加载或设备运行",
+  "artifacts": [
+    {
+      "file": "android-150.7871.04.aar",
+      "bytes": 49068339,
+      "sha256": "1872dda4e3bf7d6ea6f7c6e11861332081c57081a1e62fc82fab72415c69c84c",
+      "sha1": "662256e133d977920b4714d2c0d9939d8247da4b"
+    },
+    {
+      "file": "android-150.7871.04.pom",
+      "bytes": 1137,
+      "sha256": "c511dba5b204f6056530359f1d0a30a431a9c07946dbb73322db5ee4a1d71405",
+      "sha1": "28718b591874a69ceca971358b14902e04f7727b"
+    },
+    {
+      "file": "noise-java-0.1.1.jar",
+      "bytes": 127167,
+      "sha256": "2bbc531e5e31b3151269dbb7596548e3c884ded217ab6312c2d87591bfea543b",
+      "sha1": "6c4457d5c57207cf55d7f0558ae87a06fbda2faa"
+    },
+    {
+      "file": "noise-java-0.1.1.pom",
+      "bytes": 5693,
+      "sha256": "4cac7f78a2c940aacb1d7ac7723f1040edab6c05b0c9cb7781a54cb63dfbe317",
+      "sha1": "d89faf7bdbfaee6d2d91016eb8ef04407a0f93df"
+    }
+  ],
+  "webrtcMaven": "io.github.webrtc-sdk:android:150.7871.04",
+  "mavenPublishedSha1Matched": true,
+  "webrtcTag": "v150.7871.04",
+  "webrtcTagCommit": "1d6a68a74162d3f218f9681d49c6b5eef8f02800",
+  "manifestUsesSdk": {
+    "minSdkVersion": "21",
+    "targetSdkVersion": "23"
+  },
+  "nativeLibraries": [
+    {
+      "path": "jni/arm64-v8a/libjingle_peerconnection_so.so",
+      "bytes": 12266048,
+      "sha256": "2b561520298d9fec3e216baf58a53fbddf4a46dfd247880cbc3821875ed20200",
+      "elfBits": 64,
+      "loadAlignments": [
+        "0x4000",
+        "0x4000",
+        "0x4000"
+      ]
+    },
+    {
+      "path": "jni/armeabi-v7a/libjingle_peerconnection_so.so",
+      "bytes": 6791820,
+      "sha256": "5415e7a02ce83e983329575e7c2e46b8ced6c75baea3c41aa52b5699ccb54eda",
+      "elfBits": 32,
+      "loadAlignments": [
+        "0x1000",
+        "0x1000",
+        "0x1000"
+      ]
+    },
+    {
+      "path": "jni/x86/libjingle_peerconnection_so.so",
+      "bytes": 12798344,
+      "sha256": "9a532ef72dcda8b4b9874d4f578dbd3a5eb18bce01f9f91bee883bc0962dce3c",
+      "elfBits": 32,
+      "loadAlignments": [
+        "0x1000",
+        "0x1000",
+        "0x1000"
+      ]
+    },
+    {
+      "path": "jni/x86_64/libjingle_peerconnection_so.so",
+      "bytes": 16144848,
+      "sha256": "b87bbb6d6c81c50f04538cd809575de633a789cc3555af2c5eb6ec414b148908",
+      "elfBits": 64,
+      "loadAlignments": [
+        "0x4000",
+        "0x4000",
+        "0x4000"
+      ]
+    }
+  ],
+  "runtimeStatus": "UNVERIFIED",
+  "deviceStatus": "BLOCKED"
+}

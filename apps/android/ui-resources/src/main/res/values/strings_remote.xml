@@ -1,0 +1,30 @@
+<resources>
+    <string name="remote_connection_title">Remote 连接</string>
+    <string name="remote_service_address">Remote 服务地址</string>
+    <string name="remote_account_email">邮箱</string>
+    <string name="remote_account_password">密码</string>
+    <string name="remote_login">登录</string>
+    <string name="remote_hosts">Host 主机</string>
+    <string name="remote_refresh_hosts">刷新主机列表</string>
+    <string name="remote_workspaces">Agent 与工作区</string>
+    <string name="remote_select_model">选择模型</string>
+    <string name="remote_select_effort">思考强度</string>
+    <string name="remote_local_settings">本机设置</string>
+    <string name="remote_client_role">主动会话连接</string>
+    <string name="remote_host_role">手机受控连接</string>
+    <string name="remote_role_signed_out">未登录</string>
+    <string name="remote_role_ready">已登录，等待选择工作区</string>
+    <string name="remote_role_connecting">连接中</string>
+    <string name="remote_role_connected">已连接</string>
+    <string name="remote_role_disconnected">连接已断开</string>
+    <string name="remote_role_stopped">未启动</string>
+    <string name="remote_role_online">已上线</string>
+    <string name="remote_role_failed">连接失败</string>
+    <string name="remote_voice_lost">录音已丢失，请重新录制</string>
+    <string name="remote_voice_target_changed">对话已切换，语音未发送</string>
+    <string name="remote_voice_not_sent">语音未发送，请查看对话提示后重试</string>
+    <string name="remote_voice_failed">录音或发送失败，请重试</string>
+    <string name="remote_voice_restart_after_switch">对话已切换，请重新开始录音</string>
+    <string name="remote_voice_wait">当前对话暂不能发送语音，请等待处理完成后重试</string>
+    <string name="remote_conversation_not_ready">对话尚未就绪</string>
+</resources>

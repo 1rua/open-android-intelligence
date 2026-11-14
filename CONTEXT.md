@@ -190,9 +190,9 @@ _Avoid_: 失败、成功、可安全重试
 电脑 DSH 内供外部 MCP 入口复用已登录 Remote 通道的受限适配边界；它不另持一套手机身份或设备授权。
 _Avoid_: Android Companion、独立 Relay 服务、第二控制通道
 
-**Agent 委派（AgentDelegation）**:
-一个 Agent 请求另一个实际可用 Agent 后端完成工作的行为；同一 DSH 主机上的委派可能串行切换共享工作区。
-_Avoid_: 模型切换、虚构端点、Remote 账号切换
+**工作区选择（WorkspaceSelection）**:
+用户在某个 Host 的 DSH、Codex 或 ACP 后端中选择工作区及对话的行为；后台跨工作区调度属于上游能力。
+_Avoid_: 手机能力授权、模型切换、Remote 账号切换
 
 **屏幕观察（ScreenObservation）**:
 在本机许可范围内取得的当前屏幕结构或图像事实；观察结果不授予后续操作权限。

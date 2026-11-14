@@ -149,10 +149,17 @@ class SettingsViewModel(
     private val environment: PlatformSettingsEnvironment,
     private val runtime: GatewayRuntime? = null,
     externalScope: CoroutineScope? = null,
+    private val remoteRuntime: RemoteRuntime? = null,
 ) : ViewModel() {
 
     internal val settingsEnvironment get() = environment
     internal val gatewayRuntime get() = runtime
+    internal val remoteSettingsRuntime get() = remoteRuntime
+    internal val localSettingsRuntime = remoteRuntime?.localSettings ?: runtime?.let { gateway ->
+        LocalSettingsRuntime(gateway.replyNotifications, gateway.nativeConversationNotifications::refreshActive,
+            gateway::reloadDebounceSettings, { gateway.controller.value?.refreshThreads() },
+            gateway.deviceCapabilityState, gateway::requestCapabilitySync)
+    }
     private val scope: CoroutineScope = externalScope ?: viewModelScope
 
     private val _accountPickerRequested = MutableStateFlow(false)
@@ -190,8 +197,8 @@ class SettingsViewModel(
         _trustModeEnabled,
         _emergencyStopped,
         _stoppedCount,
-        runtime?.replyNotifications?.enabled ?: MutableStateFlow(false),
-        runtime?.replyNotifications?.allowed ?: MutableStateFlow(false),
+        localSettingsRuntime?.replyNotifications?.enabled ?: MutableStateFlow(false),
+        localSettingsRuntime?.replyNotifications?.allowed ?: MutableStateFlow(false),
     ) { trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed ->
         ControlSettings(trustEnabled, emergencyStopped, stoppedCount, replyEnabled, replyAllowed)
     }
@@ -249,7 +256,7 @@ class SettingsViewModel(
             auditEvents = base.auditEvents,
             operationNotice = operations.first,
             isRefreshingSession = operations.second,
-            replyNotificationsWired = runtime != null,
+            replyNotificationsWired = remoteRuntime != null || runtime != null,
             replyNotificationsEnabled = control.replyEnabled,
             replyNotificationsAllowed = control.replyAllowed,
             nativeAgentsState = nativeAgentsState,
@@ -269,7 +276,7 @@ class SettingsViewModel(
         connectionFacts,
         _localError,
         runtime?.unpairOperation ?: MutableStateFlow<LocalOperationState>(LocalOperationState.Idle),
-        runtime?.replyNotifications?.liveUpdatesAllowed ?: MutableStateFlow(false),
+        localSettingsRuntime?.replyNotifications?.liveUpdatesAllowed ?: MutableStateFlow(false),
     ) { base, facts, error, unpair, liveAllowed ->
         base.copy(
             coreHttpHealth = facts.http,
@@ -299,16 +306,16 @@ class SettingsViewModel(
             auditLines = environment.auditSink.eventsFlow.value.map { environment.audit.render(it) },
             operationNotice = runtime?.operationNotice?.value,
             isRefreshingSession = runtime?.isRefreshingSession?.value ?: false,
-            replyNotificationsWired = runtime != null,
-            replyNotificationsEnabled = runtime?.replyNotifications?.enabled?.value ?: false,
-            replyNotificationsAllowed = runtime?.replyNotifications?.allowed?.value ?: false,
+            replyNotificationsWired = localSettingsRuntime != null,
+            replyNotificationsEnabled = localSettingsRuntime?.replyNotifications?.enabled?.value ?: false,
+            replyNotificationsAllowed = localSettingsRuntime?.replyNotifications?.allowed?.value ?: false,
             nativeAgentsState = runtime?.nativeAgents?.value?.state?.value,
             coreHttpHealth = runtime?.coreHttpHealth?.value ?: CoreHttpHealth(),
             eventStreamStatus = runtime?.connectionStatus?.value ?: EventStreamStatus.IDLE,
             loginStatus = runtime?.loginStatus?.value ?: GatewayLoginStatus.SIGNED_OUT,
             savedProfiles = runtime?.savedProfiles?.value.orEmpty(),
             isManagingProfiles = runtime?.isManagingProfiles?.value ?: false,
-            liveUpdatesAllowed = runtime?.replyNotifications?.liveUpdatesAllowed?.value ?: false,
+            liveUpdatesAllowed = localSettingsRuntime?.replyNotifications?.liveUpdatesAllowed?.value ?: false,
             unpairOperation = runtime?.unpairOperation?.value ?: LocalOperationState.Idle,
         ),
     )
@@ -338,12 +345,12 @@ class SettingsViewModel(
     }
 
     fun setNotificationsGrant(enabled: Boolean): Boolean {
-        val saved = runtime?.replyNotifications?.setEnabled(enabled) == true
+        val saved = localSettingsRuntime?.replyNotifications?.setEnabled(enabled) == true
         if (!saved) {
             _localError.value = "通知偏好未能保存，请检查手机存储后重试。"
             return false
         }
-        if (enabled) runtime?.nativeConversationNotifications?.refreshActive()
+        if (enabled) localSettingsRuntime?.refreshNotifications?.invoke()
         return true
     }
 
@@ -354,11 +361,11 @@ class SettingsViewModel(
     fun retryConnection() { runtime?.retryConnection() }
 
     fun refreshReplyNotificationPermission() {
-        runtime?.replyNotifications?.refreshPermission()
-        runtime?.nativeConversationNotifications?.refreshActive()
+        localSettingsRuntime?.replyNotifications?.refreshPermission()
+        localSettingsRuntime?.refreshNotifications?.invoke()
     }
-    fun shouldRequestReplyNotificationPermission(): Boolean = runtime?.replyNotifications?.shouldRequestPermission() == true
-    fun markReplyNotificationPermissionRequested() { runtime?.replyNotifications?.markPermissionRequested() }
+    fun shouldRequestReplyNotificationPermission(): Boolean = localSettingsRuntime?.replyNotifications?.shouldRequestPermission() == true
+    fun markReplyNotificationPermissionRequested() { localSettingsRuntime?.replyNotifications?.markPermissionRequested() }
 
     fun enableTrustMode(
         acknowledgementText: String = DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT,

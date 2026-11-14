@@ -728,3 +728,49 @@ def test_release_workflows_wait_for_verified_ci():
 def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     properties = (REPO_ROOT / "apps/android/gradle.properties").read_text(encoding="utf-8")
     assert "org.gradle.configuration-cache=true" in properties
+
+
+@pytest.mark.parametrize("path", [
+    "tools/remote/projection-scope.test.mjs",
+    "tools/remote/fixtures/dsh-remote/acp/virtual-harness.ts",
+    "tools/remote/fixtures/dsh-remote/source.json",
+])
+def test_acp_projection_observation_routes_to_remote_lane(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["lanes"]["remote"]
+    assert not result["lanes"]["dsh"]
+    assert not result["unknown"]
+    assert not result["full_required"]
+
+
+@pytest.mark.parametrize("path", [
+    "integrations/dsh-session-adapter/install.mjs",
+    "integrations/package.json",
+    "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh_builtin_contract.py",
+])
+def test_legacy_dsh_real_support_paths_keep_ci_adapter_coverage(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["lanes"]["dsh"]
+    assert not result["lanes"]["remote"]
+
+
+def test_remote_android_fixture_routes_to_gateway_without_legacy_dsh(impact):
+    result = impact.classify([("M", "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json")])
+    assert result["lanes"]["android-gateway"]
+    assert not result["lanes"]["dsh"]
+
+
+def test_control_ports_remote_types_reach_gateway_and_ui_consumers(impact):
+    result = impact.classify([("M", "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt")])
+    expected = {"android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications", "android-app", "android-play"}
+    assert expected <= active_lanes(result)
+    assert not result["unknown"]
+
+
+def test_phone_mcp_routes_to_remote_without_legacy_adapters(impact):
+    result = impact.classify([("M", "integrations/oai-android-mcp/src/stdio.mjs")])
+    assert result["lanes"]["remote"]
+    assert not result["lanes"]["dsh"]
+    assert not result["lanes"]["hermes"]
+    assert not result["full_required"]

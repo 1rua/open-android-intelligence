@@ -82,6 +82,7 @@ jobs:
       runs_core: ${{ steps.impact.outputs.runs_core }}
       runs_hermes: ${{ steps.impact.outputs.runs_hermes }}
       runs_dsh: ${{ steps.impact.outputs.runs_dsh }}
+      runs_remote: ${{ steps.impact.outputs.runs_remote }}
       runs_android_device: ${{ steps.impact.outputs.runs_android_device }}
       runs_android_platform: ${{ steps.impact.outputs.runs_android_platform }}
       runs_android_notifications: ${{ steps.impact.outputs.runs_android_notifications }}
@@ -112,7 +113,7 @@ jobs:
               echo "::warning::No usable base commit; running every lane."
               python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          lanes = ["fast","core","hermes","dsh","android_device","android_platform",
+          lanes = ["fast","core","hermes","dsh","remote","android_device","android_platform",
                    "android_notifications","android_conversation","android_gateway",
                    "android_plugins","android_app","android_play"]
           print("\n".join(f"runs_{lane}=true" for lane in lanes))
@@ -332,6 +333,37 @@ jobs:
         run: |
           npm ci --prefer-offline --no-audit --fund=false
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
+
+  remote:
+    name: Remote phone MCP and ACP observations
+    needs: changes
+    if: needs.changes.outputs.runs_remote == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.18.0'
+          cache: npm
+
+      - name: 安装固定Remote服务端隔离依赖
+        run: npm ci --prefix tools/remote-server --prefer-offline --no-audit --fund=false
+
+      - name: 固定服务端OAI版本协商回归
+        run: npm test --prefix tools/remote-server
+
+      - name: 固定 ACP 投影关闭风险观察
+        run: node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
+
+      - name: 安装独立手机 MCP 官方 SDK 依赖
+        run: npm ci --prefix integrations/oai-android-mcp --prefer-offline --no-audit --fund=false
+
+      - name: 手机 MCP 官方客户端与进程内桥回归
+        run: npm run test:phone-mcp
 
   # --- Android -------------------------------------------------------------
   android-setup:
@@ -609,6 +641,7 @@ jobs:
       - core
       - hermes-native
       - dsh
+      - remote
       # android-setup 必须在 gate 的依赖里：它失败时所有 android lane 都会
       # 被 skip，若不显式依赖，gate 会把「夹具没构建出来」误判为通过。
       - android-setup

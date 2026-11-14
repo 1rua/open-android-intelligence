@@ -44,6 +44,7 @@ data class ScreenNode(
     fun toMap(): Map<String, Any?> = mapOf("nodeId" to nodeId, "windowId" to windowId, "parentId" to parentId,
         "depth" to depth, "text" to text, "description" to description, "resourceId" to resourceId,
         "className" to className, "bounds" to bounds.toMap(), "clickable" to clickable,
+        "centerX" to (bounds.left + (bounds.right - bounds.left) / 2), "centerY" to (bounds.top + (bounds.bottom - bounds.top) / 2),
         "longClickable" to longClickable, "scrollable" to scrollable, "editable" to editable,
         "focused" to focused, "selected" to selected, "enabled" to enabled, "password" to password)
 }

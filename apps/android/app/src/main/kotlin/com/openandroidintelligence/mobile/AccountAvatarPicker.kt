@@ -38,6 +38,10 @@ internal class AccountAvatarPickerState : ViewModel() {
         private set
 
     fun save(context: Context, runtime: GatewayRuntime, uri: Uri?) {
+        save(context, uri, runtime::setAccountAvatar)
+    }
+
+    fun save(context: Context, uri: Uri?, persist: suspend (String, ByteArray) -> Unit) {
         val target = pendingProfileId
         pendingProfileId = null
         if (uri == null || target == null) return
@@ -49,7 +53,7 @@ internal class AccountAvatarPickerState : ViewModel() {
         viewModelScope.launch {
             try {
                 val image = withContext(Dispatchers.IO) { loadAccountAvatar(context, uri) }
-                if (currentProfileId == target) runtime.setAccountAvatar(target, image)
+                if (currentProfileId == target) persist(target, image)
                 else Toast.makeText(context, "账号已切换，头像未更换", Toast.LENGTH_SHORT).show()
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -58,6 +62,31 @@ internal class AccountAvatarPickerState : ViewModel() {
             } finally { saving = false }
         }
     }
+}
+
+/** Remote 单账号沿用相同系统选择器与本机头像编码，结果仍绑定发起时的账号。 */
+@Composable
+internal fun rememberRemoteAccountAvatarPicker(runtime: RemoteRuntime): AccountAvatarPicker {
+    val context = LocalContext.current.applicationContext
+    val remote by runtime.state.collectAsState()
+    val owner = runtime.connectedProfileId?.let { "$it:${remote.account?.accountId}" }
+    val state: AccountAvatarPickerState = viewModel()
+    SideEffect { state.currentProfileId = owner }
+    DisposableEffect(state) { onDispose { state.currentProfileId = null } }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        state.save(context, uri, runtime::setAccountAvatar)
+    }
+    val image by produceState<ImageBitmap?>(null, owner, remote.accountAvatarBase64) {
+        value = withContext(Dispatchers.IO) { decodeAccountAvatar(remote.accountAvatarBase64) }
+    }
+    val pick: (() -> Unit)? = if (owner == null) null else ({
+        if (!state.saving && state.pendingProfileId == null) {
+            state.pendingProfileId = owner
+            try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+            catch (_: Exception) { state.pendingProfileId = null; Toast.makeText(context, "无法打开系统相册", Toast.LENGTH_SHORT).show() }
+        }
+    })
+    return AccountAvatarPicker(image, pick)
 }
 
 @Composable

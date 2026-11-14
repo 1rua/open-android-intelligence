@@ -70,6 +70,14 @@ SECURITY_OR_CONTRACT_PATHS = {
     "apps/android/ci/hermes-fixture-requirements.txt",
 }
 
+# 旧 DSH 的共享安装/清单支持面也需要 Node adapter 回归。
+DSH_ADAPTER_SUPPORT_PATHS = {
+    "integrations/package.json", "integrations/package-lock.json", "integrations/tsconfig.json",
+    "oai-core/src/oai_core/adapters/dsh.py", "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh.py", "oai-core/tests/test_dsh_setup.py",
+    "oai-core/tests/test_dsh_installation.py", "oai-core/tests/test_dsh_builtin_contract.py",
+}
+
 # Test modules that only the Hermes lane executes. The Core job explicitly
 # `--ignore`s them, so classifying them as "core" alone would let a change to a
 # test file pass CI without ever running that file.
@@ -117,7 +125,7 @@ MODULE_LANE_TO_APP_SECTION = {
 # build script (verified by tools/test_ci_planning.py against the real files).
 MODULE_DEPENDENTS = {
     "gateway-client": ("device", "conversation", "plugins"),
-    "control-ports": ("conversation", "plugins", "notifications"),
+    "control-ports": ("gateway", "conversation", "plugins", "notifications"),
     "capability-ports": ("plugins", "notifications"),
     "platform-kernel": ("conversation", "plugins", "notifications", "device"),
     "plugin-package": ("plugins",),
@@ -163,6 +171,7 @@ LANES = (
     "core",          # oai-core Python suite (3.11 + 3.12)
     "hermes",        # optional Session Adapter + native Hermes SDK
     "dsh",           # DSH Node bridge
+    "remote",        # 固定 ACP 投影关闭风险观察
     "android-device",       # device primitives, local authorization
     "android-platform",     # platform kernel recovery
     "android-notifications",  # settings/notification policy/encrypted state
@@ -315,9 +324,20 @@ def classify_path(
         sections.add("plugins")
         return True
 
-    if path.startswith("integrations/dsh-session-adapter/"):
+    if path.startswith("integrations/oai-android-mcp/"):
+        lanes["remote"] = True
+        return True
+
+    if path.startswith(("tools/remote/", "tools/remote-server/")):
+        # 固定 ACP 投影观察独立于旧 DSH Session Adapter lane。
+        lanes["remote"] = True
+        return True
+
+    if path.startswith("integrations/dsh-session-adapter/") or path in DSH_ADAPTER_SUPPORT_PATHS:
         lanes["dsh"] = True
         lanes["fast"] = True
+        if path.startswith("oai-core/"):
+            lanes["core"] = True
         return True
 
     if path.startswith("integrations/hermes-session-adapter/") or "hermes" in path:

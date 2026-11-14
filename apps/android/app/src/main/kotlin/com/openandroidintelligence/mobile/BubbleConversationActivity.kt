@@ -48,7 +48,7 @@ class BubbleConversationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         target = targetFromIntent(intent)
         val app = application as? OpenAndroidIntelligenceApplication
-        val runtime = app?.gatewayRuntime
+        val runtime = app?.remoteRuntime
         // 系统气泡窗口与主界面共用同一份外观偏好：深浅、动态取色、减少动态都跟随用户设置，
         // 而不是永远跟随系统 + 品牌色。首帧前先把系统栏图标对齐，避免出现反向配色的状态栏。
         applySystemBarContrast(appearanceIsDark(app?.appearancePreferences?.settings?.value ?: AppearanceSettings()))
@@ -116,20 +116,18 @@ class BubbleConversationActivity : ComponentActivity() {
 }
 
 @Composable
-private fun BubbleConversationContent(runtime: GatewayRuntime, target: ReplyNotificationTarget?, onClose: () -> Unit) {
-    val phase by runtime.phase.collectAsState()
+private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotificationTarget?, onClose: () -> Unit) {
+    val connection by runtime.state.collectAsState()
     val sessions by runtime.nativeConversationNotifications.sessions.collectAsState()
     // A replacement authenticated workspace invalidates every old picker and draft destination.
     val activeSession by runtime.controller.collectAsState()
     // 原生模式要等 Agent 发现完成才知道目标是否可用；不订阅这份状态，气泡会在
     // 发现完成后仍停在“正在连接”，除非用户把窗口关了重开。
-    val nativeAgents by runtime.nativeAgents.collectAsState()
-    val nativeAgentsState = nativeAgents?.state?.collectAsState()?.value
-    LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
-    // 目标所属 Agent 一旦被本账号发现，原生气泡就不再依赖主界面；在列表还没到达
-    // 之前这里保持“正在连接”，发现完成后自动继续。
-    val agentDiscovered = target?.agentId == null ||
-        nativeAgentsState?.agents?.any { it.id == target.agentId } == true
+    LaunchedEffect(runtime, target) {
+        runtime.restoreSessionIfAvailable().join()
+        target?.let { runtime.activateNotificationEndpoint(it) }
+    }
+    val agentDiscovered = target?.agentId != null && connection.selected != null
     // 直接求值而不缓存：目标可用性还依赖工作区与连接阶段。
     val valid = target != null && agentDiscovered && runtime.isBubbleTargetCurrent(target)
     // 原生会话由气泡自己的控制器承载，不依赖主界面当前打开的是哪个会话/Agent；
@@ -161,12 +159,9 @@ private fun BubbleConversationContent(runtime: GatewayRuntime, target: ReplyNoti
     if (!valid) {
         val message = when {
             target == null -> "会话链接无效"
-            phase == ConnectionPhase.Negotiating || phase == ConnectionPhase.Authenticating -> "正在连接 Gateway…"
-            // 已连上但还没发现这个 Agent：说清楚是在等待，而不是暗示账号不对。
-            phase is ConnectionPhase.Connected && !agentDiscovered -> "正在查找该 Agent…"
-            phase is ConnectionPhase.Connected -> "此气泡属于其他账号，无法读取或回复"
-            phase is ConnectionPhase.Failed -> "Gateway 连接失败，请在应用中重新连接"
-            else -> "Gateway 尚未连接，请在应用中连接后重试"
+            connection.busy -> "正在连接 Remote…"
+            connection.account != null -> "请在应用中选择此会话所属的 Agent 与工作区"
+            else -> "Remote 尚未连接，请在应用中连接后重试"
         }
         BubbleUnavailable(message, onClose)
         return

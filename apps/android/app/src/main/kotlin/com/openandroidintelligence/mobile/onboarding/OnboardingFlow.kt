@@ -151,7 +151,7 @@ fun OnboardingFlow(
             // 用户刚在这里拒绝，连上网关时又会被弹一次——正是需求禁止的重复弹窗。
             if (id == "notifications") {
                 (context.applicationContext as? OpenAndroidIntelligenceApplication)
-                    ?.gatewayRuntime?.replyNotifications?.markPermissionRequested()
+                    ?.remoteRuntime?.replyNotifications?.markPermissionRequested()
             }
         }
         pendingPermissionId = null

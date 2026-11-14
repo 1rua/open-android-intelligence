@@ -1,0 +1,50 @@
+{
+  "repository": "liguobao/ds-harness-remote",
+  "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+  "files": [
+    {
+      "path": "apps/server/src/gateway.ts",
+      "sha256": "b27b4ff2e6947c73c1e034e8cc664eb02d1bd698559cd6e13593dc2f8f5133d6"
+    },
+    {
+      "path": "apps/server/src/store.ts",
+      "sha256": "31c746275255df90893cc341ce44c0ac420768e662589ccf3e09f87b629e8924"
+    },
+    {
+      "path": "apps/server/src/config.ts",
+      "sha256": "b0f5f2650b991ebbabad43bdf9a732f1b6a6342634678bf6147f3123868d8e7d"
+    },
+    {
+      "path": "apps/server/src/logger.ts",
+      "sha256": "1c9aefe9cb6b917aeb8f5d850c06f4522740cd5b2b8d4f5078d83d257319f1d4"
+    },
+    {
+      "path": "apps/server/src/server.ts",
+      "sha256": "91a725bb2e799bfc5f9b2e6c0b144510ce0749443d6f0b1ac38837aaa8cd9e47"
+    },
+    {
+      "path": "apps/server/src/ice.ts",
+      "sha256": "63597c2c8d41c094b151b0642ee71c855927e2651a33f672ff55c905ddcc5bd7"
+    },
+    {
+      "path": "packages/protocol/src/index.ts",
+      "sha256": "37978dc499c5d98ec31bb37e3a9c7e1682f09962ab327ea43f56964f52bd3db2"
+    },
+    {
+      "path": "packages/protocol/src/wire-json.ts",
+      "sha256": "f41255f95c2046579a66d3cb5bb991fcc751d9724f37f2edc61d988fe523f591"
+    },
+    {
+      "path": "packages/protocol/src/loopback.ts",
+      "sha256": "4a600abb00f2815a962186f9ffa6b678d2f5be79a2f817aac630062e0a3c0c8f"
+    },
+    {
+      "path": "packages/protocol/src/close-semantics.ts",
+      "sha256": "e9733d7cedd3369b88942bbd50c4b6bed3e220615637ae18c5bcab065cd8c19a"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d"
+    }
+  ]
+}

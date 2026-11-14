@@ -32,6 +32,15 @@ CORE_SECURITY_CONTRACT_PATTERNS = [
     "package-lock.json",
 ]
 
+# 旧 DSH 适配器及其真实安装/配置支持面，不以文件名包含 dsh 推断依赖。
+DSH_ADAPTER_SUPPORT_PATHS = {
+    "integrations/package.json", "integrations/package-lock.json", "integrations/tsconfig.json",
+    "oai-core/src/oai_core/adapters/dsh.py", "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh.py", "oai-core/tests/test_dsh_setup.py",
+    "oai-core/tests/test_dsh_installation.py", "oai-core/tests/test_dsh_builtin_contract.py",
+}
+
+
 def get_git_diff_files(since_ref: str | None) -> list[str]:
     cmd = ["git", "-C", str(REPO_ROOT), "diff", "--name-only"]
     if since_ref:
@@ -77,6 +86,8 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_android_kernel": False,
         "affects_hermes": False,
         "affects_dsh": False,
+        "affects_remote": False,
+        "affects_phone_mcp": False,
         "affects_plugins": False,
         "affects_android_control": False,
         "affects_android_conversation": False,
@@ -91,6 +102,15 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         return impact
 
     for f in changed_files:
+        # 文档中的宿主名称不代表修改了可选适配器实现。
+        if f.startswith("docs/") or f.endswith(".md"):
+            continue
+        if f.startswith("integrations/oai-android-mcp/"):
+            impact["affects_phone_mcp"] = True
+            continue
+        if f.startswith(("tools/remote/", "tools/remote-server/")):
+            impact["affects_remote"] = True
+            continue
         if f in {"tools/observe-communication.py", "tools/test_observe_communication.py",
                  "tools/audit-communication.py", "tools/test_audit_communication.py"}:
             impact["affects_observer"] = True
@@ -108,6 +128,11 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             impact["affects_configuration"] = True
         if f.startswith("apps/android/platform-kernel/"):
             impact["affects_android_kernel"] = True
+        if f.startswith("apps/android/control-ports/"):
+            # gateway-client 消费控制域类型；其测试及上层会话装配均须跟随。
+            impact["affects_android_gateway"] = True
+            impact["affects_android_conversation"] = True
+            impact["affects_android_app"] = True
         if f.startswith("oai-core/"):
             impact["affects_oai_core"] = True
         if "hermes" in f or f in {
@@ -118,7 +143,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
             "oai-core/tests/test_communication_process_recovery.py",
         }:
             impact["affects_hermes"] = True
-        if "dsh" in f:
+        if f.startswith("integrations/dsh-session-adapter/") or f in DSH_ADAPTER_SUPPORT_PATHS:
             impact["affects_dsh"] = True
         if f.startswith("plugins/") or f.startswith("plugin-tooling/"):
             impact["affects_plugins"] = True
@@ -290,6 +315,12 @@ def execute_strategy(
         if ret != 0:
             return ret
 
+    if impact.get("affects_phone_mcp") or level == "full":
+        print("\n--- 手机 MCP 官方 SDK 与桥接回归 ---")
+        ret = run_command(["npm", "run", "test:phone-mcp"])
+        if ret != 0:
+            return ret
+
     # 2. Python Core 测试
     if (impact["is_full_required"] and level != "fast") or impact["affects_oai_core"] or level == "full":
         print("\n--- 阶段 2: OAI Core 单元测试 ---")
@@ -337,8 +368,8 @@ def execute_strategy(
         hermes_env = os.environ.copy()
         sdk_candidates = [
             os.environ.get("HERMES_SDK_ROOT"),
+            str(REPO_ROOT / ".toolchains/hermes-sdk-75b083e"),
             str(REPO_ROOT.parents[1] / ".toolchains/hermes-sdk-75b083e"),
-            "/mnt/data/projects/open-android-intelligence/.toolchains/hermes-sdk-75b083e",
         ]
         sdk_root = next((c for c in sdk_candidates if c and Path(c).is_dir()), None)
         base_paths = [str(REPO_ROOT / 'oai-core/src'), str(REPO_ROOT / 'integrations/hermes-session-adapter/src')]
@@ -372,6 +403,19 @@ def execute_strategy(
                 "oai-core/tests/test_native_event_sync.py",
             ])
         ret = run_command(hermes_cmd, env=hermes_env)
+        if ret != 0:
+            return ret
+
+    # 固定 ACP 投影观察独立于旧 Core，不作为后台委派放行门禁。
+    if impact.get("affects_remote") or level == "full":
+        print("\n--- 固定 ACP 投影关闭风险观察 ---")
+        ret = run_command([
+            "node", "--experimental-vm-modules", "--test",
+            "tools/remote/projection-scope.test.mjs",
+        ])
+        if ret != 0:
+            return ret
+        ret = run_command(["npm", "test", "--prefix", "tools/remote-server"])
         if ret != 0:
             return ret
 

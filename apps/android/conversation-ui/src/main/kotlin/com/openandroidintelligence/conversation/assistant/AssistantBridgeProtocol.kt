@@ -115,7 +115,10 @@ data class AssistantTimelineEntryDto(
     /** 仅用于当前页面呈现，不进入消息持久化。 */
     val presentationOrigin: String? = null,
     val presentationRevision: Long = 0L,
+    val reasoning: List<AssistantReasoningDto> = emptyList(),
 )
+
+data class AssistantReasoningDto(val id: String, val text: String, val bodyOffset: Int, val complete: Boolean)
 
 /**
  * 附件元数据。
@@ -356,6 +359,7 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
     executionGenerationState = executionGenerationState?.name,
     presentationOrigin = presentation?.origin?.name,
     presentationRevision = presentation?.revision ?: 0L,
+    reasoning = reasoning.map { AssistantReasoningDto(it.id, it.text, it.bodyOffset, it.complete) },
 )
 
 /** 把一条线上投影还原为界面条目。 */
@@ -381,6 +385,7 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry = TimelineEntry(
     executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
     presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
         ?.let { StreamPresentationMetadata(it, presentationRevision) },
+    reasoning = reasoning.map { com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete) },
 )
 
 private fun TimelineAttachment.toAssistantAttachmentDto(): AssistantAttachmentDto = AssistantAttachmentDto(
@@ -509,7 +514,9 @@ object AssistantWireBudget {
         val adjusted = entries.mapIndexed { index, entry ->
             // 流式尾条是仍在增长的增量，截掉中段会隐藏最新内容；尾条正文必须完整送达。
             val streamingTail = (index == lastIndex && entry.isStreaming) || entry.key == protectedMessageId
-            if (streamingTail) entry else entry.copy(text = truncateText(entry.text))
+            if (streamingTail) entry else entry.copy(text = truncateText(entry.text), reasoning = entry.reasoning.map {
+                it.copy(text = truncateText(it.text))
+            })
         }
 
         // 先按条数封顶；保留最新条目，因此流式尾条必然留下。
@@ -675,6 +682,9 @@ private fun AssistantTimelineEntryDto.toJson(): JSONObject = JSONObject().apply 
     if (executionFact) put("executionFact", true)
     executionGenerationState?.let { put("executionGenerationState", it) }
     presentationOrigin?.let { put("presentationOrigin", it); put("presentationRevision", presentationRevision) }
+    put("reasoning", reasoning.toJsonArray { block -> JSONObject().apply {
+        put("id", block.id); put("text", block.text); put("bodyOffset", block.bodyOffset); put("complete", block.complete)
+    } })
 }
 
 /** 测量与编码共用同一份序列化，预算不会和实际 payload 走偏。 */
@@ -759,6 +769,11 @@ private fun JSONObject.toTimelineEntryDto(): AssistantTimelineEntryDto = Assista
     executionGenerationState = stringOrNull("executionGenerationState"),
     presentationOrigin = stringOrNull("presentationOrigin"),
     presentationRevision = optLong("presentationRevision", 0L),
+    reasoning = optJSONArray("reasoning").objects().mapNotNull { block ->
+        val id = block.stringOrNull("id")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        val offset = block.optInt("bodyOffset", -1).takeIf { it >= 0 } ?: return@mapNotNull null
+        AssistantReasoningDto(id, block.stringOrEmpty("text"), offset, block.optBoolean("complete", false))
+    },
 )
 
 /**

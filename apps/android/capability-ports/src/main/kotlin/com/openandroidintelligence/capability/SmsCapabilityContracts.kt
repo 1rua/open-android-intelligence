@@ -1,6 +1,9 @@
 package com.openandroidintelligence.capability
 
 const val MAX_SMS_BATCH_RECORDS: Int = 10_000
+const val SMS_SEND_CAPABILITY_ID: String = "org.openandroidintelligence.sms.send"
+const val SMS_SEND_PRIMITIVE_ID: String = "kernel.sms.send"
+const val SMS_SEND_MAX_TEXT_LENGTH: Int = 65_535
 
 private val SMS_RECORD_ID = Regex("sms:[1-9][0-9]*")
 
@@ -48,6 +51,50 @@ enum class SmsSyncInterval {
             MINUTES_15 -> 15 * 60 * 1000L
             MINUTES_30 -> 30 * 60 * 1000L
             MINUTES_60 -> 60 * 60 * 1000L
+    }
+}
+
+/** 原生短信发送请求。正文不参与日志、审计摘要或 [toString]。 */
+data class SmsSendRequest(
+    val subscriptionId: Int,
+    val recipient: String,
+    val text: String,
+) {
+    init {
+        require(subscriptionId >= 0) { "subscription ID must be non-negative and explicit" }
+        require(recipient.isNotBlank()) { "SMS recipient must not be blank" }
+        require(recipient.length <= 256) { "SMS recipient is too long" }
+        require(text.isNotEmpty()) { "SMS text must not be empty" }
+        require(text.length <= SMS_SEND_MAX_TEXT_LENGTH) { "SMS text is too long" }
+    }
+
+    override fun toString(): String =
+        "SmsSendRequest(subscriptionId=$subscriptionId,recipientLength=${recipient.length},textLength=${text.length})"
+}
+
+enum class SmsSendStatus {
+    SENT,
+    FAILED,
+    CANCELED,
+    OUTCOME_UNKNOWN,
+}
+
+/** 只记录系统回调事实；[text] 与完整收件人永远不进入结果。 */
+data class SmsSendResult(
+    val status: SmsSendStatus,
+    val segmentCount: Int,
+    val sentSegments: Int,
+    val failedSegments: Int,
+    val failureCode: String? = null,
+) {
+    init {
+        require(segmentCount >= 1)
+        require(sentSegments in 0..segmentCount)
+        require(failedSegments in 0..segmentCount)
+        require(sentSegments + failedSegments <= segmentCount)
+        require(status != SmsSendStatus.SENT || sentSegments == segmentCount)
+        require(status != SmsSendStatus.FAILED || failedSegments > 0)
+        require(status != SmsSendStatus.OUTCOME_UNKNOWN || failureCode == "OUTCOME_UNKNOWN")
     }
 }
 

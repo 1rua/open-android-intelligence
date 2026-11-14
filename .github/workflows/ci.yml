@@ -54,6 +54,7 @@ jobs:
           npm install --global npm@11.16.0
           npm ci
           npm ci --prefix plugin-tooling
+          npm ci --prefix tools/remote-server
           python -m pip install pytest
 
       # Historical protocol oracle only: the fixed pre-migration Gateway below
@@ -286,6 +287,7 @@ jobs:
       - name: Build signed plugin packages with an isolated test author
         run: |
           npm ci --prefix plugin-tooling
+          npm ci --prefix tools/remote-server
           umask 077
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-test-plugin-seed.bin"
           trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-test-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT

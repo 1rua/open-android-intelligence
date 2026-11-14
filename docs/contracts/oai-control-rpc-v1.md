@@ -23,8 +23,17 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 - Virtual Host 固定暴露工作区 `phone-capabilities` 和常驻会话 `control-bus`。
   每个独立任务创建新的任务 Session；后续步骤使用该任务的 Session，不能把不同任务的
   消息、审批、节点引用和结果合并到全局 `control-bus`。
-- `control-bus` 用于发现控制能力与建立任务关联。新建任务必须走真实 `session/create`，
-  返回独立 Session ID；不把每次创建请求伪装成同一个 `control-bus`。
+- `control-bus` 用于发现控制能力、单步快速调用与建立任务关联。新建独立任务必须走真实
+  `session/create`，返回独立 Session ID；不把每次创建请求伪装成同一个 `control-bus`。
+  总线中的请求按可信拥有者与 request_id 隔离，不隐式继承前一次请求的审批、快照或任务上下文。
+  总线单步屏幕动作仍须显式提供绑定同一可信拥有者与 control-bus 的有效 snapshotId；
+  可以复用当前进程尚有效的显式快照引用，禁止用全局“最近快照”自动补齐。快照失效照常拒绝。
+  多步操作推荐创建独立任务，任务快照不得转用于总线或另一任务。
+- 控制任务的消息、Prompt、轮次、语义树、截图与结果正文只保存在当前进程内存，不写入
+  聊天历史或持久执行队列；进程重启后不恢复旧任务、不回放、不自动续做。正常聊天镜像、
+  主动推送队列与短信定时任务仍按各自已确认功能加密持久，不受此控制任务边界替代。
+- 持久化的旧任务拥有者关联和失效标记仅用于最小回执查询及防止旧 ID 被冒用，不恢复
+  旧任务 Session 的可执行状态。旧 taskSessionId 不接受后续业务 Prompt；新工作建立新任务。
 - 任务拥有者来自已认证 Remote 对端的身份与本机授权，不能来自 Prompt 中自报的
   `account`、`principal` 或设备 ID。任务建立时绑定 Remote Server origin、双方设备身份、
   本机授权代际和任务 Session。执行、取消、查询和文件读取都重新核对这一绑定。
@@ -77,6 +86,7 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
 | `ui.drag` | `snapshotId`、`x/y/endX/endY`；可传 `durationMs` | `android_drag` |
 | `ui.launch_app` | `snapshotId`、`packageName`，由原生端口校验目标 | `android_launch_app` |
 | `plugin.invoke` | `pluginId`、版本化 `capabilityId`、`method`、`params`；按已验证 `.alp` 声明与内核端口执行 | 以下数据工具及通用已授权插件调用 |
+| `request.status` | `targetRequestId`、`targetTaskSessionId`；经当前 control-bus 查询该可信拥有者的原最小回执，不恢复旧任务 | `android_request_status` |
 | `request.cancel` | `targetRequestId`；仅取消同一任务内该可信拥有者的指定请求，返回原请求的真实状态 | `android_cancel_request` |
 
 滚动、拖动、启动应用和时长参数来自现有
@@ -101,7 +111,10 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
 ## 3. 受理、持久回执与结果
 
 在调用任何有副作用的端口前，手机必须原子记录请求标识、可信拥有者、任务 Session、
-规范化参数摘要和状态。上游工具的内存 operation ledger 不是手机的持久执行账本。
+操作种类、规范化参数摘要、execution/state 和取消关联。账本只保存上述最小元数据，不能保存
+Prompt、输入文本、短信/通知正文、完整树、截图或结果正文。上游工具的内存 operation ledger
+不是手机的持久执行账本。请求进入副作用端口前先持久记录执行栅栏；该记录之后崩溃而无法
+证明是否已进入端口时保守记为未知，不能通过重放取得确定结果。
 同一拥有者与 request_id 重复提交相同任务和参数时只返回已有回执；改任务或参数返回
 `REQUEST_ID_CONFLICT`，不能重新执行。
 
@@ -148,8 +161,36 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
   审批期间参数或界面失效必须重新拒绝或重新发起本机确认，不能沿用旧批准。
 - 执行前已确定没有进入端口的请求可回报 `not_started`。若进程崩溃、断线或端口超时后
   不能证明副作用是否发生，回执为 `outcome_unknown/unknown`，不能当作失败自动重发。
-- 重启恢复时保留 request_id、参数摘要和未知事实；结果已持久化则返回原结果。
-  不通过新的 request_id 或重新创建任务来绕过去重。账本不可用时拒绝新的副作用操作。
+- 重启恢复时保留最小回执与未知事实，不恢复结果正文或执行队列。尚未进入执行栅栏的
+  待执行/待确认请求结束为未执行；进入栅栏后无法证明副作用结果的请求记为
+  `outcome_unknown/unknown`。已经持久确定的原终态保持原事实，不能因正文丢失改成执行失败。
+  不通过新的 request_id 或重新创建任务绕过去重。账本不可用时拒绝新的副作用操作。
+- 当前进程仍保有结果正文时 `resultAvailable:true`；正文未保留时为 `false`。后者不代表
+  没有执行，不能返回伪造空结果、旧树或占位截图；读取正文应明确报告不可用。
+- 只读 `request.status` 使用新的查询 request_id，其 `args.targetRequestId` 和
+  `args.targetTaskSessionId` 指向原请求与原任务。查询只能从当前 `control-bus` 发起，
+  以当前可信拥有者查账本并核对原任务；传入 ID 不授予访问权。原请求属于总线时原任务为
+  `control-bus`。查询自己的回执与原回执不混用，原最小回执置于本次查询的 `result` 内：
+
+  ```json
+  {
+    "request_id": "status-query-0001",
+    "taskSessionId": "control-bus",
+    "state": "completed",
+    "execution": {"status": "succeeded"},
+    "result": {
+      "request_id": "original-request-0001",
+      "taskSessionId": "original-task",
+      "state": "completed",
+      "execution": {"status": "succeeded"},
+      "resultAvailable": false
+    }
+  }
+  ```
+
+  查询不恢复原 Session、审批、快照或正文，也不重新执行原操作。查询关联只存在当前进程，
+  不递归产生新的持久任务历史。未找到不能被解释为从未执行；拒绝或查不到不得泄露他人任务。
+  `session/follow/page` 与电脑内存中的 `remote_get_operation` 不能替代该手机账本查询。
 - 按请求取消使用 `request.cancel`，取消信封有独立 request_id，`args.targetRequestId` 指向
   原请求。路由器在普通动作排队前处理该受限管理操作，并在同一原子状态转换中核对拥有者、
   任务及目标请求，标记取消并阻止其待执行步骤；不能把取消排在正在等待本机确认的动作之后。
@@ -159,8 +200,9 @@ ui.tap --request-id f4b76bb2-d134-419f-a948-65059486660b {"snapshotId":"snapshot
 - 取消只阻止尚未开始的执行或请求原生端口停止后续步骤，不撤销已经完成的点击、发送
   或文件导出；无法确认停止时保留未知状态。原生 session/cancel 则明确取消整个任务 Session，
   冻结该任务后续请求，不关闭 control-bus 或影响其他任务。关闭等待或 MCP 进程退出不等于取消任务。
-- 每个结果作为该任务会话中的真实 Assistant 记录发布，并保留 request_id；
-  活动执行、待人工处理和终态通过真实 Session 投影同步，不能只来回切换 running/idle。
+- 每个结果在当前进程中作为该任务会话的真实 Assistant 记录发布，并保留 request_id；
+  这些记录不作为持久历史，重启后不恢复。活动执行、待人工处理和终态通过真实 Session
+  投影同步，不能只来回切换 running/idle。
   任务等待本机确认时必须可观察为 `needs_user_input`，不能伪装成完成。
   为兼容现有工具的状态识别，实际轮次发出 `turn/start`、`turn/end`，本机待确认发出带唯一
   ID 的 `approval/asked`，本机决定后发出对应 `approval/decided`。这些记录仅展示本机门禁
@@ -236,7 +278,10 @@ Typert 外层 requestId、Remote message ID 和 connectionId 保留各自传输�
 门面使用真正的 Session V3 header、seq/cursor、`assistant-stream` 与最终
 `assistant/message.data.stream`，不以自定义 running 布尔代替这些载体。
 
-截图或导出文件写入手机应用私有的虚拟工作区根，并关联任务和请求。结果仅给出 artifactId、
+截图或导出文件写入手机应用私有的临时虚拟工作区根，并关联任务和请求。文件只属于当前
+进程的任务生命周期，不作为控制历史持久回放；重启后旧 artifact 引用失效且不能被恢复为可读。
+临时存储残留不授予访问权。正常聊天媒体镜像与用户显式导出遵循其独立保留语义。
+结果仅给出 artifactId、
 工作区相对 path、mimeType、bytes 与版本；只允许合法任务拥有者通过 scoped 文件面读取。
 拒绝父目录跳转、绝对手机路径、跨任务引用和符号链接越界；不开放手机任意文件系统。
 `remote_download_file` 调用 `workspaceFiles/stat/readBytes`，不是凭一个 URL 下载。
@@ -246,7 +291,7 @@ Typert 外层 requestId、Remote message ID 和 connectionId 保留各自传输�
 Assistant 记录保留可完整读取的 request_id、执行结论和文件引用；不能截断 JSON 后仍声称
 已返回完整树。MCP 与原生入口都能继续按 artifact scope 取得完整结果。
 
-## 6. 本机 Bridge、MCP 与跨 Agent 委派
+## 6. 本机 Bridge 与手机 MCP
 
 Bridge 是安装在电脑 DSH 进程内的 OAI 适配插件。Stdio MCP 由各 Agent 启动，
 只调用 Bridge；不读出 Remote 私钥/token，不另建账号、穿透、Relay 或手机执行器。
@@ -260,44 +305,36 @@ HTTP Host/Origin 校验不因“本机调用”关闭；无浏览器 Origin 的 
 固定本机操作为 `status`、`list_endpoints`、`start`、`request_status`、`cancel`、
 `read_artifact`，分别用于版本/可用性、已授权目标、受理有类型请求、查询原回执、请求取消、
 读取本任务产物。`start` 在发送前返回或持久保存调用者可查询的 request_id 与任务关联；
-RPC 等待中断后仍能用同一标识查状态。`read_artifact` 不接受任意文件路径。
-接口只接受本契约操作或下述委派操作，不提供任意 namespace/method 代理。
+RPC 等待中断后仍能用同一标识查状态。`request_status` 通过当前 control-bus 的
+`session/prompt` 发送 `request.status`，原 task ID 只核对原回执归属；旧任务不必且不得恢复。
+`read_artifact` 不接受任意文件路径。
+接口只接受本契约的手机操作，不提供任意 namespace/method 代理或后台 Agent 委派。
 所有 MCP Android 工具映射到上述操作；另暴露 `android_request_status` 和
 `android_cancel_request`，保证审批等待、长任务和未知结果可以继续查询与停止。
 Android 的 Bridge `cancel` 根据原回执确定任务与 `targetRequestId`，通过同一任务的
 session/prompt 发送 `request.cancel` 信封；原生 remote_interrupt_session 仍采用整任务语义。
 两者不能混用，也不能通过“先查请求再 session/cancel”的客户端竞态模拟精确取消。
-跨 Agent 委派的持久回执由 Bridge 保存，绑定同一活动账号、完整目标、任务与参数摘要；
-手机请求仍以手机账本为执行权威。Bridge 恢复后不能因本地没有上游内存回执就重发已受理
-委派，未知结果保留未知。MCP 子进程不持有这些权威状态，进程重启后通过 Bridge 查询。
+MCP 只暴露 `android_*`，发现与选择的目标仅为 OAI Virtual Host 的 `phone-capabilities`；
+Bridge 不保存或派发后台跨 workspace 的 Agent 任务。手机账本仍是手机请求执行、防重和取消的权威。
+MCP 子进程不持有执行权威状态，进程重启后经 Bridge 查询最小回执；未知写入不得自动重发。
 
-Bridge 的目标不是官方独立 SDK。固定上游版本提供进程内 `dshRemoteClient.runSessionTool`
-及当前 `typertGateway.invoke/stream`；没有公开的不改变当前选择的任意后台通道租用接口。
-本方案不访问 private hooks，不 fork 上游，按以下已经确认的边界实施：
-
-1. 手机任务经原生 Harness 会话工具兼容门面进入同一执行器。
-2. `remote_agent_delegate` 显式接收 `endpointId` 和任务文本/已支持附件，目标只来自当前
-   账号已授权且真实就绪的 AgentEndpoint；backend 不可用时失败，不换另一个 Agent。
-3. Bridge 串行取得桌面工作区选择权，使用公开的 Host/工作区选择接口切换当前 DSH 目标，
-   再通过该目标的 Typert 投影调用真实创建、Prompt、观察和取消。覆盖 Harness、Codex 与
-   已就绪 ACP 后端，但不把仅支持 Harness 的 `runSessionTool` 谎称支持全部 backend。
-4. 持有选择权期间不自动切回旧工作区；用户已接受桌面当前工作区发生切换的副作用。
-   用户手动切换、退出、账号/Host/后端代际变化时，在途调用立即失效并释放选择权，
-   未发送的请求拒绝，已发送且结果未明的请求保留未知，禁止向新目标续发或自动重放。
-   目标已经开始的 Agent 任务不因观察失效而被虚报为取消，不自动抢回旧选择。
-   每次调用前后都以公开状态/事件确认目标绑定；无法证明当前目标时拒绝调用，不猜测选路。
-5. 委派回执绑定完整目标、原生 Session/Thread、任务和 request_id。后端审批保留原生
-   单次审批契约；待审批时返回需要人工处理，不自动允许，也不把本机 Bridge token 当作审批。
-
-`remote_agent_delegate` 的 `action` 为 `start`、`status` 或 `cancel`：start 接收稳定
-request_id、endpointId 与任务内容，返回任务句柄；status/cancel 使用该句柄查询或取消原委派。
-Bridge 按回执种类区分 Android 精确请求取消与 Agent 原生任务取消；委派取消只发送给已验证的
-原后端 Session/Thread。目标绑定失效时明确返回未知或无法取消，不向电脑当前新工作区发送取消。
+跨 workspace 后台调度属于上游，不作为本客户端 P0/P4 或发布的前置条件。
+正常聊天中用户可随时手动切换 Host、DSH/Codex/ACP workspace 与对话。
+客户端对每个选择建立独立连接或连接代际，切换时取消并排空旧 stream/pending-open，
+拒绝旧结果更新新目标；已发送而结果未明的写入保持未知，不能重放、改投或自动抢回选择。
+这类手动切换的本地保护必须由客户端实际实现与回归证明，不由历史后台委派探针替代。
 
 各 Agent 通过电脑端原生配置挂载 Stdio MCP。上游 Remote ACP 的 `session/new/load`
 固定使用 `mcpServers:[]`，不能声称可从手机会话参数注入 MCP。
 不同后端的 Prompt、图片、模型、effort、审批和中断以真实 capability 与确认结果为准。
 模型/effort 目录可能属于 Session，不能用 Endpoint 缓存替代当前会话确认状态。
+
+MCP 首次 `android_get_ui_tree` 或截图调用可以真实创建任务，并返回 `taskSessionId` 与
+`snapshotId`；后续读取、截图和动作显式携带原 `taskSessionId`，动作同时携带对应
+`snapshotId`。动作缺少任务时不得暗中新建任务。并发任务分别 create，不以 MCP 进程中
+全局“最近任务”选路。截图生成新快照时返回其新 ID 和对应节点映射。旧任务在重启后只可
+查询最小回执，不可继续动作。`control-bus` 单步调用不隐式选择前一次快照；调用者可显式
+引用仍有效且绑定同一可信拥有者/control-bus 的 snapshotId，所有快照与执行门禁保持不变。
 
 ## 7. 必须通过的验收
 
@@ -309,6 +346,8 @@ Bridge 按回执种类区分 Android 精确请求取消与 Agent 原生任务取
   读取结果及 `stat/readBytes` 下载；并发 stream、关闭、任务 owner 与文件 scope 不串线。
 - 同任务 A 已完成、B 正在执行时迟到取消 A，只返回 A 的原终态；等待本机确认的 A 可按 ID 取消，
   取消不能被动作队列阻塞。原生整任务取消冻结后续请求，MCP 精确取消不误停 B。
+- 内存历史不落盘，重启不回放/续做；旧 task 仅能从新总线查询最小回执，正文未保留不伪造结果。
+- MCP 树→截图→动作复用显式 task/snapshot，并发任务不串线；动作缺失任务或使用重启前快照拒绝。
 - 相同 request_id 重复、参数冲突、任务冲突、发送回执丢失、执行前/后崩溃、进程恢复、
   账本失败、取消竞态均不重复副作用；unknown 查询不被当作“尚未执行”。
 - 首次手动、范围内只读免逐次确认、敏感强制确认、系统权限撤销、锁屏与授权代际变化；
@@ -319,5 +358,5 @@ Bridge 按回执种类区分 Android 精确请求取消与 Agent 原生任务取
   超时、持续动画及读树失败保留动作真实结果，超时不触发重试。
 - Bridge 错误 bearer、非本地/跨源请求、登出、Server 切换与旧进程凭据失效均拒绝；
   外部 Agent 的 MCP 实际加载经过各后端验证，不以空 mcpServers 创建成功代替挂载验收。
-- 全部真实可用后端的串行委派、手动切桌面工作区、后端替换、审批、取消与断线均核对
-  目标和回执；未完成的后端或传输路径逐项标记，不声明整体通过。
+- MCP 工具白名单仅含 android_*，拒绝非手机 Host、其他 workspace 和任意 Agent 调用；
+  正常聊天的 Host/workspace/对话手动切换核对独立连接、代际、旧流取消排空及迟到结果拒绝。

@@ -1,0 +1,8 @@
+<resources>
+    <string name="remote_phone_confirm">远程手机操作需要本机确认：%1$s</string>
+    <string name="remote_phone_executing">正在执行远程手机操作</string>
+    <string name="remote_phone_allow">本次允许</string>
+    <string name="remote_phone_deny">拒绝</string>
+    <string name="remote_phone_stop">立即停止</string>
+    <string name="remote_phone_sms_confirmation">收件人：%1$s\nSIM 订阅：%2$d\n正文预览（共 %4$d 字）：\n%3$s</string>
+</resources>

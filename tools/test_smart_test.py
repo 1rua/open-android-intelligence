@@ -401,3 +401,86 @@ def test_observation_audit_edits_run_the_offline_regression(monkeypatch, changed
     assert runner.execute_strategy("fast", impact) == 0
     assert any("tools/test_audit_communication.py" in command for command in commands)
 
+
+
+@pytest.mark.parametrize("path", ["docs/plans/dsh-remote.md", "docs/reviews/hermes-remote.md"])
+def test_remote_documents_do_not_trigger_legacy_adapters(path):
+    runner = load_runner()
+    impact = runner.analyze_impact([path])
+    assert not impact["affects_dsh"]
+    assert not impact["affects_hermes"]
+    assert not impact["affects_remote"]
+
+
+@pytest.mark.parametrize("level", ["fast", "pr", "full"])
+def test_acp_projection_observation_runs_and_propagates_failure(level):
+    runner = load_runner()
+    commands = []
+
+    def execute(command, **kwargs):
+        commands.append(command)
+        return 23 if "tools/remote/projection-scope.test.mjs" in command else 0
+
+    runner.run_command = execute
+    impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
+    assert runner.execute_strategy(level, impact) == 23
+    assert commands[-1] == [
+        "node", "--experimental-vm-modules", "--test",
+        "tools/remote/projection-scope.test.mjs",
+    ]
+    assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
+
+
+@pytest.mark.parametrize("path", [
+    "integrations/dsh-session-adapter/index.js",
+    "integrations/dsh-session-adapter/install.mjs",
+    "integrations/dsh-session-adapter/cordis.patch.yml",
+    "integrations/package.json",
+    "oai-core/src/oai_core/dsh_installation.py",
+    "oai-core/tests/test_dsh_builtin_contract.py",
+])
+def test_legacy_dsh_real_support_paths_keep_adapter_coverage(path):
+    runner = load_runner()
+    assert runner.analyze_impact([path])["affects_dsh"]
+
+
+def test_remote_android_fixture_does_not_trigger_legacy_dsh_adapter():
+    runner = load_runner()
+    impact = runner.analyze_impact([
+        "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json",
+    ])
+    assert impact["affects_android_gateway"]
+    assert not impact["affects_dsh"]
+
+
+def test_full_still_runs_legacy_dsh_adapter_with_only_remote_changes():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
+    assert runner.execute_strategy("full", impact) == 0
+    assert any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
+
+
+def test_control_ports_remote_change_executes_gateway_and_conversation_pr_tasks():
+    runner = load_runner()
+    impact = runner.analyze_impact([
+        "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt",
+    ])
+    tasks = [task for invocation in runner.android_test_invocations("pr", impact) for task in invocation]
+    assert ":gateway-client:testDebugUnitTest" in tasks
+    assert ":conversation-data:testDebugUnitTest" in tasks
+    assert ":conversation-ui:testDebugUnitTest" in tasks
+    assert ":app:testFullDebugUnitTest" in tasks
+
+
+def test_phone_mcp_routes_without_legacy_adapter_and_propagates_failure():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or (31 if "test:phone-mcp" in command else 0)
+    impact = runner.analyze_impact(["integrations/oai-android-mcp/src/stdio.mjs"])
+    assert impact["affects_phone_mcp"]
+    assert not impact["affects_dsh"]
+    assert not impact["affects_hermes"]
+    assert runner.execute_strategy("fast", impact) == 31
+    assert commands[-1] == ["npm", "run", "test:phone-mcp"]

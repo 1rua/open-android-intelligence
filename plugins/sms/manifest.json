@@ -3,8 +3,8 @@
   "plugin": {
     "id": "org.openandroidintelligence.sms",
     "version": "1.0.0",
-    "name": "SMS Query",
-    "description": "Official reference plugin for querying SMS messages"
+    "name": "SMS",
+    "description": "Official reference plugin for querying and locally sending SMS messages"
   },
   "author": {
     "algorithm": "Ed25519",
@@ -41,6 +41,11 @@
         "id": "org.openandroidintelligence.sms.cancel",
         "version": "1.0.0",
         "schema": "schemas/sms-cancel.json"
+      },
+      {
+        "id": "org.openandroidintelligence.sms.send",
+        "version": "1.0.0",
+        "schema": "schemas/sms-send.json"
       }
     ],
     "depends": [],
@@ -69,6 +74,11 @@
         "id": "kernel.background.run",
         "version": "1.0.0",
         "purpose": "Run authorized scheduled queries in the background"
+      },
+      {
+        "id": "kernel.sms.send",
+        "version": "1.0.0",
+        "purpose": "Send one SMS through the explicitly selected subscription after local confirmation"
       }
     ]
   },
