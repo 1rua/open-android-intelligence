@@ -87,6 +87,7 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
         "affects_hermes": False,
         "affects_dsh": False,
         "affects_remote": False,
+        "affects_phone_mcp": False,
         "affects_plugins": False,
         "affects_android_control": False,
         "affects_android_conversation": False,
@@ -103,6 +104,9 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
     for f in changed_files:
         # 文档中的宿主名称不代表修改了可选适配器实现。
         if f.startswith("docs/") or f.endswith(".md"):
+            continue
+        if f.startswith("integrations/oai-android-mcp/"):
+            impact["affects_phone_mcp"] = True
             continue
         if f.startswith("tools/remote/"):
             impact["affects_remote"] = True
@@ -308,6 +312,12 @@ def execute_strategy(
     if impact["affects_plugins"] or level == "full":
         print("\n--- 插件工具与清单回归 ---")
         ret = run_command(["npm", "test", "--prefix", "plugin-tooling"])
+        if ret != 0:
+            return ret
+
+    if impact.get("affects_phone_mcp") or level == "full":
+        print("\n--- 手机 MCP 官方 SDK 与桥接回归 ---")
+        ret = run_command(["npm", "run", "test:phone-mcp"])
         if ret != 0:
             return ret
 

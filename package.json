@@ -15,7 +15,8 @@
     "gateway:v2:conformance": "tsx gateway-contract/tools/run-openclaw-conformance.ts && python3 gateway-contract/tools/run-hermes-conformance.py && npm test --prefix gateway-contract -- test/cross-host-conformance.test.ts",
     "lock:check": "node --experimental-strip-types tools/check-dependency-lock.ts",
     "ci:plan": "python3 tools/ci/impact.py",
-    "mvp:lock:check": "npm run lock:check"
+    "mvp:lock:check": "npm run lock:check",
+    "test:phone-mcp": "npm test --prefix integrations/oai-android-mcp"
   },
   "dependencies": {
     "@noble/curves": "2.2.0",

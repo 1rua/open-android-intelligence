@@ -766,3 +766,11 @@ def test_control_ports_remote_types_reach_gateway_and_ui_consumers(impact):
     expected = {"android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications", "android-app", "android-play"}
     assert expected <= active_lanes(result)
     assert not result["unknown"]
+
+
+def test_phone_mcp_routes_to_remote_without_legacy_adapters(impact):
+    result = impact.classify([("M", "integrations/oai-android-mcp/src/stdio.mjs")])
+    assert result["lanes"]["remote"]
+    assert not result["lanes"]["dsh"]
+    assert not result["lanes"]["hermes"]
+    assert not result["full_required"]

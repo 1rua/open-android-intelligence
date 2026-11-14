@@ -335,7 +335,7 @@ jobs:
           npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
   remote:
-    name: Fixed ACP projection observation
+    name: Remote phone MCP and ACP observations
     needs: changes
     if: needs.changes.outputs.runs_remote == 'true'
     runs-on: ubuntu-latest
@@ -352,6 +352,12 @@ jobs:
 
       - name: 固定 ACP 投影关闭风险观察
         run: node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
+
+      - name: 安装独立手机 MCP 官方 SDK 依赖
+        run: npm ci --prefix integrations/oai-android-mcp --prefer-offline --no-audit --fund=false
+
+      - name: 手机 MCP 官方客户端与进程内桥回归
+        run: npm run test:phone-mcp
 
   # --- Android -------------------------------------------------------------
   android-setup:

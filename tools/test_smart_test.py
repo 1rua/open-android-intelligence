@@ -472,3 +472,15 @@ def test_control_ports_remote_change_executes_gateway_and_conversation_pr_tasks(
     assert ":conversation-data:testDebugUnitTest" in tasks
     assert ":conversation-ui:testDebugUnitTest" in tasks
     assert ":app:testFullDebugUnitTest" in tasks
+
+
+def test_phone_mcp_routes_without_legacy_adapter_and_propagates_failure():
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or (31 if "test:phone-mcp" in command else 0)
+    impact = runner.analyze_impact(["integrations/oai-android-mcp/src/stdio.mjs"])
+    assert impact["affects_phone_mcp"]
+    assert not impact["affects_dsh"]
+    assert not impact["affects_hermes"]
+    assert runner.execute_strategy("fast", impact) == 31
+    assert commands[-1] == ["npm", "run", "test:phone-mcp"]
