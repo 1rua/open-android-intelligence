@@ -173,7 +173,7 @@ class RemoteRuntimeTest {
 
     @Test fun `未登录导入地址后导出保持同一登录预填`() {
         val backup = remoteBackup()
-        assertTrue(backup.import(connectionBackup("https://prefill-b.example")).isSuccess)
+        backup.import(connectionBackup("https://prefill-b.example")).getOrThrow()
         assertNull(runtime.state.value.account)
         assertEquals("https://prefill-b.example", runtime.loginOrigin())
         assertEquals("https://prefill-b.example", exportedOrigin(backup.export().json))
@@ -183,7 +183,7 @@ class RemoteRuntimeTest {
         ready("one")
         val active = runtime.state.value.account
         val backup = remoteBackup()
-        assertTrue(backup.import(connectionBackup("https://prefill-b.example")).isSuccess)
+        backup.import(connectionBackup("https://prefill-b.example")).getOrThrow()
         assertEquals("https://prefill-b.example", exportedOrigin(backup.export().json))
         assertEquals(active, runtime.state.value.account)
         assertEquals("https://remote.example", runtime.state.value.account?.origin)
@@ -201,10 +201,12 @@ class RemoteRuntimeTest {
                 com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Rejected("TEST_REJECT")
         }
         val backup = remoteBackup(rejecting)
-        val text = Json.canonical(Json.of(mapOf("schemaVersion" to 1, "settings" to mapOf(
+        val text = backupDocument(mapOf(
             "connection" to mapOf("gatewayUrl" to "https://prefill-b.example"),
-            "notificationCollection" to mapOf("packageIds" to listOf("com.example.chat"), "fieldAccess" to "METADATA", "mode" to "ON_DEMAND")))))
-        assertTrue(backup.import(text).isFailure)
+            "notificationCollection" to mapOf("packageIds" to listOf("com.example.chat"), "fieldAccess" to "METADATA", "mode" to "ON_DEMAND")))
+        val failure = backup.import(text).exceptionOrNull()
+        assertNotNull(failure)
+        assertTrue(failure!!.message.orEmpty(), failure.message.orEmpty().contains("TEST_REJECT"))
         assertEquals("https://original.example", runtime.loginOrigin())
         assertEquals("https://original.example", exportedOrigin(backup.export().json))
     }
@@ -218,8 +220,11 @@ class RemoteRuntimeTest {
             com.openandroidintelligence.mobile.updates.AppUpdatePreferences(context, com.openandroidintelligence.mobile.updates.AppUpdateChannel.PREVIEW),
             policy, keyProvider = key, remoteRuntime = runtime)
     }
-    private fun connectionBackup(origin: String): String = Json.canonical(Json.of(mapOf("schemaVersion" to 1,
-        "settings" to mapOf("connection" to mapOf("gatewayUrl" to origin)))))
+    private fun connectionBackup(origin: String): String = backupDocument(mapOf("connection" to mapOf("gatewayUrl" to origin)))
+    private fun backupDocument(sections: Map<String, Map<String, Any>>): String =
+        com.openandroidintelligence.mobile.settings.backup.SettingsBackupCodec.encode(
+            sections.mapValues { (_, fields) -> Json.of(fields) as JsonValue.JObject },
+            appVersionName = "test", appVersionCode = 1, exportedAt = "2026-11-14T00:00:00Z")
     private fun exportedOrigin(text: String): String? {
         val root = JsonFields.obj(Json.parse(text)) ?: return null
         val settings = JsonFields.obj(JsonFields.field(root, "settings")) ?: return null
