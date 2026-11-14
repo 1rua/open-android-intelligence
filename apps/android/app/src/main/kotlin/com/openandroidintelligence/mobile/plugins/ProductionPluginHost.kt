@@ -348,8 +348,11 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             quarantineNative(pluginId); throw cause
         } finally { nativeInFlight.remove(pluginId); crashPreferences.edit().remove("loading:$pluginId").commit() }
     }
-    private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding,
-        val scope: CapabilityRequestScope)
+    private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding?,
+        val scope: CapabilityRequestScope, val remote: RemoteCapabilityBinding? = null) {
+        val accountId get() = remote?.access?.principal?.accountId ?: requireNotNull(binding).accountId
+        val ownerId get() = remote?.id ?: requireNotNull(binding).pairingId
+    }
     private val activeAuthorization = ThreadLocal<ActiveAuthorization>()
 
     private fun authorizationRequestKey(requestId: String, binding: PairingGrantBinding? = null): String {
@@ -453,7 +456,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val active = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
         if (active.requestId != session.correlationId || active.scope != authorizationScope(entry, Json.parse(input.decodeToString())))
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
-        requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
+        if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote)
+        else requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
     }
 
     private fun requireActiveAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
@@ -463,6 +467,58 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             is com.openandroidintelligence.kernel.CapabilityAuthorization.Denied -> throw CapabilityDenied(decision.code)
             com.openandroidintelligence.kernel.CapabilityAuthorization.AwaitingConfirmation -> throw CapabilityDenied("LOCAL_CONFIRMATION_REQUIRED")
         }
+    }
+
+    /** 与旧配对共享真实安装策略，但请求拥有者和连接代际来自 Noise 通道。 */
+    fun requestRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: RemoteCapabilityBinding): CapabilityAuthorization {
+        if (!binding.isCurrent() || grants.currentKernelGrant(binding.id) == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
+        val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
+        val scope = authorizationScope(entry, parameters)
+        // 新通道只允许明确的只读免确认；写入和控制不会继承旧自动许可。
+        val remotePolicy = if (scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
+            else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
+        return grants.authorization.evaluate(binding.requestKey(requestId), scope, remotePolicy,
+            grants.state.value?.revision ?: return CapabilityAuthorization.Denied("LOCAL_POLICY_UNAVAILABLE"))
+    }
+
+    fun approveRemoteRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
+        binding: RemoteCapabilityBinding): LocalCapabilityApproval {
+        check(binding.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        return grants.authorization.approve(binding.requestKey(requestId), authorizationScope(entry, parameters), 0,
+            grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), 5 * 60_000,
+            com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+    }
+
+    fun cancelRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.cancel(binding.requestKey(requestId))
+    fun finishRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.finish(binding.requestKey(requestId))
+
+    private fun requireRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue, binding: RemoteCapabilityBinding) {
+        if (requestRemoteAuthorization(requestId, entry, parameters, binding) !is CapabilityAuthorization.Allowed)
+            throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+    }
+
+    private fun invocationAuthorizationCurrent(invocation: ActiveAuthorization, requestId: String): Boolean =
+        if (invocation.remote != null) {
+            val entry = capabilityForAuthorizationScope(invocation.scope)
+            entry != null && invocation.remote.isCurrent() && grants.authorization.evaluate(invocation.remote.requestKey(requestId),
+                invocation.scope, capabilityPolicy(entry.identity.pluginId, entry.key).let { policy ->
+                    if (invocation.scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
+                    else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
+                }, grants.state.value?.revision ?: -1) is CapabilityAuthorization.Allowed
+        } else authorizationScopeIsCurrent(requestId, invocation.scope, null, invocation.binding)
+
+    fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding): ByteArray {
+        check(CapabilitySchemaValidator.accepts(entry.schema, parameters)) { "SCHEMA_INVALID" }
+        requireRemoteAuthorization(correlationId, entry, parameters, binding)
+        val previous = activeAuthorization.get()
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters), binding))
+        return try {
+            val output = kernel.invoke(entry.identity, binding.access.principal.accountId, binding.id, entry.key,
+                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, false, correlationId)).output
+            requireRemoteAuthorization(correlationId, entry, parameters, binding)
+            output
+        } finally { if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous) }
     }
 
     /** Local ability switch; enabling it never grants background, system or screen permissions. */
@@ -597,9 +653,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
     fun mediate(call: KernelCallContext, primitive: String, input: ByteArray): ByteArray {
         val invocation = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
-        if (invocation.requestId != call.session.correlationId || invocation.binding.accountId != call.accountId ||
-            invocation.binding.pairingId != call.pairingId || !authorizationScopeIsCurrent(call.session.correlationId,
-                invocation.scope, null, invocation.binding)) {
+        if (invocation.requestId != call.session.correlationId || invocation.accountId != call.accountId ||
+            invocation.ownerId != call.pairingId || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) {
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
         }
         KernelPrimitiveRegistry.provider(primitive)?.let { provider ->
@@ -627,14 +682,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             val result = runBlocking {
                 withTimeout(call.budget.maxInvocationMillis) {
                     if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
-                        !isEnabled(call.identity.pluginId) || !authorizationScopeIsCurrent(call.session.correlationId,
-                            invocation.scope, null, invocation.binding)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                        !isEnabled(call.identity.pluginId) || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
                     provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),localInput)
                 }
             }
             if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
                 !isEnabled(call.identity.pluginId) ||
-                !authorizationScopeIsCurrent(call.session.correlationId, invocation.scope, null, invocation.binding))
+                !invocationAuthorizationCurrent(invocation, call.session.correlationId))
                 throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
             return result
         }

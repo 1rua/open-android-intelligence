@@ -127,6 +127,7 @@ class PairingGrantStateHolder(
     @Volatile private var boundGrant: BoundGrant? = null
     private val verifiedBindings = java.util.concurrent.ConcurrentHashMap<String, PairingGrantBinding>()
     private val connectionChecks = java.util.concurrent.ConcurrentHashMap<String, () -> Boolean>()
+    private val remoteConnections = java.util.concurrent.ConcurrentHashMap<String, RemoteCapabilityBinding>()
     private fun current(check: () -> Boolean): Boolean = runCatching(check).getOrDefault(false)
     val authorization = CapabilityAuthorizationController()
 
@@ -256,9 +257,18 @@ class PairingGrantStateHolder(
             verifiedBindings.entries.any { it.value == binding && connectionChecks[it.key]?.let(::current) == true }
 
     fun currentKernelGrant(pairingId: String): PairingGrant? =
-        _state.value?.takeIf { boundGrant?.let { it.binding.pairingId == pairingId && current(it.current) } == true ||
+        _state.value?.takeIf { remoteConnections.values.any { it.id == pairingId && it.isCurrent() } ||
+            boundGrant?.let { it.binding.pairingId == pairingId && current(it.current) } == true ||
             verifiedBindings.entries.any { it.value.pairingId == pairingId && connectionChecks[it.key]?.let(::current) == true } }
             ?.copy(pairingId = pairingId)?.asKernelGrant()
+
+    /** 复用安装级用户决策，仅为已认证 Remote 连接提供内核投影。 */
+    fun attachRemoteConnection(binding: RemoteCapabilityBinding): AutoCloseable {
+        check(binding.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        val registration = UUID.randomUUID().toString()
+        remoteConnections[registration] = binding
+        return AutoCloseable { remoteConnections.remove(registration, binding) }
+    }
 
     @Synchronized
     fun unbind() {
