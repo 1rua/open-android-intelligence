@@ -25,15 +25,17 @@ P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换
 
 ## 稳定候选线性集成检查点（2026-11-14）
 
-PR #190 本轮保留 Draft，已将固定 Runtime 与手机候选重放到 `d57194ed`；原 Runtime
-`1953344f`、手机 `cb626070` 及正在编辑的短信/定时/UI 工作区均保持原样。整合后的候选源码点为
-`5d6b06c8`，没有夹带未提交源码。此处只确认线性集成与补丁等价，不声明同 SHA Android 回归通过。
+PR #190 本轮保留 Draft，已将固定 Runtime、手机与 UI 候选线性整合，远端已读回
+`ba07ead0b519df40e869f3f64795116377b605b2`。原 Runtime `1953344f`、手机 `cb626070`、UI `526ab9d8`
+保持原审查点；短信/定时和后续 UI 改动独立推进，没有夹带未提交源码。此处确认线性集成与补丁等价，
+不声明同 SHA Android 回归或最终 Fast/PR 全部门禁通过。
 
 | 原候选补丁 | 线性集成补丁 | 等价核对 |
 | --- | --- | --- |
 | `8d546dc5`、`1953344f` | `634dfe97`、`7f63c15d` | `git range-diff` 均为 `=`；稳定 patch-id 分别为 `8e5622a5d663dc0f4dd02b603363336ac77d66cc`、`99d51c54b4eeff66ef885eab7bf31a57155ae2c2` |
 | `fbe2a125`、`2ae67caa`、`d7aaa450`、`931e16d5`、`cb626070` | `7cdeb433`、`5e174284`、`c92b6384`、`7c78ce8a`、`5d6b06c8` | `git range-diff` 五项均为 `=` |
 | `31e42fa2`、`a7993373`、`889a4ed8` | 已在 foundation/runtime 中存在 | `git cherry` 标记 `-`；前两项重放时跳过重复内容，第三项由 rebase 自动跳过 |
+| UI `5866a8ab`、`8a093ed8`、`c2bd7d9a`、`0a3672e7`、`f445277d`、`b2d8d95f`、`526ab9d8` | `975eab8b`、`bfa82d71`、`f7a94697`、`4b09d033`、`e7ac08ec`、`431e98f5`、`ba07ead0` | `git range-diff` 七项均为 `=`；重复 phone `433f8cc3`、`bb6cd2c0`、`daa26a30` 按 `git cherry -` 跳过 |
 
 `git diff --check` 通过；`python3 -m pytest tools/test_ci_planning.py tools/test_smart_test.py -q` 197 项通过（1.49 秒）。下表中 Runtime 17 项、手机 ContentDelivery/Bus 10 项仍引用原候选执行证据，
 本轮未重复启动 Gradle；同一整合 SHA 的 Android 回归仍待进行。定时本机查询正在接入加密活动账号、
@@ -41,14 +43,14 @@ PR #190 本轮保留 Draft，已将固定 Runtime 与手机候选重放到 `d571
 
 ## 当前实现候选与验证边界（2026-11-14 更新）
 
-当前继续跟踪 #187/#188/#189 与实现收口 #192，PR #190 保持 Draft。下列为不同隔离工作区的候选证据，
-尚未线性整合到同一最终 SHA，不能累加为整条生产链路通过。旧章节保留其当时提交与结论；后台委派的
+当前继续跟踪 #187/#188/#189 与实现收口 #192，PR #190 保持 Draft。Runtime/手机/UI 固定切片已线性整合，
+下列测试仍保留各自原候选证据，不能累加为同一最终 SHA 整条生产链路通过。旧章节保留其当时提交与结论；后台委派的
 历史阻塞已被当前范围取消，不能再阻塞本项目。
 
 | 候选 | 已验证范围 | 未验证或后续工作 |
 | --- | --- | --- |
-| Runtime `1953344f7a21a02813e0461316d083dc3118fdf8` | 原入口 focused 17 项通过（51 秒）：固定 Server 5、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0。原 `8d546dc5` 的 15 项为前轮证据 | 新两项 P2 定点确认待进行；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
-| UI `0a3672e7814b2ab56be60433916c0af384a628e1` | 前轮 App 211 项、conversation-data 13 项通过；本候选 App 编译与 RemoteRuntime 4 项最小复验通过（3 分 40 秒，4 项失败/错误/跳过均 0） | 独立 fresh 审查新增 5 项问题待修，不因上述最小复验通过而关闭；多候选整合后按新 SHA 回归；推送、定时、插件管理与旧 Gateway 生产消费尚待迁移 |
+| Runtime `1953344f7a21a02813e0461316d083dc3118fdf8` | 原入口 focused 17 项通过（51 秒）：固定 Server 5、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0。原 `8d546dc5` 的 15 项为前轮证据 | 原两项 P2 已独立定点关闭；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
+| UI `526ab9d83ef68a2f5472f7f6f12c0523c63eaab0` → `ba07ead0` | 原候选 fresh 16 项通过，原五项 P2 已独立关闭；前轮 App 211 项、conversation-data 13 项及 RemoteRuntime 4 项保留原 SHA 证据 | `ba07ead0` 之上的本机授权入口、设置组织与备份接线正在独立 UI 工作区修改，待测试；新整合 SHA 回归待进行 |
 | 手机 `931e16d53291fac05936ac3452142e368be70611` | 候选回归 Overlay 3、NativeKernel 3、Bus 7 及 App 编译通过，1 分 50 秒；失败/错误/跳过均 0 | API 31–33 SoM 尚未交付；API 34+ 实现未做真机像素/焦点/锁屏验收 |
 | MCP/原生工具 | 最新 MCP 官方客户端/stdio 2 项通过；固定原生工具至 Kotlin facade 的发现、建任务、发送、读回及 18 字节 artifact 下载通过 | 18 字节测试产物不证明真实截图/SoM 下载；实际 DSH 插件加载、原生 MCP 挂载与设备能力未验 |
 
@@ -56,7 +58,7 @@ Runtime `1953344f` 在前轮三项修复上继续关闭两处复审缺陷：旧 
 代次检查与状态写入统一放在同一 selectionLock；回归控制真实旧 service.close 回调的状态 setter 停点，
 与新选择发布 CONNECTED 形成合法交错。Host 收到 Offer/ICE 后本地 RTC_UNAVAILABLE 或确定的候选失败只
 禁用该隧道的 RTC 候选，保留 Relay 选择与原握手等待，不虚构 signal.error；固定原 Server 的 RawClient
-Offer→JVM Host 原生 RTC 不可用→Relay→Noise→RPC 场景通过。两项尚待原评审定点确认，不先写成审查关闭。
+Offer→JVM Host 原生 RTC 不可用→Relay→Noise→RPC 场景通过。两项已取得原评审独立定点关闭；真实网络部署验收仍独立保留。
 
 手机敏感输出交付 P1 修复候选 `cb626070` 的 ContentDelivery 3、Bus 7 及 App 编译通过，10 项失败/错误/跳过
 均 0；独立定点确认已关闭该 P1。它属于手机候选，不与 Runtime 或前轮 931e16d5 的计数合并。
@@ -76,6 +78,13 @@ Runtime 的三项独立审查问题已形成失败回归后修复：旧非法版
 候选随后定向复验 Overlay 3 与 Kernel/Bus，未重复执行所有前轮测试，因此不能把两轮拼成同 SHA 全量通过。
 原始日志留在临时环境，仓库仅保留本台账与可运行回归。测试复用现有 Node 24.18.0/JDK21/Android SDK/Gradle 缓存，
 本轮不做真机、不使用日常 Host；短信发送、可靠推送确认、定时与生产旧依赖退役仍是剩余实现范围。
+
+## 本轮仍在推进的切片
+
+- 短信 `5308`：系统副作用前再次核对原语、参数与授权的 P1 回归正在验证，待独立定点关闭；不因前轮发送通过而提前关闭。
+- 定时 `a9944772`：生产本机恢复逻辑为 `009ebbc4`，重启账号/固定身份四项与后台内核投影两项已通过；匹配源码 WASM 后 App 原 35 项中 29 项通过。自定义读取入口沿用整包写权限的旧夹具已缩为真实只读声明；随后对象数组格式错误 `SCHEMA_INVALID:kernelPrimitives` 已修并通过轻量预检，原六项跨 API 复验和 fresh 审查待进行。以上不合并计为同 SHA 全通过。
+- 定时输入：新 snapshot 初次缺少 `plugins/target` WASM，按固定 `009ebbc4` 源码执行 `cargo build --offline --locked --release --target wasm32-unknown-unknown --manifest-path plugins/Cargo.toml -p open-android-intelligence-sms -p open-android-intelligence-notifications`，复用根 Cargo/Rustup 缓存且不覆盖短信工作区产物。短信/通知 WASM SHA256 分别为 `3258848d25687ba17055565c93f56fc0e1bd88745c334c7de0f962c7288d93f7`、`018722c38ea2a583a123270c2c4fba972fe167ebed50a27cccb6fc8f9b1dedb9`。App 使用 `:app:testFullDebugUnitTest --tests ...ClientCapabilityAuthorizationTest --tests ...ProductionPluginHostTest`；六项复验只选 `*storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets*`，沿用根 JDK21/SDK/Gradle/Robolectric 缓存、固定 Hermes 夹具、`--offline --max-workers=2`。
+- 剩余实现与门禁：API 31–33 SoM、可靠主动推送、旧 Core/Gateway 的生产代码/工具链/CI 消费退出、最终 Fast/PR。真机本轮明确不做，不把这些未完成项泛化成所有切片均无进展。
 
 ## 环境与证据分层
 
