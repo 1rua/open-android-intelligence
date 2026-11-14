@@ -16,11 +16,12 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 ## 当前范围（2026-11-14）
 
-用户取消本客户端后台跨 workspace Agent 委派；MCP 只公开 android_*，目标仅手机
-OAI Virtual Host 的 phone-capabilities。#191 按范围取消关闭，target lease 及公开委派目标绑定不再是
-P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换完整保留，
-必须以独立连接/代际、旧流取消排空及迟到结果拒绝实现并验证。
-以下历史证据保留其原 SHA、命令和当时结论；其中后台委派阻塞已被本次范围决定取代，
+本项目范围不包含 `remote_agent_delegate` 或其他后台跨 workspace Agent 委派；MCP 只公开
+android_*，目标仅手机 OAI Virtual Host 的 phone-capabilities。#191 按范围取消关闭，target
+lease 及公开委派目标绑定不再是 P0/P4/P5 前置，也不再作为本项目的实现、测试或发布门禁。
+正常多 Host、DSH/Codex/ACP workspace 与对话手动切换完整保留，必须以独立连接/代际、旧流
+取消排空及迟到结果拒绝实现并验证。
+以下历史证据保留其原 SHA、命令和当时结论；其中后台委派探针及其阻塞结论只作为历史背景，
 不能继续作为当前阻塞，也不能把旧探针视为新客户端手动切换验收。
 
 ## 稳定候选线性集成检查点（2026-11-14）
@@ -179,12 +180,12 @@ Virtual Harness/Event Carrier 原文参与执行，没有实际账号、Host 或
 - VERIFIED（原始 ACP 投影）：`session/prompt` 可按当前选中 workspace 注册未知 Session，忽略请求内旧 workspaceId；
   同名 Session ID 可在当前 workspace 接收。workspace follow 关闭后仍可读出关闭前缓冲的 baseline/upsert，关闭只结束后续等待。
 - UNVERIFIED：真实投影关闭/缓冲事件排空与公开流所有者租用；真实 DSH 加载与后端互操作。
-- BLOCKED（P0 委派放行）：尚无足够公开的 workspace/选择代际派发前证明；原始 ACP 投影
-  不能以请求内 workspaceId 提供归属校验，不能只凭 status、sessionId 或后验检查放行生产跨后端写入，
-  不使用 private hooks 绕过。
+- 历史观察（不再是本项目状态）：当时尚无足够公开的 workspace/选择代际派发前证明；原始
+  ACP 投影不能以请求内 workspaceId 提供归属校验。这些事实解释了为何本项目不实现后台委派，
+  不构成当前 P0/P4/P5 阻塞，也不要求继续补齐委派接口。
 
-以上局部证据不改变 P0 整体状态，也不证明全量委派安全。后续必须在公开接口边界内补足证明，
-否则保持该能力明确不可用并报告精确阻塞。
+以上局部证据不改变当前手机控制和手动切换的独立验收状态，也不证明全量委派安全；
+后台委派属于上游范围，本项目不为其补充接口或放行证明。
 
 ### 集成 focused 验证（集成 SHA `761c0c63`）
 
@@ -213,8 +214,9 @@ node --experimental-vm-modules --test tools/remote/target-binding.test.mjs tools
   `AcpVirtualHarness.close` 的清理不能被解释为派发前的原子租约。
 - Typert Gateway 的公开 status 只能证明 Host/mode；workspace selection 被消费后，同 Host/backend 换 workspace 可出现等价 status。
 
-因此 P0 的跨后端/ACP 委派保持 `BLOCKED`。安全可行的局部范围只能是不可切换目标、已登记 Session、同 Host/backend/session 的同步调用；
-ACP/Codex 跨 workspace 委派和依赖后验状态检查的写入必须拒绝，不能用 private hooks、隐式全局目标或后验关闭信号绕过。
+因此本项目不提供跨后端/ACP 后台委派；原始观察仅说明该能力应留在上游公开接口边界内。
+手机桥只按 `android_*` 白名单处理手机能力，收到其他 Agent 或跨 workspace 委派请求时按
+未知/不支持操作拒绝，不把该拒绝扩展为本项目的委派验收项。
 
 ### P1 控制账本身份范围阻塞
 

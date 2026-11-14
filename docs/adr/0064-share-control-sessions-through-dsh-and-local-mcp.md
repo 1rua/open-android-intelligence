@@ -28,8 +28,10 @@ taskSessionId/snapshotId。首次 MCP 读树或截图可以真实建任务，动
 DSH 和桥插件，并通过其原生配置挂载 MCP。这个本机桥不是被废弃的服务端会话适配器。
 
 2026-11-14 范围调整：MCP 只公开 `android_*`，目标限于手机 OAI Virtual Host 的
-`phone-capabilities`。本客户端取消后台跨 workspace Agent 委派；调度属于上游，
-公开 target lease 不再是本客户端或本地桥的实现与发布前置。
+`phone-capabilities`。本客户端不定义、不实现 `remote_agent_delegate` 或其他后台跨
+workspace Agent 委派工具；这类调度属于上游，公开 target lease 不再是本客户端或本地桥的
+实现与发布前置。桥收到不属于手机能力白名单的请求时，只按通用的未知/不支持操作拒绝，
+不形成委派功能或对应验收项。
 正常多 Host、DSH/Codex/ACP workspace 与对话的手动切换完整保留，采用独立连接与连接代际、
 旧流取消排空及迟到结果拒绝保证归属；不能以不支持后台委派为由限制切换。
 审批仍由真实拥有者处理，不能把 MCP 连接、同账号关系或会话 idle 当成批准或任务成功。

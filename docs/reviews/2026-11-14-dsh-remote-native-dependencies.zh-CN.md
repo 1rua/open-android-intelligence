@@ -76,8 +76,8 @@ ELF 和 APK ZIP 对齐，并运行 16 KiB 环境测试。因此这些结果只�
 根配置因此给它 `minSdk=31`。这只是编译/打包配置事实，不等于 Noise 或 WebRTC 在所有 ABI、API、
 厂商系统和 16 KiB page-size 环境可运行。
 
-P0 整体仍被公开委派目标绑定阻塞；原生依赖的静态检查不能解除该阻塞，也不能把 native transport 或
-WebRTC 运行兼容性报告为已验证。
+本记录不评估也不阻塞后台跨 workspace 委派；该能力属于上游，`remote_agent_delegate` 不在本项目
+需求或发布门禁中。原生依赖的静态检查仍不能把 native transport 或 WebRTC 运行兼容性报告为已验证。
 
 
 ## 随包通知与尚未闭合的来源映射

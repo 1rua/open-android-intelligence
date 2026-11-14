@@ -308,7 +308,9 @@ HTTP Host/Origin 校验不因“本机调用”关闭；无浏览器 Origin 的 
 RPC 等待中断后仍能用同一标识查状态。`request_status` 通过当前 control-bus 的
 `session/prompt` 发送 `request.status`，原 task ID 只核对原回执归属；旧任务不必且不得恢复。
 `read_artifact` 不接受任意文件路径。
-接口只接受本契约的手机操作，不提供任意 namespace/method 代理或后台 Agent 委派。
+接口只接受本契约的手机操作，不提供任意 namespace/method 代理，也不定义
+`remote_agent_delegate` 或其他后台 Agent 委派操作。非手机操作按未知/不支持操作拒绝，
+这项通用边界不构成后台委派功能或验收要求。
 所有 MCP Android 工具映射到上述操作；另暴露 `android_request_status` 和
 `android_cancel_request`，保证审批等待、长任务和未知结果可以继续查询与停止。
 Android 的 Bridge `cancel` 根据原回执确定任务与 `targetRequestId`，通过同一任务的
@@ -318,8 +320,9 @@ MCP 只暴露 `android_*`，发现与选择的目标仅为 OAI Virtual Host 的 
 Bridge 不保存或派发后台跨 workspace 的 Agent 任务。手机账本仍是手机请求执行、防重和取消的权威。
 MCP 子进程不持有执行权威状态，进程重启后经 Bridge 查询最小回执；未知写入不得自动重发。
 
-跨 workspace 后台调度属于上游，不作为本客户端 P0/P4 或发布的前置条件。
-正常聊天中用户可随时手动切换 Host、DSH/Codex/ACP workspace 与对话。
+跨 workspace 后台调度属于上游，不作为本客户端 P0/P4 或发布的前置条件；本项目的需求、
+实现和发布门禁中不包含 `remote_agent_delegate`。正常聊天中用户可随时手动切换 Host、
+DSH/Codex/ACP workspace 与对话。
 客户端对每个选择建立独立连接或连接代际，切换时取消并排空旧 stream/pending-open，
 拒绝旧结果更新新目标；已发送而结果未明的写入保持未知，不能重放、改投或自动抢回选择。
 这类手动切换的本地保护必须由客户端实际实现与回归证明，不由历史后台委派探针替代。
@@ -358,5 +361,5 @@ MCP 首次 `android_get_ui_tree` 或截图调用可以真实创建任务，并�
   超时、持续动画及读树失败保留动作真实结果，超时不触发重试。
 - Bridge 错误 bearer、非本地/跨源请求、登出、Server 切换与旧进程凭据失效均拒绝；
   外部 Agent 的 MCP 实际加载经过各后端验证，不以空 mcpServers 创建成功代替挂载验收。
-- MCP 工具白名单仅含 android_*，拒绝非手机 Host、其他 workspace 和任意 Agent 调用；
+- MCP 工具白名单仅含 android_*，拒绝非手机 Host、手机能力范围外的 workspace 和任意 Agent 调用；
   正常聊天的 Host/workspace/对话手动切换核对独立连接、代际、旧流取消排空及迟到结果拒绝。

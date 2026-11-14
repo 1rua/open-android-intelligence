@@ -42,7 +42,8 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
   手机不运行本地 LLM，两种电脑入口共用一个确定性执行器与本机权限裁决。
 - 原生 DSH 使用已有 remote_* 工具；外部 Agent 使用电脑上的 Stdio MCP 与 DSH 进程内桥。
   MCP 仅公开 `android_*` 手机操作，目标限定为 OAI Virtual Host 的 `phone-capabilities`。
-  跨 workspace 后台调度属于上游，本客户端不提供委派工具；正常多 Host/DSH/Codex/ACP 的手动切换完整保留。
+  跨 workspace 后台调度属于上游，本客户端不提供 `remote_agent_delegate` 或其他委派工具，
+  也不将其列为需求、实现或发布门禁；正常多 Host/DSH/Codex/ACP 的手动切换完整保留。
 - 新能力默认每次手动；用户在手机选择允许只读后，批准范围内读取免逐次确认。
   敏感操作强制本机确认。锁屏只允许已明确授予后台权限的数据请求，拒绝读屏、截图和屏幕控制。
 - Kotlin 负责屏幕感知与控制，WASM 负责离散数据能力。采用无障碍悬浮确认与紧急停止；
@@ -224,7 +225,8 @@ Stdio MCP 只转接参数和结构化结果；通道、登录状态和任务观�
 退出登录、切服务和插件卸载时，旧桥授权失效。MCP 标准输出只承载协议，诊断不能污染它。
 
 MCP 只选择当前账号已授权的手机 OAI Virtual Host 与 `phone-capabilities`，只暴露 `android_*`。
-后台跨 workspace 的 Agent 调度归上游，不是本客户端功能或验收前置。
+后台跨 workspace 的 Agent 调度（包括 `remote_agent_delegate`）归上游，不是本客户端功能、
+实现范围或验收前置。
 正常聊天中用户可随时切换 Host、DSH/Codex/ACP workspace 与对话；切换须关闭并排空旧流，
 用独立连接与连接代际拒绝迟到结果，不能限制切换、自动抢回工作区、改投新目标或重放未知写入。
 MCP 首次读树/截图可 create 并返回 taskSessionId，后续显式携带原 taskSessionId/snapshotId；

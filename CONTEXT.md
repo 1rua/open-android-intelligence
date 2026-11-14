@@ -191,7 +191,7 @@ _Avoid_: 失败、成功、可安全重试
 _Avoid_: Android Companion、独立 Relay 服务、第二控制通道
 
 **工作区选择（WorkspaceSelection）**:
-用户在某个 Host 的 DSH、Codex 或 ACP 后端中选择工作区及对话的行为；后台跨工作区调度属于上游能力。
+用户在某个 Host 的 DSH、Codex 或 ACP 后端中选择工作区及对话的行为；本客户端只支持这种用户主动选择，后台跨工作区调度（包括 `remote_agent_delegate`）属于上游能力，不是本项目的工具、接口或验收项。
 _Avoid_: 手机能力授权、模型切换、Remote 账号切换
 
 **屏幕观察（ScreenObservation）**:
