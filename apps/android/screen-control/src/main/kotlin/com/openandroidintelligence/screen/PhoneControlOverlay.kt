@@ -39,10 +39,9 @@ class PhoneControlOverlay(
     // 新窗口等待首个布局时先拒绝全部远端坐标，不能留下 bounds 尚未发布的注入窗口。
     override val protectedBounds: ScreenBounds? get() = if (protecting) bounds ?: ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE) else null
     @Suppress("DEPRECATION")
-    override fun captureProtection(): LocalUiCaptureProtection {
+    override fun captureProtection(): LocalUiCaptureProtection? {
         check(android.os.Looper.myLooper() == android.os.Looper.getMainLooper())
-        val metrics = manager.maximumWindowMetrics.bounds
-        val display = ScreenDisplay(metrics.width(), metrics.height(), manager.defaultDisplay.rotation)
+        val display = currentDisplay() ?: return null
         if (historyDisplay != null && historyDisplay != display) geometryProvable = false
         val current = view
         if (current != null) {
@@ -63,6 +62,12 @@ class PhoneControlOverlay(
             geometryProvable && historyDisplay == display && (!protecting || bounds != null))
     }
     private fun changedProtection() { protectionGeneration++; changedAt = SystemClock.uptimeMillis() }
+    @Suppress("DEPRECATION")
+    private fun currentDisplay(): ScreenDisplay? = try {
+        val metrics = manager.maximumWindowMetrics.bounds
+        ScreenDisplay(metrics.width(), metrics.height(), manager.defaultDisplay.rotation)
+            .takeIf { it.widthPixels > 0 && it.heightPixels > 0 }
+    } catch (_: RuntimeException) { geometryProvable = false; null }
     private fun recordBounds(actual: ScreenBounds, display: ScreenDisplay) {
         if (historyDisplay == null) historyDisplay = display
         if (historyDisplay != display || actual.left < 0 || actual.top < 0 || actual.right > display.widthPixels ||
@@ -150,9 +155,9 @@ class PhoneControlOverlay(
         layout.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (view === layout) {
                 val location = IntArray(2); layout.getLocationOnScreen(location)
-                val metrics = manager.maximumWindowMetrics.bounds
-                @Suppress("DEPRECATION") val display = ScreenDisplay(metrics.width(), metrics.height(), manager.defaultDisplay.rotation)
-                recordBounds(ScreenBounds(location[0], location[1], location[0] + layout.width, location[1] + layout.height), display)
+                val display = currentDisplay()
+                if (display != null) recordBounds(ScreenBounds(location[0], location[1], location[0] + layout.width, location[1] + layout.height), display)
+                else geometryProvable = false
             }
         }
         manager.addView(layout, params); view = layout

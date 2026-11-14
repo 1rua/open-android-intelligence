@@ -133,21 +133,19 @@ class PhoneControlOverlayTest {
         val overlay = PhoneControlOverlay(service)
         try {
             val waiting = async { overlay.confirm("capture-history", "ui.capture_som") }; runCurrent()
+            org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
             val layout = view(overlay)
-            layout.measure(View.MeasureSpec.makeMeasureSpec(200, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(150, View.MeasureSpec.EXACTLY))
-            layout.layout(0, 0, 200, 150)
-            val first = overlay.captureProtection()
-            assertTrue(first.ready)
+            val first = requireNotNull(overlay.captureProtection())
+            assertTrue(first.toString(), first.ready)
             assertEquals(0, first.maskedRegions.single().left)
             assertEquals(first.display.widthPixels, first.maskedRegions.single().right)
             val oldBottom = first.maskedRegions.single().bottom
-            layout.layout(0, 0, 200, 100)
-            val smaller = overlay.captureProtection()
+            layout.layout(layout.left, layout.top, layout.right, layout.bottom - 1)
+            val smaller = requireNotNull(overlay.captureProtection())
             assertTrue(smaller.generation > first.generation)
             assertTrue(smaller.maskedRegions.single().bottom >= oldBottom)
             layout.elevation = 10f
-            assertFalse(overlay.captureProtection().ready)
+            assertFalse(requireNotNull(overlay.captureProtection()).ready)
             overlay.emergencyStop(); runCurrent(); assertFalse(waiting.await())
         } finally { overlay.close() }
     }
