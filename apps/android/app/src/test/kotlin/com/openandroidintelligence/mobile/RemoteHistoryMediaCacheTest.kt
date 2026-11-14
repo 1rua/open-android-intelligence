@@ -217,8 +217,14 @@ class RemoteHistoryMediaCacheTest {
         assertNotNull(runCatching { AndroidAttachmentDownloads(context, media, scope, keys).download(conversation, fixture.id) }.exceptionOrNull())
         assertTrue(updated)
         assertEquals(1, provider.rows.size)
-        assertEquals(1, provider.rows.values.single().values.getAsInteger(MediaStore.MediaColumns.IS_TRASHED))
-        assertEquals(1, provider.rows.values.single().values.getAsInteger(MediaStore.MediaColumns.IS_PENDING))
+        val rejected = provider.rows.values.single()
+        assertArrayEquals("新修订在完整原件已复制后才到达", original, rejected.file.readBytes())
+        assertEquals("过期下载必须回收，不能作为普通文件发布", 1, rejected.values.getAsInteger(MediaStore.MediaColumns.IS_TRASHED))
+        assertEquals("回滚完成后退出系统待发布状态", 0, rejected.values.getAsInteger(MediaStore.MediaColumns.IS_PENDING))
+        assertFalse("没有未回收的可见下载", provider.rows.values.any {
+            it.values.getAsInteger(MediaStore.MediaColumns.IS_PENDING) == 0 &&
+                it.values.getAsInteger(MediaStore.MediaColumns.IS_TRASHED) != 1
+        })
         fixture.cache.clearMedia()
     }
     @Test fun `更高修订到达时读取中的旧原件不会写入缓存`() = runBlocking {
