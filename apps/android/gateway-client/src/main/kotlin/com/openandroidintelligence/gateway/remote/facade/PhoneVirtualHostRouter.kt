@@ -14,8 +14,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
     suspend fun route(access: ControlAccessBinding, method: String, input: JsonValue): JsonValue {
         val args = carrierArgs(input)
         return when (method) {
-            "harness.transport.describe" -> Json.of(mapOf("sessionFormat" to "v3", "sessionFormatCompatibility" to "native-v3",
-                "capabilities" to listOf("session-v3", "workspace-files-read"), "workspaceId" to WORKSPACE))
+            "harness.transport.describe" -> Json.of(mapOf("capabilities" to listOf("harness.remote.v3")))
             "workspace/list" -> workspace(access)
             "session/list" -> Json.of(mapOf("items" to bus.sessions(access)))
             "session/create" -> {
@@ -62,17 +61,30 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
                 val request = request(args)
                 val sessionId = sessionId(request)
                 var lastCursor = -1L
+                var revision = 0L
                 bus.changes.collect {
                     val page = history(access, request)
                     val fields = fields(page)
                     val cursor = (fields.getValue("cursor") as JsonValue.JNumber).raw.toLong()
                     if (lastCursor < 0) emit(page) else {
-                        val records = fields.getValue("records") as JsonValue.JArray
-                        records.items.filter { row ->
+                        bus.eventsSince(access, sessionId, lastCursor).forEach { row ->
                             val event = fields(fields(row).getValue("event"))
-                            (event.getValue("seq") as JsonValue.JNumber).raw.toLong() >= lastCursor
-                        }.forEach { emit(it) }
-                        emit(Json.of(mapOf("type" to "assistant-stream", "sessionId" to sessionId, "revision" to cursor)))
+                            if (event.text("type") == "assistant/message") {
+                                val seq = event.number("seq")!!
+                                val data = fields(event.getValue("data"))
+                                val attempt = "phone:$sessionId:$seq"
+                                emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf("type" to "start", "attemptId" to attempt,
+                                    "revision" to ++revision, "startedAfterSeq" to seq - 1, "turn" to (data.number("turn") ?: 0), "step" to 1))))
+                                val chunks = (data["stream"] as? JsonValue.JArray)?.items.orEmpty()
+                                chunks.forEachIndexed { index, chunk -> emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf(
+                                    "type" to "chunk", "attemptId" to attempt, "revision" to ++revision, "index" to index,
+                                    "time" to event.getValue("time"), "chunk" to (fields(chunk)["chunk"] ?: chunk))))) }
+                                emit(row)
+                                emit(Json.of(mapOf("type" to "assistant-stream", "frame" to mapOf("type" to "end", "attemptId" to attempt,
+                                    "revision" to ++revision, "index" to chunks.size,
+                                    "outcome" to mapOf("kind" to "committed", "eventType" to "assistant/message", "seq" to seq)))))
+                            } else emit(row)
+                        }
                     }
                     lastCursor = cursor
                 }

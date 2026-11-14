@@ -23,6 +23,7 @@ sealed interface ControlOperation {
 
     data class DumpTree(val query: ScreenReadQuery) : ControlOperation { override val wireName = "ui.dump_tree" }
     data object CaptureSom : ControlOperation { override val wireName = "ui.capture_som" }
+    data object Capabilities : ControlOperation { override val wireName = "phone.capabilities" }
     data class Screen(val snapshotId: String, val action: ScreenAction) : ControlOperation {
         override val wireName: String get() = when (action) {
             is ScreenAction.Click -> "ui.tap"

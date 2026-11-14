@@ -22,6 +22,7 @@ class PhoneControlBus(
         val queue = Mutex()
         var frozen = false
         var turn = 0
+        var activeRequestId: String? = null
         val records = mutableListOf<JsonValue>()
         val results = mutableMapOf<String, JsonValue>()
         val jobs = mutableMapOf<String, Job>()
@@ -61,6 +62,14 @@ class PhoneControlBus(
 
     fun submit(access: ControlAccessBinding, taskId: String, request: ParsedControlRequest): JsonValue = synchronized(lock) {
         val task = task(access, taskId)
+        if (request.operation == ControlOperation.Capabilities) {
+            val result = Json.of(mapOf("request_id" to request.requestId, "taskSessionId" to taskId, "state" to "completed",
+                "execution" to mapOf("status" to "succeeded"), "result" to capabilities(access)))
+            event(task, "assistant/message", mapOf("request_id" to request.requestId,
+                "message" to mapOf("id" to request.requestId, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to Json.canonical(result)))),
+                "stream" to listOf(mapOf("type" to "chunk", "time" to currentTimeMillis(), "chunk" to mapOf("type" to "text-delta", "index" to 0, "text" to Json.canonical(result))))))
+            return@synchronized result
+        }
         if (request.operation is ControlOperation.Status) return@synchronized status(access, task, request)
         // 管理取消绕过动作队列和手机审批；原子校验拥有者、任务及原请求。
         if (request.operation is ControlOperation.Cancel) return@synchronized cancelRequest(access, task, request)
@@ -85,6 +94,7 @@ class PhoneControlBus(
             synchronized(lock) {
                 val old = find(access, task.scope.taskSessionId, request.requestId)
                 if (old.state.terminal) return
+                task.activeRequestId = request.requestId
                 event(task, "turn/start", mapOf("turn" to ++task.turn, "request_id" to request.requestId))
             }
             val result = executor.execute(PhoneExecutionContext(requestScope, access, request.parameterDigest,
@@ -217,15 +227,24 @@ class PhoneControlBus(
         found.copy(bytes = found.bytes.copyOf())
     }
 
+    fun eventsSince(access: ControlAccessBinding, taskId: String, seq: Long): List<JsonValue> = synchronized(lock) {
+        val task = task(access, taskId)
+        if (seq !in 0..task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
+        task.records.drop(seq.toInt()).toList()
+    }
+
     private fun task(access: ControlAccessBinding, id: String): Task {
         if (id == "control-bus") return bus(access)
         val task = tasks[key(access, id)] ?: fail("CONTROL_TASK_NOT_FOUND")
         if (!task.scope.permits(access, processEpoch)) fail("CONTROL_TASK_NOT_FOUND")
         return task
     }
-    private fun bus(access: ControlAccessBinding): Task = tasks.getOrPut(key(access, "control-bus")) {
-        Task(ControlTaskScope(access.principal, "control-bus", access.authorizationEpoch, processEpoch), currentTimeMillis())
-    }.also { if (!it.scope.permits(access, processEpoch)) fail("CONTROL_TASK_NOT_FOUND") }
+    private fun bus(access: ControlAccessBinding): Task {
+        val key = key(access, "control-bus")
+        val old = tasks[key]
+        if (old != null && old.scope.permits(access, processEpoch)) return old
+        return Task(ControlTaskScope(access.principal, "control-bus", access.authorizationEpoch, processEpoch), currentTimeMillis()).also { tasks[key] = it }
+    }
     private fun key(access: ControlAccessBinding, id: String) = "${access.principal.storageKey}:$id"
     private fun metadata(access: ControlAccessBinding, id: String, request: ParsedControlRequest) = ControlRequestMetadata(
         access.principal.storageKey, request.requestId, id, request.operation.wireName, request.parameterDigest,
@@ -246,14 +265,17 @@ class PhoneControlBus(
     }
     private fun finish(access: ControlAccessBinding, task: Task, id: String) {
         val text = Json.canonical(receipt(access, task.scope.taskSessionId, id))
-        val stream = listOf(mapOf("type" to "block-start", "index" to 0, "block" to mapOf("type" to "text", "text" to "")),
+        val stream = listOf(mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
             mapOf("type" to "text-delta", "index" to 0, "text" to text),
             mapOf("type" to "block-end", "index" to 0, "block" to mapOf("type" to "text", "text" to text)),
-            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop")))
+            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop"))).map { mapOf("type" to "chunk", "time" to currentTimeMillis(), "chunk" to it) }
         event(task, "assistant/message", mapOf("turn" to task.turn, "step" to 1,
             "message" to mapOf("id" to id, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to text)),
                 "source" to mapOf("kind" to "tool", "callId" to id)), "stream" to stream, "request_id" to id))
-        event(task, "turn/end", mapOf("turn" to task.turn, "request_id" to id))
+        if (task.activeRequestId == id) {
+            event(task, "turn/end", mapOf("turn" to task.turn, "request_id" to id))
+            task.activeRequestId = null
+        }
     }
     private fun event(task: Task, type: String, data: Map<String, Any?>) {
         task.records += Json.of(mapOf("type" to "event", "event" to mapOf("seq" to task.records.size, "time" to currentTimeMillis(), "type" to type, "data" to data)))

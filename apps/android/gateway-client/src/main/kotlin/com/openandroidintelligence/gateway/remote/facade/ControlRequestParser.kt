@@ -45,6 +45,7 @@ object ControlRequestParser {
                 description = a.optionalText("description"), previousHash = a.optionalText("previousHash")))
         }
         "ui.capture_som" -> { a.exact(emptySet()); ControlOperation.CaptureSom }
+        "phone.capabilities" -> { a.exact(emptySet()); ControlOperation.Capabilities }
         "ui.tap", "ui.long_press" -> {
             a.allowed(setOf("snapshotId", "nodeId", "x", "y") + if (op == "ui.long_press") setOf("durationMs") else emptySet())
             val node = a.optionalText("nodeId")
@@ -123,6 +124,7 @@ object ControlRequestParser {
             "maxDepth" to it.maxDepth, "maxBytes" to it.maxBytes, "text" to it.text, "resourceId" to it.resourceId,
             "description" to it.description, "previousHash" to it.previousHash) }
         ControlOperation.CaptureSom -> emptyMap<String, Any>()
+        ControlOperation.Capabilities -> emptyMap<String, Any>()
         is ControlOperation.Screen -> mapOf("snapshotId" to operation.snapshotId) + when (val action = operation.action) {
             is ScreenAction.Click -> mapOf("nodeId" to action.nodeId, "x" to action.x, "y" to action.y)
             is ScreenAction.LongPress -> mapOf("nodeId" to action.nodeId, "x" to action.x, "y" to action.y, "durationMs" to action.durationMs)

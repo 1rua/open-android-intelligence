@@ -1,0 +1,31 @@
+{
+  "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+  "repository": "liguobao/ds-harness-remote",
+  "files": [
+    {
+      "path": "packages/plugin/src/remote-session-tools.ts",
+      "fixture": "remote-session-tools.ts",
+      "sha256": "4ea859e361893dc1865ca2da3c5ae06a4fc08a72e4a95b7eb68c38f63697fd8a"
+    },
+    {
+      "path": "packages/plugin/src/remote-file-download.ts",
+      "fixture": "remote-file-download.ts",
+      "sha256": "e47afa0e292c8a1d35dbdd43acae2ca9dd2c7226343e6166798c38866c64bb1c"
+    },
+    {
+      "path": "packages/plugin/src/remote-typert-gateway.ts",
+      "fixture": "remote-typert-gateway.ts",
+      "sha256": "a44e099012f7a3f4f8e74b89d3a84c8a27fb504cb231b6afb7fb7ac7a3f40483"
+    },
+    {
+      "path": "packages/plugin/src/session-history-cache.ts",
+      "fixture": "session-history-cache.ts",
+      "sha256": "75cd948aadc21e4772aefd9f9db3c2d492d1ce0a2d7a4aa0fea339e98f792e2b"
+    },
+    {
+      "path": "packages/plugin/src/session-format-compat.ts",
+      "fixture": "session-format-compat.ts",
+      "sha256": "232f7de3151c63caac3a71dc0b2b1e6bcaa5dcd0cd33952fb461eaa03b8a58c6"
+    }
+  ]
+}
