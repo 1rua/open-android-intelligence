@@ -35,4 +35,22 @@ Android SDK `android-sdk`、Gradle 缓存 `gradle-home`。不要把 `android-use
 - CI/发布：`.github/workflows/oai-core.yml` 的 Core/Hermes/DSH jobs、`.github/workflows/ci.yml` 的旧契约/插件 checkout/conformance、
   `.github/actions/android-lane/action.yml` 的旧 fixture 环境、smart-test/impact 的旧路由与对应测试、release-gate 的目标工作流引用。
 
+## 下一实施切片：定时与可靠推送
+
+定时任务可独立先迁移：`PluginJobScheduler` 当前保存 account/pairing/grantRevision，执行时依赖
+Gateway 已连接账号与旧 pairing grant，`PluginTimerService` 也恢复旧 Gateway。新入口应保存稳定 Remote
+主体（origin、账号、双方设备/密钥指纹、本机授权代际）与本机后台授权，保留加密参数、JobScheduler、
+执行前复核、防重复栅栏和结果未知；不得依赖临时 connectionId，不能因此删减原定时能力。
+
+推送尚有真实接口缺口：`PushEndpoint` 仍为 Core 路由，`GatewayPushTransport` 依赖旧 `/v2/push`
+已确认消费回执和撤销账本，`DevicePushComposition` 依赖旧登录/独立连接发现。下一切片须以完整 Remote
+稳定目标取代路由，保留加密队列、本机选择、采集、过期/撤销与系统任务。固定上游的 Harness prompt
+受理、Codex turn/start 或 ACP 回合结束没有统一事件消费 ACK；不得把 accepted 当作 CONSUMED，
+不得用空 transport 或假 Delivered 让验收通过。后台投递也不能调用当前单活动 Client 的 connect 挤掉聊天。
+只可复用现有安全独立通道并明确协商 ACK 支持；不擅自新增 Host 调度插件或恢复后台 Agent 委派。
+
+当前 Runtime `8d546dc5` 的原三项修复已完成 15 项回归，但定点复审又发现状态发布原子性与 Host RTC
+不可用后 Relay 降级两项 P2；正在同一 runtime 工作区定向修复并新增两项回归。修复后重新冻结 SHA，
+通过复审才线性整合；不得把旧 15 项通过扩写为网络最终验收。
+
 用户负责最终合并 PR、移除工作区及关闭/更新关联 issue；Agent 不自动合并或执行收尾删除。所有文件退役使用 mv 至忽略的 `.worktrees/trash/`。
