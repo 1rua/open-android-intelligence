@@ -82,7 +82,7 @@ Runtime 的三项独立审查问题已形成失败回归后修复：旧非法版
 ## 本轮仍在推进的切片
 
 - 短信 `5308`：系统副作用前再次核对原语、参数与授权的 P1 回归正在验证，待独立定点关闭；不因前轮发送通过而提前关闭。
-- 定时 `a9944772`：生产本机恢复逻辑为 `009ebbc4`，重启账号/固定身份四项与后台内核投影两项已通过；匹配源码 WASM 后 App 原 35 项中 29 项通过。自定义读取入口沿用整包写权限的旧夹具已缩为真实只读声明；随后对象数组格式错误 `SCHEMA_INVALID:kernelPrimitives` 已修并通过轻量预检，原六项跨 API 复验和 fresh 审查待进行。以上不合并计为同 SHA 全通过。
+- 定时 `a9944772` 已通过 fresh 审查（无 P1/P2）并线性集成：`009ebbc4` → `a5a9ae14`、`e95fc9d7` → `cc0c6519`、`a9944772` → `72dc84cb`，三项 `git range-diff` 均为 `=`。账号/固定身份四项与后台内核投影两项在 `009ebbc4` 通过；匹配源码 WASM 后 App 35 项中 29 项在该 SHA 通过，fixture-only 修复后原六项在 `a9944772` 通过（3 分 52 秒，失败/错误/跳过均 0）。组合覆盖 41 项，不声称同一轮或新整合 SHA 全绿。
 - 定时输入：新 snapshot 初次缺少 `plugins/target` WASM，按固定 `009ebbc4` 源码执行 `cargo build --offline --locked --release --target wasm32-unknown-unknown --manifest-path plugins/Cargo.toml -p open-android-intelligence-sms -p open-android-intelligence-notifications`，复用根 Cargo/Rustup 缓存且不覆盖短信工作区产物。短信/通知 WASM SHA256 分别为 `3258848d25687ba17055565c93f56fc0e1bd88745c334c7de0f962c7288d93f7`、`018722c38ea2a583a123270c2c4fba972fe167ebed50a27cccb6fc8f9b1dedb9`。App 使用 `:app:testFullDebugUnitTest --tests ...ClientCapabilityAuthorizationTest --tests ...ProductionPluginHostTest`；六项复验只选 `*storedTimerInvokesTheVerifiedNonQueryNameAndVersionAndFencesLegacyOrChangedTargets*`，沿用根 JDK21/SDK/Gradle/Robolectric 缓存、固定 Hermes 夹具、`--offline --max-workers=2`。
 - 剩余实现与门禁：API 31–33 SoM、可靠主动推送、旧 Core/Gateway 的生产代码/工具链/CI 消费退出、最终 Fast/PR。真机本轮明确不做，不把这些未完成项泛化成所有切片均无进展。
 
