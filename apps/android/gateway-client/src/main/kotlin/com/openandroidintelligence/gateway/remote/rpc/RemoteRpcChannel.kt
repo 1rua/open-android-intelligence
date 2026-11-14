@@ -43,3 +43,6 @@ interface RemoteRpcHostHandler {
     suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject): JsonValue
     fun events(scope: RemoteRpcConnectionScope): Flow<RemoteRpcEvent>
 }
+
+/** 仅保留固定错误码，服务端原始错误文本可能包含业务内容。 */
+class RemoteRpcException(val code: String) : IllegalStateException(code)
