@@ -32,7 +32,7 @@ P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换
 | 候选 | 已验证范围 | 未验证或后续工作 |
 | --- | --- | --- |
 | Runtime `8d546dc575cc160307fe0eef2ae8401ae783087d` | 原入口 focused 15 项通过（50 秒）：固定 Server 3、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0 | 定点独立复审待进行；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
-| UI `0a3672e7814b2ab56be60433916c0af384a628e1` | 前轮 App 211 项、conversation-data 13 项通过；其中含测试后补充，本候选正在执行 App 编译与 RemoteRuntime 4 项最小复验 | 多候选整合后按实际新 SHA 回归；推送、定时、插件管理与旧 Gateway 生产消费尚待迁移 |
+| UI `0a3672e7814b2ab56be60433916c0af384a628e1` | 前轮 App 211 项、conversation-data 13 项通过；本候选 App 编译与 RemoteRuntime 4 项最小复验通过（3 分 40 秒，4 项失败/错误/跳过均 0） | 独立 fresh 审查新增 5 项问题待修，不因上述最小复验通过而关闭；多候选整合后按新 SHA 回归；推送、定时、插件管理与旧 Gateway 生产消费尚待迁移 |
 | 手机 `931e16d53291fac05936ac3452142e368be70611` | 候选回归 Overlay 3、NativeKernel 3、Bus 7 及 App 编译通过，1 分 50 秒；失败/错误/跳过均 0 | API 31–33 SoM 尚未交付；API 34+ 实现未做真机像素/焦点/锁屏验收 |
 | MCP/原生工具 | 最新 MCP 官方客户端/stdio 2 项通过；固定原生工具至 Kotlin facade 的发现、建任务、发送、读回及 18 字节 artifact 下载通过 | 18 字节测试产物不证明真实截图/SoM 下载；实际 DSH 插件加载、原生 MCP 挂载与设备能力未验 |
 
