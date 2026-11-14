@@ -154,6 +154,8 @@ class BuiltInCapabilitiesTest {
             sms.getValue("org.openandroidintelligence.sms.job-status").primitives)
         assertEquals(setOf("kernel.scheduler.cancel"),
             sms.getValue("org.openandroidintelligence.sms.cancel").primitives)
+        assertEquals(setOf("kernel.sms.send"),
+            sms.getValue("org.openandroidintelligence.sms.send").primitives)
     }
 
     @Test

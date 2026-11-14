@@ -18,8 +18,8 @@ class RemotePhoneControlComposition(
     scope: CoroutineScope,
     private val pluginHost: ProductionPluginHost,
     private val grants: PairingGrantStateHolder,
-    private val confirmLocally: suspend (String, String, String) -> Boolean = { requestId, capabilityId, _ ->
-        PhoneLocalControlUiRegistry.current?.confirm(requestId, capabilityId) ?: false
+    private val confirmLocally: suspend (String, String, String) -> Boolean = { requestId, capabilityId, localParameters ->
+        PhoneLocalControlUiRegistry.current?.confirm(requestId, capabilityId, localParameters) ?: false
     },
 ) : PhoneControlExecutor, AutoCloseable {
     private data class Connection(val binding: RemoteCapabilityBinding, val registration: AutoCloseable)
@@ -104,9 +104,9 @@ class RemotePhoneControlComposition(
                 if (isBackground() && grants.currentKernelGrant(connection.binding.id)?.backgroundSync != true) fail("BACKGROUND_PERMISSION_REQUIRED")
             }
             revalidate()
-            context.beforeDispatch()
+            if (entry.id != "org.openandroidintelligence.sms.send") context.beforeDispatch()
             val output = runInterruptible(Dispatchers.IO) { pluginHost.invokeRemote(entry, parameters, id, connection.binding,
-                context.parameterDigest, isBackground()) }
+                context.parameterDigest, isBackground(), beforeSystemEffect = context.beforeDispatch) }
             revalidate()
             val result = Json.parse(output.decodeToString())
             return PhoneControlResult((value(result) as? ControlValue.Object) ?: ControlValue.Object(mapOf("value" to value(result))))

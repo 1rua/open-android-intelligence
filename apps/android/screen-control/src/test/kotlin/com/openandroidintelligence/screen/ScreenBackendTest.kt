@@ -257,7 +257,7 @@ class ScreenBackendTest {
     @Test fun remoteNodeCoordinateAndCrossingGestureCannotHitLocalApprovalArea() = runTest {
         val localUi = object : com.openandroidintelligence.control.remote.PhoneLocalControlUi {
             override val protectedBounds = ScreenBounds(0, 0, 50, 50)
-            override suspend fun confirm(requestId: String, capability: String) = false
+            override suspend fun confirm(requestId: String, capability: String, localParameters: String?) = false
             override suspend fun executing(requestId: String) {}
             override suspend fun finish(requestId: String) {}
             override fun emergencyStop() {}

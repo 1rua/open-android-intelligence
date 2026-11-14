@@ -4,7 +4,7 @@ import com.openandroidintelligence.control.ScreenBounds
 
 /** 仅手机本机服务实现；远端协议没有批准、隐藏或停止胶囊的调用入口。 */
 interface PhoneLocalControlUi {
-    suspend fun confirm(requestId: String, capability: String): Boolean
+    suspend fun confirm(requestId: String, capability: String, localParameters: String? = null): Boolean
     suspend fun executing(requestId: String)
     suspend fun finish(requestId: String)
     fun emergencyStop()

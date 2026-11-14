@@ -8,6 +8,9 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.control.ScreenBounds
 import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.control.remote.PhoneLocalControlUi
@@ -27,13 +30,22 @@ class PhoneControlOverlay(
     @Volatile private var stopped = false
     // 新窗口等待首个布局时先拒绝全部远端坐标，不能留下 bounds 尚未发布的注入窗口。
     override val protectedBounds: ScreenBounds? get() = if (protecting) bounds ?: ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE) else null
-    override suspend fun confirm(requestId: String, capability: String): Boolean {
+    override suspend fun confirm(requestId: String, capability: String, localParameters: String?): Boolean {
         queue.lock()
         var retained = false
         return try { withContext(Dispatchers.Main.immediate) {
             if (stopped) return@withContext false
             val pending = CompletableDeferred<Boolean>(); decision = pending; activeId = requestId
-            show(service.getString(R.string.remote_phone_confirm, capability), pending)
+            val detail = if (capability == "org.openandroidintelligence.sms.send") {
+                val parameters = localParameters?.let { JsonFields.obj(Json.parse(it)) }
+                    ?: return@withContext false
+                service.getString(R.string.remote_phone_sms_confirmation,
+                    JsonFields.string(parameters, "recipient") ?: return@withContext false,
+                    JsonFields.int(parameters, "subscriptionId") ?: return@withContext false,
+                    JsonFields.string(parameters, "text")?.take(240) ?: return@withContext false,
+                    JsonFields.string(parameters, "text")?.length ?: return@withContext false)
+            } else null
+            show(service.getString(R.string.remote_phone_confirm, capability), pending, detail)
             val allowed = withTimeoutOrNull(5 * 60_000) { pending.await() } ?: false
             decision = null
             if (allowed && !stopped) {
@@ -68,7 +80,7 @@ class PhoneControlOverlay(
     }
     override fun emergencyStop() { stopped = true; decision?.complete(false); stopNative(); PhoneLocalControlUiRegistry.notifyEmergencyStop() }
     private fun stopNative() { com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop(); ScreenHostRegistry.current?.revoke() }
-    private fun show(title: String, pending: CompletableDeferred<Boolean>?) {
+    private fun show(title: String, pending: CompletableDeferred<Boolean>?, detail: String? = null) {
         protecting = true
         hide(clearProtection = false)
         val layout = LinearLayout(service).apply {
@@ -78,10 +90,16 @@ class PhoneControlOverlay(
             setBackgroundColor(0xff202124.toInt())
         }
         layout.addView(TextView(service).apply { text = title; setTextColor(0xffffffff.toInt()) })
+        if (detail != null) {
+            layout.addView(ScrollView(service).apply {
+                addView(TextView(service).apply { text = detail; setTextColor(0xffffffff.toInt()) })
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                (service.resources.displayMetrics.heightPixels / 3)))
+        }
         if (pending != null) { layout.addView(button(R.string.remote_phone_allow) { pending.complete(true) }); layout.addView(button(R.string.remote_phone_deny) { pending.complete(false) }) }
         layout.addView(button(R.string.remote_phone_stop) { emergencyStop() })
         val params = WindowManager.LayoutParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END }
+            WindowManager.LayoutParams.FLAG_SECURE or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL, PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.END }
         layout.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             if (view === layout) {
                 val location = IntArray(2); layout.getLocationOnScreen(location)

@@ -84,6 +84,26 @@ fun androidPermissionRequirements(
             ),
         )
     }
+    if ("kernel.sms.send" in primitives) {
+        add(
+            AndroidPermissionRequirement(
+                key = "sms-send",
+                labelRes = UiR.string.perm_req_sms_send_title,
+                grantKind = DeviceCapabilityGrantKind.RUNTIME_PERMISSION,
+                manifestPermission = Manifest.permission.SEND_SMS,
+                purposeRes = UiR.string.perm_req_sms_send_purpose,
+            ),
+        )
+        add(
+            AndroidPermissionRequirement(
+                key = "sms-subscription",
+                labelRes = UiR.string.perm_req_sms_subscription_title,
+                grantKind = DeviceCapabilityGrantKind.RUNTIME_PERMISSION,
+                manifestPermission = Manifest.permission.READ_PHONE_STATE,
+                purposeRes = UiR.string.perm_req_sms_subscription_purpose,
+            ),
+        )
+    }
     if ("kernel.call-log.read" in primitives) {
         add(
             AndroidPermissionRequirement(

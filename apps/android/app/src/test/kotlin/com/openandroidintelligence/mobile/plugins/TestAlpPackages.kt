@@ -76,7 +76,7 @@ internal object TestAlpPackages {
             }
         })).toByteArray()
         val content = listOf("payload/sms.wasm" to File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes()) +
-            listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel").map { name ->
+            listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel", "sms-send").map { name ->
                 "schemas/$name.json" to File(root, "plugins/schemas/$name.json").readBytes()
             }
         val index = filesJson(content)

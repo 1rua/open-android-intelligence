@@ -350,6 +350,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
     private data class ActiveAuthorization(val requestId: String, val binding: PairingGrantBinding?,
         val scope: CapabilityRequestScope, val remote: RemoteCapabilityBinding? = null,
+        val beforeSystemEffect: (() -> Unit)? = null, val inputSha256: String? = null,
         val background: RemoteBackgroundBinding? = null) {
         val accountId get() = background?.principal?.accountId ?: remote?.access?.principal?.accountId ?: requireNotNull(binding).accountId
         val ownerId get() = background?.id ?: remote?.id ?: requireNotNull(binding).pairingId
@@ -381,7 +382,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val legacyAllows = state != null && (entry.primitives.filterNot { it == "kernel.background.run" } + entry.key).all {
             state.permits(it) && state.permits(identityGrantKey(entry.identity, it))
         }
-        return if (legacyAllows) policy else policy.copy(enabled = false)
+        val effective = if (legacyAllows) policy else policy.copy(enabled = false)
+        return if (entry.id == "org.openandroidintelligence.sms.send") effective.copy(mode = CapabilityAuthorizationMode.MANUAL) else effective
     }
 
     fun setCapabilityPolicy(pluginId: String, capability: String, policy: com.openandroidintelligence.kernel.CapabilityPolicy) {
@@ -408,17 +410,49 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             else -> com.openandroidintelligence.kernel.DeviceOperation.WRITE
         }, Json.sha256(parameters))
 
+    private val smsConfirmations = ConcurrentHashMap<String, String>()
+
+    private fun smsConfirmationKey(requestId: String, entry: VerifiedCapability, parameters: JsonValue): String =
+        digestName(requestId) + ":" + digestName(entry.key + "\u0000" + Json.sha256(parameters))
+
+    /** 确认前保存本机订阅快照；确认后和实际发送前都必须与它相同。 */
+    private fun captureSmsSubscription(requestId: String, entry: VerifiedCapability, parameters: JsonValue) {
+        if (entry.id != "org.openandroidintelligence.sms.send") return
+        val binding = KernelPrimitiveRegistry.provider("kernel.sms.send")
+            ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())
+            ?: throw CapabilityDenied("SMS_SUBSCRIPTION_UNAVAILABLE")
+        if (smsConfirmations.size >= 512) throw CapabilityDenied("SMS_CONFIRMATION_CAPACITY_EXCEEDED")
+        val old = smsConfirmations.putIfAbsent(smsConfirmationKey(requestId, entry, parameters), binding)
+        if (old != null && old != binding) throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+    }
+
+    private fun requireSmsSubscription(requestId: String, entry: VerifiedCapability, parameters: JsonValue) {
+        if (entry.id != "org.openandroidintelligence.sms.send") return
+        val expected = smsConfirmations[smsConfirmationKey(requestId, entry, parameters)]
+            ?: throw CapabilityDenied("SMS_CONFIRMATION_REQUIRED")
+        if (expected != KernelPrimitiveRegistry.provider("kernel.sms.send")
+                ?.confirmationBinding(Json.canonical(parameters).encodeToByteArray())) {
+            throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+        }
+    }
+
     fun requestAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
-        binding: PairingGrantBinding? = null): CapabilityAuthorization = grants.authorization.evaluate(
+        binding: PairingGrantBinding? = null): CapabilityAuthorization {
+        captureSmsSubscription(requestId, entry, parameters)
+        return grants.authorization.evaluate(
             authorizationRequestKey(requestId, requireBinding(binding)), authorizationScope(entry, parameters),
             capabilityPolicy(entry.identity.pluginId, entry.key), grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"))
+    }
 
     fun approveRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue, durationMinutes: Int,
-        remainingRequestMillis: Long, binding: PairingGrantBinding? = null): LocalCapabilityApproval =
-        grants.authorization.approve(authorizationRequestKey(requestId, requireBinding(binding)),
-            authorizationScope(entry, parameters), durationMinutes,
+        remainingRequestMillis: Long, binding: PairingGrantBinding? = null): LocalCapabilityApproval {
+        requireSmsSubscription(requestId, entry, parameters)
+        return grants.authorization.approve(authorizationRequestKey(requestId, requireBinding(binding)),
+            authorizationScope(entry, parameters), if (entry.id == "org.openandroidintelligence.sms.send") 0 else durationMinutes,
             grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), remainingRequestMillis,
-            displaySummary = com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+            displaySummary = if (entry.id == "org.openandroidintelligence.sms.send") emptyList()
+                else com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+    }
 
     fun authorizationIsCurrent(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
         binding: PairingGrantBinding? = null): Boolean = runCatching {
@@ -446,6 +480,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::cancel)
     }
     fun finishRequestAuthorization(requestId: String, binding: PairingGrantBinding? = null) {
+        smsConfirmations.keys.removeAll { it.startsWith(digestName(requestId) + ":") }
         runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::finish)
     }
     val authorizationChanges get() = grants.authorization.changes
@@ -475,6 +510,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun requestRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
         binding: RemoteCapabilityBinding, controlDigest: String? = null): CapabilityAuthorization {
         if (!binding.isCurrent() || grants.currentKernelGrant(binding.id) == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
+        captureSmsSubscription(binding.requestKey(requestId), entry, parameters)
         val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
         val scope = authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }
         // 新通道只允许明确的只读免确认；写入和控制不会继承旧自动许可。
@@ -487,13 +523,18 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun approveRemoteRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
         binding: RemoteCapabilityBinding, controlDigest: String? = null): LocalCapabilityApproval {
         check(binding.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
+        requireSmsSubscription(binding.requestKey(requestId), entry, parameters)
         return grants.authorization.approve(binding.requestKey(requestId), authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, 0,
             grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), 5 * 60_000,
-            com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
+            if (entry.id == "org.openandroidintelligence.sms.send") emptyList()
+            else com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
     }
 
     fun cancelRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.cancel(binding.requestKey(requestId))
-    fun finishRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.finish(binding.requestKey(requestId))
+    fun finishRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) {
+        grants.authorization.finish(binding.requestKey(requestId))
+        smsConfirmations.keys.removeAll { it.startsWith(digestName(binding.requestKey(requestId)) + ":") }
+    }
 
     private fun requireRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue, binding: RemoteCapabilityBinding, controlDigest: String? = null) {
         if (requestRemoteAuthorization(requestId, entry, parameters, binding, controlDigest) !is CapabilityAuthorization.Allowed)
@@ -514,11 +555,11 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         } else authorizationScopeIsCurrent(requestId, invocation.scope, null, invocation.binding)
 
     fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding,
-        controlDigest: String? = null, background: Boolean = false): ByteArray {
+        controlDigest: String? = null, background: Boolean = false, beforeSystemEffect: (() -> Unit)? = null): ByteArray {
         check(CapabilitySchemaValidator.accepts(entry.schema, parameters)) { "SCHEMA_INVALID" }
         requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
         val previous = activeAuthorization.get()
-        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, binding))
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, binding, beforeSystemEffect, Json.sha256(parameters)))
         return try {
             val output = kernel.invoke(entry.identity, binding.access.principal.accountId, binding.id, entry.key,
                 Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, background, correlationId)).output
@@ -667,7 +708,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                         "" -> "READY"
                         // 授权类：都能由用户操作恢复。区分具体原因是为了让远端与界面
                         // 知道该引导用户去「申请权限」还是「检查服务是否连接」。
-                        "READ_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED",
+                        "READ_SMS_REQUIRED", "SEND_SMS_REQUIRED", "READ_CALL_LOG_REQUIRED", "NOTIFICATION_ACCESS_REQUIRED",
                         "ACCESSIBILITY_SERVICE_UNAVAILABLE", "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED",
                         "SCREEN_CAPTURE_SYSTEM_REJECTED", "SCREEN_DEVICE_LOCKED" -> "ANDROID_PERMISSION_REQUIRED"
                         "LOCAL_GRANT_REQUIRED", "LOCAL_POLICY_CORRUPTED", "SCREEN_SESSION_REQUIRED",
@@ -704,6 +745,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             if (previousAuthorization == null) activeAuthorization.remove() else activeAuthorization.set(previousAuthorization)
         }
     }
+
     fun scheduledTarget(call: KernelCallContext, args: JsonValue.JObject): VerifiedCapability {
         val id = JsonFields.string(args,"capabilityId") ?: error("SCHEDULE_TARGET_REQUIRED")
         val version = JsonFields.string(args,"capabilityVersion") ?: error("SCHEDULE_TARGET_REQUIRED")
@@ -719,6 +761,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         if (invocation.requestId != call.session.correlationId || invocation.accountId != call.accountId ||
             invocation.ownerId != call.pairingId || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) {
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+        }
+        if (primitive == "kernel.sms.send" &&
+            Json.sha256(Json.parse(input.decodeToString())) != (invocation.inputSha256 ?: invocation.scope.parametersSha256)) {
+            throw CapabilityDenied("SMS_PARAMETERS_CHANGED")
         }
         KernelPrimitiveRegistry.provider(primitive)?.let { provider ->
             val expectedRevision = grants.state.value?.revision ?: throw CapabilityDenied("LOCAL_POLICY_UNAVAILABLE")
@@ -746,7 +792,22 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                 withTimeout(call.budget.maxInvocationMillis) {
                     if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
                         !isEnabled(call.identity.pluginId) || !invocationAuthorizationCurrent(invocation, call.session.correlationId)) throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
-                    provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId),localInput)
+                    provider.invoke(LocalGrantContext(call.identity.pluginId,call.accountId,call.pairingId,call.session.correlationId,
+                        beforeSystemEffect = { dispatchedInput ->
+                            if (!dispatchedInput.contentEquals(localInput) || expectedRevision != grants.state.value?.revision ||
+                                kernel.isEmergencyStopped() || !isEnabled(call.identity.pluginId) ||
+                                !invocationAuthorizationCurrent(invocation, call.session.correlationId)) {
+                                throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                            }
+                            if (primitive == "kernel.sms.send") {
+                                val entry = capabilityForAuthorizationScope(invocation.scope)
+                                    ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
+                                requireSmsSubscription(invocation.remote?.requestKey(invocation.requestId) ?: invocation.requestId,
+                                    entry, Json.parse(localInput.decodeToString()))
+                                invocation.beforeSystemEffect?.invoke()
+                                    ?: throw CapabilityDenied("SMS_EXECUTION_FENCE_REQUIRED")
+                            }
+                        }),localInput)
                 }
             }
             if (expectedRevision != grants.state.value?.revision || kernel.isEmergencyStopped() ||
