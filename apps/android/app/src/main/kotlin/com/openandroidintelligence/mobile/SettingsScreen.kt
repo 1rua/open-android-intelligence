@@ -64,7 +64,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onRequestScreenCaptureAuthorization: () -> Unit = {},
-) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, viewModel.gatewayRuntime, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
+) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, viewModel.gatewayRuntime, onBack, modifier, presentation, onRequestScreenCaptureAuthorization, viewModel.remoteSettingsRuntime)
 
 /**
  * 兼容入口：主动推送已不再是用户可达的独立页面，配置挂在「通知读取」与「短信」详情里。

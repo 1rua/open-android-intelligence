@@ -18,7 +18,7 @@ import androidx.compose.ui.semantics.semantics
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
-import com.openandroidintelligence.mobile.GatewayRuntime
+import com.openandroidintelligence.mobile.LocalSettingsRuntime
 import com.openandroidintelligence.mobile.SettingsPresentation
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
@@ -34,7 +34,7 @@ private const val ISSUES_URL = "$PROJECT_URL/issues"
 
 @Composable
 internal fun AdvancedSettingsScreen(
-    runtime: GatewayRuntime?,
+    runtime: LocalSettingsRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
     onOpenUpdates: () -> Unit,

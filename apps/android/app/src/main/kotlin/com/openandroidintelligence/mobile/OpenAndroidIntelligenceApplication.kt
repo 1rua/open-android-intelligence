@@ -86,7 +86,7 @@ class OpenAndroidIntelligenceApplication : Application() {
     val gatewayRuntime: GatewayRuntime by gatewayRuntimeOwner
     private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val remoteRuntime: RemoteRuntime by lazy {
-        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants, confirmLocally = { _, _, _ -> false })
+        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants)
     }
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()

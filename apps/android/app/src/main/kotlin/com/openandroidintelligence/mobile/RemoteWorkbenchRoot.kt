@@ -57,6 +57,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         }
     }
     val activity = androidx.compose.ui.platform.LocalContext.current as androidx.activity.ComponentActivity
+    val requestScreenCaptureAuthorization = com.openandroidintelligence.mobile.screen.rememberScreenCaptureAuthorization(app, activity, ::notice)
+    val pluginRevision by app.pluginHost.revision.collectAsState()
+    val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
     LaunchedEffect(dark) { activity.applySystemBarContrast(dark) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     val voiceTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
@@ -221,7 +224,10 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                 }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
         } else {
         val current = controller
-        if (current != null) WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
+        if (nativeUi != null) {
+            RemoteNativePluginSurface(app.pluginHost, nativeUi, current, connection.selected?.origin?.value.orEmpty()) { settings = true }
+            if (settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
+        } else if (current != null) WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
             onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
             onPickDocument = picks.document,
             onVoiceInput = startVoiceInput, recording = activeRecording,
@@ -233,9 +239,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
             pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
                 runtime.connectedAccountId) { settings = true } },
             settingsOpen = settings, onSettingsOpenChange = { settings = it },
-            settingsPanel = { close -> RemoteSettings(app, close) }, header = { RemoteModelSelector(runtime) })
+            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, close) }, header = { RemoteModelSelector(runtime) })
         else RemoteLoginScreen(runtime, connection.busy, onOpenSettings = { settings = true })
-        if (current == null && settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app) { settings = false } }
+        if (current == null && settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
         }
         SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).safeDrawingPadding())
         }
@@ -245,7 +251,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
 @Composable
 private fun RemoteLoginScreen(runtime: RemoteRuntime, busy: Boolean, onOpenSettings: () -> Unit) {
     val state by runtime.state.collectAsState()
-    var origin by rememberSaveable { mutableStateOf("https://dsh.r2049.cn") }
+    var origin by rememberSaveable { mutableStateOf(runtime.loginOrigin()) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -316,9 +322,9 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
 }
 
 @Composable
-private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, onBack: () -> Unit) {
+private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, onBack: () -> Unit) {
     SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = null, remoteRuntime = app.remoteRuntime,
-        presentation = SettingsPresentation.SIDEBAR)
+        presentation = SettingsPresentation.SIDEBAR, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
 }
 
 @Composable
@@ -346,4 +352,24 @@ internal fun RemoteConnectionSettingsScreen(runtime: RemoteRuntime, presentation
             TextButton(onClick = { runtime.logout() }) { Text(stringResource(UiR.string.common_action_logout)) }
         }
     }
+}
+
+/** 本机选中的原生全屏界面继续使用原宿主外壳与当前工作台操作。 */
+@Composable
+internal fun RemoteNativePluginSurface(
+    host: com.openandroidintelligence.mobile.plugins.ProductionPluginHost,
+    nativeUi: Pair<String, com.openandroidintelligence.plugin.ui.NativeUiProvider>,
+    controller: WorkbenchController?,
+    origin: String,
+    openSettings: () -> Unit,
+) {
+    val workbench = controller?.state?.collectAsState()?.value
+    com.openandroidintelligence.mobile.plugins.NativePluginSurface(
+        host, nativeUi.first, nativeUi.second,
+        com.openandroidintelligence.plugin.ui.NativeUiContext(origin, workbench?.activeThreadId,
+            workbench?.activeThreadTitle.orEmpty(), workbench?.draft.orEmpty(),
+            (workbench?.timeline as? com.openandroidintelligence.conversation.state.Loadable.Ready)?.value.orEmpty()
+                .map { com.openandroidintelligence.plugin.ui.NativeUiMessage(it.key, it.sender, it.text, it.isStreaming) },
+            { controller?.editDraft(it) }, { controller?.sendDraft() }, { controller?.stopGeneration() }, openSettings),
+    )
 }

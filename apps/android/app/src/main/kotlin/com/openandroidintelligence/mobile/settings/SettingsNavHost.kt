@@ -87,6 +87,7 @@ internal fun SettingsNavHost(
     remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val localRuntime = viewModel.localSettingsRuntime
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val context = LocalContext.current
@@ -249,18 +250,18 @@ internal fun SettingsNavHost(
             composable(SettingsRoutes.CONNECTION_DETAILS) { ConnectionDiagnosticsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.REMINDERS) { NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications) }
             composable(SettingsRoutes.PAIRING) {
-                DeviceCapabilitiesScreen(environment, runtime, presentation, ::back,
+                DeviceCapabilitiesScreen(environment, localRuntime, presentation, ::back,
                     onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.CAPABILITY, arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType })) { destination ->
                 CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.SCREEN_CAPABILITY) {
                 CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
             }
             composable(SettingsRoutes.PLUGINS) {
@@ -294,7 +295,7 @@ internal fun SettingsNavHost(
             }
             composable(SettingsRoutes.AUDIT_LOG) { AuditSettingsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.ADVANCED) {
-                AdvancedSettingsScreen(runtime, presentation, ::back,
+                AdvancedSettingsScreen(localRuntime, presentation, ::back,
                     onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
                     onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
                     onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() }, remoteRuntime = remoteRuntime)

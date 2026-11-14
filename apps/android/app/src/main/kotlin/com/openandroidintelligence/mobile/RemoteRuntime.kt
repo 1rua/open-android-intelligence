@@ -51,7 +51,7 @@ class RemoteRuntime(
     private val scope: CoroutineScope,
     private val pluginHost: ProductionPluginHost,
     private val grants: PairingGrantStateHolder,
-    private val confirmLocally: suspend (String, String, String) -> Boolean,
+    private val confirmLocally: (suspend (String, String, String) -> Boolean)? = null,
     accountFactory: (RemoteRpcHostHandler) -> RemoteAccountConnection = { ProductionRemoteAccountConnection(context, scope, it) },
     private val localDocumentKeyProvider: AesGcmKeyProvider? = null,
 ) {
@@ -62,7 +62,10 @@ class RemoteRuntime(
     val deviceCapabilityState = MutableStateFlow(DeviceCapabilitySyncState())
     private val selection = Mutex()
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
-    private val phone by lazy { RemotePhoneControlComposition(context, scope, pluginHost, grants, confirmLocally) }
+    private val phone by lazy {
+        confirmLocally?.let { RemotePhoneControlComposition(context, scope, pluginHost, grants, it) }
+            ?: RemotePhoneControlComposition(context, scope, pluginHost, grants)
+    }
     private data class Registered(val access: ControlAccessBinding, val registration: AutoCloseable)
     private val registered = ConcurrentHashMap<String, Registered>()
     private val handler = object : RemoteRpcHostHandler {
@@ -95,6 +98,10 @@ class RemoteRuntime(
     }
     internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, publisher::update,
         cancel = publisher::cancel, forget = publisher::forget)
+    val localSettings by lazy {
+        LocalSettingsRuntime(replyNotifications, nativeConversationNotifications::refreshActive,
+            ::reloadDebounceSettings, { controller.value?.refreshThreads() })
+    }
     val connectedAccountId: String? get() = state.value.account?.accountId
     val connectedProfileId: String? get() = state.value.account?.let { profileId(it.origin) }
     val connectedAgentName: String? get() = state.value.endpoints.firstOrNull { it.endpoint.key == state.value.selected }?.endpoint?.displayName
@@ -234,7 +241,19 @@ class RemoteRuntime(
         media: EncryptedHistoryMediaCache, attachments: AttachmentDraftCoordinator?, local: ConversationScope,
         active: AtomicReference<String?>, restore: Boolean = true): WorkbenchController {
         val supported = (repo as? RemoteConversationRepository)?.carrier?.capabilities.orEmpty()
-        val history = if (repo is RemoteConversationRepository) MirroredConversationRepository(repo, mirror, media) else repo
+        val source = if (repo is RemoteConversationRepository) MirroredConversationRepository(repo, mirror, media) else repo
+        val organization = EncryptedNativeConversationOrganizationStore(context, local, localDocumentKeyProvider)
+        val tracker = repo as? GenerationTracker ?: object : GenerationTracker {
+            override val generationId = MutableStateFlow<String?>(null)
+            override val generationState = MutableStateFlow(GenerationState.IDLE)
+        }
+        val history = object : ConversationRepository by source, GenerationTracker by tracker, MessageOutcomeQuery {
+            override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? =
+                (source as? MessageOutcomeQuery)?.queryMessage(conversationId, clientMessageId)
+            override suspend fun readOrganization() = withContext(Dispatchers.IO) { organization.read(local.gatewayId) }
+            override suspend fun updateOrganization(expectedRevision: Long, value: ConversationOrganization) =
+                withContext(Dispatchers.IO) { organization.update(local.gatewayId, expectedRevision, value) }
+        }
         return WorkbenchController(ownedScope, history, object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) =
                 (repo as? RemoteConversationRepository)?.carrier?.commands(active.get()?.let(RemoteLocalIds::decode))
@@ -244,6 +263,8 @@ class RemoteRuntime(
             onActiveThreadChanged = { id -> active.set(id); (repo as? RemoteConversationRepository)?.activeConversationChanged(); if (restore) refreshModels(id) },
             streamHealthSource = repo as? StreamHealthSource, persistence = mirror.takeIf { restore }, media = media,
             downloads = AndroidAttachmentDownloads(context, media, local, localDocumentKeyProvider), allowSending = repo is RemoteConversationRepository,
+            supportsConversationManagement = true, organizationStoredLocally = true,
+            supportsConversationDelete = false,
             supportsConversationRename = SessionCapability.RENAME in supported,
             supportsConversationArchive = SessionCapability.ARCHIVE in supported,
             supportsConversationUnarchive = SessionCapability.UNARCHIVE in supported,
@@ -439,6 +460,28 @@ class RemoteRuntime(
     fun onAppForegrounded() { foreground = true; replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive() }
     private var foreground = false
     fun onAppBackgrounded() { foreground = false }
+    /** 仅枚举当前 Remote 账号已登记的完整端点，不读取旧 Core 档案。 */
+    fun localOrganizationScopes(): List<ConversationScope> {
+        val account = state.value.account ?: return emptyList()
+        val prefix = "endpoint:${profileId(account.origin)}:${account.accountId}:"
+        return preferences.all.keys.filter { it.startsWith(prefix) }.mapNotNull { key ->
+            val id = key.removePrefix(prefix)
+            endpointForNotification(ReplyNotificationTarget(profileId(account.origin), account.accountId, "", id))
+                ?.endpoint?.key?.let(::conversationScope)
+        }.distinct()
+    }
+    fun readLocalOrganization(local: ConversationScope): ConversationOrganization =
+        EncryptedNativeConversationOrganizationStore(context, local, localDocumentKeyProvider).read(local.gatewayId)
+    fun updateLocalOrganization(local: ConversationScope, value: ConversationOrganization): ConversationOrganization {
+        check(local in localOrganizationScopes()) { "REMOTE_ORGANIZATION_SCOPE_UNAVAILABLE" }
+        val store = EncryptedNativeConversationOrganizationStore(context, local, localDocumentKeyProvider)
+        return store.update(local.gatewayId, store.read(local.gatewayId).revision, value)
+    }
+    fun loginOrigin(): String = preferences.getString("preferred-origin", null) ?: "https://dsh.r2049.cn"
+    fun saveLoginOrigin(origin: String) {
+        val canonical = RemoteServiceOrigin.fromCanonicalOrigin(origin).value
+        check(preferences.edit().putString("preferred-origin", canonical).commit()) { "LOCAL_SAVE_FAILED" }
+    }
     fun reloadDebounceSettings() {
         val policy = DebouncePreferences(context).read()
         controller.value?.updateDebouncePolicy(policy)

@@ -169,6 +169,15 @@ class SettingsBackupCoordinator(
         MessageProcessingSection(DebouncePreferences(context).read().delay.inWholeMilliseconds.toInt())
 
     private fun currentOrganizations(): ConversationSection? {
+        remoteRuntime?.let { remote ->
+            val entries = remote.localOrganizationScopes().mapNotNull { local ->
+                val organization = remote.readLocalOrganization(local)
+                if (organization.isDefault()) null else ConversationOrganizationValue(
+                    remoteOrganizationProfile(local), local.gatewayId, organization.sortMode.wireValue,
+                    organization.customOrder, organization.folders.map { ConversationFolderValue(it.folderId, it.name) }, organization.assignments)
+            }
+            return entries.takeIf { it.isNotEmpty() }?.let(::ConversationSection)
+        }
         val installId = installId() ?: return null
         val entries = buildList {
             profiles.list().forEach { profile ->
@@ -218,6 +227,7 @@ class SettingsBackupCoordinator(
     }
 
     private fun currentAgents(): AgentsSection? {
+        if (remoteRuntime != null) return null
         val selected = profiles.list().mapNotNull { profile ->
             val agent = profile.selectedAgentId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             backupProfileKey(profile.localProfileId) to agent
@@ -441,6 +451,20 @@ class SettingsBackupCoordinator(
     ) {
         section ?: return
         if (section.organizations.isEmpty()) return
+        remoteRuntime?.let { remote ->
+            val scopes = remote.localOrganizationScopes().associateBy { remoteOrganizationProfile(it) to it.gatewayId }
+            section.organizations.forEach { entry ->
+                val local = scopes[entry.profileId to entry.agentId]
+                if (local == null) skipped += "会话排序未导入：本机还没有对应 Remote 工作区。"
+                else {
+                    remote.updateLocalOrganization(local, ConversationOrganization(sortMode = ConversationSortMode.entries.first { it.wireValue == entry.sortMode },
+                        customOrder = entry.customOrder, folders = entry.folders.map { ConversationFolder(it.folderId, it.name) }, assignments = entry.assignments))
+                    applied += section.summary()
+                    pendingRuntimeRefreshes += { runtimeRefresh?.refreshThreads() }
+                }
+            }
+            return
+        }
         val installId = installId() ?: run {
             skipped += "会话排序未导入：本机安装标识尚未生成。"
             return
@@ -482,6 +506,12 @@ class SettingsBackupCoordinator(
         deferred: MutableList<String>,
     ) {
         section ?: return
+        remoteRuntime?.let { remote ->
+            remote.saveLoginOrigin(section.gatewayUrl)
+            applied += section.summary()
+            deferred += "连接地址已保存为登录页默认值；已登录的账号不受影响。"
+            return
+        }
         if (LoginGatewayPrefill.read(context) != section.gatewayUrl) {
             if (!LoginGatewayPrefill.write(context, section.gatewayUrl)) {
                 throw IllegalStateException("PREFERRED_GATEWAY_PERSISTENCE_FAILED")
@@ -500,6 +530,7 @@ class SettingsBackupCoordinator(
     ) {
         section ?: return
         if (section.selectedByProfile.isEmpty()) return
+        if (remoteRuntime != null) { skipped += "旧 Agent 选择不适用于 Remote 工作区。"; return }
         val local = profiles.list().associateBy { backupProfileKey(it.localProfileId) }
         var written = 0
         var missing = 0
@@ -657,6 +688,8 @@ class SettingsBackupCoordinator(
         val notificationCollection: NotificationPolicySnapshot?,
         val capabilityPolicies: Map<String, com.openandroidintelligence.kernel.CapabilityPolicy>,
         val organizations: List<OrganizationSnapshot>,
+        val remoteOrganizations: List<Pair<ConversationScope, ConversationOrganization>>,
+        val remoteOrigin: String?,
     ) {
         /**
          * 把各类权威写回快照值，返回**确认未恢复**的项目名称。
@@ -687,9 +720,12 @@ class SettingsBackupCoordinator(
                 runtimeRefresh?.reloadDebounceSettings()
             }
             attempt("连接地址") {
-                val written = if (preferredGateway == null) LoginGatewayPrefill.clear(context)
-                else LoginGatewayPrefill.write(context, preferredGateway)
-                check(written) { "PREFERRED_GATEWAY_PERSISTENCE_FAILED" }
+                remoteOrigin?.let { remoteRuntime?.saveLoginOrigin(it) }
+                if (remoteRuntime == null) {
+                    val written = if (preferredGateway == null) LoginGatewayPrefill.clear(context)
+                    else LoginGatewayPrefill.write(context, preferredGateway)
+                    check(written) { "PREFERRED_GATEWAY_PERSISTENCE_FAILED" }
+                }
             }
             attempt("Agent 选择") {
                 agents.forEach { (profileId, agentId) -> profiles.saveSelectedAgent(profileId, agentId) }
@@ -729,6 +765,9 @@ class SettingsBackupCoordinator(
                     }
                 }
             }
+            remoteOrganizations.forEach { (local, organization) ->
+                attempt("会话排序") { remoteRuntime?.updateLocalOrganization(local, organization) }
+            }
             attempt("会话列表刷新") {
                 runtimeRefresh?.refreshThreads()
             }
@@ -747,11 +786,13 @@ class SettingsBackupCoordinator(
         notificationsEnabled = replyNotifications?.enabled?.value,
         debounce = DebouncePreferences(context).snapshot(),
         preferredGateway = LoginGatewayPrefill.read(context),
-        agents = profiles.list().associate { it.localProfileId to it.selectedAgentId },
+        agents = if (remoteRuntime == null) profiles.list().associate { it.localProfileId to it.selectedAgentId } else emptyMap(),
         updates = appUpdates.readChannel(),
         notificationCollection = runCatching { notificationPolicy.snapshot() }.getOrNull(),
         capabilityPolicies = grants.state.value?.capabilityPolicies.orEmpty(),
-        organizations = captureOrganizations(),
+        organizations = if (remoteRuntime == null) captureOrganizations() else emptyList(),
+        remoteOrganizations = remoteRuntime?.let { remote -> remote.localOrganizationScopes().map { it to remote.readLocalOrganization(it) } }.orEmpty(),
+        remoteOrigin = remoteRuntime?.loginOrigin(),
     )
 
     private fun captureOrganizations(): List<OrganizationSnapshot> {
@@ -765,6 +806,9 @@ class SettingsBackupCoordinator(
             }
         }
     }
+
+    private fun remoteOrganizationProfile(scope: ConversationScope): String =
+        "${scope.profileId}:${scope.accountId}"
 
     // ---------------------------------------------------------------- 基础设施
 

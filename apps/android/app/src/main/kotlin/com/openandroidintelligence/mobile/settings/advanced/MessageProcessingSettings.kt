@@ -20,7 +20,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
-import com.openandroidintelligence.mobile.GatewayRuntime
+import com.openandroidintelligence.mobile.LocalSettingsRuntime
 import com.openandroidintelligence.mobile.conversations.DebouncePreferences
 import kotlinx.coroutines.CancellationException
 import com.openandroidintelligence.ui.resources.R as UiR
@@ -32,14 +32,14 @@ import com.openandroidintelligence.ui.resources.R as UiR
  * 也不会向 Core 写配置。
  */
 @Composable
-internal fun MessageProcessingSettings(runtime: GatewayRuntime?, remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null) {
+internal fun MessageProcessingSettings(runtime: LocalSettingsRuntime?, remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null) {
     val context = LocalContext.current.applicationContext
     val preferences = remember(context) { DebouncePreferences(context) }
     MessageProcessingEditor(
         preferences = preferences,
         onSaveDelay = { delayMillis ->
             if (remoteRuntime != null) { preferences.write(delayMillis); remoteRuntime.reloadDebounceSettings() }
-            else if (runtime != null) runtime.updateDebounceSettings(delayMillis)
+            else if (runtime != null) { preferences.write(delayMillis); runtime.reloadMessageProcessing() }
             else preferences.write(delayMillis)
         },
     )

@@ -114,6 +114,62 @@ class RemoteRuntimeTest {
         assertEquals(firstScope, runtime.controller.value!!.localConversationScope)
     }
 
+    @Test fun `同名会话的本机文件夹按工作区隔离并重建后恢复`() = runBlocking {
+        ready("one")
+        val first = runtime.controller.value!!
+        first.createFolder("工作区一")
+        eventually { first.state.value.organization.folders.any { it.name == "工作区一" } }
+        val one = first.localConversationScope
+        val saved = runtime.readLocalOrganization(one)
+        ready("two")
+        assertTrue(runtime.controller.value!!.state.value.organization.folders.isEmpty())
+        runtime.controller.value!!.createFolder("工作区二")
+        eventually { runtime.controller.value!!.state.value.organization.folders.any { it.name == "工作区二" } }
+        ready("one")
+        eventually { runtime.controller.value!!.state.value.organization.folders.any { it.name == "工作区一" } }
+        assertEquals(saved, com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context, one, key).read(one.gatewayId))
+    }
+
+    @Test fun `本机组织功能不冒充远端改名归档和删除能力`() = runBlocking {
+        ready("one")
+        val state = runtime.controller.value!!.state.value
+        assertTrue(state.conversationManagementSupported)
+        assertTrue(state.organizationStoredLocally)
+        assertTrue(state.conversationRenameSupported)
+        assertFalse(state.conversationArchiveSupported)
+        assertFalse(state.conversationDeleteSupported)
+        assertFalse(state.conversationUnarchiveSupported)
+    }
+
+    @Test fun `未选择Remote端点时不枚举旧Core组织分区`() = runBlocking {
+        context.getSharedPreferences("open_android_intelligence_runtime", 0).edit().putString("installation_id", "old-install").commit()
+        val old = com.openandroidintelligence.conversation.ports.ConversationScope("core-profile", "https://core.example", "account", "old-install")
+        val store = com.openandroidintelligence.mobile.conversations.EncryptedNativeConversationOrganizationStore(context, old, key)
+        store.update("old-agent", 0, com.openandroidintelligence.conversation.ports.ConversationOrganization(
+            folders = listOf(com.openandroidintelligence.conversation.ports.ConversationFolder("old-folder", "旧服务文件夹"))))
+        assertTrue(runtime.localOrganizationScopes().isEmpty())
+    }
+
+    @Test fun `Remote设置备份导出再恢复保持端点组织与登录地址`() = runBlocking {
+        ready("one")
+        val local = runtime.controller.value!!.localConversationScope
+        val original = com.openandroidintelligence.conversation.ports.ConversationOrganization(
+            folders = listOf(com.openandroidintelligence.conversation.ports.ConversationFolder("folder", "备份文件夹")))
+        runtime.updateLocalOrganization(local, original)
+        val audit = AndroidAuditStore(InMemoryAuditSink())
+        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
+        val backup = com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator(
+            context, AppearancePreferences(context), AndroidAccountProfileStore(context), grants, null,
+            runtime.replyNotifications, null, null,
+            com.openandroidintelligence.mobile.updates.AppUpdatePreferences(context, com.openandroidintelligence.mobile.updates.AppUpdateChannel.PREVIEW),
+            com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort(), keyProvider = key, remoteRuntime = runtime)
+        val exported = backup.export()
+        runtime.updateLocalOrganization(local, com.openandroidintelligence.conversation.ports.ConversationOrganization())
+        assertTrue(backup.import(exported.json).isSuccess)
+        assertEquals(original.folders, runtime.readLocalOrganization(local).folders)
+        assertEquals("https://remote.example", runtime.loginOrigin())
+    }
+
     private fun endpoint(id: String): com.openandroidintelligence.conversation.data.remote.RemoteWorkspace =
         com.openandroidintelligence.conversation.data.remote.RemoteWorkspace(AgentEndpoint(EndpointKey(
             RemoteServiceOrigin.fromCanonicalOrigin("https://remote.example"), "account", "host", BackendId("harness"), id), id), "/$id")
