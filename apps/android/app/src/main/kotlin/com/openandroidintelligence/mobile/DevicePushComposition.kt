@@ -93,6 +93,18 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         } else delivery(access,operation)
     }
 
+    fun deliveryPolicy(access: com.openandroidintelligence.control.remote.ControlAccessBinding,
+        operation: com.openandroidintelligence.control.remote.ControlOperation.Delivery): com.openandroidintelligence.kernel.NativePushDeliveryPolicy {
+        val local=runtime ?: return com.openandroidintelligence.kernel.NativePushDeliveryPolicy("unavailable",false)
+        val snapshot=local.snapshot()
+        val receipt=local.remoteReceipt(operation.deliveryId)
+        val target=receipt?.endpoint?.remoteTarget
+        return com.openandroidintelligence.kernel.NativePushDeliveryPolicy(local.authorizationDigest(),
+            !app.kernel.isEmergencyStopped() && synchronizeLogin() && target != null && identity.accepts(access,target) &&
+                (receipt.consumed || snapshot.configuration.let { receipt.endpoint in it.sms.endpoints && it.sms.enabled ||
+                    receipt.endpoint in it.notifications.endpoints && it.notifications.enabled }))
+    }
+
     private val notificationObserver = object : DevicePushNotificationObserver {
         override fun accepts(packageName: String): Boolean = synchronizeLogin() && runtime?.let {
             it.isCollectionAllowed(PushKind.NOTIFICATION) && packageName in it.snapshot().configuration.notifications.scope.packageIds

@@ -63,6 +63,14 @@ class DevicePushRuntime(
         snapshotLocked()
     }
 
+    /** 仅配置与白名单参与授权摘要，入队、固定reader或ACK清理不会伪装成用户撤销。 */
+    internal fun authorizationDigest(): String = synchronized(lock) {
+        checkHealthy()
+        val bytes=PushStateCodec.encode(PushStoredState(state.installationId,configuration=state.configuration))
+        try { "sha256:"+java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } }
+        finally { bytes.fill(0) }
+    }
+
     fun configure(configuration: PushConfiguration, expectedConfiguration: PushConfiguration? = null): PushSnapshot {
         val cancellations: List<ActiveAttempt>
         val notifyCleanup: Boolean

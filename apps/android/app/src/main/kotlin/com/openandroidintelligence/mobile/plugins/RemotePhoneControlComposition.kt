@@ -29,6 +29,7 @@ class RemotePhoneControlComposition(
     @Volatile private var stopped = false
     private val nativeKernel = NativePhoneControlKernel(grants, grants.authorization, { pluginHost.hostCapabilities },
         { pluginHost.phoneCapabilities }, pluginHost::nativePhonePolicy, { stopped || pluginHost.remoteEmergencyStopped() })
+    private val pushKernel = NativePushDeliveryKernel(grants) { stopped || pluginHost.remoteEmergencyStopped() }
     private val metadataFile = File(context.noBackupFilesDir, "remote-control-metadata-v1.enc")
     private val metadataKeys = AndroidKeystoreOutboxKeyProvider("oai_remote_control_metadata_v1")
     private val ledger = ControlMetadataStore(AesGcmEncryptedBlobStore(FileEncryptedOutboxPersistence(metadataFile),
@@ -83,8 +84,9 @@ class RemotePhoneControlComposition(
                 ?: fail("PUSH_RUNTIME_UNAVAILABLE")
             val push=app.devicePush ?: fail("PUSH_RUNTIME_UNAVAILABLE")
             connection(context.access)
-            context.beforeDispatch()
-            val result=push.delivery(context.access,operation)
+            val result=pushKernel.execute(connection.binding,{ push.deliveryPolicy(context.access,operation) },context.beforeDispatch) {
+                push.delivery(context.access,operation)
+            }
             connection(context.access)
             return PhoneControlResult(value(result) as ControlValue.Object,requireContentAccess={
                 connection(context.access);push.requireDeliveryContent(context.access,operation)
