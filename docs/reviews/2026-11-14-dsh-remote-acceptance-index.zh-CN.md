@@ -31,10 +31,19 @@ P0/P4/P5 前置。正常多 Host、DSH/Codex/ACP workspace 与对话手动切换
 
 | 候选 | 已验证范围 | 未验证或后续工作 |
 | --- | --- | --- |
-| Runtime `8d546dc575cc160307fe0eef2ae8401ae783087d` | 原入口 focused 15 项通过（50 秒）：固定 Server 3、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0 | 定点独立复审待进行；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
+| Runtime `1953344f7a21a02813e0461316d083dc3118fdf8` | 原入口 focused 17 项通过（51 秒）：固定 Server 5、Control WS/Noise 3、HTTP 3、RPC 生命周期 4、凭据重启 2；失败/错误/跳过均 0。原 `8d546dc5` 的 15 项为前轮证据 | 新两项 P2 定点确认待进行；真实 Host/手机及 LAN/P2P/TURN/独立 Relay 部署未验 |
 | UI `0a3672e7814b2ab56be60433916c0af384a628e1` | 前轮 App 211 项、conversation-data 13 项通过；本候选 App 编译与 RemoteRuntime 4 项最小复验通过（3 分 40 秒，4 项失败/错误/跳过均 0） | 独立 fresh 审查新增 5 项问题待修，不因上述最小复验通过而关闭；多候选整合后按新 SHA 回归；推送、定时、插件管理与旧 Gateway 生产消费尚待迁移 |
 | 手机 `931e16d53291fac05936ac3452142e368be70611` | 候选回归 Overlay 3、NativeKernel 3、Bus 7 及 App 编译通过，1 分 50 秒；失败/错误/跳过均 0 | API 31–33 SoM 尚未交付；API 34+ 实现未做真机像素/焦点/锁屏验收 |
 | MCP/原生工具 | 最新 MCP 官方客户端/stdio 2 项通过；固定原生工具至 Kotlin facade 的发现、建任务、发送、读回及 18 字节 artifact 下载通过 | 18 字节测试产物不证明真实截图/SoM 下载；实际 DSH 插件加载、原生 MCP 挂载与设备能力未验 |
+
+Runtime `1953344f` 在前轮三项修复上继续关闭两处复审缺陷：旧 onClosed、主动 close 和失败收尾的
+代次检查与状态写入统一放在同一 selectionLock；回归控制真实旧 service.close 回调的状态 setter 停点，
+与新选择发布 CONNECTED 形成合法交错。Host 收到 Offer/ICE 后本地 RTC_UNAVAILABLE 或确定的候选失败只
+禁用该隧道的 RTC 候选，保留 Relay 选择与原握手等待，不虚构 signal.error；固定原 Server 的 RawClient
+Offer→JVM Host 原生 RTC 不可用→Relay→Noise→RPC 场景通过。两项尚待原评审定点确认，不先写成审查关闭。
+
+手机敏感输出交付 P1 修复候选 `cb626070` 的 ContentDelivery 3、Bus 7 及 App 编译通过，10 项失败/错误/跳过
+均 0；独立定点确认已关闭该 P1。它属于手机候选，不与 Runtime 或前轮 931e16d5 的计数合并。
 
 Runtime 的三项独立审查问题已形成失败回归后修复：旧非法版本 `oai-android` 的固定 Server 负例
 不转发 Relay 选择并会替换旧 Client；现在 hello 与注册 descriptor 共用从本项目 version.properties
