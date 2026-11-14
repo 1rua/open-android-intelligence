@@ -1,37 +1,8 @@
-name: OAI Core and Session Adapters
+name: Remote Client and Android
 
-# 目标：以「提交到拿到最终结果」的墙钟时间为第一优先级。
-#
-# 调度结构（互不阻塞，全部并行启动）：
-#   changes           变更影响分析，输出各 lane 开关；本身永不被跳过
-#   fast              静态/契约门禁，约 30-60 秒
-#   core (3.11/3.12)  独立
-#   hermes-native     独立
-#   dsh               独立
-#   android-setup     只构建一次 Rust WASM + 签名插件，artifact 分发给各 lane
-#   android-preflight 越权面门禁（廉价），所有 Android lane 的共同前置
-#   android-<lane>    每个 lane 独立 runner、一次 Gradle 调用、一批独立测试任务
-#   gate              汇总；只有它作为分支保护所需的唯一检查名称
-#
-# 实测得到的三条硬约束，不要“简化”：
-#   1. Gradle 的 `--tests` 只绑定它前面最近的那个 Test 任务。因此每个 job
-#      只声明一个 Test 任务；分片清单由 tools/ci/android_tasks.py 生成。
-#   2. job 级 `if` 依赖 changes 的布尔输出，避免“先起 runner 再跳过命令”。
-#   3. changes 失败等价于“无法判断影响范围”，下游全部按 full 处理，绝不放行。
-#
-# 刻意不做的事：
-#   * 不把 android lane 串在 core 之后。两者互不依赖，串行只会拉长关键路径；
-#     独立的失败信息也比“一个失败掩盖其余”更有价值。
-#   * 不为每个 lane 重新编译 Rust 插件，构建一次后走 artifact。
-
-# 职责边界：
-#   * 本工作流 = 增量 CI（按变更范围选测 lane），dev 与 main 都跑。
-#   * ci.yml     = main 的完整回归（不依赖影响分析）。
-#
-# 为什么 main 也必须跑本工作流：Core 发行包、Core 安全、Hermes 适配器与
-# DSH 回归只定义在这里。ci.yml 负责的是历史网关兼容性与 Android 完整回归，
-# 并不覆盖上述套件。若本工作流不监听 main，稳定发布门禁就可能接受一次
-# 从未跑过当前 Core 套件的 ci.yml 成功结果。
+# Remote 固定来源、手机 MCP 与 Android 功能门禁按影响图并行运行。
+# 未知变更扩大完整矩阵；签名 WASM 资产只构建一次并由相关 lane 读取。
+# CI Gate 保留既有外部检查名称，发布仍验证同一提交的最新工作流结论。
 on:
   pull_request:
     branches: [dev, main]
@@ -68,7 +39,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: oai-core-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'gate' }}
+  group: remote-client-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'gate' }}
   # 新提交取代旧提交时取消旧 CI；dev/main 上的发布前验证必须完整跑完。
   cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
 
@@ -79,9 +50,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       runs_fast: ${{ steps.impact.outputs.runs_fast }}
-      runs_core: ${{ steps.impact.outputs.runs_core }}
-      runs_hermes: ${{ steps.impact.outputs.runs_hermes }}
-      runs_dsh: ${{ steps.impact.outputs.runs_dsh }}
       runs_remote: ${{ steps.impact.outputs.runs_remote }}
       runs_android_device: ${{ steps.impact.outputs.runs_android_device }}
       runs_android_platform: ${{ steps.impact.outputs.runs_android_platform }}
@@ -113,7 +81,7 @@ jobs:
               echo "::warning::No usable base commit; running every lane."
               python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
-          lanes = ["fast","core","hermes","dsh","remote","android_device","android_platform",
+          lanes = ["fast","remote","android_device","android_platform",
                    "android_notifications","android_conversation","android_gateway",
                    "android_plugins","android_app","android_play"]
           print("\n".join(f"runs_{lane}=true" for lane in lanes))
@@ -158,30 +126,31 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Shell and Node syntax
-        run: |
-          bash -n scripts/install.sh
-          bash -n scripts/uninstall.sh
-          bash -n scripts/setup.sh
-          node --check integrations/dsh-session-adapter/index.js
-
-      # GitHub-hosted runners do not ship pytest; install just what this gate
-      # needs instead of the full Core dependency set.
-      - name: Install the gate's test dependency
+      - name: 安装门禁验证依赖
         run: python3 -m pip install --quiet --disable-pip-version-check pytest PyYAML==6.0.3
+
+      - name: 安装根工具与插件工具依赖
+        run: |
+          npm ci --prefer-offline --no-audit --fund=false
+          npm ci --prefix plugin-tooling --prefer-offline --no-audit --fund=false
+
+      - name: 根工具与插件签名回归
+        run: |
+          npm test
+          npm run typecheck
 
       - name: CI planning helpers
         run: >-
-          python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py
+          python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py
           tools/test_android_jvm_reuse.py tools/test_android_app_performance.py
           tools/test_check_hardcoded_chinese.py tools/test_test_string_resources_integrity.py
 
-  dependency-lock:
-    name: Dependency Lock Evidence
+  remote-sources:
+    name: Remote Fixed Source Integrity
     needs: changes
-    if: needs.changes.outputs.runs_fast == 'true'
+    if: needs.changes.outputs.runs_fast == 'true' || needs.changes.outputs.runs_remote == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -189,150 +158,8 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "24.18.0"
-          cache: npm
-      # Separate job on purpose: evidence rows expire on a wall-clock schedule,
-      # so this can go red for a commit whose code is fine. Keeping it apart from
-      # the Fast Gate means the static/syntax signal stays readable, and the
-      # failure names the exact expired row.
-      - name: Dependency lock table
+      - name: 校验固定 Remote 原文与许可摘要
         run: npm run lock:check
-
-  core:
-    name: Core (Python ${{ matrix.python }})
-    needs: changes
-    if: needs.changes.outputs.runs_core == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ['3.11', '3.12']
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: oai-core/pyproject.toml
-
-      - name: Build standalone wheel and source distribution
-        run: |
-          python -m pip install --quiet build
-          python -m build oai-core --outdir "$RUNNER_TEMP/core-dist"
-
-      - name: Install only Core and its declared runtime dependencies
-        run: |
-          python -m venv "$RUNNER_TEMP/core-clean"
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install --quiet "$RUNNER_TEMP"/core-dist/*.whl
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip check
-
-      - name: Verify installed CLI and signed device flow without Hermes
-        run: |
-          env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" oai-core/tools/verify_distribution.py
-          state=$(mktemp -d "$RUNNER_TEMP/core-independent.XXXXXX")
-          env -u PYTHONPATH -u HERMES_SDK_ROOT "$RUNNER_TEMP/core-clean/bin/python" \
-            oai-core/tests/independent_core_contract.py "$state"
-
-      - name: Core protocol, security, CLI, MCP and installer regressions
-        run: |
-          "$RUNNER_TEMP/core-clean/bin/python" -m pip install --quiet pytest pytest-asyncio PyYAML==6.0.3
-          env -u HERMES_SDK_ROOT -u PYTHONPATH "$RUNNER_TEMP/core-clean/bin/python" -m pytest \
-            oai-core/tests tests/test_install_script.py tests/test_uninstall_script.py tests/test_core_setup_transaction.py tests/test_scripts_entrypoints.py tests/test_scripts_runtime.py tests/test_scripts_runtime_security.py tests/test_setup_service_entrypoint.py tools/test_smart_test.py tools/test_ci_planning.py -q -p no:cacheprovider \
-            --ignore=oai-core/tests/test_hermes.py \
-            --ignore=oai-core/tests/test_hermes_native.py \
-            --ignore=oai-core/tests/test_hermes_session_key_recovery.py \
-            --ignore=oai-core/tests/test_hermes_plugin_zero_config.py \
-            --ignore=oai-core/tests/test_hermes_native_origin.py \
-            --ignore=oai-core/tests/test_native_event_sync.py \
-            --ignore=oai-core/tests/test_hermes_communication_reliability.py \
-            --ignore=oai-core/tests/test_hermes_bridge_heartbeat.py \
-            --ignore=oai-core/tests/test_communication_process_recovery.py \
-            --ignore=oai-core/tests/test_hermes_interactions.py \
-            --ignore=oai-core/tests/test_hermes_approval_prompts.py \
-            --ignore=oai-core/tests/test_structured_tool_history.py \
-            --ignore=oai-core/tests/test_native_tool_events.py \
-            --ignore=oai-core/tests/test_interaction_pipeline.py
-          bash -n scripts/install.sh
-          bash -n scripts/uninstall.sh
-          bash -n scripts/setup.sh
-
-  hermes-native:
-    name: Hermes Native Adapter
-    needs: changes
-    if: needs.changes.outputs.runs_hermes == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: oai-core/pyproject.toml
-
-      - name: Install optional Session Adapter and native test dependencies
-        run: >-
-          python -m pip install --quiet -e ./oai-core -e ./integrations/hermes-session-adapter
-          pytest pytest-asyncio PyYAML==6.0.3 python-dotenv==1.2.4 psutil==7.2.2 httpx==0.28.1 requests==2.33.0
-
-      - name: Check out the pinned native Hermes SDK
-        uses: actions/checkout@v7
-        with:
-          repository: NousResearch/hermes-agent
-          ref: 75b083e9399115b12513385252811f09c3503c90
-          path: .toolchains/hermes-native-sdk
-          persist-credentials: false
-
-      - name: Native SessionStore, account isolation and lifecycle contracts
-        env:
-          HERMES_SDK_ROOT: .toolchains/hermes-native-sdk
-        run: >-
-          python -m pytest -q -p no:cacheprovider
-          oai-core/tests/test_hermes.py oai-core/tests/test_hermes_native.py
-          oai-core/tests/test_hermes_native_origin.py oai-core/tests/test_hermes_zero_config_native.py
-          oai-core/tests/test_agent_registration.py oai-core/tests/test_native_event_sync.py
-          oai-core/tests/test_hermes_interactions.py oai-core/tests/test_interaction_pipeline.py
-          oai-core/tests/test_hermes_approval_prompts.py
-          oai-core/tests/test_hermes_session_key_recovery.py
-          oai-core/tests/test_hermes_plugin_zero_config.py
-          oai-core/tests/test_structured_tool_history.py oai-core/tests/test_native_tool_events.py
-          oai-core/tests/test_hermes_dispatch_delivery.py
-          oai-core/tests/test_hermes_communication_reliability.py
-          oai-core/tests/test_hermes_bridge_heartbeat.py
-          oai-core/tests/test_communication_process_recovery.py
-
-      - name: Communication measurement provenance and failure accounting
-        run: python -m pytest -q -p no:cacheprovider tools/test_measure_communication.py
-
-  dsh:
-    name: DSH Adapter
-    needs: changes
-    if: needs.changes.outputs.runs_dsh == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24.18.0'
-          cache: npm
-
-      - name: DSH native session bridge syntax
-        run: node --check integrations/dsh-session-adapter/index.js
-
-      - name: DSH native session bridge regressions
-        run: |
-          npm ci --prefer-offline --no-audit --fund=false
-          npx vitest run --config integrations/dsh-session-adapter/vitest.config.js
 
   remote:
     name: Remote phone MCP and ACP observations
@@ -637,10 +464,7 @@ jobs:
     needs:
       - changes
       - fast
-      - dependency-lock
-      - core
-      - hermes-native
-      - dsh
+      - remote-sources
       - remote
       # android-setup 必须在 gate 的依赖里：它失败时所有 android lane 都会
       # 被 skip，若不显式依赖，gate 会把「夹具没构建出来」误判为通过。

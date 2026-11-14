@@ -30,10 +30,10 @@ on:
       required-workflow:
         description: >-
           Workflow file whose run must have passed for the SHA. dev preview
-          releases are gated by the incremental oai-core.yml; stable releases
+          releases are gated by the incremental remote-client.yml; stable releases
           are gated by the full-regression ci.yml.
         required: false
-        default: oai-core.yml
+        default: remote-client.yml
         type: string
   workflow_dispatch:
     inputs:
@@ -45,9 +45,9 @@ on:
         required: false
         default: '2400'
       required-workflow:
-        description: Workflow file whose run must have passed (oai-core.yml or ci.yml).
+        description: Workflow file whose run must have passed (remote-client.yml or ci.yml).
         required: false
-        default: oai-core.yml
+        default: remote-client.yml
 
 permissions:
   contents: read
@@ -69,7 +69,7 @@ jobs:
           WAIT_SECONDS: ${{ inputs.wait-seconds || 2400 }}
           # workflow_dispatch inputs have no type coercion; keep a hard default so
           # an empty value cannot make the path filter match nothing.
-          REQUIRED_WORKFLOW: ${{ inputs.required-workflow || 'oai-core.yml' }}
+          REQUIRED_WORKFLOW: ${{ inputs.required-workflow || 'remote-client.yml' }}
         run: |
           python3 - <<'PY'
           import json

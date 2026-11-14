@@ -12,7 +12,6 @@
 <p>
   <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat-square&label=Release&color=D94E1F" alt="Latest Release"></a>
   <a href="#快速开始"><img src="https://img.shields.io/badge/Android-12%2B-10B981?style=flat-square&logo=android&logoColor=white" alt="Android 12+"></a>
-  <a href="#快速开始"><img src="https://img.shields.io/badge/Python-3.11%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -22,10 +21,9 @@
 
 ---
 
-> **架构规划（2026-11-13）**：[DSH Remote 重构规格](docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)已确认，
-> 配套[架构决策](docs/adr/0063-adopt-dsh-remote-with-independent-client-and-host-identities.md)、
-> [控制协议](docs/contracts/oai-control-rpc-v1.md)与[事实/验收基线](docs/architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)已纳入文档。
-> 目标是退出自建 Core 和旧 Gateway，保留原生聊天与本机权限裁决。**运行时代码尚未切换，以下介绍与安装步骤仍描述现有版本；文档确认不等于功能或真机验收完成。**
+> **Remote 迁移状态（2026-11-14）**：本仓按[DSH Remote 规格](docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)
+> 退出独立 OAI Core 与旧 Gateway。Android、手机控制和本机 MCP 已有迁移实现；真实 Host、设备、网络与发布验收
+> 仍以[验收台账](docs/reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)为准。本地测试通过不代表完整部署已可用。
 
 ## 项目介绍
 
@@ -39,19 +37,16 @@
 | | |
 | --- | --- |
 | **在手机上随时跟你的 AI 聊天** | 一个安卓 App，同时连上你电脑或服务器里的 **Hermes、DSH、Codex** 等多种 AI 助手。直接接着电脑上的聊天记录聊，支持发相册图片、传文件，还能设成手机默认数字助理——长按电源键就能圈选当前屏幕画面向 AI 提问。 |
-| **让 AI 帮你看消息、操作手机** | 任何支持命令行或 MCP 的 AI 助手，都能通过 `oai` 命令向你的手机申请**查通知、读短信、看通话记录、截屏，或者点击、滑动屏幕**。让Agent留在云端，用你喜欢的Agent，无需本地部署 |
-| **决定权 100% 留在你手里的手机上** | **不需要 Root 手机，也不经过任何第三方云端服务器。** 装在你电脑上的服务端只负责传话，能不能看短信、能不能点屏幕，全由你手机 App 上的开关说了算。 |
+| **让 AI 帮你看消息、操作手机** | 任何支持命令行或 MCP 的 AI 助手，可通过手机 `android_*` MCP 工具向你的手机申请**查通知、读短信、看通话记录、截屏，或者点击、滑动屏幕**。让Agent留在云端，用你喜欢的Agent，无需本地部署 |
+| **决定权 100% 留在你手里的手机上** | **不需要 Root 手机。** Remote 连接不授予手机权限；能不能看短信、能不能点屏幕，全由手机 App 上的开关和本机确认决定。 |
 
-### 三部分怎么配合工作？
+### 手机与电脑怎样连接？
 
-<p align="center">
-  <img src="./assets/readme/architecture.svg" width="100%" alt="工作原理：你的安卓手机、OAI Core 服务端与各种 AI 助手三部分如何配合">
-</p>
+1. **Android App** 保留聊天、附件、默认助理和本机能力管理；手机权限由 Android 内核裁决。
+2. **DSH Remote** 提供账号、电脑发现和加密连接；手机使用独立 Client 与 Virtual Host 身份。
+3. **电脑上的 AI 后端** 通过实际发现的 Host、后端与工作区提供会话。用户手动切换目标，消息、附件与审批保持各自归属。
 
-整个项目只由三个清晰的部分组成：
-1. **你的安卓手机（Android App）**：负责日常聊天界面、管理手机上的能力插件（短信、通知、屏幕操作等），以及把守所有权限开关。
-2. **你的私人中枢（OAI Core 服务端）**：装在你自己的电脑或服务器上，用一个地址同时连起手机和各种 AI 助手。它只负责核对账号和传话，**不能替手机做任何权限决定**。
-3. **你的各种 AI 助手（AI Agents）**：留在你的电脑或服务器上运行。既能把对话同步到手机上，也能用 `oai` 命令或 `MCP` 工具向手机发起操作申请。
+本仓不再提供独立 Core 服务的安装、管理员账号或旧 Gateway 配对向导。Remote 的服务和电脑端安装由上游维护。
 
 ### 为什么不怕 AI 乱动你的手机？
 
@@ -70,104 +65,27 @@
 
 ## 快速开始
 
-只需要 3 步，就能把你的手机和电脑上的 AI 助手连起来。
+当前开发分支正在迁移，以下步骤说明目标连接入口；安装包与真实环境是否通过验收请先查阅[验收台账](docs/reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)。
 
-### 第一步：在电脑或服务器上安装并配置服务端（OAI Core）
+### 第一步：准备 DSH Remote 电脑端
 
-**环境要求**：Linux 或 macOS，已安装 `Python 3.11+` 和 `git`（若缺少依赖，安装脚本会自动询问并帮你安装）。
+按 [DSH Remote 上游说明](https://github.com/liguobao/ds-harness-remote)安装服务或电脑 Host，并登录 Remote 账号。
+本仓不另建 Remote 服务安装器，也不再维护旧 Core 的安装、配置和卸载脚本。
 
-**方式 A：一条命令快速安装（推荐）**
+### 第二步：连接 Android App 与工作区
 
-在终端直接运行在线安装脚本（默认安装到 `~/.oai-core`）：
+1. 从 [Releases](https://github.com/1rua/open-android-intelligence/releases)选择安装包，核对其版本及迁移验收状态。
+2. 在 Remote 连接页填写服务地址、邮箱和密码。手机与电脑 Host 使用同一 Remote 账号。
+3. 刷新已登录的电脑，手动选择 Host、后端和工作区，再选择或创建对话；实际能力以远端发现结果为准。
+4. 在本机设置中按需开启插件、手机能力和系统权限；敏感动作仍须手机本机确认。
+5. 本机设置支持备份与恢复。备份不包含账号密码、登录凭据、主密钥、会话历史或附件，系统授权仍须重新确认。
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/install.sh | bash
-```
+### 第三步：配置手机 MCP
 
-**方式 B：克隆仓库后本地安装**
-
-```bash
-git clone https://github.com/1rua/open-android-intelligence.git
-cd open-android-intelligence
-./scripts/install.sh
-```
-
-按屏幕提示设置**管理员账号和密码**（请妥善保管只显示一次的管理员恢复码），向导会自动创建运行环境，并引导你设置监听端口、扫描和接入本机的 AI 助手（如 Hermes、DSH、Codex）。
-
-**日常配置、建号与服务管理命令**：
-
-```bash
-# 1. 打开交互式配置菜单（随时改端口、管理账号、接入 AI 助手、开关 2FA、启停服务）
-oai setup
-# 或者直接运行配置脚本：
-./scripts/setup.sh
-# 或远程调用本地已安装的配置入口：
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/setup.sh | bash
-
-# 2. 创建一个平时在手机和命令行登录用的日常账号（例如 alice）
-oai account create alice
-
-# 3. 手动启动服务端（若未开启开机自启）
-~/.oai-core/start-core.sh
-```
-
-<details>
-<summary><b>附：一键卸载脚本命令（点击展开）</b></summary>
-
-```bash
-# 默认保留账号配置与数据，仅移除运行环境（方便日后重装）
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash
-
-# 彻底移除整个安装目录（移入 /tmp 临时回收目录供人工复核，不直接永久删除）
-curl -fsSL https://raw.githubusercontent.com/1rua/open-android-intelligence/dev/scripts/uninstall.sh | bash -s -- --purge
-```
-</details>
-
-### 第二步：在手机上安装 App 并开启所需功能
-
-**环境要求**：Android 12 及以上（无需 Root，手机与你的电脑/服务器在同一局域网、Tailscale 组网或公网 HTTPS 可达）。
-
-1. 前往 [Releases 页面](https://github.com/1rua/open-android-intelligence/releases) 下载最新的 APK 安装到手机。
-2. 打开 App，填入你的 `OAI Core` 服务地址（例如 `https://你的服务器地址:11451`）和刚才创建的账号密码完成登录配对。
-3. 进入手机 App 的 **「设置 → 插件管理 / 授权管理」**：
-   - 启用你需要的手机插件（如通知、短信、屏幕读取与操控）。
-   - 为每项能力选择你放心的模式（默认均为**每次手动确认**）以及允许读取的应用/短信范围。
-4. 换手机或重装 App 后，不必逐项重配：在 **「设置 → 高级设置与关于 → 备份与恢复」** 先导出一次设置
-   （`oai-settings-年月日.json`），在新手机上选择导入即可恢复外观、通知、会话排序、能力策略等偏好。
-   备份文件**不包含**账号密码、登录凭据、主密钥、会话历史与附件；系统权限和各项能力的实际授权
-   仍需你在新手机上重新确认。
-
-### 第三步：让你的 AI 助手调用手机
-
-你可以把自带的「手机操控技能说明」一键安装到本机的 Claude Code、Codex、Hermes、DSH 等助手中，让 AI 自动学会怎么调用你的手机：
-
-```bash
-./.venv/bin/oai skill install
-```
-
-也可以直接在终端里登录并试试调用手机能力：
-
-```bash
-# 1. 登录你的账号（按提示输入密码）
-oai login --url https://你的服务器地址:11451 --username alice
-
-# 2. 查看已配对的手机
-oai devices
-
-# 3. 查看当前手机开启了哪些可用能力及参数格式
-oai capabilities
-
-# 4. 发起一次操作（例如：申请查看最近 5 条通知，等待手机弹窗确认）
-oai invoke org.openandroidintelligence.notifications.query \
-  --version 1.0.0 \
-  --parameters '{"limit": 5}' \
-  --agent-name "我的桌面助手" \
-  --purpose "帮你查看最近 5 条手机通知" \
-  --idempotency-key "demo-notif-001" \
-  --wait 30
-```
-
-如果你的 AI 客户端支持 **MCP（Model Context Protocol）**，只需完成一次 `oai login`，然后把 `oai mcp` 配置为 stdio MCP Server，AI 就能直接调用 `oai_devices`、`oai_capabilities`、`oai_invoke` 等标准工具了。
+使用[手机 OAI MCP](integrations/oai-android-mcp/README.md)的 DSH 进程内桥与 Stdio 入口，
+把生成的 `mcpServers.oai-android` 加入外部 Agent 的原生 MCP 配置，不复制 Remote token 或私钥。
+该入口只公开 `android_*` 手机工具，不提供跨工作区 Agent 委派。首次调用前核对手机目标和本机授权。
+真实后端、屏幕与短信能力的支持范围继续按验收台账分别记录，不能由隔离测试推断全部可用。
 
 ---
 
@@ -185,12 +103,6 @@ open-android-intelligence/
 │   ├── assistant-holder/          #    系统默认数字助理入口（长按电源键唤出、屏幕圈选截图）
 │   └── ...                        #    短信、通知、通话记录、屏幕控制等各功能的安卓底层模块
 │
-├── oai-core/                      # 🖥️ OAI Core 服务端与 oai 命令行工具（Python 3.11+）
-│   ├── src/oai_core/cli.py        #    oai 命令行入口（login / devices / capabilities / invoke / mcp）
-│   ├── src/oai_core/server.py     #    Core 服务端主监听程序（配对、转发请求、连接 AI 会话）
-│   ├── src/oai_core/mcp.py        #    供各类 AI 助手挂载的 MCP 工具服务
-│   └── tests/                     #    服务端与命令行自动化测试
-│
 ├── plugins/                       # 🧩 官方手机能力插件源码（Rust 编写，编译为安全的 .alp 插件包）
 │   ├── notifications/             #    通知查询与主动推送插件
 │   ├── sms/                       #    短信查询、过滤与主动推送插件
@@ -199,14 +111,8 @@ open-android-intelligence/
 │   ├── screen-capture/            #    屏幕截图插件
 │   └── screen-control/            #    屏幕点击、滑动、输入文字与返回键操控插件
 │
-├── integrations/                  # 🔌 第三方 AI 助手对接组件与技能包
-│   ├── skills/oai-client/         #    教 AI 助手如何安全调用手机的 Skill 说明书（SKILL.md）
-│   ├── hermes-session-adapter/    #    把 Hermes 聊天会话接入手机的适配器
-│   └── dsh-session-adapter/       #    把 DSH (DeepSeek Harness) 聊天会话接入手机的适配器
-│
-├── gateway-contract/              # 📜 手机与服务端之间的通信格式定义与 70 组标准测试题（TypeScript）
-├── plugin-tooling/                # 📦 插件打包与数字签名工具（把代码打成手机可安装的 .alp 包）
-├── scripts/                       # 🚀 一键安装（install.sh）、配置（setup.sh）与卸载脚本
+├── integrations/oai-android-mcp/   # 手机 MCP、进程内桥与固定上游探针
+├── plugin-tooling/                # 插件打包与数字签名工具
 ├── tools/                         # 🛠️ 开发自测脚本（如 smart-test.py 分级测试工具）
 ├── assets/readme/                 # 🎨 README 视觉图片与可编辑 SVG 源文件
 ├── docs/                          # 📚 详细设计文档、架构决策记录（ADR）与测试验收报告

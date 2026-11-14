@@ -82,7 +82,7 @@ def test_default_ci_uses_only_measured_optimization():
     import yaml
 
     root = Path(__file__).resolve().parent.parent
-    workflow = yaml.safe_load((root / ".github/workflows/oai-core.yml").read_text())
+    workflow = yaml.safe_load((root / ".github/workflows/remote-client.yml").read_text())
     inputs = workflow["jobs"]["android-app"]["steps"][1]["with"]
     assert inputs["test-parallel-forks"] == "${{ inputs.app-forks || '4' }}"
     assert inputs["app-jit"] == "${{ inputs.app-jit || 'startup' }}"

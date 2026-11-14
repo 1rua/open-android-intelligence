@@ -54,7 +54,10 @@ SECURITY_OR_CONTRACT_PATHS = {
     "apps/android/app/build.gradle.kts",
     "package.json",
     "package-lock.json",
-    "openclaw-plugin-pin.json",
+    "tools/check-remote-sources.mjs",
+    "tools/remote-source-integrity.ts",
+    "tools/check-remote-sources.test.mjs",
+    "apps/android/gateway-client/src/main/assets/licenses/remote/sources.json",
     "tools/smart-test.py",
     "tools/ci/impact.py",
     "tools/ci/android_tasks.py",
@@ -63,54 +66,13 @@ SECURITY_OR_CONTRACT_PATHS = {
     "tools/test_android_jvm_reuse.py",
     "tools/test_ci_planning.py",
     "tools/test_smart_test.py",
-    ".github/workflows/oai-core.yml",
+    ".github/workflows/remote-client.yml",
+    ".github/workflows/ci.yml",
     ".github/workflows/release-gate.yml",
     "apps/android/ci/app-regression.txt",
     "apps/android/ci/app-jvm-reuse.txt",
     "apps/android/ci/hermes-fixture-requirements.txt",
 }
-
-# 旧 DSH 的共享安装/清单支持面也需要 Node adapter 回归。
-DSH_ADAPTER_SUPPORT_PATHS = {
-    "integrations/package.json", "integrations/package-lock.json", "integrations/tsconfig.json",
-    "oai-core/src/oai_core/adapters/dsh.py", "oai-core/src/oai_core/dsh_installation.py",
-    "oai-core/tests/test_dsh.py", "oai-core/tests/test_dsh_setup.py",
-    "oai-core/tests/test_dsh_installation.py", "oai-core/tests/test_dsh_builtin_contract.py",
-}
-
-# Test modules that only the Hermes lane executes. The Core job explicitly
-# `--ignore`s them, so classifying them as "core" alone would let a change to a
-# test file pass CI without ever running that file.
-HERMES_ONLY_TESTS = {
-    "oai-core/tests/test_hermes.py",
-    "oai-core/tests/test_hermes_native.py",
-    "oai-core/tests/test_hermes_native_origin.py",
-    "oai-core/tests/test_hermes_zero_config_native.py",
-    "oai-core/tests/test_hermes_session_key_recovery.py",
-    "oai-core/tests/test_hermes_plugin_zero_config.py",
-    "oai-core/tests/test_hermes_interactions.py",
-    "oai-core/tests/test_hermes_approval_prompts.py",
-    "oai-core/tests/test_hermes_dispatch_delivery.py",
-    "oai-core/tests/test_hermes_communication_reliability.py",
-    "oai-core/tests/test_hermes_bridge_heartbeat.py",
-    "oai-core/tests/test_agent_registration.py",
-    "oai-core/tests/test_native_event_sync.py",
-    "oai-core/tests/test_native_tool_events.py",
-    "oai-core/tests/test_structured_tool_history.py",
-    "oai-core/tests/test_interaction_pipeline.py",
-    "oai-core/tests/test_communication_process_recovery.py",
-    # The measurement suite runs only in the Hermes job.
-    "tools/test_measure_communication.py",
-}
-
-# oai-core authentication, authorization, sync and gateway code invalidates the
-# security assumptions of every other lane.
-CORE_SECURITY_PREFIXES = (
-    "oai-core/src/oai_core/gateway/",
-    "oai-core/src/oai_core/auth",
-    "oai-core/src/oai_core/security",
-    "oai-core/src/oai_core/sessions",
-)
 
 # Module lane -> app-test section. Modules without an entry are cross-cutting and
 # widen the app suite to every section (they are compiled into every screen).
@@ -168,15 +130,12 @@ ANDROID_MODULE_LANES = {
 # Lanes are the unit of CI scheduling. Each maps to one or more GitHub jobs.
 LANES = (
     "fast",          # protocol/JS/plugin-tooling static + unit gates
-    "core",          # oai-core Python suite (3.11 + 3.12)
-    "hermes",        # optional Session Adapter + native Hermes SDK
-    "dsh",           # DSH Node bridge
     "remote",        # 固定 ACP 投影关闭风险观察
     "android-device",       # device primitives, local authorization
     "android-platform",     # platform kernel recovery
     "android-notifications",  # settings/notification policy/encrypted state
     "android-conversation",   # conversation ordering/rendering/persistence
-    "android-gateway",        # gateway client transport + connectivity
+    "android-gateway",        # Remote 客户端传输与连接
     "android-plugins",        # plugin package/runtime/UI modules
     "android-app",            # full app unit tests (heaviest lane)
     "android-play",           # Play variant integration
@@ -310,6 +269,10 @@ def classify_path(
     status: str, path: str, lanes: dict[str, bool], sections: set[str]
 ) -> bool:
     """Mark the lanes a single path affects. Returns True when it was classified."""
+    # 许可和固定上游原文虽有 .txt/.md 扩展名，仍是必须逐字节验证的输入。
+    if path.startswith("apps/android/gateway-client/src/main/assets/licenses/remote/"):
+        lanes["fast"] = True
+        return True
     # Documentation and review artefacts never gate code lanes.
     if path.startswith(("docs/", "tmp/")) or (
         path.endswith((".md", ".txt")) and not path.startswith("apps/android/app/src/test/")
@@ -331,44 +294,6 @@ def classify_path(
     if path.startswith(("tools/remote/", "tools/remote-server/")):
         # 固定 ACP 投影观察独立于旧 DSH Session Adapter lane。
         lanes["remote"] = True
-        return True
-
-    if path.startswith("integrations/dsh-session-adapter/") or path in DSH_ADAPTER_SUPPORT_PATHS:
-        lanes["dsh"] = True
-        lanes["fast"] = True
-        if path.startswith("oai-core/"):
-            lanes["core"] = True
-        return True
-
-    if path.startswith("integrations/hermes-session-adapter/") or "hermes" in path:
-        lanes["hermes"] = True
-        lanes["core"] = True
-        return True
-
-    if path in HERMES_ONLY_TESTS:
-        # The Core job ignores these files; only the Hermes job runs them.
-        lanes["hermes"] = True
-        return True
-
-    if path.startswith("oai-core/"):
-        lanes["core"] = True
-        # Authentication/authorization/session semantics are shared with every
-        # other lane's fixtures; widening is cheaper than a false green.
-        return not path.startswith(CORE_SECURITY_PREFIXES)
-
-    if path.startswith("gateway-contract/"):
-        lanes["fast"] = True
-        return True
-
-    if path.startswith("tools/measure-communication"):
-        # Implementation and its tests both live in the Hermes job.
-        lanes["hermes"] = True
-        lanes["core"] = True
-        return True
-
-    if path.startswith(("tests/", "scripts/")):
-        # Installer and distribution entrypoints are validated by the core lane.
-        lanes["core"] = True
         return True
 
     if path.startswith("apps/android/"):
