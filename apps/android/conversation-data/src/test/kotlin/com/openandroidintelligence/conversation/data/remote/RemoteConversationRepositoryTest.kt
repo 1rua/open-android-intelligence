@@ -73,7 +73,7 @@ class RemoteConversationRepositoryTest {
     }
     @Test fun `prompt受理后未知响应保留原身份且不自动重发`() = runTest {
         val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
-        val carrier = Carrier(workspace).apply { promptResult = { throw RemoteRpcException("RPC_TIMEOUT") } }
+        val carrier = Carrier(workspace).apply { promptResult = { throw RemoteRpcException("RPC_TIMEOUT", RemoteDeliveryOutcome.UNKNOWN) } }
         val observed = mutableListOf<VerifiedConversationEvent>()
         val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
         repo.submitMessage(local, OutgoingMessage(ClientMessageId("original"), "消息")); runCurrent()
@@ -102,5 +102,48 @@ class RemoteConversationRepositoryTest {
         runCurrent()
         assertEquals(GenerationState.COMPLETED, repo.generationState.value)
         repo.close()
+    }
+    @Test fun `连续普通发送的旧任务终态不能完成较新请求`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
+        val carrier = Carrier(workspace)
+        var calls = 0
+        carrier.promptResult = { obj("turn" to obj("id" to if (++calls == 1) "turn-first" else "turn-second")) }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("first"), "一")); runCurrent()
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("second"), "二")); runCurrent()
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "turn-second"))))
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "turn-first", "status" to "completed"))))
+        runCurrent()
+        assertEquals(listOf("first"), observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().filter { it.status == AgentMessageStatus.COMPLETED }.map { it.clientMessageId.value })
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        assertEquals("turn-second", repo.generationId.value)
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "turn-second", "status" to "completed"))))
+        runCurrent()
+        assertEquals(listOf("first", "second"), observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().filter { it.status == AgentMessageStatus.COMPLETED }.map { it.clientMessageId.value })
+        repo.close()
+    }
+    @Test fun `合并批次的每个成员都收到同一真实任务终态`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
+        val carrier = Carrier(workspace).apply { promptResult = { obj("turn" to obj("id" to "turn")) } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.submitBatch(local, MessageBatch("batch", listOf(OutgoingMessage(ClientMessageId("one"), "一"), OutgoingMessage(ClientMessageId("two"), "二"))))
+        runCurrent()
+        assertEquals(1, carrier.prompts.size)
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "turn", "status" to "completed"))))
+        runCurrent()
+        assertEquals(setOf("one", "two"), observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().filter { it.status == AgentMessageStatus.COMPLETED }.map { it.clientMessageId.value }.toSet())
+        repo.close()
+    }
+    @Test fun `不透明标识拒绝非UTF8字符而不替换为同名问号`() {
+        assertThrows(IllegalArgumentException::class.java) { RemoteLocalIds.encode("坏\uD800标识") }
+        val invalid = "remote_" + java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(byteArrayOf(0xc0.toByte(), 0xaf.toByte()))
+        assertThrows(IllegalArgumentException::class.java) { RemoteLocalIds.decode(invalid) }
+        assertNotEquals(RemoteLocalIds.encode("?"), RemoteLocalIds.encode("？"))
+    }
+    @Test fun `时间单位由各后端协议确定不能按数值大小猜测`() {
+        assertEquals(5L, millis(obj("time" to 5), "time"))
+        assertEquals(5_000L, secondsMillis(obj("time" to 5), "time"))
     }
 }

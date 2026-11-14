@@ -123,7 +123,10 @@ private fun BubbleConversationContent(runtime: RemoteRuntime, target: ReplyNotif
     val activeSession by runtime.controller.collectAsState()
     // 原生模式要等 Agent 发现完成才知道目标是否可用；不订阅这份状态，气泡会在
     // 发现完成后仍停在“正在连接”，除非用户把窗口关了重开。
-    LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
+    LaunchedEffect(runtime, target) {
+        runtime.restoreSessionIfAvailable().join()
+        target?.let { runtime.activateNotificationEndpoint(it) }
+    }
     val agentDiscovered = target?.agentId != null && connection.selected != null
     // 直接求值而不缓存：目标可用性还依赖工作区与连接阶段。
     val valid = target != null && agentDiscovered && runtime.isBubbleTargetCurrent(target)

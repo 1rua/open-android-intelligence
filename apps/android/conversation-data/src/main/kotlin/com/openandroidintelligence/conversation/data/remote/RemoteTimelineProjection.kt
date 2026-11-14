@@ -14,6 +14,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         private set
     var generationState = GenerationState.IDLE
         private set
+    var clientRequestId: String? = null
+        private set
+    var terminalGeneration: Pair<String, GenerationState>? = null
+        private set
     private var revision = 0L
     private var lastSeq: Long? = null
     private val attempts = mutableMapOf<String, StringBuilder>()
@@ -28,6 +32,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     fun markUnknown() { generationState = GenerationState.OUTCOME_UNKNOWN }
 
     fun accept(value: JsonValue, history: Boolean = false): List<VerifiedConversationEvent> {
+        terminalGeneration = null
         if (value.text("type") == "snapshot") {
             val events = value.requiredArray("records").flatMap { accept(it, history = true) }.toMutableList()
             lastSeq = value.number("cursor")
@@ -62,16 +67,19 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val time = event.number("time") ?: 0
         val turn = data.text("turnId") ?: data.number("turn")?.toString()
         when (event.text("type")) {
-            "turn/start" -> { generationId = turn ?: id; generationState = GenerationState.RUNNING }
+            "turn/start" -> { generationId = turn ?: id; generationState = GenerationState.RUNNING; clientRequestId = null }
             "turn/end" -> {
-                generationState = when (data.at("reason")?.text("kind")) {
+                val terminal = when (data.at("reason")?.text("kind")) {
                     "error" -> GenerationState.FAILED
                     "cancelled", "interrupted" -> GenerationState.CANCELLED
                     else -> GenerationState.COMPLETED
                 }
+                val terminalId = turn ?: generationId
+                terminalId?.let { terminalGeneration = it to terminal }
+                if (terminalId == generationId) generationState = terminal
                 return finalizeStreaming(id, time)
             }
-            "user/message" -> return upsert(data, "user", false, event.number("seq"), time)
+            "user/message" -> { clientRequestId = data.at("source")?.text("rpcId"); return upsert(data, "user", false, event.number("seq"), time) }
             "assistant/message" -> return upsert(data.at("message") ?: data, "assistant", false, event.number("seq"), time)
             "tool/call" -> return execution(data, id, time, false)
             "tool/result" -> return execution(data, id, time, true)
@@ -121,11 +129,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         when (method) {
             "turn/started" -> { generationId = params.at("turn")?.text("id") ?: params.text("turnId"); generationState = GenerationState.RUNNING }
             "turn/completed" -> {
-                generationState = when (params.at("turn")?.text("status")) {
+                val terminalId = params.at("turn")?.text("id") ?: params.text("turnId") ?: generationId
+                val terminal = when (params.at("turn")?.text("status")) {
                     "failed" -> GenerationState.FAILED
                     "interrupted", "cancelled" -> GenerationState.CANCELLED
                     else -> GenerationState.COMPLETED
                 }
+                terminalId?.let { terminalGeneration = it to terminal }
+                if (terminalId != generationId) return emptyList()
+                generationState = terminal
                 return finalizeStreaming("turn-end:${++liveSequence}", 0)
             }
             "item/agentMessage/delta" -> {
@@ -166,6 +178,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                             update.text("stopReason") == "end_turn" -> GenerationState.COMPLETED
                             else -> GenerationState.OUTCOME_UNKNOWN
                         }
+                        generationId?.let { terminalGeneration = it to generationState }
                         return finalizeStreaming("turn-end:${++liveSequence}", 0)
                     }
                 }

@@ -42,6 +42,7 @@ internal fun AdvancedSettingsScreen(
     onOpenLicenses: () -> Unit,
     onOpenBackup: () -> Unit,
     onReplayOnboarding: () -> Unit,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val context = LocalContext.current
     val installed = remember(context) { installedAppBuild(context.applicationContext) }
@@ -60,7 +61,7 @@ internal fun AdvancedSettingsScreen(
     SettingsPageScaffold(title = stringResource(UiR.string.settings_title_advanced), presentation = presentation, onBack = onBack) { padding ->
         SettingsPageColumn(contentPadding = padding) {
             SectionLabel(stringResource(UiR.string.settings_section_message_processing))
-            MessageProcessingSettings(runtime = runtime)
+            MessageProcessingSettings(runtime = runtime, remoteRuntime = remoteRuntime)
 
             SectionLabel(stringResource(UiR.string.settings_section_app_maintenance))
             SettingsSectionCard {

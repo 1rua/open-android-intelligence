@@ -61,7 +61,9 @@ internal fun JsonValue.requiredArray(key: String): List<JsonValue> = array(key)
 internal fun JsonValue.listValue(): List<JsonValue> = (this as? JsonValue.JArray)?.items
     ?: throw RemoteSessionException("REMOTE_INVALID_RESPONSE")
 internal fun JsonValue.stringValue(): String? = (this as? JsonValue.JString)?.value
-internal fun millis(value: JsonValue, key: String): Long = value.number(key)?.let { if (it in 1..9_999_999_999) it * 1_000 else it }
+internal fun millis(value: JsonValue, key: String): Long = value.number(key)
+    ?: value.text(key)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() } ?: 0
+internal fun secondsMillis(value: JsonValue, key: String): Long = value.number(key)?.let { Math.multiplyExact(it, 1_000) }
     ?: value.text(key)?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() } ?: 0
 
 /** 业务失败不能伪装成成功的空历史或空模型目录。 */

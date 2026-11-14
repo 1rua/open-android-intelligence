@@ -32,13 +32,14 @@ import com.openandroidintelligence.ui.resources.R as UiR
  * 也不会向 Core 写配置。
  */
 @Composable
-internal fun MessageProcessingSettings(runtime: GatewayRuntime?) {
+internal fun MessageProcessingSettings(runtime: GatewayRuntime?, remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null) {
     val context = LocalContext.current.applicationContext
     val preferences = remember(context) { DebouncePreferences(context) }
     MessageProcessingEditor(
         preferences = preferences,
         onSaveDelay = { delayMillis ->
-            if (runtime != null) runtime.updateDebounceSettings(delayMillis)
+            if (remoteRuntime != null) { preferences.write(delayMillis); remoteRuntime.reloadDebounceSettings() }
+            else if (runtime != null) runtime.updateDebounceSettings(delayMillis)
             else preferences.write(delayMillis)
         },
     )

@@ -39,17 +39,19 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val dark = when (appearance.theme) { ThemePreference.LIGHT -> false; ThemePreference.DARK -> true; ThemePreference.SYSTEM -> isSystemInDarkTheme() }
     val controller by runtime.controller.collectAsState()
     val connection by runtime.state.collectAsState()
+    val onboarding by app.onboardingPreferences.state.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
     fun notice(text: String) { uiScope.launch { snackbar.showSnackbar(text) } }
     val picks = rememberConversationAttachmentPickers(controller) { runtime.controller.value === it }
+    val avatar = rememberRemoteAccountAvatarPicker(runtime)
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         runtime.replyNotifications.refreshPermission()
     }
     LaunchedEffect(connection.account) {
         runtime.replyNotifications.refreshPermission()
-        if (connection.account != null && runtime.replyNotifications.shouldRequestPermission()) {
+        if (connection.account != null && runtime.replyNotifications.enabled.value && runtime.replyNotifications.shouldRequestPermission()) {
             runtime.replyNotifications.markPermissionRequested()
             notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -81,13 +83,13 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                 uiScope.launch {
                     try {
                         if (target == null) {
-                            notice("录音已丢失，请重新录制")
+                            notice(app.getString(UiR.string.remote_voice_lost))
                         } else if (runtime.controller.value !== target.first) {
-                            notice("对话已切换，语音未发送")
+                            notice(app.getString(UiR.string.remote_voice_target_changed))
                         } else if (target.first.state.value.activeThreadId != sessionKey) {
-                            notice("对话已切换，语音未发送")
+                            notice(app.getString(UiR.string.remote_voice_target_changed))
                         } else if (!target.first.sendVoiceAttachment(voice.selection(), target.second)) {
-                            notice("语音未发送，请查看对话提示后重试")
+                            notice(app.getString(UiR.string.remote_voice_not_sent))
                         }
                     } finally {
                         voice.close()
@@ -104,7 +106,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                         voiceRejectionMessage(rejection)
                     startFailure.getAndSet(false) ->
                         app.getString(UiR.string.perm_audio_error_start_failed)
-                    else -> "录音或发送失败，请重试"
+                    else -> app.getString(UiR.string.remote_voice_failed)
                 }
                 uiScope.launch { notice(message) }
             },
@@ -137,9 +139,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     }
     val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->
         if (runtime.controller.value !== target.first || target.first.state.value.activeThreadId != target.second) {
-            notice("对话已切换，请重新开始录音")
+            notice(app.getString(UiR.string.remote_voice_restart_after_switch))
         } else if (!target.first.canSendVoiceAttachment(target.second)) {
-            notice("当前对话暂不能发送语音，请等待处理完成后重试")
+            notice(app.getString(UiR.string.remote_voice_wait))
         } else if (voiceState is VoiceRecorderState.Sending) {
             notice(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
         } else if (voiceState is VoiceRecorderState.Idle) {
@@ -168,9 +170,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val startVoiceInput: () -> Unit = {
         val active = controller
         if (active == null) {
-            notice("对话尚未就绪")
+            notice(app.getString(UiR.string.remote_conversation_not_ready))
         } else if (!active.canSendVoiceAttachment(active.state.value.activeThreadId)) {
-            notice("当前对话暂不能发送语音，请等待处理完成后重试")
+            notice(app.getString(UiR.string.remote_voice_wait))
         } else if (voiceState is VoiceRecorderState.Sending) {
             notice(voiceRejectionMessage(VoiceRejection.ALREADY_SENDING))
         } else if (voiceState is VoiceRecorderState.Idle && permissionTarget == null) {
@@ -200,7 +202,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     LaunchedEffect(controller, shared) {
         controller?.let { active -> active.state.collect { sharedAttachments.deliverTo(active, picks.receive) } }
     }
-    LaunchedEffect(controller, pendingReply.value) {
+    LaunchedEffect(runtime, connection.account, pendingReply.value) {
         pendingReply.value?.let { if (runtime.openReplyNotification(it)) pendingReply.value = null }
     }
     LaunchedEffect(controller, pendingHandoff.value) {
@@ -209,6 +211,15 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = appearance.dynamicColor, palette = appearance.palette,
         reduceMotion = appearance.reduceMotion, streamingHapticFeedback = appearance.streamingHapticFeedback) {
         Box(Modifier.fillMaxSize()) {
+        if (onboarding.shouldShow) {
+            com.openandroidintelligence.mobile.onboarding.OnboardingFlow(onboarding, appearance, app.appearancePreferences,
+                app.onboardingPreferences::setStage, app.onboardingPreferences::setLastGateway,
+                onFinished = app.onboardingPreferences::markCompleted,
+                onExit = {
+                    if (onboarding.replay) app.onboardingPreferences.endReplay()
+                    else { app.onboardingPreferences.dismissForCurrentSession(); activity.finish() }
+                }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
+        } else {
         val current = controller
         if (current != null) WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
             onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
@@ -218,10 +229,14 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
             isDarkTheme = dark, onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
             onLogout = { runtime.logout() }, onPasteImages = picks.paste,
             accountName = connection.account?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
+            accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
+            pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
+                runtime.connectedAccountId) { settings = true } },
             settingsOpen = settings, onSettingsOpenChange = { settings = it },
             settingsPanel = { close -> RemoteSettings(app, close) }, header = { RemoteModelSelector(runtime) })
         else RemoteLoginScreen(runtime, connection.busy, onOpenSettings = { settings = true })
         if (current == null && settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app) { settings = false } }
+        }
         SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).safeDrawingPadding())
         }
     }
@@ -266,6 +281,7 @@ internal fun RemoteEndpointList(runtime: RemoteRuntime) {
             Text(endpoint.endpoint.displayName)
         }
     }
+    state.backendFailures.forEach { (backend, code) -> Text("$backend · $code", color = MaterialTheme.colorScheme.error) }
 }
 
 @Composable
@@ -307,8 +323,25 @@ private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, onBack: () -
 
 @Composable
 internal fun RemoteConnectionSettingsScreen(runtime: RemoteRuntime, presentation: SettingsPresentation, onBack: () -> Unit) {
+    val client by runtime.accountRuntime.state.collectAsState()
+    val host by runtime.accountRuntime.hostState.collectAsState()
     com.openandroidintelligence.mobile.settings.SettingsPageScaffold(stringResource(UiR.string.remote_connection_title), presentation, onBack) { padding ->
         com.openandroidintelligence.mobile.settings.SettingsPageColumn(padding) {
+            com.openandroidintelligence.conversation.components.SettingsSectionCard {
+                com.openandroidintelligence.conversation.components.SettingsListItem(stringResource(UiR.string.remote_client_role), supporting = when (client) {
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.SIGNED_OUT -> stringResource(UiR.string.remote_role_signed_out)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.READY -> stringResource(UiR.string.remote_role_ready)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.CONNECTING -> stringResource(UiR.string.remote_role_connecting)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.CONNECTED -> stringResource(UiR.string.remote_role_connected)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.DISCONNECTED -> stringResource(UiR.string.remote_role_disconnected)
+                })
+                com.openandroidintelligence.conversation.components.SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = when (host) {
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.STOPPED -> stringResource(UiR.string.remote_role_stopped)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.CONNECTING -> stringResource(UiR.string.remote_role_connecting)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.ONLINE -> stringResource(UiR.string.remote_role_online)
+                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.FAILED -> stringResource(UiR.string.remote_role_failed)
+                })
+            }
             RemoteEndpointList(runtime)
             TextButton(onClick = { runtime.logout() }) { Text(stringResource(UiR.string.common_action_logout)) }
         }
