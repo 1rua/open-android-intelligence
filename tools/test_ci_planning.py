@@ -703,6 +703,11 @@ def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     "tools/remote/projection-scope.test.mjs",
     "tools/remote/fixtures/dsh-remote/acp/virtual-harness.ts",
     "tools/remote/fixtures/dsh-remote/source.json",
+    "tools/remote/media-source.test.mjs",
+    "tools/remote/fixtures/media-upstream/source.json",
+    "tools/remote/fixtures/media-upstream/LICENSE",
+    "tools/remote/fixtures/media-upstream/packages/plugin/src/workspace-bridge.ts",
+    "tools/remote/phone-mcp-interop.ts",
 ])
 def test_acp_projection_observation_routes_to_remote_lane(impact, path):
     result = impact.classify([("M", path)])
@@ -767,3 +772,66 @@ def test_full_ci_preserves_android_release_tool_regressions():
     for filename in ("test_app_release_metadata.py", "test_extract_package_version.py",
                      "test_prepare_release_notes.py", "test_bundled_plugins.py"):
         assert f"unittest discover -s apps/android/tools -p '{filename}'" in commands
+
+
+@pytest.mark.parametrize("path", [
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/remote/facade/PhoneControlBus.kt",
+    "apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/remote/facade/PhoneVirtualHostProbe.kt",
+    "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/ControlOperation.kt",
+])
+def test_phone_jvm_inputs_trigger_original_tools_interop(impact, path):
+    for status in ("A", "M", "D"):
+        result = impact.classify([(status, path)])
+        assert result["lanes"]["remote"]
+
+
+def test_remote_ci_prepares_real_jvm_in_the_same_job_before_original_probe():
+    import json
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/remote-client.yml").read_text())["jobs"]
+    steps = jobs["remote"]["steps"]
+    unit = next(i for i, step in enumerate(steps) if step.get("run") == "npm run test:phone-mcp:unit")
+    media = next(i for i, step in enumerate(steps) if step.get("run") == "npm run test:remote")
+    interop = next(i for i, step in enumerate(steps) if step.get("with", {}).get("lane") == "phone-mcp-interop")
+    assert unit < interop and media < interop
+    action = yaml.safe_load((REPO_ROOT / ".github/actions/android-lane/action.yml").read_text())
+    action_steps = action["runs"]["steps"]
+    setup = next(i for i, step in enumerate(action_steps) if step.get("uses", "").startswith("gradle/actions/setup-gradle@"))
+    run = next(i for i, step in enumerate(action_steps) if "phone-mcp-interop.ts" in step.get("run", ""))
+    assert setup < run
+    assert any(step.get("with", {}).get("java-version") == "21" for step in action_steps[:run])
+    assert any(step.get("uses", "").startswith("android-actions/setup-android@") for step in action_steps[:run])
+    scripts = json.loads((REPO_ROOT / "package.json").read_text())["scripts"]
+    assert scripts["test:phone-mcp"] == "npm run test:phone-mcp:unit && npm run test:phone-mcp:interop"
+    assert "media-source.test.mjs" in scripts["test:remote"]
+    assert "phone-mcp-interop.test.mjs" in scripts["test:remote"]
+
+
+def test_full_ci_original_tools_runs_in_android_job_after_current_checkout_build():
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    node_commands = "\n".join(step.get("run", "") for step in jobs["gateway-and-protocol"]["steps"])
+    assert "npm run test:phone-mcp:unit" in node_commands
+    assert "npm run test:phone-mcp:interop" not in node_commands
+    assert "npm run test:remote" in node_commands
+    steps = jobs["android"]["steps"]
+    build = next(i for i, step in enumerate(steps) if "./gradlew check " in step.get("run", ""))
+    interop = next(i for i, step in enumerate(steps) if "npm run test:phone-mcp:interop" in step.get("run", ""))
+    assert build < interop
+
+
+def test_history_media_regression_is_selected_for_conversation_changes(tasks):
+    sections = tasks.read_regression_sections()
+    assert "RemoteHistoryMediaCacheTest" in sections["conversations"]
+    assert "--tests=RemoteHistoryMediaCacheTest" in tasks.pr_args_for_sections(["conversations"])
+
+
+def test_typecheck_excludes_only_pinned_typescript_and_keeps_probe_source():
+    import json
+    config = json.loads((REPO_ROOT / "tsconfig.json").read_text())
+    assert config["include"] == ["tools/**/*.ts"]
+    assert set(config["exclude"]) == {
+        "tools/remote/fixtures/dsh-remote/**/*.ts",
+        "tools/remote/fixtures/media-upstream/**/*.ts",
+        "tools/remote-server/fixtures/**/*.ts",
+    }

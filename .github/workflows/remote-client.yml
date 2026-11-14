@@ -166,7 +166,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.runs_remote == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
@@ -183,14 +183,19 @@ jobs:
       - name: 固定服务端OAI版本协商回归
         run: npm test --prefix tools/remote-server
 
-      - name: 固定 ACP 投影关闭风险观察
-        run: node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
-
       - name: 安装独立手机 MCP 官方 SDK 依赖
         run: npm ci --prefix integrations/oai-android-mcp --prefer-offline --no-audit --fund=false
 
       - name: 手机 MCP 官方客户端与进程内桥回归
-        run: npm run test:phone-mcp
+        run: npm run test:phone-mcp:unit
+
+      - name: 固定 ACP 投影及媒体原文回归
+        run: npm run test:remote
+
+      - name: 当前源码编译与原生手机门面互通
+        uses: ./.github/actions/android-lane
+        with:
+          lane: phone-mcp-interop
 
   # --- Android -------------------------------------------------------------
   android-setup:

@@ -192,15 +192,12 @@ def test_acp_projection_observation_runs_and_propagates_failure(level):
 
     def execute(command, **kwargs):
         commands.append(command)
-        return 23 if "tools/remote/projection-scope.test.mjs" in command else 0
+        return 23 if "test:remote" in command else 0
 
     runner.run_command = execute
     impact = runner.analyze_impact(["tools/remote/projection-scope.test.mjs"])
     assert runner.execute_strategy(level, impact) == 23
-    assert commands[-1] == [
-        "node", "--experimental-vm-modules", "--test",
-        "tools/remote/projection-scope.test.mjs",
-    ]
+    assert commands[-1] == ["npm", "run", "test:remote"]
     assert not any("integrations/dsh-session-adapter/vitest.config.js" in command for command in commands)
 
 
@@ -238,11 +235,32 @@ def test_control_ports_remote_change_executes_gateway_and_conversation_pr_tasks(
 def test_phone_mcp_routes_without_legacy_adapter_and_propagates_failure():
     runner = load_runner()
     commands = []
-    runner.run_command = lambda command, **kwargs: commands.append(command) or (31 if "test:phone-mcp" in command else 0)
+    runner.run_command = lambda command, **kwargs: commands.append(command) or (31 if "test:phone-mcp:unit" in command else 0)
     impact = runner.analyze_impact(["integrations/oai-android-mcp/src/stdio.mjs"])
     assert impact["affects_phone_mcp"]
     assert runner.execute_strategy("fast", impact) == 31
+    assert commands[-1] == ["npm", "run", "test:phone-mcp:unit"]
+
+
+@pytest.mark.parametrize("level", ["pr", "full"])
+def test_remote_admission_runs_real_phone_interop_and_propagates_failure(level):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or (43 if "test:phone-mcp" in command else 0)
+    impact = runner.analyze_impact(["tools/remote/media-source.test.mjs"])
+    assert runner.execute_strategy(level, impact) == 43
     assert commands[-1] == ["npm", "run", "test:phone-mcp"]
+    assert ["npm", "run", "test:phone-mcp:unit"] not in commands
+
+
+@pytest.mark.parametrize("level", ["fast", "pr", "full"])
+def test_media_upstream_changes_run_original_media_probe(level):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or (47 if "test:remote" in command else 0)
+    impact = runner.analyze_impact(["tools/remote/fixtures/media-upstream/packages/plugin/src/workspace-bridge.ts"])
+    assert runner.execute_strategy(level, impact) == 47
+    assert commands[-1] == ["npm", "run", "test:remote"]
 
 
 @pytest.mark.parametrize("level", ["fast", "pr", "full"])

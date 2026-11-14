@@ -297,6 +297,9 @@ def classify_path(
         return True
 
     if path.startswith("apps/android/"):
+        # Kotlin 门面及请求类型也是原生 remote_* 探针输入，不能只按 Node 文件触发。
+        if path.startswith(("apps/android/gateway-client/", "apps/android/control-ports/")):
+            lanes["remote"] = True
         return classify_android(status, path, lanes, sections)
 
     return False

@@ -96,6 +96,7 @@ SettingsShortcutsTest
 SmsBackgroundConsentTest
 
 [conversations]
+RemoteHistoryMediaCacheTest
 RemoteReasoningMirrorTest
 NativeConversationOrganizationStoreTest
 NativeMediaIsolationTest

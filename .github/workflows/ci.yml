@@ -74,9 +74,9 @@ jobs:
       - name: 固定服务端与手机 MCP 回归
         run: |
           npm test --prefix tools/remote-server
-          node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs
           npm ci --prefix integrations/oai-android-mcp --ignore-scripts
-          npm run test:phone-mcp
+          npm run test:phone-mcp:unit
+          npm run test:remote
 
   android:
     name: Android Build & Check
@@ -153,6 +153,11 @@ jobs:
             -Poai.requireBundledPlugins=true \
             -Poai.testParallelForks=2 \
             --stacktrace
+
+      - name: 同源码原生手机门面互通
+        run: |
+          npm ci --prefix integrations/oai-android-mcp --ignore-scripts
+          npm run test:phone-mcp:interop
 
       # 六个插件资产必须逐一与签出的包逐字节一致；缺一个就说明内置链路断了。
       - name: Verify the plugin packages reached the APK

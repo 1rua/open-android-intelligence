@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -9,6 +9,7 @@ type SourceEntry = {
   asset?: string;
   sha256: string;
   bytes?: number;
+  gitBlob?: string;
 };
 type ReadBytes = (path: string) => Promise<Buffer>;
 
@@ -38,8 +39,42 @@ export async function verifyEntries(base: string, entries: SourceEntry[], read: 
     const bytes = await read(target);
     if (entry.bytes !== undefined && bytes.length !== entry.bytes) throw Error(`来源长度不匹配：${path}`);
     if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) throw Error(`来源摘要不匹配：${path}`);
+    if (entry.gitBlob !== undefined && (!/^[a-f0-9]{40}$/.test(entry.gitBlob) ||
+      createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex') !== entry.gitBlob)) {
+      throw Error(`来源 Git blob 不匹配：${path}`);
+    }
   }
   return entries.length;
+}
+
+/** 媒体快照严格覆盖目录内全部原文，不能漏登新增文件或 MIT 许可。 */
+export async function verifyMediaSources(base: string): Promise<number> {
+  const source = JSON.parse(await readFile(resolve(base, 'source.json'), 'utf8'));
+  if (source.repository !== repository || source.commit !== commit || !Array.isArray(source.files)) {
+    throw Error('媒体固定上游身份或清单不匹配');
+  }
+  const entries: SourceEntry[] = source.files;
+  const license = entries.find(entry => entry.path === 'LICENSE');
+  if (!license || license.sha256 !== '6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d') {
+    throw Error('媒体固定来源缺少原始 MIT 许可');
+  }
+  if (entries.some(entry => typeof entry.path !== 'string' || entry.fixture !== undefined || entry.asset !== undefined ||
+    !/^[a-f0-9]{40}$/.test(entry.gitBlob ?? ''))) throw Error('媒体来源路径或 Git blob 元数据无效');
+  const count = await verifyEntries(base, entries);
+  const registered = new Set(entries.map(entry => relative(base, member(base, entry.path))));
+  async function inventory(directory: string): Promise<string[]> {
+    const files: string[] = [];
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) files.push(...await inventory(path));
+      else if (entry.isFile()) files.push(relative(base, path));
+      else throw Error(`媒体来源不能包含链接或特殊文件：${entry.name}`);
+    }
+    return files;
+  }
+  const files = (await inventory(base)).filter(path => path !== 'source.json');
+  if (files.length !== registered.size || files.some(path => !registered.has(path))) throw Error('媒体原文目录与来源清单不完整');
+  return count;
 }
 
 export async function verifyRemoteSources(projectRoot: string = root): Promise<number> {
@@ -54,6 +89,7 @@ export async function verifyRemoteSources(projectRoot: string = root): Promise<n
     if (source.repository !== repository || source.commit !== commit) throw Error(`固定上游身份不匹配：${file}`);
     count += await verifyEntries(dirname(target), source.files);
   }
+  count += await verifyMediaSources(member(projectRoot, 'tools/remote/fixtures/media-upstream'));
   const vectorRoot = member(projectRoot, 'apps/android/gateway-client/src/test/resources/dsh-remote');
   const sums = (await readFile(resolve(vectorRoot, 'SHA256SUMS'), 'utf8')).split(/\r?\n/).filter(Boolean);
   const vectors = sums.map((line): SourceEntry => {

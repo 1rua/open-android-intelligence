@@ -225,7 +225,8 @@ def execute_strategy(
 
     if impact.get("affects_phone_mcp") or level == "full":
         print("\n--- 手机 MCP 官方 SDK 与桥接回归 ---")
-        ret = run_command(["npm", "run", "test:phone-mcp"])
+        # 快速反馈不编译 Android；PR/Full 必须包含真实 Kotlin 门面互通。
+        ret = run_command(["npm", "run", "test:phone-mcp:unit" if level == "fast" else "test:phone-mcp"])
         if ret != 0:
             return ret
 
@@ -241,10 +242,7 @@ def execute_strategy(
     # 固定 ACP 投影观察独立于旧 Core，不作为后台委派放行门禁。
     if impact.get("affects_remote") or level == "full":
         print("\n--- 固定 ACP 投影关闭风险观察 ---")
-        ret = run_command([
-            "node", "--experimental-vm-modules", "--test",
-            "tools/remote/projection-scope.test.mjs",
-        ])
+        ret = run_command(["npm", "run", "test:remote"])
         if ret != 0:
             return ret
         ret = run_command(["npm", "test", "--prefix", "tools/remote-server"])

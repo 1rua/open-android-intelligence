@@ -130,6 +130,11 @@ runs:
       run: |
         set -euo pipefail
         case "${{ inputs.lane }}" in
+          phone-mcp-interop)
+            # 使用同一 checkout、JDK/SDK/Gradle 缓存，先编译当前源码再运行原工具。
+            node ../../tools/remote/phone-mcp-interop.ts
+            exit 0
+            ;;
           android-device|android-platform|android-notifications|android-conversation|android-gateway|android-plugins)
             planner=(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
             ;;

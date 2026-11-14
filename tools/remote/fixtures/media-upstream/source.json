@@ -54,7 +54,8 @@
     },
     {
       "path": "LICENSE",
-      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d"
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d",
+      "gitBlob": "d2c3468f3a4e2ffac2a66d07e85fe0f4f6369122"
     },
     {
       "path": "packages/plugin/src/codex/session-id.ts",

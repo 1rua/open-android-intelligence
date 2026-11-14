@@ -14,7 +14,10 @@
     "typecheck": "tsc --noEmit && npm run typecheck --prefix plugin-tooling",
     "lock:check": "node tools/check-remote-sources.mjs",
     "ci:plan": "python3 tools/ci/impact.py",
-    "test:phone-mcp": "npm test --prefix integrations/oai-android-mcp"
+    "test:remote": "node --experimental-vm-modules --test tools/remote/projection-scope.test.mjs tools/remote/media-source.test.mjs tools/remote/phone-mcp-interop.test.mjs",
+    "test:phone-mcp:unit": "npm test --prefix integrations/oai-android-mcp",
+    "test:phone-mcp:interop": "node tools/remote/phone-mcp-interop.ts",
+    "test:phone-mcp": "npm run test:phone-mcp:unit && npm run test:phone-mcp:interop"
   },
   "dependencies": {
     "@noble/curves": "2.2.0",
