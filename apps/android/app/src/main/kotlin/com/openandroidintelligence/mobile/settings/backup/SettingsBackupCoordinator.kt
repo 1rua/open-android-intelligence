@@ -210,7 +210,7 @@ class SettingsBackupCoordinator(
      */
     private fun currentConnection(): ConnectionSection? {
         remoteRuntime?.let { remote ->
-            return remote.state.value.account?.origin?.let(::credentialFreeGateway)?.let(::ConnectionSection)
+            return credentialFreeGateway(remote.loginOrigin())?.let(::ConnectionSection)
         }
         val candidates = sequenceOf(
             LoginGatewayPrefill.read(context),

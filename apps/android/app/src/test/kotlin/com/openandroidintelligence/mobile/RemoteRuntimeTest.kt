@@ -152,6 +152,7 @@ class RemoteRuntimeTest {
 
     @Test fun `Remote设置备份导出再恢复保持端点组织与登录地址`() = runBlocking {
         ready("one")
+        runtime.saveLoginOrigin("https://remote.example")
         val local = runtime.controller.value!!.localConversationScope
         val original = com.openandroidintelligence.conversation.ports.ConversationOrganization(
             folders = listOf(com.openandroidintelligence.conversation.ports.ConversationFolder("folder", "备份文件夹")))
@@ -168,6 +169,62 @@ class RemoteRuntimeTest {
         assertTrue(backup.import(exported.json).isSuccess)
         assertEquals(original.folders, runtime.readLocalOrganization(local).folders)
         assertEquals("https://remote.example", runtime.loginOrigin())
+    }
+
+    @Test fun `未登录导入地址后导出保持同一登录预填`() {
+        val backup = remoteBackup()
+        assertTrue(backup.import(connectionBackup("https://prefill-b.example")).isSuccess)
+        assertNull(runtime.state.value.account)
+        assertEquals("https://prefill-b.example", runtime.loginOrigin())
+        assertEquals("https://prefill-b.example", exportedOrigin(backup.export().json))
+    }
+
+    @Test fun `已登录A导入B只修改预填且导出B`() = runBlocking {
+        ready("one")
+        val active = runtime.state.value.account
+        val backup = remoteBackup()
+        assertTrue(backup.import(connectionBackup("https://prefill-b.example")).isSuccess)
+        assertEquals("https://prefill-b.example", exportedOrigin(backup.export().json))
+        assertEquals(active, runtime.state.value.account)
+        assertEquals("https://remote.example", runtime.state.value.account?.origin)
+    }
+
+    @Test fun `导入后续失败回滚原登录默认地址`() {
+        runtime.saveLoginOrigin("https://original.example")
+        val rejecting = object : com.openandroidintelligence.notification.control.NotificationPolicyPort {
+            override fun snapshot() = com.openandroidintelligence.notification.control.NotificationPolicySnapshot(
+                installed = true, granted = true, packageIds = emptyList(),
+                fieldAccess = com.openandroidintelligence.core.model.NotificationFieldAccess.METADATA,
+                mode = com.openandroidintelligence.core.model.NotificationDeliveryMode.ON_DEMAND, revision = 1uL)
+            override fun observe() = flowOf(snapshot())
+            override fun update(request: com.openandroidintelligence.notification.control.NotificationPolicyUpdate) =
+                com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome.Rejected("TEST_REJECT")
+        }
+        val backup = remoteBackup(rejecting)
+        val text = Json.canonical(Json.of(mapOf("schemaVersion" to 1, "settings" to mapOf(
+            "connection" to mapOf("gatewayUrl" to "https://prefill-b.example"),
+            "notificationCollection" to mapOf("packageIds" to listOf("com.example.chat"), "fieldAccess" to "METADATA", "mode" to "ON_DEMAND")))))
+        assertTrue(backup.import(text).isFailure)
+        assertEquals("https://original.example", runtime.loginOrigin())
+        assertEquals("https://original.example", exportedOrigin(backup.export().json))
+    }
+
+    private fun remoteBackup(policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
+        com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort()): com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator {
+        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink()))
+        return com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator(
+            context, AppearancePreferences(context), AndroidAccountProfileStore(context), grants, null,
+            runtime.replyNotifications, null, null,
+            com.openandroidintelligence.mobile.updates.AppUpdatePreferences(context, com.openandroidintelligence.mobile.updates.AppUpdateChannel.PREVIEW),
+            policy, keyProvider = key, remoteRuntime = runtime)
+    }
+    private fun connectionBackup(origin: String): String = Json.canonical(Json.of(mapOf("schemaVersion" to 1,
+        "settings" to mapOf("connection" to mapOf("gatewayUrl" to origin)))))
+    private fun exportedOrigin(text: String): String? {
+        val root = JsonFields.obj(Json.parse(text)) ?: return null
+        val settings = JsonFields.obj(JsonFields.field(root, "settings")) ?: return null
+        val connection = JsonFields.obj(JsonFields.field(settings, "connection")) ?: return null
+        return JsonFields.string(connection, "gatewayUrl")
     }
 
     private fun endpoint(id: String): com.openandroidintelligence.conversation.data.remote.RemoteWorkspace =
