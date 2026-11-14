@@ -20,6 +20,7 @@ dependencies {
     implementation(project(":control-ports"))
     implementation("com.bloxbean.cardano:net-i2p-crypto-eddsa:0.3.1")
     implementation("org.signal.forks:noise-java:0.1.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.github.webrtc-sdk:android:150.7871.04")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
 
