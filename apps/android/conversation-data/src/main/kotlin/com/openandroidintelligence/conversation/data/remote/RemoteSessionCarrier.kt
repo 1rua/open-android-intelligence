@@ -27,6 +27,8 @@ interface RemoteSessionCarrier {
         throw RemoteSessionException("STEERING_UNSUPPORTED")
     suspend fun respond(sessionId: String, handle: String, allow: Boolean): JsonValue
     suspend fun models(sessionId: String): RemoteModelCatalog
+    suspend fun commands(sessionId: String?): com.openandroidintelligence.conversation.ports.AgentCommandCatalog =
+        throw RemoteSessionException("COMMANDS_UNSUPPORTED")
     suspend fun selectModel(sessionId: String, selection: RemoteModelSelection): RemoteModelSelection
     suspend fun rename(sessionId: String, title: String): Unit = throw RemoteSessionException("RENAME_UNSUPPORTED")
     suspend fun archive(sessionId: String, archived: Boolean): Unit = throw RemoteSessionException("ARCHIVE_UNSUPPORTED")

@@ -48,18 +48,21 @@ class RemoteRuntime(
     private val pluginHost: ProductionPluginHost,
     private val grants: PairingGrantStateHolder,
     private val confirmLocally: suspend (String, String, String) -> Boolean,
+    accountFactory: (RemoteRpcHostHandler) -> RemoteAccountConnection = { ProductionRemoteAccountConnection(context, scope, it) },
+    private val localDocumentKeyProvider: AesGcmKeyProvider? = null,
 ) {
     private val mutableState = MutableStateFlow(RemoteWorkspaceState())
     val state = mutableState.asStateFlow()
     private val mutableController = MutableStateFlow<WorkbenchController?>(null)
     val controller = mutableController.asStateFlow()
+    val deviceCapabilityState = MutableStateFlow(DeviceCapabilitySyncState())
     private val selection = Mutex()
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
     private val phone = RemotePhoneControlComposition(context, scope, pluginHost, grants, confirmLocally)
     private data class Registered(val access: ControlAccessBinding, val registration: AutoCloseable)
     private val registered = ConcurrentHashMap<String, Registered>()
     private val handler = PhoneRemoteRpcHostHandler(scope, phone.router, ::access)
-    val accountRuntime = RemoteAccountRuntime(context, scope, handler)
+    val accountRuntime = accountFactory(handler)
     private var channel: RemoteRpcChannel? = null
     private var repository: RemoteConversationRepository? = null
     private var ownerJob: Job? = null
@@ -70,6 +73,8 @@ class RemoteRuntime(
     private val assistantControllers = ConcurrentHashMap<String, WorkbenchController>()
     private val assistantPresence = ConcurrentHashMap<String, Pair<String?, Boolean>>()
     private val handoffs = ConcurrentHashMap<String, AssistantHandoffTarget>()
+    private val assistantWrappers = ConcurrentHashMap<String, AssistantAttachmentDraftCoordinator>()
+    private val modelSequence = java.util.concurrent.atomic.AtomicLong()
     private val mutableAssistantVersion = MutableStateFlow(0L)
     val assistantWorkspaceVersion = mutableAssistantVersion.asStateFlow()
     val replyNotifications = ReplyNotificationSettings(context)
@@ -161,12 +166,12 @@ class RemoteRuntime(
             ownerJob = owner
             val ownedScope = CoroutineScope(scope.coroutineContext + owner)
             val local = conversationScope(endpoint.endpoint.key)
-            val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local) }
-            val media = EncryptedHistoryMediaCache(context, local)
+            val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local, localDocumentKeyProvider) }
+            val media = EncryptedHistoryMediaCache(context, local, keyProvider = localDocumentKeyProvider)
             val stagingKey = endpointId(endpoint.endpoint.key)
             val staging = EncryptedAttachmentStagingStore(File(context.noBackupFilesDir, "remote-attachment-staging/$stagingKey"),
-                AndroidKeystoreOutboxKeyProvider("remote_attachment_$stagingKey").getOrCreate(), stagingKey, persistent = true)
-            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging, EncryptedAttachmentRecovery(context, local))
+                (localDocumentKeyProvider ?: AndroidKeystoreOutboxKeyProvider("remote_attachment_$stagingKey")).getOrCreate(), stagingKey, persistent = true)
+            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging, EncryptedAttachmentRecovery(context, local, localDocumentKeyProvider))
             val active = AtomicReference<String?>(null)
             val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent) { key, event ->
                 mirror.commitNativeEvents(listOf(event))
@@ -188,43 +193,49 @@ class RemoteRuntime(
     }
 
     private fun createController(ownedScope: CoroutineScope, repo: ConversationRepository, mirror: EncryptedConversationMirror,
-        media: EncryptedHistoryMediaCache, attachments: RemoteAttachmentCoordinator?, local: ConversationScope,
+        media: EncryptedHistoryMediaCache, attachments: AttachmentDraftCoordinator?, local: ConversationScope,
         active: AtomicReference<String?>, restore: Boolean = true): WorkbenchController {
         val supported = (repo as? RemoteConversationRepository)?.carrier?.capabilities.orEmpty()
         return WorkbenchController(ownedScope, repo, object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) =
-                AgentCommandCatalog(CatalogVersion("remote"), emptyList())
+                (repo as? RemoteConversationRepository)?.carrier?.commands(active.get()?.let(RemoteLocalIds::decode))
+                    ?: throw RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
         }, { local }, attachmentCoordinator = attachments,
             restoreLastThread = restore, supportsApprovalCards = SessionCapability.APPROVAL in supported,
-            onActiveThreadChanged = { id -> active.set(id); (repo as? RemoteConversationRepository)?.activeConversationChanged(); refreshModels(id) },
-            streamHealthSource = repo as? StreamHealthSource, persistence = mirror, media = media,
+            onActiveThreadChanged = { id -> active.set(id); (repo as? RemoteConversationRepository)?.activeConversationChanged(); if (restore) refreshModels(id) },
+            streamHealthSource = repo as? StreamHealthSource, persistence = mirror.takeIf { restore }, media = media,
             downloads = AndroidAttachmentDownloads(context, media, local), allowSending = repo is RemoteConversationRepository,
             supportsConversationRename = SessionCapability.RENAME in supported,
             supportsConversationArchive = SessionCapability.ARCHIVE in supported,
             supportsConversationUnarchive = SessionCapability.UNARCHIVE in supported,
             authoritativeMessageIds = true)
     }
-    fun refreshModels(id: String? = controller.value?.state?.value?.activeThreadId) = scope.launch {
+    fun refreshModels(id: String? = controller.value?.state?.value?.activeThreadId): Job {
+        val sequence = modelSequence.incrementAndGet()
+        return scope.launch {
         val repo = repository ?: return@launch
         if (id == null) { mutableState.update { it.copy(models = null) }; return@launch }
         mutableState.update { it.copy(modelBusy = true) }
         try {
             val models = repo.modelCatalog(id)
-            if (repository === repo && controller.value?.state?.value?.activeThreadId == id) mutableState.update { it.copy(models = models) }
+            if (repository === repo && modelSequence.get() == sequence && controller.value?.state?.value?.activeThreadId == id) mutableState.update { it.copy(models = models) }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { if (repository === repo) fail(failure) }
-        finally { if (repository === repo) mutableState.update { it.copy(modelBusy = false) } }
-    }
-    fun selectModel(selection: RemoteModelSelection) = scope.launch {
+        finally { if (repository === repo && modelSequence.get() == sequence) mutableState.update { it.copy(modelBusy = false) } }
+    } }
+    fun selectModel(selection: RemoteModelSelection): Job {
+        val sequence = modelSequence.incrementAndGet()
+        return scope.launch {
         val repo = repository ?: return@launch
         val id = controller.value?.state?.value?.activeThreadId ?: return@launch
         mutableState.update { it.copy(modelBusy = true) }
         try {
             val confirmed = repo.selectModel(id, selection)
-            if (repository === repo) mutableState.update { it.copy(models = it.models?.copy(selected = confirmed)) }
+            if (repository === repo && modelSequence.get() == sequence && controller.value?.state?.value?.activeThreadId == id)
+                mutableState.update { it.copy(models = it.models?.copy(selected = confirmed)) }
         } catch (failure: Exception) { fail(failure) }
-        finally { mutableState.update { it.copy(modelBusy = false) } }
-    }
+        finally { if (repository === repo && modelSequence.get() == sequence) mutableState.update { it.copy(modelBusy = false) } }
+    } }
     fun logout() = scope.launch {
         accountRuntime.logout()
         mutableState.update { it.copy(account = null) }
@@ -235,6 +246,7 @@ class RemoteRuntime(
     private suspend fun retire() {
         mutableController.value?.closeAndAwait(); mutableController.value = null
         assistantControllers.values.forEach { it.closeAndAwait() }; assistantControllers.clear()
+        assistantWrappers.values.forEach { it.close(scope).join() }; assistantWrappers.clear()
         repository?.close(); repository = null
         ownerJob?.cancelAndJoin(); ownerJob = null
         channel?.close(); channel = null
@@ -248,8 +260,8 @@ class RemoteRuntime(
         if (values.size != 5) return
         val key = EndpointKey(RemoteServiceOrigin.fromCanonicalOrigin(account.origin), account.accountId, values[0], BackendId(values[1]), values[2])
         val local = conversationScope(key)
-        val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local) }
-        val media = EncryptedHistoryMediaCache(context, local)
+        val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local, localDocumentKeyProvider) }
+        val media = EncryptedHistoryMediaCache(context, local, keyProvider = localDocumentKeyProvider)
         val owner = SupervisorJob(scope.coroutineContext[Job]); ownerJob = owner
         ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
         mutableController.value = withContext(Dispatchers.IO) { createController(CoroutineScope(scope.coroutineContext + owner), OfflineMirrorRepository(mirror), mirror, media, null, local, AtomicReference()) }
@@ -284,7 +296,8 @@ class RemoteRuntime(
         val media = ownerMedia ?: return null
         val local = ownerConversationScope ?: return null
         val active = AtomicReference<String?>(null)
-        return createController(CoroutineScope(scope.coroutineContext + owner), repo, mirror, media, ownerAttachments, local, active,
+        val wrapper = assistantAttachmentWrapperFor(assistantWrappers, ownerAttachments, token)
+        return createController(CoroutineScope(scope.coroutineContext + owner), repo, mirror, media, wrapper, local, active,
             restore = false).also { controller -> assistantControllers.putIfAbsent(token, controller)?.let { controller.close() } }
             .let { assistantControllers[token] ?: it }
     }
@@ -293,6 +306,7 @@ class RemoteRuntime(
         val current = assistantControllers[token] ?: return
         if (current.state.value.generation in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN)) return
         assistantControllers.remove(token)?.close()
+        assistantWrappers.remove(token)?.close(scope)
     }
     internal fun setAssistantPresence(clientToken: String, sessionToken: String?, visible: Boolean) {
         assistantPresence[clientToken] = sessionToken to visible
@@ -308,6 +322,7 @@ class RemoteRuntime(
         val conversation = sender.state.value.activeThreadId
         conversation?.let(receiver::openThread)
         val skipped = receiver.adoptAssistantDraft(draft.text, draft.attachments)
+        assistantWrappers[token]?.let { wrapper -> draft.attachments.forEach { wrapper.disown(it.id.value) } }
         val target = AssistantHandoffTarget(profile, account, state.value.selected?.let(::endpointId), conversation)
         handoffs[token] = target
         return AssistantHandoffResult.Accepted(target, skipped)
@@ -338,7 +353,13 @@ class RemoteRuntime(
         return true
     }
     fun onAppForegrounded() { replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive() }
-    fun onAppBackgrounded() = Unit
+    private var foreground = false
+    fun onAppBackgrounded() { foreground = false }
+    fun reloadDebounceSettings() {
+        val policy = DebouncePreferences(context).read()
+        controller.value?.updateDebouncePolicy(policy)
+        assistantControllers.values.forEach { it.updateDebouncePolicy(policy) }
+    }
     fun onNetworkAvailable(routeChanged: Boolean = false) {
         val selected = state.value.selected ?: return
         if (controller.value?.state?.value?.isOnline == false) state.value.endpoints.firstOrNull { it.endpoint.key == selected }?.let(::select)

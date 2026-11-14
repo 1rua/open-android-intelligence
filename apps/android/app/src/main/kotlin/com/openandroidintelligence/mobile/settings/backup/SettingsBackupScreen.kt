@@ -55,11 +55,12 @@ internal fun SettingsBackupRoute(
     runtime: GatewayRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
     val installed = remember(context) { installedAppBuild(context.applicationContext) }
-    val coordinator = remember(app, runtime) { backupCoordinator(context, app, runtime) }
+    val coordinator = remember(app, runtime, remoteRuntime) { backupCoordinator(context, app, runtime, remoteRuntime) }
     val model: SettingsBackupViewModel = viewModel(
         key = "settings-backup",
         factory = remember(coordinator, installed.versionName) {
@@ -254,6 +255,7 @@ private fun backupCoordinator(
     context: Context,
     app: OpenAndroidIntelligenceApplication?,
     runtime: GatewayRuntime?,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime?,
 ): SettingsBackupCoordinator? {
     if (app == null) return null
     val installed = installedAppBuild(context.applicationContext)
@@ -266,11 +268,16 @@ private fun backupCoordinator(
             pluginHost = app.pluginHost,
             // 有运行时就用它的实例（导入后能立即刷新界面）；没有运行时则直接读同一份
             // 偏好文件——此时不存在「另一个实例的缓存值过期」的问题。
-            replyNotifications = runtime?.replyNotifications ?: ReplyNotificationSettings(context.applicationContext),
+            replyNotifications = remoteRuntime?.replyNotifications ?: runtime?.replyNotifications ?: ReplyNotificationSettings(context.applicationContext),
             runtime = runtime,
             devicePush = app.devicePush?.runtime,
             appUpdates = AppUpdatePreferences(context.applicationContext, defaultAppUpdateChannel(installed)),
             notificationPolicy = NotificationControlRegistry.policyPort(),
+            remoteRuntime = remoteRuntime,
+            runtimeRefresh = remoteRuntime?.let { remote -> object : SettingsRuntimeRefresh {
+                override fun reloadDebounceSettings() = remote.reloadDebounceSettings()
+                override fun refreshThreads() { remote.controller.value?.refreshThreads() }
+            } } ?: runtime?.let(::gatewayRuntimeRefresh),
         )
     }.getOrNull()
 }

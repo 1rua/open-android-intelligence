@@ -114,6 +114,7 @@ class SettingsBackupCoordinator(
      * 运行时刷新入口；默认桥接到 [runtime]，测试可替换为记录器。
      */
     private val runtimeRefresh: SettingsRuntimeRefresh? = runtime?.let(::gatewayRuntimeRefresh),
+    private val remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     /**
      * 导入期间累积的运行时刷新动作，只在全部写入成功后才执行。
@@ -199,6 +200,9 @@ class SettingsBackupCoordinator(
      * 预填偏好 → 运行时的最近地址（含已登出/离线镜像）→ 已保存账号的地址。
      */
     private fun currentConnection(): ConnectionSection? {
+        remoteRuntime?.let { remote ->
+            return remote.state.value.account?.origin?.let(::credentialFreeGateway)?.let(::ConnectionSection)
+        }
         val candidates = sequenceOf(
             LoginGatewayPrefill.read(context),
             runtime?.lastGatewayUrl(),

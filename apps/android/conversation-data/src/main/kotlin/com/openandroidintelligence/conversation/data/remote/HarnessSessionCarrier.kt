@@ -8,6 +8,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.filterNot
 
 /** Harness 只走官方 Session V3；不经过 Codex 或 ACP 的虚拟 Harness。 */
 class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSessionCarrier {
@@ -69,11 +70,20 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
 
     override fun follow(sessionId: String): Flow<JsonValue> = merge(
         stream("session/follow", obj("request" to obj("address" to obj("kind" to "session", "sessionId" to sessionId),
-            "assistantStream" to true))), stream("\$events", obj()))
+            "assistantStream" to true))), stream("\$events", obj()).filterNot { it.text("type") == "remote-stream-ready" })
 
-    override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue =
-        invoke("session/prompt", obj("request" to obj("sessionId" to sessionId, "requestId" to requestId,
+    override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue {
+        if (model != null) selectModel(sessionId, model)
+        return invoke("session/prompt", obj("request" to obj("sessionId" to sessionId, "requestId" to requestId,
             "mode" to "queue", "content" to content)))
+    }
+
+    override suspend fun commands(sessionId: String?): com.openandroidintelligence.conversation.ports.AgentCommandCatalog {
+        val result = invoke("commands/list", obj("request" to obj(*listOfNotNull(sessionId?.let { "sessionId" to it }).toTypedArray())))
+        val items = result.array("items") ?: result.array("commands") ?: throw RemoteSessionException("REMOTE_INVALID_COMMAND_CATALOG")
+        return com.openandroidintelligence.conversation.ports.AgentCommandCatalog(com.openandroidintelligence.conversation.model.CatalogVersion("remote"),
+            items.map { command -> com.openandroidintelligence.conversation.ports.AgentCommand(command.text("command") ?: command.requiredText("name"), command.text("description") ?: "") })
+    }
 
     override suspend fun steer(sessionId: String, generationId: String, requestId: String, text: String): JsonValue =
         invoke("session/prompt", obj("request" to obj("sessionId" to sessionId, "requestId" to requestId,
