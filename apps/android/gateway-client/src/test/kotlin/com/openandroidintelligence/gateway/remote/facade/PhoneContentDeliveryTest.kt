@@ -81,8 +81,10 @@ class PhoneContentDeliveryTest {
         val task=bus.create(access);bus.submit(access,task,request());runCurrent()
         assertTrue(Json.canonical(bus.history(access,task)).contains(SECRET))
         executor.contentCurrent=false
-        denied("PUSH_DELIVERY_REVOKED") { bus.history(access,task) }
-        denied("PUSH_DELIVERY_REVOKED") { bus.eventsSince(access,task,-1) }
+        val history=Json.canonical(bus.history(access,task))
+        assertFalse(history.contains(SECRET));assertTrue(history.contains("resultAvailable"))
+        val events=Json.canonical(Json.of(bus.eventsSince(access,task,-1)))
+        assertFalse(events.contains(SECRET));assertTrue(events.contains("resultAvailable"))
         denied("PUSH_DELIVERY_REVOKED") { bus.artifact(access,task,"private-image") }
         assertFalse(Json.canonical(bus.receipt(access,task,"content-request-00001")).contains(SECRET))
     }
@@ -97,7 +99,7 @@ class PhoneContentDeliveryTest {
         assertTrue(oldReceipt.contains("resultAvailable\":false"));assertFalse(oldReceipt.contains(SECRET))
         val newReceipt=Json.canonical(bus.receipt(access,task,"content-new-000001"))
         assertTrue(newReceipt.contains(SECRET));assertTrue(newReceipt.contains("resultAvailable\":true"))
-        val control=Json.canonical(bus.history(access,"control-bus"))
+        val control=Json.canonical(bus.history(access,task))
         assertTrue(control.contains("content-old-000001"));assertTrue(control.contains("content-new-000001"))
         assertFalse(control.contains(SECRET))
     }
