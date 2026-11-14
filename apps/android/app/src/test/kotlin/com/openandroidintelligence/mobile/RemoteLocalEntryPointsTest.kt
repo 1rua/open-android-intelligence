@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
@@ -19,6 +20,11 @@ import com.openandroidintelligence.mobile.screen.ScreenCaptureConsentTicket
 import com.openandroidintelligence.mobile.screen.rememberScreenCaptureAuthorization
 import com.openandroidintelligence.plugin.ui.NativeUiContext
 import com.openandroidintelligence.plugin.ui.NativeUiProvider
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.emptyFlow
+import com.openandroidintelligence.conversation.model.*
+import com.openandroidintelligence.conversation.ports.*
+import com.openandroidintelligence.conversation.state.WorkbenchController
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -65,6 +71,42 @@ class RemoteLocalEntryPointsTest {
                 assertEquals("test.screen.CONSENT", shadowOf(activity).nextStartedActivityForResult.intent.action)
             }
         } finally { field.set(null, previous) }
+    }
+
+    @Test @Config(qualifiers = "w411dp-h891dp-420dpi")
+    fun `窄屏工作台退出按钮只触发退出不会打开设置`() = assertWorkbenchLogout(narrow = true)
+
+    @Test @Config(qualifiers = "w1000dp-h891dp-420dpi")
+    fun `宽屏工作台退出按钮只触发退出不会打开设置`() = assertWorkbenchLogout(narrow = false)
+
+    private fun assertWorkbenchLogout(narrow: Boolean) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        val repo = object : ConversationRepository {
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(emptyList(), null)
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation = error("不创建会话")
+            override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance = error("不发送")
+            override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance = error("不发送")
+            override fun observeEvents(scope: ConversationScope) = emptyFlow<VerifiedConversationEvent>()
+            override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val controller = WorkbenchController(scope, repo, object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("test"), emptyList())
+        }, { ConversationScope("remote", "endpoint", "account", "install") })
+        var logout = 0
+        var settings = 0
+        try {
+            compose.setContent { MaterialTheme {
+                WorkbenchSettingsHost {
+                    com.openandroidintelligence.conversation.workbench.WorkbenchScreen(controller, "https://remote.example",
+                        onOpenSettings = { settings++ }, onLogout = { logout++ },
+                        onPickCamera = {}, onPickGallery = {}, onPickDocument = {}, onVoiceInput = {})
+                }
+            } }
+            if (narrow) compose.onNodeWithContentDescription("打开会话抽屉").performClick()
+            compose.onNodeWithText("退出登录").performClick()
+            compose.runOnIdle { assertEquals(1, logout); assertEquals(0, settings) }
+        } finally { controller.close(); scope.cancel() }
     }
 
     @Test fun `Remote原生全屏插件展示且仍能打开设置或恢复宿主`() {

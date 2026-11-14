@@ -16,7 +16,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.openandroidintelligence.gateway.account.AccountProfile
 import java.io.ByteArrayOutputStream
 import java.util.Base64
 import kotlinx.coroutines.CancellationException
@@ -36,10 +35,6 @@ internal class AccountAvatarPickerState : ViewModel() {
     var currentProfileId: String? = null
     var saving by mutableStateOf(false)
         private set
-
-    fun save(context: Context, runtime: GatewayRuntime, uri: Uri?) {
-        save(context, uri, runtime::setAccountAvatar)
-    }
 
     fun save(context: Context, uri: Uri?, persist: suspend (String, ByteArray) -> Unit) {
         val target = pendingProfileId
@@ -84,35 +79,6 @@ internal fun rememberRemoteAccountAvatarPicker(runtime: RemoteRuntime): AccountA
             state.pendingProfileId = owner
             try { launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
             catch (_: Exception) { state.pendingProfileId = null; Toast.makeText(context, "无法打开系统相册", Toast.LENGTH_SHORT).show() }
-        }
-    })
-    return AccountAvatarPicker(image, pick)
-}
-
-@Composable
-internal fun rememberAccountAvatarPicker(runtime: GatewayRuntime, profile: AccountProfile?): AccountAvatarPicker {
-    val context = LocalContext.current.applicationContext
-    val state: AccountAvatarPickerState = viewModel()
-    SideEffect { state.currentProfileId = profile?.localProfileId }
-    DisposableEffect(state) { onDispose { state.currentProfileId = null } }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        state.save(context, runtime, uri)
-    }
-    val image = key(profile?.localProfileId, profile?.avatarBase64) {
-        val decoded by produceState<ImageBitmap?>(null) {
-            value = withContext(Dispatchers.IO) { decodeAccountAvatar(profile?.avatarBase64) }
-        }
-        decoded
-    }
-    val pick: (() -> Unit)? = if (profile == null) null else ({
-        if (!state.saving && state.pendingProfileId == null) {
-            state.pendingProfileId = profile.localProfileId
-            try {
-                launcher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            } catch (_: Exception) {
-                state.pendingProfileId = null
-                Toast.makeText(context, "无法打开系统相册", Toast.LENGTH_SHORT).show()
-            }
         }
     })
     return AccountAvatarPicker(image, pick)

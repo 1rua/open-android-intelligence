@@ -74,10 +74,10 @@ interface SettingsRuntimeRefresh {
     fun refreshThreads()
 }
 
-fun gatewayRuntimeRefresh(runtime: com.openandroidintelligence.mobile.GatewayRuntime): SettingsRuntimeRefresh =
+fun localRuntimeRefresh(runtime: com.openandroidintelligence.mobile.LocalSettingsRuntime): SettingsRuntimeRefresh =
     object : SettingsRuntimeRefresh {
-        override fun reloadDebounceSettings() = runtime.reloadDebounceSettings()
-        override fun refreshThreads() { runtime.controller.value?.refreshThreads() }
+        override fun reloadDebounceSettings() = runtime.reloadMessageProcessing()
+        override fun refreshThreads() { runtime.refreshThreads() }
     }
 
 /**
@@ -104,7 +104,7 @@ class SettingsBackupCoordinator(
     private val grants: PairingGrantStateHolder,
     private val pluginHost: ProductionPluginHost?,
     private val replyNotifications: ReplyNotificationSettings?,
-    private val runtime: com.openandroidintelligence.mobile.GatewayRuntime?,
+    private val runtime: com.openandroidintelligence.mobile.LocalSettingsRuntime?,
     private val devicePush: DevicePushRuntime?,
     private val appUpdates: AppUpdatePreferences,
     private val notificationPolicy: NotificationPolicyPort,
@@ -113,7 +113,7 @@ class SettingsBackupCoordinator(
     /**
      * 运行时刷新入口；默认桥接到 [runtime]，测试可替换为记录器。
      */
-    private val runtimeRefresh: SettingsRuntimeRefresh? = runtime?.let(::gatewayRuntimeRefresh),
+    private val runtimeRefresh: SettingsRuntimeRefresh? = runtime?.let(::localRuntimeRefresh),
     private val remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     /**
@@ -214,7 +214,6 @@ class SettingsBackupCoordinator(
         }
         val candidates = sequenceOf(
             LoginGatewayPrefill.read(context),
-            runtime?.lastGatewayUrl(),
             profiles.list().firstOrNull()?.gatewayBaseUrl,
         )
         val url = candidates.filterNotNull()

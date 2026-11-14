@@ -101,7 +101,6 @@ private const val HANDOFF_NAVIGATION_RETRY_MILLIS = 500L
 
 class MainActivity : ComponentActivity() {
     private val sharedAttachments: SharedConversationAttachments by viewModels()
-    private val pendingInvitation = androidx.compose.runtime.mutableStateOf<String?>(null)
     private val pendingReply = androidx.compose.runtime.mutableStateOf<ReplyNotificationTarget?>(null)
 
     /** 助手浮层「上滑交接」带来的会话身份（只由主进程刚刚接受过的那一次产生）。 */
@@ -110,7 +109,6 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         receiveSharedConversationAttachments(this, sharedAttachments, intent)
-        if (intent.data?.scheme=="oai" && intent.data?.host=="pair") pendingInvitation.value=intent.data.toString()
         // 助手交接的深链与回复通知同形（同一 action、同一条 oai-reply:// 路径），
         // 两者都会被解析出来。交接意图必须**只**进 pendingHandoff：否则回复通知那条
         // 路径会先跑、忽略 agentId 去 openThread，把用户带到旧 Agent 的同名会话或直接失败，
@@ -142,170 +140,4 @@ class MainActivity : ComponentActivity() {
         setContent { RemoteWorkbenchRoot(app, sharedAttachments, pendingReply, pendingHandoff) }
     }
 
-}
-
-/**
- * 离线镜像横幅：如实说明当前只能看本机缓存，并提供唯一的重连入口。
- * 用 warning 语义色 + 图标 + 文字三件套，不靠颜色单独传达状态。
- */
-@Composable
-private fun OfflineMirrorBanner(onReconnect: () -> Unit) {
-    val stateColors = LocalAppStateColors.current
-    Surface(
-        color = stateColors.warningContainer,
-        contentColor = stateColors.onWarningContainer,
-        shape = RoundedCornerShape(AppRadius.Medium),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(
-                horizontal = Dimensions.ScreenHorizontal,
-                vertical = Dimensions.SpaceSmall,
-            ),
-    ) {
-        Row(
-            modifier = Modifier.padding(
-                start = Dimensions.SpaceMedium,
-                end = Dimensions.SpaceSmall,
-                top = Dimensions.SpaceSmall,
-                bottom = Dimensions.SpaceSmall,
-            ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Default.CloudOff,
-                contentDescription = null,
-                modifier = Modifier.size(Dimensions.SmallIcon),
-            )
-            Text(
-                text = stringResource(UiR.string.conn_status_offline_mode_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = Dimensions.SpaceSmall),
-            )
-            TextButton(onClick = onReconnect) { Text(stringResource(UiR.string.conn_action_reconnect)) }
-        }
-    }
-}
-
-/** 生产工作台的账号操作装配；界面测试与 Activity 使用同一条真实会话路径。 */
-@Composable
-internal fun GatewayWorkbenchScreen(
-    runtime: GatewayRuntime,
-    controller: com.openandroidintelligence.conversation.state.WorkbenchController,
-    gatewayLabel: String,
-    onOpenSettings: () -> Unit,
-    onPickCamera: () -> Unit,
-    onPickGallery: () -> Unit,
-    onPickDocument: () -> Unit,
-    onVoiceInput: () -> Unit,
-    modifier: Modifier = Modifier,
-    recording: ActiveVoiceRecording? = null,
-    onCancelRecording: () -> Unit = {},
-    onFinishRecording: () -> Unit = {},
-    pluginCards: @Composable () -> Unit = {},
-    header: @Composable () -> Unit = {},
-    offlineMirrorPhase: Boolean = false,
-    onReconnectOfflineMirror: () -> Unit = {},
-    reduceMotion: Boolean = false,
-    onPasteImages: ((PastedImageContent) -> Unit)? = null,
-    settingsOpen: Boolean = false,
-    onSettingsOpenChange: (Boolean) -> Unit = {},
-    settingsPanel: (@Composable (presentation: SettingsPresentation, onClose: () -> Unit) -> Unit)? = null,
-) {
-    val operationNotice by runtime.operationNotice.collectAsState()
-    val phase by runtime.phase.collectAsState()
-    val connectionStatus by runtime.connectionStatus.collectAsState()
-    val localSession by runtime.localSessionState.collectAsState()
-    val profiles by runtime.savedProfiles.collectAsState()
-    val username = when (val current = phase) {
-        is ConnectionPhase.Connected -> current.username
-        is ConnectionPhase.OfflineMirror -> current.username
-        else -> (localSession as? LocalSessionState.Workspace)?.account?.username.orEmpty()
-    }
-    val profile = profiles.firstOrNull { it.gatewayBaseUrl == gatewayLabel && it.username == username }
-    val avatar = rememberAccountAvatarPicker(runtime, profile)
-    // 必须读取工作台宿主宽度；进入设置插槽后，宽屏侧栏已经只有 320dp。
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val settingsPresentation = if (maxWidth >= Dimensions.ExpandedWindow) {
-            SettingsPresentation.SIDEBAR
-        } else {
-            SettingsPresentation.SCREEN
-        }
-        Column(Modifier.fillMaxSize()) {
-            WorkbenchScreen(
-                accountName = username,
-                agentName = (phase as? ConnectionPhase.Connected)?.agentName ?: profile?.agentName,
-                accountAvatar = avatar.image,
-                onChangeAvatar = avatar.pick,
-                connectionHealth = workbenchConnectionHealth(phase, connectionStatus),
-                onPasteImages = onPasteImages,
-                controller = controller,
-                gatewayLabel = gatewayLabel,
-                onOpenSettings = onOpenSettings,
-                settingsOpen = settingsOpen,
-                onSettingsOpenChange = onSettingsOpenChange,
-                settingsPanel = settingsPanel?.let { panel ->
-                    { onClose -> panel(settingsPresentation, onClose) }
-                },
-                onPickCamera = onPickCamera,
-                onPickGallery = onPickGallery,
-                onPickDocument = onPickDocument,
-                onVoiceInput = onVoiceInput,
-                recording = recording,
-                onCancelRecording = onCancelRecording,
-                onFinishRecording = onFinishRecording,
-                modifier = Modifier.weight(1f),
-                onLogout = { runtime.logout(revokeRefresh = true) },
-                pluginCards = pluginCards,
-                header = {
-                    // 通告区与时间线同宽，随内容滚动容器顶部分布；横幅本体带自己的圆角与内边距。
-                    Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
-                        AnimatedVisibility(
-                            visible = offlineMirrorPhase,
-                            enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) +
-                                fadeIn(MotionSpecs.fade(reduceMotion)),
-                            exit = shrinkVertically(MotionSpecs.emphasized(reduceMotion)) +
-                                fadeOut(MotionSpecs.fade(reduceMotion)),
-                        ) {
-                            OfflineMirrorBanner(onReconnect = onReconnectOfflineMirror)
-                        }
-                        operationNotice?.let { notice ->
-                            OperationNoticeBanner(
-                                text = notice,
-                                onDismiss = runtime::dismissOperationNotice,
-                                onRetry = if (runtime.canRetryWorkbenchInitialization || phase is ConnectionPhase.Failed) runtime::retryConnection else null,
-                                modifier = Modifier.padding(horizontal = Dimensions.TimelineHorizontal),
-                            )
-                        }
-                    }
-                    header()
-                },
-            )
-        }
-    }
-}
-
-internal fun workbenchConnectionHealth(
-    phase: ConnectionPhase,
-    status: EventStreamStatus,
-): StreamHealth? {
-    return when (phase) {
-        ConnectionPhase.Initializing, ConnectionPhase.Negotiating, ConnectionPhase.Authenticating ->
-            StreamHealth.CONNECTING
-        ConnectionPhase.Reconnecting -> StreamHealth.RECONNECTING
-        is ConnectionPhase.OfflineMirror -> StreamHealth.FAILED
-        is ConnectionPhase.Connected -> when (status) {
-            EventStreamStatus.CONNECTING ->
-                StreamHealth.CONNECTING
-            EventStreamStatus.RECONNECTING ->
-                StreamHealth.RECONNECTING
-            EventStreamStatus.FAILED ->
-                StreamHealth.FAILED
-            EventStreamStatus.LIVE ->
-                StreamHealth.LIVE
-            else -> null
-        }
-        else -> null
-    }
 }

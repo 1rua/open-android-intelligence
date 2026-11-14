@@ -55,3 +55,17 @@ Gateway 已连接账号与旧 pairing grant，`PluginTimerService` 也恢复旧 
 不得把各工作区不同 SHA 的结果拼成网络或全链路最终验收。
 
 用户负责最终合并 PR、移除工作区及关闭/更新关联 issue；Agent 不自动合并或执行收尾删除。所有文件退役使用 mv 至忽略的 `.worktrees/trash/`。
+
+## UI 生产消费者清退对照（本机行为保留）
+
+- 旧 `GatewayTutorials`/部署命令测试：Core/OpenClaw 部署是明确退役范围；改由 `RemoteTutorialsTest` 核对 Remote 登录、Host 发现、手动工作区、本机授权，`OnboardingStateTest` 保留恢复/重看/阶段语义。教程稳定片 `9b2b8555` 的 16 项本次通过。
+- 旧 `SettingsViewModel` 的 Core 协商、续期、账号选择、配对管理分支与对应协议断言退役；外观持久化、通知偏好与系统授权分离、信任确认、急停/持久失败、外部状态反应继续由中性 `SettingsViewModelTest`/`SettingsStateIntegrityTest` 覆盖。
+- 旧 `ConnectionSettingsScreen`/`NativeAgentSessionsScreen` 无生产消费者后归档；Remote 连接页面保留账号/Client/Host 状态与手动发现选择，本机能力页不借旧账号或配对授予权限。
+- 旧 `GatewayWorkbenchScreen`、头像 Gateway overload、Core 连接健康 helper 归档；`RemoteLocalEntryPointsTest` 保留窄/宽工作台退出回调与设置入口独立，`SettingsResponsiveHostRegressionTest` 继续核对真实导航、滚动、未提交表单和宽度切换。`AccountAvatarTest` 保留图像上限/编码/账号隔离，Remote 头像仍绑定发起账号。
+- 旧 `GatewayWorkbenchLogoutTest` 的 Core HTTP/多账号协议断言随产品退役；`RemoteRuntimeTest` 新增真正运行回复→退后台服务保持→完成停、注销主/助手/流/通知/服务清理、端点切换停止旧服务、迟到回调与后台/拒绝通知不能重启服务。测试未执行前均为 UNVERIFIED，不以按钮回调替代生命周期证据。
+- 旧 `ColdStartConnectionTest` 中仅两个旧 Core 设置账号探针归档；Remote 恢复/同会话跨工作区、离线镜像、本机组织、登录预填、Host 独立角色仍分别在 `RemoteRuntimeTest` 与 Remote account/runtime 测试中验证。旧 Core 凭据不做迁移。
+- `RemoteAttachmentCoordinatorCancellationTest` 补上取消时真实 upload.abort、禁止旧 commit、另一端点不受影响、草稿恢复/丢弃隔离；助手附件交接所有权原测试保留。
+- 备份 coordinator 的生产运行时类型改为 `LocalSettingsRuntime`；历史格式的纯本机偏好/插件配置读写暂保留，Remote 当前账号只枚举完整端点，不读取旧 Core 账号分区。备份地址权威唯一 P2 已在 `d941520b` 的 33 项本次验证后关闭。
+- 仍未清退：Application 的 `gatewayRuntimeOwner`、DevicePush 与旧 PluginJobScheduler 生产消费者由对应推送/定时切片关闭后再移除；本片不得宣称旧 Core 已全部退出。
+
+安全归档副本位于对应工作区忽略目录 `.worktrees/trash/ui-core-retirement/`，由用户最终复核清理；Git 保留原始历史。本清单不把临时 `/tmp` 索引当作验收证据。

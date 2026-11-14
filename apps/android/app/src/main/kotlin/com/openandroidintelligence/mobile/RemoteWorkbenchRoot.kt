@@ -227,7 +227,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         if (nativeUi != null) {
             RemoteNativePluginSurface(app.pluginHost, nativeUi, current, connection.selected?.origin?.value.orEmpty()) { settings = true }
             if (settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
-        } else if (current != null) WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
+        } else if (current != null) WorkbenchSettingsHost { presentation -> WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
             onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
             onPickDocument = picks.document,
             onVoiceInput = startVoiceInput, recording = activeRecording,
@@ -239,7 +239,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
             pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
                 runtime.connectedAccountId) { settings = true } },
             settingsOpen = settings, onSettingsOpenChange = { settings = it },
-            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, close) }, header = { RemoteModelSelector(runtime) })
+            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) }, header = { RemoteModelSelector(runtime) }) }
         else RemoteLoginScreen(runtime, connection.busy, onOpenSettings = { settings = true })
         if (current == null && settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
         }
@@ -322,9 +322,9 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
 }
 
 @Composable
-private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, onBack: () -> Unit) {
-    SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = null, remoteRuntime = app.remoteRuntime,
-        presentation = SettingsPresentation.SIDEBAR, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
+private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, presentation: SettingsPresentation = SettingsPresentation.SIDEBAR, onBack: () -> Unit) {
+    SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = app.remoteRuntime.localSettings, remoteRuntime = app.remoteRuntime,
+        presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
 }
 
 @Composable

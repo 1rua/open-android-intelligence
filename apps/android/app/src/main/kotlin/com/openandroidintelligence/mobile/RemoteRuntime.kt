@@ -92,6 +92,10 @@ class RemoteRuntime(
     private val mutableAssistantVersion = MutableStateFlow(0L)
     val assistantWorkspaceVersion = mutableAssistantVersion.asStateFlow()
     val replyNotifications = ReplyNotificationSettings(context)
+    private val keepAlive = AgentSessionKeepAlive(context)
+    private val backgroundOwnership = Any()
+    private var ownerActive = false
+    private var workObserver: Job? = null
     private val publisher = AndroidReplyNotificationPublisher(context, replyNotifications) { target ->
         assistantControllers.any { (token, controller) -> assistantPresence.values.any { it.first == token && it.second } &&
             controller.state.value.activeThreadId == target.conversationId && target.agentId == state.value.selected?.let(::endpointId) }
@@ -101,6 +105,28 @@ class RemoteRuntime(
     val localSettings by lazy {
         LocalSettingsRuntime(replyNotifications, nativeConversationNotifications::refreshActive,
             ::reloadDebounceSettings, { controller.value?.refreshThreads() })
+    }
+    init {
+        scope.launch {
+            combine(nativeConversationNotifications.sessions, replyNotifications.enabled, replyNotifications.allowed) { _, _, _ -> Unit }
+                .collect { refreshBackgroundWork() }
+        }
+    }
+    private fun refreshBackgroundWork(foregrounded: Boolean = false) = synchronized(backgroundOwnership) {
+        val work = ownerActive && repository != null && state.value.account != null &&
+            replyNotifications.enabled.value && replyNotifications.allowed.value &&
+            (controller.value?.hasActiveWork?.value == true || assistantWorkspace?.hasActiveWork?.value == true ||
+                nativeConversationNotifications.sessions.value.any { it.isRunning && it.target.agentId == state.value.selected?.let(::endpointId) })
+        if (foregrounded) keepAlive.onForegrounded(work) else keepAlive.update(work, foreground)
+    }
+    private fun observeBackgroundWork() {
+        workObserver?.cancel()
+        synchronized(backgroundOwnership) { ownerActive = true }
+        workObserver = scope.launch {
+            val main = controller.value ?: return@launch
+            val assistant = assistantWorkspace?.hasActiveWork ?: MutableStateFlow(false)
+            combine(main.hasActiveWork, assistant) { _, _ -> Unit }.collect { refreshBackgroundWork() }
+        }
     }
     val connectedAccountId: String? get() = state.value.account?.accountId
     val connectedProfileId: String? get() = state.value.account?.let { profileId(it.origin) }
@@ -230,6 +256,7 @@ class RemoteRuntime(
                     assistantRepositories.remove(token)?.let { old -> scope.launch { old.close() } }
                 })
             saveSelection(endpoint)
+            observeBackgroundWork()
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
             fail(failure)
@@ -304,6 +331,8 @@ class RemoteRuntime(
         nativeConversationNotifications.leave(); mutableState.value = RemoteWorkspaceState()
     } }
     private suspend fun retire() {
+        synchronized(backgroundOwnership) { ownerActive = false; keepAlive.stop() }
+        workObserver?.cancelAndJoin(); workObserver = null
         mutableController.value?.closeAndAwait(); mutableController.value = null
         assistantWorkspace?.closeAndAwait(); assistantWorkspace = null
         assistantControllers.values.forEach { it.closeAndAwait() }; assistantControllers.clear()
@@ -457,9 +486,18 @@ class RemoteRuntime(
         controller.value?.openThread(target.conversationId) ?: return false
         return true
     }
-    fun onAppForegrounded() { foreground = true; replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive() }
-    private var foreground = false
-    fun onAppBackgrounded() { foreground = false }
+    fun onAppForegrounded() {
+        synchronized(backgroundOwnership) { foreground = true }
+        replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive()
+        refreshBackgroundWork(foregrounded = true)
+    }
+    @Volatile private var foreground = false
+    fun onAppBackgrounded() {
+        // 仍在可见 Activity 离开时申请；后续后台回调只能维持已有服务。
+        refreshBackgroundWork()
+        synchronized(backgroundOwnership) { foreground = false }
+        replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive()
+    }
     /** 仅枚举当前 Remote 账号已登记的完整端点，不读取旧 Core 档案。 */
     fun localOrganizationScopes(): List<ConversationScope> {
         val account = state.value.account ?: return emptyList()

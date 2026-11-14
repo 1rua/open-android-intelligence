@@ -136,7 +136,7 @@ fun notificationPushCapabilityPresentation(
 /**
  * 会话级操作提示条：登出/续期这类落网结果必须可见、可关，而不是静默。
  *
- * 文案由 [GatewayRuntime] 生成——只陈述事实与下一步动作；这里只负责让它
+ * 文案由实际连接状态持有者生成——只陈述事实与下一步动作；这里只负责让它
  * 出现在界面上，并提供明确的关闭路径。
  */
 @Composable

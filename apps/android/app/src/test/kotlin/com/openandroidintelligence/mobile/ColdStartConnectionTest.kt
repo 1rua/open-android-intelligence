@@ -352,101 +352,6 @@ class ColdStartConnectionTest {
     }
 
     @Test
-    fun failedRestorationKeepsSettingsAccountSwitchAndAllowsAnotherCoreLogin() {
-        val profileId = savedLoginWithHistory().profileId
-        val originalCredential = credentialStore.loadRefresh(profileId)?.decodeToString()
-        gateway.respond(NEGOTIATE_PATH,
-            """{"error":{"code":"PROTOCOL_INCOMPATIBLE","retryable":false}}""", status = 406)
-        val scope = newScope()
-        val restarted = runtime(scope)
-        val settings = settingsFor(restarted, scope)
-        assertFalse(settings.uiState.value.hasLocalSession)
-
-        restarted.restoreSessionIfAvailable()
-
-        assertTrue("真实恢复失败仍须将本地工作台投影到设置页", awaitCondition {
-            settings.uiState.value.connectionPhase is ConnectionPhase.Failed && settings.uiState.value.hasLocalSession
-        })
-        assertFalse(settings.uiState.value.isGatewayConnected)
-        assertEquals("operator", settings.uiState.value.connectedUsername)
-        assertEquals(gateway.baseUrl, settings.uiState.value.connectedGatewayUrl)
-        assertEquals(originalCredential, credentialStore.loadRefresh(profileId)?.decodeToString())
-
-        settings.chooseAnotherAccount()
-        assertTrue("设置页切换操作必须实际退出旧工作台", awaitCondition {
-            restarted.controller.value == null && restarted.phase.value is ConnectionPhase.Disconnected &&
-                restarted.localSessionState.value is LocalSessionState.AccountPicker && !settings.uiState.value.hasLocalSession
-        })
-        assertEquals("切换账号不能清除原账号凭据", originalCredential,
-            credentialStore.loadRefresh(profileId)?.decodeToString())
-        assertTrue(restarted.savedProfiles.value.any { it.localProfileId == profileId })
-
-        val otherCore = LoopbackGatewayStub()
-        try {
-            otherCore.respond(NEGOTIATE_PATH, NEGOTIATE_BODY)
-            otherCore.respond(PASSWORD_PATH, PASSWORD_BODY)
-            otherCore.respond(CONVERSATIONS_PATH, """{"data":{"conversations":[],"nextCursor":null}}""")
-            otherCore.respond("$API/events", "", contentType = "text/event-stream")
-            restarted.login(otherCore.baseUrl, "other-operator", "secret".toCharArray())
-            awaitConnected(restarted)
-            assertTrue("设置页必须跟随新 Core 的本地账号", awaitCondition {
-                settings.uiState.value.hasLocalSession &&
-                    (settings.uiState.value.localSessionState as? LocalSessionState.Workspace)?.account?.gatewayBaseUrl == otherCore.baseUrl
-            })
-            assertEquals("other-operator", settings.uiState.value.connectedUsername)
-            assertEquals(otherCore.baseUrl, settings.uiState.value.connectedGatewayUrl)
-            assertEquals("切换 Core 不能覆盖原账号凭据", originalCredential,
-                credentialStore.loadRefresh(profileId)?.decodeToString())
-        } finally {
-            otherCore.closed()
-        }
-    }
-
-    @Test
-    fun pausedRestorationKeepsSettingsLogoutAvailableAndRetainsTheSavedAccount() {
-        val profileId = savedLoginWithHistory().profileId
-        val retainedCredential = credentialStore.loadRefresh(profileId)?.decodeToString()
-        assertNotNull("退出测试必须先有真实保存的刷新凭据", retainedCredential)
-        gateway.respond(NEGOTIATE_PATH,
-            """{"error":{"code":"PROTOCOL_INCOMPATIBLE","retryable":false}}""", status = 406)
-        val scope = newScope()
-        val restarted = runtime(scope)
-        val settings = settingsFor(restarted, scope)
-        restarted.restoreSessionIfAvailable()
-        assertTrue("先实际完成失败恢复", awaitCondition {
-            settings.uiState.value.connectionPhase is ConnectionPhase.Failed && settings.uiState.value.hasLocalSession
-        })
-
-        // 清除失败后不触发重试，本地工作台停留在暂停的连接状态。
-        restarted.resetFailure()
-        assertTrue(awaitCondition { settings.uiState.value.connectionPhase is ConnectionPhase.Disconnected })
-        assertTrue(settings.uiState.value.hasLocalSession)
-        assertFalse(settings.uiState.value.isGatewayConnected)
-        assertEquals("operator", settings.uiState.value.connectedUsername)
-        val recreatedSettings = settingsFor(restarted, scope)
-        assertTrue("暂停后新打开的设置也须从真实本地上下文初始化", recreatedSettings.uiState.value.hasLocalSession)
-
-        assertTrue("退出前该账号仍具有推送登录身份", restarted.isPushProfileLoggedIn(profileId))
-        recreatedSettings.logout(revokeRefresh = false)
-
-        assertTrue("退出必须跟随真实本地状态隐藏账号操作", awaitCondition {
-            restarted.localSessionState.value is LocalSessionState.SignedOut &&
-                !settings.uiState.value.hasLocalSession && !recreatedSettings.uiState.value.hasLocalSession &&
-                restarted.controller.value == null
-        })
-        assertTrue("离线退出保留锁定的刷新凭据", credentialStore.hasRefresh(profileId))
-        assertEquals("离线退出不能改写已保存凭据", retainedCredential,
-            credentialStore.loadRefresh(profileId)?.decodeToString())
-        assertFalse("保留凭据不能保留推送登录身份", restarted.isPushProfileLoggedIn(profileId))
-        val preferences = ApplicationProvider.getApplicationContext<Application>()
-            .getSharedPreferences("open_android_intelligence_runtime", android.content.Context.MODE_PRIVATE)
-        assertTrue("退出屏障必须持久保存，阻止后续自动使用保留凭据",
-            preferences.getBoolean("signed_out_$profileId", false))
-        assertTrue("普通退出保留账号资料", restarted.savedProfiles.value.any { it.localProfileId == profileId })
-        assertTrue("普通退出保留设备身份", deviceKeys.hasKey(profileId))
-    }
-
-    @Test
     fun returningFromBackgroundRetainsTheSameControllerThreadAndDraft() {
         val connected = connectedRuntimeWithHistory()
         val current = connected.runtime
@@ -1001,31 +906,6 @@ class ColdStartConnectionTest {
             println("连接测试 HTTP 实现：${connection.javaClass.name}")
         }
         return connection
-    }
-
-    private fun settingsFor(runtime: GatewayRuntime, scope: CoroutineScope): SettingsViewModel {
-        val trust = DeveloperTrustMode()
-        val sink = InMemoryAuditSink()
-        val audit = AndroidAuditStore(sink)
-        val kernel = PluginKernel(
-            hostEnvelope = HostEnvelope(primitives = emptySet()),
-            phoneLimits = PhoneLimits(primitives = emptySet()),
-            runtimes = emptyMap(),
-            audit = audit,
-            trustMode = trust,
-            nativeLoader = NativePluginLoader(trust),
-            providerSelector = CapabilityProviderSelector(phoneDefaults = emptyMap()),
-            grants = { pairingId -> pairingGrants.currentKernelGrant(pairingId) },
-        )
-        return SettingsViewModel(
-            environment = PlatformSettingsEnvironment(
-                trustMode = trust, audit = audit, auditSink = sink,
-                allowDeveloperTrustMode = true, kernel = kernel, pairingGrants = pairingGrants,
-                appearance = AppearancePreferences(ApplicationProvider.getApplicationContext()),
-            ),
-            runtime = runtime,
-            externalScope = scope,
-        )
     }
 
     private fun elapsedMillis(startedAt: Long) = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)

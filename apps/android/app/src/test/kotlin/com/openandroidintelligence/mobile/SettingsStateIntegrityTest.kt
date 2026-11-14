@@ -60,20 +60,11 @@ class SettingsStateIntegrityTest {
         assertTrue(real.getBoolean("enabled", false))
     }
 
-    @Test fun coreEventsAndLoginRemainIndependentFacts() {
-        val state = SettingsUiState(
-            connectionPhase = ConnectionPhase.Connected("http://core", "user", null, null, com.openandroidintelligence.gateway.http.TransportSecurity.PLAINTEXT),
-            loginStatus = GatewayLoginStatus.SIGNED_IN,
-            coreHttpHealth = CoreHttpHealth(CoreHttpReachability.REACHABLE),
-            eventStreamStatus = EventStreamStatus.RECONNECTING,
-            replyNotificationsEnabled = true,
-            replyNotificationsAllowed = false,
-        )
-        assertTrue(state.isGatewayConnected)
-        assertEquals(EventStreamStatus.RECONNECTING, state.eventStreamStatus)
-        assertEquals(GatewayLoginStatus.SIGNED_IN, state.loginStatus)
-        assertEquals(CoreHttpReachability.REACHABLE, state.coreHttpHealth.reachability)
+    @Test fun notificationPreferenceAndSystemGrantRemainIndependentFacts() {
+        val state = SettingsUiState(replyNotificationsWired = true,
+            replyNotificationsEnabled = true, replyNotificationsAllowed = false)
         assertTrue(state.replyNotificationsEnabled)
         assertFalse(state.replyNotificationsAllowed)
+        assertFalse(state.isNotificationsGranted)
     }
 }

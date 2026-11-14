@@ -211,6 +211,81 @@ class RemoteRuntimeTest {
         assertEquals("https://original.example", exportedOrigin(backup.export().json))
     }
 
+    @Test fun `运行回复离开前台仍保留服务且完成后停止`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.onAppForegrounded()
+        postReply("running", false)
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onAppBackgrounded()
+        assertTrue(AgentSessionRecoveryState(context).hasPendingWork)
+        assertTrue(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
+        postReply("completed", true)
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        assertFalse(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
+    }
+
+    @Test fun `退出关闭主助手流通知与服务且旧回调不能重新启动`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.onAppForegrounded()
+        val main = runtime.controller.value!!
+        val assistant = runtime.createAssistantSessionController("logout-assistant")!!
+        postReply("running", false)
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        val local = main.localConversationScope
+        runtime.logout().join()
+        assertNull(runtime.controller.value)
+        assertNull(runtime.state.value.account)
+        assertFalse(main.state.value.isOnline)
+        assertFalse(assistant.state.value.isOnline)
+        assertTrue(connection.channels.all { it.closed })
+        assertTrue(runtime.nativeConversationNotifications.sessions.value.isEmpty())
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, replyFrame(local, "late", false))
+        runtime.onAppBackgrounded()
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+    }
+
+    @Test fun `切换工作区停止旧服务且后台旧端点回调不能重新启动`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.onAppForegrounded()
+        val old = runtime.controller.value!!.localConversationScope
+        postReply("running", false)
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onAppBackgrounded()
+        ready("two")
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+        runtime.nativeConversationNotifications.accept(old.profileId, old.accountId, replyFrame(old, "late", false))
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+    }
+
+    @Test fun `后台新工作和通知权限拒绝都不能非法启动前台服务`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.onAppForegrounded()
+        postReply("denied", false)
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+        runtime.onAppBackgrounded()
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        runtime.replyNotifications.refreshPermission()
+        postReply("background", false)
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+    }
+
+    private fun postReply(eventId: String, complete: Boolean) {
+        val local = runtime.controller.value!!.localConversationScope
+        runtime.nativeConversationNotifications.accept(local.profileId, local.accountId, replyFrame(local, eventId, complete))
+    }
+    private fun replyFrame(local: com.openandroidintelligence.conversation.ports.ConversationScope, eventId: String, complete: Boolean) =
+        com.openandroidintelligence.gateway.events.GatewayEvent(eventId,
+            if (complete) "conversation.message.status" else "conversation.message.delta",
+            Json.canonical(Json.of(mapOf("accountId" to local.accountId, "occurredAt" to java.time.Instant.now().toString(),
+                "payload" to mapOf("agentId" to local.gatewayId, "conversationId" to "same:reply", "generationId" to "gen",
+                    "messageId" to if (complete) "user" else "reply", "sender" to "assistant", "text" to "运行回复",
+                    "clientMessageId" to "request", "status" to if (complete) "completed" else "delivered", "revision" to if (complete) 2 else 1)))))
+
     private fun remoteBackup(policy: com.openandroidintelligence.notification.control.NotificationPolicyPort =
         com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort()): com.openandroidintelligence.mobile.settings.backup.SettingsBackupCoordinator {
         val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink()))

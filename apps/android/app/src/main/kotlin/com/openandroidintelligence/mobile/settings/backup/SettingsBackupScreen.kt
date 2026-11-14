@@ -29,7 +29,6 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.AndroidAccountProfileStore
-import com.openandroidintelligence.mobile.GatewayRuntime
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.ReplyNotificationSettings
 import com.openandroidintelligence.mobile.SettingsPresentation
@@ -52,7 +51,6 @@ import java.time.format.DateTimeFormatter
  */
 @Composable
 internal fun SettingsBackupRoute(
-    runtime: GatewayRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
     remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
@@ -60,7 +58,7 @@ internal fun SettingsBackupRoute(
     val context = LocalContext.current
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
     val installed = remember(context) { installedAppBuild(context.applicationContext) }
-    val coordinator = remember(app, runtime, remoteRuntime) { backupCoordinator(context, app, runtime, remoteRuntime) }
+    val coordinator = remember(app, remoteRuntime) { backupCoordinator(context, app, remoteRuntime) }
     val model: SettingsBackupViewModel = viewModel(
         key = "settings-backup",
         factory = remember(coordinator, installed.versionName) {
@@ -254,7 +252,6 @@ private fun readBackupText(context: Context, uri: android.net.Uri): String? {
 private fun backupCoordinator(
     context: Context,
     app: OpenAndroidIntelligenceApplication?,
-    runtime: GatewayRuntime?,
     remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime?,
 ): SettingsBackupCoordinator? {
     if (app == null) return null
@@ -268,8 +265,8 @@ private fun backupCoordinator(
             pluginHost = app.pluginHost,
             // 有运行时就用它的实例（导入后能立即刷新界面）；没有运行时则直接读同一份
             // 偏好文件——此时不存在「另一个实例的缓存值过期」的问题。
-            replyNotifications = remoteRuntime?.replyNotifications ?: runtime?.replyNotifications ?: ReplyNotificationSettings(context.applicationContext),
-            runtime = runtime,
+            replyNotifications = remoteRuntime?.replyNotifications ?: ReplyNotificationSettings(context.applicationContext),
+            runtime = remoteRuntime?.localSettings,
             devicePush = app.devicePush?.runtime,
             appUpdates = AppUpdatePreferences(context.applicationContext, defaultAppUpdateChannel(installed)),
             notificationPolicy = NotificationControlRegistry.policyPort(),
@@ -277,7 +274,7 @@ private fun backupCoordinator(
             runtimeRefresh = remoteRuntime?.let { remote -> object : SettingsRuntimeRefresh {
                 override fun reloadDebounceSettings() = remote.reloadDebounceSettings()
                 override fun refreshThreads() { remote.controller.value?.refreshThreads() }
-            } } ?: runtime?.let(::gatewayRuntimeRefresh),
+            } },
         )
     }.getOrNull()
 }
