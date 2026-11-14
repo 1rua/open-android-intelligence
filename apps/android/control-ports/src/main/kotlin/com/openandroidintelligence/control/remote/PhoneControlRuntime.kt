@@ -34,6 +34,7 @@ interface ControlMetadataLedger {
 data class PhoneControlResult(
     val result: ControlValue.Object,
     val artifacts: List<ControlArtifact> = emptyList(),
+    val ui: ControlValue.Object? = null,
 )
 
 data class ControlArtifact(val id: String, val mimeType: String, val version: String, val bytes: ByteArray)

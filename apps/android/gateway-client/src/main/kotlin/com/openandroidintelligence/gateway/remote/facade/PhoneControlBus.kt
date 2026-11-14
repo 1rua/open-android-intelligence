@@ -26,15 +26,18 @@ class PhoneControlBus(
         val records = mutableListOf<JsonValue>()
         val results = mutableMapOf<String, JsonValue>()
         val jobs = mutableMapOf<String, Job>()
+        val access = mutableMapOf<String, ControlAccessBinding>()
         val artifacts = mutableMapOf<String, Pair<String, ControlArtifact>>()
         var revision = 0L
     }
     private val lock = Any()
     private val tasks = linkedMapOf<String, Task>()
+    private var stopped = false
     private val version = MutableStateFlow(0L)
     val changes: StateFlow<Long> get() = version
 
     fun create(access: ControlAccessBinding, taskId: String = UUID.randomUUID().toString()): String = synchronized(lock) {
+        if (stopped) fail("LOCAL_EMERGENCY_STOP")
         require(taskId != "control-bus") { "CONTROL_TASK_INVALID" }
         val task = Task(ControlTaskScope(access.principal, taskId, access.authorizationEpoch, processEpoch), currentTimeMillis())
         // 持久墓碑只绑定拥有者与任务标识；进程重启不能以旧 ID 重新建立可执行任务。
@@ -54,7 +57,7 @@ class PhoneControlBus(
             val metadata = ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == task.scope.taskSessionId } }
             Json.of(mapOf("sessionId" to task.scope.taskSessionId, "title" to if (task.scope.taskSessionId == "control-bus") "手机控制总线" else "手机控制任务",
                 "running" to metadata.any { !it.state.terminal }, "blank" to task.records.isEmpty(), "updatedAt" to task.createdAt,
-                "projections" to mapOf("execution" to executionProjection(metadata))))
+                "projections" to mapOf("values" to projections(metadata))))
         }
     }
 
@@ -73,6 +76,7 @@ class PhoneControlBus(
         if (request.operation is ControlOperation.Status) return@synchronized status(access, task, request)
         // 管理取消绕过动作队列和手机审批；原子校验拥有者、任务及原请求。
         if (request.operation is ControlOperation.Cancel) return@synchronized cancelRequest(access, task, request)
+        if (stopped) fail("LOCAL_EMERGENCY_STOP")
         if (task.frozen) fail("CONTROL_TASK_CANCELLED")
         val row = metadata(access, taskId, request)
         val accepted = ledger.transaction { rows ->
@@ -84,6 +88,7 @@ class PhoneControlBus(
             task.queue.withLock { execute(access, task, request) }
         }
         task.jobs[request.requestId] = job
+        task.access[request.requestId] = access
         job.start()
         receipt(access, taskId, request.requestId)
     }
@@ -126,7 +131,8 @@ class PhoneControlBus(
                         "bytes" to artifact.bytes.size, "version" to artifact.version)
                 }
                 update(access, task.scope.taskSessionId, request.requestId) { it.copy(state = ControlRequestState.COMPLETED, execution = ControlExecutionStatus.SUCCEEDED) }
-                task.results[request.requestId] = Json.of(mapOf("result" to controlJson(result.result), "artifacts" to artifacts))
+                task.results[request.requestId] = Json.of(mapOf("result" to controlJson(result.result), "artifacts" to artifacts) +
+                    (result.ui?.let { mapOf("ui" to controlJson(it)) } ?: emptyMap()))
                 finish(access, task, request.requestId)
             }
         } catch (failure: Exception) {
@@ -140,7 +146,7 @@ class PhoneControlBus(
                     finish(access, task, request.requestId)
                 }
             }
-        } finally { synchronized(lock) { task.jobs.remove(request.requestId) } }
+        } finally { synchronized(lock) { task.jobs.remove(request.requestId); task.access.remove(request.requestId) } }
     }
 
     private fun cancelRequest(access: ControlAccessBinding, task: Task, request: ParsedControlRequest): JsonValue {
@@ -197,6 +203,37 @@ class PhoneControlBus(
         Json.of(mapOf("accepted" to true))
     }
 
+    /** 本机急停不依赖远端连接仍有效，先冻结全部任务并阻止尚未进入端口的请求。 */
+    fun emergencyStop() = synchronized(lock) {
+        stopped = true
+        val pending = ledger.transaction { rows -> rows.values.filter { !it.state.terminal }.map { old ->
+            old.copy(state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
+                execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
+                errorCode = "LOCAL_EMERGENCY_STOP").also { rows[it.key] = it }
+        } }
+        tasks.values.forEach { task ->
+            task.frozen = true
+            pending.filter { it.ownerKey == task.scope.principal.storageKey && it.taskSessionId == task.scope.taskSessionId }.forEach { row ->
+                executor.cancel(ControlRequestScope(task.scope, row.requestId)); task.jobs[row.requestId]?.cancel()
+            }
+        }
+        changed()
+    }
+
+    /** 断开只结束该连接代际自己的在途请求，不影响重连后新连接提交的动作。 */
+    fun connectionClosed(access: ControlAccessBinding) = synchronized(lock) {
+        tasks.values.forEach { task ->
+            task.access.filterValues { it == access }.keys.toList().forEach { id ->
+                update(access, task.scope.taskSessionId, id) { old -> old.copy(
+                    state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
+                    execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
+                    errorCode = "REMOTE_CONNECTION_CLOSED") }
+                executor.cancel(ControlRequestScope(task.scope, id)); task.jobs[id]?.cancel()
+            }
+        }
+        changed()
+    }
+
     fun receipt(access: ControlAccessBinding, taskId: String, requestId: String): JsonValue = synchronized(lock) {
         val row = find(access, taskId, requestId)
         val task = tasks[key(access, taskId)]
@@ -208,17 +245,17 @@ class PhoneControlBus(
     fun history(access: ControlAccessBinding, taskId: String, beforeSeq: Long? = null, throughSeq: Long? = null, maxMessages: Int = 50): JsonValue = synchronized(lock) {
         val task = task(access, taskId)
         require(maxMessages in 1..50) { "CONTROL_PAGE_LIMIT_INVALID" }
-        val cursor = task.records.size.toLong()
+        val cursor = task.records.size.toLong() - 1
         val through = throughSeq ?: cursor
-        require(through in 0..cursor && (beforeSeq == null || beforeSeq in 0..through)) { "CONTROL_CURSOR_INVALID" }
-        val matching = task.records.take(through.toInt()).filter { record ->
+        require(through in -1..cursor && (beforeSeq == null || beforeSeq in 0..(through + 1))) { "CONTROL_CURSOR_INVALID" }
+        val matching = task.records.take((through + 1).toInt()).filter { record ->
             val seq = ((record as JsonValue.JObject).fields.first { it.first == "event" }.second as JsonValue.JObject).fields.first { it.first == "seq" }.second as JsonValue.JNumber
             beforeSeq == null || seq.raw.toLong() < beforeSeq
         }
         Json.of(mapOf("type" to "snapshot", "header" to mapOf("version" to 3, "id" to taskId, "createdAt" to task.createdAt,
-            "cwd" to "phone-capabilities", "isSeeded" to false), "cursor" to through, "records" to matching.takeLast(maxMessages),
+            "cwd" to "phone-capabilities", "isSeeded" to false), "cursor" to through, "nextTurn" to task.turn + 1, "records" to matching.takeLast(maxMessages),
             "hasMore" to (matching.size > maxMessages), "assistantStream" to mapOf("revision" to task.revision),
-            "projections" to mapOf("asOfSeq" to cursor, "values" to mapOf("execution" to executionProjection(ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == taskId } })))))
+            "projections" to mapOf("asOfSeq" to cursor, "values" to projections(ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == taskId } }))))
     }
 
     fun artifact(access: ControlAccessBinding, taskId: String, artifactId: String): ControlArtifact = synchronized(lock) {
@@ -229,8 +266,8 @@ class PhoneControlBus(
 
     fun eventsSince(access: ControlAccessBinding, taskId: String, seq: Long): List<JsonValue> = synchronized(lock) {
         val task = task(access, taskId)
-        if (seq !in 0..task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
-        task.records.drop(seq.toInt()).toList()
+        if (seq !in -1 until task.records.size.toLong()) fail("CONTROL_CURSOR_INVALID")
+        task.records.drop((seq + 1).toInt()).toList()
     }
 
     private fun task(access: ControlAccessBinding, id: String): Task {
@@ -264,7 +301,16 @@ class PhoneControlBus(
         }; changed()
     }
     private fun finish(access: ControlAccessBinding, task: Task, id: String) {
-        val text = Json.canonical(receipt(access, task.scope.taskSessionId, id))
+        val complete = receipt(access, task.scope.taskSessionId, id)
+        val fullText = Json.canonical(complete)
+        val text = if (fullText.length <= 12_000) fullText else {
+            val bytes = fullText.toByteArray()
+            val artifactId = "result-$id"
+            val version = "sha256:" + java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+            task.artifacts[artifactId] = id to ControlArtifact(artifactId, "application/json", version, bytes)
+            Json.canonical(Json.of(minimal(find(access, task.scope.taskSessionId, id), true) + mapOf("resultArtifact" to mapOf(
+                "artifactId" to artifactId, "path" to "artifacts/$artifactId", "mimeType" to "application/json", "bytes" to bytes.size, "version" to version))))
+        }
         val stream = listOf(mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
             mapOf("type" to "text-delta", "index" to 0, "text" to text),
             mapOf("type" to "block-end", "index" to 0, "block" to mapOf("type" to "text", "text" to text)),
@@ -284,6 +330,8 @@ class PhoneControlBus(
     private fun changed() { version.value += 1 }
     private fun executionProjection(rows: List<ControlRequestMetadata>): Map<String, Any> = mapOf(
         "status" to if (rows.any { it.state == ControlRequestState.AWAITING_CONFIRMATION }) "needs_user_input" else if (rows.any { !it.state.terminal }) "running" else "idle")
+    private fun projections(rows: List<ControlRequestMetadata>): Map<String, Any> = mapOf(
+        "execution" to executionProjection(rows), "inbox" to mapOf("next-turn" to rows.filter { it.state == ControlRequestState.ACCEPTED }.map { mapOf("id" to it.requestId) }))
     private fun minimal(row: ControlRequestMetadata, available: Boolean): Map<String, Any?> = mapOf(
         "request_id" to row.requestId, "taskSessionId" to row.taskSessionId, "state" to row.state.wire,
         "execution" to mapOf("status" to row.execution.wire), "resultAvailable" to available,

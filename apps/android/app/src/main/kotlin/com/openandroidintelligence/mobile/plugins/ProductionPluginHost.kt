@@ -454,9 +454,9 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         val entry = capabilityEntry(identity.pluginId, capability)
         require(entry.identity == identity) { "PLUGIN_IDENTITY_MISMATCH" }
         val active = activeAuthorization.get() ?: throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
-        if (active.requestId != session.correlationId || active.scope != authorizationScope(entry, Json.parse(input.decodeToString())))
+        if (active.requestId != session.correlationId || (active.remote == null && active.scope != authorizationScope(entry, Json.parse(input.decodeToString()))))
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CONTEXT_REQUIRED")
-        if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote)
+        if (active.remote != null) requireRemoteAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.remote, active.scope.parametersSha256)
         else requireActiveAuthorization(session.correlationId, entry, Json.parse(input.decodeToString()), active.binding)
     }
 
@@ -471,10 +471,10 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
 
     /** 与旧配对共享真实安装策略，但请求拥有者和连接代际来自 Noise 通道。 */
     fun requestRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
-        binding: RemoteCapabilityBinding): CapabilityAuthorization {
+        binding: RemoteCapabilityBinding, controlDigest: String? = null): CapabilityAuthorization {
         if (!binding.isCurrent() || grants.currentKernelGrant(binding.id) == null) return CapabilityAuthorization.Denied("REMOTE_AUTHORIZATION_CHANGED")
         val policy = capabilityPolicy(entry.identity.pluginId, entry.key)
-        val scope = authorizationScope(entry, parameters)
+        val scope = authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }
         // 新通道只允许明确的只读免确认；写入和控制不会继承旧自动许可。
         val remotePolicy = if (scope.operation == DeviceOperation.READ && policy.mode == CapabilityAuthorizationMode.READ_ONLY) policy
             else policy.copy(mode = CapabilityAuthorizationMode.MANUAL)
@@ -483,9 +483,9 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
 
     fun approveRemoteRequest(requestId: String, entry: VerifiedCapability, parameters: JsonValue,
-        binding: RemoteCapabilityBinding): LocalCapabilityApproval {
+        binding: RemoteCapabilityBinding, controlDigest: String? = null): LocalCapabilityApproval {
         check(binding.isCurrent()) { "REMOTE_AUTHORIZATION_CHANGED" }
-        return grants.authorization.approve(binding.requestKey(requestId), authorizationScope(entry, parameters), 0,
+        return grants.authorization.approve(binding.requestKey(requestId), authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, 0,
             grants.state.value?.revision ?: error("LOCAL_POLICY_UNAVAILABLE"), 5 * 60_000,
             com.openandroidintelligence.mobile.screen.temporaryApprovalParameterSummary(parameters))
     }
@@ -493,8 +493,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     fun cancelRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.cancel(binding.requestKey(requestId))
     fun finishRemoteRequest(requestId: String, binding: RemoteCapabilityBinding) = grants.authorization.finish(binding.requestKey(requestId))
 
-    private fun requireRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue, binding: RemoteCapabilityBinding) {
-        if (requestRemoteAuthorization(requestId, entry, parameters, binding) !is CapabilityAuthorization.Allowed)
+    private fun requireRemoteAuthorization(requestId: String, entry: VerifiedCapability, parameters: JsonValue, binding: RemoteCapabilityBinding, controlDigest: String? = null) {
+        if (requestRemoteAuthorization(requestId, entry, parameters, binding, controlDigest) !is CapabilityAuthorization.Allowed)
             throw CapabilityDenied("LOCAL_AUTHORIZATION_CHANGED")
     }
 
@@ -508,18 +508,29 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                 }, grants.state.value?.revision ?: -1) is CapabilityAuthorization.Allowed
         } else authorizationScopeIsCurrent(requestId, invocation.scope, null, invocation.binding)
 
-    fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding): ByteArray {
+    fun invokeRemote(entry: VerifiedCapability, parameters: JsonValue, correlationId: String, binding: RemoteCapabilityBinding,
+        controlDigest: String? = null, background: Boolean = false): ByteArray {
         check(CapabilitySchemaValidator.accepts(entry.schema, parameters)) { "SCHEMA_INVALID" }
-        requireRemoteAuthorization(correlationId, entry, parameters, binding)
+        requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
         val previous = activeAuthorization.get()
-        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters), binding))
+        activeAuthorization.set(ActiveAuthorization(correlationId, null, authorizationScope(entry, parameters).let { if (controlDigest == null) it else it.copy(parametersSha256 = controlDigest) }, binding))
         return try {
             val output = kernel.invoke(entry.identity, binding.access.principal.accountId, binding.id, entry.key,
-                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, false, correlationId)).output
-            requireRemoteAuthorization(correlationId, entry, parameters, binding)
+                Json.canonical(parameters).toByteArray(), SessionConstraints(entry.primitives + entry.key, background, correlationId)).output
+            requireRemoteAuthorization(correlationId, entry, parameters, binding, controlDigest)
             output
         } finally { if (previous == null) activeAuthorization.remove() else activeAuthorization.set(previous) }
     }
+
+    /** 原生目录复用用户可见的对应屏幕开关；缺失真实安装策略时默认拒绝。 */
+    fun nativePhonePolicy(primitive: String): CapabilityPolicy {
+        val entry = verifiedCapabilities().firstOrNull { primitive in it.primitives && it.primitives.count { p -> p.startsWith("kernel.screen.") } == 1 }
+            ?: return CapabilityPolicy(enabled = false)
+        return capabilityPolicy(entry.identity.pluginId, entry.key)
+    }
+    fun remoteEmergencyStopped(): Boolean = kernel.isEmergencyStopped()
+    fun emergencyStopFromPhone(): Int = kernel.emergencyStop("phone-local-emergency-stop")
+    fun observeEmergencyStop(listener: (Boolean) -> Unit): AutoCloseable = kernel.observeEmergencyStop(listener)
 
     /** Local ability switch; enabling it never grants background, system or screen permissions. */
     fun setCapabilityEnabled(pluginId: String, enabled: Boolean) {

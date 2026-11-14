@@ -13,7 +13,8 @@ export function apply(ctx, config) {
     const status = runtime.status();
     if (!status.identityReady || !status.available || status.clientAuthRequired) throw new Error('BRIDGE_AUTHORITY_UNAVAILABLE');
     // DSH 注销会撤销当前 runtime；插件在其生命周期之外不保留授权。
-    return JSON.stringify([status.serverUrl, status.deviceId]);
+    if (status.host && (!status.host.authorized || status.host.accountRequired)) throw new Error('BRIDGE_AUTHORITY_UNAVAILABLE');
+    return JSON.stringify([status.serverUrl, status.deviceId, status.host?.deviceId, status.host?.account]);
   } };
   const bridge = new PhoneMcpBridge(runtime, authority);
   const registration = registerPhoneMcpRoute({ webServer: ctx.get('webServer'), connection: ctx.get('connection'), bridge });

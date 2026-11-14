@@ -10,6 +10,11 @@ import javax.crypto.SecretKey
 class AndroidKeystoreOutboxKeyProvider(
     private val alias: String = DEFAULT_ALIAS,
 ) : AesGcmKeyProvider {
+    fun existing(): SecretKey? {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val key = store.getKey(alias, null) ?: return null
+        return key as? SecretKey ?: error("KEYSTORE_SECRET_KEY_REQUIRED")
+    }
     override fun getOrCreate(): SecretKey {
         require(alias.isNotBlank()) { "outbox key alias must not be blank" }
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

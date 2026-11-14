@@ -41,6 +41,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class AndroidAccessibilityScreenshotRuntime(
     private val context: Context,
+    private val targetWindowId: Int? = null,
 ) : AccessibilityScreenshotRuntime {
 
     override fun isServiceEnabledInSettings(): Boolean = try {
@@ -96,10 +97,7 @@ class AndroidAccessibilityScreenshotRuntime(
                         // 回调只交接结果，不在主线程编码；成功缓冲区先登记再恢复协程。
                         val executor = Executor { it.run() }
                         try {
-                            service.takeScreenshot(
-                                displayId,
-                                executor,
-                                object : AccessibilityService.TakeScreenshotCallback {
+                            val callback = object : AccessibilityService.TakeScreenshotCallback {
                                     override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                                         // resume 的取消回调处理恢复前被取消的结果；即使已超时后
                                         // 才收到系统回调，也由同一个所有者关闭缓冲区。
@@ -117,8 +115,14 @@ class AndroidAccessibilityScreenshotRuntime(
                                             )
                                         }
                                     }
-                                },
-                            )
+                                }
+                            if (targetWindowId != null && Build.VERSION.SDK_INT >= 34)
+                                service.takeScreenshotOfWindow(targetWindowId, executor, callback)
+                            else {
+                                if (com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current?.protectedBounds != null)
+                                    throw IllegalStateException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
+                                service.takeScreenshot(displayId, executor, callback)
+                            }
                         } catch (_: RuntimeException) {
                             // 服务刚好被系统解绑时可能抛异常：如实报告为断连，不伪装成取帧失败。
                             if (continuation.isActive) {

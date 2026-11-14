@@ -18,3 +18,20 @@
 
 短信发送及 SoM 仅在手机真实提供者、授权和本机确认落实后可用；当前缺少的能力返回明确错误。
 `npm test` 使用真实 MCP SDK Stdio 客户端检验列工具与调用；平台数据使用隔离替身，不能作为真机验收。
+
+原生手机屏幕工具直接进入 Kotlin 内核目录，保留独立的读树、截图和控制权限。确认与急停
+通过 `TYPE_ACCESSIBILITY_OVERLAY` 显示，所有远端节点、坐标与穿越胶囊的手势均拒绝。
+动作完成后保持手机全局执行权，等待 400ms 布局静默或 3000ms 硬期限后返回最新观测；
+动作执行结果与界面是否稳定分别报告，超时不会重试动作。自动观测仍要求独立的只读许可。
+SoM 使用 Android 34 起的窗口截图排除胶囊，并以本地 Canvas 标记真实可交互节点、输出 WebP；
+较低系统版本因无法证明可靠排除而返回 `SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED`。该能力边界
+须在真机继续验收，不能以本地构建或隔离截图字节证明支持所有 Android 31–36 设备。
+
+固定上游互通探针在 Android 定向测试编译之后运行：
+
+```bash
+node --experimental-vm-modules integrations/oai-android-mcp/test/original-tools-probe.mjs .
+```
+
+命令读取已配置的 `JAVA_HOME`、`GRADLE_USER_HOME`，加载有 SHA-256 和许可证记录的未修改上游源码。
+探针覆盖真实手机门面和控制总线；系统采集器与账号只使用隔离数据，不连接日常 Host 或账号。

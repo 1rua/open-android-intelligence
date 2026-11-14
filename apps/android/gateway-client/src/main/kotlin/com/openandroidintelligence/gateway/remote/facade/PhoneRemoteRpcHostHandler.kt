@@ -17,6 +17,7 @@ class PhoneRemoteRpcHostHandler(
     private class Connection(val scope: RemoteRpcConnectionScope) {
         val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 128)
         val streams = ConcurrentHashMap<String, Job>()
+        val closed = MutableStateFlow(false)
     }
     private val connections = ConcurrentHashMap<String, Connection>()
     private fun connection(scope: RemoteRpcConnectionScope): Connection {
@@ -25,7 +26,14 @@ class PhoneRemoteRpcHostHandler(
         check(connection.scope == scope) { "REMOTE_CONNECTION_CHANGED" }
         return connection
     }
-    override fun events(scope: RemoteRpcConnectionScope): Flow<RemoteRpcEvent> = connection(scope).events.asSharedFlow()
+    override fun events(scope: RemoteRpcConnectionScope): Flow<RemoteRpcEvent> {
+        val connection = connection(scope)
+        return channelFlow {
+            val collector = launch { connection.events.collect { authenticatedAccess(scope); send(it) } }
+            connection.closed.first { it }
+            collector.cancel()
+        }
+    }
 
     override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject): JsonValue {
         val connection = connection(scope)
@@ -42,8 +50,8 @@ class PhoneRemoteRpcHostHandler(
                     !fields.keys.containsAll(setOf("streamId", "endpoint", "payload")) || fields["transferFrames"] == JsonValue.JBool(true))
                     throw ControlRequestException("CONTROL_PARAMETERS_INVALID")
                 val streamId = text(fields, "streamId")
-                if (connection.streams.containsKey(streamId)) throw ControlRequestException("CONTROL_STREAM_CONFLICT")
-                val job = coroutineScope.launch(start = CoroutineStart.LAZY) {
+                lateinit var job: Job
+                job = coroutineScope.launch(start = CoroutineStart.LAZY) {
                     try {
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
@@ -54,9 +62,10 @@ class PhoneRemoteRpcHostHandler(
                     catch (_: Exception) {
                         connection.events.emit(RemoteRpcEvent("harness.remote.stream.closed", Json.of(mapOf("streamId" to streamId,
                             "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to "手机任务观察已失效。", "details" to emptyMap<String, Any>())))))
-                    } finally { connection.streams.remove(streamId) }
+                    } finally { connection.streams.remove(streamId, job) }
                 }
-                connection.streams[streamId] = job; job.start()
+                if (connection.streams.putIfAbsent(streamId, job) != null) { job.cancel(); throw ControlRequestException("CONTROL_STREAM_CONFLICT") }
+                job.start()
                 Json.of(emptyMap<String, Any>())
             }
             "harness.remote.stream.close" -> {
@@ -69,10 +78,10 @@ class PhoneRemoteRpcHostHandler(
 
     fun disconnect(scope: RemoteRpcConnectionScope) {
         connections[scope.connectionId]?.takeIf { it.scope == scope }?.let { connection ->
-            if (connections.remove(scope.connectionId, connection)) { connection.streams.values.forEach(Job::cancel); connection.streams.clear() }
+            if (connections.remove(scope.connectionId, connection)) { connection.closed.value = true; connection.streams.values.forEach(Job::cancel); connection.streams.clear() }
         }
     }
-    override fun close() { connections.values.forEach { connection -> connection.streams.values.forEach(Job::cancel) }; connections.clear() }
+    override fun close() { connections.values.forEach { connection -> connection.closed.value = true; connection.streams.values.forEach(Job::cancel) }; connections.clear() }
     private suspend fun business(call: suspend () -> JsonValue): JsonValue = try { Json.of(mapOf("ok" to true, "value" to call())) }
     catch (failure: ControlRequestException) { Json.of(mapOf("ok" to false, "error" to mapOf("code" to failure.code, "message" to "手机控制请求被拒绝。", "details" to emptyMap<String, Any>()))) }
     private fun exact(fields: Map<String, JsonValue>, keys: Set<String>) { if (fields.keys != keys) throw ControlRequestException("CONTROL_PARAMETERS_INVALID") }

@@ -14,37 +14,52 @@ import kotlinx.coroutines.*
 
 /** 真实手机装配：安装策略、已验证 WASM 和 Android 提供者仍由既有内核执行。 */
 class RemotePhoneControlComposition(
-    context: Context,
+    private val context: Context,
     scope: CoroutineScope,
     private val pluginHost: ProductionPluginHost,
     private val grants: PairingGrantStateHolder,
-    private val confirmLocally: suspend (String, String, String) -> Boolean,
+    private val confirmLocally: suspend (String, String, String) -> Boolean = { requestId, capabilityId, _ ->
+        PhoneLocalControlUiRegistry.current?.confirm(requestId, capabilityId) ?: false
+    },
 ) : PhoneControlExecutor, AutoCloseable {
-    private data class Connection(val binding: RemoteCapabilityBinding, val registration: AutoCloseable,
-        val screen: ScreenAuthorizationBinding?)
-    private data class Snapshot(val task: ControlTaskScope, val revision: String)
+    private data class Connection(val binding: RemoteCapabilityBinding, val registration: AutoCloseable)
     private val connections = ConcurrentHashMap<ControlAccessBinding, Connection>()
-    private val snapshots = ConcurrentHashMap<String, Snapshot>()
     private val activeRequests = ConcurrentHashMap<ControlRequestScope, Pair<String, Connection>>()
-    private val ledger = ControlMetadataStore(AesGcmEncryptedBlobStore(
-        FileEncryptedOutboxPersistence(File(context.noBackupFilesDir, "remote-control-metadata-v1.enc")),
-        AndroidKeystoreOutboxKeyProvider("oai_remote_control_metadata_v1").getOrCreate()))
+    private val nativeContexts = ConcurrentHashMap<ControlRequestScope, PhoneExecutionContext>()
+    @Volatile private var stopped = false
+    private val nativeKernel = NativePhoneControlKernel(grants, grants.authorization, { pluginHost.hostCapabilities },
+        { pluginHost.phoneCapabilities }, pluginHost::nativePhonePolicy, { stopped || pluginHost.remoteEmergencyStopped() })
+    private val metadataFile = File(context.noBackupFilesDir, "remote-control-metadata-v1.enc")
+    private val metadataKeys = AndroidKeystoreOutboxKeyProvider("oai_remote_control_metadata_v1")
+    private val ledger = ControlMetadataStore(AesGcmEncryptedBlobStore(FileEncryptedOutboxPersistence(metadataFile),
+        if (metadataFile.exists()) metadataKeys.existing() ?: error("CONTROL_LEDGER_KEY_UNAVAILABLE") else metadataKeys.getOrCreate()))
     val bus = PhoneControlBus(scope, ledger, this)
     val router = PhoneVirtualHostRouter(bus)
+    private val stopObserver = PhoneLocalControlUiRegistry.observeEmergencyStop {
+        stopPhone()
+        pluginHost.emergencyStopFromPhone()
+    }
+    private val kernelStopObserver = pluginHost.observeEmergencyStop { if (it) stopPhone() }
+
+    private fun stopPhone() {
+        stopped = true
+        grants.revokeTemporaryApprovals()
+        NativePhoneScreenRegistry.current?.stop()
+        bus.emergencyStop()
+    }
 
     /** 只能由认证网络持有者注册；失去授权、断线和代际变更通过 current 即时拒绝。 */
     fun register(access: ControlAccessBinding, current: () -> Boolean): AutoCloseable {
         val binding = RemoteCapabilityBinding(access, current)
         val registration = grants.attachRemoteConnection(binding)
-        val screen = ScreenHostRegistry.current?.registerConnection(access.principal.accountId, binding.id,
-            access.authorizationEpoch, { if (binding.isCurrent()) grants.currentKernelGrant(binding.id)?.revision ?: -1 else -1 })
-        val connection = Connection(binding, registration, screen)
+        val connection = Connection(binding, registration)
         check(connections.putIfAbsent(access, connection) == null) { "REMOTE_CONNECTION_ALREADY_REGISTERED" }
         return AutoCloseable {
             if (connections.remove(access, connection)) {
-                registration.close(); screen?.let { ScreenHostRegistry.current?.disconnectConnection(it) }
+                registration.close()
                 activeRequests.filterValues { it.second === connection }.keys.forEach(::cancel)
-                snapshots.entries.removeAll { it.value.task.principal == access.principal }
+                nativeContexts.values.filter { it.access == access }.forEach { nativeKernel.cancel(it, connection.binding) }
+                bus.connectionClosed(access)
             }
         }
     }
@@ -53,112 +68,92 @@ class RemotePhoneControlComposition(
         connection(access)
         return value(Json.of(mapOf("inventory" to pluginHost.capabilitySnapshot().inventory,
             "inventoryComplete" to pluginHost.capabilitySnapshot().inventoryComplete,
-            "captureSom" to mapOf("available" to false, "reason" to "REMOTE_SOM_NOT_READY")))) as ControlValue.Object
+            "nativeScreen" to mapOf("available" to (NativePhoneScreenRegistry.current != null && NativePhoneScreenRegistry.current?.availability() == null),
+                "reason" to (NativePhoneScreenRegistry.current?.availability() ?: if (NativePhoneScreenRegistry.current == null) "SCREEN_PROVIDER_UNAVAILABLE" else null))))) as ControlValue.Object
     }
 
     override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
         val connection = connection(context.access)
+        if (operation is ControlOperation.DumpTree || operation is ControlOperation.Screen || operation == ControlOperation.CaptureSom)
+            return executeNative(context, connection, operation)
         val id = "remote-${UUID.randomUUID()}"
         activeRequests[context.scope] = id to connection
         try {
-            val (entry, parameters) = resolve(context, operation)
-            if (operation is ControlOperation.Screen) {
-                val snapshot = snapshots[operation.snapshotId] ?: fail("SNAPSHOT_STALE")
-                if (snapshot.task != context.scope.task) fail("SNAPSHOT_STALE")
-            }
-            when (val decision = pluginHost.requestRemoteAuthorization(id, entry, parameters, connection.binding)) {
+            val (entry, parameters) = resolve(operation)
+            when (val decision = pluginHost.requestRemoteAuthorization(id, entry, parameters, connection.binding, context.parameterDigest)) {
                 is CapabilityAuthorization.Denied -> fail(decision.code)
                 is CapabilityAuthorization.Allowed -> Unit
                 CapabilityAuthorization.AwaitingConfirmation -> {
                     context.awaitingConfirmation(true)
-                    val accepted = confirmLocally(context.scope.requestId, entry.id, Json.canonical(parameters))
+                    val accepted = confirmLocally(context.scope.key.storageKey, entry.id, Json.canonical(parameters))
                     if (!accepted) fail("LOCAL_USER_REJECTED")
                     connection(context.access)
-                    pluginHost.approveRemoteRequest(id, entry, parameters, connection.binding)
+                    pluginHost.approveRemoteRequest(id, entry, parameters, connection.binding, context.parameterDigest)
                     context.awaitingConfirmation(false)
                 }
             }
             currentCoroutineContext().ensureActive()
             fun revalidate() {
                 connection(context.access)
-                if (pluginHost.requestRemoteAuthorization(id, entry, parameters, connection.binding) !is CapabilityAuthorization.Allowed)
+                if (pluginHost.requestRemoteAuthorization(id, entry, parameters, connection.binding, context.parameterDigest) !is CapabilityAuthorization.Allowed)
                     fail("LOCAL_AUTHORIZATION_CHANGED")
-            }
-            val screenHost = ScreenHostRegistry.current
-            val permissions = entry.primitives.mapNotNull { when (it) {
-                "kernel.screen.read" -> ScreenPermission.READ
-                "kernel.screen.capture" -> ScreenPermission.CAPTURE
-                "kernel.screen.control" -> ScreenPermission.CONTROL
-                else -> null
-            } }.toSet()
-            if (permissions.isNotEmpty()) {
-                screenHost?.installRequestAuthorization(id, permissions, System.currentTimeMillis() + 5 * 60_000,
-                    Json.sha256(parameters), connection.screen ?: fail("SCREEN_CONNECTION_REQUIRED"), ::revalidate)
-                    ?: fail("SCREEN_PROVIDER_UNAVAILABLE")
+                if (isBackground() && grants.currentKernelGrant(connection.binding.id)?.backgroundSync != true) fail("BACKGROUND_PERMISSION_REQUIRED")
             }
             revalidate()
             context.beforeDispatch()
-            val output = runInterruptible(Dispatchers.IO) { pluginHost.invokeRemote(entry, parameters, id, connection.binding) }
+            val output = runInterruptible(Dispatchers.IO) { pluginHost.invokeRemote(entry, parameters, id, connection.binding,
+                context.parameterDigest, isBackground()) }
             revalidate()
-            var result = Json.parse(output.decodeToString())
-            if (operation is ControlOperation.DumpTree) {
-                val tree = result as? JsonValue.JObject ?: fail("SCREEN_RESPONSE_INVALID")
-                val revision = (tree.fields.firstOrNull { it.first == "revision" }?.second as? JsonValue.JString)?.value ?: fail("SCREEN_RESPONSE_INVALID")
-                val snapshotId = UUID.randomUUID().toString()
-                snapshots[snapshotId] = Snapshot(context.scope.task, revision)
-                result = JsonValue.JObject(tree.fields + ("snapshotId" to JsonValue.JString(snapshotId)))
-            }
+            val result = Json.parse(output.decodeToString())
             return PhoneControlResult((value(result) as? ControlValue.Object) ?: ControlValue.Object(mapOf("value" to value(result))))
         } finally {
             activeRequests.remove(context.scope)
-            connection.screen?.let { ScreenHostRegistry.current?.finishRequest(id, it) }
+            PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey)
             pluginHost.finishRemoteRequest(id, connection.binding)
         }
     }
 
-    private fun resolve(context: PhoneExecutionContext, operation: ControlOperation): Pair<VerifiedCapability, JsonValue> {
-        val (plugin, capability, parameters) = when (operation) {
-            is ControlOperation.PluginInvoke -> {
-                val params = controlJsonLocal(operation.params)
-                Triple(operation.pluginId, operation.capabilityId, params)
-            }
-            is ControlOperation.DumpTree -> Triple("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read@1.0.0",
-                Json.of(mapOf("operation" to operation.query.operation, "maxNodes" to operation.query.maxNodes, "maxDepth" to operation.query.maxDepth,
-                    "maxBytes" to operation.query.maxBytes) + listOfNotNull(operation.query.previousHash?.let { "previousHash" to it }).toMap() +
-                    mapOf("query" to listOfNotNull(operation.query.text?.let { "text" to it }, operation.query.resourceId?.let { "resourceId" to it },
-                        operation.query.description?.let { "description" to it }).toMap())))
-            is ControlOperation.Screen -> {
-                val snapshot = snapshots[operation.snapshotId]?.takeIf { it.task == context.scope.task } ?: fail("SNAPSHOT_STALE")
-                val args: Map<String, Any?> = when (val action = operation.action) {
-                    is ScreenAction.Click -> mapOf("action" to "click", "nodeId" to action.nodeId, "x" to action.x, "y" to action.y)
-                    is ScreenAction.LongPress -> mapOf("action" to "longPress", "nodeId" to action.nodeId, "x" to action.x, "y" to action.y, "durationMs" to action.durationMs)
-                    is ScreenAction.SetText -> mapOf("action" to "setText", "nodeId" to action.nodeId, "text" to action.text)
-                    is ScreenAction.Scroll -> mapOf("action" to "scroll", "nodeId" to action.nodeId, "direction" to action.direction)
-                    is ScreenAction.Swipe -> mapOf("action" to "swipe", "x" to action.x, "y" to action.y, "endX" to action.endX, "endY" to action.endY, "durationMs" to action.durationMs)
-                    is ScreenAction.Drag -> mapOf("action" to "drag", "x" to action.x, "y" to action.y, "endX" to action.endX, "endY" to action.endY, "durationMs" to action.durationMs)
-                    is ScreenAction.Global -> mapOf("action" to "global", "globalAction" to action.globalAction)
-                    is ScreenAction.LaunchApp -> mapOf("action" to "launchApp", "packageName" to action.packageName)
-                }
-                Triple("org.openandroidintelligence.screen-control", "org.openandroidintelligence.screen-control.control@1.0.0",
-                    Json.of(args.filterValues { it != null } + ("expectedRevision" to snapshot.revision)))
-            }
-            ControlOperation.CaptureSom -> fail("REMOTE_SOM_NOT_READY")
-            else -> fail("CONTROL_OPERATION_UNSUPPORTED")
-        }
-        val entry = pluginHost.entries(plugin).singleOrNull { it.key == capability } ?: fail("CAPABILITY_UNAVAILABLE")
-        if (!pluginHost.isEnabled(plugin)) fail("PLUGIN_DISABLED")
+    private fun resolve(operation: ControlOperation): Pair<VerifiedCapability, JsonValue> {
+        val call = operation as? ControlOperation.PluginInvoke ?: fail("CONTROL_OPERATION_UNSUPPORTED")
+        if (call.method != call.capabilityId.substringBefore('@').substringAfterLast('.')) fail("CONTROL_METHOD_MISMATCH")
+        val parameters = controlJsonLocal(call.params)
+        val entry = pluginHost.entries(call.pluginId).singleOrNull { it.key == call.capabilityId } ?: fail("CAPABILITY_UNAVAILABLE")
+        if (entry.primitives.any { it.startsWith("kernel.screen.") }) fail("SCREEN_NATIVE_OPERATION_REQUIRED")
+        if (!pluginHost.isEnabled(call.pluginId)) fail("PLUGIN_DISABLED")
         if (!CapabilitySchemaValidator.accepts(entry.schema, parameters)) fail("SCHEMA_INVALID")
         return entry to parameters
     }
 
     override fun cancel(scope: ControlRequestScope) {
+        nativeContexts[scope]?.let { context -> connections[context.access]?.let { nativeKernel.cancel(context, it.binding) } }
         activeRequests[scope]?.let { (id, connection) ->
             pluginHost.cancelRemoteRequest(id, connection.binding)
-            connection.screen?.let { ScreenHostRegistry.current?.cancelRequest(id, it) }
         }
     }
-    private fun connection(access: ControlAccessBinding) = connections[access]?.takeIf { it.binding.isCurrent() } ?: fail("REMOTE_AUTHORIZATION_CHANGED")
-    override fun close() { connections.values.forEach { it.registration.close(); it.screen?.let { screen -> ScreenHostRegistry.current?.disconnectConnection(screen) } }; connections.clear(); snapshots.clear() }
+    private suspend fun executeNative(context: PhoneExecutionContext, connection: Connection, operation: ControlOperation): PhoneControlResult {
+        nativeContexts[context.scope] = context
+        try {
+            when (val decision = nativeKernel.evaluate(context, connection.binding, operation)) {
+                is CapabilityAuthorization.Denied -> fail(decision.code)
+                is CapabilityAuthorization.Allowed -> Unit
+                CapabilityAuthorization.AwaitingConfirmation -> {
+                    context.awaitingConfirmation(true)
+                    if (!confirmLocally(context.scope.key.storageKey, operation.wireName, "")) fail("LOCAL_USER_REJECTED")
+                    nativeKernel.approve(context, connection.binding, operation)
+                    context.awaitingConfirmation(false)
+                }
+            }
+            return nativeKernel.execute(context, connection.binding, operation)
+        } finally {
+            nativeContexts.remove(context.scope)
+            nativeKernel.finish(context, connection.binding)
+            PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey)
+        }
+    }
+    private fun connection(access: ControlAccessBinding) = connections[access]?.takeIf { !stopped && it.binding.isCurrent() } ?: fail("REMOTE_AUTHORIZATION_CHANGED")
+    private fun isBackground(): Boolean = context.getSystemService(android.app.KeyguardManager::class.java)?.isKeyguardLocked != false ||
+        !androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+    override fun close() { stopObserver.close(); kernelStopObserver.close(); connections.values.forEach { it.registration.close() }; connections.clear() }
     private fun fail(code: String): Nothing = throw ControlRequestException(code)
 }
 

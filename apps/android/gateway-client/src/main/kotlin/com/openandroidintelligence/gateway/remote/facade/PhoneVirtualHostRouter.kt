@@ -60,14 +60,17 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             "session/follow" -> {
                 val request = request(args)
                 val sessionId = sessionId(request)
-                var lastCursor = -1L
+                var lastCursor: Long? = null
                 var revision = 0L
                 bus.changes.collect {
                     val page = history(access, request)
                     val fields = fields(page)
                     val cursor = (fields.getValue("cursor") as JsonValue.JNumber).raw.toLong()
-                    if (lastCursor < 0) emit(page) else {
-                        bus.eventsSince(access, sessionId, lastCursor).forEach { row ->
+                    if (lastCursor == null) {
+                        revision = fields["assistantStream"]?.let(::fields)?.number("revision") ?: 0
+                        emit(page)
+                    } else {
+                        bus.eventsSince(access, sessionId, checkNotNull(lastCursor)).forEach { row ->
                             val event = fields(fields(row).getValue("event"))
                             if (event.text("type") == "assistant/message") {
                                 val seq = event.number("seq")!!
@@ -85,6 +88,8 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
                                     "outcome" to mapOf("kind" to "committed", "eventType" to "assistant/message", "seq" to seq)))))
                             } else emit(row)
                         }
+                        val projected = fields["projections"]?.let(::fields)?.get("values")?.let(::fields)
+                        projected?.get("inbox")?.let { value -> emit(Json.of(mapOf("type" to "projection", "key" to "inbox", "value" to value, "seq" to cursor))) }
                     }
                     lastCursor = cursor
                 }

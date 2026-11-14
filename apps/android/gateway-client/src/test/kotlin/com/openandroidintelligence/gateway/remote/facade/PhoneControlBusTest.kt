@@ -92,4 +92,30 @@ class PhoneControlBusTest {
         assertTrue(receipt.contains("\"resultAvailable\":false")); assertTrue(receipt.contains("completed"))
         assertTrue(Json.canonical(restarted.history(access(), "control-bus")).contains("status-request-00001"))
     }
+
+    @Test fun v3CursorIsLastInclusiveSequenceAndPageKeepsLastRecord() = runTest {
+        val bus = PhoneControlBus(this, Ledger(), Executor()); val task = bus.create(access())
+        val empty = bus.history(access(), task) as com.openandroidintelligence.gateway.schema.JsonValue.JObject
+        assertEquals(com.openandroidintelligence.gateway.schema.JsonValue.JNumber("-1"), empty.fields.toMap()["cursor"])
+        bus.submit(access(), task, request("cursor-request-00001")); runCurrent()
+        val page = bus.history(access(), task) as com.openandroidintelligence.gateway.schema.JsonValue.JObject
+        val records = (page.fields.toMap().getValue("records") as com.openandroidintelligence.gateway.schema.JsonValue.JArray).items
+        val last = ((records.last() as com.openandroidintelligence.gateway.schema.JsonValue.JObject).fields.toMap().getValue("event") as com.openandroidintelligence.gateway.schema.JsonValue.JObject).fields.toMap().getValue("seq")
+        assertEquals(last, page.fields.toMap()["cursor"])
+        assertEquals(1, bus.eventsSince(access(), task, 1).size)
+    }
+
+    @Test fun localEmergencyStopFreezesPendingAndNewRequestsWithoutLeakingBody() = runTest {
+        val never = CompletableDeferred<Unit>()
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.awaitingConfirmation(true); never.await(); return super.execute(context, operation)
+            }
+        }
+        val bus = PhoneControlBus(this, Ledger(), executor); val task = bus.create(access())
+        bus.submit(access(), task, request("kill-request-0000001")); runCurrent(); bus.emergencyStop(); runCurrent()
+        assertTrue(Json.canonical(bus.receipt(access(), task, "kill-request-0000001")).contains("cancelled"))
+        assertThrows(ControlRequestException::class.java) { bus.submit(access(), task, request("kill-request-0000002")) }
+        assertTrue(executor.calls.isEmpty())
+    }
 }
