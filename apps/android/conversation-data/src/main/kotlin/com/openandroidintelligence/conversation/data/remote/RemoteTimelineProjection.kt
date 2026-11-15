@@ -398,7 +398,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (!source.historical) generationState = GenerationState.RUNNING
                         return upsertContent(requireNotNull(acpMessageId), acpContent, source)
                     }
-                    "user_message_chunk" -> return upsert(obj("id" to "remote-acp-user:${++liveSequence}", "content" to listOf(update.at("content") ?: obj())), "user", false, null, source)
+                    "user_message_chunk" -> {
+                        val content = update.at("content") ?: obj()
+                        if (internalMessage(params) || internalMessage(update) || internalMessage(content)) return emptyList()
+                        return upsert(obj("id" to "remote-acp-user:${++liveSequence}", "content" to listOf(content)), "user", false, null, source)
+                    }
                     "tool_call", "tool_call_update" -> return execution(update, update.text("toolCallId") ?: "tool:${++liveSequence}", source,
                         update.text("status") in setOf("completed", "failed"))
                     "session_info_update" -> update.text("title")?.let { return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), it)) }

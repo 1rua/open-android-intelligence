@@ -271,4 +271,21 @@ class RemoteTimelineProjectionContentCleanupTest {
         assertEquals(GenerationState.FAILED, acpProjection.generationState)
     }
 
+
+    @Test fun `ACP用户分块外层元标记隐藏而正常用户与助手分块保留`() {
+        listOf("isMeta" to true, "role" to "system").forEach { marker ->
+            val projection = RemoteTimelineProjection(local)
+            projection.accept(obj("method" to "session/update", "params" to obj(
+                "sessionId" to native, marker,
+                "update" to obj("sessionUpdate" to "user_message_chunk", "content" to obj("type" to "text", "text" to "内部用户上下文")))))
+            assertTrue("ACP外层 $marker 不应形成用户正文", projection.rows.isEmpty())
+            projection.accept(acp("user_message_chunk", "真实用户消息"))
+            projection.accept(acp("agent_message_chunk", "正常助手回答"))
+            assertEquals(listOf("真实用户消息", "正常助手回答"), projection.rows.values.flatMap { row ->
+                row.parts.filterIsInstance<MessagePart.Text>().map { it.value }
+            })
+            assertTrue("助手正常正文不能被用户元标记影响", projection.rows.values.any { it.sender == "assistant" && body(projection).contains("正常助手回答") })
+        }
+    }
+
 }
