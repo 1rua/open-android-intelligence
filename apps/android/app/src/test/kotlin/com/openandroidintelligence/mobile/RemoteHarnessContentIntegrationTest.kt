@@ -100,7 +100,7 @@ class RemoteHarnessContentIntegrationTest {
         assertNotEquals(StreamHealth.FAILED, controller.state.value.streamHealth)
         assertFalse(rows(controller).any { it.messageStatus == AgentMessageStatus.FAILED })
     }
-    @Test fun `Harness未知状态与跨片段系统提醒不阻止后续正文和正常终态`() = runBlocking {
+    @Test fun `Harness未知状态与跨片段系统提醒不阻止后续正文和正常终态`(): Unit = runBlocking {
         val controller = ready()
         send(controller)
         listOf("thinking", "tool", "meta", "status").forEach { connection.rpc.chunk("unknown", it, "") }
