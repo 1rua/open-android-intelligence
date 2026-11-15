@@ -444,7 +444,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val clientId = directClientId ?: previous?.clientMessageId ?: requestClientId
         val row = TimelineMessage(id, role, parts, source.time, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
             clientMessageId = clientId, contentRevision = ++revision, generationId = nativeGeneration,
-            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoning(blocks, streaming))
+            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoning(blocks, streaming),
+            historySequence = if (persistentMessageSequence) seq ?: previous?.historySequence else null)
         val visible = ConversationContentSanitizer.message(row) ?: return hide(id, source)
         rows[id] = visible
         rowHistorical[id] = source.historical
