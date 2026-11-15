@@ -389,7 +389,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (content.text("type") != "text") return emptyList()
                         if (internalMessage(params) || internalMessage(update) || internalMessage(content)) {
                             if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
-                            return suppressMessage(acpMessageId, source)
+                            val hidden = hide(acpMessageId, source)
+                            resetAcpTurnContent()
+                            return hidden
                         }
                         if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
                         val kind = if ((update.text("sessionUpdate") ?: update.text("type")) in setOf("agent_thought_chunk", "agent_thought")) "reasoning" else "text"

@@ -288,4 +288,16 @@ class RemoteTimelineProjectionContentCleanupTest {
         }
     }
 
+
+    @Test fun `ACP助手元分段丢弃当前片段后后续正常回答重新建立可见流`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(acp("agent_message_chunk", "回答前半"))
+        projection.accept(acp("agent_message_chunk", "内部元块", "role" to "system"))
+        projection.accept(acp("agent_message_chunk", "回答后半"))
+        assertEquals(listOf("回答前半", "回答后半"), projection.rows.values.map { row ->
+            row.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
+        })
+        assertTrue(projection.rows.values.none { row -> row.parts.filterIsInstance<MessagePart.Text>().any { it.value.contains("内部元块") } })
+    }
+
 }
