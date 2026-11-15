@@ -23,6 +23,16 @@ import java.util.UUID
 /** 本机镜像身份沿用既有安全字符范围；该约束不依赖网络协议或登录。 */
 private val MIRROR_ID_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
 
+/** 事件检查点是 SQLite 值中的不透明身份，不继承旧请求 ID 的路径字母表。 */
+private fun validEventCheckpoint(value: String): Boolean {
+    if (value.isBlank() || value.any(Char::isISOControl)) return false
+    return try {
+        Charsets.UTF_8.newEncoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .encode(java.nio.CharBuffer.wrap(value)).remaining() <= 4096
+    } catch (_: java.nio.charset.CharacterCodingException) { false }
+}
+
 /** 加密范围包含 Gateway 身份；不同宿主的同名账号不会共用文档。 */
 class EncryptedConversationMirror(context: Context, private val scope: ConversationScope,
     keyProvider:com.openandroidintelligence.encrypted.store.AesGcmKeyProvider?=null,
@@ -751,11 +761,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
     fun loadCursor(accountId: String): String? {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        return read("cursor")?.let { JsonFields.string(it,"value") }
+        return read("cursor")?.let { document -> JsonFields.string(document,"value")?.also {
+            check(validEventCheckpoint(it)) { "MIRROR_CORRUPTED" }
+        } }
     }
     fun saveCursor(accountId: String,cursor: String) {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        require(MIRROR_ID_ALPHABET.matches(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
+        require(validEventCheckpoint(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
         documents.transaction { documents.write("cursor",encode(mapOf("value" to cursor))) }
     }
     fun clearCursor(accountId: String) {

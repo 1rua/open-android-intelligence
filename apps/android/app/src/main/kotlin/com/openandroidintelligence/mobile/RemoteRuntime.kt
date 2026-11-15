@@ -110,7 +110,7 @@ class RemoteRuntime(
             controller.state.value.activeThreadId == target.conversationId && target.agentId == state.value.selected?.let(::endpointId) }
     }
     internal val nativeConversationNotifications = NativeConversationNotifications(context, scope, publisher::update,
-        cancel = publisher::cancel, forget = publisher::forget)
+        titleFor = ::notificationTitle, cancel = publisher::cancel, forget = publisher::forget)
     val localSettings by lazy {
         LocalSettingsRuntime(replyNotifications, nativeConversationNotifications::refreshActive,
             ::reloadDebounceSettings, { controller.value?.refreshThreads() })
@@ -125,6 +125,15 @@ class RemoteRuntime(
             combine(nativeConversationNotifications.sessions, replyNotifications.enabled, replyNotifications.allowed) { _, _, _ -> Unit }
                 .collect { refreshBackgroundWork() }
         }
+    }
+    /** 标题来自同账号、同端点的会话目录，路由用的编码身份不作为展示标题。 */
+    private fun notificationTitle(target: ReplyNotificationTarget): String? {
+        val account = state.value.account ?: return null
+        val owner = ownerConversationScope ?: return null
+        if (target.profileId != profileId(account.origin) || target.accountId != account.accountId ||
+            target.profileId != owner.profileId || target.accountId != owner.accountId || target.agentId != owner.gatewayId) return null
+        return runCatching { ownerMirror?.threads()?.firstOrNull { it.id.value == target.conversationId }?.title }.getOrNull()
+            ?.takeIf { it.isNotBlank() }
     }
     private fun refreshBackgroundWork(foregrounded: Boolean = false) = synchronized(backgroundOwnership) {
         val work = ownerActive && repository != null && state.value.account != null &&

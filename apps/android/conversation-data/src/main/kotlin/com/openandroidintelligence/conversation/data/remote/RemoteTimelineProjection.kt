@@ -78,6 +78,26 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     /** 记录行首先来自历史还是实时；无 seq 的实时流也不能被迟到历史回写。 */
     private val rowHistorical = mutableMapOf<String, Boolean>()
     private val rowSequences = mutableMapOf<String, Long>()
+    private val userRequestsByGeneration = mutableMapOf<String, ClientMessageId>()
+    private val userItemsByGeneration = mutableMapOf<String, String>()
+    private val ambiguousUserGenerations = mutableSetOf<String>()
+
+    /** Codex 只有本次 prompt 回执可证明 turn 归属；先到的用户回声随后按同一原生 turn 补齐身份。 */
+    fun bindUserRequest(nativeGeneration: String, clientId: ClientMessageId): List<VerifiedConversationEvent> {
+        val previous = userRequestsByGeneration.putIfAbsent(nativeGeneration, clientId)
+        check(previous == null || previous == clientId) { "REMOTE_GENERATION_MISMATCH" }
+        val candidates = rows.values.filter { it.sender == "user" && it.generationId == nativeGeneration }
+        if (candidates.size > 1) ambiguousUserGenerations += nativeGeneration
+        val row = candidates.singleOrNull()?.takeUnless { nativeGeneration in ambiguousUserGenerations }
+            ?: return emptyList()
+        if (row.clientMessageId != null && row.clientMessageId != clientId) return emptyList()
+        userItemsByGeneration.putIfAbsent(nativeGeneration, row.id)
+        if (row.clientMessageId == clientId) return emptyList()
+        val identified = row.copy(clientMessageId = clientId, contentRevision = ++revision)
+        rows[row.id] = identified
+        return listOf(VerifiedConversationEvent.TimelineUpsert("request-identity:${row.id}:$revision", clock(), revision, identified))
+    }
+
     private var acpContent = AssistantContent()
     private var acpTurnHadContent = false
     private var acpMessageId: String? = null
@@ -274,7 +294,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 val item = params.at("item") ?: return emptyList()
                 return when (item.text("type")) {
                     "agentMessage" -> upsert(obj("id" to item.requiredText("id"), "content" to listOf(obj("type" to "text", "text" to (item.text("text") ?: "")))), "assistant", method == "item/started", null, source)
-                    "userMessage" -> upsert(item, "user", false, null, source)
+                    "userMessage" -> upsert(item, "user", false, null, source, params.text("turnId"))
                     "reasoning", "plan" -> {
                         val id = item.requiredText("id")
                         val completeText = codexItemText(item)
@@ -380,9 +400,20 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val blocks = message.array("content").orEmpty()
         val parts = contentParts(blocks, RemoteMediaRevision(id, seq, source.historical, source.historyRead))
             .ifEmpty { message.text("text")?.let { listOf(MessagePart.Text(it)) }.orEmpty() }
-        val clientId = message.at("source")?.text("rpcId")?.let(::ClientMessageId)
+        val previous = rows[id]
+        // 历史 user/message 不回传请求身份；同一原生 item 的已确认映射不能在补历史时丢失。
+        val nativeGeneration = if (role == "user" && source.historical) previous?.generationId ?: messageGeneration else messageGeneration
+        val directClientId = message.at("source")?.text("rpcId")?.let(::ClientMessageId)
+        if (role == "user" && nativeGeneration != null && rows.values.any {
+            it.sender == "user" && it.generationId == nativeGeneration && it.id != id
+        }) ambiguousUserGenerations += nativeGeneration
+        val requestClientId = if (role == "user" && nativeGeneration != null && nativeGeneration !in ambiguousUserGenerations) userRequestsByGeneration[nativeGeneration]?.takeIf {
+            val knownItem = userItemsByGeneration.putIfAbsent(nativeGeneration, id)
+            knownItem == null || knownItem == id
+        } else null
+        val clientId = directClientId ?: previous?.clientMessageId ?: requestClientId
         val row = TimelineMessage(id, role, parts, source.time, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
-            clientMessageId = clientId, contentRevision = ++revision, generationId = messageGeneration,
+            clientMessageId = clientId, contentRevision = ++revision, generationId = nativeGeneration,
             localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoning(blocks, streaming))
         rows[id] = row
         rowHistorical[id] = source.historical

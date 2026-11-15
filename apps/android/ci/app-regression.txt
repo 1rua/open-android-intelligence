@@ -20,6 +20,7 @@ RemoteRootInteractionTest
 RemoteRuntimeTest
 RemoteHarnessCatalogTest
 RemoteNewSessionNavigationTest
+RemoteSessionDeliveryIntegrationTest
 AccountAvatarTest
 AgentSessionForegroundServiceTest
 AgentSessionKeepAliveTest
