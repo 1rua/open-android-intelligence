@@ -837,4 +837,6 @@ def test_typecheck_excludes_only_pinned_typescript_and_keeps_probe_source():
         "tools/remote/fixtures/dsh-remote/**/*.ts",
         "tools/remote/fixtures/media-upstream/**/*.ts",
         "tools/remote-server/fixtures/**/*.ts",
+        "tools/remote-interop/fixtures/**/*.ts",
+        "tools/remote-interop/release-fixtures/**/*.ts",
     }

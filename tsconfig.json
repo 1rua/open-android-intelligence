@@ -19,6 +19,8 @@
   "exclude": [
     "tools/remote/fixtures/dsh-remote/**/*.ts",
     "tools/remote/fixtures/media-upstream/**/*.ts",
-    "tools/remote-server/fixtures/**/*.ts"
+    "tools/remote-server/fixtures/**/*.ts",
+    "tools/remote-interop/fixtures/**/*.ts",
+    "tools/remote-interop/release-fixtures/**/*.ts"
   ]
 }

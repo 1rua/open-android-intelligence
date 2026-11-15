@@ -8,6 +8,7 @@
 - Remote `v0.6.5` release 固定为 `eef232d2c43b0c9d04998a18db98cbc9e673e488`。互通探针在 pin 基础上逐字节加载 release 的七份差异源码；原插件 `ClientSecureTransport`、能力探测、`RemoteTypertGateway`、`RemoteSessionTools` 与 pin 相同。生产 pin 未升级，不维护上游分叉。
 - 官方桌面消费者锁为 npm `@deepseek-ai/dsh-client-connection`、`@deepseek-ai/dsh-api-gateway`、`@deepseek-ai/dsh-api-session-controller` 的 `0.2.2-rc.1`，运行原始连接、事件和 SessionControl 消费者，不复制其解析逻辑。来源清单记录 npm tarball integrity、逐文件 SHA256 和官方仓库 `deepseek-ai/deepseek-harness@39163dd30f703a79079e2d2446545cff3c453738` 的 MIT 许可。
 - pin、release 差异和官方桌面消费者来源分别见 `tools/remote-interop/fixtures/source.json`、`tools/remote-interop/release-fixtures/source.json`、`tools/remote-interop/harness-fixtures/source.json`；门禁核对原文及许可完整性。
+- 这些 fixture 是只读上游源码输入，不属于本仓库业务 TypeScript 工程；根 `tsconfig.json` 排除 `tools/remote-interop/fixtures/**/*.ts` 与 `tools/remote-interop/release-fixtures/**/*.ts`，避免用本仓库更严格的可选属性规则重编译上游原文。运行时依赖由 `tools/remote-interop/package-lock.json` 固定，其中 `zod` 为 `4.6.7`；探针通过 VM linker 加载依赖，不修改原文。
 - `clientVersion=0.6.5` 表示本项目实现的 Remote 协议兼容基线。`harnessVersion=0.2.2-rc.1` 是**本项目定义的虚拟 Host Typert 协议兼容声明**，不同于上游字段原本的已安装 Harness distribution 含义，也不表示手机安装或运行 Harness 引擎。`harness.transport.describe.implementation` 同时公开 `kind=virtual`、`harnessVersionSource=compatibility`、独立 OAI 实现版本和固定上游 SHA。
 - 手机只公布真实实现的 `harness.remote.v3` 和手机工作区；未声明模型、终端、任意文件、Codex/ACP、审批 waterfall 或上传能力。
 
@@ -47,14 +48,16 @@ Client 和 Virtual Host 的独立 deviceId、静态密钥及永久设备名保�
 
 | 验证层级 | 状态及证据 |
 | --- | --- |
-| `npm run test:fast -- --since 7215a9d9e5aa281e4182cc5e0ad9b5b91d0e125b` | VERIFIED：`8a297ab9` 完整退出 0 |
-| `npm run test:pr -- --since 7215a9d9e5aa281e4182cc5e0ad9b5b91d0e125b` | VERIFIED：同源码完整退出 0；Gateway 35 类/307 项全部通过，App Full 131 类/1453 项、1450 通过、0 失败/错误、3 项渠道条件跳过 |
+| `npm run test:fast -- --since 7215a9d9e5aa281e4182cc5e0ad9b5b91d0e125b` | PENDING：此前 `8a297ab9` 组合证据完整退出 0；本次 c906 新增 fixture 编译边界后需在当前提交重跑 |
+| `npm run test:pr -- --since 7215a9d9e5aa281e4182cc5e0ad9b5b91d0e125b` | PENDING：此前组合证据为完整退出 0；当前提交需重跑以确认 fixture 排除与 Fast 门禁收敛 |
 | 关键 Gateway 回归 | VERIFIED：同批实际执行 `OriginalPluginHostInteropTest` 1 项、`RemoteRtcCallbackBoundaryTest` 5 项、`PhoneRemoteEventSourceTest` 2 项、安装身份 5 项、退出含冷启动 6 项、Client 生命周期 2 项；不是读取旧缓存 XML |
 | 原消费者互通范围 | VERIFIED：经固定 Server、官方 Remote Noise initiator、Android responder、真实门面与执行总线，以及官方连接/事件/SessionControl 消费者；系统采集器隔离，测试释放入口不进入生产 Host |
-| 来源与 CI 路由 | VERIFIED：Host 来源分支固定原文/许可回归 9/9，精确 CI 规划 107/107；组合 Fast/PR 也完整退出 0，不将来源分支结果冒充同 SHA 独立重跑 |
+| 来源与 CI 路由 | VERIFIED：Host 来源分支固定原文/许可回归 9/9，精确 CI 规划 107/107；当前提交的 Fast/PR 仍待重跑，不把历史组合结果冒充当前 SHA 结果 |
 | Play 必要补验 | VERIFIED：同源码定向 5 类/26 项，18 通过、0 失败/错误、8 项渠道条件跳过；设备名 2/2、顶栏 5/5，Full 的三项受限渠道负向用例在 Play 实际执行通过 |
 | 远端 CI、APK 与真实环境 | UNVERIFIED：本轮新的远端 CI/APK、真实账号、电脑 Host、LAN/P2P/TURN、物理设备及原生库运行另验；旧构建不替代本轮结果 |
 
 Full 的三项条件跳过来自 `BuiltInCapabilitiesTest`、`SmsSendOutcomeHostBusTest`、`SmsSendPluginHostTest` 的受限渠道负向路径，不计作通过；对应三项在 Play 已实际通过。Play 的八项需 `ALLOW_RUNTIME_PLUGINS`，该渠道不装配插件运行时，按条件跳过。Play 命令为 `./gradlew :app:testPlayDebugUnitTest`，用 `--tests` 定向 `*RemoteDeviceNameSettingTest`、`*RemoteRootInteractionTest` 及上述三个类。两渠道重复用例不相加为唯一总数。完整原始日志保留临时环境，不入库。
 
 用户还报告连接时 App 闪退，服务端显示 `dotnet-experimental`。受控复现证明桌面重试原因和官方禁止的原生清理路径，**不能证明用户进程崩溃根因或真实闪退已解决**。该 .NET 服务的公开原实现尚未找到，也没有 Android fatal 堆栈。本轮未启动模拟器、ADB、真实账户或变更电脑 Host；真实服务与设备链路仍待独立验收。PR 合并、worktree 清理和 issue 收尾由用户操作。
+
+当前 c906 提交已修复固定上游 fixture 的严格类型编译边界；该提交尚未完成新的 Fast/PR 运行，待重跑确认后再更新本表状态。
