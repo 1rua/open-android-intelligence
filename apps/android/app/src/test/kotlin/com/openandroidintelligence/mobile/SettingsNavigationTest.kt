@@ -6,6 +6,9 @@ import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsOn
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasTestTag
+import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -58,7 +61,9 @@ class SettingsNavigationTest {
                 }
                 if (category == "连接与账号") {
                     compose.onNodeWithText(context.getString(UiR.string.remote_client_role)).assertIsDisplayed()
-                    compose.onNodeWithText(context.getString(UiR.string.remote_role_signed_out)).assertIsDisplayed()
+                    // 主动连接与当前账号都可合法显示“未登录”，断言须绑定具体角色行。
+                    compose.onNode(hasText(context.getString(UiR.string.remote_role_signed_out)) and
+                        hasAnyAncestor(hasTestTag("remote-client-status")), useUnmergedTree = true).assertIsDisplayed()
                     compose.onNodeWithText(context.getString(UiR.string.remote_host_role)).assertIsDisplayed()
                     compose.onNodeWithText(context.getString(UiR.string.remote_role_stopped)).assertIsDisplayed()
                 }

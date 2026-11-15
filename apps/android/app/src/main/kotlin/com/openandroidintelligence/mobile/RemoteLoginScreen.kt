@@ -185,7 +185,10 @@ internal fun RemoteLoginScreen(
                                         style = MaterialTheme.typography.labelLarge)
                                 }
                             } else {
-                                OutlinedButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                FilledTonalButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = MaterialTheme.colorScheme.onSurface),
                                     modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
                                     Text(stringResource(UiR.string.remote_login_scan_pairing))
                                 }
@@ -195,11 +198,17 @@ internal fun RemoteLoginScreen(
                                     modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
                                     Text(stringResource(UiR.string.remote_login_github))
                                 }
-                                OutlinedButton(onClick = { onOAuthLogin("zhihu") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                FilledTonalButton(onClick = { onOAuthLogin("zhihu") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = MaterialTheme.colorScheme.onSurface),
                                     modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
                                     Text(stringResource(UiR.string.remote_login_zhihu))
                                 }
-                                OutlinedButton(onClick = { onOAuthLogin("google") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                FilledTonalButton(onClick = { onOAuthLogin("google") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                    colors = ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                        contentColor = MaterialTheme.colorScheme.onSurface),
                                     modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
                                     Text(stringResource(UiR.string.remote_login_google))
                                 }

@@ -168,29 +168,58 @@ class RemoteLoginPresentationTest {
         lateinit var contentView: View
         var surface = Color.Unspecified
         var card = Color.Unspecified
+        var tonalButton = Color.Unspecified
+        var primaryButton = Color.Unspecified
         compose.setContent {
             OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = false) {
                 contentView = LocalView.current
                 surface = MaterialTheme.colorScheme.surface
                 card = MaterialTheme.colorScheme.surfaceContainer
+                tonalButton = MaterialTheme.colorScheme.surfaceContainerHigh
+                primaryButton = MaterialTheme.colorScheme.primary
                 Surface(Modifier.fillMaxSize(), color = surface) {
                     RemoteLoginScreen(false, false, false, "https://remote.example", null, {}, { _, _, _ -> }, {}, {})
                 }
             }
         }
+        var selfHosted = false
         listOf(false, true).forEach { isDark ->
             compose.runOnIdle { dark = isDark }
-            val bounds = compose.onNodeWithTag("remote-login-card").fetchSemanticsNode().boundsInRoot
-            val bitmap = compose.runOnIdle {
-                Bitmap.createBitmap(contentView.width, contentView.height, Bitmap.Config.ARGB_8888).also {
-                    contentView.draw(Canvas(it))
+            compose.waitForIdle()
+            listOf(false, true).forEach { showSelfHosted ->
+                if (selfHosted != showSelfHosted) {
+                    compose.onNodeWithText(if (showSelfHosted) "使用自部署服务" else "使用官方服务")
+                        .performScrollTo().performClick()
+                    selfHosted = showSelfHosted
                 }
+                // 同一个生产布局内切换，等主题插值、交叉淡化与卡片尺寸动画全部结束再绘制。
+                compose.waitForIdle()
+                val currentMode = if (showSelfHosted) "remote-self-hosted-login" else "remote-official-login"
+                val oldMode = if (showSelfHosted) "remote-official-login" else "remote-self-hosted-login"
+                compose.onNodeWithTag(currentMode).assertIsDisplayed()
+                compose.onNodeWithTag(oldMode).assertDoesNotExist()
+                val bounds = compose.onNodeWithTag("remote-login-card").fetchSemanticsNode().boundsInRoot
+                val buttonBounds = if (showSelfHosted) emptyList() else listOf("扫码配对电脑", "使用 知乎 登录", "使用 Google 登录")
+                    .map { compose.onNodeWithText(it).fetchSemanticsNode().boundsInRoot }
+                val githubBounds = if (showSelfHosted) null else compose.onNodeWithText("使用 GitHub 登录").fetchSemanticsNode().boundsInRoot
+                val bitmap = compose.runOnIdle {
+                    Bitmap.createBitmap(contentView.width, contentView.height, Bitmap.Config.ARGB_8888).also {
+                        contentView.draw(Canvas(it))
+                    }
+                }
+                assertColor(surface, Color(bitmap.getPixel(1, bitmap.height / 2)))
+                assertColor(card, Color(bitmap.getPixel(bounds.center.x.toInt(), bounds.top.toInt() + 2)))
+                buttonBounds.forEach { button ->
+                    assertColor(tonalButton, Color(bitmap.getPixel(button.left.toInt() + 8, button.center.y.toInt())))
+                }
+                githubBounds?.let { button ->
+                    assertColor(primaryButton, Color(bitmap.getPixel(button.left.toInt() + 8, button.center.y.toInt())))
+                }
+                val mode = if (showSelfHosted) "self-hosted" else "official"
+                val output = File("build/reports/remote-ui-recovery/login-$mode-${if (isDark) "dark" else "light"}.png")
+                output.parentFile?.mkdirs()
+                output.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
             }
-            assertColor(surface, Color(bitmap.getPixel(1, bitmap.height / 2)))
-            assertColor(card, Color(bitmap.getPixel(bounds.center.x.toInt(), bounds.top.toInt() + 2)))
-            val output = File("build/reports/remote-ui-recovery/login-${if (isDark) "dark" else "light"}.png")
-            output.parentFile?.mkdirs()
-            output.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
     }
 

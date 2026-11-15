@@ -9,6 +9,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import com.openandroidintelligence.conversation.components.SettingsListItem
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
@@ -71,7 +73,8 @@ internal fun RemoteConnectionSettingsScreen(
             SettingsSectionCard {
                 SettingsListItem(stringResource(UiR.string.conn_server_address_title),
                     supporting = state.account?.origin ?: stringResource(UiR.string.conn_server_address_none))
-                SettingsListItem(stringResource(UiR.string.remote_client_role), supporting = remoteClientLabel(client))
+                SettingsListItem(stringResource(UiR.string.remote_client_role),
+                    modifier = Modifier.testTag("remote-client-status"), supporting = remoteClientLabel(client))
                 SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = remoteHostLabel(host))
                 SettingsNavigationItem(stringResource(UiR.string.conn_item_diagnostics), onClick = onOpenDiagnostics)
             }
