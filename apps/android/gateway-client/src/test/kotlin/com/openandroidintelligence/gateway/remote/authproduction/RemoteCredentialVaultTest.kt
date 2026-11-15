@@ -87,6 +87,42 @@ class RemoteCredentialVaultTest {
         vault.revokeActive()
         assertNull(vault.activeAccount())
     }
+    @Test fun 主凭据提交替换失败保持撤销屏障且旧角色数据可安全重试() {
+        val directory = Files.createTempDirectory("remote-vault-main-commit-fault").toFile()
+        val protector = Protector(); val initial = RemoteCredentialVault(directory, protector)
+        val record = "独立用户凭据记录".encodeToByteArray()
+        initial.writeAtomic("保留的角色", record)
+        val epoch = initial.revokeActive()
+        val active = initial.activate("https://remote.example", "owner", epoch)
+        val base = File(directory, "remote-credentials.bin")
+        val previous = base.readBytes()
+        val trash = File(directory, "隔离故障文件").apply { check(mkdir()) }
+        var failedCommit = false
+        val failing = RemoteCredentialVault(directory, protector) { atomic, stream ->
+            stream.flush()
+            // 主文件.new已完整写入，移动到隔离区模拟提交时源文件消失；不触碰旧凭据和撤销标记。
+            val staged = File(directory, "remote-credentials.bin.new")
+            assertTrue(staged.isFile)
+            Files.move(staged.toPath(), File(trash, "保留待审密文.new").toPath())
+            failedCommit = true
+            atomic.finishWrite(stream)
+        }
+        val error = assertThrows(com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException::class.java) { failing.revokeActive() }
+        assertEquals("REMOTE_CREDENTIAL_PERSISTENCE_FAILED", error.code)
+        assertTrue(failedCommit)
+        assertArrayEquals("原凭据文件不能丢失或被错误覆盖", previous, base.readBytes())
+        assertArrayEquals(byteArrayOf(1), File(directory, "remote-revocation.bin").readBytes())
+        val restarted = RemoteCredentialVault(directory, protector)
+        assertNull(restarted.activeAccount())
+        assertThrows(IllegalStateException::class.java) { restarted.requireCurrent(active) }
+        assertArrayEquals(record, restarted.read("保留的角色"))
+        restarted.revokeActive()
+        val afterRetry = RemoteCredentialVault(directory, protector)
+        assertNull(afterRetry.activeAccount())
+        assertArrayEquals(byteArrayOf(0), File(directory, "remote-revocation.bin").readBytes())
+        assertArrayEquals(record, afterRetry.read("保留的角色"))
+        previous.fill(0); record.fill(0)
+    }
     @Test fun 读时缺密钥失败且不能生成替代密钥() {
         val directory = Files.createTempDirectory("remote-vault-key").toFile(); val protector = Protector()
         val vault = RemoteCredentialVault(directory, protector); val epoch = vault.revokeActive()

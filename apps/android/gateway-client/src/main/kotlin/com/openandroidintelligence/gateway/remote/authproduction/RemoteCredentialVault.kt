@@ -10,11 +10,13 @@ import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityPersistence
 import com.openandroidintelligence.gateway.remote.auth.RemoteIdentityProtector
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
 import com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.remote.runtime.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.io.File
 import java.io.FileNotFoundException
+import java.io.FileOutputStream
 import java.io.RandomAccessFile
 import java.security.KeyStore
 import java.util.concurrent.ConcurrentHashMap
@@ -63,9 +65,10 @@ data class RemoteActiveAccount(val origin: String, val accountId: String, val ep
  * 两个角色与活动账号/撤销代际位于同一个加密 AtomicFile 信封，所有读改写受文件锁保护。
  * 退出先提交 inactive 与更高代际；角色清理失败或进程重启都不能重新恢复旧活动账号。
  */
-class RemoteCredentialVault(
+class RemoteCredentialVault internal constructor(
     directory: File,
     private val protector: RemoteIdentityProtector,
+    private val commitCredentials: (AtomicFile, FileOutputStream) -> Unit,
 ) : RemoteIdentityPersistence {
     private val directory = directory.apply { check(mkdirs() || isDirectory) }
     private val atomic = AtomicFile(File(directory, "remote-credentials.bin"))
@@ -77,6 +80,7 @@ class RemoteCredentialVault(
     private val master = "credential-vault"
     private val aad = "oai-remote-credential-vault/v1".encodeToByteArray()
 
+    constructor(directory: File, protector: RemoteIdentityProtector) : this(directory, protector, { file, stream -> file.finishWrite(stream) })
     constructor(context: Context) : this(File(context.noBackupFilesDir, "remote"), AndroidRemoteIdentityProtector())
 
     suspend fun <T> credentialTransaction(block: suspend () -> T): T = transactionMutex.withLock {
@@ -148,9 +152,22 @@ class RemoteCredentialVault(
     private fun save(state: State) {
         val plain = Json.canonical(obj("v" to 1, "epoch" to state.epoch,
             "active" to state.active?.let { obj("origin" to it.origin, "accountId" to it.accountId) }, "records" to state.records)).encodeToByteArray()
-        val cipher = try { protector.seal(master, plain, aad) } finally { plain.fill(0) }
-        val stream = atomic.startWrite()
-        try { stream.write(cipher); atomic.finishWrite(stream) } catch (error: Exception) { atomic.failWrite(stream); throw error }
+        val cipher = try { protector.seal(master, plain, aad) }
+        catch (_: Exception) { throw RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED") }
+        finally { plain.fill(0) }
+        var stream: FileOutputStream? = null
+        try {
+            stream = atomic.startWrite()
+            stream.write(cipher)
+            commitCredentials(atomic, stream)
+            check(atomic.baseFile.isFile)
+            val committed = atomic.openRead().use { it.readBytes() }
+            try { check(committed.contentEquals(cipher)) }
+            finally { committed.fill(0) }
+        } catch (_: Exception) {
+            stream?.let { runCatching { atomic.failWrite(it) } }
+            throw RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED")
+        } finally { cipher.fill(0) }
     }
     private fun <T> locked(block: () -> T): T = synchronized(monitor) {
         RandomAccessFile(lockFile, "rw").use { file -> file.channel.lock().use { block() } }
