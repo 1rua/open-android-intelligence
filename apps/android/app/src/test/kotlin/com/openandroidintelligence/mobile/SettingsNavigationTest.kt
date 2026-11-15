@@ -50,7 +50,7 @@ class SettingsNavigationTest {
             }
             listOf("外观与交互", "连接与账号", "通知与提醒", "设备能力与授权", "安全与隐私", "高级设置与关于").forEach { category ->
                 compose.onNodeWithText(category).performScrollTo().performClick()
-                val pageTitle = if (category == "连接与账号") context.getString(UiR.string.remote_connection_title) else category
+                val pageTitle = category
                 try {
                     compose.onNodeWithText(pageTitle).assertIsDisplayed()
                 } catch (failure: AssertionError) {

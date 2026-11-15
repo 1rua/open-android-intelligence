@@ -5,6 +5,10 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,12 +18,15 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
+import com.openandroidintelligence.conversation.motion.AppTransitions
+import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
+import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.*
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
 import com.openandroidintelligence.mobile.settings.appearance.AppearanceSettingsScreen
@@ -35,6 +42,8 @@ import kotlinx.coroutines.launch
 internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, sharedAttachments: SharedConversationAttachments,
     pendingReply: MutableState<ReplyNotificationTarget?>, pendingHandoff: MutableState<String?>) {
     val runtime = app.remoteRuntime
+    val loginEntry = rememberRemoteLoginEntryBridge(runtime)
+    val loginEntryState by loginEntry.state.collectAsState()
     val appearance by app.appearancePreferences.settings.collectAsState()
     val dark = when (appearance.theme) { ThemePreference.LIGHT -> false; ThemePreference.DARK -> true; ThemePreference.SYSTEM -> isSystemInDarkTheme() }
     val controller by runtime.controller.collectAsState()
@@ -43,7 +52,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     var settings by rememberSaveable { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
-    fun notice(text: String) { uiScope.launch { snackbar.showSnackbar(text) } }
+    fun notice(text: String) { uiScope.launch { snackbar.showSnackbar(text, withDismissAction = true) } }
     val picks = rememberConversationAttachmentPickers(controller) { runtime.controller.value === it }
     val avatar = rememberRemoteAccountAvatarPicker(runtime)
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -57,9 +66,22 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         }
     }
     val activity = androidx.compose.ui.platform.LocalContext.current as androidx.activity.ComponentActivity
+    fun noticeWithSettingsAction(text: String) {
+        uiScope.launch {
+            if (snackbar.showSnackbar(text, actionLabel = app.getString(UiR.string.common_action_go_to_settings),
+                    withDismissAction = true) == SnackbarResult.ActionPerformed) {
+                activity.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", activity.packageName, null)))
+            }
+        }
+    }
     val requestScreenCaptureAuthorization = com.openandroidintelligence.mobile.screen.rememberScreenCaptureAuthorization(app, activity, ::notice)
     val pluginRevision by app.pluginHost.revision.collectAsState()
     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
+    var displayedNativeUi by remember { mutableStateOf(nativeUi) }
+    LaunchedEffect(nativeUi, settings) {
+        if (!settings) displayedNativeUi = nativeUi
+    }
     LaunchedEffect(dark) { activity.applySystemBarContrast(dark) }
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     val voiceTarget = remember { AtomicReference<Pair<WorkbenchController, String?>?>(null) }
@@ -167,7 +189,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         if (granted && target != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             beginRecording(target)
         } else if (!granted) {
-            notice(app.getString(UiR.string.perm_audio_required))
+            noticeWithSettingsAction(app.getString(UiR.string.perm_audio_required))
         }
     }
     val startVoiceInput: () -> Unit = {
@@ -200,94 +222,124 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         onDispose { lifecycle.removeObserver(observer); permissionTarget = null; cancelRecording() }
     }
     LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
-    LaunchedEffect(connection.errorCode) { connection.errorCode?.let { notice(it) } }
     val shared by sharedAttachments.pending.collectAsState()
     LaunchedEffect(controller, shared) {
-        controller?.let { active -> active.state.collect { sharedAttachments.deliverTo(active, picks.receive) } }
+        controller?.let { active -> active.state.collect {
+            if (sharedAttachments.deliverTo(active, picks.receive)) settings = false
+        } }
     }
     LaunchedEffect(runtime, connection.account, pendingReply.value) {
-        pendingReply.value?.let { if (runtime.openReplyNotification(it)) pendingReply.value = null }
+        pendingReply.value?.let { if (runtime.openReplyNotification(it)) {
+            settings = false
+            pendingReply.value = null
+            activity.intent.data = null
+        } }
     }
     LaunchedEffect(controller, pendingHandoff.value) {
-        pendingHandoff.value?.let { if (runtime.consumeAssistantHandoff(it)) pendingHandoff.value = null }
+        pendingHandoff.value?.let { if (runtime.consumeAssistantHandoff(it)) {
+            settings = false
+            pendingHandoff.value = null
+            activity.intent.data = null
+        } }
     }
     OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = appearance.dynamicColor, palette = appearance.palette,
         reduceMotion = appearance.reduceMotion, streamingHapticFeedback = appearance.streamingHapticFeedback) {
-        Box(Modifier.fillMaxSize()) {
-        if (onboarding.shouldShow) {
-            com.openandroidintelligence.mobile.onboarding.OnboardingFlow(onboarding, appearance, app.appearancePreferences,
-                app.onboardingPreferences::setStage, app.onboardingPreferences::setLastGateway,
-                onFinished = app.onboardingPreferences::markCompleted,
-                onExit = {
-                    if (onboarding.replay) app.onboardingPreferences.endReplay()
-                    else { app.onboardingPreferences.dismissForCurrentSession(); activity.finish() }
-                }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
-        } else {
-        val current = controller
-        if (nativeUi != null) {
-            RemoteNativePluginSurface(app.pluginHost, nativeUi, current, connection.selected?.origin?.value.orEmpty()) { settings = true }
-            if (settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
-        } else if (current != null) WorkbenchSettingsHost { presentation -> WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
-            onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
-            onPickDocument = picks.document,
-            onVoiceInput = startVoiceInput, recording = activeRecording,
-            onCancelRecording = cancelRecording, onFinishRecording = finishRecording,
-            isDarkTheme = dark, onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
-            onLogout = { runtime.logout() }, onPasteImages = picks.paste,
-            accountName = connection.account?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
-            accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
-            pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
-                runtime.connectedAccountId) { settings = true } },
-            settingsOpen = settings, onSettingsOpenChange = { settings = it },
-            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) }, header = { RemoteModelSelector(runtime) }) }
-        else RemoteLoginScreen(runtime, connection.busy, onOpenSettings = { settings = true })
-        if (current == null && settings) Surface(Modifier.fillMaxSize()) { RemoteSettings(app, requestScreenCaptureAuthorization) { settings = false } }
-        }
-        SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).safeDrawingPadding())
-        }
-    }
-}
-
-@Composable
-private fun RemoteLoginScreen(runtime: RemoteRuntime, busy: Boolean, onOpenSettings: () -> Unit) {
-    val state by runtime.state.collectAsState()
-    var origin by rememberSaveable { mutableStateOf(runtime.loginOrigin()) }
-    var email by rememberSaveable { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().safeDrawingPadding().padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text(stringResource(UiR.string.remote_connection_title), style = MaterialTheme.typography.headlineMedium)
-        if (state.account == null) {
-            OutlinedTextField(origin, { origin = it }, label = { Text(stringResource(UiR.string.remote_service_address)) }, enabled = !busy, singleLine = true)
-            OutlinedTextField(email, { email = it }, label = { Text(stringResource(UiR.string.remote_account_email)) }, enabled = !busy, singleLine = true)
-            OutlinedTextField(password, { password = it }, label = { Text(stringResource(UiR.string.remote_account_password)) }, enabled = !busy,
-                visualTransformation = PasswordVisualTransformation(), singleLine = true)
-            Button(onClick = { runtime.login(origin, email, password); password = "" }, enabled = !busy && email.isNotBlank() && password.isNotBlank()) {
-                Text(stringResource(UiR.string.remote_login))
+        val reduceMotion = LocalMotionPolicy.current.reduceMotion
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+            Box(Modifier.fillMaxSize()) {
+                if (onboarding.shouldShow) {
+                    com.openandroidintelligence.mobile.onboarding.OnboardingFlow(onboarding, appearance, app.appearancePreferences,
+                        app.onboardingPreferences::setStage, app.onboardingPreferences::setLastGateway,
+                        onFinished = app.onboardingPreferences::markCompleted,
+                        onExit = {
+                            if (onboarding.replay) app.onboardingPreferences.endReplay()
+                            else { app.onboardingPreferences.dismissForCurrentSession(); activity.finish() }
+                        }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
+                } else AnimatedContent(
+                    targetState = displayedNativeUi,
+                    transitionSpec = {
+                        fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))
+                    },
+                    label = "native-plugin-surface",
+                ) { activeNative ->
+                    if (activeNative != null) {
+                        PlatformSettingsDrawer(
+                            open = settings && displayedNativeUi == activeNative,
+                            onDismiss = { settings = false },
+                            settingsContent = { presentation, close ->
+                                RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
+                            },
+                        ) {
+                            RemoteNativePluginSurface(app.pluginHost, activeNative, controller,
+                                connection.selected?.origin?.value.orEmpty()) { settings = true }
+                        }
+                    } else AnimatedContent(
+                        targetState = controller != null,
+                        transitionSpec = {
+                            AppTransitions.enter(reduceMotion, forward = targetState) togetherWith
+                                AppTransitions.exit(reduceMotion, forward = targetState)
+                        },
+                        label = "root-surface",
+                    ) { onWorkbench ->
+                        val current = controller
+                        if (!onWorkbench || current == null) {
+                            RemoteLoginSettingsHost(
+                                busy = connection.busy || loginEntryState.busy,
+                                connected = connection.selected != null,
+                                signedIn = connection.account != null,
+                                initialOrigin = runtime.loginOrigin(),
+                                error = loginEntryState.errorCode ?: connection.errorCode,
+                                settingsOpen = settings && controller == null && displayedNativeUi == null,
+                                onSettingsOpenChange = { settings = it },
+                                onLogin = { origin, account, secret -> runtime.login(origin, account, secret) },
+                                onScanPairing = loginEntry::scanPairing,
+                                onRetry = { runtime.dismissConnectionError(); loginEntry.dismissError() },
+                                onOAuthLogin = { loginEntry.startOAuth(activity, RemoteOAuthProvider.valueOf(it.uppercase())) },
+                                settingsContent = { presentation, close ->
+                                    RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
+                                },
+                                endpointContent = { RemoteEndpointList(runtime) },
+                            )
+                        } else WorkbenchSettingsHost { presentation ->
+                            val workbenchState by current.state.collectAsState()
+                            var dismissedError by remember(connection.errorCode) { mutableStateOf(false) }
+                            val retryConnection = {
+                                connection.endpoints.firstOrNull { it.endpoint.key == connection.selected }?.let { runtime.select(it) }
+                                    ?: runtime.refreshHosts()
+                                Unit
+                            }
+                            WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
+                                onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
+                                onPickDocument = picks.document,
+                                onVoiceInput = startVoiceInput, recording = activeRecording,
+                                onCancelRecording = cancelRecording, onFinishRecording = finishRecording,
+                                isDarkTheme = dark,
+                                onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
+                                onLogout = { runtime.logout() }, onPasteImages = picks.paste,
+                                accountName = connection.account?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
+                                accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
+                                connectionHealth = if (!workbenchState.isOnline) com.openandroidintelligence.conversation.model.StreamHealth.FAILED else null,
+                                pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
+                                    runtime.connectedAccountId) { settings = true } },
+                                settingsOpen = settings && controller != null && displayedNativeUi == null,
+                                onSettingsOpenChange = { settings = it },
+                                settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) },
+                                header = {
+                                    RemoteWorkbenchNotices(offline = !workbenchState.isOnline,
+                                        error = connection.errorCode.takeUnless { dismissedError },
+                                        onRetry = retryConnection, onDismiss = { dismissedError = true })
+                                    RemoteModelSelector(runtime)
+                                })
+                        }
+                    }
+                }
+                RemotePairingDialog(loginEntry)
+                SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).navigationBarsPadding()
+                    .padding(start = Dimensions.ScreenHorizontal, end = Dimensions.ScreenHorizontal,
+                        bottom = if (controller != null) Dimensions.ComposerPrimaryAction + Dimensions.SpaceMedium else Dimensions.SpaceMedium))
             }
-        } else RemoteEndpointList(runtime)
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        state.errorCode?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        TextButton(onClick = onOpenSettings) { Text(stringResource(UiR.string.common_action_settings)) }
-    }
-}
-
-@Composable
-internal fun RemoteEndpointList(runtime: RemoteRuntime) {
-    val state by runtime.state.collectAsState()
-    Text(stringResource(UiR.string.remote_hosts), style = MaterialTheme.typography.titleMedium)
-    TextButton(onClick = { runtime.refreshHosts() }, enabled = !state.busy) { Text(stringResource(UiR.string.remote_refresh_hosts)) }
-    state.hosts.forEach { host ->
-        OutlinedButton(onClick = { runtime.discover(host) }, enabled = !state.busy && host.online, modifier = Modifier.fillMaxWidth()) {
-            Text(host.name + " · " + stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline))
         }
     }
-    Text(stringResource(UiR.string.remote_workspaces), style = MaterialTheme.typography.titleMedium)
-    state.endpoints.forEach { endpoint ->
-        TextButton(onClick = { runtime.select(endpoint) }, enabled = !state.busy, modifier = Modifier.fillMaxWidth()) {
-            Text(endpoint.endpoint.displayName)
-        }
-    }
-    state.backendFailures.forEach { (backend, code) -> Text("$backend · $code", color = MaterialTheme.colorScheme.error) }
 }
 
 @Composable
@@ -325,33 +377,6 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
 private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, presentation: SettingsPresentation = SettingsPresentation.SIDEBAR, onBack: () -> Unit) {
     SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = app.remoteRuntime.localSettings, remoteRuntime = app.remoteRuntime,
         presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
-}
-
-@Composable
-internal fun RemoteConnectionSettingsScreen(runtime: RemoteRuntime, presentation: SettingsPresentation, onBack: () -> Unit) {
-    val client by runtime.accountRuntime.state.collectAsState()
-    val host by runtime.accountRuntime.hostState.collectAsState()
-    com.openandroidintelligence.mobile.settings.SettingsPageScaffold(stringResource(UiR.string.remote_connection_title), presentation, onBack) { padding ->
-        com.openandroidintelligence.mobile.settings.SettingsPageColumn(padding) {
-            com.openandroidintelligence.conversation.components.SettingsSectionCard {
-                com.openandroidintelligence.conversation.components.SettingsListItem(stringResource(UiR.string.remote_client_role), supporting = when (client) {
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.SIGNED_OUT -> stringResource(UiR.string.remote_role_signed_out)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.READY -> stringResource(UiR.string.remote_role_ready)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.CONNECTING -> stringResource(UiR.string.remote_role_connecting)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.CONNECTED -> stringResource(UiR.string.remote_role_connected)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState.DISCONNECTED -> stringResource(UiR.string.remote_role_disconnected)
-                })
-                com.openandroidintelligence.conversation.components.SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = when (host) {
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.STOPPED -> stringResource(UiR.string.remote_role_stopped)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.CONNECTING -> stringResource(UiR.string.remote_role_connecting)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.ONLINE -> stringResource(UiR.string.remote_role_online)
-                    com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState.FAILED -> stringResource(UiR.string.remote_role_failed)
-                })
-            }
-            RemoteEndpointList(runtime)
-            TextButton(onClick = { runtime.logout() }) { Text(stringResource(UiR.string.common_action_logout)) }
-        }
-    }
 }
 
 /** 本机选中的原生全屏界面继续使用原宿主外壳与当前工作台操作。 */

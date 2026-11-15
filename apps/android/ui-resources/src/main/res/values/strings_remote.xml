@@ -1,4 +1,16 @@
 <resources>
+    <string name="remote_login_brand" translatable="false">Open Android Intelligence</string>
+    <string name="remote_login_subtitle">连接 DSH Remote，发现已接入的 Agent</string>
+    <string name="remote_login_use_self_hosted">使用自部署服务</string>
+    <string name="remote_login_use_official">使用官方服务</string>
+    <string name="remote_login_account">邮箱或账号</string>
+    <string name="remote_login_credential">访问凭据或密码</string>
+    <string name="remote_login_server">登录 Remote 服务器</string>
+    <string name="remote_login_scan_pairing">扫码配对电脑</string>
+    <string name="remote_login_scan_hint">扫电脑上 Remote 插件显示的二维码，不用注册 Remote 账号</string>
+    <string name="remote_login_github">使用 GitHub 登录</string>
+    <string name="remote_login_zhihu">使用 知乎 登录</string>
+    <string name="remote_login_google">使用 Google 登录</string>
     <string name="remote_connection_title">Remote 连接</string>
     <string name="remote_service_address">Remote 服务地址</string>
     <string name="remote_account_email">邮箱</string>

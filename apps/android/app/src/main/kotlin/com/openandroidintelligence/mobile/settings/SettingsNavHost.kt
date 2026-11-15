@@ -211,13 +211,14 @@ internal fun SettingsNavHost(
                     onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
             }
             composable(SettingsRoutes.GATEWAY) {
-                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back)
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back,
+                    onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) })
                 else SettingsPageScaffold("Remote", presentation, ::back) { padding ->
                     SettingsPageColumn(padding) { Text(androidx.compose.ui.res.stringResource(com.openandroidintelligence.ui.resources.R.string.remote_conversation_not_ready)) }
                 }
             }
             composable(SettingsRoutes.CONNECTION_DETAILS) {
-                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back)
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionDiagnosticsScreen(remoteRuntime, presentation, ::back)
             }
             composable(SettingsRoutes.REMINDERS) { NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications) }
             composable(SettingsRoutes.PAIRING) {
