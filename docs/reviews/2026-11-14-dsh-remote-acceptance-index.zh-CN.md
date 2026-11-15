@@ -131,3 +131,7 @@ manifest 的 telephony `required=false`、签名核验通过，证书 SHA-256 �
 
 不连接日常 Host、账号或会话，不将隔离替身、18 字节测试 artifact、源码检查、APK 编译或单个绿色任务扩大为真实链路通过。
 P0–P5 及 REM-01–20 的完整验收仍 pending；PR 合并、worktree 清理与 issue 收尾由用户操作。
+
+## 2026-11-15 会话链路修复补充
+
+关联 #196，当前业务源码为 `8d083fae4ab9b129750ef1ebbc68c14bf8fbb502`；五项反馈的根因、先红后绿证据与范围见[会话链路修复记录](2026-11-15-remote-session-flow-repair.zh-CN.md)。同源码 Fast、PR 与 Play 定向验证已通过；本轮远端 CI、新 APK 和真实设备复测仍待推送及验收，不能沿用上文旧 SHA 的绿色结果。同轮 STEER 唯一性仍为期望 2 条、实际 3 条，安全回归通过不等于功能闭合；用户可见性策略待确认，保留正文，PR #190 继续 Draft。
