@@ -22,10 +22,12 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 历史 target lease、公开委派目标绑定观察不再是实现或发布前置。MCP 仅公开手机 `android_*`，
 目标限于 OAI Virtual Host 的 `phone-capabilities`，不新增中心服务或监听。
 
-最终被测代码固定为 `7f17831240be467eaaac3fa66cf5550d81cdddab`，迁移基线为
-`12094e684e4bd6d4270513d54b6ef35437536552`。本次证据提交只更新本索引；代码、依赖和测试清单仍对应上述被测 SHA。
+生产代码固定为 `7f17831240be467eaaac3fa66cf5550d81cdddab`，迁移基线为
+`12094e684e4bd6d4270513d54b6ef35437536552`；已通过远端门禁的 head 为 `69a2a2f3014629c51a7e2ec762f69e1dd5aadda0`。
+其间 `40531634` 是文档检查点，`9f8d388` 修两项 CI 工具，`69a2a2f` 修三项测试辅助文件；生产业务逻辑不变。
+本索引的证据文档提交 SHA 由提交后回读登记，不在正文自指。同 head 的 CI 15/15 jobs 与 APK 构建成功。
 此前 `cd4374f` 的 Full 失败与旧候选 APK 证据不计入本次最终结果。下表只登记实际运行结果；真实 Host、设备、模拟器、网络和发布结论继续单独分层。
-证据登记时间为 `2026-11-15 12:05:59 +08:00`（Asia/Shanghai）；这是本地证据汇总时间，不冒充各流水线的起止时间。
+首轮证据登记时间为 `2026-11-15 12:05:59 +08:00`（Asia/Shanghai）；后续补充失败归因与已下载 APK，不冒充各流水线的起止时间。
 
 ## 实现与自动化入口
 
@@ -39,9 +41,9 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 | 手机 Session V3、总线与请求 / 09–10、16 | Gateway、控制端口、取消状态机和手机 MCP 互通纳入 Full；本地原工具 probe 返回 `nativeTools:PASS`、3 条记录及 18 字节测试 artifact 下载 | VERIFIED：本地自动化；真实手机控制另验 |
 | 本机权限与屏幕 / 11–15 | Kotlin 原生内核、SoM、overlay、急停及后台授权由模块 Full 回归覆盖 | VERIFIED：自动化；物理设备另验 |
 | Bridge / MCP / 17 | 官方 SDK、Stdio/进程内桥和当前源码互通由 Full 流程执行 | VERIFIED：本地自动化；真实插件挂载另验 |
-| 旧依赖退役 / 18 | 固定来源、依赖许可、规划器与 CI 消费检查纳入 Fast/Full；未授权远端 CI 日志保持单独未验证 | VERIFIED：本地门禁；远端复核另验 |
+| 旧依赖退役 / 18 | 固定来源、依赖许可、规划器与 CI 消费检查纳入 Fast/Full；摘要门禁与夹具修复后远端 15/15 jobs 成功 | VERIFIED：本地与远端门禁 |
 | 功能保真 / 19 | 默认助理、附件、审批、短信发送/定时、通知/短信主动推送、本地镜像与导出纳入两 App 变体回归 | VERIFIED：以本地计数为限；真实链路另验 |
-| 证据分层 / 20 | 本索引区分最终代码的 Fast/Full 与上一候选 PR，并记录编译、APK 和源码审查；远端 CI 失败日志无法认证时不扩大结论 | VERIFIED：文档证据分层；真实环境未闭合 |
+| 证据分层 / 20 | 本索引区分生产代码、CI 门禁和证据文档提交，并保留旧失败、新运行与本地证据的各自归属 | VERIFIED：文档证据分层；真实环境未闭合 |
 
 媒体来源事实与边界见[媒体来源说明](2026-11-14-remote-history-media-source.zh-CN.md)，
 原生依赖和分发许可见[依赖说明](2026-11-14-dsh-remote-native-dependencies.zh-CN.md)。
@@ -57,8 +59,8 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 | `npm run test:fast -- --since cd4374fcd71774d1c877117ad316b33d228580d7` | 退出码 0；58 份来源、源码扫描、Python 280 项和 `noVpnSurfaceCheck` 通过 | VERIFIED：本地实际执行 |
 | 上一候选 `cd4374f` 的 `npm run test:pr -- --since effa5db64f6ca69733068a69f8ee839b6a2e28cb` | 退出码 0；App 128 类/1435 项（1434 通过、1 项预期 Play 专属跳过），Gateway 24 类/265 项全通过；最终 `7f1783` 以以下 Full 覆盖 | VERIFIED：仅上一候选，不冒充最终 PR 重跑 |
 | `npm run test:full -- --since 12094e684e4bd6d4270513d54b6ef35437536552` | BUILD SUCCESSFUL，10 分 40 秒；Full 128 类/1437 项/0 失败/0 错误/3 跳过，Play 128 类/1437 项/0 失败/0 错误/50 跳过 | VERIFIED：本地全量回归 |
-| APK、Lint 与 AndroidTest 编译 | `lintFullDebug` 成功且 0 errors；`:app:compileFullDebugAndroidTestKotlin` 成功，19 秒，26 executed/303 up-to-date；APK run `43673470976` 成功，artifact 43,865,982 bytes，未取得 7f 本地 SHA | Lint/AndroidTest VERIFIED；APK 构建 VERIFIED、哈希 UNVERIFIED |
-| 独立审查与远端 CI | 基线 `12094e68…`→`dafa…`、后续窄差分至 `effa…` 与 `7f1783…` 的 finding 均关闭；Remote CI run `43673476871` 观察到 App Regressions/CI Gate failure，其余 jobs 成功，但失败日志因未认证无法读取和归因 | 审查 VERIFIED；远端失败原因 UNVERIFIED/UNATTRIBUTED |
+| APK、Lint 与 AndroidTest 编译 | `7f1783` 的 `lintFullDebug` 成功且 0 errors；`:app:compileFullDebugAndroidTestKotlin` 成功，19 秒，26 executed/303 up-to-date；`69a2a2f` APK run `43677436680` 已下载并完成包内容、签名与插件核验 | VERIFIED：各 SHA 的构建与核验分别登记 |
+| 独立审查与远端 CI | 原基线至 `7f1783` 的源码 finding、`9f8d388` 门禁和 `69a2a2f` 三文件夹具修复独立审查均闭合；CI `43677440869` 同 head 15/15 jobs SUCCESS | VERIFIED：含 App Regressions、Play Variant、CI Gate |
 
 执行环境复用 Node 24.18.0、JDK 21、Android SDK 与现有 Gradle 缓存。
 Full 的 App 两变体任务本轮实际执行；其 Gradle 调用为 475 actionable tasks：42 executed、8 from cache、425 up-to-date。
@@ -71,10 +73,19 @@ Full 的 3 项跳过来自 `BuiltInCapabilitiesTest`、`SmsSendPluginHostTest`�
 `SmsBackgroundConsentTest` 3、`SmsSendPluginHostTest` 2、`ProductionPluginHostTest` 20、`SmsSendOutcomeHostBusTest` 2；
 对应插件运行时/渠道门控假设，不计作通过。Play 两项签名安装与 RemoteBus 短信拒绝负向测试实际执行，断言不触发本机确认或系统发送。
 
-同一代码的 [APK run 43673470976](https://github.com/1rua/open-android-intelligence/actions/runs/43673470976) 成功，
-`app-full-debug` artifact 大小为 43,865,982 bytes；下载未完成，最终 APK SHA-256、包内容与签名本地复核均 UNVERIFIED，不引用旧 `cd4374f` APK 哈希。
-[Remote CI run 43673476871](https://github.com/1rua/open-android-intelligence/actions/runs/43673476871) 的失败状态保留，不能以本地 Full 成功覆盖。
-源码独立审查与自动化测试为两类证据；PR #190 保持 Draft，未转正式或合并。
+最终 [APK run 43677436680](https://github.com/1rua/open-android-intelligence/actions/runs/43677436680) 的 metadata commit 为 `69a2a2f3014629c51a7e2ec762f69e1dd5aadda0`；
+artifact ZIP 为 43,866,011 bytes，解压 APK 为 118,944,569 bytes，APK SHA-256 为 `b456cd1c69cef798d3e2dcf144bd86b679f25e758924fc25f520eb93d249393f`。
+包名 `com.openandroidintelligence.mobile`，版本 `2.2.1-dev`/11951，minSdk 31、targetSdk 35；ABI 为 arm64-v8a、armeabi-v7a、x86、x86_64；同 run 6 个 signed `.alp` 逐字节核验通过，
+manifest 的 telephony `required=false`、签名核验通过，证书 SHA-256 为 `9420b1917a285377dd267f04e78347dd73bea00a86fc904267704173599bc4d7`。
+这些证据属于 `69a2a2f` 的实际构建，不构成二进制可重现构建证明。
+
+旧 [Remote CI run 43673476871](https://github.com/1rua/open-android-intelligence/actions/runs/43673476871) 的 App 1437 项/0 失败/3 跳过且 BUILD SUCCESSFUL，
+摘要失败源于遗漏两项仅 Play 负向测试在 Full 的条件跳过，并非性能超时。`9f8d388` 补精确三项类名/方法名允许清单及任务/结果归属校验，
+缺少、多出或不匹配仍拒绝、性能门槛不变；209 项 pytest 通过，原 XML/profile/metrics 不改的 v3 重算 summary、measured、class selection 均 passed，unexpected skip 为空。
+`69a2a2f` 修复测试夹具 `Date.now()` 命名碰撞：两项文件系统回归先复现失败，改用 `mkdtemp` 与唯一回收路径后，插件 89 项、typecheck 和普通环境 Fast 实际通过；独立审查无问题。
+最终 [CI run 43677440869](https://github.com/1rua/open-android-intelligence/actions/runs/43677440869) 与
+[APK run 43677436680](https://github.com/1rua/open-android-intelligence/actions/runs/43677436680) 均以 `69a2a2f` completed/SUCCESS；北京时间 `2026-11-15 12:43:31 +08:00` 回读确认，前者 15/15 jobs 成功，旧摘要及夹具问题已闭合。
+实现、本地自动化与远端 CI 已验；真实环境仍待验收。PR #190 保持 Draft，未转正式或合并；证据文档后续提交不改变已验证业务源码。
 
 ## 必须保留的行为边界
 
@@ -86,9 +97,9 @@ Full 的 3 项跳过来自 `BuiltInCapabilitiesTest`、`SmsSendPluginHostTest`�
 
 | 层级 | 当前状态与所需证据 |
 | --- | --- |
-| 本地隔离自动化 | VERIFIED：限上述 `7f1783` 的本地 Fast/Full、Lint、AndroidTest 编译与原工具 probe；上一候选 PR 和远端 CI 分别列明 |
-| 真实 Host / 后端 | BLOCKED：用户稍后提供专用环境；需要固定 DSH 插件加载、Harness/Codex/ACP 数据面、原生 MCP 挂载与双向握手 |
-| 模拟器 | UNVERIFIED：本轮不运行模拟器；APK 装配与系统生命周期须独立验收 |
+| 本地隔离自动化与远端 CI | VERIFIED：`7f1783` 本地 Full/Lint/AndroidTest/原工具 probe 与 `69a2a2f` 门禁 Fast、远端 15/15 jobs；各 SHA 分别列明 |
+| 真实 Host / 后端 | UNVERIFIED：待用户提供专用环境并登录，核对 DSH 插件加载、Harness/Codex/ACP 数据面、原生 MCP 挂载与双向握手 |
+| 模拟器 | UNVERIFIED：待用户确认启动并手动登录；APK 装配不代替系统生命周期与真实连接验收 |
 | 物理设备 | BLOCKED：本轮不做真机；权限、焦点、锁屏、overlay、急停、SoM 像素及 Android/API 差异需专机验收 |
 | 网络与发布 | UNVERIFIED：LAN/P2P/TURN/Relay、网络切换、实际服务/Host/APK 版本、干净安装与分发完整性另验 |
 
