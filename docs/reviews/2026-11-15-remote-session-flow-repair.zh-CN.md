@@ -32,3 +32,30 @@
 - 真实 Host、用户账号、手机设备及新 APK 复测：**UNVERIFIED**。本轮仅控制认证后的 RPC 边界，不声称线上部署、实机交互或整个迁移已经验收。
 
 原始日志、堆栈与失败夹具保留在 `/tmp`，不入库。诊断记录为 `/tmp/dsh-visibility-red-113ade75.log`、`/tmp/dsh-visibility-h1h3-red.log`、`/tmp/dsh-stream-red-113ade75-v4.log`、`/tmp/dsh-stream-steer-red.log`；最终集成验证为 `/tmp/dsh-issue196-integrated-fast.log`、`/tmp/dsh-issue196-integrated-pr.log`、`/tmp/dsh-issue196-integrated-play.log`。临时日志不是长期分发产物，远端 CI 链接待集成方回读后补入 PR。
+
+## 系统上下文清洗与流失败补充（构建 12151 反馈）
+
+本轮从 `59fbd2449449a8a93e2e7d97318457898e694316` 构造生产路径回放，未连接用户账号、手机或真实 Host。用户确认现象发生在构建 12151，但未提供本次错误日志；以下受控缺陷不能直接认定为实机红字的同一根因。
+
+| 场景 | 已确认的证据 | 改动与验收边界 |
+| --- | --- | --- |
+| 系统提示成为用户或助手气泡 | 共享投影没有处理 `role=system`、`isMeta=true`、`<system-reminder>`；三种后端的历史/实时回放均能让注入进入正文。第一批 6 项、第二批 8 项定向回放全部实际失败。 | 在进入镜像与通知之前统一清洗；只允许明确的用户/助手角色成为聊天正文，正文块的元标记也会过滤。完整、未闭合和跨增量标签均处理；清洗后空则隐藏，附件、正常用户正文与思考/工具呈现保留。同身份更新为空时发布撤下事件。 |
+| 活动流开场后正文中断 | 固定 Harness 0.2.2-rc.1 元数据中的开场快照是 `assistantStream.activeAttempt`。原投影只读 `entries/message`，因此随后的合法正文分块抛 `REMOTE_ASSISTANT_STREAM_GAP`。实际堆栈为 `assistantStream:239 → accept:161 → 回放测试`。 | 恢复活动尝试与已积累的 `type=chunk` 流记录后接续增量；已知正文确实没有开场时仍保留缺口错误，不以忽略全部异常修复。 |
+| 未知状态分块造成流错误 | 原代码先要求活动尝试存在，再识别分块类型；无活动尝试的未知 `thinking/tool/meta/status` 分块同样抛上述缺口异常。 | 先判断是否为已知正文分块，未知类型不进入正文；真实错误、取消和终态逻辑保持原有判定。 |
+| 旧版本已落盘的提示气泡 | 镜像旧行与 Workbench 检查点可以绕过新投影继续显示；仅阻止新写入不足以清理旧气泡。 | 复用同一清洗函数处理镜像读取、检查点恢复和发送原子合并后的展示结果；保留原始发送事实，不凭正文猜测或删除用户输入。旧的纯提醒隐藏，混合正常正文与附件保留。 |
+
+固定上游证据：`eef232d2c43b0c9d04998a18db98cbc9e673e488` 的 `packages/client-core/src/harness-alpha-client.ts:1716-1735` 恢复 `activeAttempt`；`packages/plugin/src/acp/virtual-live.ts:353-358` 将持久流记录保存为 `{type:'chunk',time,chunk}`。本仓锁定的 `tools/remote-interop/harness-fixtures/dsh-api-session-controller/lib/typert.remote-client.js:622-631` 定义活动尝试快照，`:1492-1496` 与 `:2409-2411` 明确 `session/prompt` 回执只保证 `{accepted:true}`。测试没有给该回执添加协议未保证的 `generationId`。
+
+真实失败仍须报告。当前本地触发 `MessageStatus.FAILED` 的入口为明确未发送/明确拒绝，或已确认的失败终态；Harness 的失败终态来自 `turn/end.reason.kind=error`。`accepted` 仅按 JSON 布尔值读取，`true`、缺失或空回执不会因为布尔转换而进入明确拒绝分支。Codex/ACP 的真实失败通路也保留。固定 `packages/plugin/src/codex/turn-end-reason.ts:9-13` 与 `packages/plugin/src/acp/virtual-contract.ts:29-31` 证明 `reason.error.code` 是现存失败形状；本轮不猜测未知上下文字段。
+
+生产 Runtime/Carrier/仓储/镜像/工作台回放已经确认：上述两种缺口会呈现 `notice=EVENTS_FAILED:EVENT_STREAM_FAILED`、`streamHealth=FAILED`，同时 `generation=RUNNING`。这与用户截图中的“Agent 处理失败/生成失败”不是同一项已证明的状态。**实机红字的具体触发原因仍为 UNVERIFIED**，不得把它归因于元消息或宣称已修复真实 Host 的模型执行错误。
+
+为下一轮定位，直接复用已有 `GatewayLog` 出口增加 `OaiRemoteSession` 结构日志：记录 `backend/phase/安全错误码/异常类名/最多 12 个源码栈帧`，拒绝正文式或路径式错误码；不记录异常消息、RPC 内容、会话身份、凭据或用户路径。`conversation-data` 原本已经依赖 `gateway-client`，本轮未增加依赖、协议接口或 UI 文案。
+
+本轮修复后的集成验证待测试执行者回读；原始红灯日志为 `/tmp/issue196-content-red.log`、`/tmp/issue196-content-red-v2.log`、`/tmp/issue196-content-runtime-red-v2.log`。真实 Host、用户账号、升级后的手机和新 APK 复测仍为 **UNVERIFIED**。
+
+### 候选集成回读修正
+
+候选 App 回归中，Harness 的正文和 `turn/end` 完成事实均已到达；唯一失败是测试在关闭 follow 后立即读取通知状态，没有等待通知消费最后一个正文事件。通知入口仍将 `STREAMING`/`CONFIRMED` 投影为 `REPLY_DELTA`/`REPLY_COMPLETED`，并从同一条清洗后的 `TimelineUpsert` 更新摘要。回归已改为等待通知状态流中的完整正文，不改变生产失败语义。
+
+另补充了大小写不敏感的系统提醒标签清洗，以及发送异常诊断中的受控 `deliveryOutcome`（`NOT_SENT`、`REJECTED`、`UNKNOWN`）字段。上述补丁尚待集成方定向回读，当前不宣称已通过新的构建。

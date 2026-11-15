@@ -5,14 +5,15 @@ import com.openandroidintelligence.conversation.model.MessagePart
 /** 会话正文与离线镜像共用清洗规则，避免系统上下文进入界面和通知。 */
 object ConversationContentSanitizer {
     private const val opening = "<system-reminder>"
-    private val reminders = Regex("<system-reminder>[\\s\\S]*?</system-reminder>")
+    private val openingPattern = Regex("<system-reminder>", RegexOption.IGNORE_CASE)
+    private val reminders = Regex("<system-reminder>[\\s\\S]*?</system-reminder>", RegexOption.IGNORE_CASE)
 
     fun text(value: String, streaming: Boolean = false): String {
         var cleaned = reminders.replace(value, "")
         // 流的下一片尚未到达时，也不能把未闭合提示当作普通正文先显示。
-        cleaned.indexOf(opening).takeIf { it >= 0 }?.let { cleaned = cleaned.substring(0, it) }
+        openingPattern.find(cleaned)?.range?.first?.let { cleaned = cleaned.substring(0, it) }
         if (streaming) {
-            val partial = (opening.length - 1 downTo 1).firstOrNull { length -> cleaned.endsWith(opening.take(length)) }
+            val partial = (opening.length - 1 downTo 1).firstOrNull { length -> cleaned.takeLast(length).equals(opening.take(length), ignoreCase = true) }
             if (partial != null) cleaned = cleaned.dropLast(partial)
         }
         return cleaned

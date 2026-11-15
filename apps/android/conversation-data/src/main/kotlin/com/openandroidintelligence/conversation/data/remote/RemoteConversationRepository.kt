@@ -227,7 +227,8 @@ class RemoteConversationRepository(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
                 logRemoteSessionFailure(carrier.backend, "prompt", (cause as? RemoteSessionException)?.code
-                    ?: (cause as? RemoteRpcException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN", cause)
+                    ?: (cause as? RemoteRpcException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN", cause,
+                    (cause as? RemoteRpcException)?.deliveryOutcome?.name)
                 // 已发出的 mutation 没有回执时保持原提交身份，不能画成可盲目重发的确定失败。
                 failure.value = (cause as? RemoteSessionException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN"
                 val rejected = (cause is RemoteRpcException && cause.deliveryOutcome == RemoteDeliveryOutcome.NOT_SENT) ||
@@ -386,7 +387,7 @@ class RemoteConversationRepository(
 
 
 /** 只保留结构化错误码和源码栈，禁止把异常消息、正文或会话身份带入日志。 */
-internal fun logRemoteSessionFailure(backend: String, phase: String, code: String, cause: Throwable? = null) {
+internal fun logRemoteSessionFailure(backend: String, phase: String, code: String, cause: Throwable? = null, deliveryOutcome: String? = null) {
     val safeCode = code.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,95}")) } ?: "REMOTE_FAILURE"
     val safeBackend = backend.takeIf { it.matches(Regex("[a-z][a-z0-9_-]{0,31}")) } ?: "unknown"
     val stack = cause?.stackTrace.orEmpty().take(12).map { frame ->
@@ -394,5 +395,6 @@ internal fun logRemoteSessionFailure(backend: String, phase: String, code: Strin
         "${frame.className}.${frame.methodName}(${file ?: "unknown"}:${frame.lineNumber})"
     }
     GatewayLog.w("OaiRemoteSession", Json.canonical(obj("phase" to phase, "backend" to safeBackend,
-        "code" to safeCode, "exception" to cause?.javaClass?.simpleName, "sourceStack" to stack)))
+        "code" to safeCode, "deliveryOutcome" to deliveryOutcome?.takeIf { it in setOf("NOT_SENT", "REJECTED", "UNKNOWN") },
+        "exception" to cause?.javaClass?.simpleName, "sourceStack" to stack)))
 }
