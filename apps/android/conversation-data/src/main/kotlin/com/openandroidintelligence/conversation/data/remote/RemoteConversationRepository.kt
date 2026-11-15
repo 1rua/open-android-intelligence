@@ -166,7 +166,17 @@ class RemoteConversationRepository(
         }
         val content = buildList {
             if (message.text.isNotEmpty()) add(obj("type" to "text", "text" to message.text))
-            message.attachmentIds.forEach { addAll(attachmentContent(conversationId, it)) }
+            message.attachmentIds.forEach { draftId ->
+                try { addAll(attachmentContent(conversationId, draftId)) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: RemoteRpcException) {
+                    throw java.io.IOException("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:${failure.code}", failure)
+                }
+                catch (failure: java.io.IOException) {
+                    // 尚未调用 prompt；附件未知不能伪装成消息已发，也不能使下一次创建新附件。
+                    throw java.io.IOException("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:${failure.message}", failure)
+                }
+            }
         }
         if (content.isEmpty()) throw RemoteSessionException("INVALID_MESSAGE")
         val localGeneration = "request:${message.clientMessageId.value}"
@@ -200,13 +210,18 @@ class RemoteConversationRepository(
             catch (cause: Exception) {
                 // 已发出的 mutation 没有回执时保持原提交身份，不能画成可盲目重发的确定失败。
                 failure.value = (cause as? RemoteSessionException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN"
-                val rejected = (cause is RemoteRpcException && cause.deliveryOutcome != RemoteDeliveryOutcome.UNKNOWN) ||
+                val rejected = (cause is RemoteRpcException && cause.deliveryOutcome == RemoteDeliveryOutcome.NOT_SENT) ||
                     cause is RemoteSessionException && cause.code == "REMOTE_PROMPT_NOT_ACCEPTED"
                 if (rejected) {
                     synchronized(turns) { turns.remove(message.clientMessageId.value) }
                     turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.MessageStatus("rejected:${member.value}", clock(),
                         ConversationId(conversationId), message.clientMessageId.value, member, AgentMessageStatus.FAILED,
                         2, AgentMessageErrorCode.AGENT_REQUEST_FAILED, localGeneration)) }
+                    val code = if ((cause as? RemoteRpcException)?.deliveryOutcome == RemoteDeliveryOutcome.NOT_SENT)
+                        "REMOTE_SUBMISSION_NOT_SENT" else "REMOTE_SUBMISSION_REJECTED"
+                    turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("not-sent:${member.value}", clock(),
+                        PendingDelivery(member, ConversationId(conversationId), message.text, message.attachmentIds.size,
+                            PendingDeliveryState.FAILED, code, localGeneration))) }
                 } else {
                     if (projection(conversationId).generationId == localGeneration) projection(conversationId).markUnknown()
                     turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("unknown:${member.value}", clock(),
@@ -314,8 +329,13 @@ class RemoteConversationRepository(
         current()
         return CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)
     }
-    override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? =
-        projection(conversationId).rows.values.firstOrNull { it.clientMessageId == clientMessageId }
+    override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? {
+        current()
+        // 原生后端没有按客户端请求身份查询的公开接口；投影缺项不能证明原 prompt 未执行。
+        return synchronized(projection(conversationId)) {
+            projection(conversationId).rows.values.firstOrNull { it.clientMessageId == clientMessageId }
+        } ?: throw java.io.IOException("REMOTE_MESSAGE_QUERY_UNAVAILABLE")
+    }
     override suspend fun submitApprovalDecision(approvalId: ApprovalId, choice: ApprovalChoice): ApprovalSubmissionResult {
         current()
         if (choice !in setOf(ApprovalChoice.ONCE, ApprovalChoice.DENY)) return ApprovalSubmissionResult(ApprovalSubmissionOutcome.UNSUPPORTED)

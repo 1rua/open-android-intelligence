@@ -389,7 +389,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,
             errorCode=status.errorCode,submissionState=submission,
-            submissionErrorCode=if (submission == LocalSubmissionState.FAILED) incoming.submissionErrorCode else null,
+            // 仅保留本次明确提交的“prompt 未发送、附件结果未知”事实；空值必须消费旧许可。
+            submissionErrorCode=when {
+                submission == LocalSubmissionState.FAILED -> incoming.submissionErrorCode
+                submission == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                    incoming.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true -> incoming.submissionErrorCode
+                else -> null
+            },
         )
     }
 

@@ -538,6 +538,22 @@ class WorkbenchController(
         latest.forEach(activeWork::atomChanged)
     }
 
+    /** 每次真实重发前消费旧的未发送许可；崩溃恢复只能查询本次结果，不能沿用上次许可。 */
+    private suspend fun persistDispatchBoundary(threadId: String, clients: List<ClientMessageId>) {
+        sendAtomsMutex.withLock {
+            val existing = loadSendAtomsOnIo(threadId).associateByTo(linkedMapOf()) { it.clientMessageId.value }
+            clients.forEach { client ->
+                val atom = existing[client.value] ?: error("LOCAL_SEND_ATOM_MISSING")
+                check(!atom.isDeleted && atom.submissionState != LocalSubmissionState.ACCEPTED) { "SEND_ATOM_ALREADY_SETTLED" }
+                existing[client.value] = atom.copy(submissionState = LocalSubmissionState.OUTCOME_UNKNOWN, submissionErrorCode = null)
+            }
+            saveAtoms(threadId, existing.values.toList())
+            sendAtomsByThread[threadId] = existing
+            existing.values.forEach(activeWork::atomChanged)
+        }
+        flushPendingPersistence()
+    }
+
     private var cancelledSendPersistenceFailure: Throwable? = null
 
     /** Cancellation settles durable send facts even after the UI has closed; closeAndAwait joins this write. */
@@ -3765,6 +3781,7 @@ class WorkbenchController(
             val normalClients = messages.filter { it.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL }
                 .mapTo(linkedSetOf()) { it.clientMessageId.value }
             if (normalClients.isNotEmpty()) localTurnClientsByThread[conversationId] = normalClients
+            persistDispatchBoundary(conversationId, messages.map { it.clientMessageId })
             val acceptance = repository.submitBatch(conversationId, com.openandroidintelligence.conversation.ports.MessageBatch(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
@@ -3922,6 +3939,7 @@ class WorkbenchController(
         if (atom.isDeleted || atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) return
         var querying = true
         var remotelyAccepted = false
+        var recoveringAttachments = false
         val recoveredDraftRevision = draftRevision
         val recoveredDraftOwner = failedSubmission?.takeIf {
             it.clientMessageId == atom.clientMessageId.value && it.revision == recoveredDraftRevision
@@ -3929,7 +3947,10 @@ class WorkbenchController(
         try {
             val query = repository as? com.openandroidintelligence.conversation.ports.MessageOutcomeQuery
                 ?: throw java.io.IOException("MESSAGE_QUERY_UNAVAILABLE")
-            val known = query.queryMessage(threadId, atom.clientMessageId)
+            val known = if ((atom.submissionState == LocalSubmissionState.FAILED && atom.submissionErrorCode in
+                setOf("REMOTE_SUBMISSION_NOT_SENT", "REMOTE_SUBMISSION_REJECTED")) ||
+                atom.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true) null
+                else query.queryMessage(threadId, atom.clientMessageId)
             hydrateSendAtoms(threadId,refresh=true)
             querying = false
             if (known?.isDeleted == true || atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) {
@@ -3947,8 +3968,10 @@ class WorkbenchController(
             flushPendingPersistence()
             val acceptedBeforeRetry=atomsFor(threadId)[atom.clientMessageId.value]
                 ?.takeIf { it.submissionState==LocalSubmissionState.ACCEPTED }?.messageId
-            val retried=if (known == null && acceptedBeforeRetry == null) retrySubmittedAttachments(threadId,atom)
-                else RetriedAttachmentRefs(attachmentIds,emptyList())
+            val retried=if (known == null && acceptedBeforeRetry == null) {
+                recoveringAttachments = true
+                retrySubmittedAttachments(threadId,atom).also { recoveringAttachments = false }
+            } else RetriedAttachmentRefs(attachmentIds,emptyList())
             attachmentIds=retried.remoteIds
             if (atomsFor(threadId)[atom.clientMessageId.value]?.isDeleted == true) {
                 reconcileDeletedRecoveryUnits(threadId)
@@ -3959,6 +3982,7 @@ class WorkbenchController(
             val messageId = known?.id ?: acceptedFromEvent ?: run {
                 beginLegacyTurn(threadId)
                 if (activeThreadId == threadId) generationFactRevision++
+                persistDispatchBoundary(threadId, listOf(atom.clientMessageId))
                 val acceptance = submitMessageToRepository(threadId,
                     OutgoingMessage(atom.clientMessageId, text, attachmentIds, delivery = atom.delivery))
                 if (acceptance.delivery == com.openandroidintelligence.conversation.ports.MessageDeliveryMode.QUEUE) {
@@ -4032,11 +4056,15 @@ class WorkbenchController(
             throw cancelled
         } catch (cause: Exception) {
             val unknown = querying || remotelyAccepted || cause is java.io.IOException
+            // 恢复附件尚未返回时，原 prompt 未发送的事实不能被这次附件错误覆盖。
+            val code = if (recoveringAttachments && atom.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true)
+                "REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:${errorCodeOf(cause).removePrefix("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:")}"
+                else errorCodeOf(cause)
             changeSendAtom(threadId, atom.clientMessageId.value) { old -> old?.takeIf { it.submissionState != LocalSubmissionState.ACCEPTED }?.copy(
                 submissionState = if (unknown) LocalSubmissionState.OUTCOME_UNKNOWN else LocalSubmissionState.FAILED,
-                submissionErrorCode = errorCodeOf(cause)) }
+                submissionErrorCode = code) }
             if (activeThreadId == threadId) update { it.copy(
-                notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:${errorCodeOf(cause)}",
+                notice = "${if (unknown) "SEND_OUTCOME_UNKNOWN" else "SEND_FAILED"}:$code",
                 generation = if (unknown) GenerationState.OUTCOME_UNKNOWN else GenerationState.IDLE,
                 timeline = Loadable.Ready(renderTimeline(it.pendingBatch))) }
         } finally {
@@ -4053,7 +4081,13 @@ class WorkbenchController(
         }
         try {
             val liveMessages=messages.filterNot { atomsFor(threadId)[it.clientMessageId.value]?.isDeleted == true }
-            val known = liveMessages.map { query.queryMessage(threadId, it.clientMessageId) }
+            val known = liveMessages.map { message ->
+                val atom = atomsFor(threadId)[message.clientMessageId.value]
+                if ((atom?.submissionState == LocalSubmissionState.FAILED && atom.submissionErrorCode in
+                    setOf("REMOTE_SUBMISSION_NOT_SENT", "REMOTE_SUBMISSION_REJECTED")) ||
+                    atom?.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true) null
+                else query.queryMessage(threadId, message.clientMessageId)
+            }
             hydrateSendAtoms(threadId,refresh=true)
             val hasDeletedMember=messages.any { atomsFor(threadId)[it.clientMessageId.value]?.isDeleted == true }
             if (known.all { it != null }) {

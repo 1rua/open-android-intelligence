@@ -455,14 +455,132 @@ class WorkbenchSendPersistenceTest {
     private fun userTexts(controller: WorkbenchController): List<String> =
         (controller.state.value.timeline as? Loadable.Ready)?.value.orEmpty().filter { it.isUser }.map { it.text }
 
+    @Test fun `原生已执行但回执丢失重连和进程恢复不会再次发送原消息`() = runTest {
+        val persistence = MemoryPersistence()
+        val repository = EmptyHostHistory().apply { loseMessageReceipt = true; queryFailure = true }
+        val first = controller(repository, persistence)
+        runCurrent(); first.openThread("conv_a"); runCurrent()
+        first.editDraft("只执行一次"); first.sendDraft(); runCurrent()
+        val original = persistence.loadSendAtoms("conv_a").single()
+        assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, original.submissionState)
+        first.retryPendingSubmissions(); runCurrent()
+        assertEquals(1, repository.messages.size)
+        first.close(); runCurrent()
+        val restored = controller(repository, persistence)
+        runCurrent(); restored.openThread("conv_a"); runCurrent()
+        restored.retryPendingSubmissions(); runCurrent()
+        assertEquals(1, repository.messages.size)
+        assertEquals(original.clientMessageId, persistence.loadSendAtoms("conv_a").single().clientMessageId)
+        assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, persistence.loadSendAtoms("conv_a").single().submissionState)
+        restored.close()
+    }
+
+    @Test fun `明确未发送的原请求可在原生查询不可用时真实重试`() = runTest {
+        val persistence = MemoryPersistence()
+        val repository = EmptyHostHistory().apply { initiationOnly = true; queryFailure = true }
+        val controller = controller(repository, persistence)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        controller.editDraft("已确定未发送"); controller.sendDraft(); runCurrent()
+        val original = repository.messages.single()
+        repository.events.emit(VerifiedConversationEvent.PendingDeliveryUpdated("not-sent", 2,
+            PendingDelivery(original.clientMessageId, ConversationId("conv_a"), original.text, 0,
+                PendingDeliveryState.FAILED, "REMOTE_SUBMISSION_NOT_SENT")))
+        runCurrent()
+        controller.retryPendingSubmissions(); runCurrent()
+        assertEquals(2, repository.messages.size)
+        assertEquals(original.clientMessageId, repository.messages.last().clientMessageId)
+        assertEquals(0, repository.queries)
+        controller.close()
+    }
+
+    @Test fun `原消息安全重试许可在实际执行前落盘消费且崩溃后不再使用旧许可`() = runTest {
+        for (delivery in listOf(MessageDeliveryMode.NORMAL, MessageDeliveryMode.STEER)) {
+            val persistence = MemoryPersistence()
+            val original = LocalSendAtom(ConversationId("conv_a"), ClientMessageId("safe_${delivery.name}"),
+                listOf(MessagePart.Text("只执行本次重试")), 1, submissionState = LocalSubmissionState.FAILED,
+                submissionErrorCode = "REMOTE_SUBMISSION_NOT_SENT", delivery = delivery)
+            persistence.saveSendAtoms("conv_a", listOf(original))
+            val repository = EmptyHostHistory().apply {
+                queryFailure = true
+                beforeMessage = {
+                    val durable = persistence.loadSendAtoms("conv_a").single()
+                    assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, durable.submissionState)
+                    assertNull(durable.submissionErrorCode)
+                    throw kotlinx.coroutines.CancellationException("执行后进程中断")
+                }
+            }
+            val first = controller(repository, persistence)
+            runCurrent(); first.openThread("conv_a"); runCurrent()
+            first.retryPendingSubmissions(); runCurrent()
+            assertEquals(1, repository.messages.size)
+            first.close(); runCurrent()
+            val reopened = controller(repository, persistence)
+            runCurrent(); reopened.openThread("conv_a"); runCurrent()
+            reopened.retryPendingSubmissions(); runCurrent()
+            assertEquals("旧许可不能产生第二次执行", 1, repository.messages.size)
+            assertTrue(repository.queries > 0)
+            reopened.close()
+        }
+    }
+
+    @Test fun `发送边界写盘失败不能执行普通消息重试`() = runTest {
+        val persistence = MemoryPersistence()
+        persistence.saveSendAtoms("conv_a", listOf(LocalSendAtom(ConversationId("conv_a"), ClientMessageId("safe"),
+            listOf(MessagePart.Text("写盘失败不发")), 1, submissionState = LocalSubmissionState.FAILED,
+            submissionErrorCode = "REMOTE_SUBMISSION_NOT_SENT")))
+        val repository = EmptyHostHistory().apply { queryFailure = true }
+        val controller = controller(repository, persistence)
+        runCurrent(); controller.openThread("conv_a"); runCurrent()
+        persistence.failNextDispatchWrite = true
+        controller.retryPendingSubmissions(); runCurrent()
+        assertTrue(repository.messages.isEmpty())
+        controller.close()
+    }
+
+    @Test fun `批次安全重试许可先整体消费崩溃重建后只查询且写盘失败不发送`() = runTest {
+        for (failWrite in listOf(false, true)) {
+            val persistence = MemoryPersistence()
+            val repository = EmptyHostHistory().apply { loseBatchReceipt = true; queryFailure = true }
+            val first = controller(repository, persistence, batched = true)
+            runCurrent(); first.openThread("conv_a"); runCurrent()
+            first.editDraft("批次原请求"); first.sendDraft(); runCurrent()
+            advanceTimeBy(1_501); runCurrent()
+            val original = persistence.loadSendAtoms("conv_a").single()
+            repository.events.emit(VerifiedConversationEvent.PendingDeliveryUpdated("not-sent", 2,
+                PendingDelivery(original.clientMessageId, ConversationId("conv_a"), "批次原请求", 0,
+                    PendingDeliveryState.FAILED, "REMOTE_SUBMISSION_NOT_SENT")))
+            runCurrent()
+            persistence.failNextDispatchWrite = failWrite
+            repository.beforeBatch = {
+                val durable = persistence.loadSendAtoms("conv_a").single()
+                assertEquals(LocalSubmissionState.OUTCOME_UNKNOWN, durable.submissionState)
+                assertNull(durable.submissionErrorCode)
+                throw kotlinx.coroutines.CancellationException("批次执行后进程中断")
+            }
+            first.retryPendingSubmissions(); runCurrent()
+            assertEquals(if (failWrite) 1 else 2, repository.batches.size)
+            first.close(); runCurrent()
+            val reopened = controller(repository, persistence, batched = true)
+            runCurrent(); reopened.openThread("conv_a"); runCurrent()
+            reopened.retryPendingSubmissions(); runCurrent()
+            assertEquals("重建只能查询已消费许可的批次", if (failWrite) 1 else 2, repository.batches.size)
+            reopened.close()
+        }
+    }
+
     private class MemoryPersistence : WorkbenchPersistence {
         var failNextAcceptanceWrite = false
+        var failNextDispatchWrite = false
         private var checkpoint: WorkbenchCheckpoint? = null
         private val atoms = linkedMapOf<String, List<LocalSendAtom>>()
         override fun load() = checkpoint
         override fun save(checkpoint: WorkbenchCheckpoint) { this.checkpoint = checkpoint }
         override fun loadSendAtoms(conversationId: String) = atoms[conversationId].orEmpty()
         override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
+            if (failNextDispatchWrite && atoms.any { it.submissionState == LocalSubmissionState.OUTCOME_UNKNOWN && it.submissionErrorCode == null }) {
+                failNextDispatchWrite = false
+                throw java.io.IOException("DISPATCH_WRITE_FAILED")
+            }
             if (failNextAcceptanceWrite && atoms.any { it.submissionState == LocalSubmissionState.ACCEPTED }) {
                 failNextAcceptanceWrite = false
                 error("MIRROR_WRITE_FAILED")
@@ -476,6 +594,8 @@ class WorkbenchSendPersistenceTest {
         val batches = mutableListOf<MessageBatch>()
         val messages = mutableListOf<OutgoingMessage>()
         var queries = 0
+        var beforeMessage: (() -> Unit)? = null
+        var beforeBatch: (() -> Unit)? = null
         var batchGate: CompletableDeferred<Unit>? = null
         var loseBatchReceipt = false
         var loseMessageReceipt = false
@@ -497,6 +617,7 @@ class WorkbenchSendPersistenceTest {
         override suspend fun submitMessage(message: OutgoingMessage) = submitMessage("conv_a", message)
         override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
             messages += message
+            beforeMessage?.invoke()
             if (commitOrdinaryMessage) {
                 accepted[message.clientMessageId.value] = TimelineMessage(
                     "server_${message.clientMessageId.value}", "user", emptyList(), 0, "queued",
@@ -509,6 +630,7 @@ class WorkbenchSendPersistenceTest {
         }
         override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance {
             batches += batch
+            beforeBatch?.invoke()
             if (cancelBatchRequest) throw kotlinx.coroutines.CancellationException("REQUEST_CANCELLED")
             batch.messages.forEach { message -> accepted[message.clientMessageId.value] = TimelineMessage(
                 "server_${message.clientMessageId.value}", "user", emptyList(), 0, "queued",
@@ -524,6 +646,7 @@ class WorkbenchSendPersistenceTest {
             queryGates[clientMessageId.value]?.let { return it.await() }
             return accepted[clientMessageId.value]?.takeIf { it.conversationId?.value == conversationId }
         }
+        override suspend fun steerMessage(conversationId: String, message: OutgoingMessage) = submitMessage(conversationId, message)
         override suspend fun cancelGeneration(generationId: String, requestId: String) = CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
         override fun observeEvents(scope: ConversationScope) = events
     }

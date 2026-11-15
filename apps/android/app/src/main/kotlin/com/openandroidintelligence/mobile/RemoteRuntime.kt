@@ -274,7 +274,12 @@ class RemoteRuntime(
             val stagingKey = endpointId(endpoint.endpoint.key)
             val staging = EncryptedAttachmentStagingStore(File(context.noBackupFilesDir, "remote-attachment-staging/$stagingKey"),
                 (localDocumentKeyProvider ?: AndroidKeystoreOutboxKeyProvider("remote_attachment_$stagingKey")).getOrCreate(), stagingKey, persistent = true)
-            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging, EncryptedAttachmentRecovery(context, local, localDocumentKeyProvider), mediaSource)
+            val attachments = RemoteAttachmentCoordinator(carrier, ownedScope, staging,
+                EncryptedAttachmentRecovery(context, local, localDocumentKeyProvider), mediaSource, confirmed.endpoint.key.workspaceId,
+                Json.canonical(Json.of(listOf(mediaAccount.epoch, mediaPeer.localFingerprint, mediaPeer.peerFingerprint, mediaPeer.role.name)))) {
+                owner.isActive && channel === next && accountRuntime.account.value == mediaAccount &&
+                    runCatching { accountRuntime.authenticatedPeer(next.scope.connectionId) == mediaPeer }.getOrDefault(false)
+            }
             val active = AtomicReference<String?>(null)
             val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent, mediaSource = mediaSource) { key, event ->
                 mirror.commitNativeEvents(listOf(event))

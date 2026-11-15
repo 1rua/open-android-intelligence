@@ -54,7 +54,8 @@ class RemoteConversationRepositoryTest {
         val second = RemoteConversationRepository(secondCarrier, secondWorkspace, backgroundScope, { local })
         assertEquals(local, first.listConversations(scope, PageRequest()).conversations.single().id.value)
         first.timeline(local, PageRequest())
-        assertNull(second.queryMessage(local, ClientMessageId("unknown")))
+        try { second.queryMessage(local, ClientMessageId("unknown")); fail("投影缺失不是权威未执行") }
+        catch (failure: java.io.IOException) { assertEquals("REMOTE_MESSAGE_QUERY_UNAVAILABLE", failure.message) }
         assertNotEquals(first.workspace.endpoint.key, second.workspace.endpoint.key)
         assertEquals("hermes:相同/session", RemoteLocalIds.decode(local))
         first.close(); second.close()

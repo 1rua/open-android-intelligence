@@ -612,8 +612,23 @@ interface AgentCommandCatalogRepository {
     suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog
 }
 
+/** 已提交文件只能在原端点、工作区、会话与授权主体下复用。连接身份仅约束未知 commit 的回执恢复。 */
+data class RemoteAttachmentUpload(
+    val authority: String,
+    val conversationId: String,
+    val uploadId: String,
+    val connectionId: String,
+    val connectionGeneration: Long,
+    val phase: RemoteAttachmentUploadPhase,
+    val sizeBytes: Long,
+    val sha256Hex: String,
+    val path: String? = null,
+    val name: String? = null,
+)
+enum class RemoteAttachmentUploadPhase { PREPARING, COMMIT_UNKNOWN, CONFIRMED }
+
 data class RecoveredAttachmentDraft(val draft: AttachmentDraft, val content: StagedAttachmentContent, val remoteId: String?,
-    val clientAttachmentId: String? = null)
+    val clientAttachmentId: String? = null, val remoteUpload: RemoteAttachmentUpload? = null)
 interface AttachmentDraftRecoveryStore {
     fun load(): List<RecoveredAttachmentDraft>
     fun save(records: List<RecoveredAttachmentDraft>)
