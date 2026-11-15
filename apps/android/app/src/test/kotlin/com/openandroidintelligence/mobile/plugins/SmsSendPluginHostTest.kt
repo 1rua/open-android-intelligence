@@ -9,9 +9,11 @@ import com.openandroidintelligence.gateway.remote.facade.PhoneFacadeStrings
 import com.openandroidintelligence.gateway.remote.facade.ControlRequestParser
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.mobile.BuildConfig
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.*
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -21,7 +23,32 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class SmsSendPluginHostTest {
+    @Test fun aRestrictedChannelCannotRegisterOrEnableAnInstalledSignedSmsPackage() {
+        assumeTrue(!BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val audit = AndroidAuditStore()
+        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
+        val trust = DeveloperTrustMode()
+        val host = thirdPartyOnlyHost(app, grants, trust, NativePluginLoader(trust), "sms-restricted-test")
+        val installed = host.installStore.install(TestAlpPackages.compiledSmsPackage())
+        val kernel = PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
+            host.runtimes, audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,
+            mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation)
+        host.attach(kernel)
+
+        // 包确实通过签名校验并安装；渠道限制仍须先于插件注册和启用生效。
+        assertEquals(SMS_PLUGIN_ID, installed.pluginId)
+        assertTrue(host.runtimes.isEmpty())
+        assertTrue(host.entries(SMS_PLUGIN_ID).isEmpty())
+        assertNull(kernel.registrationFor(SMS_PLUGIN_ID))
+        assertEquals("BUILT_IN_CHANNEL_UNSUPPORTED", host.builtInFailures[SMS_PLUGIN_ID])
+        assertThrows(PluginNotRegistered::class.java) { host.enable(SMS_PLUGIN_ID, true) }
+        assertFalse(host.isEnabled(SMS_PLUGIN_ID))
+    }
+
     @Test fun oneLocalApprovalCannotLetSignedWasmSendTwiceAndRestartKeepsTheConsumedFact() = runBlocking {
+        // 真实 WASM 执行只适用于装配运行时的渠道；Play 的拒绝行为由上面的反向用例验证。
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val app = ApplicationProvider.getApplicationContext<Application>()
         val previousProvider = KernelPrimitiveRegistry.provider("kernel.sms.send")
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -112,6 +139,7 @@ class SmsSendPluginHostTest {
     }
 
     @Test fun sendBindsExactParametersSubscriptionAndFinalLocalFence() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val app = ApplicationProvider.getApplicationContext<Application>()
         val old = KernelPrimitiveRegistry.provider("kernel.sms.send")
         val handler = Thread.getDefaultUncaughtExceptionHandler()

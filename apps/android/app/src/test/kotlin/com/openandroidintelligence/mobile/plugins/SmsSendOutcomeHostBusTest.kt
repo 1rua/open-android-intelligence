@@ -11,9 +11,11 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.mobile.BuildConfig
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.*
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -23,11 +25,72 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class SmsSendOutcomeHostBusTest {
+    @Test fun aRestrictedChannelDeniesRemoteSmsBeforeConfirmationOrSystemSend() = runBlocking {
+        assumeTrue(!BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val oldProvider = KernelPrimitiveRegistry.provider("kernel.sms.send")
+        var systemSends = 0
+        var confirmations = 0
+        val provider = object : KernelPrimitiveProvider {
+            override val primitiveId = "kernel.sms.send"
+            override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
+                systemSends++
+                return """{"status":"sent"}""".encodeToByteArray()
+            }
+        }
+        KernelPrimitiveRegistry.register(provider)
+        try {
+            val audit = AndroidAuditStore()
+            val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
+            val trust = DeveloperTrustMode()
+            val host = thirdPartyOnlyHost(app, grants, trust, NativePluginLoader(trust), "sms-restricted-bus-test")
+            host.installStore.install(TestAlpPackages.compiledSmsPackage())
+            host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
+                host.runtimes, audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,
+                mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
+            val keyProvider = object : AesGcmKeyProvider {
+                private var key: javax.crypto.SecretKey? = null
+                override fun getOrCreate() = key ?: SecretKeySpec(ByteArray(32) { 29 }, "AES").also { key = it }
+                override fun delete() { key = null }
+            }
+            // 使用真实 Remote 装配和 Bus，不能用测试执行器主动拒绝来替代渠道门禁。
+            val composition = RemotePhoneControlComposition(app, this@runBlocking, host, grants,
+                confirmLocally = { _, _, _ -> confirmations++; true }, metadataKeyProvider = keyProvider)
+            try {
+                val access = ControlAccessBinding(RemoteControlPrincipal(ControlOrigin.fromCanonical("https://restricted-sms.example"),
+                    "sms-account", "controller", "phone", "sha256:" + "a".repeat(64), "sha256:" + "b".repeat(64)), 1, "connection", 1)
+                val registration = composition.register(access) { true }
+                try {
+                    val task = composition.bus.create(access)
+                    val request = ControlRequestParser.parse(Json.canonical(Json.of(mapOf("request_id" to "sms-restricted-request-01",
+                        "op" to "plugin.invoke", "args" to mapOf("pluginId" to SMS_PLUGIN_ID,
+                            "capabilityId" to "org.openandroidintelligence.sms.send@1.0.0", "method" to "send",
+                            "params" to mapOf("subscriptionId" to 2, "recipient" to "+15550001", "text" to "渠道拒绝测试"))))))
+                    composition.bus.submit(access, task, request)
+                    val running = coroutineContext[Job]!!.children.toList()
+                    withTimeout(5_000) { running.forEach { it.join() } }
+                    val receipt = JsonFields.obj(composition.bus.receipt(access, task, request.requestId))!!
+                    assertEquals("denied", JsonFields.string(receipt, "state"))
+                    assertEquals("not_started", JsonFields.string(JsonFields.obj(JsonFields.field(receipt, "execution")), "status"))
+                    assertEquals("CAPABILITY_UNAVAILABLE", JsonFields.string(JsonFields.obj(JsonFields.field(receipt, "error")), "code"))
+                    assertEquals(false, JsonFields.bool(receipt, "resultAvailable"))
+                    assertEquals(0, confirmations)
+                    assertEquals(0, systemSends)
+                } finally { registration.close() }
+            } finally { composition.close() }
+        } finally {
+            KernelPrimitiveRegistry.unregister(provider)
+            if (oldProvider != null) KernelPrimitiveRegistry.register(oldProvider)
+        }
+    }
+
     @Test fun normalUnknownSmsResultKeepsUnknownReceiptAndNeverResendsOnReplayOrRestart() = verify("outcome_unknown")
 
     @Test fun sentSmsResultKeepsCompletedReceiptAndOneSystemSend() = verify("sent")
 
     private fun verify(providerStatus: String) = runBlocking {
+        // 返回值与重放断言依赖真实 WASM 运行时；受限渠道由上面的真实装配拒绝用例覆盖。
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
         val app = ApplicationProvider.getApplicationContext<Application>()
         val oldProvider = KernelPrimitiveRegistry.provider("kernel.sms.send")
         val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
