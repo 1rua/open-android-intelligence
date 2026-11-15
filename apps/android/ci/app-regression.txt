@@ -18,6 +18,8 @@ RemoteLoginPresentationTest
 RemoteDeviceNameSettingTest
 RemoteRootInteractionTest
 RemoteRuntimeTest
+RemoteHarnessCatalogTest
+RemoteNewSessionNavigationTest
 AccountAvatarTest
 AgentSessionForegroundServiceTest
 AgentSessionKeepAliveTest

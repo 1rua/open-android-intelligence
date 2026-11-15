@@ -479,7 +479,12 @@ class RemoteRuntime(
         val owner = SupervisorJob(scope.coroutineContext[Job]); ownerJob = owner
         ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
         mutableController.value = withContext(Dispatchers.IO) { createController(CoroutineScope(scope.coroutineContext + owner), OfflineMirrorRepository(mirror), mirror, media, null, local, AtomicReference()) }
-        mutableState.update { it.copy(selected = key, endpoints = listOf(RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4]))) }
+        val savedWorkspace = RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4])
+        mutableState.update { current ->
+            // 离线恢复只补上次选择；本轮已发现的完整目录及就绪事实仍然有效。
+            val endpoints = current.endpoints.filter { it.endpoint.key.origin.value == account.origin && it.endpoint.key.accountId == account.accountId }
+            current.copy(selected = key, endpoints = if (endpoints.any { it.endpoint.key == key }) endpoints else endpoints + savedWorkspace)
+        }
     }
     private fun saveSelection(workspace: RemoteWorkspace) {
         val key = workspace.endpoint.key
@@ -514,7 +519,8 @@ class RemoteRuntime(
                 JsonFields.bool(it, "available") == true && JsonFields.string(it, "capability") in channel.capabilities
             } == true
         }
-        if (ready("harness", "harness.remote.v3")) add(HarnessSessionCarrier(channel))
+        // 官方类型清单只细化 Codex/ACP，Harness 由独立的 Session V3 能力声明。
+        if ("harness.remote.v3" in channel.capabilities) add(HarnessSessionCarrier(channel))
         if (ready("codex", "codex.appserver.v1")) add(CodexSessionCarrier(channel))
         if ("agent.acp.v1" in channel.capabilities) setOf("cursor", "antigravity", "pi", "opencode", "claude", "hermes")
             .filter { ready(it, "agent.acp.$it.v1") }.forEach { add(AcpSessionCarrier(channel, it)) }

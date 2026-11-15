@@ -147,6 +147,17 @@ class RemoteRuntimeTest {
         assertEquals("one", runtime.state.value.selected!!.workspaceId)
     }
 
+    @Test fun `重新发现宿主后离线恢复不能覆盖完整工作区目录`() = runBlocking {
+        ready("one")
+        runtime.discover(connection.listHosts().single()).join()
+
+        assertEquals("离线恢复仍保留用户上次选择", "one", runtime.state.value.selected!!.workspaceId)
+        assertEquals("设置页必须能选择宿主实际发现的所有工作区", setOf("one", "two"),
+            runtime.state.value.endpoints.map { it.endpoint.key.workspaceId }.toSet())
+        assertTrue("刚发现的工作区事实不能被替换成未知状态",
+            runtime.state.value.endpoints.all { it.endpoint.availability == EndpointAvailability.AVAILABLE })
+    }
+
     @Test fun `旧工作区晚到模型目录不能覆盖当前模型`() = runBlocking {
         ready("one")
         val delayed = CompletableDeferred<JsonValue>()

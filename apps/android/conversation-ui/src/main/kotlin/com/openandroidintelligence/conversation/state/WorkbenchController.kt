@@ -1126,6 +1126,8 @@ class WorkbenchController(
     private data class ConversationCreationAttempt(val scope: ConversationScope, val clientId: String, val folderId: String?,
         var mayHaveBeenSent: Boolean = false)
     private var unconfirmedConversationCreation: ConversationCreationAttempt? = null
+    /** 创建回执先于目录落盘时保留权威身份，首次被完整目录收录后交回目录管理。 */
+    private val creationsAwaitingCatalog = linkedMapOf<Pair<ConversationScope, String>, ConversationSummary>()
     private val pendingFolderAssignments = LinkedHashMap<String, String>()
     private var folderAssignmentJob: Job? = null
     private var folderAssignmentScope: ConversationScope? = null
@@ -1167,6 +1169,8 @@ class WorkbenchController(
             }
         }
         if (unconfirmedConversationCreation === attempt) unconfirmedConversationCreation = null
+        creationsAwaitingCatalog[attempt.scope to conversation.id.value] =
+            ConversationSummary(conversation.id, conversation.title, conversation.createdAt)
         if (attempt.folderId != null) {
             pendingFolderAssignments[conversation.id.value] = attempt.folderId
             folderAssignmentScope = attempt.scope
@@ -1401,6 +1405,7 @@ class WorkbenchController(
         check(remoteConversationOnline) { "AGENT_OFFLINE" }
         check(supportsConversationDelete) { "CONVERSATION_DELETE_UNSUPPORTED" }
         repository.deleteConversation(threadId)
+        creationsAwaitingCatalog.remove(scopeFactory() to threadId)
         deletedThreads.add(threadId)
         timelineSnapshots.remove(scopeFactory() to threadId)
         composerDrafts.remove(threadId)
@@ -1575,6 +1580,7 @@ class WorkbenchController(
         creationGraceJob = null
         pendingCreation = null
         settledCreations.clear()
+        creationsAwaitingCatalog.clear()
         approvalCards.clear()
         approvalFallbacks.clear()
         eventJob?.cancel()
@@ -1918,8 +1924,14 @@ class WorkbenchController(
                 threadsSnapshotRevision=page.snapshotRevision
                 val installedOrganization=organization.takeUnless { it.revision < _state.value.organization.revision } ?: _state.value.organization
                 // 缓存页只能补齐已知会话，缺席不能作为删除证据。
-                val summaries = if (page.authoritative) page.conversations else
+                if (page.authoritative) page.conversations.forEach { summary ->
+                    creationsAwaitingCatalog.remove(requestedScope to summary.id.value)
+                }
+                val catalogSummaries = if (page.authoritative) page.conversations else
                     (( _state.value.threads as? Loadable.Ready)?.value.orEmpty() + page.conversations).distinctBy { it.id }
+                // 原生会话已创建且可打开时，尚未进入持久化目录不等同于被删除。
+                val summaries = (catalogSummaries + creationsAwaitingCatalog.filterKeys { it.first == requestedScope }.values)
+                    .distinctBy { it.id }
                 val threads=installedOrganization.sort(summaries.filterNot { it.id.value in deletedThreads })
                 update { state -> state.copy(organization=installedOrganization,
                     selectedFolderId=state.selectedFolderId?.takeIf { id -> installedOrganization.folders.any { it.folderId == id } },
@@ -4766,6 +4778,7 @@ class WorkbenchController(
         if (event is VerifiedConversationEvent.ConversationsChanged) {
             if (event.eventId.isNotBlank() && event.eventId in handledEventIds) return
             if (event.deleted) event.conversationId?.value?.let { id ->
+                creationsAwaitingCatalog.remove(scopeFactory() to id)
                 deletedThreads.add(id)
                 timelineSnapshots.remove(scopeFactory() to id)
                 composerDrafts.remove(id)
