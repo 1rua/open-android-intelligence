@@ -11,7 +11,7 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 本索引对应[总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)、
 [实施计划](../plans/2026-11-14-dsh-remote-migration-plan.zh-CN.md)与
-[控制契约](../contracts/oai-control-rpc-v1.md)。PR #190 与 #187/#188/#189/#192/#194 持续跟踪。
+[控制契约](../contracts/oai-control-rpc-v1.md)。PR #190 与关联 issue #187/#188/#189/#192/#194/#195 持续跟踪。
 `VERIFIED` 只证明列明提交、环境、命令和断言；`BLOCKED` 表示已知环境限制；
 `UNVERIFIED` 表示缺少证据。实现、自动化与真实环境验收分别记录。
 
@@ -28,6 +28,16 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 本索引的证据文档提交 SHA 由提交后回读登记，不在正文自指。同 head 的 CI 15/15 jobs 与 APK 构建成功。
 此前 `cd4374f` 的 Full 失败与旧候选 APK 证据不计入本次最终结果。下表只登记实际运行结果；真实 Host、设备、模拟器、网络和发布结论继续单独分层。
 首轮证据登记时间为 `2026-11-15 12:05:59 +08:00`（Asia/Shanghai）；后续补充失败归因与已下载 APK，不冒充各流水线的起止时间。
+
+## 2026-11-15 协议互通与安装身份补充
+
+本轮最新生产源码为 `8a297ab9f9ca0d9d32ccad2c4c6cbb32df89c038`，关联 #195。presence 与 Client 常驻控制面、安装身份/名称/本机过滤、官方桌面 `$events`/会话投影、RTC 回调清理及固定兼容来源见[互通记录](2026-11-15-phone-virtual-host-interop.zh-CN.md)。本节仅更新本轮证据；下文旧 SHA 的远端 CI 和 APK 保留历史归属。
+
+| 本轮门禁 | 实际结果 |
+| --- | --- |
+| Fast 与完整 PR | VERIFIED：两者均对上述源码使用 `--since 7215a9d9e5aa281e4182cc5e0ad9b5b91d0e125b` 完整退出 0；Gateway 35 类/307 项全过；App Full 131 类/1453 项、1450 通过、0 失败/错误、3 项预期渠道条件跳过 |
+| Play 必要回归 | VERIFIED：5 类/26 项、18 通过、0 失败/错误、8 项预期渠道条件跳过；设备名 2/2、顶栏 5/5，Full 跳过的三项受限渠道负向用例在 Play 已实际通过。两渠道重复用例不合计为唯一总数 |
+| 剩余验收 | UNVERIFIED：本轮远端 CI/APK、真实账号/电脑 Host、物理设备、LAN/P2P/TURN 与用户 `dotnet-experimental` 服务；缺少 fatal 堆栈，不能称真实闪退根因已确认或已解决。旧匿名设备丢失私钥不能安全认领 |
 
 ## 2026-11-15 界面与认证补充
 
