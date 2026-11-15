@@ -15,11 +15,11 @@ enum class RemoteOAuthProvider(val id: String) { GITHUB("github"), ZHIHU("zhihu"
 /** 固定官方回调协议；随机 state 绑定 App 发起的尝试，不替代上游没有提供的 PKCE。 */
 class RemoteBrowserAttempt(val provider: RemoteOAuthProvider, val state: String, val expiresAt: Long, val epoch: Long) {
     val returnTo: String get() = "dshremote://oauth?state=$state&provider=${provider.id}"
-    override fun toString() = "RemoteBrowserAttempt(秘密=已隐藏)"
+    override fun toString() = "RemoteBrowserAttempt(秘密=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
 }
 
 class RemoteBrowserResult(val token: String?, val error: String?) {
-    override fun toString() = "RemoteBrowserResult(凭据=已隐藏)"
+    override fun toString() = "RemoteBrowserResult(凭据=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
 }
 
 /** 只保存短时发起票据，不落盘账号 token；消费先持久化清空，重复回调不能再注册设备。 */

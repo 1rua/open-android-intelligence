@@ -60,17 +60,17 @@ class RemoteLoginPresentationTest {
         showLogin(onLogin = { _, _, _ -> logins++ })
         compose.onNodeWithText("使用自部署服务").performClick()
         compose.onNodeWithTag("remote-self-hosted-login").assertIsDisplayed()
-        compose.onNodeWithText("邮箱或账号").performTextInput("alice")
-        compose.onNodeWithText("访问凭据或密码").performTextInput("secret")
-        compose.onNodeWithText("访问凭据或密码").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
+        compose.onNodeWithText("邮箱 / 账号").performTextInput("alice")
+        compose.onNodeWithText("访问凭据 / 密码").performTextInput("secret")
+        compose.onNodeWithText("访问凭据 / 密码").assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Password))
         compose.onNodeWithContentDescription("显示密码").performClick()
-        compose.onNodeWithText("访问凭据或密码").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Password))
+        compose.onNodeWithText("访问凭据 / 密码").assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Password))
         compose.onNodeWithContentDescription("隐藏密码").performClick()
         compose.onNodeWithText("使用官方服务").performClick()
         compose.onNodeWithTag("remote-official-login").assertIsDisplayed()
         compose.onNodeWithText("使用自部署服务").performClick()
-        compose.onNodeWithText("邮箱或账号").assertTextContains("alice")
-        compose.onNodeWithText("访问凭据或密码").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+        compose.onNodeWithText("邮箱 / 账号").assertTextContains("alice")
+        compose.onNodeWithText("访问凭据 / 密码").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
         assertEquals("切换入口与密码显示都不能发起认证", 0, logins)
     }
 
@@ -79,12 +79,12 @@ class RemoteLoginPresentationTest {
         showLogin(onLogin = { origin, account, password -> submitted += listOf(origin, account, password) })
         compose.onNodeWithText("使用自部署服务").performClick()
         compose.onNodeWithText("Remote 服务地址").performTextReplacement(" remote.example ")
-        compose.onNodeWithText("邮箱或账号").performTextInput(" alice ")
-        compose.onNodeWithText("访问凭据或密码").performTextInput("secret")
+        compose.onNodeWithText("邮箱 / 账号").performTextInput(" alice ")
+        compose.onNodeWithText("访问凭据 / 密码").performTextInput("secret")
         compose.onNodeWithText("登录 Remote 服务器").performScrollTo().performClick()
         assertEquals(listOf(listOf("https://remote.example", "alice", "secret")), submitted)
         compose.onNodeWithText("登录 Remote 服务器").assertIsNotEnabled()
-        compose.onNodeWithText("访问凭据或密码").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
+        compose.onNodeWithText("访问凭据 / 密码").assert(SemanticsMatcher.expectValue(SemanticsProperties.EditableText, androidx.compose.ui.text.AnnotatedString("")))
     }
 
     @Test fun busyEntryDisablesAuthenticationAndModeChanges() {
@@ -98,13 +98,13 @@ class RemoteLoginPresentationTest {
         showLogin(onLogin = { _, _, _ -> logins++ })
         compose.onNodeWithText("使用自部署服务").performClick()
         compose.onNodeWithText("Remote 服务地址").performTextReplacement("https://")
-        compose.onNodeWithText("邮箱或账号").performTextInput("alice")
-        compose.onNodeWithText("访问凭据或密码").performTextInput("secret")
+        compose.onNodeWithText("邮箱 / 账号").performTextInput("alice")
+        compose.onNodeWithText("访问凭据 / 密码").performTextInput("secret")
         compose.onNodeWithText("登录 Remote 服务器").assertIsNotEnabled()
-        compose.onNodeWithText("访问凭据或密码").performImeAction()
+        compose.onNodeWithText("访问凭据 / 密码").performImeAction()
         assertEquals(0, logins)
         compose.onNodeWithText("Remote 服务地址").performTextReplacement("remote.example")
-        compose.onNodeWithText("访问凭据或密码").performImeAction()
+        compose.onNodeWithText("访问凭据 / 密码").performImeAction()
         assertEquals(1, logins)
     }
 
@@ -150,7 +150,7 @@ class RemoteLoginPresentationTest {
             }
         }
         compose.onNodeWithText("使用自部署服务").performClick()
-        compose.onNodeWithText("邮箱或账号").performTextInput("保留的输入")
+        compose.onNodeWithText("邮箱 / 账号").performTextInput("保留的输入")
         compose.onNodeWithText("前往设置").performScrollTo().performTouchInput { click() }
         compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
         compose.onNodeWithText("外观与交互").performScrollTo().performClick()
@@ -158,7 +158,7 @@ class RemoteLoginPresentationTest {
         compose.onNodeWithText("设置").assertIsDisplayed()
         compose.runOnIdle { assertTrue("子页返回不能直接关闭设置", settingsOpen); dispatcher.onBackPressed() }
         compose.runOnIdle { assertFalse(settingsOpen) }
-        compose.onNodeWithText("邮箱或账号").assertTextContains("保留的输入")
+        compose.onNodeWithText("邮箱 / 账号").assertTextContains("保留的输入")
         compose.onNodeWithText("前往设置").performScrollTo().assertIsDisplayed()
         assertEquals("设置往返不应触发认证", 0, logins)
     }

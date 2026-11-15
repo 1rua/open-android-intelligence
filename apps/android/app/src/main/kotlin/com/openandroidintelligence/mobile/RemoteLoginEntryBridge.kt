@@ -30,7 +30,7 @@ data class RemoteLoginEntryState(
     val pairingState: String? = null,
     val verificationCode: String? = null,
 ) {
-    override fun toString() = "RemoteLoginEntryState(busy=$busy,秘密=已隐藏)"
+    override fun toString() = "RemoteLoginEntryState(busy=$busy,秘密=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
 }
 
 /** 原生界面只调用意图；账号令牌、临时手机私钥和扫码秘密均不进入普通设置或日志。 */

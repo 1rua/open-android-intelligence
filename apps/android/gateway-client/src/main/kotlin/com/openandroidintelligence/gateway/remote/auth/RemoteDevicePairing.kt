@@ -16,7 +16,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 class RemotePairingQr(val ticket: String?, val session: RemotePairingSession?) {
-    override fun toString() = "RemotePairingQr(秘密=已隐藏)"
+    override fun toString() = "RemotePairingQr(秘密=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
 }
 class RemotePairingSession(val value: JsonValue.JObject) {
     val id = value.requiredText("sessionId")
@@ -36,7 +36,7 @@ class RemotePairingSession(val value: JsonValue.JObject) {
         check(hostName.length <= 128 && expiresAt > 0)
         pairingKey(scanSecret)
     }
-    override fun toString() = "RemotePairingSession(秘密=已隐藏)"
+    override fun toString() = "RemotePairingSession(秘密=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
 }
 class RemotePairingImport(val sessionId: String, val accountId: String, val credential: RemoteRoleCredential, val epoch: Long, val loginAttemptId: String)
 class RemotePairingStatus(val state: String, val verificationCode: String? = null, val imported: RemotePairingImport? = null,
@@ -49,7 +49,7 @@ class RemoteDevicePairing(
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     class Pending(val session: RemotePairingSession, val identity: RemoteStaticIdentity, val rawClaim: String, val epoch: Long, val loginAttemptId: String) {
-        override fun toString() = "Pending(配对秘密=已隐藏)"
+        override fun toString() = "Pending(配对秘密=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本，不作为界面文案
     }
     fun parseQr(raw: String): RemotePairingQr {
         check(raw.toByteArray().size <= 8192) { "INVALID_MESSAGE" }
