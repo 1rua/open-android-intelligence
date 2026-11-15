@@ -73,6 +73,8 @@ data class SteeringEchoPresentation(
     val seenMessageIds: Set<String>,
     val historySequence: Long? = null,
     val messageId: String? = null,
+    /** 发送时已知的原生轮次；旧记录为空时继续保守处理。 */
+    val generationId: String? = null,
 )
 
 /**

@@ -25,9 +25,9 @@ class EncryptedSteeringPresentationTest {
         override fun delete() = Unit
     }
     private val conversation = ConversationId("same_conversation")
-    private fun atom(id: String = "client") = LocalSendAtom(conversation, ClientMessageId(id),
+    private fun atom(id: String = "client", generation: String? = "same-turn") = LocalSendAtom(conversation, ClientMessageId(id),
         listOf(MessagePart.Text("重复正文")), 10_000L, delivery = MessageDeliveryMode.STEER,
-        submissionState = LocalSubmissionState.ACCEPTED, steeringEcho = SteeringEchoPresentation(emptySet()))
+        submissionState = LocalSubmissionState.ACCEPTED, steeringEcho = SteeringEchoPresentation(emptySet(), generationId = generation))
     private fun row(id: String, sequence: Long) = TimelineMessage(id, "user", listOf(MessagePart.Text("重复正文")), 1L,
         conversationId = conversation, historySequence = sequence)
 
@@ -52,6 +52,7 @@ class EncryptedSteeringPresentationTest {
             val saved = restored.loadSendAtoms(conversation.value).single()
             assertNull(saved.messageId)
             assertEquals("echo", saved.steeringEcho!!.messageId)
+            assertEquals("same-turn", saved.steeringEcho!!.generationId)
             assertTrue(saved.steeringEcho!!.seenMessageIds.contains("seen"))
             assertEquals(10L, saved.steeringEcho!!.historySequence)
             val visible = restored.mergeTimeline(conversation.value, restored.timeline(conversation.value)!!).messages

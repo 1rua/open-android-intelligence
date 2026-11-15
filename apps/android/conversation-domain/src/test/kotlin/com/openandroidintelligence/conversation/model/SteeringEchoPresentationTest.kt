@@ -9,9 +9,9 @@ import org.junit.Test
 /** 正文只形成展示对应：每次发送独立、已见历史不消耗原稿、身份权威不变。 */
 class SteeringEchoPresentationTest {
     private val conversation = ConversationId("remote_session")
-    private fun atom(id: String = "first", text: String = "继续检查", seen: Set<String> = emptySet(), sequence: Long? = null) =
-        LocalSendAtom(conversation, ClientMessageId(id), listOf(MessagePart.Text(text)), 10_000L,
-            delivery = MessageDeliveryMode.STEER, steeringEcho = SteeringEchoPresentation(seen, sequence))
+    private fun atom(id: String = "first", text: String = "继续检查", seen: Set<String> = emptySet(), sequence: Long? = null,
+        generation: String? = "native_turn") = LocalSendAtom(conversation, ClientMessageId(id), listOf(MessagePart.Text(text)), 10_000L,
+            delivery = MessageDeliveryMode.STEER, steeringEcho = SteeringEchoPresentation(seen, sequence, generationId = generation))
     private fun row(id: String = "echo", text: String = "继续检查", sequence: Long? = null) =
         TimelineMessage(id, "user", listOf(MessagePart.Text(text)), 1L, conversationId = conversation,
             generationId = "native_turn", historySequence = sequence)
@@ -35,6 +35,7 @@ class SteeringEchoPresentationTest {
         assertEquals(remote.id, visible.id)
         assertNull(visible.clientMessageId)
         assertEquals(local.clientMessageId, visible.presentationClientMessageId)
+        assertEquals("native_turn", reconciled.steeringEcho!!.generationId)
         assertFalse(visible.localPlaceholder)
         assertEquals("CONFIRMED", visible.state)
         assertNull(remote.presentationClientMessageId)

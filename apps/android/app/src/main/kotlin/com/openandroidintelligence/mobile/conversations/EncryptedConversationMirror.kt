@@ -342,7 +342,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted,
         "delivery" to a.delivery.wireValue,
         "steeringEcho" to a.steeringEcho?.let { echo -> mapOf("seenMessageIds" to echo.seenMessageIds.toList(),
-            "historySequence" to echo.historySequence,"messageId" to echo.messageId) })
+            "historySequence" to echo.historySequence,"messageId" to echo.messageId,"generationId" to echo.generationId) })
 
     private fun decodeSendAtom(o: JsonValue.JObject) = LocalSendAtom(ConversationId(str(o,"conversationId")),
         ClientMessageId(str(o,"clientMessageId")),decodeParts(o),JsonFields.long(o,"timestamp") ?: 0L,
@@ -355,7 +355,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         } ?: MessageDeliveryMode.NORMAL,
         steeringEcho=JsonFields.obj(JsonFields.field(o,"steeringEcho"))?.let { echo ->
             SteeringEchoPresentation(JsonFields.strings(echo,"seenMessageIds").toSet(),JsonFields.long(echo,"historySequence"),
-                JsonFields.string(echo,"messageId"))
+                JsonFields.string(echo,"messageId"),JsonFields.string(echo,"generationId"))
         })
 
     private fun decodeStatus(value: String?) = value?.let { text -> AgentMessageStatus.entries.firstOrNull { it.wireValue == text }
@@ -415,8 +415,10 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         return incoming.copy(
             messageId=messageId,batchId=incoming.batchId ?: existing.batchId,
             // 正文展示对应独立且只确认一次；迟到 ACK 不得丢掉已保存的回并结果。
-            steeringEcho=existing.steeringEcho?.let { echo -> echo.copy(messageId=echo.messageId ?: incoming.steeringEcho?.messageId) }
-                ?: incoming.steeringEcho,
+            steeringEcho=existing.steeringEcho?.let { echo -> echo.copy(
+                messageId=echo.messageId ?: incoming.steeringEcho?.messageId,
+                generationId=echo.generationId ?: incoming.steeringEcho?.generationId,
+            ) } ?: incoming.steeringEcho,
             timestamp=existing.timestamp.takeIf { it > 0L } ?: incoming.timestamp,
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,

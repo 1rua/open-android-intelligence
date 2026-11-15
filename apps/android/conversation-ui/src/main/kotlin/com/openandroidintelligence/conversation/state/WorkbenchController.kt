@@ -3479,7 +3479,11 @@ class WorkbenchController(
                     }, timestamp = entry.timestamp, delivery = submission.delivery,
                     steeringEcho = if (authoritativeMessageIds && submission.delivery ==
                         com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER)
-                        SteeringEchoPresentation(mirrored.keys.toSet(), mirrored.values.mapNotNull { it.historySequence }.maxOrNull())
+                        SteeringEchoPresentation(
+                            seenMessageIds = mirrored.keys.toSet(),
+                            historySequence = mirrored.values.mapNotNull { it.historySequence }.maxOrNull(),
+                            generationId = submission.expectedGenerationId,
+                        )
                     else null,
                 ) }
                 flushPendingPersistence()
@@ -5694,13 +5698,13 @@ class WorkbenchController(
         // 手机与 Host 的时钟可能不同。只修正已回并引导与发送后同轮新助手的相对次序，
         // 发送前已存在的助手、其他轮次及尚未出现真实回声的原稿都保持原排序。
         val ordered=rawList.toMutableList()
-        val trackerGeneration = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value
         activeAtoms.sortedBy { it.timestamp }.forEach { atom ->
             val echo=atom.steeringEcho ?: return@forEach
             val id=echo.messageId ?: return@forEach
             val message=mergedMessages.firstOrNull { it.id == id && it.presentationClientMessageId == atom.clientMessageId }
                 ?: return@forEach
-            val generation=message.generationId ?: return@forEach
+            val steeringGeneration = echo.generationId
+            val generation=message.generationId ?: steeringGeneration ?: return@forEach
             val userIndex=ordered.indexOfFirst { it.key == id }
             if (userIndex < 0) return@forEach
             val earlierReplies=ordered.take(userIndex).filter { candidate ->
@@ -5708,7 +5712,7 @@ class WorkbenchController(
                 // Codex 历史追赶有时不带 generationId；只有当前活动轮次仍与
                 // 该本地引导一致时才把缺失身份视为同轮，避免跨轮移动旧助手。
                 candidate.generationId == generation ||
-                    (candidate.generationId == null && trackerGeneration == generation)
+                    (candidate.generationId == null && steeringGeneration == generation)
             }
             if (earlierReplies.isNotEmpty()) {
                 // 保留原稿锚点及发送前已有行；仅把时钟偏差导致提前的同轮新回复放回输入之后。
