@@ -68,6 +68,7 @@ class RemoteLoginEntryBridge(
                 pairing.restore()?.let { restored ->
                     if (generation.get() != 0L) return@launch
                     vault.requireEpoch(restored.epoch)
+                    fence.requirePending(restored.loginAttemptId)
                     pending = restored
                     mutableState.value = RemoteLoginEntryState(session = restored.session, pairingState = "recovering")
                     if (foreground) startPolling()
@@ -130,14 +131,15 @@ class RemoteLoginEntryBridge(
         // 非本次回调不取消正在进行的合法尝试，避免任意恶意深链造成登录被抢占。
         val accepted = try { synchronized(entryLock) {
             check(!fence.blocked()) { "REMOTE_OAUTH_ATTEMPT_MISSING" }
+            val attemptId = fence.currentAttemptId()
             val result = browser.consume(raw, vault.authorizationEpoch())
-            result to replaceOperation()
+            Triple(result, replaceOperation(), attemptId)
         } }
         catch (_: Exception) {
             if (!state.value.awaitingBrowser) mutableState.update { it.copy(errorCode = "REMOTE_OAUTH_CALLBACK_INVALID") }
             return false
         }
-        val (result, ticket) = accepted
+        val (result, ticket, attemptId) = accepted
         operation = scope.launch {
             synchronized(entryLock) { current(ticket); mutableState.value = RemoteLoginEntryState(busy = true) }
             try {
@@ -147,7 +149,7 @@ class RemoteLoginEntryBridge(
                 }
                 current(ticket)
                 currentCoroutineContext().ensureActive()
-                runtime.completeExternalLogin(requireNotNull(result.token))
+                runtime.completeExternalLogin(requireNotNull(result.token), attemptId)
                 current(ticket)
                 mutableState.value = RemoteLoginEntryState()
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -192,8 +194,8 @@ class RemoteLoginEntryBridge(
         val next = synchronized(entryLock) {
             current(ticket)
             pending?.takeIf { it.session.id == session.id } ?: run {
-                fence.allowNewAttempt()
-                pairing.prepareClaim(session, vault.authorizationEpoch()).also { pending = it }
+                val attemptId = fence.allowNewAttempt()
+                pairing.prepareClaim(session, vault.authorizationEpoch(), attemptId).also { pending = it }
             }
         }
         val claimed = pairing.claim(next)

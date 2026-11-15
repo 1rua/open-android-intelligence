@@ -219,11 +219,11 @@ class RemoteRuntime(
         catch (failure: Exception) { fail(failure) }
         finally { mutableState.update { it.copy(busy = false) } }
     }
-    suspend fun completeExternalLogin(token: String) {
+    suspend fun completeExternalLogin(token: String, loginAttemptId: String) {
         mutableState.update { it.copy(busy = true, errorCode = null) }
         try {
             retire()
-            accountRuntime.loginAccountToken("https://dsh.r2049.cn", token)
+            accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId)
             mutableState.value = RemoteWorkspaceState(account = accountRuntime.account.value, busy = true,
                 accountAvatarBase64 = accountRuntime.account.value?.let(::avatar))
             refreshHostsInternal()

@@ -59,7 +59,7 @@ class AndroidRemoteIdentityProtector : RemoteIdentityProtector {
     companion object { private val keyLock = Any() }
 }
 
-data class RemoteActiveAccount(val origin: String, val accountId: String, val epoch: Long)
+data class RemoteActiveAccount(val origin: String, val accountId: String, val epoch: Long, val loginAttemptId: String? = null)
 
 /**
  * 两个角色与活动账号/撤销代际位于同一个加密 AtomicFile 信封，所有读改写受文件锁保护。
@@ -77,6 +77,7 @@ class RemoteCredentialVault internal constructor(
     private val revocation = AtomicFile(File(directory, "remote-revocation.bin"))
     private val monitor = monitors.computeIfAbsent(lockFile.canonicalPath) { Any() }
     private val transactionMutex = transactions.computeIfAbsent(lockFile.canonicalPath) { Mutex() }
+    private val loginFence = RemoteLoginAttemptFence(directory)
     private val master = "credential-vault"
     private val aad = "oai-remote-credential-vault/v1".encodeToByteArray()
 
@@ -102,9 +103,14 @@ class RemoteCredentialVault internal constructor(
         // 以原子替换提交清空，不删除文件；旧角色即使恢复进程也读不到旧密文。
         save(state.copy(records = state.records - scopeKey))
     }
+    fun beginLoginAttempt(): String { loginFence.block(); return loginFence.allowNewAttempt() }
+    fun cancelLoginAttempt(id: String) = loginFence.cancelAttempt(id)
+    fun requireLoginAttempt(id: String) = loginFence.requirePending(id)
     fun authorizationEpoch(): Long = locked { load().epoch }
     fun requireEpoch(expected: Long) = locked { check(load().epoch == expected) { "REMOTE_AUTHORIZATION_SUPERSEDED" } }
-    fun activeAccount(): RemoteActiveAccount? = locked { if (revocationPending()) null else load().active }
+    fun activeAccount(): RemoteActiveAccount? = locked {
+        if (revocationPending()) null else load().active?.takeIf { it.loginAttemptId == null || loginFence.authorized(it.loginAttemptId) }
+    }
     fun revokeActive(): Long = locked {
         saveRevocation(true)
         val state = load(); val next = Math.addExact(state.epoch, 1)
@@ -112,15 +118,24 @@ class RemoteCredentialVault internal constructor(
         saveRevocation(false)
         next
     }
-    fun activate(origin: String, accountId: String, expectedEpoch: Long): RemoteActiveAccount = locked {
+    fun activate(origin: String, accountId: String, expectedEpoch: Long, loginAttemptId: String? = null): RemoteActiveAccount = locked {
         check(!revocationPending()) { "REMOTE_LOGOUT_INCOMPLETE" }
         val state = load()
         check(state.epoch == expectedEpoch) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
-        val account = RemoteActiveAccount(origin, accountId, expectedEpoch)
-        save(state.copy(active = account)); account
+        loginAttemptId?.let(loginFence::requirePending)
+        val account = RemoteActiveAccount(origin, accountId, expectedEpoch, loginAttemptId)
+        save(state.copy(active = account))
+        try { loginAttemptId?.let(loginFence::complete) }
+        catch (failure: Exception) {
+            // 本临界区内没有其他账号提交；失败时只清除此尝试，撤销终态仍独立阻止重启恢复。
+            runCatching { save(state.copy(active = null)) }
+            throw failure
+        }
+        account
     }
     fun requireCurrent(account: RemoteActiveAccount) = locked {
-        check(!revocationPending() && load().active == account) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
+        check(!revocationPending() && load().active == account &&
+            (account.loginAttemptId == null || loginFence.authorized(account.loginAttemptId))) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
     }
     private fun revocationPending(): Boolean = try {
         revocation.openRead().use { it.read() != 0 }
@@ -144,7 +159,7 @@ class RemoteCredentialVault internal constructor(
             check(value.longValue("v") == 1L)
             val epoch = value.longValue("epoch"); check(epoch >= 0)
             val active = value.value("active").let { row -> if (row == JsonValue.JNull) null else row.objectValue().let {
-                RemoteActiveAccount(it.requiredText("origin"), it.requiredText("accountId"), epoch)
+                RemoteActiveAccount(it.requiredText("origin"), it.requiredText("accountId"), epoch, it.optionalText("loginAttemptId"))
             } }
             val records = value.value("records").objectValue().fields.associate { (key, v) -> key to (v as JsonValue.JString).value }
             State(epoch, active, records)
@@ -152,7 +167,7 @@ class RemoteCredentialVault internal constructor(
     }
     private fun save(state: State) {
         val plain = Json.canonical(obj("v" to 1, "epoch" to state.epoch,
-            "active" to state.active?.let { obj("origin" to it.origin, "accountId" to it.accountId) }, "records" to state.records)).encodeToByteArray()
+            "active" to state.active?.let { obj("origin" to it.origin, "accountId" to it.accountId, "loginAttemptId" to it.loginAttemptId) }, "records" to state.records)).encodeToByteArray()
         val cipher = try { protector.seal(master, plain, aad) }
         catch (_: Exception) { throw RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED") }
         finally { plain.fill(0) }

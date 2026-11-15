@@ -53,7 +53,7 @@ class RemoteDevicePairingTest {
             val memory = Memory(); val api = RemoteServerApi(origin)
             val pairing = RemoteDevicePairing(memory, api) { 1000L }
             val value = pairing.parseQr(Json.canonical(session(origin))).session!!
-            val pending = pairing.prepareClaim(value, 2)
+            val pending = pairing.prepareClaim(value, 2, java.util.UUID.randomUUID().toString())
             val restored = RemoteDevicePairing(memory, api) { 1000L }.restore()!!
             assertTrue(restored.identity.sameIdentity(pending.identity)); assertEquals(pending.rawClaim, restored.rawClaim)
             server.enqueue(MockResponse().setBody("{\"state\":\"claimed\",\"verificationCode\":\"00123456\",\"expiresAt\":181000}"))

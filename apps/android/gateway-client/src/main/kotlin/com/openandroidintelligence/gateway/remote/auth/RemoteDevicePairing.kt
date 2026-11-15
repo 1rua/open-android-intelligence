@@ -38,7 +38,7 @@ class RemotePairingSession(val value: JsonValue.JObject) {
     }
     override fun toString() = "RemotePairingSession(秘密=已隐藏)"
 }
-class RemotePairingImport(val sessionId: String, val accountId: String, val credential: RemoteRoleCredential, val epoch: Long)
+class RemotePairingImport(val sessionId: String, val accountId: String, val credential: RemoteRoleCredential, val epoch: Long, val loginAttemptId: String)
 class RemotePairingStatus(val state: String, val verificationCode: String? = null, val imported: RemotePairingImport? = null,
     val failureReason: String? = null)
 
@@ -48,7 +48,7 @@ class RemoteDevicePairing(
     private val api: RemoteServerApi = RemoteServerApi(RemoteServerApi.DEFAULT_ORIGIN),
     private val now: () -> Long = System::currentTimeMillis,
 ) {
-    class Pending(val session: RemotePairingSession, val identity: RemoteStaticIdentity, val rawClaim: String, val epoch: Long) {
+    class Pending(val session: RemotePairingSession, val identity: RemoteStaticIdentity, val rawClaim: String, val epoch: Long, val loginAttemptId: String) {
         override fun toString() = "Pending(配对秘密=已隐藏)"
     }
     fun parseQr(raw: String): RemotePairingQr {
@@ -75,14 +75,14 @@ class RemoteDevicePairing(
     private fun validSession(row: JsonValue.JObject): RemotePairingSession = RemotePairingSession(row).also {
         check(it.expiresAt > now() && it.expiresAt <= now() + 240_000L) { "PAIRING_CLOSED" }
     }
-    fun prepareClaim(session: RemotePairingSession, epoch: Long): Pending {
+    fun prepareClaim(session: RemotePairingSession, epoch: Long, loginAttemptId: String): Pending {
         check(session.expiresAt > now()) { "PAIRING_CLOSED" }
         val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         check(identity.deviceId.value != session.hostId && !identity.publicKey.contentEquals(session.hostKey)) { "PAIRING_DEVICE_CONFLICT" }
         val raw = Json.canonical(Json.of(mapOf("scanSecret" to session.scanSecret, "device" to mapOf(
             "deviceId" to identity.deviceId.value, "name" to androidDeviceName(), "role" to "client", "platform" to "android",
             "identityKey" to RemoteBase64Url.encode(identity.publicKey)))))
-        return Pending(session, identity, raw, epoch).also(::save)
+        return Pending(session, identity, raw, epoch, loginAttemptId).also(::save)
     }
     private fun androidDeviceName(): String = "OAI Android"
     suspend fun claim(pending: Pending): RemotePairingStatus {
@@ -114,7 +114,7 @@ class RemoteDevicePairing(
         check(tokens.accessTokenExpiresAt > now() && tokens.refreshTokenExpiresAt > now()) { "TOKEN_EXPIRED" }
         val imported = RemoteRoleCredential(pending.identity, tokens, listOf(RemotePeerPin(RemoteRole.HOST,
             RemoteDeviceId(pending.session.hostId), pending.session.hostKey)))
-        return RemotePairingStatus(state, imported = RemotePairingImport(pending.session.id, credential.requiredText("account"), imported, pending.epoch))
+        return RemotePairingStatus(state, imported = RemotePairingImport(pending.session.id, credential.requiredText("account"), imported, pending.epoch, pending.loginAttemptId))
     }
     suspend fun cancel(pending: Pending) { send(pending, "mobile/cancel", "{}") }
     private suspend fun send(pending: Pending, action: String, raw: String): JsonValue.JObject {
@@ -133,14 +133,14 @@ class RemoteDevicePairing(
             val privateKey = pairingKey(row.requiredText("privateKey"))
             val identity = try { RemoteStaticIdentity(RemoteDeviceId(row.requiredText("deviceId")), privateKey,
                 pairingKey(row.requiredText("publicKey")), 1) } finally { privateKey.fill(0) }
-            Pending(session, identity, row.requiredText("claim"), row.longValue("epoch")).also(::requireRecoverable)
+            Pending(session, identity, row.requiredText("claim"), row.longValue("epoch"), row.requiredText("loginAttemptId")).also(::requireRecoverable)
         } finally { raw.fill(0) }
     }
     private fun save(pending: Pending) {
         val key = pending.identity.privateKeyCopy()
         try { persistence.writeAtomic(KEY, Json.canonical(Json.of(mapOf("origin" to api.origin, "session" to pending.session.value,
             "deviceId" to pending.identity.deviceId.value, "privateKey" to RemoteBase64Url.encode(key),
-            "publicKey" to RemoteBase64Url.encode(pending.identity.publicKey), "claim" to pending.rawClaim, "epoch" to pending.epoch))).encodeToByteArray()) }
+            "publicKey" to RemoteBase64Url.encode(pending.identity.publicKey), "claim" to pending.rawClaim, "epoch" to pending.epoch, "loginAttemptId" to pending.loginAttemptId))).encodeToByteArray()) }
         finally { key.fill(0) }
     }
     fun clear() = persistence.clear(KEY)

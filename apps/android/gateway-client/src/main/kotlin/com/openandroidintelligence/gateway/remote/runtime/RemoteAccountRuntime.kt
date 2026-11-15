@@ -45,15 +45,16 @@ class RemoteAccountRuntime(
     private val peers = ConcurrentHashMap<String, AuthenticatedRemotePeer>()
 
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
-        loginAuthorized(origin) { it.login(email, password) }
-    suspend fun loginAccountToken(origin: String, token: String): RemoteLoginResult =
-        loginAuthorized(origin) { it.accountFromToken(token) }
-    private suspend fun loginAuthorized(origin: String, authorize: suspend (RemoteServerApi) -> RemoteAccountLogin): RemoteLoginResult {
+        loginAuthorized(origin, vault.beginLoginAttempt()) { it.login(email, password) }
+    suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String): RemoteLoginResult =
+        loginAuthorized(origin, loginAttemptId) { it.accountFromToken(token) }
+    private suspend fun loginAuthorized(origin: String, loginAttemptId: String, authorize: suspend (RemoteServerApi) -> RemoteAccountLogin): RemoteLoginResult {
         loginJob?.cancel()
         val operation = currentCoroutineContext()[Job]
         loginJob = operation
         return try {
             lifecycle.withLock {
+                vault.requireLoginAttempt(loginAttemptId)
                 revokeLocal()
                 val server = apiFactory(origin)
                 val epoch = vault.revokeActive()
@@ -68,13 +69,16 @@ class RemoteAccountRuntime(
                 currentCoroutineContext().ensureActive()
                 ensureActiveAuthorization(epoch)
                 if (result.client.state == RemoteRoleRegistrationState.REGISTERED || result.host.state == RemoteRoleRegistrationState.REGISTERED) {
-                    val active = vault.activate(server.origin, login.accountId, epoch)
+                    val active = vault.activate(server.origin, login.accountId, epoch, loginAttemptId)
                     api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
                     startHost(active)
                 }
                 result
             }
-        } finally { if (loginJob === operation) loginJob = null }
+        } finally {
+            vault.cancelLoginAttempt(loginAttemptId)
+            if (loginJob === operation) loginJob = null
+        }
     }
     /** 配对只导入手机 Client；不请求上游禁止的账号级注册，也不派生虚拟 Host。 */
     suspend fun importPairing(value: RemotePairingImport) {
@@ -88,6 +92,7 @@ class RemoteAccountRuntime(
                 val active = vault.activeAccount()
                 // 保存成功后的进程退出可能留下临时配对票据。恢复时保留已续期凭据，不重复覆盖。
                 if (active?.origin == server.origin && active.accountId == value.accountId) {
+                    check(active.loginAttemptId == value.loginAttemptId) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
                     val existing = store.load(clientScope)
                     check(existing?.identity?.sameIdentity(value.credential.identity) == true) { "PAIRING_DEVICE_CONFLICT" }
                     value.credential.peers.forEach { expected ->
@@ -96,6 +101,7 @@ class RemoteAccountRuntime(
                     api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
                     return@withLock
                 }
+                vault.requireLoginAttempt(value.loginAttemptId)
                 vault.requireEpoch(value.epoch)
                 revokeLocal()
                 val epoch = vault.authorizationEpoch()
@@ -106,7 +112,7 @@ class RemoteAccountRuntime(
                     store.save(clientScope, value.credential)
                     currentCoroutineContext().ensureActive()
                     ensureActiveAuthorization(epoch)
-                    val saved = vault.activate(server.origin, value.accountId, epoch)
+                    val saved = vault.activate(server.origin, value.accountId, epoch, value.loginAttemptId)
                     api = server; mutableAccount.value = saved; mutableState.value = RemoteAccountConnectionState.READY
                     mutableHostState.value = RemoteHostConnectionState.STOPPED
                 }

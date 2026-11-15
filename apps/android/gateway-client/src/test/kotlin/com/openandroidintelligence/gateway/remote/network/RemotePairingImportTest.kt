@@ -37,7 +37,7 @@ class RemotePairingImportTest {
         val peer = RemoteStaticIdentityFactory.generate(RemoteDeviceId("computer-host"))
         val tokens = RemoteTokenPair("a".repeat(16), System.currentTimeMillis() + 600000, "r".repeat(16), System.currentTimeMillis() + 1200000)
         fun imported(epoch: Long = vault.authorizationEpoch()) = RemotePairingImport("session", clientScope.accountId,
-            RemoteRoleCredential(identity, tokens, listOf(RemotePeerPin(RemoteRole.HOST, peer.deviceId, peer.publicKey))), epoch)
+            RemoteRoleCredential(identity, tokens, listOf(RemotePeerPin(RemoteRole.HOST, peer.deviceId, peer.publicKey))), epoch, vault.beginLoginAttempt())
     }
     @Test fun 配对只发布安全保存的Client身份和Host固定公钥且重启可恢复() = runBlocking {
         val fixture = Fixture()

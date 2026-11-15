@@ -19,7 +19,7 @@ interface RemoteAccountConnection {
     val state: StateFlow<RemoteAccountConnectionState>
     val hostState: StateFlow<RemoteHostConnectionState>
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult
-    suspend fun loginAccountToken(origin: String, token: String): RemoteLoginResult = error("REMOTE_LOGIN_UNAVAILABLE")
+    suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String): RemoteLoginResult = error("REMOTE_LOGIN_UNAVAILABLE")
     suspend fun importPairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport): Unit = error("REMOTE_LOGIN_UNAVAILABLE")
     suspend fun restore(): RemoteActiveAccount?
     suspend fun listHosts(): List<RemoteHostDevice>
@@ -34,7 +34,7 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override val state = runtime.state
     override val hostState = runtime.hostState
     override suspend fun login(origin: String, email: String, password: String) = runtime.login(origin, email, password)
-    override suspend fun loginAccountToken(origin: String, token: String) = runtime.loginAccountToken(origin, token)
+    override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String) = runtime.loginAccountToken(origin, token, loginAttemptId)
     override suspend fun importPairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport) = runtime.importPairing(value)
     override suspend fun restore() = runtime.restore()
     override suspend fun listHosts() = runtime.listHosts()
