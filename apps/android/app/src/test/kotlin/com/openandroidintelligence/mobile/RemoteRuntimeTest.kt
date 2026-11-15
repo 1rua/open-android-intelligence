@@ -38,6 +38,8 @@ class RemoteRuntimeTest {
     private val scope = CoroutineScope(root + Dispatchers.Unconfined)
     private val connection = Account()
     private lateinit var runtime: RemoteRuntime
+    private lateinit var phoneHandler: RemoteRpcHostHandler
+    private lateinit var grants: PairingGrantStateHolder
     private val key = object : AesGcmKeyProvider {
         override fun getOrCreate() = SecretKeySpec(ByteArray(32) { 17 }, "AES")
         override fun delete() = Unit
@@ -45,16 +47,78 @@ class RemoteRuntimeTest {
     @Before fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val audit = AndroidAuditStore(InMemoryAuditSink())
-        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
+        grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
         val trust = DeveloperTrustMode()
         val host = thirdPartyOnlyHost(context, grants, trust, NativePluginLoader(trust), "remote-tests")
-        runtime = RemoteRuntime(context, scope, host, grants, { _, _, _ -> false }, { connection }, key)
+        host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
+            host.runtimes, audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,
+            mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
+        runtime = RemoteRuntime(context, scope, host, grants, { _, _, _ -> false }, { handler -> phoneHandler = handler; connection }, key)
     }
     @After fun close() = runBlocking {
         runtime.logout().join()
         root.cancelAndJoin()
         Dispatchers.resetMain()
     }
+    private class PhoneWire : RemoteMessageTransport {
+        var receive: ((ByteArray) -> Unit)? = null
+        var terminal: ((String) -> Unit)? = null
+        val writes = mutableListOf<String>()
+        override suspend fun send(bytes: ByteArray) { writes += bytes.decodeToString() }
+        override fun onMessage(handler: (ByteArray) -> Unit) = AutoCloseable { receive = null }.also { receive = handler }
+        override fun onClose(handler: (String) -> Unit) = AutoCloseable { terminal = null }.also { terminal = handler }
+        override suspend fun close() { terminal?.invoke("TRANSPORT_CLOSED") }
+        fun openStream(id: String) {
+            receive!!(Json.canonical(Json.of(mapOf("v" to 1, "id" to id, "timestamp" to 1, "type" to "rpc.request",
+                "payload" to mapOf("method" to "harness.remote.stream.open", "params" to mapOf("streamId" to id,
+                    "endpoint" to "session/control", "payload" to emptyMap<String, Any>()))))).encodeToByteArray())
+        }
+    }
+
+    @Test fun `真实手机连接关闭释放授权登记观察任务且旧代际不能清新登记`() = runBlocking {
+        connection.restore()
+        val baselineJobs = root.children.count()
+        var previous: RemoteRpcConnectionScope? = null
+        val principal = com.openandroidintelligence.control.remote.RemoteControlPrincipal(
+            com.openandroidintelligence.control.remote.ControlOrigin.fromCanonical("https://remote.example"),
+            "account", "controller", "phone", "sha256:" + "2".repeat(64), "sha256:" + "1".repeat(64))
+        val grantId = RemoteCapabilityBinding(com.openandroidintelligence.control.remote.ControlAccessBinding(principal, 1, "phone-connection", 1)) { true }.id
+        repeat(12) { index ->
+            val current = RemoteRpcConnectionScope("https://remote.example", "account", "phone", "controller", "phone-connection", index + 1L)
+            connection.acceptPhone(current)
+            phoneHandler.invoke(current, "harness.transport.describe", Json.of(emptyMap<String, Any>()) as JsonValue.JObject)
+            val wire = PhoneWire()
+            val session = RemoteRpcSession(current, emptySet(), wire, scope, phoneHandler) { connection.releasePhone(current) }
+            wire.openStream("phone-observer-$index")
+            eventually { wire.writes.any { it.contains("harness.remote.frame") } }
+            assertNotNull(grants.currentKernelGrant(grantId))
+            previous?.let(phoneHandler::connectionClosed)
+            assertNotNull("迟到旧代际关闭不能撤销新连接登记", grants.currentKernelGrant(grantId))
+            if (index % 2 == 0) wire.terminal!!("TRANSPORT_CLOSED") else session.close()
+            eventually { root.children.count() == baselineJobs }
+            connection.peerReads = 0
+            assertNull(grants.currentKernelGrant(grantId))
+            assertEquals("旧授权投影必须已摘除，查询不能再调用旧身份检查", 0, connection.peerReads)
+            assertNull(wire.receive); assertNull(wire.terminal)
+            session.close(); previous = current
+        }
+    }
+
+    @Test fun `退出持久化失败保持退出未完成状态且仍退休工作区后可重试`() = runBlocking {
+        ready("one")
+        val account = runtime.state.value.account
+        connection.logoutFailure = true
+        runtime.logout().join()
+        assertEquals(account, runtime.state.value.account)
+        assertEquals("REMOTE_LOGOUT_INCOMPLETE", runtime.state.value.errorCode)
+        assertNull(runtime.controller.value)
+        assertTrue(connection.channels.all { it.closed })
+        connection.logoutFailure = false
+        runtime.logout().join()
+        assertNull(runtime.state.value.account)
+        assertNull(runtime.state.value.errorCode)
+    }
+
     private suspend fun ready(workspace: String) {
         if (runtime.state.value.account == null) runtime.restoreSessionIfAvailable().join()
         runtime.select(endpoint(workspace)).join()
@@ -342,10 +406,23 @@ class RemoteRuntimeTest {
             peers[it.scope.connectionId] = AuthenticatedRemotePeer(
                 it.scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.CLIENT)
         }
-        override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer =
-            peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
+        var peerReads = 0
+        override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer {
+            peerReads++
+            return peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
+        }
+        fun acceptPhone(scope: RemoteRpcConnectionScope) {
+            peers[scope.connectionId] = AuthenticatedRemotePeer(scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.HOST)
+        }
+        fun releasePhone(scope: RemoteRpcConnectionScope) {
+            peers[scope.connectionId]?.takeIf { it.scope == scope }?.let { peers.remove(scope.connectionId, it) }
+        }
         fun releasePeer(connectionId: String) { peers.remove(connectionId) }
-        override suspend fun logout() { account.value = null }
+        var logoutFailure = false
+        override suspend fun logout() {
+            account.value = null
+            if (logoutFailure) throw RemoteRpcException("REMOTE_LOGOUT_INCOMPLETE")
+        }
     }
     private inner class Rpc(generation: Int) : RemoteRpcChannel {
         override val scope = RemoteRpcConnectionScope("https://remote.example", "account", "host", "client", "connection-$generation", generation.toLong())

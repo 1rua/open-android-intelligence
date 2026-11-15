@@ -26,6 +26,7 @@ class RemoteRpcSession(
     private val transport: RemoteMessageTransport,
     parentScope: CoroutineScope,
     private val host: RemoteRpcHostHandler? = null,
+    private val onClosed: (String) -> Unit = {},
 ) : RemoteRpcChannel {
     private val lock = Any()
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
@@ -47,6 +48,7 @@ class RemoteRpcSession(
         try { for (event in channel) emit(event) } finally { synchronized(lock) { subscribers -= channel }; channel.cancel() }
     }
     init {
+        lifetime.invokeOnCompletion { terminate("CLIENT_CLOSED") }
         val receive = transport.onMessage { bytes ->
             if (!incoming.trySend(bytes.copyOf()).isSuccess) terminate("TRANSPORT_CLOSED")
         }
@@ -149,10 +151,15 @@ class RemoteRpcSession(
         }
         val failure = RemoteRpcException(code)
         pendingCopy.forEach { it.result.completeExceptionally(RemoteRpcException(code, if (it.sent) RemoteDeliveryOutcome.UNKNOWN else RemoteDeliveryOutcome.NOT_SENT)) }; subscriberCopy.forEach { it.close(failure) }
-        incoming.close(); messageSubscription?.close(); closeSubscription?.close(); lifetime.cancel()
-        cleanupScope.launch(NonCancellable) { transport.close() }
+        closeRemoteConnectionResources(
+            // 先撤销认证身份；观察取消、账本写入或某个订阅关闭失败仍须继续其余清理。
+            { onClosed(code) }, { host?.connectionClosed(scope); Unit },
+            { incoming.close(); Unit }, { messageSubscription?.close(); Unit }, { closeSubscription?.close(); Unit },
+            { lifetime.cancel() }, { cleanupScope.launch(NonCancellable) { transport.close() }; Unit },
+        )
     }
     override suspend fun close() {
-        terminate("CLIENT_CLOSED"); messageSubscription?.close(); closeSubscription?.close(); transport.close()
+        try { terminate("CLIENT_CLOSED") }
+        finally { transport.close() }
     }
 }

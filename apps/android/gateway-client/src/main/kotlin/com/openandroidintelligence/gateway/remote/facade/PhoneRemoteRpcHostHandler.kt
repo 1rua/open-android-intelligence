@@ -9,7 +9,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 
-/** 固定上游 Harness carrier；每条连接独占观察流，关闭只结束观察而不取消手机任务。 */
+/** 固定上游 Harness carrier；观察属于真实连接，关闭由执行总线按执行栅栏处理在途请求。 */
 class PhoneRemoteRpcHostHandler(
     private val coroutineScope: CoroutineScope,
     private val router: PhoneVirtualHostRouter,
@@ -17,17 +17,24 @@ class PhoneRemoteRpcHostHandler(
 ) : RemoteRpcHostHandler, AutoCloseable {
     private data class PendingEvent(val event: RemoteRpcEvent, val epoch: Long, val metadataOnly: Boolean, val content: Boolean = true,
         val sanitizeContent: (JsonValue) -> JsonValue = { it })
-    private class Connection(val scope: RemoteRpcConnectionScope) {
+    private class Connection(val scope: RemoteRpcConnectionScope, parent: CoroutineScope) {
+        val lifetime = SupervisorJob(parent.coroutineContext[Job])
+        val worker = CoroutineScope(parent.coroutineContext + lifetime)
         val events = MutableSharedFlow<PendingEvent>(extraBufferCapacity = 128)
         val streams = ConcurrentHashMap<String, Job>()
         val closed = MutableStateFlow(false)
     }
-    private val connections = ConcurrentHashMap<String, Connection>()
+    private val connectionLock = Any()
+    private var closed = false
+    private val connections = mutableMapOf<RemoteRpcConnectionScope, Connection>()
     private fun connection(scope: RemoteRpcConnectionScope): Connection {
         authenticatedAccess(scope)
-        val connection = connections.getOrPut(scope.connectionId) { Connection(scope) }
-        check(connection.scope == scope) { "REMOTE_CONNECTION_CHANGED" }
-        return connection
+        return synchronized(connectionLock) {
+            check(!closed) { "REMOTE_CONNECTION_CLOSED" }
+            // 断开先撤销认证身份；再次核对封闭首次观察登记与关闭交错的窗口。
+            authenticatedAccess(scope)
+            connections.getOrPut(scope) { Connection(scope, coroutineScope) }
+        }
     }
     override fun events(scope: RemoteRpcConnectionScope): Flow<RemoteRpcEvent> {
         val connection = connection(scope)
@@ -68,7 +75,7 @@ class PhoneRemoteRpcHostHandler(
                 val epoch = router.outputEpoch(access)
                 val metadataOnly = router.metadataStream(text(fields, "endpoint"), fields.getValue("payload"))
                 lateinit var job: Job
-                job = coroutineScope.launch(start = CoroutineStart.LAZY) {
+                job = connection.worker.launch(start = CoroutineStart.LAZY) {
                     try {
                         router.stream(access, text(fields, "endpoint"), fields.getValue("payload")).collect { value ->
                             authenticatedAccess(scope)
@@ -81,10 +88,14 @@ class PhoneRemoteRpcHostHandler(
                     catch (_: Exception) {
                         connection.events.emit(PendingEvent(RemoteRpcEvent("harness.remote.stream.closed", Json.of(mapOf("streamId" to streamId,
                             "reason" to "failed", "failure" to mapOf("code" to "CONTROL_STREAM_UNAVAILABLE", "message" to router.strings.streamUnavailable, "details" to emptyMap<String, Any>())))), epoch, true, content = false))
-                    } finally { connection.streams.remove(streamId, job) }
+                    }
                 }
-                if (connection.streams.putIfAbsent(streamId, job) != null) { job.cancel(); throw ControlRequestException("CONTROL_STREAM_CONFLICT") }
-                job.start()
+                job.invokeOnCompletion { connection.streams.remove(streamId, job) }
+                synchronized(connection) {
+                    if (connection.closed.value) { job.cancel(); throw ControlRequestException("REMOTE_CONNECTION_CLOSED") }
+                    if (connection.streams.putIfAbsent(streamId, job) != null) { job.cancel(); throw ControlRequestException("CONTROL_STREAM_CONFLICT") }
+                    job.start()
+                }
                 Json.of(emptyMap<String, Any>())
             }
             "harness.remote.stream.close" -> {
@@ -95,12 +106,23 @@ class PhoneRemoteRpcHostHandler(
         }
     }
 
+    override fun connectionClosed(scope: RemoteRpcConnectionScope) = disconnect(scope)
     fun disconnect(scope: RemoteRpcConnectionScope) {
-        connections[scope.connectionId]?.takeIf { it.scope == scope }?.let { connection ->
-            if (connections.remove(scope.connectionId, connection)) { connection.closed.value = true; connection.streams.values.forEach(Job::cancel); connection.streams.clear() }
-        }
+        val connection = synchronized(connectionLock) { connections.remove(scope) } ?: return
+        retire(connection)
     }
-    override fun close() { connections.values.forEach { connection -> connection.closed.value = true; connection.streams.values.forEach(Job::cancel) }; connections.clear() }
+    private fun retire(connection: Connection) {
+        synchronized(connection) { connection.closed.value = true }
+        connection.lifetime.cancel()
+        connection.streams.clear()
+    }
+    override fun close() {
+        val retired = synchronized(connectionLock) {
+            closed = true
+            connections.values.toList().also { connections.clear() }
+        }
+        retired.forEach(::retire)
+    }
     private suspend fun business(call: suspend () -> JsonValue): JsonValue = try { Json.of(mapOf("ok" to true, "value" to call())) }
     catch (failure: ControlRequestException) { Json.of(mapOf("ok" to false, "error" to mapOf("code" to failure.code, "message" to router.strings.requestRejected, "details" to emptyMap<String, Any>()))) }
     private fun exact(fields: Map<String, JsonValue>, keys: Set<String>) { if (fields.keys != keys) throw ControlRequestException("CONTROL_PARAMETERS_INVALID") }

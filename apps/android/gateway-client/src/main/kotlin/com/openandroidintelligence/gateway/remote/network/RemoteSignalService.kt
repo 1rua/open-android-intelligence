@@ -74,7 +74,11 @@ internal class RemoteSignalService(
                         val tunnel = connectionId?.let(tunnels::get)
                         if (identityScope.role == RemoteRole.HOST && connectionId != null) {
                             // 已认证Client的坏隧道数据不能终止Host上其他Client；未知旧连接同样只丢弃该归属。
-                            tunnel?.fail((failure as? RemoteRpcException)?.code ?: "INVALID_MESSAGE")
+                            try { tunnel?.fail((failure as? RemoteRpcException)?.code ?: "INVALID_MESSAGE") }
+                            catch (_: Exception) {
+                                // 已完成全部资源清理；记录固定错误码，不泄露账本或业务异常正文，也不停掉其他Client。
+                                android.util.Log.e("RemoteSignalService", "CONNECTION_CLEANUP_FAILED")
+                            }
                         } else throw failure
                     }
                 }
@@ -168,7 +172,13 @@ internal class RemoteSignalService(
     private fun fail(code: String) {
         if (closed) return
         closed = true; ready.completeExceptionally(RemoteRpcException(code)); clientResult.completeExceptionally(RemoteRpcException(code))
-        tunnels.values.toList().forEach { it.fail(code) }; tunnels.clear(); socket?.close(); socket = null; lifetime.cancel(); onClosed(code)
+        val closing = tunnels.values.toList()
+        tunnels.clear()
+        val control = socket.also { socket = null }
+        closeRemoteConnectionResources(
+            *closing.map { tunnel -> { tunnel.fail(code) } }.toTypedArray(),
+            { control?.close(); Unit }, { lifetime.cancel() }, { onClosed(code) },
+        )
     }
 
     private inner class Tunnel(val id: String, val peer: RemoteAuthorizedPeer, val assignment: JsonValue.JObject) : RemoteMessageTransport {
@@ -288,7 +298,9 @@ internal class RemoteSignalService(
         }
         private fun publishRpc() {
             onAuthenticatedPeer(AuthenticatedRemotePeer(connectionScope, fingerprint(credential.identity.publicKey), fingerprint(peer.publicKey), identityScope.role))
-            val session = RemoteRpcSession(connectionScope, emptySet(), this, worker, hostHandler)
+            // 关闭可与认证发布交错；已关闭的隧道不能把认证身份重新留在账号登记表。
+            terminal?.let { onPeerClosed(connectionScope); throw RemoteRpcException(it) }
+            val session = RemoteRpcSession(connectionScope, emptySet(), this, worker, hostHandler, ::fail)
             rpc = session
             if (identityScope.role == RemoteRole.CLIENT) clientResult.complete(session)
         }
@@ -330,9 +342,15 @@ internal class RemoteSignalService(
                 if (terminal != null) return
                 terminal = code; messages.clear(); closures.toList().also { closures.clear() }
             }
-            tunnels.remove(id, this); onPeerClosed(connectionScope); rtcAvailable.completeExceptionally(RemoteRpcException(code)); carrierReady.completeExceptionally(RemoteRpcException(code)); secure.close(); rtcPeer?.close(); relaySocket?.close()
-            callbacks.forEach { it(code) }
-            if (identityScope.role == RemoteRole.CLIENT) clientResult.completeExceptionally(RemoteRpcException(code))
+            tunnels.remove(id, this)
+            closeRemoteConnectionResources(
+                { onPeerClosed(connectionScope) },
+                { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },
+                { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
+                { secure.close() }, { rtcPeer?.close(); Unit }, { relaySocket?.close(); Unit },
+                *callbacks.map { callback -> { callback(code) } }.toTypedArray(),
+                { if (identityScope.role == RemoteRole.CLIENT) clientResult.completeExceptionally(RemoteRpcException(code)); Unit },
+            )
         }
     }
     companion object {

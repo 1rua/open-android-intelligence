@@ -63,15 +63,22 @@ class RemoteRuntime(
     private val selection = Mutex()
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
     private val phone by lazy {
-        confirmLocally?.let { RemotePhoneControlComposition(context, scope, pluginHost, grants, it) }
-            ?: RemotePhoneControlComposition(context, scope, pluginHost, grants)
+        confirmLocally?.let { RemotePhoneControlComposition(context, scope, pluginHost, grants, it, localDocumentKeyProvider) }
+            ?: RemotePhoneControlComposition(context, scope, pluginHost, grants, metadataKeyProvider = localDocumentKeyProvider)
     }
     private data class Registered(val access: ControlAccessBinding, val registration: AutoCloseable)
-    private val registered = ConcurrentHashMap<String, Registered>()
+    private val registrationLock = Any()
+    private val registered = mutableMapOf<RemoteRpcConnectionScope, Registered>()
     private val handler = object : RemoteRpcHostHandler {
-        private val delegate by lazy { PhoneRemoteRpcHostHandler(scope, phone.router, ::access) }
-        override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = delegate.invoke(scope, method, params)
-        override fun events(scope: RemoteRpcConnectionScope) = flow { emitAll(delegate.events(scope)) }
+        private val delegate = lazy { PhoneRemoteRpcHostHandler(scope, phone.router, ::access) }
+        override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = delegate.value.invoke(scope, method, params)
+        override fun events(scope: RemoteRpcConnectionScope) = flow { emitAll(delegate.value.events(scope)) }
+        override fun connectionClosed(scope: RemoteRpcConnectionScope) {
+            val retired = synchronized(registrationLock) { registered.remove(scope) }
+            // 取消与授权清理可能回调执行总线，不能占用登记锁。
+            try { if (delegate.isInitialized()) delegate.value.disconnect(scope) }
+            finally { retired?.registration?.close() }
+        }
     }
     val accountRuntime = accountFactory(handler)
     private var channel: RemoteRpcChannel? = null
@@ -171,23 +178,31 @@ class RemoteRuntime(
     }
 
     private fun access(connection: RemoteRpcConnectionScope): ControlAccessBinding {
-        val peer = accountRuntime.authenticatedPeer(connection.connectionId)
-        check(peer.scope == connection && peer.role == RemoteRole.HOST) { "REMOTE_HOST_BINDING_MISMATCH" }
-        val active = accountRuntime.account.value ?: error("ACCOUNT_AUTH_REQUIRED")
-        check(active.origin == connection.origin && active.accountId == connection.accountId) { "REMOTE_ACCOUNT_BINDING_MISMATCH" }
-        registered[connection.connectionId]?.let {
-            check(it.access.authorizationEpoch == active.epoch && it.access.connectionGeneration == connection.generation) { "REMOTE_AUTHORIZATION_CHANGED" }
-            return it.access
-        }
-        val access = ControlAccessBinding(RemoteControlPrincipal(ControlOrigin.fromCanonical(connection.origin), connection.accountId,
-            connection.clientDeviceId, connection.hostDeviceId, peer.peerFingerprint, peer.localFingerprint), active.epoch,
-            connection.connectionId, connection.generation)
-        val registration = phone.register(access) {
-            accountRuntime.account.value == active && runCatching { accountRuntime.authenticatedPeer(connection.connectionId) == peer }.getOrDefault(false)
-        }
-        val previous = registered.putIfAbsent(connection.connectionId, Registered(access, registration))
-        if (previous != null) { registration.close(); return previous.access }
-        return access
+        var discarded: AutoCloseable? = null
+        try {
+            return synchronized(registrationLock) {
+                val peer = accountRuntime.authenticatedPeer(connection.connectionId)
+                check(peer.scope == connection && peer.role == RemoteRole.HOST) { "REMOTE_HOST_BINDING_MISMATCH" }
+                val active = accountRuntime.account.value ?: error("ACCOUNT_AUTH_REQUIRED")
+                check(active.origin == connection.origin && active.accountId == connection.accountId) { "REMOTE_ACCOUNT_BINDING_MISMATCH" }
+                fun current() = accountRuntime.account.value == active &&
+                    runCatching { accountRuntime.authenticatedPeer(connection.connectionId) == peer }.getOrDefault(false)
+                registered[connection]?.let {
+                    check(it.access.authorizationEpoch == active.epoch) { "REMOTE_AUTHORIZATION_CHANGED" }
+                    return@synchronized it.access
+                }
+                val access = ControlAccessBinding(RemoteControlPrincipal(ControlOrigin.fromCanonical(connection.origin), connection.accountId,
+                    connection.clientDeviceId, connection.hostDeviceId, peer.peerFingerprint, peer.localFingerprint), active.epoch,
+                    connection.connectionId, connection.generation)
+                val registration = phone.register(access, ::current)
+                if (!current()) {
+                    discarded = registration
+                    error("REMOTE_AUTHORIZATION_CHANGED")
+                }
+                registered[connection] = Registered(access, registration)
+                access
+            }
+        } finally { discarded?.close() }
     }
 
     fun login(origin: String, email: String, password: String) = scope.launch {
@@ -374,12 +389,25 @@ class RemoteRuntime(
         finally { if (repository === repo && modelSequence.get() == sequence) mutableState.update { it.copy(modelBusy = false) } }
     } }
     fun logout() = scope.launch {
-        accountRuntime.logout()
-        mutableState.update { it.copy(account = null) }
+        var failure: Exception? = null
+        try { accountRuntime.logout() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) { failure = error }
         selection.withLock {
-        retire(); registered.values.forEach { it.registration.close() }; registered.clear()
-        nativeConversationNotifications.leave(); mutableState.value = RemoteWorkspaceState()
-    } }
+            try { retire() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { if (failure == null) failure = error }
+            val retired = synchronized(registrationLock) { registered.values.toList().also { registered.clear() } }
+            try {
+                closeRemoteConnectionResources(
+                    *retired.map { old -> { old.registration.close() } }.toTypedArray(),
+                    { nativeConversationNotifications.leave() },
+                )
+            } catch (error: Exception) { if (failure == null) failure = error }
+            if (failure == null && accountRuntime.account.value == null) mutableState.value = RemoteWorkspaceState()
+            else mutableState.update { it.copy(busy = false, errorCode = "REMOTE_LOGOUT_INCOMPLETE") }
+        }
+    }
     private suspend fun retire() {
         ownerMediaSource?.close(); ownerMediaSource = null
         ownerMedia?.retireConnection()

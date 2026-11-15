@@ -70,6 +70,8 @@ class RemoteCredentialVault(
     private val directory = directory.apply { check(mkdirs() || isDirectory) }
     private val atomic = AtomicFile(File(directory, "remote-credentials.bin"))
     private val lockFile = File(directory, "remote-credentials.lock")
+    // 只保存撤销待办位，不包含账号、凭据或业务内容；解密失败也不能恢复旧会话。
+    private val revocation = AtomicFile(File(directory, "remote-revocation.bin"))
     private val monitor = monitors.computeIfAbsent(lockFile.canonicalPath) { Any() }
     private val transactionMutex = transactions.computeIfAbsent(lockFile.canonicalPath) { Mutex() }
     private val master = "credential-vault"
@@ -97,19 +99,35 @@ class RemoteCredentialVault(
         save(state.copy(records = state.records - scopeKey))
     }
     fun requireEpoch(expected: Long) = locked { check(load().epoch == expected) { "REMOTE_AUTHORIZATION_SUPERSEDED" } }
-    fun activeAccount(): RemoteActiveAccount? = locked { load().active }
+    fun activeAccount(): RemoteActiveAccount? = locked { if (revocationPending()) null else load().active }
     fun revokeActive(): Long = locked {
+        saveRevocation(true)
         val state = load(); val next = Math.addExact(state.epoch, 1)
-        save(state.copy(epoch = next, active = null)); next
+        save(state.copy(epoch = next, active = null))
+        saveRevocation(false)
+        next
     }
     fun activate(origin: String, accountId: String, expectedEpoch: Long): RemoteActiveAccount = locked {
+        check(!revocationPending()) { "REMOTE_LOGOUT_INCOMPLETE" }
         val state = load()
         check(state.epoch == expectedEpoch) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
         val account = RemoteActiveAccount(origin, accountId, expectedEpoch)
         save(state.copy(active = account)); account
     }
     fun requireCurrent(account: RemoteActiveAccount) = locked {
-        check(load().active == account) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
+        check(!revocationPending() && load().active == account) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
+    }
+    private fun revocationPending(): Boolean = try {
+        revocation.openRead().use { it.read() != 0 }
+    } catch (_: FileNotFoundException) { revocation.baseFile.exists() }
+    private fun saveRevocation(pending: Boolean) {
+        val stream = revocation.startWrite()
+        try {
+            stream.write(if (pending) 1 else 0); revocation.finishWrite(stream)
+            // AtomicFile.finishWrite 在部分平台只记录替换错误；重新读取确认，不能据此误报退出成功。
+            check(revocation.baseFile.isFile && revocation.openRead().use { it.readBytes().contentEquals(byteArrayOf(if (pending) 1 else 0)) }) { "REMOTE_LOGOUT_INCOMPLETE" }
+        }
+        catch (failure: Exception) { revocation.failWrite(stream); throw failure }
     }
     private data class State(val epoch: Long = 0, val active: RemoteActiveAccount? = null, val records: Map<String, String> = emptyMap())
     private fun load(): State {

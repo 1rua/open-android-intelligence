@@ -5,6 +5,7 @@ import com.openandroidintelligence.control.*
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.gateway.remote.facade.*
+import com.openandroidintelligence.gateway.remote.rpc.closeRemoteConnectionResources
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
 import java.io.File
@@ -21,6 +22,7 @@ class RemotePhoneControlComposition(
     private val confirmLocally: suspend (String, String, String) -> Boolean = { requestId, capabilityId, localParameters ->
         PhoneLocalControlUiRegistry.current?.confirm(requestId, capabilityId, localParameters) ?: false
     },
+    metadataKeyProvider: AesGcmKeyProvider? = null,
 ) : PhoneControlExecutor, AutoCloseable {
     private data class Connection(val binding: RemoteCapabilityBinding, val registration: AutoCloseable)
     private val connections = ConcurrentHashMap<ControlAccessBinding, Connection>()
@@ -33,7 +35,7 @@ class RemotePhoneControlComposition(
     private val metadataFile = File(context.noBackupFilesDir, "remote-control-metadata-v1.enc")
     private val metadataKeys = AndroidKeystoreOutboxKeyProvider("oai_remote_control_metadata_v1")
     private val ledger = ControlMetadataStore(AesGcmEncryptedBlobStore(FileEncryptedOutboxPersistence(metadataFile),
-        if (metadataFile.exists()) metadataKeys.existing() ?: error("CONTROL_LEDGER_KEY_UNAVAILABLE") else metadataKeys.getOrCreate()))
+        metadataKeyProvider?.getOrCreate() ?: if (metadataFile.exists()) metadataKeys.existing() ?: error("CONTROL_LEDGER_KEY_UNAVAILABLE") else metadataKeys.getOrCreate()))
     val bus = PhoneControlBus(scope, ledger, this, PhoneFacadeStrings.from(context))
     val router = PhoneVirtualHostRouter(bus)
     private val stopObserver = PhoneLocalControlUiRegistry.observeEmergencyStop {
@@ -57,10 +59,12 @@ class RemotePhoneControlComposition(
         check(connections.putIfAbsent(access, connection) == null) { "REMOTE_CONNECTION_ALREADY_REGISTERED" }
         return AutoCloseable {
             if (connections.remove(access, connection)) {
-                registration.close()
-                activeRequests.filterValues { it.second === connection }.keys.forEach(::cancel)
-                nativeContexts.values.filter { it.access == access }.forEach { nativeKernel.cancel(it, connection.binding) }
-                bus.connectionClosed(access)
+                closeRemoteConnectionResources(
+                    { registration.close() },
+                    *activeRequests.filterValues { it.second === connection }.keys.map { request -> { cancel(request) } }.toTypedArray(),
+                    *nativeContexts.values.filter { it.access == access }.map { native -> { nativeKernel.cancel(native, connection.binding) } }.toTypedArray(),
+                    { bus.connectionClosed(access) },
+                )
             }
         }
     }

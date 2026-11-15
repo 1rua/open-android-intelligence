@@ -2,6 +2,7 @@ package com.openandroidintelligence.gateway.remote.facade
 
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.remote.rpc.closeRemoteConnectionResources
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.util.UUID
@@ -284,16 +285,22 @@ class PhoneControlBus(
 
     /** 断开只结束该连接代际自己的在途请求，不影响重连后新连接提交的动作。 */
     fun connectionClosed(access: ControlAccessBinding) = synchronized(lock) {
-        tasks.values.forEach { task ->
-            task.access.filterValues { it == access }.keys.toList().forEach { id ->
-                update(access, task.scope.taskSessionId, id) { old -> old.copy(
-                    state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
-                    execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
-                    errorCode = "REMOTE_CONNECTION_CLOSED") }
-                executor.cancel(ControlRequestScope(task.scope, id)); task.jobs[id]?.cancel()
+        val cleanup = tasks.values.flatMap { task ->
+            task.access.filterValues { it == access }.keys.toList().map { id ->
+                {
+                    closeRemoteConnectionResources(
+                        { update(access, task.scope.taskSessionId, id) { old -> old.copy(
+                            state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
+                            execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
+                            errorCode = "REMOTE_CONNECTION_CLOSED") } },
+                        { executor.cancel(ControlRequestScope(task.scope, id)) },
+                        { task.jobs.remove(id)?.cancel(); Unit },
+                        { task.access.remove(id); if (task.activeRequestId == id) task.activeRequestId = null },
+                    )
+                }
             }
         }
-        changed()
+        closeRemoteConnectionResources(*cleanup.toTypedArray(), { changed() })
     }
 
     fun receipt(access: ControlAccessBinding, taskId: String, requestId: String): JsonValue = synchronized(lock) {

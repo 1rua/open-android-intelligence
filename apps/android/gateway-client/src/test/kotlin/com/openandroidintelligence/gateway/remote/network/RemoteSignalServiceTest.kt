@@ -123,7 +123,7 @@ class RemoteSignalServiceTest {
             assertEquals("real-owner", seen.await().accountId); assertEquals(binding.clientDeviceId, seen.await().clientDeviceId)
         } finally { service.close(); parent.cancel(); server.shutdown(); secure.close() }
     }
-    @Test fun Host一个连接计数器异常只关闭该隧道而保留其他连接() = runBlocking {
+    @Test fun Host单连接关闭回调抛错仍结束该RPC且保留另一连接并完整关闭服务() = runBlocking {
         val host = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
         val clients = (1..2).map { RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString())) }
         val bindings = clients.mapIndexed { index, client -> RemoteConnectionBinding("connection-$index", host.deviceId.value, client.deviceId.value) }
@@ -169,13 +169,25 @@ class RemoteSignalServiceTest {
         }))
         server.start(); val api = RemoteServerApi(server.url("/").toString().removeSuffix("/")); val parent = CoroutineScope(SupervisorJob()+Dispatchers.Default)
         val peers = clients.associate { client -> client.deviceId.value to RemoteAuthorizedPeer(RemoteHostDevice(client.deviceId.value, "客户端", "linux", "member", true), RemoteRole.CLIENT, client.publicKey) }
+        val closedHandlers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        var serviceClosed = false
         val handler = object : RemoteRpcHostHandler {
+            override fun connectionClosed(scope: RemoteRpcConnectionScope) { closedHandlers += scope.connectionId }
             override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj("healthy" to true)
             override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
         }
-        val service = RemoteSignalService(context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST), RemoteRoleCredential(host, token()), {}, { id, _ -> peers.getValue(id) }, handler)
-        try { service.startHost(); assertEquals("good", withTimeout(3000) { result.await() }.objectValue().value("payload").objectValue().requiredText("requestId")) }
-        finally { service.close(); parent.cancel(); server.shutdown(); secure.forEach { it.close() } }
+        val service = RemoteSignalService(context, parent, api, RemoteIdentityScope(api.origin, "owner", RemoteRole.HOST), RemoteRoleCredential(host, token()), {}, { id, _ -> peers.getValue(id) }, handler,
+            onPeerClosed = { throw java.io.IOException("模拟关闭登记失败") }, onClosed = { serviceClosed = true })
+        try {
+            service.startHost()
+            assertEquals("good", withTimeout(3000) { result.await() }.objectValue().value("payload").objectValue().requiredText("requestId"))
+            assertTrue("首个登记回调失败仍须通知真实RPC关闭", closedHandlers.contains(bindings[0].connectionId))
+            val failure = runCatching { service.close() }.exceptionOrNull() as RemoteRpcException
+            assertEquals("CONNECTION_CLEANUP_FAILED", failure.code)
+            assertTrue(serviceClosed)
+            assertEquals(bindings.map { it.connectionId }.toSet(), closedHandlers)
+            withTimeout(3000) { while (parent.coroutineContext[Job]!!.children.any()) delay(1) }
+        } finally { runCatching { service.close() }; parent.cancel(); server.shutdown(); secure.forEach { it.close() } }
     }
 
 }

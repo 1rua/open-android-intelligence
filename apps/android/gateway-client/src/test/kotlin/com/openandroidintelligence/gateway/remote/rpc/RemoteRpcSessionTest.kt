@@ -18,12 +18,56 @@ class RemoteRpcSessionTest {
         val writes = mutableListOf<ByteArray>()
         var afterWrite: ((ByteArray) -> Unit)? = null
         var closes = 0
+        var failMessageDetach = false
         override suspend fun send(bytes: ByteArray) { writes += bytes; afterWrite?.invoke(bytes) }
-        override fun onMessage(handler: (ByteArray) -> Unit): AutoCloseable { receive = handler; return AutoCloseable { receive = null } }
+        override fun onMessage(handler: (ByteArray) -> Unit): AutoCloseable { receive = handler; return AutoCloseable { receive = null; if (failMessageDetach) throw IllegalStateException("模拟订阅解绑失败") } }
         override fun onClose(handler: (String) -> Unit): AutoCloseable { closed = handler; return AutoCloseable { closed = null } }
         override suspend fun close() { closes++ }
         fun respond(type: String, payload: JsonValue.JObject) { receive?.invoke(Json.canonical(obj("v" to 1, "id" to "response", "timestamp" to 1,
             "type" to type, "payload" to payload)).encodeToByteArray()) }
+    }
+    @Test fun 真实连接三种关闭均通知一次且普通观察取消不关闭连接() = runTest {
+        for (reason in listOf("transport", "local", "parent")) {
+            val wire = Wire(); val owner = SupervisorJob(backgroundScope.coroutineContext[Job])
+            val notified = mutableListOf<RemoteRpcConnectionScope>(); val network = mutableListOf<String>()
+            val host = object : RemoteRpcHostHandler {
+                override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj()
+                override fun events(scope: RemoteRpcConnectionScope) = kotlinx.coroutines.flow.flow<RemoteRpcEvent> { awaitCancellation() }
+                override fun connectionClosed(scope: RemoteRpcConnectionScope) { notified += scope }
+            }
+            val session = RemoteRpcSession(identity, emptySet(), wire, CoroutineScope(backgroundScope.coroutineContext + owner), host,
+                onClosed = { network += it })
+            val observer = backgroundScope.launch { session.events.collect() }
+            runCurrent(); observer.cancelAndJoin(); assertTrue(notified.isEmpty())
+            when (reason) {
+                "transport" -> wire.closed!!("TRANSPORT_CLOSED")
+                "local" -> session.close()
+                else -> owner.cancel()
+            }
+            runCurrent(); assertEquals(listOf(identity), notified); assertEquals(1, network.size)
+            session.close(); runCurrent(); assertEquals(listOf(identity), notified)
+            owner.cancel()
+        }
+    }
+
+    @Test fun 单个解绑与关闭通知失败仍结束待响应事件和所有传输订阅() = runTest {
+        val wire = Wire(); val closedScopes = mutableListOf<RemoteRpcConnectionScope>()
+        val host = object : RemoteRpcHostHandler {
+            override fun events(scope: RemoteRpcConnectionScope) = kotlinx.coroutines.flow.flow<RemoteRpcEvent> { awaitCancellation() }
+            override suspend fun invoke(scope: RemoteRpcConnectionScope, method: String, params: JsonValue.JObject) = obj()
+            override fun connectionClosed(scope: RemoteRpcConnectionScope) { closedScopes += scope; throw IllegalStateException("模拟账本关闭失败") }
+        }
+        val session = RemoteRpcSession(identity, emptySet(), wire, backgroundScope, host) { throw IllegalStateException("模拟关闭通知失败") }
+        val waiting = async { runCatching { session.invoke("session/prompt", obj(), "pending", 1000) }.exceptionOrNull() }
+        val observer = backgroundScope.launch { runCatching { session.events.collect() } }
+        runCurrent(); wire.failMessageDetach = true
+        val failure = runCatching { wire.closed!!("TRANSPORT_CLOSED") }.exceptionOrNull() as RemoteRpcException
+        assertEquals("CONNECTION_CLEANUP_FAILED", failure.code)
+        runCurrent(); assertTrue(observer.isCompleted)
+        assertEquals(RemoteDeliveryOutcome.UNKNOWN, (waiting.await() as RemoteRpcException).deliveryOutcome)
+        assertEquals(listOf(identity), closedScopes)
+        assertNull(wire.receive); assertNull(wire.closed); assertTrue(wire.closes > 0)
+        session.close(); assertEquals(1, closedScopes.size)
     }
     @Test fun 响应同步到达时等待已在发送前登记() = runTest {
         val wire = Wire(); val channel = RemoteRpcSession(identity, emptySet(), wire, backgroundScope)
