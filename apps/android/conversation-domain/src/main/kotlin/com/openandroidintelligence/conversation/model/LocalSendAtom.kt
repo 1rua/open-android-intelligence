@@ -203,6 +203,8 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
                  isSyntheticSteerId ||
                  idConflict),
             generationId = matching?.generationId,
+            historyPosition = matching?.historyPosition,
+            historySequence = matching?.historySequence,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,
         )

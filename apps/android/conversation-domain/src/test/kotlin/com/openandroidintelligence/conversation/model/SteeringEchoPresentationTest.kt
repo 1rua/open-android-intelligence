@@ -32,6 +32,25 @@ class SteeringEchoPresentationTest {
         assertEquals(atom().clientMessageId, visible.presentationClientMessageId)
     }
 
+    @Test fun `普通明确身份回并保留完整历史位置和稳定序号`() {
+        val local = atom(id = "normal", text = "下一轮普通输入").copy(
+            delivery = MessageDeliveryMode.NORMAL, steeringEcho = null,
+        ).identified("normal-native")
+        val position = HistoryMessagePosition("same-history-page", 1)
+        // 原生 ID 已确认后，历史是否再次回传客户端身份都不能清掉跨 User 的排序边界。
+        listOf<ClientMessageId?>(null, local.clientMessageId).forEach { directClient ->
+            val remote = row("normal-native", "下一轮普通输入", sequence = 42).copy(
+                clientMessageId = directClient, generationId = "next-turn", historyPosition = position,
+            )
+            val visible = mergeLocalSendAtoms(listOf(remote), listOf(local)).single()
+            assertEquals("normal-native", visible.id)
+            assertEquals(local.clientMessageId, visible.clientMessageId)
+            assertFalse(visible.localPlaceholder)
+            assertEquals("普通发送回并必须完整保留原生历史页位置", position, visible.historyPosition)
+            assertEquals("普通发送回并不能擦掉已存在的稳定序号", 42L, visible.historySequence)
+        }
+    }
+
     @Test fun `无位置更新只继承同一会话同一行的完整位置`() {
         val old = row().copy(historyPosition = HistoryMessagePosition("old-page", 8))
         val incoming = row().copy(parts = listOf(MessagePart.Text("新正文")))
