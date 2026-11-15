@@ -99,7 +99,7 @@ class PhoneRemoteRpcHostHandler(
                 Json.of(emptyMap<String, Any>())
             }
             "harness.remote.stream.close" -> {
-                exact(fields, setOf("streamId")); connection.streams.remove(text(fields, "streamId"))?.cancel()
+                exact(fields, setOf("streamId")); connection.streams.remove(text(fields, "streamId"))?.cancelAndJoin()
                 Json.of(emptyMap<String, Any>())
             }
             else -> throw ControlRequestException("METHOD_NOT_FOUND")

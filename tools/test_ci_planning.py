@@ -708,6 +708,9 @@ def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     "tools/remote/fixtures/media-upstream/LICENSE",
     "tools/remote/fixtures/media-upstream/packages/plugin/src/workspace-bridge.ts",
     "tools/remote/phone-mcp-interop.ts",
+    "tools/remote-interop/original-client.mjs",
+    "tools/remote-interop/release-fixtures/source.json",
+    "tools/remote-interop/harness-fixtures/source.json",
 ])
 def test_acp_projection_observation_routes_to_remote_lane(impact, path):
     result = impact.classify([("M", path)])

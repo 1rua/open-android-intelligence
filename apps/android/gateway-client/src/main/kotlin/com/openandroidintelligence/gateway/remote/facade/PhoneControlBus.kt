@@ -73,6 +73,16 @@ class PhoneControlBus(
         controlJson(executor.capabilities(access))
     }
 
+    /** 官方 SessionControl 的目录投影按会话标识索引，每项携带自身日志切点。 */
+    fun controlProjections(access: ControlAccessBinding): JsonValue = synchronized(lock) {
+        executor.requireCurrentAccess(access)
+        bus(access)
+        Json.of(tasks.values.filter { it.scope.permits(access, processEpoch) }.associate { task ->
+            val metadata = ledger.transaction { rows -> rows.values.filter { it.ownerKey == access.principal.storageKey && it.taskSessionId == task.scope.taskSessionId } }
+            task.scope.taskSessionId to mapOf("asOfSeq" to task.records.size - 1, "values" to projections(metadata))
+        })
+    }
+
     /** 排队的输出绑定本机交付代次；急停前已排队的数据不能转移到急停后的观察流。 */
     fun outputEpoch(access: ControlAccessBinding): Long = synchronized(lock) { executor.requireCurrentAccess(access); deliveryEpoch }
 
@@ -459,7 +469,8 @@ class PhoneControlBus(
     private fun executionProjection(rows: List<ControlRequestMetadata>): Map<String, Any> = mapOf(
         "status" to if (rows.any { it.state == ControlRequestState.AWAITING_CONFIRMATION }) "needs_user_input" else if (rows.any { !it.state.terminal }) "running" else "idle")
     private fun projections(rows: List<ControlRequestMetadata>): Map<String, Any> = mapOf(
-        "execution" to executionProjection(rows), "inbox" to mapOf("next-turn" to rows.filter { it.state == ControlRequestState.ACCEPTED }.map { mapOf("id" to it.requestId) }))
+        "execution" to executionProjection(rows), "inbox" to mapOf("next-turn" to rows.filter { it.state == ControlRequestState.ACCEPTED }.map { mapOf("id" to it.requestId) },
+            "next-step" to emptyList<Any>()))
     private fun minimal(row: ControlRequestMetadata, available: Boolean): Map<String, Any?> = mapOf(
         "request_id" to row.requestId, "taskSessionId" to row.taskSessionId, "state" to row.state.wire,
         "execution" to mapOf("status" to row.execution.wire), "resultAvailable" to available,

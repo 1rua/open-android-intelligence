@@ -11,10 +11,18 @@ val remoteAppVersion = providers.fileContents(rootProject.layout.projectDirector
 
 android {
     buildFeatures { buildConfig = true }
-    defaultConfig { buildConfigField("String", "OAI_REMOTE_CLIENT_VERSION", "\"${remoteAppVersion.get()}+oai.android\"") }
+    defaultConfig {
+        buildConfigField("String", "OAI_REMOTE_CLIENT_VERSION", "\"0.6.5\"")
+        buildConfigField("String", "OAI_IMPLEMENTATION_VERSION", "\"${remoteAppVersion.get()}\"")
+    }
     namespace = "com.openandroidintelligence.gateway.client"
     defaultConfig { testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
     testOptions.unitTests.all {
+        // Node 原客户端、固定 Server 与其锁文件变化必须使互通测试失效，不能沿用旧的 JVM 通过结果。
+        listOf("tools/remote-interop", "tools/remote-server", "integrations/oai-android-mcp/test/fixtures/dsh-remote").forEach { source ->
+            it.inputs.files(rootProject.fileTree("../../$source") { exclude("node_modules/**") })
+                .withPathSensitivity(org.gradle.api.tasks.PathSensitivity.RELATIVE)
+        }
         val testHome = rootProject.layout.projectDirectory.dir(".gradle/robolectric-home").asFile
         it.systemProperty("user.home", testHome.absolutePath)
         it.testLogging.exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

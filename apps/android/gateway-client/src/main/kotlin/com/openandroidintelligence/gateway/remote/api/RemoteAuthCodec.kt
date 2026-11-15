@@ -64,6 +64,9 @@ object RemoteAuthCodec {
                 "platform" to "android",
                 "identityKey" to java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(identity.publicKey),
                 "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION,
+                // 虚拟 Host 显式使用协议兼容基线，不表示 Android 安装了 Harness 引擎。
+                *if (role == RemoteRole.HOST) arrayOf("harnessVersion" to
+                    com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol.HARNESS_COMPATIBILITY_VERSION) else emptyArray(),
             ),
         ))), bearer)
     }

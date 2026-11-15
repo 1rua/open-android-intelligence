@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { cp, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { test } from 'node:test';
-import { verifyEntries, verifyMediaSources, verifyRemoteSources } from './remote-source-integrity.ts';
+import { verifyEntries, verifyMediaSources, verifyRemoteSources, verifyHarnessConsumerSources, verifyInteropReleaseSources } from './remote-source-integrity.ts';
 
 const bytes = Buffer.from('固定上游原文\n');
 const sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -67,4 +67,23 @@ test('媒体原文被篡改时即使文件仍在清单内也阻止通过', async
   await cp(new URL('./remote/fixtures/media-upstream/', import.meta.url), base, { recursive: true });
   await writeFile(resolve(base, 'LICENSE'), '篡改的许可原文');
   await assert.rejects(verifyMediaSources(base), /摘要不匹配/u);
+});
+
+test('官方桌面消费者拒绝包版本或npm发行完整性篡改', async () => {
+  const base = await mkdtemp(resolve(tmpdir(), 'oai-harness-consumer-integrity-'));
+  await cp(new URL('./remote-interop/harness-fixtures/', import.meta.url), base, { recursive: true });
+  const path = resolve(base, 'source.json');
+  const source = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(await verifyHarnessConsumerSources(base), 5);
+  source.files[0].version = '0.2.1';
+  await writeFile(path, JSON.stringify(source));
+  await assert.rejects(verifyHarnessConsumerSources(base), /来源身份不匹配/u);
+});
+
+test('Remote实际0.6.5发布差异拒绝漏登或未登记文件', async () => {
+  const base = await mkdtemp(resolve(tmpdir(), 'oai-release-consumer-integrity-'));
+  await cp(new URL('./remote-interop/release-fixtures/', import.meta.url), base, { recursive: true });
+  assert.equal(await verifyInteropReleaseSources(base), 8);
+  await writeFile(resolve(base, 'unregistered.ts'), '// 未登记\n');
+  await assert.rejects(verifyInteropReleaseSources(base), /清单不完整/u);
 });

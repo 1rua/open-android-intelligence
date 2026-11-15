@@ -1,0 +1,202 @@
+// 使用固定上游原始 Client、Noise、选路和能力探测；不替换线上协议实现。
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { stripTypeScriptTypes } from 'node:module';
+import { SourceTextModule, SyntheticModule } from 'node:vm';
+import { posix } from 'node:path';
+import * as ws from 'ws';
+import { z } from 'zod';
+import { Context } from '@deepseek-ai/cordis';
+
+globalThis.WebSocket = ws.WebSocket;
+const modules = new Map();
+const fixtureRoot = new URL('./fixtures/', import.meta.url);
+const sources = [
+  [fixtureRoot, 'path', '', 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', false],
+  [new URL('../remote-server/fixtures/', import.meta.url), 'path', '', 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', false],
+  [new URL('../../integrations/oai-android-mcp/test/fixtures/dsh-remote/', import.meta.url), 'fixture', 'packages/plugin/src/', 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', false],
+  [new URL('./release-fixtures/', import.meta.url), 'path', '', 'eef232d2c43b0c9d04998a18db98cbc9e673e488', true],
+];
+for (const [directory, field, prefix, commit, override] of sources) {
+  const manifest = JSON.parse(await readFile(new URL('source.json', directory), 'utf8'));
+  assert.equal(manifest.repository, 'liguobao/ds-harness-remote');
+  assert.equal(manifest.commit, commit);
+  for (const entry of manifest.files) {
+    const file = entry[field];
+    const bytes = await readFile(new URL(file, directory));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, `固定上游摘要不一致：${file}`);
+    if (!file.endsWith('.ts')) continue;
+    const id = prefix + file;
+    if (override || !modules.has(id)) modules.set(id, new SourceTextModule(stripTypeScriptTypes(bytes.toString('utf8'), { mode: 'transform' }), { identifier: id }));
+  }
+}
+const packages = new Map(['protocol', 'crypto', 'webrtc', 'client-core'].map(name => [`@dsh-remote/${name}`, `packages/${name}/src/index.ts`]));
+const externals = new Map();
+async function link(specifier, referencing) {
+  const id = packages.get(specifier) ?? (specifier.startsWith('.')
+    ? posix.normalize(posix.join(posix.dirname(referencing.identifier), specifier.replace(/\.js$/, '.ts'))) : undefined);
+  if (id) {
+    assert.ok(modules.has(id), `互通探针缺少固定源码：${id}`);
+    return modules.get(id);
+  }
+  if (!externals.has(specifier)) {
+    // 原文件清理临时下载时也移入回收站，遵守项目禁止永久删除的约定。
+    let values = specifier === 'zod' ? { z } : await import(specifier);
+    if (specifier === 'node:fs/promises') values = { ...values, rm: async path => {
+      const trash = new URL('../../.worktrees/trash/', import.meta.url);
+      await values.mkdir(trash, { recursive: true });
+      await values.rename(path, new URL(`interop-${crypto.randomUUID()}`, trash));
+    } };
+    externals.set(specifier, new SyntheticModule(Object.keys(values), function () {
+      for (const [name, value] of Object.entries(values)) this.setExport(name, value);
+    }, { identifier: specifier }));
+  }
+  return externals.get(specifier);
+}
+for (const id of ['packages/plugin/src/client-secure-transport.ts', 'packages/plugin/src/client-capabilities.ts',
+  'packages/plugin/src/remote-session-tools.ts', 'packages/client-core/src/index.ts', 'packages/webrtc/src/index.ts', 'packages/crypto/src/index.ts']) {
+  const module = modules.get(id);
+  if (module.status === 'unlinked') await module.link(link);
+  if (module.status === 'linked') await module.evaluate();
+}
+const { ClientSecureTransport } = modules.get('packages/plugin/src/client-secure-transport.ts').namespace;
+const { probeRemoteHostFeatures } = modules.get('packages/plugin/src/client-capabilities.ts').namespace;
+const { RemoteClientCore } = modules.get('packages/client-core/src/index.ts').namespace;
+const { AdaptiveTransport } = modules.get('packages/webrtc/src/index.ts').namespace;
+const { generateKeyPair } = modules.get('packages/crypto/src/index.ts').namespace;
+const { RemoteSessionTools } = modules.get('packages/plugin/src/remote-session-tools.ts').namespace;
+const harnessRoot = new URL('./harness-fixtures/', import.meta.url);
+const harnessSource = JSON.parse(await readFile(new URL('source.json', harnessRoot), 'utf8'));
+for (const entry of harnessSource.files) {
+  assert.equal(createHash('sha256').update(await readFile(new URL(entry.path, harnessRoot))).digest('hex'), entry.sha256);
+}
+const { installConnection } = await import('./harness-fixtures/dsh-client-connection/lib/client.node.js');
+const { ClientRemoteEvents } = await import('./harness-fixtures/dsh-api-gateway/lib/types/client/remote-events.js');
+const { default: sessionContract } = await import('./harness-fixtures/dsh-api-session-controller/lib/typert.remote-client.js');
+const { RemoteTypertGateway } = modules.get('packages/plugin/src/remote-typert-gateway.ts').namespace;
+const [origin, hostId] = process.argv.slice(2);
+assert.ok(origin?.startsWith('http://127.0.0.1:') && hostId, '互通探针仅连接隔离本地服务');
+async function api(path, body, bearer) {
+  const response = await fetch(origin + path, { method: body ? 'POST' : 'GET',
+    headers: { ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}) });
+  assert.equal(response.status, 200, `固定服务请求失败：${path}`);
+  return response.json();
+}
+const login = await api('/api/v1/auth/login', { email: 'fixture@example.test', password: 'fixture-local-password' });
+const identity = { deviceId: crypto.randomUUID(), name: '上游原客户端互通探针', ...generateKeyPair() };
+const tokens = await api('/api/v1/devices/register', { v: 1, device: { deviceId: identity.deviceId, name: identity.name,
+  platform: 'linux', role: 'client', identityKey: identity.publicKey, clientVersion: '0.6.5' } }, login.token);
+const descriptor = await api(`/api/v1/devices/${hostId}`, undefined, tokens.accessToken);
+const target = { deviceId: hostId, name: descriptor.name, publicKey: descriptor.identityKey, membershipId: descriptor.membershipId };
+const transport = new AdaptiveTransport(origin.replace('http:', 'ws:') + '/ws/v1/connect', {
+  role: 'client', deviceId: identity.deviceId, accessToken: tokens.accessToken,
+  targetDeviceId: hostId, forceRelay: true, preferredTransports: ['relay'],
+});
+const client = new RemoteClientCore(new ClientSecureTransport(transport, identity, target), 5_000);
+let stage = '控制连接与Noise握手';
+let lifecycle;
+let events;
+let eventsClientId;
+let eventGenerationEnded;
+let connection;
+const owner = new Context();
+const deliveries = [];
+const waiting = new Set();
+function waitEvent(predicate) {
+  const seen = deliveries.find(predicate);
+  if (seen) return Promise.resolve(seen);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { waiting.delete(observer); reject(Error('官方事件消费者未收到预期通知')); }, 4_000);
+    const observer = value => { if (predicate(value)) { clearTimeout(timer); waiting.delete(observer); resolve(value); } };
+    waiting.add(observer);
+  });
+}
+try {
+  await client.connect();
+  stage = '真实能力探测';
+  const features = await probeRemoteHostFeatures(client, descriptor.clientVersion);
+  assert.equal(features.remoteGateway, true);
+  assert.equal(features.sessionFormat, 3);
+  stage = '官方桌面事件代际就绪';
+  const gateway = new RemoteTypertGateway(client);
+  installConnection({ provide: (_name, value) => { connection = value; } }, {
+    interactions: 'answer', transport: { rpc: {
+      call: async (_channel, endpoint, payload, signal) => gateway.dispatch(endpoint, payload, signal),
+    } }, recovery: { generationReadyTimeoutMs: 3_000, generationReadyWarnMs: 2_500,
+      backoffBaseMs: 1, backoffMaxMs: 1, backoffFactor: 1 },
+  });
+  events = new ClientRemoteEvents(owner, connection, (endpoint, payload, signal) => ({
+    async *[Symbol.asyncIterator]() {
+      const stream = await gateway.open(endpoint, payload, signal);
+      try { for await (const item of stream) {
+        if (item.type === 'ready') eventsClientId = item.clientId;
+        yield item;
+      } } finally { await stream.return?.(); eventGenerationEnded?.(); }
+    },
+  }));
+  for (const name of ['api-session/added', 'api-session/status']) events.subscribe(owner, name, (...args) => {
+    const value = { name, args }; deliveries.push(value); for (const observer of waiting) observer(value);
+  });
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(Error('官方桌面事件代际未进入connected')), 4_000);
+    lifecycle = connection.start({ onConnected: host => { clearTimeout(timeout); resolve(host); },
+      onReconnectRequested: () => { clearTimeout(timeout); reject(Error('官方桌面事件代际失败并进入自动重试')); } });
+  });
+  assert.equal(connection.state.getSnapshot(), 'connected');
+  assert.equal(connection.generation.getSnapshot().host.home, '/phone-capabilities');
+  stage = '官方SessionControl投影契约';
+  const control = await gateway.open('session/control', { args: {} }, AbortSignal.timeout(5_000));
+  const controlIterator = control[Symbol.asyncIterator]();
+  try {
+    const baseline = await controlIterator.next();
+    assert.equal(baseline.done, false);
+    const schema = sessionContract.descriptors.find(item => item.namespace === 'session' && item.method === 'control').result.create();
+    // 旧数组不能冒充按 sessionId 索引的投影映射，使用官方生成的真实结果解析器锁住该缺陷。
+    assert.throws(() => schema.parse({ type: 'baseline', value: { projections: [] } }));
+    const parsed = schema.parse(baseline.value);
+    assert.ok(parsed.value.projections['control-bus']);
+  } finally { await controlIterator.return?.(); }
+  const remote = { client, features };
+  const tools = new RemoteSessionTools(async (_host, signal, query) => query(remote, signal));
+  const signal = AbortSignal.timeout(10_000);
+  const workspace = { hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
+  stage = 'Typert工作区与会话目录';
+  const listing = await tools.run('remote_list_sessions', workspace, signal);
+  assert.ok(listing.sessions.some(item => item.sessionId === 'control-bus'));
+  stage = 'Typert创建任务与能力请求';
+  const created = await tools.run('remote_create_session', { ...workspace, operationId: 'interop-create-00000001' }, signal);
+  assert.equal(created.status, 'accepted');
+  await waitEvent(item => item.name === 'api-session/added' && item.args[0]?.sessionId === created.sessionId);
+  const requestId = 'interop-capabilities-00000001';
+  const sent = await tools.run('remote_send_message', { ...workspace, sessionId: created.sessionId, operationId: requestId,
+    message: JSON.stringify({ request_id: requestId, op: 'phone.capabilities', args: {} }) }, signal);
+  assert.equal(sent.status, 'accepted');
+  stage = 'Typert读取请求回执';
+  const history = await tools.run('remote_read_session', { ...workspace, sessionId: created.sessionId }, signal);
+  assert.ok(history.records.some(item => item.type === 'assistant/message' && item.json.includes(requestId)));
+  stage = '官方事件消费者持续观察真实执行状态';
+  const runningRequest = 'interop-execute-00000001';
+  const running = await tools.run('remote_send_message', { ...workspace, sessionId: created.sessionId, operationId: runningRequest,
+    message: JSON.stringify({ request_id: runningRequest, op: 'ui.dump_tree', args: {} }) }, signal);
+  assert.equal(running.status, 'accepted');
+  await waitEvent(item => item.name === 'api-session/status' && item.args[0] === created.sessionId && item.args[1] === true);
+  await client.rpc('probe.release', {});
+  await waitEvent(item => item.name === 'api-session/status' && item.args[0] === created.sessionId && item.args[1] === false);
+  assert.equal(connection.state.getSnapshot(), 'connected');
+  stage = '真实事件回答与订阅关闭';
+  const answered = await gateway.dispatch('$events/result', { args: { clientId: eventsClientId, eventId: 'unknown',
+    outcome: { kind: 'rejected', error: { name: 'Error', message: '', code: '' } } } }, signal);
+  assert.equal(answered.ok, true);
+  const generationEnded = new Promise(resolve => { eventGenerationEnded = resolve; });
+  lifecycle.stop(); await events.dispose(); await generationEnded;
+  const stale = await gateway.dispatch('$events/result', { args: { clientId: eventsClientId, eventId: 'unknown', outcome: { kind: 'next' } } }, signal);
+  assert.equal(stale.ok, false);
+  console.log(JSON.stringify({ status: 'PASS', upstream: 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', release: 'eef232d2c43b0c9d04998a18db98cbc9e673e488',
+    transport: client.getStats().mode, sessionFormat: features.sessionFormat, workspace: workspace.workspaceId,
+    capabilities: features.capabilities, harnessVersion: descriptor.harnessVersion ?? null }));
+} catch (error) {
+  console.error(JSON.stringify({ status: 'FAIL', stage, code: error.code ?? error.name, message: error.message }));
+  process.exitCode = 1;
+} finally { lifecycle?.stop(); await events?.dispose(); await client.close(); }

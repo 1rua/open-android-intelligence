@@ -6,6 +6,9 @@ import java.util.Base64
 object RemoteProtocol {
     const val VERSION = 1
     const val UPSTREAM_COMMIT = "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7"
+    const val REMOTE_COMPATIBILITY_VERSION = "0.6.5"
+    // 本项目虚拟 Host 对官方 Typert 消费者的协议兼容基线，不表示手机安装了 Harness 引擎。
+    const val HARNESS_COMPATIBILITY_VERSION = "0.2.2-rc.1"
     const val NOISE_SUITE = "Noise_IK_25519_ChaChaPoly_SHA256"
     const val MAX_CONTROL_FRAME_BYTES = 64 * 1024
     const val MAX_RELAY_FRAME_BYTES = 1024 * 1024

@@ -87,7 +87,9 @@ internal class RemoteSignalService(
             try {
                 control.awaitOpen(); requireCurrent()
                 sendControl("hello", obj("role" to identityScope.role.wireValue, "deviceId" to credential.identity.deviceId.value,
-                    "accessToken" to credential.tokens.accessToken, "protocols" to listOf(1), "capabilities" to offered.toList(), "clientVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION))
+                    "accessToken" to credential.tokens.accessToken, "protocols" to listOf(1), "capabilities" to offered.toList(),
+                    "clientVersion" to RemoteProtocol.REMOTE_COMPATIBILITY_VERSION,
+                    *if (identityScope.role == RemoteRole.HOST) arrayOf("harnessVersion" to RemoteProtocol.HARNESS_COMPATIBILITY_VERSION) else emptyArray()))
                 for (frame in control.frames) {
                     lastReceived = System.currentTimeMillis(); requireCurrent()
                     try { handle(frame) }

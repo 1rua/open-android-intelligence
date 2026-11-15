@@ -55,6 +55,7 @@ jobs:
           npm ci
           npm ci --prefix plugin-tooling
           npm ci --prefix tools/remote-server
+          npm ci --prefix tools/remote-interop
           python -m pip install pytest PyYAML==6.0.3
 
       # 显示名称保留现有分支规则标识；实际只执行 Remote 与插件门禁。
@@ -130,6 +131,7 @@ jobs:
         run: |
           npm ci --prefix plugin-tooling
           npm ci --prefix tools/remote-server
+          npm ci --prefix tools/remote-interop
           umask 077
           OAI_PLUGIN_KEY_FILE="$RUNNER_TEMP/oai-test-plugin-seed.bin"
           trap 'if [ -f "$OAI_PLUGIN_KEY_FILE" ]; then mkdir -p "$RUNNER_TEMP/open-android-intelligence-trash"; mv "$OAI_PLUGIN_KEY_FILE" "$RUNNER_TEMP/open-android-intelligence-trash/oai-test-plugin-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.bin"; fi' EXIT

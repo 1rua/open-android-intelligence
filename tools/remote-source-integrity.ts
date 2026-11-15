@@ -82,13 +82,19 @@ export async function verifyRemoteSources(projectRoot: string = root): Promise<n
   for (const file of [
     'tools/remote/fixtures/dsh-remote/source.json',
     'tools/remote-server/fixtures/source.json',
+    'tools/remote-interop/fixtures/source.json',
     'integrations/oai-android-mcp/test/fixtures/dsh-remote/source.json',
   ]) {
     const target = member(projectRoot, file);
     const source = JSON.parse(await readFile(target, 'utf8'));
     if (source.repository !== repository || source.commit !== commit) throw Error(`固定上游身份不匹配：${file}`);
     count += await verifyEntries(dirname(target), source.files);
+    if (file === 'tools/remote-interop/fixtures/source.json') {
+      await verifyInventory(dirname(target), ['source.json', ...source.files.map((entry: SourceEntry) => entry.path!)]);
+    }
   }
+  count += await verifyInteropReleaseSources(member(projectRoot, 'tools/remote-interop/release-fixtures'));
+  count += await verifyHarnessConsumerSources(member(projectRoot, 'tools/remote-interop/harness-fixtures'));
   count += await verifyMediaSources(member(projectRoot, 'tools/remote/fixtures/media-upstream'));
   const vectorRoot = member(projectRoot, 'apps/android/gateway-client/src/test/resources/dsh-remote');
   const sums = (await readFile(resolve(vectorRoot, 'SHA256SUMS'), 'utf8')).split(/\r?\n/).filter(Boolean);
@@ -110,5 +116,50 @@ export async function verifyRemoteSources(projectRoot: string = root): Promise<n
     throw Error('上游 WebRTC 原文例外的固定摘要不匹配');
   }
   count += await verifyEntries(licensesRoot, licenses.licenseAssets);
+  return count;
+}
+
+async function verifyInventory(base: string, paths: string[]): Promise<void> {
+  const expected = new Set(paths);
+  const observed: string[] = [];
+  async function visit(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) observed.push(relative(base, path));
+      else throw Error('互通来源不允许符号链接或特殊文件');
+    }
+  }
+  await visit(base);
+  if (observed.length !== expected.size || observed.some(path => !expected.has(path))) throw Error('互通来源目录与清单不完整');
+}
+
+export async function verifyInteropReleaseSources(base: string): Promise<number> {
+  const source = JSON.parse(await readFile(resolve(base, 'source.json'), 'utf8'));
+  if (source.repository !== repository || source.commit !== 'eef232d2c43b0c9d04998a18db98cbc9e673e488' ||
+      source.release !== 'v0.6.5' || source.baseCommit !== commit || !Array.isArray(source.files) || source.files.length !== 8) {
+    throw Error('Remote 0.6.5 发布差异来源身份不匹配');
+  }
+  const count = await verifyEntries(base, source.files);
+  await verifyInventory(base, ['source.json', ...source.files.map((entry: SourceEntry) => entry.path!)]);
+  return count;
+}
+
+export async function verifyHarnessConsumerSources(base: string): Promise<number> {
+  const source = JSON.parse(await readFile(resolve(base, 'source.json'), 'utf8'));
+  const packages: Record<string, string> = {
+    '@deepseek-ai/dsh-client-connection': 'sha512-GuUgWVWP3+ngXcZhU9ctzVxD78owjP1JVIbXNIGJm2RW9avhBg3590x95EJNPD4YIFuOISg72q8pbXT4Nd1UMw==',
+    '@deepseek-ai/dsh-api-gateway': 'sha512-pVBKLnxB9D3VrN3OfmpTLZir3UI2sTydbOjsHe6Ae6o0Zi3TBBAyMmz1BsLygUn11jDWYKwKywftOgskWm8zxg==',
+    '@deepseek-ai/dsh-api-session-controller': 'sha512-BtAWPuxMzaEKTQWR2D4vNbZf+3eJ9Zi9Y2XFx843SJF/nECakC+QVXeT3WB+YguU0i+9RqEf4Fy/R7nXNfJOyw==',
+  };
+  if (source.repository !== 'deepseek-ai/deepseek-harness' || source.licenseCommit !== '39163dd30f703a79079e2d2446545cff3c453738' ||
+      source.licenseSha256 !== 'ebb4f09972aee8608be255debaf78451a68e95c290f55c240dec2ecfa16ea6be' ||
+      !Array.isArray(source.files) || source.files.length !== 4 || source.files.some((entry: { package: string; version: string; tarballIntegrity: string }) =>
+        entry.version !== '0.2.2-rc.1' || !packages[entry.package] || packages[entry.package] !== entry.tarballIntegrity)) {
+    throw Error('Harness 0.2.2-rc.1 官方消费者来源身份不匹配');
+  }
+  const entries: SourceEntry[] = [...source.files, { path: 'LICENSE', sha256: source.licenseSha256 }];
+  const count = await verifyEntries(base, entries);
+  await verifyInventory(base, ['source.json', ...entries.map(entry => entry.path!)]);
   return count;
 }

@@ -1,0 +1,131 @@
+{
+  "repository": "liguobao/ds-harness-remote",
+  "commit": "ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7",
+  "files": [
+    {
+      "path": "packages/client-core/src/acp-client.ts",
+      "sha256": "a1a8c53a6f5d0a82c32377d273740e1b5edb7743112c6ecd2891174f91fd241d",
+      "gitBlob": "138c9c8461c6d631d4865537a8729f84bfa47eda"
+    },
+    {
+      "path": "packages/client-core/src/codex-client.ts",
+      "sha256": "edf1e18d213e7a76d5b8cda4108181affed570ba4450d2c11cafdf61693feefa",
+      "gitBlob": "c80a159dcf6f63c1764805dc6d2b21a967451e9e"
+    },
+    {
+      "path": "packages/client-core/src/harness-alpha-client.ts",
+      "sha256": "73962ba2fd09701fb3fac704be591e8dca095d3ac8835fb796840a719ab4d142",
+      "gitBlob": "088cfddc569d0b83520119c7ab410167694f73f4"
+    },
+    {
+      "path": "packages/client-core/src/harness-questions.ts",
+      "sha256": "3e601cd13dfb817ae6959527cf5c93fb6acddb6c9673cb3ec157ec9838ae9612",
+      "gitBlob": "a481ffa622746728d67453c1ef68dd54afd25d61"
+    },
+    {
+      "path": "packages/client-core/src/index.ts",
+      "sha256": "8c84b9b6322bfdcee3e1c9706539b875e3bf88b78d2ac2083f7f6b4899230763",
+      "gitBlob": "06f9289c3f3191e2c8e6a3761214821c0da51e4a"
+    },
+    {
+      "path": "packages/client-core/src/remote-gateway.ts",
+      "sha256": "94ada3483813db96d5d75884a46e0edcb03d79c041a370646f13a8bc796b39ec",
+      "gitBlob": "5587b66b60be8347117845cbe866125b78b4b694"
+    },
+    {
+      "path": "packages/crypto/src/index.ts",
+      "sha256": "b995849e46beefd224d98076656ac8c2444188c150df0990365b873ade76fcf2",
+      "gitBlob": "3eb93fc7c4ac60845136646484d1f7095aeab099"
+    },
+    {
+      "path": "packages/crypto/src/noise.ts",
+      "sha256": "bf0849323e6aae8bbbdc59e212e19ec1a9ffdfec2b987d78d0064b48a253a795",
+      "gitBlob": "d6bbc6f5a33654cf0e09468046b1ae8f342efc9f"
+    },
+    {
+      "path": "packages/webrtc/src/adaptive-transport.ts",
+      "sha256": "bb93b9c6d0c1b2d7f3109e5c260b6688315a194cfd1f494a10d2a9b09ca69205",
+      "gitBlob": "abed1944f6f445c301302a6f1a406a83995c27b6"
+    },
+    {
+      "path": "packages/webrtc/src/control-lease.ts",
+      "sha256": "edf102a2ec2f33a5946f0c1fc2b01509acc1b11c9e5a3eb4098757539d943795",
+      "gitBlob": "24991c01b989231a471e4cc2883554129be919f4"
+    },
+    {
+      "path": "packages/webrtc/src/index.ts",
+      "sha256": "ebf5b503f7a6fa09ce99552594f46f3faf3e8cbe857f1d1422b4b16f457c5eec",
+      "gitBlob": "31dd18bafa38e4a6cb88a4190fe69c5522cf6a6c"
+    },
+    {
+      "path": "packages/webrtc/src/rtc-adapter.ts",
+      "sha256": "e99e3f99f82ba04a1f5c28d3c28054e8f078c220a528ae3ea1fc08b632a64aeb",
+      "gitBlob": "fc642329e3b9cc91de1a01f300e1fd6a377824d5"
+    },
+    {
+      "path": "packages/webrtc/src/rtc-chunking.ts",
+      "sha256": "8766f275d1d47a9d97d856b092758bdae8c72de60a37fe5ffc6c97d7e1753870",
+      "gitBlob": "4d1d83fb1bdabf61cd9b0e1f4c53b00529489299"
+    },
+    {
+      "path": "packages/webrtc/src/rtc-data-channel.ts",
+      "sha256": "970088786181d7f7954548099fa1e28784043a709dd5c4754717b8ac2091df3f",
+      "gitBlob": "0c9a7d597028efd36cd3326e366d13369866e2cb"
+    },
+    {
+      "path": "packages/webrtc/src/serial-send.ts",
+      "sha256": "941ee832a8d18b62df0f030d9ee295ff19fc23b45e193383e4bad7430924a5bb",
+      "gitBlob": "d65641578ace38a596ceecc69d3a7e2f3e22a384"
+    },
+    {
+      "path": "packages/webrtc/src/transport.ts",
+      "sha256": "6c747e95addf478d8c5048fa4d8b696af45194896402577e05b7a4678806503b",
+      "gitBlob": "7a81ba9d6bd0e95c59f4e856697f1f446dbcdaf9"
+    },
+    {
+      "path": "packages/webrtc/src/util.ts",
+      "sha256": "f5d7833d727827f2bf11480597bad9ed068cdbec4569ab9f4cda025b45ace6e4",
+      "gitBlob": "1d0b71c837a9be1d6c637c3ff17f22c599b46436"
+    },
+    {
+      "path": "packages/webrtc/src/websocket-backpressure.ts",
+      "sha256": "ff7ee84eb388891788584b2faa2fda4c4dcc695f6f9ea03b848f475382df238e",
+      "gitBlob": "b61d55f6b2bc5e6c07add3541a1cad24a2b83531"
+    },
+    {
+      "path": "packages/plugin/src/client-secure-transport.ts",
+      "sha256": "6e3c9d4aaf83e849867bc3f5bb14b2654e6c285b610776f5ff91b793d6dbe64d",
+      "gitBlob": "f42d41d515c8045344dd56a7e3544e7a099c30ce"
+    },
+    {
+      "path": "packages/plugin/src/client-capabilities.ts",
+      "sha256": "7f8c248bbab493a8a9227620d4e1efebe5ebb0e9ba9a6e662c3bc196962264ca",
+      "gitBlob": "9c90150c82fbdafbc1ec501186970f866472a892"
+    },
+    {
+      "path": "packages/plugin/src/client-runtime-contract.ts",
+      "sha256": "5f395257f1ee54fdd9a2ad6830805d79b4cad09cff1f49c89693b7f731f5c9ae",
+      "gitBlob": "48666f6cb00b3ba9b845c34b6f2fc4db495bffd2"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6e41a78bbbe0c3ed54d085b661eb5af5a7836f4d40460d54f1469f43b386285d",
+      "gitBlob": "d2c3468f3a4e2ffac2a66d07e85fe0f4f6369122"
+    },
+    {
+      "path": "packages/plugin/src/ids.ts",
+      "sha256": "dab5956a569102ac94eb5bdfd846796eaab4ff5374688a6e85deb834f8d9fe89",
+      "gitBlob": "f9d79dabbf9905a8b02c5782eedde916d8054e42"
+    },
+    {
+      "path": "packages/plugin/src/remote-file-upload.ts",
+      "sha256": "9a9053993190f49270571f7bf35c0044f449c0c0af028d61f9c13db2c9490058",
+      "gitBlob": "88cf48d0dbb8b83985b2c2524df0aa65380814c5"
+    },
+    {
+      "path": "packages/plugin/src/workspace-transfer-limits.ts",
+      "sha256": "35bd834d8c23e5890b9a026199d731cf885b43d068c816bacba57b5c3e17bd7e",
+      "gitBlob": "943370a150c01b49f2528a9c3a9a95265b06bd56"
+    }
+  ]
+}

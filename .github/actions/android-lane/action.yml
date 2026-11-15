@@ -77,6 +77,11 @@ runs:
       shell: bash
       run: npm ci --prefix tools/remote-server --prefer-offline --no-audit --fund=false
 
+    - name: 安装官方客户端与手机Host互通隔离依赖
+      if: inputs.lane == 'android-gateway'
+      shell: bash
+      run: npm ci --prefix tools/remote-interop --prefer-offline --no-audit --fund=false
+
     - name: Set up JDK 21
       uses: actions/setup-java@v6
       with:

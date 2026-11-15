@@ -4,6 +4,7 @@ import com.openandroidintelligence.control.remote.ControlAccessBinding
 import com.openandroidintelligence.control.remote.ControlRequestException
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
+import com.openandroidintelligence.gateway.remote.protocol.RemoteProtocol
 import java.util.Base64
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.map
 
 /** 只公开手机工作区。网络层负责 Noise 身份，门面从不接受业务正文中的主体字段。 */
 class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
+    private val remoteEvents = PhoneRemoteEventSource(bus)
     val strings: PhoneFacadeStrings get() = bus.strings
     fun outputEpoch(access: ControlAccessBinding): Long = bus.outputEpoch(access)
     fun requireOutput(access: ControlAccessBinding, epoch: Long, metadataOnly: Boolean = false) = bus.requireOutput(access, epoch, metadataOnly)
@@ -20,7 +22,18 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
         val epoch = outputEpoch(access)
         val args = carrierArgs(input)
         val result = when (method) {
-            "harness.transport.describe" -> Json.of(mapOf("capabilities" to listOf("harness.remote.v3")))
+            "\$events/result" -> remoteEvents.answer(access, args)
+            "harness.transport.describe" -> Json.of(mapOf(
+                "capabilities" to listOf("harness.remote.v3"),
+                "workspaceTypes" to listOf(mapOf("id" to "harness", "name" to strings.workspaceTitle,
+                    "capability" to "harness.remote.v3", "available" to true)),
+                // compatibility 是本项目显式定义的虚拟 Host 语义，区别于上游实际安装的引擎版本。
+                "implementation" to mapOf("kind" to "virtual", "name" to "oai.android",
+                    "implementationVersion" to com.openandroidintelligence.gateway.client.BuildConfig.OAI_IMPLEMENTATION_VERSION,
+                    "clientVersion" to RemoteProtocol.REMOTE_COMPATIBILITY_VERSION,
+                    "harnessVersion" to RemoteProtocol.HARNESS_COMPATIBILITY_VERSION,
+                    "harnessVersionSource" to "compatibility", "upstreamCommit" to RemoteProtocol.UPSTREAM_COMMIT),
+            ))
             "workspace/list" -> workspace(access)
             "session/list" -> Json.of(mapOf("items" to bus.sessions(access)))
             "session/create" -> {
@@ -72,7 +85,7 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
     }
 
     /** 每个订阅自行记录 cursor，取消订阅只停止观察，不取消手机请求。 */
-    fun metadataStream(method: String, input: JsonValue): Boolean = method in setOf("workspace/follow", "session/control") ||
+    fun metadataStream(method: String, input: JsonValue): Boolean = method in setOf("\$events", "workspace/follow", "session/control") ||
         method == "session/follow" && sessionId(request(carrierArgs(input))) == "control-bus"
 
     fun stream(access: ControlAccessBinding, method: String, input: JsonValue): Flow<JsonValue> {
@@ -81,9 +94,10 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
         return flow {
         val args = carrierArgs(input)
         when (method) {
+            "\$events" -> remoteEvents.open(access, args).collect { emit(it) }
             "workspace/follow" -> bus.changes.collect { emit(Json.of(mapOf("type" to "baseline", "value" to workspace(access)))) }
             "session/control" -> bus.changes.collect {
-                emit(Json.of(mapOf("type" to "baseline", "value" to mapOf("projections" to bus.sessions(access)))))
+                emit(Json.of(mapOf("type" to "baseline", "value" to mapOf("projections" to bus.controlProjections(access)))))
             }
             "session/follow" -> {
                 val request = request(args)
