@@ -57,6 +57,7 @@ import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.ports.completeTimeline
+import com.openandroidintelligence.conversation.ports.preservingHistoryPosition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -2107,8 +2108,11 @@ class WorkbenchController(
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
                     page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
-                        val message = withLatestMessageStatus(rawMessage)
+                        val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
+                        if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
+                            mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
+                        }
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                             if (message.sender == "assistant" && message.state == "CONFIRMED") {
                                 pruneConfirmedAssistantDuplicates(message)
@@ -4974,7 +4978,7 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
                 if (event.message.state == "STREAMING" && event.message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return
-                val message = withLatestMessageStatus(event.message)
+                val message = withLatestMessageStatus(event.message).preservingHistoryPosition(mirrored[event.message.id])
                 val eventConvId = message.conversationId?.value
                 if (eventConvId != null && eventConvId != currentActiveId) {
                     refreshThreads()
@@ -5248,11 +5252,14 @@ class WorkbenchController(
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
-                    val message = withLatestMessageStatus(rawMessage)
+                    val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
                     if (message.sender == "user" && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
                         message.clientMessageId?.value?.let { activeWork.settledClient(threadId, it) }
                     }
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
+                    if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
+                        mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
+                    }
                     if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                         if (message.sender == "assistant" && message.state == "CONFIRMED") {
                             val matched = pruneConfirmedAssistantDuplicates(message)
@@ -5327,12 +5334,14 @@ class WorkbenchController(
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
             deleted.forEach { mirrored.remove(it); mirroredRevisions.remove(it) }
             page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
-                val message = withLatestMessageStatus(rawMessage)
+                val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
                     rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = revision
+                } else if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
+                    mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
                 }
             }
             scheduleHistoricalMedia(threadId,page.messages)
@@ -5709,10 +5718,20 @@ class WorkbenchController(
             if (userIndex < 0) return@forEach
             val earlierReplies=ordered.take(userIndex).filter { candidate ->
                 if (candidate.isUser || candidate.key in echo.seenMessageIds) return@filter false
-                // Codex 历史追赶有时不带 generationId；只有当前活动轮次仍与
-                // 该本地引导一致时才把缺失身份视为同轮，避免跨轮移动旧助手。
-                candidate.generationId == generation ||
-                    (candidate.generationId == null && steeringGeneration == generation)
+                if (candidate.generationId != null) return@filter candidate.generationId == generation
+                // 缺少轮次时只认同一次历史页中位于回声之后的助手；更早的旧问答、
+                // 不同分页和未见过的跨轮记录都不能因手机时间较晚而被挪到引导后。
+                val echoPosition=message.historyPosition ?: return@filter false
+                val candidatePosition=mirrored[candidate.key]?.historyPosition ?: return@filter false
+                if (!candidatePosition.isAfter(echoPosition)) return@filter false
+                mergedMessages.none { between ->
+                    val position=between.historyPosition
+                    between.sender == "user" && position != null && position.isAfter(echoPosition) &&
+                        candidatePosition.isAfter(position) &&
+                        between.presentationClientMessageId?.let { client ->
+                            activeAtoms.firstOrNull { it.clientMessageId == client }?.steeringEcho?.generationId == generation
+                        } != true
+                }
             }
             if (earlierReplies.isNotEmpty()) {
                 // 保留原稿锚点及发送前已有行；仅把时钟偏差导致提前的同轮新回复放回输入之后。

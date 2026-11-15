@@ -93,13 +93,17 @@ class RemoteConversationRepository(
         val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
         projected.forEach { rememberApproval(conversationId, it) }
         activeConversationChanged()
-        val pageIds = result.records.mapNotNull { record ->
+        // 页内顺序来自这次真实 records，不使用可能重编号的 Codex seq 或手机时钟。
+        // 每页独立身份保证分页、重读与其他会话的位置不会被拿来互相比大小。
+        val pageId = UUID.randomUUID().toString()
+        val positions = result.records.mapIndexedNotNull { index, record ->
             val event = record.at("event") ?: record
-            val data = event.at("data") ?: return@mapNotNull null
-            (data.at("message") ?: data).text("id")
-        }.toSet()
-        return TimelinePage(synchronized(target) { target.rows.values.filter { it.id in pageIds } },
-            result.nextCursor, result.revision)
+            val data = event.at("data") ?: return@mapIndexedNotNull null
+            (data.at("message") ?: data).text("id")?.let { it to HistoryMessagePosition(pageId, index) }
+        }.toMap()
+        return TimelinePage(synchronized(target) { target.rows.values.mapNotNull { row ->
+            positions[row.id]?.let { row.copy(historyPosition = it) }
+        } }, result.nextCursor, result.revision)
     }
     private suspend fun ensureFollow(id: String) {
         val opened = ready.computeIfAbsent(id) { CompletableDeferred() }

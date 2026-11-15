@@ -63,6 +63,27 @@ class EncryptedSteeringPresentationTest {
         } finally { restored.closeStore() }
     }
 
+    @Test fun `历史位置成对保存且无位置实时更新不能擦掉原页位置`() = runBlocking {
+        val owner = scope.copy(profileId = "history_position_reopen")
+        val position = HistoryMessagePosition("first-page", 3)
+        val original = row("history-row", 1).copy(contentRevision = 1, historyPosition = position)
+        val mirror = EncryptedConversationMirror(context, owner, key)
+        mirror.saveTimeline(conversation.value, TimelinePage(listOf(original), null))
+        mirror.apply(VerifiedConversationEvent.TimelineUpsert("live-update", 2, 2,
+            original.copy(parts = listOf(MessagePart.Text("实时更新")), contentRevision = 2, historyPosition = null)))
+        assertEquals(position, mirror.timeline(conversation.value)!!.messages.single().historyPosition)
+        // 新页位置整体替换，即使正文修订较旧也不能拼出新页身份加旧页下标。
+        val nextPosition = HistoryMessagePosition("next-page", 0)
+        mirror.saveTimeline(conversation.value, TimelinePage(listOf(original.copy(historyPosition = nextPosition)), null))
+        mirror.closeStore()
+        val restored = EncryptedConversationMirror(context, owner, key)
+        try {
+            val saved = restored.timeline(conversation.value)!!.messages.single()
+            assertEquals(nextPosition, saved.historyPosition)
+            assertEquals("实时更新", (saved.parts.single() as MessagePart.Text).value)
+        } finally { restored.closeStore() }
+    }
+
     @Test fun `同名会话在其他端点与其他会话不能取得原稿对应`() = runBlocking {
         val first = EncryptedConversationMirror(context, scope.copy(profileId = "steering_scope"), key)
         val other = EncryptedConversationMirror(context, scope.copy(profileId = "steering_scope", gatewayId = "endpoint_two"), key)

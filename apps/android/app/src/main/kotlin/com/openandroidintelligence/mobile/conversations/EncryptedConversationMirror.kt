@@ -196,6 +196,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
         "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
         "historySequence" to m.historySequence,
+        "historyPosition" to m.historyPosition?.let { mapOf("pageId" to it.pageId,"index" to it.index) },
         "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
@@ -206,6 +207,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
         localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
         historySequence=JsonFields.long(o,"historySequence"),
+        historyPosition=JsonFields.obj(JsonFields.field(o,"historyPosition"))?.let { position ->
+            HistoryMessagePosition(str(position,"pageId"),JsonFields.int(position,"index") ?: error("MIRROR_CORRUPTED"))
+        },
         reasoning=JsonFields.objects(o,"reasoning").map { block -> MessageReasoning(str(block,"id"), str(block,"text"),
             JsonFields.int(block,"bodyOffset") ?: error("MIRROR_CORRUPTED"), JsonFields.bool(block,"complete") ?: error("MIRROR_CORRUPTED")) },
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
@@ -686,10 +690,11 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     /** 只比较明确单条正文版本；普通空页和全页摘要不能改写原稿。 */
     private fun reconcileSnapshotContent(id: String,page: TimelinePage): TimelinePage {
         val baseline=timeline(id)?.messages.orEmpty().associateBy { it.id }
-        return page.copy(messages=page.messages.map { row ->
+        return page.copy(messages=page.messages.map { incoming ->
+            val row=incoming.preservingHistoryPosition(baseline[incoming.id])
             val revision=row.contentRevision ?: return@map if (row.isDeleted) row else baseline[row.id]?.takeIf {
                 (it.contentRevision ?: -1L) >= 0L && it.state != "STREAMING"
-            } ?: row
+            }?.copy(historyPosition=row.historyPosition) ?: row
             if (row.isDeleted || revision < 0L) return@map row
             check(row.conversationId?.value?.let { it == id } != false) { "MESSAGE_CONVERSATION_CONFLICT" }
             val content=contentRevision(id,row.id)
@@ -698,7 +703,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val atom=atoms.firstOrNull { row.sender == "user" && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
             val known=maxOf(content.revision,atom?.contentRevision ?: -1L)
             if (revision < known || (revision == known && content.tombstoned)) {
-                return@map baseline[row.id] ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
+                return@map baseline[row.id]?.copy(historyPosition=row.historyPosition)
+                    ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
             }
             if (revision > known) {
                 if (atom != null) {
@@ -919,7 +925,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 enqueueMediaTransition(id,event.message.id,event.revision,previousMedia - currentMedia.toSet(),true)
                 enqueueMediaTransition(id,event.message.id,event.revision,currentMedia,false)
                 writeTimeline(id,old.copy(messages = (old.messages.filterNot { it.id == event.message.id } +
-                    withDurableStatus(id,event.message.copy(contentRevision=event.revision))).sortedBy { it.timestamp }))
+                    withDurableStatus(id,event.message.copy(contentRevision=event.revision)
+                        .preservingHistoryPosition(old.messages.firstOrNull { it.id == event.message.id }))).sortedBy { it.timestamp }))
                 saveContentRevision(id,event.message.id,event.revision,false)
                 reconcileSteeringPresentation(id)
             }

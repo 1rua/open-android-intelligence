@@ -279,6 +279,44 @@ class RemoteSessionDeliveryIntegrationTest {
             assertTrue(reopened.timeline(local)!!.messages.filter { it.sender == "user" }.all { it.clientMessageId == null })
         } finally { reopened.closeStore() }
     }
+    @Test fun `Codex同轮引导不能把迟到旧助手移出原来的问答段`() = runBlocking {
+        delayedOldHistoryKeepsQuestionAnswerBeforeSteering(changeGeneration = false)
+    }
+    @Test fun `Codex切换轮次后引导仍不能把迟到旧助手移到回声之后`() = runBlocking {
+        delayedOldHistoryKeepsQuestionAnswerBeforeSteering(changeGeneration = true)
+    }
+    private suspend fun delayedOldHistoryKeepsQuestionAnswerBeforeSteering(changeGeneration: Boolean) {
+        val controller = ready()
+        connection.rpc.frame("turn/started", obj("turn" to obj("id" to "order-g1")))
+        connection.rpc.frame("item/agentMessage/delta", obj("turnId" to "order-g1", "itemId" to "order-initial", "delta" to "发送前已有助手"))
+        awaitReply(controller, "发送前已有助手")
+        controller.editDraft("当前引导输入")
+        controller.sendDraft(MessageDeliveryMode.STEER)
+        val ack = withTimeout(5_000) { connection.rpc.steers.receive() }
+        ack.complete(obj("turnId" to "order-g1"))
+        withTimeout(5_000) { controller.state.first { it.notice == "STEERED:CURRENT_TURN" } }
+        connection.rpc.frame("item/started", obj("turnId" to "order-g1", "item" to obj("id" to "order-echo", "type" to "userMessage",
+            "content" to listOf(obj("type" to "text", "text" to "当前引导输入")))))
+        withTimeout(5_000) { controller.state.first { state ->
+            (state.timeline as? Loadable.Ready)?.value.orEmpty().any { it.key == "order-echo" && !it.localPlaceholder }
+        } }
+        if (changeGeneration) {
+            connection.rpc.frame("turn/started", obj("turn" to obj("id" to "order-g2")))
+            connection.rpc.frame("item/agentMessage/delta", obj("turnId" to "order-g2", "itemId" to "order-next", "delta" to "下一轮仍在执行"))
+            awaitReply(controller, "下一轮仍在执行")
+        }
+        // 同一原生历史页明确把旧问答放在回声之前；手机时间晚于这批记录。
+        connection.rpc.historyRecords = listOf(userHistory("order-old-user", "与当前引导不同的旧问题", 1, 1),
+            obj("type" to "event", "event" to obj("seq" to 2, "time" to 2, "type" to "assistant/message", "data" to obj("message" to obj(
+                "id" to "order-old-answer", "content" to listOf(obj("type" to "text", "text" to "旧问题的答案")))))),
+            userHistory("order-echo", "当前引导输入", 3, 3))
+        controller.retryTimeline()
+        awaitReply(controller, "旧问题的答案")
+        val expected = listOf("order-old-user", "order-old-answer", "order-initial", "order-echo")
+        val actual = rows(controller).filter { it.key in expected }.map { it.key }
+        assertEquals("迟到历史中的旧问答不能被展示回并拆开；changeGeneration=$changeGeneration，rows=" +
+            rows(controller).map { listOf(it.key, it.generationId, it.timestamp, it.localPlaceholder) }, expected, actual)
+    }
     private fun userHistory(id: String, text: String, sequence: Int, time: Long) = obj("type" to "event", "event" to obj(
         "seq" to sequence, "time" to time, "type" to "user/message", "data" to obj("id" to id, "source" to obj("kind" to "user"),
             "content" to listOf(obj("type" to "text", "text" to text)))))

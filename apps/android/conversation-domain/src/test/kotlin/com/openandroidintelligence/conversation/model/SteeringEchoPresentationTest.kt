@@ -3,6 +3,8 @@ package com.openandroidintelligence.conversation.model
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.ports.HistoryMessagePosition
+import com.openandroidintelligence.conversation.ports.preservingHistoryPosition
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -15,6 +17,30 @@ class SteeringEchoPresentationTest {
     private fun row(id: String = "echo", text: String = "继续检查", sequence: Long? = null) =
         TimelineMessage(id, "user", listOf(MessagePart.Text(text)), 1L, conversationId = conversation,
             generationId = "native_turn", historySequence = sequence)
+
+    @Test fun `历史位置仅同页可比较且回声合并保留完整来源`() {
+        val before = HistoryMessagePosition("page", 0)
+        val echoPosition = HistoryMessagePosition("page", 1)
+        val after = HistoryMessagePosition("page", 2)
+        assertFalse(before.isAfter(echoPosition))
+        assertTrue(after.isAfter(echoPosition))
+        assertFalse(HistoryMessagePosition("other-page", 100).isAfter(echoPosition))
+        val remote = row().copy(historyPosition = echoPosition)
+        val visible = mergeLocalSendAtoms(listOf(remote), listOf(atom())).single()
+        assertEquals(echoPosition, visible.historyPosition)
+        assertNull(visible.clientMessageId)
+        assertEquals(atom().clientMessageId, visible.presentationClientMessageId)
+    }
+
+    @Test fun `无位置更新只继承同一会话同一行的完整位置`() {
+        val old = row().copy(historyPosition = HistoryMessagePosition("old-page", 8))
+        val incoming = row().copy(parts = listOf(MessagePart.Text("新正文")))
+        assertEquals(old.historyPosition, incoming.preservingHistoryPosition(old).historyPosition)
+        val next = incoming.copy(historyPosition = HistoryMessagePosition("new-page", 1))
+        assertEquals(HistoryMessagePosition("new-page", 1), next.preservingHistoryPosition(old).historyPosition)
+        assertNull(incoming.copy(id = "other").preservingHistoryPosition(old).historyPosition)
+        assertNull(incoming.copy(conversationId = ConversationId("other")).preservingHistoryPosition(old).historyPosition)
+    }
 
     @Test fun `成功回执尚无正文时本地原稿始终可见`() {
         val accepted = atom().copy(submissionState = LocalSubmissionState.ACCEPTED, status = AgentMessageStatus.DELIVERED)
