@@ -47,7 +47,7 @@ class RemoteRootInteractionTest {
     @get:Rule val compose = createComposeRule()
     private val context get() = ApplicationProvider.getApplicationContext<Application>()
 
-    @Test fun staleSelectionOrClientStateCannotMakeTheLoginStatusConnected() {
+    @Test fun 账号控制面上线无需工作区且忙碌和离线镜像不覆盖真实连接状态() {
         var workbench by mutableStateOf<WorkbenchUiState?>(null)
         var client by mutableStateOf(RemoteAccountConnectionState.CONNECTED)
         var busy by mutableStateOf(false)
@@ -59,17 +59,18 @@ class RemoteRootInteractionTest {
                 }
             }
         }
-        // 退休控制器后，即使 Client 暂留 CONNECTED，登录/端点选择页仍未连接。
-        compose.onNodeWithText("未连接").assertIsDisplayed()
+        compose.onNodeWithText("已连接").assertIsDisplayed()
         compose.runOnIdle { workbench = WorkbenchUiState(isOnline = false) }
-        compose.onNodeWithText("未连接").assertIsDisplayed()
+        compose.onNodeWithText("已连接").assertIsDisplayed()
         compose.runOnIdle { workbench = WorkbenchUiState(isOnline = true); busy = true }
-        compose.onNodeWithText("未连接").assertIsDisplayed()
+        compose.onNodeWithText("已连接").assertIsDisplayed()
         compose.runOnIdle { busy = false; client = RemoteAccountConnectionState.CONNECTING }
         compose.onNodeWithText("未连接").assertIsDisplayed()
         compose.runOnIdle { client = RemoteAccountConnectionState.CONNECTED }
         compose.onNodeWithText("已连接").assertIsDisplayed()
         compose.runOnIdle { workbench = null }
+        compose.onNodeWithText("已连接").assertIsDisplayed()
+        compose.runOnIdle { client = RemoteAccountConnectionState.DISCONNECTED }
         compose.onNodeWithText("未连接").assertIsDisplayed()
     }
 

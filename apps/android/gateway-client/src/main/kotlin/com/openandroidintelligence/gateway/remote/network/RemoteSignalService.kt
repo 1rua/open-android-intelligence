@@ -35,13 +35,15 @@ internal class RemoteSignalService(
     private val onAuthenticatedPeer: (AuthenticatedRemotePeer) -> Unit = {},
     private val onPeerClosed: (RemoteRpcConnectionScope) -> Unit = {},
     private val onClosed: (String) -> Unit = {},
+    private val onHeartbeat: () -> Unit = {},
 ) {
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
     private val worker = CoroutineScope(parentScope.coroutineContext + lifetime)
     private val tunnels = ConcurrentHashMap<String, Tunnel>()
     private val ready = CompletableDeferred<Unit>()
-    private var target: RemoteAuthorizedPeer? = null
-    private var clientResult = CompletableDeferred<RemoteRpcChannel>()
+    @Volatile private var target: RemoteAuthorizedPeer? = null
+    @Volatile private var clientResult = CompletableDeferred<RemoteRpcChannel>()
+    private val clientSelection = Mutex()
     @Volatile private var socket: RemoteSocket? = null
     @Volatile private var closed = false
     @Volatile private var limits = RemoteFrameLimits()
@@ -50,11 +52,27 @@ internal class RemoteSignalService(
     private val offered = setOf("transport.lan", "transport.p2p", "transport.turn", "transport.relay", "transport.relay.attach")
 
     suspend fun startHost() { check(identityScope.role == RemoteRole.HOST); start(); withTimeout(15_000) { ready.await() } }
-    suspend fun connect(peer: RemoteAuthorizedPeer): RemoteRpcChannel {
+    suspend fun startClient() { check(identityScope.role == RemoteRole.CLIENT); start(); withTimeout(15_000) { ready.await() } }
+    val connected: Boolean get() = ready.isCompleted && !ready.isCancelled && !closed
+    fun cancelPendingSelection() {
+        if (target != null && !clientResult.isCompleted) close()
+    }
+    suspend fun connect(peer: RemoteAuthorizedPeer): RemoteRpcChannel = clientSelection.withLock {
         check(identityScope.role == RemoteRole.CLIENT && peer.role == RemoteRole.HOST)
+        if (socket == null && !closed) start()
+        withTimeout(15_000) { ready.await() }
+        requireCurrent()
+        tunnels.values.toList().forEach { it.fail("CONNECTION_REPLACED") }
         target = peer
-        start()
-        return try { withTimeout(60_000) { clientResult.await() } } catch (failure: Exception) { close(); throw failure }
+        val result = CompletableDeferred<RemoteRpcChannel>().also { clientResult = it }
+        sendControl("connect.request", obj("hostDeviceId" to peer.device.deviceId,
+            "preferredTransports" to listOf("lan", "p2p", "turn", "relay").filter { "transport.$it" in negotiated }))
+        try { withTimeout(60_000) { result.await() } }
+        catch (failure: Exception) {
+            // accepted 不含 Host 身份；取消未完成选择后必须换控制连接，拒绝迟到回包借用新目标。
+            if (!result.isCompleted) close()
+            throw failure
+        }
     }
     private fun start() {
         requireCurrent()
@@ -97,19 +115,19 @@ internal class RemoteSignalService(
                 if (!offered.containsAll(negotiated) || "transport.relay" !in negotiated) throw RemoteRpcException("UNSUPPORTED_VERSION")
                 limits = RemoteFrameLimits(payload.longValue("maxControlFrameBytes").toInt(), payload.longValue("maxRelayFrameBytes").toInt())
                 socket?.limits = limits; ready.complete(Unit)
+                val heartbeatInterval = payload.longValue("heartbeatIntervalMs")
                 worker.launch {
                     while (isActive && !closed) {
-                        delay(25_000)
-                        if (System.currentTimeMillis() - lastReceived >= 75_000) { fail("HEARTBEAT_TIMEOUT"); break }
+                        delay(heartbeatInterval)
+                        if (System.currentTimeMillis() - lastReceived >= maxOf(15_000L, heartbeatInterval * 3)) { fail("HEARTBEAT_TIMEOUT"); break }
                         sendControl("ping", obj("nonce" to UUID.randomUUID().toString()))
+                        onHeartbeat()
                     }
                 }
-                if (identityScope.role == RemoteRole.CLIENT) sendControl("connect.request", obj("hostDeviceId" to target!!.device.deviceId,
-                    "preferredTransports" to listOf("lan", "p2p", "turn", "relay").filter { "transport.$it" in negotiated }))
             }
             "connect.accepted" -> {
                 if (identityScope.role != RemoteRole.CLIENT || !ready.isCompleted) throw RemoteRpcException("INVALID_MESSAGE")
-                val tunnel = newTunnel(payload.requiredText("connectionId"), target!!, payload)
+                val tunnel = newTunnel(payload.requiredText("connectionId"), target ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH"), payload)
                 worker.launch {
                     try {
                         tunnel.selectClientTransport()
@@ -150,8 +168,13 @@ internal class RemoteSignalService(
             "connect.rejected", "error" -> {
                 val code = payload.optionalText("code") ?: "CONNECTION_FAILED"
                 val connectionId = payload.optionalText("connectionId")
-                if (connectionId != null && identityScope.role == RemoteRole.HOST) tunnels[connectionId]?.fail(code)
-                else throw RemoteRpcException(code)
+                if (connectionId != null) tunnels[connectionId]?.fail(code)
+                    ?: if (frame.type == "connect.rejected" && identityScope.role == RemoteRole.CLIENT && !clientResult.isCompleted) {
+                        clientResult.completeExceptionally(RemoteRpcException(code))
+                    } else Unit
+                else if (identityScope.role == RemoteRole.CLIENT && !clientResult.isCompleted && code in setOf("HOST_OFFLINE", "MEMBERSHIP_REQUIRED", "CAPABILITY_NOT_SUPPORTED")) {
+                    clientResult.completeExceptionally(RemoteRpcException(code))
+                } else throw RemoteRpcException(code)
             }
             else -> throw RemoteRpcException("INVALID_MESSAGE")
         }

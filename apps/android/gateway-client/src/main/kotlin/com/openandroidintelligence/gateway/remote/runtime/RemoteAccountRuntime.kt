@@ -7,11 +7,11 @@ import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.network.*
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.schema.JsonValue
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -25,12 +25,16 @@ class RemoteAccountRuntime(
     private val hostHandler: RemoteRpcHostHandler? = null,
     private val vault: RemoteCredentialVault = RemoteCredentialVault(context),
     private val protector: RemoteIdentityProtector = AndroidRemoteIdentityProtector(),
-    private val apiFactory: (String) -> RemoteServerApi = { RemoteServerApi(it) },
+    private val apiFactory: ((String) -> RemoteServerApi)? = null,
 ) {
+    private val installation = RemoteInstallationIdentityStore(context, protector)
+    private fun server(origin: String) = apiFactory?.invoke(origin) ?: RemoteServerApi(origin, deviceNameProvider = installation::deviceName)
     private val mutableAccount = MutableStateFlow<RemoteActiveAccount?>(null)
     val account: StateFlow<RemoteActiveAccount?> = mutableAccount
     private val mutableState = MutableStateFlow(RemoteAccountConnectionState.SIGNED_OUT)
     val state: StateFlow<RemoteAccountConnectionState> = mutableState
+    private val mutableHosts = MutableStateFlow<List<RemoteHostDevice>>(emptyList())
+    val hosts: StateFlow<List<RemoteHostDevice>> = mutableHosts.asStateFlow()
     private val store = RemoteIdentityStore(vault, protector)
     private val lifecycle = Mutex()
     private val mutableHostState = MutableStateFlow(RemoteHostConnectionState.STOPPED)
@@ -38,7 +42,10 @@ class RemoteAccountRuntime(
     @Volatile private var loginJob: Job? = null
     private var api: RemoteServerApi? = null
     private var host: RemoteSignalService? = null
-    private val clients = mutableSetOf<RemoteSignalService>()
+    @Volatile private var client: RemoteSignalService? = null
+    @Volatile private var clientJob: Job? = null
+    private var clientAvailable = CompletableDeferred<RemoteSignalService>()
+    private val presenceRefresh = Mutex()
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val selectionLock = Any()
     private var pendingConnect: Deferred<RemoteRpcChannel>? = null
@@ -55,13 +62,14 @@ class RemoteAccountRuntime(
         return try {
             lifecycle.withLock {
                 vault.requireLoginAttempt(loginAttemptId)
+                val installation = installationIdentities()
                 revokeLocal()
-                val server = apiFactory(origin)
+                val server = server(origin)
                 val epoch = vault.revokeActive()
                 val login = authorize(server)
                 ensureActiveAuthorization(epoch)
-                val clientIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
-                val hostIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+                val clientIdentity = installation.client
+                val hostIdentity = installation.host
                 val result = vault.credentialTransaction {
                     ensureActiveAuthorization(epoch)
                     RemoteLoginCoordinator(store, server).registerRoles(server.origin, login.accountId, login.token, clientIdentity, hostIdentity)
@@ -71,7 +79,7 @@ class RemoteAccountRuntime(
                 if (result.client.state == RemoteRoleRegistrationState.REGISTERED || result.host.state == RemoteRoleRegistrationState.REGISTERED) {
                     val active = vault.activate(server.origin, login.accountId, epoch, loginAttemptId)
                     api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
-                    startHost(active)
+                    startClient(active); startHost(active)
                 }
                 result
             }
@@ -87,7 +95,7 @@ class RemoteAccountRuntime(
         loginJob = operation
         try {
             lifecycle.withLock {
-                val server = apiFactory(RemoteServerApi.DEFAULT_ORIGIN)
+                val server = server(RemoteServerApi.DEFAULT_ORIGIN)
                 val clientScope = RemoteIdentityScope(server.origin, value.accountId, RemoteRole.CLIENT)
                 val active = vault.activeAccount()
                 // 保存成功后的进程退出可能留下临时配对票据。恢复时保留已续期凭据，不重复覆盖。
@@ -99,6 +107,7 @@ class RemoteAccountRuntime(
                         check(existing.peers.any { it.peerDeviceId == expected.peerDeviceId && it.matches(expected.publicKey) }) { "REMOTE_PEER_PIN_MISMATCH" }
                     }
                     api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
+                    startClient(active)
                     return@withLock
                 }
                 vault.requireLoginAttempt(value.loginAttemptId)
@@ -116,40 +125,50 @@ class RemoteAccountRuntime(
                     api = server; mutableAccount.value = saved; mutableState.value = RemoteAccountConnectionState.READY
                     mutableHostState.value = RemoteHostConnectionState.STOPPED
                 }
+                startClient(mutableAccount.value ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED"))
             }
         } finally { if (loginJob === operation) loginJob = null }
     }
     private fun ensureActiveAuthorization(epoch: Long) { vault.requireEpoch(epoch) }
+    private fun installationIdentities(): RemoteInstallationIdentities {
+        val active = vault.activeAccount()
+        return installation.loadOrCreate(
+            active?.let { store.load(RemoteIdentityScope(it.origin, it.accountId, RemoteRole.CLIENT))?.identity },
+            active?.let { store.load(RemoteIdentityScope(it.origin, it.accountId, RemoteRole.HOST))?.identity },
+        )
+    }
     suspend fun restore(): RemoteActiveAccount? = lifecycle.withLock {
         if (mutableAccount.value != null) return@withLock mutableAccount.value
         val active = vault.activeAccount() ?: return@withLock null
-        val server = apiFactory(active.origin)
+        val server = server(active.origin)
         val client = store.load(RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT))
         val hostCredential = store.load(RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST))
         if (client == null && hostCredential == null) { vault.revokeActive(); return@withLock null }
+        installation.loadOrCreate(client?.identity, hostCredential?.identity)
         currentCoroutineContext().ensureActive()
         vault.requireCurrent(active)
         api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
-        startHost(active); active
+        startClient(active); startHost(active); active
     }
-    suspend fun listHosts(): List<RemoteHostDevice> {
+    suspend fun listHosts(): List<RemoteHostDevice> = presenceRefresh.withLock {
         val active = current(); val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
         val credential = credential(active, RemoteRole.CLIENT)
-        return server.listHosts(credential.tokens.accessToken).also { requireActive(active) }
+        val localHost = store.load(RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST))?.identity?.deviceId?.value
+        val installationHost = installation.loadOrCreate().host.deviceId.value
+        server.listHosts(credential.tokens.accessToken).filter { it.deviceId != localHost && it.deviceId != installationHost }.also { devices ->
+            synchronized(selectionLock) { requireActive(active); mutableHosts.value = devices }
+        }
     }
     suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
         val active = current()
-        val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
         val selection: Long
         val operation: Deferred<RemoteRpcChannel>
         synchronized(selectionLock) {
             selection = selectionGeneration.incrementAndGet()
             pendingConnect?.cancel()
-            // 同一 Client 设备的 Control WS 只能拥有一个活动选择；新选择先结束旧观察。
-            synchronized(clients) { clients.forEach { it.close() }; clients.clear() }
-            peers.entries.removeIf { it.value.role == RemoteRole.CLIENT }
-            mutableState.value = RemoteAccountConnectionState.CONNECTING
-            operation = scope.async(start = CoroutineStart.LAZY) { connectSelected(active, server, hostDeviceId, selection) }
+            client?.cancelPendingSelection()
+            if (client?.connected != true && clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+            operation = scope.async(start = CoroutineStart.LAZY) { connectSelected(active, hostDeviceId, selection) }
             pendingConnect = operation
             operation.start()
         }
@@ -162,49 +181,27 @@ class RemoteAccountRuntime(
         requireActive(active)
         if (selectionGeneration.get() != selection) throw RemoteRpcException("CONNECTION_REPLACED", RemoteDeliveryOutcome.NOT_SENT)
     }
-    /** 代次判断和状态发布必须共用选择锁，旧回调不能在新选择发布后覆盖它。 */
-    private fun publishSelectionState(active: RemoteActiveAccount, selection: Long, state: RemoteAccountConnectionState) = synchronized(selectionLock) {
-        if (mutableAccount.value == active && selectionGeneration.get() == selection) mutableState.value = state
-    }
-    private suspend fun connectSelected(active: RemoteActiveAccount, server: RemoteServerApi, hostDeviceId: String, selection: Long): RemoteRpcChannel {
-        currentCoroutineContext().ensureActive(); requireSelection(active, selection)
-        val credential = credential(active, RemoteRole.CLIENT)
+    private suspend fun connectSelected(active: RemoteActiveAccount, hostDeviceId: String, selection: Long): RemoteRpcChannel {
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
         val peer = authorize(active, RemoteRole.CLIENT, hostDeviceId, RemoteRole.HOST)
         currentCoroutineContext().ensureActive(); requireSelection(active, selection)
-        val service: RemoteSignalService
-        val opening: Deferred<RemoteRpcChannel>
-        synchronized(selectionLock) {
-            requireSelection(active, selection)
-            service = RemoteSignalService(context, scope, server, RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT), credential,
-                { requireSelection(active, selection) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
-                onAuthenticatedPeer = { authenticated -> synchronized(selectionLock) {
-                    requireSelection(active, selection); peers[authenticated.scope.connectionId] = authenticated
-                } },
-                onPeerClosed = ::peerClosed,
-                onClosed = { publishSelectionState(active, selection, RemoteAccountConnectionState.DISCONNECTED) })
-            synchronized(clients) { clients += service }
-            // UNDISPATCHED 让创建 Control WS 与最后的代际核对处于同一选择锁内。
-            opening = scope.async(start = CoroutineStart.UNDISPATCHED) { service.connect(peer) }
-        }
+        val service = withTimeout(30_000) { synchronized(selectionLock) { requireActive(active); clientAvailable }.await() }
+        currentCoroutineContext().ensureActive(); requireSelection(active, selection)
+        var channel: RemoteRpcChannel? = null
         return try {
-            val channel = opening.await()
+            val opened = service.connect(peer).also { channel = it }
             currentCoroutineContext().ensureActive(); requireSelection(active, selection)
-            val profile = probeCapabilities(channel)
+            val profile = probeCapabilities(opened)
             currentCoroutineContext().ensureActive(); requireSelection(active, selection)
-            synchronized(selectionLock) { requireSelection(active, selection); mutableState.value = RemoteAccountConnectionState.CONNECTED }
-            object : RemoteRpcChannel by channel {
+            object : RemoteRpcChannel by opened {
                 override val capabilities = profile.capabilities
                 override val workspaceTypes = profile.workspaceTypes
                 override suspend fun close() {
-                    channel.close(); service.close(); peerClosed(channel.scope)
-                    synchronized(clients) { clients -= service }
-                    publishSelectionState(active, selection, RemoteAccountConnectionState.READY)
+                    opened.close(); peerClosed(opened.scope)
                 }
             }
         } catch (failure: Exception) {
-            opening.cancel(); service.close(); synchronized(clients) { clients -= service }
-            publishSelectionState(active, selection, RemoteAccountConnectionState.DISCONNECTED)
+            channel?.close()
             throw failure
         }
     }
@@ -226,7 +223,13 @@ class RemoteAccountRuntime(
         }
         val closingHost = host.also { host = null }
         mutableHostState.value = RemoteHostConnectionState.STOPPED
-        val closingClients = synchronized(clients) { clients.toList().also { clients.clear() } }
+        val closingClient = synchronized(selectionLock) {
+            clientJob?.cancel(); clientJob = null
+            clientAvailable.completeExceptionally(RemoteRpcException("CLIENT_CLOSED"))
+            clientAvailable = CompletableDeferred()
+            client.also { client = null }
+        }
+        mutableHosts.value = emptyList()
         val closingPeers = peers.values.toList()
         api = null
         var revocationFailed = false
@@ -236,13 +239,82 @@ class RemoteAccountRuntime(
         try {
             closeRemoteConnectionResources(
                 { closingHost?.close(); Unit },
-                *closingClients.map { client -> { client.close() } }.toTypedArray(),
+                { closingClient?.close(); Unit },
                 *closingPeers.map { peer -> { peerClosed(peer.scope) } }.toTypedArray(),
                 { if (!revocationFailed && old != null) store.clearAccount(old.origin, old.accountId) },
             )
         } catch (_: Exception) { cleanupFailed = true }
         if (revocationFailed || cleanupFailed) throw RemoteRpcException("REMOTE_LOGOUT_INCOMPLETE")
         mutableState.value = RemoteAccountConnectionState.SIGNED_OUT
+    }
+    /** 账号控制面与 Host 业务隧道分别拥有生命周期；登录后不等待选工作区才上线。 */
+    private fun startClient(active: RemoteActiveAccount) = synchronized(selectionLock) {
+        if (clientJob?.isActive == true) return@synchronized
+        requireActive(active)
+        clientJob = scope.launch(start = CoroutineStart.LAZY) {
+            var retry = 1_000L
+            while (isActive && mutableAccount.value == active) {
+                var service: RemoteSignalService? = null
+                try {
+                    val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
+                    val credential = credential(active, RemoteRole.CLIENT)
+                    val ended = CompletableDeferred<Unit>()
+                    val current = RemoteSignalService(context, scope, server,
+                        RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT), credential,
+                        { requireActive(active) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
+                        onAuthenticatedPeer = { authenticated -> synchronized(selectionLock) {
+                            requireActive(active); peers[authenticated.scope.connectionId] = authenticated
+                        } }, onPeerClosed = ::peerClosed,
+                        onClosed = { ended.complete(Unit) },
+                        onHeartbeat = { scope.launch { refreshPresence(active) } })
+                    service = current
+                    synchronized(selectionLock) {
+                        requireActive(active); client = current
+                        mutableState.value = RemoteAccountConnectionState.CONNECTING
+                    }
+                    current.startClient()
+                    synchronized(selectionLock) {
+                        requireActive(active)
+                        if (!current.connected) throw RemoteRpcException("TRANSPORT_CLOSED")
+                        mutableState.value = RemoteAccountConnectionState.CONNECTED
+                        clientAvailable.complete(current)
+                    }
+                    retry = 1_000L
+                    scope.launch { refreshPresence(active) }
+                    ended.await()
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    // 只重建认证与传输，绝不重放旧隧道上的业务写入。
+                } finally {
+                    service?.close()
+                    synchronized(selectionLock) {
+                        if (mutableAccount.value == active) {
+                            if (client === service) client = null
+                            if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+                            mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+                        }
+                    }
+                }
+                delay(retry)
+                retry = (retry * 2).coerceAtMost(30_000L)
+            }
+        }.also { it.start() }
+    }
+    private suspend fun refreshPresence(active: RemoteActiveAccount) {
+        if (mutableAccount.value != active || presenceRefresh.isLocked) return
+        try { listHosts() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) {
+            android.util.Log.w("RemoteAccountRuntime", "PRESENCE_REFRESH_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
+            synchronized(selectionLock) {
+                if (mutableAccount.value == active) mutableHosts.value = mutableHosts.value.map { it.copy(online = false) }
+            }
+        }
+    }
+    fun refreshControlConnection() {
+        val active = mutableAccount.value ?: return
+        if (clientJob?.isActive != true) startClient(active)
+        scope.launch { refreshPresence(active) }
     }
     private suspend fun startHost(active: RemoteActiveAccount) {
         if (hostHandler == null) return

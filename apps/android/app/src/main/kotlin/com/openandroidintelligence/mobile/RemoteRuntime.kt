@@ -117,6 +117,11 @@ class RemoteRuntime(
     }
     init {
         scope.launch {
+            accountRuntime.hosts.collect { devices ->
+                if (state.value.account == accountRuntime.account.value) mutableState.update { it.copy(hosts = devices) }
+            }
+        }
+        scope.launch {
             combine(nativeConversationNotifications.sessions, replyNotifications.enabled, replyNotifications.allowed) { _, _, _ -> Unit }
                 .collect { refreshBackgroundWork() }
         }
@@ -261,7 +266,12 @@ class RemoteRuntime(
     }
     fun dismissConnectionError() { mutableState.update { it.copy(errorCode = null) } }
     fun refreshHosts() = scope.launch { try { refreshHostsInternal() } catch (failure: Exception) { fail(failure) } }
-    private suspend fun refreshHostsInternal() { mutableState.update { it.copy(hosts = accountRuntime.listHosts(), errorCode = null) } }
+    private suspend fun refreshHostsInternal() {
+        val active = accountRuntime.account.value ?: return
+        val devices = accountRuntime.listHosts()
+        if (accountRuntime.account.value == active && state.value.account == active)
+            mutableState.update { it.copy(hosts = devices, errorCode = null) }
+    }
 
     fun discover(host: RemoteHostDevice) = scope.launch {
         selection.withLock {
@@ -599,6 +609,7 @@ class RemoteRuntime(
         return true
     }
     fun onAppForegrounded() {
+        accountRuntime.refreshControlConnection()
         synchronized(backgroundOwnership) { foreground = true }
         replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
@@ -638,6 +649,7 @@ class RemoteRuntime(
         assistantControllers.values.forEach { it.updateDebouncePolicy(policy) }
     }
     fun onNetworkAvailable(routeChanged: Boolean = false) {
+        accountRuntime.refreshControlConnection()
         val selected = state.value.selected ?: return
         if (controller.value?.state?.value?.isOnline == false) state.value.endpoints.firstOrNull { it.endpoint.key == selected }?.let(::select)
     }

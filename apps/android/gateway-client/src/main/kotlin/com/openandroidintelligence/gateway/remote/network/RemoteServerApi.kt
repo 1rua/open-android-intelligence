@@ -19,6 +19,12 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.CancellationException
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
@@ -38,7 +44,9 @@ class RemoteAuthorizedPeer(val device: RemoteHostDevice, val role: RemoteRole, v
 data class RemoteIceServer(val urls: List<String>, val username: String? = null, val credential: String? = null)
 
 /** 固定上游 Server API 的真实 HTTP 实现；写请求不自动重试，不跟随可能泄露 bearer 的重定向。 */
-class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultHttpClient()) : RemoteRoleRegistrar, RemoteTokenRefresher {
+class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultHttpClient(),
+    private val deviceNameProvider: () -> String = { "OAI Android" },
+) : RemoteRoleRegistrar, RemoteTokenRefresher {
     val origin: String = normalizeRemoteOrigin(origin)
     suspend fun loginProviders(): JsonValue.JObject = request("GET", "/api/v1/auth/oauth/providers").objectValue()
     suspend fun accountFromToken(token: String): RemoteAccountLogin {
@@ -58,7 +66,7 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
     override suspend fun registerAccountRole(scope: RemoteIdentityScope, identity: RemoteStaticIdentity,
         accountToken: RemoteAccountAuthorizationToken): RemoteRoleCredential {
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
-        return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(auth(RemoteAuthCodec.registerAccountRole(identity, scope.role, accountToken))))
+        return RemoteRoleCredential(identity, RemoteAuthCodec.parseTokenPair(auth(RemoteAuthCodec.registerAccountRole(identity, scope.role, accountToken, deviceNameProvider()))))
     }
     override suspend fun refresh(scope: RemoteIdentityScope, deviceId: String, refreshToken: String): RemoteTokenPair {
         check(scope.origin == origin) { "REMOTE_ORIGIN_MISMATCH" }
@@ -74,7 +82,25 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
             cursor = page.optionalText("nextCursor")
             if (cursor != null && !cursors.add(cursor)) throw RemoteRpcException("INVALID_MESSAGE")
         } while (cursor != null)
-        return items
+        // 固定上游插件 devices() 单独查询 presence；目录允许不带 online，不能据此判为离线。
+        val concurrency = Semaphore(8)
+        return coroutineScope {
+            items.map { device -> async {
+                concurrency.withPermit {
+                    val online = try { presence(accessToken, device.deviceId) }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) {
+                        java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
+                        false
+                    }
+                    device.copy(online = online)
+                }
+            } }.awaitAll()
+        }
+    }
+    suspend fun presence(accessToken: String, deviceId: String): Boolean {
+        val value = request("GET", "/api/v1/devices/${encode(deviceId)}/presence", accessToken).objectValue()
+        return value.booleanValue("online")
     }
     suspend fun peer(accessToken: String, deviceId: String): RemoteAuthorizedPeer {
         val value = request("GET", "/api/v1/devices/${encode(deviceId)}", accessToken).objectValue()

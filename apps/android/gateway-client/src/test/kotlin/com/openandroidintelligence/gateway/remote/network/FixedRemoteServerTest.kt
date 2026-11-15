@@ -68,6 +68,13 @@ class FixedRemoteServerTest {
                     RemoteSignalService(context, parent, server.api, scope, credential, {}, { _, _ -> hostPeer }).also(clients::add).connect(hostPeer)
                 }
                 for (channel in channels) assertTrue(channel.invoke("harness.transport.describe", obj(), timeoutMs = 3000) is JsonValue.JObject)
+                channels.first().close()
+                assertTrue("关闭工作区隧道必须保留账号控制连接", clients.first().connected)
+                val replacement = clients.first().connect(hostPeer)
+                assertNotEquals(channels.first().scope.connectionId, replacement.scope.connectionId)
+                assertTrue(replacement.invoke("harness.transport.describe", obj(), timeoutMs = 3000) is JsonValue.JObject)
+                assertTrue("切换隧道不能被上游旧connectionId的CONNECTION_REPLACED误伤", clients.first().connected)
+                assertTrue(channels.last().invoke("harness.transport.describe", obj(), timeoutMs = 3000) is JsonValue.JObject)
             } finally { clients.forEach { it.close() }; hostService.close(); parent.cancel() }
         }
     }
@@ -219,66 +226,45 @@ class FixedRemoteServerTest {
             old.cancelAndJoin(); next.cancelAndJoin()
         } finally { releaseFirst.complete(Unit); runtime.logout(); parent.cancel(); server.shutdown() }
     }
-    @Test fun 旧连接关闭检查与新选择发布交错时不能覆盖新状态() = runBlocking {
-        val target = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
-        val requests = Channel<Unit>(8); val server = MockWebServer()
+    @Test fun 旧控制连接迟到关闭不能覆盖重新登录后的账号状态() = runBlocking {
+        val server = MockWebServer()
+        val hello = Channel<Unit>(8)
         val tokens = obj("accessToken" to "a".repeat(16), "accessTokenExpiresAt" to System.currentTimeMillis()+600_000,
             "refreshToken" to "r".repeat(16), "refreshTokenExpiresAt" to System.currentTimeMillis()+1200000)
         server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 request.path == "/api/v1/auth/login" -> MockResponse().setBody(Json.canonical(obj("token" to "l".repeat(16), "account" to "owner", "expiresAt" to System.currentTimeMillis()+600_000)))
                 request.path == "/api/v1/devices/register" -> MockResponse().setBody(Json.canonical(tokens))
-                request.path?.startsWith("/api/v1/devices/") == true -> MockResponse().setBody(Json.canonical(obj("deviceId" to target.deviceId.value, "name" to "电脑", "platform" to "linux", "role" to "host",
-                    "membershipId" to "member", "identityKey" to RemoteBase64Url.encode(target.publicKey), "online" to true)))
+                request.path?.startsWith("/api/v1/devices?") == true -> MockResponse().setBody(Json.canonical(obj("items" to emptyList<String>(), "nextCursor" to null)))
                 else -> MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                     override fun onMessage(socket: WebSocket, text: String) {
                         val frame = RemoteControlCodec.decode(text.encodeToByteArray())
-                        if (frame.type == "hello") socket.send(Json.canonical(obj("v" to 1, "id" to "ack", "type" to "hello.ack", "timestamp" to 1,
-                            "payload" to obj("protocol" to 1, "serverVersion" to "fixture", "connectionSessionId" to UUID.randomUUID().toString(), "heartbeatIntervalMs" to 25000,
-                                "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576, "capabilities" to listOf("transport.relay")))))
-                        if (frame.type == "connect.request") requests.trySend(Unit)
+                        if (frame.type == "hello") {
+                            socket.send(Json.canonical(obj("v" to 1, "id" to "ack", "type" to "hello.ack", "timestamp" to 1,
+                                "payload" to obj("protocol" to 1, "serverVersion" to "fixture", "connectionSessionId" to UUID.randomUUID().toString(), "heartbeatIntervalMs" to 25000,
+                                    "maxControlFrameBytes" to 65536, "maxRelayFrameBytes" to 1048576, "capabilities" to listOf("transport.relay")))))
+                            hello.trySend(Unit)
+                        }
                     }
                 })
             }
         }
         server.start(); val parent = CoroutineScope(SupervisorJob()+Dispatchers.Default); val protector = PlainProtector()
         val runtime = RemoteAccountRuntime(context, parent, vault = RemoteCredentialVault(java.nio.file.Files.createTempDirectory("remote-state-race").toFile(), protector), protector = protector)
-        val callbackEntered = CountDownLatch(1); val releaseCallback = CountDownLatch(1)
-        var closer: Thread? = null; var selector: Thread? = null
         try {
-            runtime.login(server.url("/").toString().removeSuffix("/"), "owner", "password")
-            val old = parent.async { runCatching { runtime.connect(target.deviceId.value) } }
-            withTimeout(3000) { requests.receive() }
-            val mutableField = RemoteAccountRuntime::class.java.getDeclaredField("mutableState").apply { isAccessible = true }
-            val original = mutableField.get(runtime) as MutableStateFlow<RemoteAccountConnectionState>
-            val pausing = object : MutableStateFlow<RemoteAccountConnectionState> by original {
-                override var value: RemoteAccountConnectionState
-                    get() = original.value
-                    set(value) {
-                        if (value == RemoteAccountConnectionState.DISCONNECTED && Thread.currentThread().name == "old-close-callback") {
-                            callbackEntered.countDown(); check(releaseCallback.await(3, TimeUnit.SECONDS))
-                        }
-                        original.value = value
-                    }
-            }
-            mutableField.set(runtime, pausing)
-            val clientsField = RemoteAccountRuntime::class.java.getDeclaredField("clients").apply { isAccessible = true }
-            val oldService = (clientsField.get(runtime) as Set<RemoteSignalService>).single()
-            closer = Thread({ oldService.close() }, "old-close-callback").also { it.start() }
-            assertTrue(callbackEntered.await(3, TimeUnit.SECONDS))
-            val selectionLock = RemoteAccountRuntime::class.java.getDeclaredField("selectionLock").apply { isAccessible = true }.get(runtime)
-            val generation = RemoteAccountRuntime::class.java.getDeclaredField("selectionGeneration").apply { isAccessible = true }.get(runtime) as java.util.concurrent.atomic.AtomicLong
-            // 真实新选择使用的同一把锁与状态源；控制回调的发布停点，形成确定的合法交错。
-            selector = Thread({ synchronized(selectionLock) { generation.incrementAndGet(); original.value = RemoteAccountConnectionState.CONNECTED } }, "new-selection-publish").also { it.start() }
-            withTimeout(3000) {
-                while (selector!!.state != Thread.State.BLOCKED && selector!!.isAlive) { yield(); delay(1) }
-            }
-            releaseCallback.countDown(); closer!!.join(3000); selector!!.join(3000)
+            val origin = server.url("/").toString().removeSuffix("/")
+            runtime.login(origin, "owner", "password")
+            withTimeout(3000) { hello.receive(); while (runtime.state.value != RemoteAccountConnectionState.CONNECTED) delay(1) }
+            val clientField = RemoteAccountRuntime::class.java.getDeclaredField("client").apply { isAccessible = true }
+            val oldService = clientField.get(runtime) as RemoteSignalService
+            val oldAccount = runtime.account.value
+            runtime.logout()
+            runtime.login(origin, "owner", "password")
+            withTimeout(3000) { hello.receive(); while (runtime.state.value != RemoteAccountConnectionState.CONNECTED) delay(1) }
+            oldService.close()
+            assertNotEquals(oldAccount, runtime.account.value)
             assertEquals(RemoteAccountConnectionState.CONNECTED, runtime.state.value)
-            old.cancelAndJoin()
-        } finally {
-            releaseCallback.countDown(); closer?.join(3000); selector?.join(3000); runtime.logout(); parent.cancel(); server.shutdown()
-        }
+        } finally { runtime.logout(); parent.cancel(); server.shutdown() }
     }
 
 }

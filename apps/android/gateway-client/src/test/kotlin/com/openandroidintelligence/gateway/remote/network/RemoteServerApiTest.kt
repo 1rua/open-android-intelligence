@@ -47,6 +47,7 @@ class RemoteServerApiTest {
             fixture.route("/api/v1/auth/refresh") { token }
             fixture.route("/api/v1/devices/self", 204) { JsonValue.JNull }
             fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host", "name" to "电脑", "platform" to "linux", "membershipId" to "membership", "online" to true))) }
+            fixture.route("/api/v1/devices/host/presence") { obj("online" to true) }
             val api = RemoteServerApi(fixture.origin); val login = api.login("owner", "password")
             for (role in RemoteRole.entries) {
                 val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(java.util.UUID.randomUUID().toString()))
@@ -60,7 +61,30 @@ class RemoteServerApiTest {
             assertEquals(2, registrations.size); assertTrue(registrations.all { it.second == "Bearer ${"l".repeat(16)}" })
             assertTrue(registrations.all { it.third.objectValue().value("device").objectValue().requiredText("clientVersion") == com.openandroidintelligence.gateway.client.BuildConfig.OAI_REMOTE_CLIENT_VERSION })
             assertEquals(setOf("client", "host"), registrations.map { it.third.objectValue().value("device").objectValue().requiredText("role") }.toSet())
-            assertEquals(6, fixture.requests.size)
+            assertEquals(7, fixture.requests.size)
+        }
+    }
+    @Test fun 上游目录无online时必须查询presence且以独立在线事实为准() = runBlocking {
+        Server().use { fixture ->
+            // 来自固定 ea1c0925 packages/plugin/tests/server-api.test.ts 的 host(0)，没有 online 字段。
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "role" to "host",
+                "name" to "Host 0", "platform" to "linux", "membershipId" to "member-0")), "nextCursor" to null) }
+            var online = true
+            fixture.route("/api/v1/devices/host-0/presence") { obj("online" to online) }
+            val api = RemoteServerApi(fixture.origin)
+            assertTrue(api.listHosts("a".repeat(16)).single().online)
+            online = false
+            assertFalse(api.listHosts("a".repeat(16)).single().online)
+            assertEquals(2, fixture.requests.count { it.first == "/api/v1/devices/host-0/presence" })
+            assertTrue(fixture.requests.all { it.second == "Bearer ${"a".repeat(16)}" })
+        }
+    }
+    @Test fun presence失败不得回退到目录中已经过期的在线值() = runBlocking {
+        Server().use { fixture ->
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "name" to "Host 0",
+                "platform" to "linux", "membershipId" to "member-0", "online" to true))) }
+            fixture.route("/api/v1/devices/host-0/presence", 503) { obj("error" to obj("code" to "CONNECTION_FAILED")) }
+            assertFalse(RemoteServerApi(fixture.origin).listHosts("a".repeat(16)).single().online)
         }
     }
     @Test fun 私网HTTP只接受字面地址且规范化IDN与默认端口() {

@@ -15,12 +15,12 @@ import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAcc
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
 import com.openandroidintelligence.ui.resources.R as UiR
 
-/** 只有可用工作台与真实客户端连接同时就绪才算已连接；持久选择不代表连接。 */
+/** 顶栏表示账号 Client 控制面是否已认证；选择工作区的业务连接独立显示。 */
 internal fun remoteWorkbenchConnected(
     workbench: WorkbenchUiState?,
     client: RemoteAccountConnectionState,
     busy: Boolean,
-): Boolean = workbench?.isOnline == true && client == RemoteAccountConnectionState.CONNECTED && !busy
+): Boolean = client == RemoteAccountConnectionState.CONNECTED
 
 /** 权限拒绝后保留原提示动作，只有点击“前往设置”才打开本应用权限页。 */
 internal suspend fun showRemoteAudioPermissionDenied(activity: ComponentActivity, snackbar: SnackbarHostState) {
