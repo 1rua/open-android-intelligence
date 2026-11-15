@@ -22,6 +22,25 @@ def xml_results(directory, cases, *, tests=None):
     return directory
 
 
+def full_xml_results(directory, cases):
+    return xml_results(directory / "testFullDebugUnitTest", cases)
+
+
+def variant_metrics(directory, task):
+    perf.write_json(directory / "run.json", {
+        "status": "completed", "exit_code": 0, "command": ["./gradlew", task],
+    })
+    return directory
+
+
+def full_summary(results, profile=None, metrics=None, compare=None):
+    """身份与计时测试显式提供 Full 任务记录，变体门禁测试直接调用真实入口。"""
+    assert results.name == "testFullDebugUnitTest"
+    if metrics is None:
+        metrics = variant_metrics(results.parent / "metrics", ":app:testFullDebugUnitTest")
+    return perf.build_summary(results, profile, metrics, compare)
+
+
 def test_empty_xml_and_declared_missing_events_fail(tmp_path):
     with pytest.raises(ValueError, match="XML"):
         perf.parse_xml_results(tmp_path)
@@ -31,44 +50,126 @@ def test_empty_xml_and_declared_missing_events_fail(tmp_path):
 
 
 def test_duplicates_fail_even_when_count_looks_correct(tmp_path):
-    results = xml_results(tmp_path, [("a", "same", ""), ("a", "same", "")])
-    summary, code = perf.build_summary(results, None, None)
+    results = full_xml_results(tmp_path, [("a", "same", ""), ("a", "same", "")])
+    summary, code = full_summary(results, None, None)
     assert code == 1
     assert summary["test_manifest"]["duplicates"] == [{"classname": "a", "name": "same"}]
 
 
 def test_existing_full_skip_is_preserved_and_new_skip_fails(tmp_path):
-    expected = (*perf.EXPECTED_FULL_SKIP, "<skipped/>")
-    baseline_results = xml_results(tmp_path / "old", [("a", "first", ""), expected])
-    baseline, code = perf.build_summary(baseline_results, None, None)
+    expected = [(classname, name, "<skipped/>") for classname, name in sorted(perf.EXPECTED_FULL_SKIPS)]
+    baseline_results = xml_results(tmp_path / "old" / "testFullDebugUnitTest", [("a", "first", ""), *expected])
+    baseline, code = full_summary(baseline_results, None, None)
     assert code == 0
     baseline_path = tmp_path / "baseline.json"
     perf.write_json(baseline_path, baseline)
-    same, code = perf.build_summary(baseline_results, None, None, baseline_path)
+    same, code = full_summary(baseline_results, None, None, baseline_path)
     assert code == 0
     assert same["test_manifest"]["sha256"] == baseline["test_manifest"]["sha256"]
-    changed = xml_results(tmp_path / "new", [("a", "first", "<skipped/>"), expected])
-    result, code = perf.build_summary(changed, None, None, baseline_path)
+    changed = xml_results(tmp_path / "new" / "testFullDebugUnitTest", [("a", "first", "<skipped/>"), *expected])
+    result, code = full_summary(changed, None, None, baseline_path)
     assert code == 1
     assert result["comparison"]["new_skips"] == [("a", "first")]
 
 
+@pytest.mark.parametrize("classname,name", [
+    ("com.openandroidintelligence.mobile.plugins.SmsSendOutcomeHostBusTest",
+     "aRestrictedChannelDeniesRemoteSmsBeforeConfirmationOrSystemSend"),
+    ("com.openandroidintelligence.mobile.plugins.SmsSendPluginHostTest",
+     "aRestrictedChannelCannotRegisterOrEnableAnInstalledSignedSmsPackage"),
+])
+@pytest.mark.parametrize("variant", ["testFullDebugUnitTest", "testPlayDebugUnitTest", "unknown"])
+def test_restricted_channel_skips_require_exact_full_variant_and_identity(tmp_path, classname, name, variant):
+    results = xml_results(tmp_path / variant, [(classname, name, "<skipped/>")])
+    summary, code = perf.build_summary(results, None, variant_metrics(tmp_path / "metrics", f":app:{variant}"))
+    assert code == (0 if variant == "testFullDebugUnitTest" else 1)
+    if code:
+        assert summary["unexpected_skips"] == [{"classname": classname, "name": name, "status": "skipped"}]
+
+
+@pytest.mark.parametrize("command,directory", [
+    (None, "testFullDebugUnitTest"),
+    ([], "testFullDebugUnitTest"),
+    ("./gradlew :app:testFullDebugUnitTest", "testFullDebugUnitTest"),
+    (["./gradlew", ":app:testPlayDebugUnitTest"], "testFullDebugUnitTest"),
+    (["./gradlew", ":app:testFullDebugUnitTest"], "testPlayDebugUnitTest"),
+    (["./gradlew", ":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest"], "testFullDebugUnitTest"),
+    (["./gradlew", ":app:testFullDebugUnitTest", ":app:testFullDebugUnitTest"], "testFullDebugUnitTest"),
+    (["./gradlew", ":app:testUnknownDebugUnitTest"], "testUnknownDebugUnitTest"),
+    (["./gradlew", ":app:testFullDebugUnitTest", "check"], "testFullDebugUnitTest"),
+    (["python3", ":app:testFullDebugUnitTest"], "testFullDebugUnitTest"),
+    (["./gradlew", None], "testFullDebugUnitTest"),
+    (["./gradlew", "--tests", ":app:testFullDebugUnitTest"], "testFullDebugUnitTest"),
+    (["./gradlew", ":app:testFullDebugUnitTest", "--tests"], "testFullDebugUnitTest"),
+])
+def test_variant_requires_one_explicit_gradle_task_matching_xml_directory(tmp_path, command, directory):
+    results = xml_results(tmp_path / directory, [("a", "first", "")])
+    metrics = tmp_path / "metrics"
+    run = {"status": "completed", "exit_code": 0}
+    if command is not None:
+        run["command"] = command
+    perf.write_json(metrics / "run.json", run)
+    summary, code = perf.build_summary(results, None, metrics)
+    assert code == 1
+    assert summary["variant_validation"]["status"] == "failed"
+    assert summary["measurement_status"] != "measured"
+
+
+def test_xml_without_run_record_cannot_claim_a_variant(tmp_path):
+    results = full_xml_results(tmp_path, [("a", "first", "")])
+    summary, code = perf.build_summary(results, None, None)
+    assert code == 1
+    assert summary["variant_validation"]["status"] == "failed"
+
+
+def test_play_task_and_directory_allow_executed_cases(tmp_path):
+    results = xml_results(tmp_path / "testPlayDebugUnitTest", [("a", "first", "")])
+    metrics = variant_metrics(tmp_path / "metrics", ":app:testPlayDebugUnitTest")
+    summary, code = perf.build_summary(results, None, metrics)
+    assert code == 0
+    assert summary["variant_validation"]["status"] == "passed"
+
+
+@pytest.mark.parametrize("test_filter", ["example.ExpectedTest", ":app:testPlayDebugUnitTest"])
+def test_variant_does_not_treat_separate_test_filter_values_as_tasks(test_filter):
+    validation = perf.validate_test_variant(Path("testFullDebugUnitTest"), {
+        "command": ["./gradlew", ":app:testFullDebugUnitTest", "--tests", test_filter],
+    })
+    assert validation["status"] == "passed"
+    assert validation["task"] == ":app:testFullDebugUnitTest"
+
+
+@pytest.mark.parametrize("classname,name", [
+    ("com.openandroidintelligence.mobile.plugins.SmsSendOutcomeHostBusTest", "anotherMethod"),
+    ("com.openandroidintelligence.mobile.plugins.SmsSendPluginHostTest", "anotherMethod"),
+    ("com.openandroidintelligence.mobile.plugins.SmsSendOutcomeHostBusTest",
+     "aRestrictedChannelDeniesRemoteSmsBeforeConfirmationOrSystemSendCopy"),
+    ("com.openandroidintelligence.mobile.plugins.SmsSendPluginHostTestCopy",
+     "aRestrictedChannelCannotRegisterOrEnableAnInstalledSignedSmsPackage"),
+])
+def test_full_skip_allowlist_rejects_other_methods_and_lookalike_names(tmp_path, classname, name):
+    results = xml_results(tmp_path / "testFullDebugUnitTest", [(classname, name, "<skipped/>")])
+    summary, code = full_summary(results, None, None)
+    assert code == 1
+    assert summary["unexpected_skips"] == [{"classname": classname, "name": name, "status": "skipped"}]
+
+
 def test_missing_identity_fails_and_extra_suite_does_not_add_identity(tmp_path):
-    old = xml_results(tmp_path / "old", [("a", "first", ""), ("a", "second", "")])
-    baseline, _ = perf.build_summary(old, None, None)
+    old = full_xml_results(tmp_path / "old", [("a", "first", ""), ("a", "second", "")])
+    baseline, _ = full_summary(old, None, None)
     path = tmp_path / "baseline.json"
     perf.write_json(path, baseline)
-    new = xml_results(tmp_path / "new", [("a", "first", "")])
+    new = full_xml_results(tmp_path / "new", [("a", "first", "")])
     (new / "TEST-wrapper.xml").write_text('<testsuite name="NewSuite" tests="0" time="0"/>')
-    result, code = perf.build_summary(new, None, None, path)
+    result, code = full_summary(new, None, None, path)
     assert code == 1
     assert result["comparison"]["missing"] == [("a", "second")]
     assert result["test_manifest"]["count"] == 1
 
 
 def test_case_failure_is_never_a_valid_baseline(tmp_path):
-    results = xml_results(tmp_path, [("a", "first", "<failure message='失败'/>" )])
-    result, code = perf.build_summary(results, None, None)
+    results = full_xml_results(tmp_path, [("a", "first", "<failure message='失败'/>" )])
+    result, code = full_summary(results, None, None)
     assert code == 1
     assert result["xml_summary"]["failures"] == 1
     assert result["host_metrics"]["status"] == "unknown"
@@ -138,15 +239,15 @@ def test_robolectric_nested_metrics_and_gc_are_kept_separate(tmp_path):
 
 
 def test_failed_baseline_and_missing_measurements_are_explicit(tmp_path):
-    results = xml_results(tmp_path / "current", [("a", "first", "")])
-    result, code = perf.build_summary(results, None, None)
+    results = full_xml_results(tmp_path / "current", [("a", "first", "")])
+    result, code = full_summary(results, None, None)
     assert code == 0
     assert result["measurement_status"] == "unknown"
     baseline = {"test_manifest": {"identities": [{"classname": "a", "name": "first", "status": "failed"}]}}
     baseline_path = tmp_path / "bad-baseline.json"
     perf.write_json(baseline_path, baseline)
     with pytest.raises(ValueError, match="失败测试"):
-        perf.build_summary(results, None, None, baseline_path)
+        full_summary(results, None, None, baseline_path)
 
 
 def test_gc_pauses_are_not_added_to_concurrent_cycle_duration(tmp_path):
@@ -172,12 +273,12 @@ def test_run_allows_an_existing_empty_directory(tmp_path):
 
 
 def test_additional_test_identity_fails_strict_same_source_comparison(tmp_path):
-    old = xml_results(tmp_path / "old", [("a", "first", "")])
-    baseline, _ = perf.build_summary(old, None, None)
+    old = full_xml_results(tmp_path / "old", [("a", "first", "")])
+    baseline, _ = full_summary(old, None, None)
     baseline_path = tmp_path / "baseline.json"
     perf.write_json(baseline_path, baseline)
-    new = xml_results(tmp_path / "new", [("a", "first", ""), ("a", "unexpected", "")])
-    result, code = perf.build_summary(new, None, None, baseline_path)
+    new = full_xml_results(tmp_path / "new", [("a", "first", ""), ("a", "unexpected", "")])
+    result, code = full_summary(new, None, None, baseline_path)
     assert code == 1
     assert result["comparison"]["added"] == [("a", "unexpected")]
     assert result["comparison"]["status"] == "failed"
@@ -191,12 +292,13 @@ def test_additional_test_identity_fails_strict_same_source_comparison(tmp_path):
     {},
 ])
 def test_existing_run_record_must_prove_success(tmp_path, run_record):
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
     metrics = tmp_path / "metrics"
-    perf.write_json(metrics / "run.json", run_record)
-    result, code = perf.build_summary(results, None, metrics)
+    perf.write_json(metrics / "run.json", {**run_record, "command": ["./gradlew", ":app:testFullDebugUnitTest"]})
+    result, code = full_summary(results, None, metrics)
     assert code != 0
     assert result["status"] == "failed"
+    assert result["run_validation"]["status"] == "failed"
     assert result["measurement_status"] != "measured"
 
 
@@ -207,21 +309,22 @@ def test_existing_run_record_must_prove_success(tmp_path, run_record):
     {"run": {"status": "completed", "exit_code": 7}},
 ])
 def test_failed_or_incomplete_baseline_cannot_pass_comparison(tmp_path, baseline_change):
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
-    baseline, _ = perf.build_summary(results, None, None)
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
+    baseline, _ = full_summary(results, None, None)
     baseline.update(baseline_change)
     baseline_path = tmp_path / "baseline.json"
     perf.write_json(baseline_path, baseline)
     with pytest.raises(ValueError, match="基线"):
-        perf.build_summary(results, None, None, baseline_path)
+        full_summary(results, None, None, baseline_path)
 
 
 def test_history_without_run_is_identity_only(tmp_path):
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
-    baseline, _ = perf.build_summary(results, None, None)
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
+    baseline, _ = full_summary(results, None, None)
+    baseline.pop("run")
     baseline_path = tmp_path / "baseline.json"
     perf.write_json(baseline_path, baseline)
-    result, code = perf.build_summary(results, None, None, baseline_path)
+    result, code = full_summary(results, None, None, baseline_path)
     assert code == 0
     assert result["comparison"]["status"] == "passed"
     assert result["measurement_status"] == "unknown"
@@ -233,15 +336,15 @@ def make_profile(path, seconds=1):
 
 
 def test_reporter_creation_without_reports_is_not_measured(tmp_path):
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
     metrics = tmp_path / "metrics"
-    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0})
+    variant_metrics(metrics, ":app:testFullDebugUnitTest")
     (metrics / "metrics.jsonl").write_text(json.dumps({"host": {"cpu_busy_percent": 20, "memory": {"MemAvailable": 1024}}}) + "\n")
     (metrics / "robolectric-1.jsonl").write_text(json.dumps({"event": "reporter-created", "pid": 1, "metrics": []}) + "\n")
     (metrics / "gradle.log").write_text("2026-11-11T01:00:00+00:00 Starting process 'Gradle Test Executor 2'\n2026-11-11T01:00:01+00:00 Gradle Test Executor 2 started executing tests.\n")
     profile = tmp_path / "profile.html"
     make_profile(profile)
-    result, code = perf.build_summary(results, profile, metrics)
+    result, code = full_summary(results, profile, metrics)
     assert code == 0
     assert result["robolectric"]["report_count"] == 0
     assert result["robolectric"]["status"] == "unknown"
@@ -269,11 +372,12 @@ def test_profile_directory_requires_unique_current_run_reference(tmp_path):
     metrics = tmp_path / "metrics"
     perf.write_json(metrics / "run.json", {
         "status": "completed", "exit_code": 0,
+        "command": ["./gradlew", ":app:testFullDebugUnitTest"],
         "profile_reports": ["build/reports/profile/profile-current.html"],
         "profile_sha256": {"build/reports/profile/profile-current.html": perf.hashlib.sha256((profiles / "profile-current.html").read_bytes()).hexdigest()},
     })
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
-    result, _ = perf.build_summary(results, profiles, metrics)
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
+    result, _ = full_summary(results, profiles, metrics)
     assert result["gradle_profile"]["status"] == "measured"
     assert len(result["gradle_profile"]["reports"]) == 1
     assert result["gradle_profile"]["reports"][0]["file"] == "profile-current.html"
@@ -286,9 +390,12 @@ def test_unassociated_or_ambiguous_profile_directory_is_unknown(tmp_path, record
     make_profile(profiles / "profile-one.html")
     make_profile(profiles / "profile-two.html")
     metrics = tmp_path / "metrics"
-    perf.write_json(metrics / "run.json", {"status": "completed", "exit_code": 0, "profile_reports": recorded})
-    results = xml_results(tmp_path / "xml", [("a", "first", "")])
-    result, _ = perf.build_summary(results, profiles, metrics)
+    perf.write_json(metrics / "run.json", {
+        "status": "completed", "exit_code": 0,
+        "command": ["./gradlew", ":app:testFullDebugUnitTest"], "profile_reports": recorded,
+    })
+    results = full_xml_results(tmp_path / "xml", [("a", "first", "")])
+    result, _ = full_summary(results, profiles, metrics)
     assert result["gradle_profile"]["status"] == "unknown"
 
 
@@ -312,13 +419,13 @@ def test_same_profile_name_from_another_run_is_not_measured(tmp_path):
     (["ExpectedTest", "MissingTest"], "failed"),
 ])
 def test_actual_classes_must_match_gradle_selection(tmp_path, classes, expected_status):
-    results = xml_results(tmp_path / "xml", [("example.ExpectedTest", "first", "")])
+    results = full_xml_results(tmp_path / "xml", [("example.ExpectedTest", "first", "")])
     metrics = tmp_path / "metrics"
     perf.write_json(metrics / "run.json", {
         "status": "completed", "exit_code": 0,
         "command": ["./gradlew", ":app:testFullDebugUnitTest", *[f"--tests={name}" for name in classes]],
     })
-    result, code = perf.build_summary(results, None, metrics)
+    result, code = full_summary(results, None, metrics)
     assert result["class_selection"]["status"] == expected_status
     assert code == (0 if expected_status == "passed" else 1)
     if expected_status == "failed":

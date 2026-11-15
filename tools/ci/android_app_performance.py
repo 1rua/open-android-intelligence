@@ -22,10 +22,21 @@ from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
 SCHEMA_VERSION = 1
-EXPECTED_FULL_SKIP = (
-    "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
-    "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
-)
+# 这些用例只验证受限 Play 渠道；Full 渠道按 ADR-0003 跳过，Play 渠道必须执行。
+EXPECTED_FULL_SKIPS = frozenset({
+    (
+        "com.openandroidintelligence.mobile.plugins.BuiltInCapabilitiesTest",
+        "aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason",
+    ),
+    (
+        "com.openandroidintelligence.mobile.plugins.SmsSendOutcomeHostBusTest",
+        "aRestrictedChannelDeniesRemoteSmsBeforeConfirmationOrSystemSend",
+    ),
+    (
+        "com.openandroidintelligence.mobile.plugins.SmsSendPluginHostTest",
+        "aRestrictedChannelCannotRegisterOrEnableAnInstalledSignedSmsPackage",
+    ),
+})
 UNKNOWN = {"status": "unknown"}
 
 
@@ -491,7 +502,7 @@ def run_failure_reason(run: dict | None) -> str | None:
     return None
 
 
-def compare_manifests(current: dict, baseline: dict) -> dict:
+def compare_manifests(current: dict, baseline: dict, expected_skips: frozenset) -> dict:
     if baseline.get("status") == "failed":
         raise ValueError("基线已明确失败，不能作为验收依据")
     baseline_run_failure = run_failure_reason(baseline.get("run"))
@@ -513,10 +524,38 @@ def compare_manifests(current: dict, baseline: dict) -> dict:
     added = sorted(set(new) - set(old))
     new_skips = sorted(key for key, status in new.items() if status == "skipped" and old.get(key) != "skipped")
     previous_skips = sorted(key for key, status in old.items() if status == "skipped")
-    unexpected_prior_skips = [key for key in previous_skips if key != EXPECTED_FULL_SKIP]
+    unexpected_prior_skips = [key for key in previous_skips if key not in expected_skips]
     skip_state_changed = [key for key in previous_skips if new.get(key) != "skipped"]
     passed = not (missing or added or new_skips or unexpected_prior_skips or skip_state_changed or current["duplicates"] or current["failures"])
     return {"status": "passed" if passed else "failed", "missing": missing, "added": added, "new_skips": new_skips, "unexpected_baseline_skips": unexpected_prior_skips, "expected_skip_changed": skip_state_changed}
+
+
+def validate_test_variant(results: Path, run: dict) -> dict:
+    """仅接受一次明确的 Gradle App 测试任务，并与其 XML 目录核对。"""
+    command = run.get("command")
+    if not isinstance(command, list) or not command or any(not isinstance(value, str) for value in command):
+        return {"status": "failed", "reason": "运行记录缺少明确的命令参数列表"}
+    if Path(command[0]).name not in {"gradlew", "gradle"}:
+        return {"status": "failed", "reason": "运行命令不是 Gradle"}
+    tasks = []
+    index = 1
+    while index < len(command):
+        argument = command[index]
+        if argument == "--tests":
+            if index + 1 == len(command):
+                return {"status": "failed", "reason": "测试过滤器缺少参数"}
+            index += 2
+            continue
+        if not argument.startswith("-"):
+            tasks.append(argument)
+        index += 1
+    supported = {":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest"}
+    if len(tasks) != 1 or tasks[0] not in supported:
+        return {"status": "failed", "reason": "运行命令必须包含唯一且支持的 App 测试任务", "tasks": tasks}
+    variant = tasks[0].removeprefix(":app:")
+    if results.name != variant:
+        return {"status": "failed", "reason": "测试任务与 XML 目录不一致", "task": tasks[0], "results_directory": results.name}
+    return {"status": "passed", "task": tasks[0], "results_directory": results.name}
 
 
 def build_summary(results: Path, profile: Path | None, metrics: Path | None, compare: Path | None = None) -> tuple[dict, int]:
@@ -525,10 +564,15 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
     measurements = parse_metrics(metrics)
     result = {"schema_version": SCHEMA_VERSION, "generated_at": utc_now(), "test_manifest": manifest, "xml_summary": parsed["summary"], "rankings": parsed["rankings"], "gradle_profile": parse_gradle_profile(profile, measurements["run"]), **measurements, "unknown": {"pure_jvm_startup_seconds": None, "test_body_seconds": None, "unattributed_overhead_seconds": None}, "limits": ["XML 是 JUnit 类和方法累计时间，不能作为精确 Test task 墙钟。", "first_method_seconds 包含有效测试和准备成本，不能等同 JVM 或 Robolectric 初始化。"]}
     failed = bool(manifest["duplicates"] or manifest["failures"])
+    result["variant_validation"] = validate_test_variant(results, result["run"])
+    variant_valid = result["variant_validation"]["status"] == "passed"
+    failed |= not variant_valid
+    command = result["run"].get("command")
+    command = command if isinstance(command, list) else []
     # 规划器使用精确简单类名；逐轮核对真实 XML，防止只少跑其中一类却仍然报绿。
     selected = {
-        argument.removeprefix("--tests=") for argument in result["run"].get("command", [])
-        if re.fullmatch(r"--tests=[A-Z][A-Za-z0-9_]*Test", argument)
+        argument.removeprefix("--tests=") for argument in command
+        if isinstance(argument, str) and re.fullmatch(r"--tests=[A-Z][A-Za-z0-9_]*Test", argument)
     }
     if selected:
         actual = {row["classname"].rsplit(".", 1)[-1] for row in manifest["identities"]}
@@ -537,12 +581,13 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
         failed |= selected != actual
     else:
         result["class_selection"] = {**UNKNOWN, "reason": "没有本次规划器的精确类过滤记录，仅核对 XML 与显式基线"}
-    unexpected_skips = [row for row in manifest["skipped"] if (row["classname"], row["name"]) != EXPECTED_FULL_SKIP]
+    expected_skips = EXPECTED_FULL_SKIPS if variant_valid and results.name == "testFullDebugUnitTest" else frozenset()
+    unexpected_skips = [row for row in manifest["skipped"] if (row["classname"], row["name"]) not in expected_skips]
     if unexpected_skips:
         result["unexpected_skips"] = unexpected_skips
         failed = True
     if compare:
-        result["comparison"] = compare_manifests(manifest, json.loads(compare.read_text(encoding="utf-8")))
+        result["comparison"] = compare_manifests(manifest, json.loads(compare.read_text(encoding="utf-8")), expected_skips)
         failed |= result["comparison"]["status"] == "failed"
     run_failure = run_failure_reason(result["run"])
     if run_failure:
@@ -551,7 +596,7 @@ def build_summary(results: Path, profile: Path | None, metrics: Path | None, com
     result["status"] = "failed" if failed else "passed"
     measured_fields = ("gradle_profile", "host_metrics", "executor_bootstrap", "robolectric")
     measured_count = sum(result[key].get("status") == "measured" for key in measured_fields)
-    run_confirmed = result["run"].get("record_present") and run_failure is None
+    run_confirmed = result["run"].get("record_present") and run_failure is None and variant_valid
     result["measurement_status"] = "unknown" if not run_confirmed else "measured" if measured_count == len(measured_fields) else "partial" if measured_count else "unknown"
     result["validation_scope"] = "status 只判断命令与用例完整性，不代表缺失的性能观测已通过；性能观测状态单列于 measurement_status。"
     return result, 1 if failed else 0
