@@ -54,7 +54,12 @@ class RemoteConversationRepository(
     private fun current() {
         check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
     }
-    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex") }
+    private fun projection(id: String) = projections.computeIfAbsent(id) {
+        RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept },
+            persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex",
+            onFailedTerminal = { code -> logRemoteSessionFailure(carrier.backend, "terminal", code ?: "REMOTE_AGENT_FAILED",
+                generationState = GenerationState.FAILED) })
+    }
     fun activeConversationChanged() = generation.publish {
         val id = activeConversationId()
         val projection = id?.let(projections::get)
@@ -271,8 +276,6 @@ class RemoteConversationRepository(
                     terminal.generationId, ConversationId(id)))
                 return@forEach
             }
-            if (terminal.state == GenerationState.FAILED) logRemoteSessionFailure(carrier.backend, "terminal",
-                terminal.errorCode ?: "REMOTE_AGENT_FAILED")
             val status = when (terminal.state) {
                 GenerationState.COMPLETED -> AgentMessageStatus.COMPLETED
                 GenerationState.FAILED -> AgentMessageStatus.FAILED
@@ -387,7 +390,8 @@ class RemoteConversationRepository(
 
 
 /** 只保留结构化错误码和源码栈，禁止把异常消息、正文或会话身份带入日志。 */
-internal fun logRemoteSessionFailure(backend: String, phase: String, code: String, cause: Throwable? = null, deliveryOutcome: String? = null) {
+internal fun logRemoteSessionFailure(backend: String, phase: String, code: String, cause: Throwable? = null,
+    deliveryOutcome: String? = null, generationState: GenerationState? = null) {
     val safeCode = code.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,95}")) } ?: "REMOTE_FAILURE"
     val safeBackend = backend.takeIf { it.matches(Regex("[a-z][a-z0-9_-]{0,31}")) } ?: "unknown"
     val stack = cause?.stackTrace.orEmpty().take(12).map { frame ->
@@ -396,5 +400,6 @@ internal fun logRemoteSessionFailure(backend: String, phase: String, code: Strin
     }
     GatewayLog.w("OaiRemoteSession", Json.canonical(obj("phase" to phase, "backend" to safeBackend,
         "code" to safeCode, "deliveryOutcome" to deliveryOutcome?.takeIf { it in setOf("NOT_SENT", "REJECTED", "UNKNOWN") },
+        "state" to generationState?.name,
         "exception" to cause?.javaClass?.simpleName, "sourceStack" to stack)))
 }

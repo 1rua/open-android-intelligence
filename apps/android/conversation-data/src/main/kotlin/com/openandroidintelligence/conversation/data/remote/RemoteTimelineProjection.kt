@@ -13,6 +13,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private val mediaReference: ((String, JsonValue, RemoteMediaRevision) -> MessagePart.Attachment?)? = null,
     private val persistentMessageSequence: Boolean = true,
     private val matchStartedGenerationToSubmission: Boolean = true,
+    private val onFailedTerminal: (String?) -> Unit = {},
 ) {
     val rows = linkedMapOf<String, TimelineMessage>()
     var generationId: String? = null
@@ -137,7 +138,12 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     }
     private fun recordTerminal(id: String, state: GenerationState, source: Source, errorCode: String? = null) {
         if (source.historical) return
-        val receipt = terminals.getOrPut(id) { TerminalReceipt(id, state, source.time, errorCode) }
+        val receipt = terminals.getOrPut(id) {
+            TerminalReceipt(id, state, source.time, errorCode).also {
+                // 即使本机没有 pending，也在首次收到真实失败时记录，重复终态不重复日志。
+                if (it.state == GenerationState.FAILED) onFailedTerminal(it.errorCode)
+            }
+        }
         terminalGeneration = id to receipt.state
         if (id == generationId) generationState = receipt.state
     }

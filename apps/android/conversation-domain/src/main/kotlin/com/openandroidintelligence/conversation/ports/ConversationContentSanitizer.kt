@@ -21,7 +21,8 @@ object ConversationContentSanitizer {
 
     fun message(value: TimelineMessage): TimelineMessage? {
         if (value.isDeleted) return value
-        if (value.sender !in setOf("user", "assistant") && value.executionSteps.isEmpty()) return null
+        // 本地执行事实在工作台由独立事件生成，不通过远端消息角色放行系统上下文。
+        if (value.sender !in setOf("user", "assistant")) return null
         val streaming = value.state == "STREAMING"
         val parts = mutableListOf<MessagePart>()
         val pending = StringBuilder()

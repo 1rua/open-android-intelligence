@@ -13,6 +13,7 @@ import com.openandroidintelligence.mobile.conversations.MirroredConversationRepo
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
@@ -144,6 +145,50 @@ class RemoteHarnessContentIntegrationTest {
         } }
         assertEquals(com.openandroidintelligence.conversation.model.GenerationState.FAILED, controller.state.value.generation)
         assertTrue(rows(controller).any { it.messageStatus == AgentMessageStatus.FAILED })
+    }
+    @Test fun `Harness隐藏系统正文后仍显示独立执行事实`() = runBlocking {
+        val controller = ready()
+        connection.rpc.event(1, "turn/start", obj("turn" to 1))
+        connection.rpc.event(2, "user/message", obj("id" to "system", "role" to "system", "turn" to 1,
+            "content" to listOf(obj("type" to "text", "text" to "内部系统上下文"))))
+        connection.rpc.event(3, "assistant/message", obj("turn" to 1, "message" to obj("id" to "answer",
+            "content" to listOf(obj("type" to "text", "text" to "正常回答")))))
+        awaitReply(controller, "正常回答")
+        connection.rpc.event(4, "tool/call", obj("id" to "call", "name" to "tool", "arguments" to "{}"))
+        withTimeout(2_000) { controller.state.first { rows(controller).any { it.executionFact && it.executionSteps.isNotEmpty() } } }
+        val fact = rows(controller).single { it.executionFact }
+        assertEquals("system", fact.sender)
+        assertEquals("call", fact.executionSteps.single().stepId)
+        assertTrue(rows(controller).none { it.text.contains("内部系统上下文") })
+        val reopened = EncryptedConversationMirror(context, controller.localConversationScope, key)
+        try {
+            assertTrue("执行事实只在界面生成，不伪造远端系统消息", reopened.timeline(local)!!.messages.none { it.sender == "system" })
+        } finally { reopened.closeStore() }
+    }
+    @Test fun `Harness没有本机待发送记录时失败终态仍仅记录一次安全诊断`() = runBlocking {
+        val controller = ready()
+        val logs = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val previous = GatewayLog.sink
+        GatewayLog.sink = { tag, message -> if (tag == "OaiRemoteSession") logs += message }
+        try {
+            connection.rpc.event(1, "turn/start", obj("turn" to 1))
+            val reason = obj("kind" to "error", "error" to obj("code" to "MODEL_FAILED",
+                "message" to "不应记录的正文与token=私密凭据"))
+            connection.rpc.event(2, "turn/end", obj("turn" to 1, "reason" to reason))
+            connection.rpc.event(3, "turn/end", obj("turn" to 1, "reason" to reason))
+            connection.rpc.event(4, "assistant/message", obj("turn" to 1, "message" to obj("id" to "diagnostic-barrier",
+                "content" to listOf(obj("type" to "text", "text" to "重复终态已消费")))))
+            awaitReply(controller, "重复终态已消费")
+            assertEquals(com.openandroidintelligence.conversation.model.GenerationState.FAILED, controller.state.value.generation)
+            assertTrue("此场景没有本机 prompt 或待发送记录", connection.rpc.prompts.tryReceive().isFailure)
+            val terminal = logs.filter { it.contains("\"phase\":\"terminal\"") }.single()
+            assertTrue(terminal.contains("\"backend\":\"harness\""))
+            assertTrue(terminal.contains("\"code\":\"MODEL_FAILED\""))
+            assertTrue(terminal.contains("\"state\":\"FAILED\""))
+            assertFalse(logs.joinToString().contains("token"))
+            assertFalse(logs.joinToString().contains("不应记录"))
+            assertFalse(logs.joinToString().contains(native))
+        } finally { GatewayLog.sink = previous }
     }
     private inner class Account : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)

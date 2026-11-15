@@ -33,6 +33,8 @@ class RemoteContentMirrorCleanupTest {
             TimelineMessage("image", "assistant", listOf(MessagePart.Text(reminder), MessagePart.Attachment(
                 AttachmentDraftId("image"), "附件", "image/png")), 3),
             TimelineMessage("user", "user", listOf(MessagePart.Text("你好")), 4),
+            TimelineMessage("system-with-steps", "system", listOf(MessagePart.Text("内部系统上下文")), 5,
+                executionSteps = listOf(NativeExecutionStep("step", "event", "tool", "{}"))),
         )
         val mirror = EncryptedConversationMirror(context, owner, key, Dispatchers.Unconfined)
         try { mirror.saveTimeline("session", TimelinePage(rows, null)) } finally { mirror.closeStore() }
