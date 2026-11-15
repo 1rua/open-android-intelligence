@@ -11,7 +11,7 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 本索引对应[总规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)、
 [实施计划](../plans/2026-11-14-dsh-remote-migration-plan.zh-CN.md)与
-[控制契约](../contracts/oai-control-rpc-v1.md)。PR #190 与 #187/#188/#189/#192 持续跟踪。
+[控制契约](../contracts/oai-control-rpc-v1.md)。PR #190 与 #187/#188/#189/#192/#194 持续跟踪。
 `VERIFIED` 只证明列明提交、环境、命令和断言；`BLOCKED` 表示已知环境限制；
 `UNVERIFIED` 表示缺少证据。实现、自动化与真实环境验收分别记录。
 
@@ -22,12 +22,28 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 历史 target lease、公开委派目标绑定观察不再是实现或发布前置。MCP 仅公开手机 `android_*`，
 目标限于 OAI Virtual Host 的 `phone-capabilities`，不新增中心服务或监听。
 
-生产代码固定为 `7f17831240be467eaaac3fa66cf5550d81cdddab`，迁移基线为
+以下首轮历史证据的生产代码为 `7f17831240be467eaaac3fa66cf5550d81cdddab`，迁移基线为
 `12094e684e4bd6d4270513d54b6ef35437536552`；已通过远端门禁的 head 为 `69a2a2f3014629c51a7e2ec762f69e1dd5aadda0`。
 其间 `40531634` 是文档检查点，`9f8d388` 修两项 CI 工具，`69a2a2f` 修三项测试辅助文件；生产业务逻辑不变。
 本索引的证据文档提交 SHA 由提交后回读登记，不在正文自指。同 head 的 CI 15/15 jobs 与 APK 构建成功。
 此前 `cd4374f` 的 Full 失败与旧候选 APK 证据不计入本次最终结果。下表只登记实际运行结果；真实 Host、设备、模拟器、网络和发布结论继续单独分层。
 首轮证据登记时间为 `2026-11-15 12:05:59 +08:00`（Asia/Shanghai）；后续补充失败归因与已下载 APK，不冒充各流水线的起止时间。
+
+## 2026-11-15 界面与认证补充
+
+本轮冻结源码为 `ea0047e8b708365815557a39006b25998de7df76`，关联 #194；本节更新本轮状态，下文 `7f1783`/`69a2a2f` 的构建、APK 和远端 CI 保留为各自历史证据，不能当作本轮新源码的远端结果。恢复范围与逐文件结论见[界面审计](../reports/2026-11-15-remote-ui-baseline-recovery.zh-CN.md)，OAuth/扫码协议、安全修复和真实环境限制见[认证说明](2026-11-15-remote-login-entry-authentication.zh-CN.md)。
+
+| 本轮证据 | 实际结果与归属 |
+| --- | --- |
+| `npm run test:fast -- --since 2a011240ec0c17c5038778566cc4845caab323bb` | VERIFIED：`ea0047e8` 完整退出 0；精确 CI 规划 `python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py` 104/104 |
+| `npm run test:pr -- --since 2a011240ec0c17c5038778566cc4845caab323bb` | VERIFIED：`ea0047e8` 完整退出 0，包含 24 模块与 App Full 130 类/1451 项，0 失败、0 错误、3 跳过；Gateway 29 类/283 项全部通过，覆盖认证树 `a496acbf52144e404a7977334c48e69ff7a58e30` 的 8 类/28 项 |
+| Play 补验 | VERIFIED：同源码 6 类/35 项，27 通过、0 失败、0 错误、8 跳过；Full 条件跳过的三项 Play 负向场景在此实际执行通过 |
+| 界面与渲染 | VERIFIED：`4fac21c644edd4eb19e0c1d0019a92d7bff91263` 定向 16/16 通过，官方/自部署浅深四图由主 Agent 目视，精确字段及 tonal 按钮像素断言通过；到 `ea0047e8` 仅新增 CI 清单两行，无界面源码变化 |
+| 独立审查与真实环境 | VERIFIED：本轮界面与认证独立源码审查闭合；UNVERIFIED：真实 OAuth 成功、扫码/电脑确认、动态壁纸取色、真实 Host/设备/网络。未启动模拟器或 ADB，PR #190 保持 Draft |
+
+PR 首次运行受 Maven HTTP 429 阻断后中止（退出 130）；复用已有 Robolectric jar 与离线 init 后按同一命令完整重跑退出 0，不能把首次失败隐藏为通过。完整测试日志保留在临时目录，不入库；四图保留为构建报告产物。
+
+本轮 Full 的 3 项跳过是 `BuiltInCapabilitiesTest.aChannelWithoutPluginRuntimesReportsEveryCapabilityAsUnavailableWithAReason`、`SmsSendPluginHostTest.aRestrictedChannelCannotRegisterOrEnableAnInstalledSignedSmsPackage`、`SmsSendOutcomeHostBusTest.aRestrictedChannelDeniesRemoteSmsBeforeConfirmationOrSystemSend`，均为 Full 不适用的受限渠道负向路径。Play 的 8 项需 `ALLOW_RUNTIME_PLUGINS`，该渠道不装配插件运行时，按条件跳过，不计作通过。Full/Play 合并 Manifest 的相机、前置、对焦和闪光均 `required=false`。这些本地证据不替代新提交的远端 CI、APK 或真实链路验收。
 
 ## 实现与自动化入口
 

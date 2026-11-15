@@ -52,8 +52,13 @@
 
 ## 验证状态
 
-- **VERIFIED（仅源码静态核对）**：固定基线差异盘点、旧活跃调用链、既定退役边界与 `git diff --check`。本轮独立评审指出的连接状态误判与兜底文案缩短已在源码修正；尚未运行任何新增或既有测试，不能据此标为行为验证通过。
-- **UNVERIFIED（待集成运行）**：`RemoteLoginPresentationTest` 的 9 项测试源码包括默认官方入口、认证动作回调、卡切换不认证/清密码、眼睛开关、校验与 Done、忙碌禁用、真实“前往设置”往返、完整原文错误/重试、离线重连和浅深主题 View 绘制；这 9 项不覆盖全部 Root 行为。渲染 PNG 仅写构建报告目录，不入库。
-- **UNVERIFIED（根页面交互待运行）**：新增 `RemoteRootInteractionTest` 的 5 项源码，使用生产根页面提取的导航副作用、原 `PlatformSettingsDrawer`、`ReceivePendingConversationShares`、实际 `RemoteConnectionSettingsScreen` 验证：缺少控制器/离线/切换/残留 Client 时状态点未连接；麦克风拒绝提示动作打开本应用系统权限页；通知与助手消费失败保留抽屉和待处理请求、成功后关闭抽屉；附件等历史完成才导入并关闭抽屉一次；退出取消保留账号且确认后才调用真实 Runtime 退出。网络消费者在测试边界可控，不能将这些用例解释为真实通知/助手跨协议验收。
-- **UNVERIFIED（待同一提交回归）**：既有设置导航/响应式宿主、设置行形变、工作台布局、主题对比度以及认证桥测试；应由统一验证任务记录实际结果后更新本节。
-- **UNVERIFIED（真实环境）**：官方 OAuth/扫码登录、动态壁纸取色、真实设备页面和物理触觉。Robolectric 或静态复用不能证明这些验收。
+本轮冻结源码为 `ea0047e8b708365815557a39006b25998de7df76`。四图和定向界面用例在 `4fac21c644edd4eb19e0c1d0019a92d7bff91263` 生成；之后仅在 App CI 清单增加两类测试，界面源码未变。证据文档提交另行登记，不自指为被测源码。
+
+| 验证范围 | 状态与实际证据 |
+| --- | --- |
+| 基线盘点与独立审查 | VERIFIED：固定基线差异、旧活跃调用链和退役边界已核对；连接状态误判、错误兜底全文和设置语义定位问题已修正，独立界面审查无新增问题 |
+| 最终定向界面行为 | VERIFIED：`4fac21c6` 的 `RemoteLoginPresentationTest` 9 项、`RemoteRootInteractionTest` 5 项及 `SettingsNavigationTest` 2 项，共 16/16 通过。覆盖入口/回调、切卡/清密、眼睛/IME/校验、忙碌、设置往返、错误/重试、离线重连、真实状态点、权限设置 Intent、通知/助手/分享消费后关闭抽屉及退出确认；受控网络回调不等于真实跨协议验收 |
+| 四图与按钮色 | VERIFIED：同一生产布局实际切换官方/自部署模式并等待动画，View 绘制与像素断言生成 `login-{official,self-hosted}-{light,dark}.png`；主 Agent 目视四图确认布局、精确字段“邮箱 / 账号”“访问凭据 / 密码”和三个次级 tonal 按钮。产物在 `apps/android/app/build/reports/remote-ui-recovery/`，不入库 |
+| 既有组件回归 | VERIFIED（历史提交）：`44f923b02cab9815c75fa1e14d3f56e0ee13535c` 的设置组件 4、形变 6、工作台布局 17、主题对比度 5，共 32/32 通过。其 App 11 项中一次“未登录”重复定位失败，经限定 Client 行修复后由最终 16 项闭合；不把旧失败写成全通过 |
+| 最终门禁 | VERIFIED：`ea0047e8` 的 Fast 和 PR 均以 `--since 2a011240ec0c17c5038778566cc4845caab323bb` 完整退出 0；CI 规划 104/104。PR 包含 24 模块及 App Full 130 类/1451 项，0 失败、0 错误、3 项渠道条件跳过；Gateway 29 类/283 项全通过。Play 补验 6 类/35 项，27 通过、0 失败、0 错误、8 项渠道条件跳过。跳过项与执行环境详见[总索引](../reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)本轮补充 |
+| 真实环境 | UNVERIFIED：真实 OAuth 成功回跳、相机扫码/电脑人工确认、动态壁纸取色、真实设备/网络和物理触觉。本轮没有启动模拟器或 ADB；自动化、静态复用及四图不替代这些验收 |
