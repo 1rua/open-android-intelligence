@@ -1,5 +1,5 @@
 import { retainTestDirectory } from "./safe-test-files.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -21,8 +21,7 @@ describe("buildPackage determinism", () => {
   let privateKey: Uint8Array;
 
   beforeEach(async () => {
-    dir = join(tmpdir(), "alp-test-" + Date.now());
-    await mkdir(dir, { recursive: true });
+    dir = await mkdtemp(join(tmpdir(), "alp-test-"));
     // Deterministic seed so the golden hash is stable across runs.
     privateKey = new Uint8Array(32).fill(0xab);
   });
