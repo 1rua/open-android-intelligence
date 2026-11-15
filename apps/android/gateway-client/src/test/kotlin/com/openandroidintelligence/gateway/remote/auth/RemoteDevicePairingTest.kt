@@ -27,6 +27,22 @@ class RemoteDevicePairingTest {
     private fun session(origin: String, now: Long = 1000L) = obj("type" to "dsh.remote.pairing", "serverUrl" to origin, "v" to 1,
         "sessionId" to id, "expiresAt" to now + 180000, "serverPublicKey" to RemoteBase64Url.encode(serverKey), "scanSecret" to ticket,
         "host" to obj("deviceId" to "host", "name" to "测试电脑", "role" to "host", "platform" to "desktop", "identityKey" to hostKey))
+    @Test fun 重新扫码使用同一安装身份且改名不改变密钥() {
+        val memory = Memory()
+        val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId("019a0000-0000-7000-8000-000000000002"))
+        var name = "我的手机"
+        fun pairing() = RemoteDevicePairing(memory, identityProvider = { identity }, deviceNameProvider = { name }, now = { 1000L })
+        val first = pairing().prepareClaim(RemotePairingSession(session(RemoteServerApi.DEFAULT_ORIGIN)), 1, "首次登录")
+        pairing().clear()
+        name = "改名后的手机"
+        val second = pairing().prepareClaim(RemotePairingSession(session(RemoteServerApi.DEFAULT_ORIGIN)), 2, "重新登录")
+        assertTrue(first.identity.sameIdentity(second.identity))
+        val descriptor = com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson.decode(second.rawClaim.encodeToByteArray())
+            .objectValue().value("device").objectValue()
+        assertEquals(name, descriptor.requiredText("name"))
+        assertEquals(identity.deviceId.value, descriptor.requiredText("deviceId"))
+        assertEquals(RemoteBase64Url.encode(identity.publicKey), descriptor.requiredText("identityKey"))
+    }
     @Test fun 手机证明与上游公开固定向量一致且绑定实际请求字节() {
         val path = "/api/v1/device-pairing/sessions/$id/mobile/status"
         assertEquals("3izg2tEapIkukkVFqJc7cPhHHtGLUEgHzs8f_O0r-Ag", RemoteDevicePairing.proof(privateKey, serverKey, id, path, "{}"))

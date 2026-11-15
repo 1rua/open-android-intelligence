@@ -9,6 +9,8 @@ import androidx.compose.runtime.remember
 import com.openandroidintelligence.gateway.remote.auth.*
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteCredentialVault
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteLoginAttemptFence
+import com.openandroidintelligence.gateway.remote.authproduction.RemoteInstallationIdentityStore
+import com.openandroidintelligence.gateway.remote.authproduction.AndroidRemoteIdentityProtector
 import com.openandroidintelligence.gateway.remote.network.RemoteServerApi
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -42,7 +44,10 @@ class RemoteLoginEntryBridge(
     private val vault = RemoteCredentialVault(context)
     private val fence = RemoteLoginAttemptFence(context)
     private val browser = RemoteBrowserLoginStore(vault)
-    private val pairing = RemoteDevicePairing(vault)
+    private val installation = RemoteInstallationIdentityStore(context)
+    private val pairing = RemoteDevicePairing(vault,
+        identityProvider = { installation.migrateActiveAccount(vault, AndroidRemoteIdentityProtector()).client },
+        deviceNameProvider = installation::deviceName)
     private val mutableState = MutableStateFlow(RemoteLoginEntryState())
     val state = mutableState.asStateFlow()
     private val entryLock = Any()

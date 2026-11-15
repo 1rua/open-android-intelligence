@@ -46,6 +46,8 @@ class RemotePairingStatus(val state: String, val verificationCode: String? = nul
 class RemoteDevicePairing(
     private val persistence: RemoteIdentityPersistence,
     private val api: RemoteServerApi = RemoteServerApi(RemoteServerApi.DEFAULT_ORIGIN),
+    private val identityProvider: () -> RemoteStaticIdentity = { RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString())) },
+    private val deviceNameProvider: () -> String = { "OAI Android" },
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     class Pending(val session: RemotePairingSession, val identity: RemoteStaticIdentity, val rawClaim: String, val epoch: Long, val loginAttemptId: String) {
@@ -77,14 +79,13 @@ class RemoteDevicePairing(
     }
     fun prepareClaim(session: RemotePairingSession, epoch: Long, loginAttemptId: String): Pending {
         check(session.expiresAt > now()) { "PAIRING_CLOSED" }
-        val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+        val identity = identityProvider()
         check(identity.deviceId.value != session.hostId && !identity.publicKey.contentEquals(session.hostKey)) { "PAIRING_DEVICE_CONFLICT" }
         val raw = Json.canonical(Json.of(mapOf("scanSecret" to session.scanSecret, "device" to mapOf(
-            "deviceId" to identity.deviceId.value, "name" to androidDeviceName(), "role" to "client", "platform" to "android",
+            "deviceId" to identity.deviceId.value, "name" to deviceNameProvider(), "role" to "client", "platform" to "android",
             "identityKey" to RemoteBase64Url.encode(identity.publicKey)))))
         return Pending(session, identity, raw, epoch, loginAttemptId).also(::save)
     }
-    private fun androidDeviceName(): String = "OAI Android"
     suspend fun claim(pending: Pending): RemotePairingStatus {
         requireRecoverable(pending)
         val row = send(pending, "claim", pending.rawClaim)

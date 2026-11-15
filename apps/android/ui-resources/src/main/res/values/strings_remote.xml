@@ -24,6 +24,9 @@
     <string name="remote_local_settings">本机设置</string>
     <string name="remote_client_role">主动会话连接</string>
     <string name="remote_host_role">手机受控连接</string>
+    <string name="remote_device_name">设备名称</string>
+    <string name="remote_device_name_effect">保存后在下次账号登录或扫码配对时更新远端名称</string>
+    <string name="remote_device_name_save_failed">设备名称保存失败，请重试</string>
     <string name="remote_role_signed_out">未登录</string>
     <string name="remote_role_ready">已登录，等待选择工作区</string>
     <string name="remote_role_connecting">连接中</string>

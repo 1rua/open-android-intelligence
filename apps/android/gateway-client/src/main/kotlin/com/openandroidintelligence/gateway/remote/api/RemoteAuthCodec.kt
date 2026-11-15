@@ -31,11 +31,13 @@ object RemoteAuthCodec {
         } finally { password.fill('\u0000') }
     }
 
-    fun registerAccountRole(identity: RemoteStaticIdentity, role: RemoteRole, accountToken: RemoteAccountAuthorizationToken): RemoteAuthRequest =
-        register("/api/v1/devices/register", identity, role, accountToken.value)
+    fun registerAccountRole(identity: RemoteStaticIdentity, role: RemoteRole, accountToken: RemoteAccountAuthorizationToken,
+        deviceName: String = "OAI Android"): RemoteAuthRequest =
+        register("/api/v1/devices/register", identity, role, accountToken.value, deviceName)
 
-    fun registerOwnedRole(identity: RemoteStaticIdentity, role: RemoteRole, authorizingAccessToken: String): RemoteAuthRequest =
-        register("/api/v1/devices/register-owned-role", identity, role, authorizingAccessToken)
+    fun registerOwnedRole(identity: RemoteStaticIdentity, role: RemoteRole, authorizingAccessToken: String,
+        deviceName: String = "OAI Android"): RemoteAuthRequest =
+        register("/api/v1/devices/register-owned-role", identity, role, authorizingAccessToken, deviceName)
 
     fun refresh(deviceId: RemoteDeviceId, refreshToken: String): RemoteAuthRequest {
         require(refreshToken.length >= 16) { "REMOTE_REFRESH_TOKEN_INVALID" }
@@ -51,13 +53,13 @@ object RemoteAuthCodec {
             JsonFields.string(checked, "refreshToken")!!, JsonFields.long(checked, "refreshTokenExpiresAt")!!)
     }
 
-    private fun register(path: String, identity: RemoteStaticIdentity, role: RemoteRole, bearer: String): RemoteAuthRequest {
+    private fun register(path: String, identity: RemoteStaticIdentity, role: RemoteRole, bearer: String, deviceName: String): RemoteAuthRequest {
         require(bearer.length >= 16) { "REMOTE_AUTHORIZATION_TOKEN_INVALID" }
         return RemoteAuthRequest(path, RemoteAccountCodec.parseRegistration(Json.of(mapOf(
             "v" to 1,
             "device" to mapOf(
                 "deviceId" to identity.deviceId.value,
-                "name" to identity.deviceId.value,
+                "name" to deviceName,
                 "role" to role.wireValue,
                 "platform" to "android",
                 "identityKey" to java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(identity.publicKey),
