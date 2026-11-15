@@ -17,11 +17,12 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [35])
 class RemotePairingImportTest {
     private class Protector : RemoteIdentityProtector {
+        private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         var failWrite = false
-        override fun hasKey(scopeKey: String) = true
+        override fun hasKey(scopeKey: String) = scopeKey in keys
         override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
             check(!failWrite) { "模拟写盘失败" }
-            return plaintext.copyOf()
+            return plaintext.copyOf().also { keys += scopeKey }
         }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
     }

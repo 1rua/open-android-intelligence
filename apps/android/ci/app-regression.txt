@@ -15,6 +15,7 @@
 LocalProfileStoreTest
 RemoteLocalEntryPointsTest
 RemoteLoginPresentationTest
+RemoteDeviceNameSettingTest
 RemoteRootInteractionTest
 RemoteRuntimeTest
 AccountAvatarTest

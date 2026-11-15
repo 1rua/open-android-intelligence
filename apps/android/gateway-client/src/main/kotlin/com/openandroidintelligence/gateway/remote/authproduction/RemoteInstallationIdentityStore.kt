@@ -41,6 +41,8 @@ class RemoteInstallationIdentityStore(
 ) {
     private val directory = directory.apply { check(mkdirs() || isDirectory) }
     private val atomic = AtomicFile(File(directory, "remote-installation.bin"))
+    // 只标记这次安装已开始保存身份，不含账号、token 或密钥；失败后不能误当首次安装。
+    private val initialized = AtomicFile(File(directory, "remote-installation-initialized.bin"))
     private val lockFile = File(directory, "remote-installation.lock")
     private val monitor = monitors.computeIfAbsent(lockFile.canonicalPath) { Any() }
 
@@ -79,7 +81,7 @@ class RemoteInstallationIdentityStore(
         val encrypted = try { atomic.openRead().use { it.readBytes() } }
         catch (_: FileNotFoundException) {
             // 已有文件或 Keystore 密钥却读不到记录时，不把损坏误认作首次安装。
-            if (atomic.baseFile.exists() || protector.hasKey(KEY)) throw RemoteIdentityCorruptedException()
+            if (atomic.baseFile.exists() || initializationStarted() || protector.hasKey(KEY)) throw RemoteIdentityCorruptedException()
             return null
         }
         if (!protector.hasKey(KEY)) throw RemoteIdentityLockedException()
@@ -112,6 +114,7 @@ class RemoteInstallationIdentityStore(
     }
 
     private fun save(record: Record) {
+        markInitializationStarted()
         val plain = Json.canonical(Json.of(mapOf("v" to 1, "name" to record.name,
             "client" to identityValue(record.identities.client), "host" to identityValue(record.identities.host)))).encodeToByteArray()
         val encrypted = try { protector.seal(KEY, plain, AAD) } finally { plain.fill(0) }
@@ -124,6 +127,23 @@ class RemoteInstallationIdentityStore(
             finally { committed.fill(0) }
         } catch (failure: Exception) { atomic.failWrite(stream); throw failure }
         finally { encrypted.fill(0) }
+    }
+
+    private fun initializationStarted(): Boolean = try {
+        // 此标记没有“清除”状态，空文件或损坏内容同样不能被当作从未初始化。
+        initialized.openRead().use { true }
+    } catch (_: FileNotFoundException) { initialized.baseFile.exists() }
+
+    private fun markInitializationStarted() {
+        if (initializationStarted()) return
+        val stream = initialized.startWrite()
+        try {
+            stream.write(1)
+            initialized.finishWrite(stream)
+            check(initialized.baseFile.isFile && initialized.openRead().use { it.readBytes().contentEquals(byteArrayOf(1)) }) {
+                "REMOTE_INSTALLATION_PERSISTENCE_FAILED"
+            }
+        } catch (failure: Exception) { initialized.failWrite(stream); throw failure }
     }
 
     private fun <T> locked(block: () -> T): T = synchronized(monitor) {

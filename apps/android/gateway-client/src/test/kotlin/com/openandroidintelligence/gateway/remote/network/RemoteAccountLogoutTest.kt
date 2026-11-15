@@ -25,19 +25,146 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [35])
 class RemoteAccountLogoutTest {
     private class Protector : RemoteIdentityProtector {
+        private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         var failOpen = false
         var failSeal = false
+        var failInstallationSeal = false
         @Volatile var beforeOpen: (() -> Unit)? = null
-        override fun hasKey(scopeKey: String) = true
+        override fun hasKey(scopeKey: String) = scopeKey in keys
         override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
             if (failSeal) throw java.io.IOException("模拟凭据持久化失败")
-            return plaintext.copyOf()
+            if (failInstallationSeal && scopeKey == "installation-identity-v1") throw java.io.IOException("模拟安装身份持久化失败")
+            return plaintext.copyOf().also { keys += scopeKey }
         }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray): ByteArray {
             beforeOpen?.also { beforeOpen = null }?.invoke()
             if (failOpen) throw java.io.IOException("模拟凭据读取失败")
             return ciphertext.copyOf()
         }
+    }
+
+    @Test fun 冷启动未恢复直接退出仍清原账号授权并保存两角色安装身份() = runBlocking {
+        val directory = Files.createTempDirectory("remote-cold-logout").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val store = RemoteIdentityStore(vault, protector)
+        val identities = seedAccount(vault, store, "https://remote.example", "旧账号")
+        val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val runtime = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent, vault = vault, protector = protector)
+        try {
+            assertNull(runtime.account.value)
+            runtime.logout()
+            assertNull(vault.activeAccount())
+            RemoteRole.entries.forEach { assertNull(store.load(RemoteIdentityScope("https://remote.example", "旧账号", it))) }
+            val saved = vault.installationIdentityStore { "测试手机" }.loadOrCreate()
+            assertTrue(identities[0].sameIdentity(saved.client)); assertTrue(identities[1].sameIdentity(saved.host))
+            assertNull(runtime.restore())
+        } finally { parent.cancel() }
+    }
+
+    @Test fun 冷启动直接登录同账号或新账号不继承旧令牌与pin但保留两安装身份() = runBlocking {
+        for (nextAccount in listOf("旧账号", "新账号")) {
+            MockWebServer().use { server ->
+                server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                    override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                        "/api/v1/auth/login" -> MockResponse().setBody(Json.canonical(obj("account" to nextAccount,
+                            "token" to "l".repeat(16), "expiresAt" to System.currentTimeMillis() + 600000)))
+                        "/api/v1/devices/register" -> MockResponse().setBody(Json.canonical(obj("accessToken" to "n".repeat(16),
+                            "accessTokenExpiresAt" to System.currentTimeMillis() + 600000, "refreshToken" to "s".repeat(16),
+                            "refreshTokenExpiresAt" to System.currentTimeMillis() + 1200000)))
+                        else -> MockResponse().setResponseCode(404)
+                    }
+                }
+                server.start()
+                val origin = server.url("/").toString().removeSuffix("/")
+                val protector = Protector(); val vault = RemoteCredentialVault(Files.createTempDirectory("remote-cold-login").toFile(), protector)
+                val store = RemoteIdentityStore(vault, protector)
+                val original = seedAccount(vault, store, origin, "旧账号")
+                val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+                val runtime = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent, vault = vault, protector = protector)
+                try {
+                    runtime.login(origin, nextAccount, "password")
+                    assertEquals(nextAccount, runtime.account.value!!.accountId)
+                    for ((index, role) in RemoteRole.entries.withIndex()) {
+                        val saved = store.load(RemoteIdentityScope(origin, nextAccount, role))!!
+                        assertTrue(original[index].sameIdentity(saved.identity))
+                        assertEquals("n".repeat(16), saved.tokens.accessToken)
+                        assertEquals("s".repeat(16), saved.tokens.refreshToken)
+                        assertTrue("重新授权不能继承旧账号或旧登录的pin", saved.peers.isEmpty())
+                        if (nextAccount != "旧账号") assertNull(store.load(RemoteIdentityScope(origin, "旧账号", role)))
+                    }
+                } finally { parent.cancel(); runtime.logout() }
+            }
+        }
+    }
+
+    @Test fun 冷启动退出迁移安装身份失败仍撤销账号但保留唯一旧密钥且报告未完成() = runBlocking {
+        val protector = Protector(); val vault = RemoteCredentialVault(Files.createTempDirectory("remote-cold-migration-failure").toFile(), protector)
+        val store = RemoteIdentityStore(vault, protector)
+        val original = seedAccount(vault, store, "https://remote.example", "旧账号")
+        val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val runtime = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent, vault = vault, protector = protector)
+        protector.failInstallationSeal = true
+        try {
+            val failure = runCatching { runtime.logout() }.exceptionOrNull() as RemoteRpcException
+            assertEquals("REMOTE_LOGOUT_INCOMPLETE", failure.code)
+            assertNull(vault.activeAccount()); assertNull(runtime.account.value); assertNull(runtime.restore())
+            for ((index, role) in RemoteRole.entries.withIndex()) {
+                assertTrue(original[index].sameIdentity(store.load(RemoteIdentityScope("https://remote.example", "旧账号", role))!!.identity))
+            }
+            assertEquals(RemoteAccountConnectionState.DISCONNECTED, runtime.state.value)
+            protector.failInstallationSeal = false
+            assertThrows(RemoteIdentityCorruptedException::class.java) {
+                vault.installationIdentityStore { "不可重建身份" }.loadOrCreate()
+            }
+            val restarted = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent, vault = vault, protector = protector)
+            val relogin = runCatching { restarted.login("https://remote.example", "旧账号", "password") }.exceptionOrNull()
+            assertTrue("再次登录必须在联网前拒绝把失败迁移当首次安装", relogin is RemoteIdentityCorruptedException)
+            assertNull(restarted.account.value)
+        } finally { parent.cancel() }
+    }
+
+    @Test fun 登录迁移安装身份失败也先撤销旧授权且不联网不删除唯一旧密钥() = runBlocking {
+        MockWebServer().use { server ->
+            server.start()
+            val origin = server.url("/").toString().removeSuffix("/")
+            val protector = Protector()
+            val vault = RemoteCredentialVault(Files.createTempDirectory("remote-login-migration-failure").toFile(), protector)
+            val store = RemoteIdentityStore(vault, protector)
+            val original = seedAccount(vault, store, origin, "旧账号")
+            val old = vault.activeAccount()!!
+            val epoch = vault.authorizationEpoch()
+            val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val runtime = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent, vault = vault, protector = protector)
+            protector.failInstallationSeal = true
+            try {
+                val failure = runCatching { runtime.login(origin, "新账号", "password") }.exceptionOrNull() as RemoteRpcException
+                assertEquals("REMOTE_LOGOUT_INCOMPLETE", failure.code)
+                assertNull(vault.activeAccount()); assertNull(runtime.account.value)
+                assertTrue(vault.authorizationEpoch() > epoch)
+                assertThrows(IllegalStateException::class.java) { vault.requireCurrent(old) }
+                assertEquals(0, server.requestCount)
+                assertTrue(runCatching { runtime.connect("旧电脑") }.exceptionOrNull() is RemoteRpcException)
+                assertTrue(runCatching { runtime.authenticatedPeer("旧连接") }.exceptionOrNull() is RemoteRpcException)
+                for ((index, role) in RemoteRole.entries.withIndex()) {
+                    assertTrue(original[index].sameIdentity(store.load(RemoteIdentityScope(origin, "旧账号", role))!!.identity))
+                    assertNull(store.load(RemoteIdentityScope(origin, "新账号", role)))
+                }
+                protector.failInstallationSeal = false
+                assertThrows(RemoteIdentityCorruptedException::class.java) {
+                    vault.installationIdentityStore { "不可自动替换" }.loadOrCreate()
+                }
+            } finally { parent.cancel() }
+        }
+    }
+
+    private fun seedAccount(vault: RemoteCredentialVault, store: RemoteIdentityStore, origin: String, account: String): List<RemoteStaticIdentity> {
+        val identities = RemoteRole.entries.map { RemoteStaticIdentityFactory.generate(RemoteDeviceId(java.util.UUID.randomUUID().toString())) }
+        val peer = RemoteStaticIdentityFactory.generate(RemoteDeviceId(java.util.UUID.randomUUID().toString()))
+        for ((index, role) in RemoteRole.entries.withIndex()) store.save(RemoteIdentityScope(origin, account, role), RemoteRoleCredential(
+            identities[index], RemoteTokenPair("a".repeat(16), System.currentTimeMillis() + 600000, "r".repeat(16), System.currentTimeMillis() + 1200000),
+            listOf(RemotePeerPin(if (role == RemoteRole.CLIENT) RemoteRole.HOST else RemoteRole.CLIENT, peer.deviceId, peer.publicKey))))
+        val epoch = vault.revokeActive(); vault.activate(origin, account, epoch)
+        return identities
     }
     @Test fun 恢复读取旧账号期间退出必须串行且结束后不能发布旧身份或新Host() = runBlocking {
         val server = MockWebServer()

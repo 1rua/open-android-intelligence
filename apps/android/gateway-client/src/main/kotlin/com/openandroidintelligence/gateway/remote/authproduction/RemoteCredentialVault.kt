@@ -84,6 +84,9 @@ class RemoteCredentialVault internal constructor(
     constructor(directory: File, protector: RemoteIdentityProtector) : this(directory, protector, { file, stream -> file.finishWrite(stream) })
     constructor(context: Context) : this(File(context.noBackupFilesDir, "remote"), AndroidRemoteIdentityProtector())
 
+    /** 安装身份与本凭据仓库使用同一安装目录及保护器，避免注入仓库后混入另一套存储。 */
+    internal fun installationIdentityStore(defaultName: () -> String) = RemoteInstallationIdentityStore(directory, protector, defaultName)
+
     suspend fun <T> credentialTransaction(block: suspend () -> T): T = transactionMutex.withLock {
         withContext(Dispatchers.IO) {
             RandomAccessFile(File(directory, "remote-refresh.lock"), "rw").use { file -> file.channel.lock().use { block() } }

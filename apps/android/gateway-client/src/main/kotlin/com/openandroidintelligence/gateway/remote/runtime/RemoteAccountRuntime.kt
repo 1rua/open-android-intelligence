@@ -27,7 +27,7 @@ class RemoteAccountRuntime(
     private val protector: RemoteIdentityProtector = AndroidRemoteIdentityProtector(),
     private val apiFactory: ((String) -> RemoteServerApi)? = null,
 ) {
-    private val installation = RemoteInstallationIdentityStore(context, protector)
+    private val installation = vault.installationIdentityStore { RemoteInstallationIdentityStore.defaultDeviceName(context) }
     private fun server(origin: String) = apiFactory?.invoke(origin) ?: RemoteServerApi(origin, deviceNameProvider = installation::deviceName)
     private val mutableAccount = MutableStateFlow<RemoteActiveAccount?>(null)
     val account: StateFlow<RemoteActiveAccount?> = mutableAccount
@@ -62,8 +62,8 @@ class RemoteAccountRuntime(
         return try {
             lifecycle.withLock {
                 vault.requireLoginAttempt(loginAttemptId)
-                val installation = installationIdentities()
                 revokeLocal()
+                val installation = installationIdentities()
                 val server = server(origin)
                 val epoch = vault.revokeActive()
                 val login = authorize(server)
@@ -215,7 +215,7 @@ class RemoteAccountRuntime(
         lifecycle.withLock { revokeLocal() }
     }
     private fun revokeLocal() {
-        val old = mutableAccount.value
+        var old = mutableAccount.value
         synchronized(selectionLock) {
             selectionGeneration.incrementAndGet(); pendingConnect?.cancel(); pendingConnect = null
             mutableAccount.value = null
@@ -234,6 +234,19 @@ class RemoteAccountRuntime(
         api = null
         var revocationFailed = false
         var cleanupFailed = false
+        var identityPreserved = false
+        try {
+            // 冷启动尚未 restore 时仍须清理磁盘活动账号，并先保住升级前唯一的安装密钥。
+            if (old == null) old = vault.activeAccount()
+            old?.let { active ->
+                installation.loadOrCreate(
+                    store.load(RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT))?.identity,
+                    store.load(RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST))?.identity,
+                )
+            }
+            identityPreserved = true
+        } catch (_: Exception) { cleanupFailed = true }
+        // 身份迁移失败也必须撤销账号、关闭连接；保留不可用旧材料，不能误删唯一密钥。
         try { vault.revokeActive() }
         catch (_: Exception) { revocationFailed = true }
         try {
@@ -241,7 +254,7 @@ class RemoteAccountRuntime(
                 { closingHost?.close(); Unit },
                 { closingClient?.close(); Unit },
                 *closingPeers.map { peer -> { peerClosed(peer.scope) } }.toTypedArray(),
-                { if (!revocationFailed && old != null) store.clearAccount(old.origin, old.accountId) },
+                { if (!revocationFailed && identityPreserved) old?.let { store.clearAccount(it.origin, it.accountId) } },
             )
         } catch (_: Exception) { cleanupFailed = true }
         if (revocationFailed || cleanupFailed) throw RemoteRpcException("REMOTE_LOGOUT_INCOMPLETE")

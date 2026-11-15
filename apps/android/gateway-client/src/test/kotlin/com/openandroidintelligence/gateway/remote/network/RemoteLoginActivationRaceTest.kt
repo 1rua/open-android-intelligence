@@ -25,13 +25,14 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [35])
 class RemoteLoginActivationRaceTest {
     private class Protector : RemoteIdentityProtector {
+        private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         @Volatile var activeWrite = false
         @Volatile var failCredentialWrites = false
-        override fun hasKey(scopeKey: String) = true
+        override fun hasKey(scopeKey: String) = scopeKey in keys
         override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
             check(!failCredentialWrites) { "模拟凭据写盘失败" }
             if (scopeKey == "credential-vault") activeWrite = RemoteWireJson.decode(plaintext).objectValue().value("active") != JsonValue.JNull
-            return plaintext.copyOf()
+            return plaintext.copyOf().also { keys += scopeKey }
         }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
     }

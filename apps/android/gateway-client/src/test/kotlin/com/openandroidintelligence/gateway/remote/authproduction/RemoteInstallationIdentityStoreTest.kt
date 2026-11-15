@@ -53,6 +53,34 @@ class RemoteInstallationIdentityStoreTest {
         assertFalse(encrypted.toList().windowed(32).any { it == identities.client.privateKeyCopy().toList() })
     }
 
+    @Test fun 注入的两个安装目录相互隔离且账号撤销后工厂恢复同一安装身份() {
+        val protector = Protector()
+        val firstDirectory = Files.createTempDirectory("remote-installation-first").toFile()
+        val secondDirectory = Files.createTempDirectory("remote-installation-second").toFile()
+        // 两个独立安装各有自己的 Keystore；不能因同一测试进程的 Android Context 混用目录。
+        val firstVault = RemoteCredentialVault(firstDirectory, protector)
+        val otherProtector = Protector()
+        val secondVault = RemoteCredentialVault(secondDirectory, otherProtector)
+        val first = firstVault.installationIdentityStore { "第一台手机" }.loadOrCreate()
+        val second = secondVault.installationIdentityStore { "第二台手机" }.loadOrCreate()
+        assertNotEquals(first.client.deviceId, second.client.deviceId)
+        assertNotEquals(first.host.deviceId, second.host.deviceId)
+        val epoch = firstVault.revokeActive()
+        firstVault.activate("https://remote.example", "owner", epoch)
+        val credentials = RemoteIdentityStore(firstVault, protector)
+        val tokens = RemoteTokenPair("a".repeat(16), 1000000, "r".repeat(16), 2000000)
+        for (role in RemoteRole.entries) credentials.save(RemoteIdentityScope("https://remote.example", "owner", role),
+            RemoteRoleCredential(if (role == RemoteRole.CLIENT) first.client else first.host, tokens))
+        firstVault.revokeActive()
+        credentials.clearAccount("https://remote.example", "owner")
+        val restoredVault = RemoteCredentialVault(firstDirectory, protector)
+        val restored = restoredVault.installationIdentityStore { "不会替换原名称" }.loadOrCreate()
+        assertTrue(first.client.sameIdentity(restored.client)); assertTrue(first.host.sameIdentity(restored.host))
+        assertEquals("第一台手机", restoredVault.installationIdentityStore { "无关" }.deviceName())
+        assertTrue(second.client.sameIdentity(secondVault.installationIdentityStore { "无关" }.loadOrCreate().client))
+        assertNull(restoredVault.activeAccount())
+    }
+
     @Test fun 当前账号升级保留原身份而退出和切账号不保留旧凭据或对端授权() {
         val directory = Files.createTempDirectory("remote-installation-account").toFile()
         val protector = Protector()

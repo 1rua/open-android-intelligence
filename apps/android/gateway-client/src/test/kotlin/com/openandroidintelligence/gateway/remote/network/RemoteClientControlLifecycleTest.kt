@@ -24,8 +24,9 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [35])
 class RemoteClientControlLifecycleTest {
     private class Protector : RemoteIdentityProtector {
-        override fun hasKey(scopeKey: String) = true
-        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) = plaintext.copyOf()
+        private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        override fun hasKey(scopeKey: String) = scopeKey in keys
+        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) = plaintext.copyOf().also { keys += scopeKey }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
     }
     private class Fixture : AutoCloseable {

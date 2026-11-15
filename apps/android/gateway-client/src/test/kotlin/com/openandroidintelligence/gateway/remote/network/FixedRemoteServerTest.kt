@@ -44,8 +44,9 @@ class FixedRemoteServerTest {
         override fun events(scope: RemoteRpcConnectionScope) = emptyFlow<RemoteRpcEvent>()
     }
     private class PlainProtector : RemoteIdentityProtector {
-        override fun hasKey(scopeKey: String) = true
-        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) = plaintext.copyOf()
+        private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        override fun hasKey(scopeKey: String) = scopeKey in keys
+        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) = plaintext.copyOf().also { keys += scopeKey }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
     }
     @Test fun 固定真实服务端转发OAIHost的Relay选择并保留两个不同Client() = runBlocking {
