@@ -94,7 +94,7 @@ class RemoteClientControlLifecycleTest {
     }
     private suspend fun await(condition: () -> Boolean) = withTimeout(5_000) { while (!condition()) delay(5) }
 
-    @Test fun 登录不选Host也立即注册Client并维持服务器心跳和在线刷新() = runBlocking {
+    @Test fun 登录不选Host也立即注册Client并维持服务器心跳和在线刷新(): Unit = runBlocking {
         Fixture().use { fixture ->
             fixture.login()
             await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.runtime.hosts.value.singleOrNull()?.online == true && fixture.pongs.get() > 0 }
@@ -121,7 +121,7 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
-    @Test fun 真实账号退出再登录复用安装的两角色身份但建立新的控制连接() = runBlocking {
+    @Test fun 真实账号退出再登录复用安装的两角色身份但建立新的控制连接(): Unit = runBlocking {
         Fixture().use { fixture ->
             fixture.login()
             await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED }

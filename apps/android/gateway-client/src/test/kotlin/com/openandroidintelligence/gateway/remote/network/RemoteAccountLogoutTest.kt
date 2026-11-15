@@ -43,7 +43,7 @@ class RemoteAccountLogoutTest {
         }
     }
 
-    @Test fun 冷启动未恢复直接退出仍清原账号授权并保存两角色安装身份() = runBlocking {
+    @Test fun 冷启动未恢复直接退出仍清原账号授权并保存两角色安装身份(): Unit = runBlocking {
         val directory = Files.createTempDirectory("remote-cold-logout").toFile()
         val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
         val store = RemoteIdentityStore(vault, protector)
@@ -61,7 +61,7 @@ class RemoteAccountLogoutTest {
         } finally { parent.cancel() }
     }
 
-    @Test fun 冷启动直接登录同账号或新账号不继承旧令牌与pin但保留两安装身份() = runBlocking {
+    @Test fun 冷启动直接登录同账号或新账号不继承旧令牌与pin但保留两安装身份(): Unit = runBlocking {
         for (nextAccount in listOf("旧账号", "新账号")) {
             MockWebServer().use { server ->
                 server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
@@ -97,7 +97,7 @@ class RemoteAccountLogoutTest {
         }
     }
 
-    @Test fun 冷启动退出迁移安装身份失败仍撤销账号但保留唯一旧密钥且报告未完成() = runBlocking {
+    @Test fun 冷启动退出迁移安装身份失败仍撤销账号但保留唯一旧密钥且报告未完成(): Unit = runBlocking {
         val protector = Protector(); val vault = RemoteCredentialVault(Files.createTempDirectory("remote-cold-migration-failure").toFile(), protector)
         val store = RemoteIdentityStore(vault, protector)
         val original = seedAccount(vault, store, "https://remote.example", "旧账号")
@@ -123,7 +123,7 @@ class RemoteAccountLogoutTest {
         } finally { parent.cancel() }
     }
 
-    @Test fun 登录迁移安装身份失败也先撤销旧授权且不联网不删除唯一旧密钥() = runBlocking {
+    @Test fun 登录迁移安装身份失败也先撤销旧授权且不联网不删除唯一旧密钥(): Unit = runBlocking {
         MockWebServer().use { server ->
             server.start()
             val origin = server.url("/").toString().removeSuffix("/")
