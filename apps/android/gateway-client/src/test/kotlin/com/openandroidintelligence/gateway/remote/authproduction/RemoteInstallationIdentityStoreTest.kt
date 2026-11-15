@@ -1,8 +1,6 @@
 package com.openandroidintelligence.gateway.remote.authproduction
 
-import android.app.Application
 import android.provider.Settings
-import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.gateway.remote.auth.*
 import com.openandroidintelligence.gateway.remote.identity.*
 import java.io.File
@@ -15,6 +13,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -106,7 +105,7 @@ class RemoteInstallationIdentityStoreTest {
     }
 
     @Test fun 默认名称优先读取Android系统设备名称并拒绝协议不允许的改名() {
-        val context = ApplicationProvider.getApplicationContext<Application>()
+        val context = RuntimeEnvironment.getApplication()
         Settings.Global.putString(context.contentResolver, Settings.Global.DEVICE_NAME, "系统自定义手机名")
         assertEquals("系统自定义手机名", RemoteInstallationIdentityStore.defaultDeviceName(context))
         Settings.Global.putString(context.contentResolver, Settings.Global.DEVICE_NAME, " ")

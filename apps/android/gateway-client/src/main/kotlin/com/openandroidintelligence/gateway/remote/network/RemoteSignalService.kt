@@ -44,6 +44,7 @@ internal class RemoteSignalService(
     @Volatile private var target: RemoteAuthorizedPeer? = null
     @Volatile private var clientResult = CompletableDeferred<RemoteRpcChannel>()
     private val clientSelection = Mutex()
+    private val clientPublication = Any()
     @Volatile private var socket: RemoteSocket? = null
     @Volatile private var closed = false
     @Volatile private var limits = RemoteFrameLimits()
@@ -63,8 +64,11 @@ internal class RemoteSignalService(
         withTimeout(15_000) { ready.await() }
         requireCurrent()
         tunnels.values.toList().forEach { it.fail("CONNECTION_REPLACED") }
-        target = peer
-        val result = CompletableDeferred<RemoteRpcChannel>().also { clientResult = it }
+        val result = synchronized(clientPublication) {
+            if (closed) throw RemoteRpcException("CLIENT_CLOSED")
+            target = peer
+            CompletableDeferred<RemoteRpcChannel>().also { clientResult = it }
+        }
         sendControl("connect.request", obj("hostDeviceId" to peer.device.deviceId,
             "preferredTransports" to listOf("lan", "p2p", "turn", "relay").filter { "transport.$it" in negotiated }))
         try { withTimeout(60_000) { result.await() } }
@@ -185,7 +189,10 @@ internal class RemoteSignalService(
     }
     private fun newTunnel(id: String, peer: RemoteAuthorizedPeer, assignment: JsonValue.JObject): Tunnel {
         requireCurrent()
-        val tunnel = Tunnel(id, peer, assignment)
+        val selectionResult = synchronized(clientPublication) {
+            if (identityScope.role == RemoteRole.CLIENT) clientResult else null
+        }
+        val tunnel = Tunnel(id, peer, assignment, selectionResult)
         if (tunnels.putIfAbsent(id, tunnel) != null) { tunnel.fail("CONNECTION_REPLACED"); throw RemoteRpcException("CONNECTION_REPLACED") }
         return tunnel
     }
@@ -193,8 +200,11 @@ internal class RemoteSignalService(
     private fun frame(type: String, payload: JsonValue.JObject) = RemoteControlCodec.create(type, payload, UUID.randomUUID().toString(), System.currentTimeMillis())
     fun close() = fail("CLIENT_CLOSED")
     private fun fail(code: String) {
-        if (closed) return
-        closed = true; ready.completeExceptionally(RemoteRpcException(code)); clientResult.completeExceptionally(RemoteRpcException(code))
+        synchronized(clientPublication) {
+            if (closed) return
+            closed = true
+            ready.completeExceptionally(RemoteRpcException(code)); clientResult.completeExceptionally(RemoteRpcException(code))
+        }
         val closing = tunnels.values.toList()
         tunnels.clear()
         val control = socket.also { socket = null }
@@ -204,7 +214,9 @@ internal class RemoteSignalService(
         )
     }
 
-    private inner class Tunnel(val id: String, val peer: RemoteAuthorizedPeer, val assignment: JsonValue.JObject) : RemoteMessageTransport {
+    private inner class Tunnel(val id: String, val peer: RemoteAuthorizedPeer, val assignment: JsonValue.JObject,
+        private val selectionResult: CompletableDeferred<RemoteRpcChannel>?,
+    ) : RemoteMessageTransport {
         val binding = RemoteConnectionBinding(id, if (identityScope.role == RemoteRole.HOST) credential.identity.deviceId.value else peer.device.deviceId,
             if (identityScope.role == RemoteRole.CLIENT) credential.identity.deviceId.value else peer.device.deviceId)
         val connectionScope = RemoteRpcConnectionScope(api.origin, identityScope.accountId, binding.hostDeviceId, binding.clientDeviceId, id, generations.incrementAndGet())
@@ -320,12 +332,27 @@ internal class RemoteSignalService(
             } else publishRpc()
         }
         private fun publishRpc() {
-            onAuthenticatedPeer(AuthenticatedRemotePeer(connectionScope, fingerprint(credential.identity.publicKey), fingerprint(peer.publicKey), identityScope.role))
-            // 关闭可与认证发布交错；已关闭的隧道不能把认证身份重新留在账号登记表。
-            terminal?.let { onPeerClosed(connectionScope); throw RemoteRpcException(it) }
-            val session = RemoteRpcSession(connectionScope, emptySet(), this, worker, hostHandler, ::fail)
-            rpc = session
-            if (identityScope.role == RemoteRole.CLIENT) clientResult.complete(session)
+            try {
+                synchronized(clientPublication) { requireCurrentSelection() }
+                onAuthenticatedPeer(AuthenticatedRemotePeer(connectionScope, fingerprint(credential.identity.publicKey), fingerprint(peer.publicKey), identityScope.role))
+                val session = RemoteRpcSession(connectionScope, emptySet(), this, worker, hostHandler, ::fail)
+                // 选择替换与发布共用锁；对外认证回调留在锁外，回调返回后再次核对归属。
+                synchronized(clientPublication) {
+                    synchronized(callbacksLock) {
+                        requireCurrentSelection()
+                        rpc = session
+                        selectionResult?.complete(session)
+                    }
+                }
+            } catch (failure: Exception) {
+                onPeerClosed(connectionScope)
+                throw failure
+            }
+        }
+        private fun requireCurrentSelection() {
+            terminal?.let { throw RemoteRpcException(it) }
+            if (closed || selectionResult != null && selectionResult !== clientResult)
+                throw RemoteRpcException("CONNECTION_REPLACED")
         }
         fun receiveRelay(payload: JsonValue.JObject) {
             if (payload.requiredText("connectionId") != id || payload.requiredText("targetDeviceId") != credential.identity.deviceId.value || selected != "relay") {
@@ -372,7 +399,8 @@ internal class RemoteSignalService(
                 { carrierReady.completeExceptionally(RemoteRpcException(code)); Unit },
                 { secure.close() }, { rtcPeer?.close(); Unit }, { relaySocket?.close(); Unit },
                 *callbacks.map { callback -> { callback(code) } }.toTypedArray(),
-                { if (identityScope.role == RemoteRole.CLIENT) clientResult.completeExceptionally(RemoteRpcException(code)); Unit },
+                // 清理只完成创建本隧道时绑定的结果，不能读取已经换代的外层选择。
+                { selectionResult?.completeExceptionally(RemoteRpcException(code)); Unit },
             )
         }
     }

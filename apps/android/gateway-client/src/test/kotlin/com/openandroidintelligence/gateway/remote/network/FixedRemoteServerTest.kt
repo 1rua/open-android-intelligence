@@ -79,6 +79,66 @@ class FixedRemoteServerTest {
         }
     }
 
+    @Test fun 旧隧道清理暂停后新Host完成握手不能误领旧连接异常() = runBlocking {
+        Server().use { server ->
+            val login = server.login()
+            val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val hostScope = RemoteIdentityScope(server.api.origin, login.accountId, RemoteRole.HOST)
+            val hosts = (1..2).map { RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString())) }
+            val hostPeers = hosts.map { identity -> RemoteAuthorizedPeer(
+                RemoteHostDevice(identity.deviceId.value, "测试电脑", "linux", "member", true), RemoteRole.HOST, identity.publicKey) }
+            val hostServices = hosts.map { identity ->
+                val credential = server.api.registerAccountRole(hostScope, identity, login.token)
+                RemoteSignalService(context, parent, server.api, hostScope, credential, {},
+                    { id, _ -> server.api.peer(credential.tokens.accessToken, id) }, handler())
+            }
+            val identity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
+            val clientScope = hostScope.copy(role = RemoteRole.CLIENT)
+            val credential = server.api.registerAccountRole(clientScope, identity, login.token)
+            val oldCleanupEntered = CountDownLatch(1)
+            val releaseOldCleanup = CountDownLatch(1)
+            val newAuthenticated = CountDownLatch(1)
+            val releaseNewAuthentication = CountDownLatch(1)
+            val pauseOld = java.util.concurrent.atomic.AtomicBoolean(true)
+            val client = RemoteSignalService(context, parent, server.api, clientScope, credential, {},
+                { id, _ -> hostPeers.single { it.device.deviceId == id } },
+                onAuthenticatedPeer = { peer ->
+                    if (peer.scope.hostDeviceId == hosts[1].deviceId.value) {
+                        newAuthenticated.countDown()
+                        check(releaseNewAuthentication.await(5, TimeUnit.SECONDS)) { "等待释放新Host认证屏障超时" }
+                    }
+                },
+                onPeerClosed = { connection ->
+                    if (connection.hostDeviceId == hosts[0].deviceId.value && pauseOld.compareAndSet(true, false)) {
+                        oldCleanupEntered.countDown()
+                        check(releaseOldCleanup.await(5, TimeUnit.SECONDS)) { "等待释放旧Host清理屏障超时" }
+                    }
+                })
+            var closing: Deferred<Unit>? = null
+            var opening: Deferred<RemoteRpcChannel>? = null
+            try {
+                hostServices.forEach { it.startHost() }
+                val old = client.connect(hostPeers[0])
+                assertTrue(old.invoke("harness.transport.describe", obj(), timeoutMs = 3000) is JsonValue.JObject)
+                closing = async(Dispatchers.IO) { old.close() }
+                assertTrue(oldCleanupEntered.await(5, TimeUnit.SECONDS))
+                opening = async(Dispatchers.Default) { client.connect(hostPeers[1]) }
+                assertTrue(newAuthenticated.await(5, TimeUnit.SECONDS))
+                releaseOldCleanup.countDown()
+                withTimeout(5000) { closing!!.await() }
+                releaseNewAuthentication.countDown()
+                val next = withTimeout(5000) { opening!!.await() }
+                assertEquals(hosts[1].deviceId.value, next.scope.hostDeviceId)
+                assertTrue(next.invoke("harness.transport.describe", obj(), timeoutMs = 3000) is JsonValue.JObject)
+                assertTrue("旧隧道退休不能关闭共享控制连接", client.connected)
+            } finally {
+                releaseOldCleanup.countDown(); releaseNewAuthentication.countDown()
+                closing?.cancel(); opening?.cancel()
+                client.close(); hostServices.forEach { it.close() }; parent.cancel()
+            }
+        }
+    }
+
     private inner class RawClient(private val api: RemoteServerApi, private val identity: RemoteStaticIdentity,
         private val credential: RemoteRoleCredential, private val host: RemoteStaticIdentity) : AutoCloseable {
         private val frames = Channel<RemoteControlFrame>(64)
