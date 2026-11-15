@@ -313,7 +313,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     }
 
     private fun nativeFrame(method: String, params: JsonValue, source: Source): List<VerifiedConversationEvent> {
-        if (internalMessage(params)) return emptyList()
+        // 先核对会话归属，再把外层元标记绑定到其中的 item；外部会话不能污染本投影的隐藏集合。
         if (params.text("threadId")?.let { it != nativeSessionId } == true || params.text("sessionId")?.let { it != nativeSessionId } == true) return emptyList()
         when (method) {
             "turn/started" -> if (!source.historical) {
@@ -332,6 +332,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "item/agentMessage/delta" -> {
                 val id = params.requiredText("itemId")
+                if (internalMessage(params)) return suppressMessage(id, source)
                 if (id in hiddenMessages) return emptyList()
                 // 清洗只影响发布内容；跨分块标签需要继续基于原始累计正文识别。
                 val old = rawMessageText[id].orEmpty()
@@ -339,6 +340,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/plan/delta" -> {
                 val id = params.requiredText("itemId")
+                if (internalMessage(params)) return suppressMessage(id, source)
                 if (id in hiddenMessages) return emptyList()
                 val content = codexContent.getOrPut(id) { AssistantContent() }
                 val part = if (method.endsWith("summaryTextDelta")) "summary:${params.number("summaryIndex") ?: 0}"
@@ -348,9 +350,12 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "item/started", "item/completed" -> {
                 val item = params.at("item") ?: return emptyList()
-                if (internalMessage(item)) return suppressMessage(item.text("id"), source)
-                if (item.text("id") in hiddenMessages && item.text("type") in setOf("agentMessage", "userMessage", "reasoning", "plan")) return emptyList()
-                return when (item.text("type")) {
+                val itemType = item.text("type")
+                val messageItem = itemType in setOf("agentMessage", "userMessage", "reasoning", "plan")
+                if ((internalMessage(params) || internalMessage(item)) && messageItem)
+                    return suppressMessage(item.text("id"), source)
+                if (item.text("id") in hiddenMessages && messageItem) return emptyList()
+                return when (itemType) {
                     "agentMessage" -> upsert(withContent(item, listOf(obj("type" to "text", "text" to (item.text("text") ?: "")))), "assistant", method == "item/started", null, source)
                     "userMessage" -> upsert(item, "user", false, null, source, params.text("turnId"))
                     "reasoning", "plan" -> {
@@ -377,11 +382,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 return approval(params.requiredText("requestHandle"), params, source)
             "session/update" -> {
                 val update = params.at("update") ?: params
-                if (internalMessage(update)) return emptyList()
-                when (update.text("sessionUpdate") ?: update.text("type")) {
+                val updateType = update.text("sessionUpdate") ?: update.text("type")
+                when (updateType) {
                     "agent_message_chunk", "agent_message", "agent_thought_chunk", "agent_thought" -> {
                         val content = update.at("content") ?: return emptyList()
-                        if (content.text("type") != "text" || internalMessage(content)) return emptyList()
+                        if (content.text("type") != "text") return emptyList()
+                        if (internalMessage(params) || internalMessage(update) || internalMessage(content)) {
+                            if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
+                            return suppressMessage(acpMessageId, source)
+                        }
                         if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
                         val kind = if ((update.text("sessionUpdate") ?: update.text("type")) in setOf("agent_thought_chunk", "agent_thought")) "reasoning" else "text"
                         acpContent.append(kind, content.text("text").orEmpty())

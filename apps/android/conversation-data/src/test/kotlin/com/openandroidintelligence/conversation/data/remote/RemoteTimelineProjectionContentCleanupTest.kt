@@ -210,4 +210,65 @@ class RemoteTimelineProjectionContentCleanupTest {
         }
     }
 
+
+    @Test fun `Codex参数外层元标记将隐藏身份延续到无标记正文和历史`() {
+        listOf("isMeta" to true, "role" to "system").forEach { marker ->
+            listOf("item/started", "item/agentMessage/delta", "item/reasoning/textDelta").forEach { method ->
+                val projection = RemoteTimelineProjection(local)
+                val identity = if (method == "item/started") "item" to obj("id" to "hidden", "type" to "agentMessage")
+                    else "itemId" to "hidden"
+                val emitted = mutableListOf<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent>()
+                emitted += projection.accept(obj("method" to method, "params" to obj("threadId" to native,
+                    marker, identity, "delta" to "内部配置")))
+                emitted += projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+                    "itemId" to "hidden", "delta" to "内部正文")))
+                emitted += projection.accept(obj("method" to "item/reasoning/textDelta", "params" to obj("threadId" to native,
+                    "itemId" to "hidden", "delta" to "内部思考")))
+                emitted += projection.accept(obj("method" to "item/completed", "params" to obj("threadId" to native,
+                    "item" to obj("id" to "hidden", "type" to "agentMessage", "text" to "内部终稿"))))
+                emitted += projection.accept(event(1, "assistant/message", obj("message" to message("hidden", "内部历史"))), history = true)
+                projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+                    "itemId" to "visible", "delta" to "正常回答")))
+                assertEquals("$method 的 $marker 必须记住隐藏身份", setOf("visible"), projection.rows.keys)
+                assertEquals("正常回答", body(projection))
+                assertTrue(emitted.none { it is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert })
+            }
+        }
+    }
+
+    @Test fun `其他会话的参数元标记不能污染当前会话同名消息身份`() {
+        listOf("threadId", "sessionId").forEach { field ->
+            val projection = RemoteTimelineProjection(local)
+            projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+                "itemId" to "shared", "delta" to "正常")))
+            val foreign = projection.accept(obj("method" to "item/started", "params" to obj(field to "other-session",
+                "isMeta" to true, "item" to obj("id" to "shared", "type" to "agentMessage"))))
+            projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+                "itemId" to "shared", "delta" to "回答")))
+            assertEquals("正常回答", body(projection))
+            assertTrue("外部会话不得撤下当前行或登记隐藏状态", foreign.isEmpty())
+        }
+    }
+
+    @Test fun `Codex与ACP元包装不吞真实工具事实和失败取消终态`() {
+        listOf("failed" to GenerationState.FAILED, "cancelled" to GenerationState.CANCELLED).forEach { (status, expected) ->
+            val codex = RemoteTimelineProjection(local)
+            codex.accept(obj("method" to "turn/started", "params" to obj("threadId" to native, "turn" to obj("id" to "turn"))))
+            val tool = codex.accept(obj("method" to "item/completed", "params" to obj("threadId" to native, "isMeta" to true,
+                "item" to obj("id" to "tool", "type" to "commandExecution", "isMeta" to true, "status" to "failed"))))
+            codex.accept(obj("method" to "turn/completed", "params" to obj("threadId" to native, "role" to "system",
+                "turn" to obj("id" to "turn", "status" to status))))
+            assertTrue("工具事实不得按正文元标记丢弃", tool.any { it is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ExecutionStepsUpdated })
+            assertEquals(expected, codex.generationState)
+        }
+        val acpProjection = RemoteTimelineProjection(local)
+        acpProjection.beginTurn("request")
+        val tool = acpProjection.accept(obj("method" to "session/update", "params" to obj("sessionId" to native, "isMeta" to true,
+            "update" to obj("sessionUpdate" to "tool_call_update", "toolCallId" to "tool", "isMeta" to true, "status" to "failed"))))
+        acpProjection.accept(obj("method" to "session/update", "params" to obj("sessionId" to native, "isMeta" to true,
+            "update" to obj("sessionUpdate" to "prompt_failed", "isMeta" to true))))
+        assertTrue(tool.any { it is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ExecutionStepsUpdated })
+        assertEquals(GenerationState.FAILED, acpProjection.generationState)
+    }
+
 }
