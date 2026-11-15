@@ -114,15 +114,15 @@ class RemoteHarnessContentIntegrationTest {
         awaitReply(controller, "你好")
         connection.rpc.chunk("answer", "text-delta", "，请问有什么需要？")
         awaitReply(controller, "你好，请问有什么需要？")
+        withTimeout(5_000) {
+            runtime.nativeConversationNotifications.sessions.first { sessions ->
+                sessions.any { session -> session.target.conversationId == local && session.latestReply == "你好，请问有什么需要？" }
+            }
+        }
         connection.rpc.event(3, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "completed")))
         withTimeout(2_000) { controller.state.first { it.generation == com.openandroidintelligence.conversation.model.GenerationState.COMPLETED } }
         connection.rpc.completeFollow()
         assertNoFailure(controller)
-        withTimeout(5_000) {
-            runtime.nativeConversationNotifications.sessions.first { sessions ->
-                sessions.any { it.latestReply == "你好，请问有什么需要？" }
-            }
-        }
     }
     @Test fun `Harness开场活动尝试快照经真实载体仓储镜像接续正文`() = runBlocking {
         val controller = ready()
