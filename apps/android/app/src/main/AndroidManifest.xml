@@ -41,6 +41,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpenAndroidIntelligence"
         android:usesCleartextTraffic="true">
+        <activity android:name=".RemoteOAuthCallbackActivity" android:exported="true" android:noHistory="true" android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="dshremote" android:host="oauth" />
+            </intent-filter>
+        </activity>
+        <activity android:name=".RemotePairingCaptureActivity" android:exported="false" android:screenOrientation="fullSensor" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

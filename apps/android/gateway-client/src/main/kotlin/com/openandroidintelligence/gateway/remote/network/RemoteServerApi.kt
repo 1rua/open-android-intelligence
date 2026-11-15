@@ -40,6 +40,14 @@ data class RemoteIceServer(val urls: List<String>, val username: String? = null,
 /** 固定上游 Server API 的真实 HTTP 实现；写请求不自动重试，不跟随可能泄露 bearer 的重定向。 */
 class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultHttpClient()) : RemoteRoleRegistrar, RemoteTokenRefresher {
     val origin: String = normalizeRemoteOrigin(origin)
+    suspend fun loginProviders(): JsonValue.JObject = request("GET", "/api/v1/auth/oauth/providers").objectValue()
+    suspend fun accountFromToken(token: String): RemoteAccountLogin {
+        require(token.length >= 16) { "REMOTE_AUTHORIZATION_TOKEN_INVALID" }
+        val value = request("GET", "/api/v1/auth/me", token).objectValue()
+        return RemoteAccountLogin(value.requiredText("account"), RemoteAccountAuthorizationToken(token), Long.MAX_VALUE)
+    }
+    suspend fun pairingRequest(path: String, body: String, proof: String? = null): JsonValue =
+        request("POST", path, rawBody = body, proof = proof)
     suspend fun login(email: String, password: String): RemoteAccountLogin {
         val value = auth(RemoteAuthCodec.accountLogin(email, password.toCharArray())).objectValue()
         val token = RemoteAccountAuthorizationToken(value.requiredText("token"))
@@ -93,10 +101,11 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         value.requiredText("platform"), value.requiredText("membershipId"),
         (value.fields.firstOrNull { it.first == "online" }?.second as? JsonValue.JBool)?.value ?: false,
         value.optionalText("clientVersion"), value.optionalText("harnessVersion"))
-    private suspend fun request(method: String, path: String, bearer: String? = null, body: JsonValue.JObject? = null): JsonValue {
+    private suspend fun request(method: String, path: String, bearer: String? = null, body: JsonValue.JObject? = null, rawBody: String? = null, proof: String? = null): JsonValue {
         val request = Request.Builder().url(origin + path).header("Accept", "application/json").apply {
             if (bearer != null) header("Authorization", "Bearer $bearer")
-            method(method, body?.let { Json.canonical(it).toRequestBody("application/json".toMediaType()) })
+            if (proof != null) header("X-DSH-Pairing-Proof", proof)
+            method(method, (rawBody ?: body?.let(Json::canonical))?.toRequestBody("application/json".toMediaType()))
         }.build()
         val response = http.newCall(request).await()
         return response.use {

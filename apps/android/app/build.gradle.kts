@@ -369,6 +369,7 @@ tasks.matching { it.name.matches(Regex("(package|bundle).*Release|sign.*ReleaseB
 }
 
 dependencies {
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation(project(":ui-resources"))
     implementation(project(":core-model"))
     implementation(project(":assistant-holder"))

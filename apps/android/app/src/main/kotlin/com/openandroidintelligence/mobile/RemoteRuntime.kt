@@ -81,6 +81,7 @@ class RemoteRuntime(
         }
     }
     val accountRuntime = accountFactory(handler)
+    val loginEntryBridge by lazy { RemoteLoginEntryBridge(context, this, scope) }
     private var channel: RemoteRpcChannel? = null
     private var repository: RemoteConversationRepository? = null
     private var ownerJob: Job? = null
@@ -206,6 +207,7 @@ class RemoteRuntime(
     }
 
     fun login(origin: String, email: String, password: String) = scope.launch {
+        loginEntryBridge.cancelLocal()
         mutableState.update { it.copy(busy = true, errorCode = null) }
         try {
             retire()
@@ -216,6 +218,34 @@ class RemoteRuntime(
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { fail(failure) }
         finally { mutableState.update { it.copy(busy = false) } }
+    }
+    suspend fun completeExternalLogin(token: String) {
+        mutableState.update { it.copy(busy = true, errorCode = null) }
+        try {
+            retire()
+            accountRuntime.loginAccountToken("https://dsh.r2049.cn", token)
+            mutableState.value = RemoteWorkspaceState(account = accountRuntime.account.value, busy = true,
+                accountAvatarBase64 = accountRuntime.account.value?.let(::avatar))
+            refreshHostsInternal()
+        } finally { mutableState.update { it.copy(busy = false) } }
+    }
+    suspend fun completePairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport, hostId: String) {
+        mutableState.update { it.copy(busy = true, errorCode = null) }
+        try {
+            retire()
+            accountRuntime.importPairing(value)
+            mutableState.value = RemoteWorkspaceState(account = accountRuntime.account.value, busy = true,
+                accountAvatarBase64 = accountRuntime.account.value?.let(::avatar))
+        } finally { mutableState.update { it.copy(busy = false) } }
+    }
+    fun refreshPairedHost(hostId: String) = scope.launch {
+        try {
+            refreshHostsInternal()
+            currentCoroutineContext().ensureActive()
+            val host = state.value.hosts.firstOrNull { it.deviceId == hostId } ?: error("PAIRING_DEVICE_CONFLICT")
+            discover(host)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { fail(failure) }
     }
     fun restoreSessionIfAvailable() = scope.launch {
         if (state.value.account != null || state.value.busy) return@launch
@@ -229,6 +259,7 @@ class RemoteRuntime(
         catch (failure: Exception) { fail(failure) }
         finally { mutableState.update { it.copy(busy = false) } }
     }
+    fun dismissConnectionError() { mutableState.update { it.copy(errorCode = null) } }
     fun refreshHosts() = scope.launch { try { refreshHostsInternal() } catch (failure: Exception) { fail(failure) } }
     private suspend fun refreshHostsInternal() { mutableState.update { it.copy(hosts = accountRuntime.listHosts(), errorCode = null) } }
 
@@ -389,6 +420,7 @@ class RemoteRuntime(
         finally { if (repository === repo && modelSequence.get() == sequence) mutableState.update { it.copy(modelBusy = false) } }
     } }
     fun logout() = scope.launch {
+        loginEntryBridge.cancelLocal()
         var failure: Exception? = null
         try { accountRuntime.logout() }
         catch (cancelled: CancellationException) { throw cancelled }

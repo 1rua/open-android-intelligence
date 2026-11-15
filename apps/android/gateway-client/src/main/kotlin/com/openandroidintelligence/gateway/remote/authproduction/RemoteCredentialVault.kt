@@ -102,6 +102,7 @@ class RemoteCredentialVault internal constructor(
         // 以原子替换提交清空，不删除文件；旧角色即使恢复进程也读不到旧密文。
         save(state.copy(records = state.records - scopeKey))
     }
+    fun authorizationEpoch(): Long = locked { load().epoch }
     fun requireEpoch(expected: Long) = locked { check(load().epoch == expected) { "REMOTE_AUTHORIZATION_SUPERSEDED" } }
     fun activeAccount(): RemoteActiveAccount? = locked { if (revocationPending()) null else load().active }
     fun revokeActive(): Long = locked {

@@ -44,7 +44,11 @@ class RemoteAccountRuntime(
     private var pendingConnect: Deferred<RemoteRpcChannel>? = null
     private val peers = ConcurrentHashMap<String, AuthenticatedRemotePeer>()
 
-    suspend fun login(origin: String, email: String, password: String): RemoteLoginResult {
+    suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
+        loginAuthorized(origin) { it.login(email, password) }
+    suspend fun loginAccountToken(origin: String, token: String): RemoteLoginResult =
+        loginAuthorized(origin) { it.accountFromToken(token) }
+    private suspend fun loginAuthorized(origin: String, authorize: suspend (RemoteServerApi) -> RemoteAccountLogin): RemoteLoginResult {
         loginJob?.cancel()
         val operation = currentCoroutineContext()[Job]
         loginJob = operation
@@ -53,7 +57,7 @@ class RemoteAccountRuntime(
                 revokeLocal()
                 val server = apiFactory(origin)
                 val epoch = vault.revokeActive()
-                val login = server.login(email, password)
+                val login = authorize(server)
                 ensureActiveAuthorization(epoch)
                 val clientIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
                 val hostIdentity = RemoteStaticIdentityFactory.generate(RemoteDeviceId(UUID.randomUUID().toString()))
@@ -69,6 +73,43 @@ class RemoteAccountRuntime(
                     startHost(active)
                 }
                 result
+            }
+        } finally { if (loginJob === operation) loginJob = null }
+    }
+    /** 配对只导入手机 Client；不请求上游禁止的账号级注册，也不派生虚拟 Host。 */
+    suspend fun importPairing(value: RemotePairingImport) {
+        loginJob?.cancel()
+        val operation = currentCoroutineContext()[Job]
+        loginJob = operation
+        try {
+            lifecycle.withLock {
+                val server = apiFactory(RemoteServerApi.DEFAULT_ORIGIN)
+                val clientScope = RemoteIdentityScope(server.origin, value.accountId, RemoteRole.CLIENT)
+                val active = vault.activeAccount()
+                // 保存成功后的进程退出可能留下临时配对票据。恢复时保留已续期凭据，不重复覆盖。
+                if (active?.origin == server.origin && active.accountId == value.accountId) {
+                    val existing = store.load(clientScope)
+                    check(existing?.identity?.sameIdentity(value.credential.identity) == true) { "PAIRING_DEVICE_CONFLICT" }
+                    value.credential.peers.forEach { expected ->
+                        check(existing.peers.any { it.peerDeviceId == expected.peerDeviceId && it.matches(expected.publicKey) }) { "REMOTE_PEER_PIN_MISMATCH" }
+                    }
+                    api = server; mutableAccount.value = active; mutableState.value = RemoteAccountConnectionState.READY
+                    return@withLock
+                }
+                vault.requireEpoch(value.epoch)
+                revokeLocal()
+                val epoch = vault.authorizationEpoch()
+                vault.credentialTransaction {
+                    ensureActiveAuthorization(epoch)
+                    // 配对授权不能复用旧的账号级 Host 记录；恢复后仍只具有本次 Client 权限。
+                    store.clear(RemoteIdentityScope(server.origin, value.accountId, RemoteRole.HOST))
+                    store.save(clientScope, value.credential)
+                    currentCoroutineContext().ensureActive()
+                    ensureActiveAuthorization(epoch)
+                    val saved = vault.activate(server.origin, value.accountId, epoch)
+                    api = server; mutableAccount.value = saved; mutableState.value = RemoteAccountConnectionState.READY
+                    mutableHostState.value = RemoteHostConnectionState.STOPPED
+                }
             }
         } finally { if (loginJob === operation) loginJob = null }
     }
