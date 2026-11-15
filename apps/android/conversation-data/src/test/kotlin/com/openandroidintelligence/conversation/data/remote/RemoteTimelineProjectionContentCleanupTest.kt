@@ -135,4 +135,79 @@ class RemoteTimelineProjectionContentCleanupTest {
         } catch (failure: RemoteSessionException) { assertEquals("REMOTE_ASSISTANT_STREAM_GAP", failure.code) }
     }
 
+
+    @Test fun `Codex元消息身份阻止后续无标记正文思考完成与历史重新出现`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("method" to "turn/started", "params" to obj("threadId" to native, "turn" to obj("id" to "turn"))))
+        val hidden = obj("id" to "hidden", "type" to "agentMessage", "isMeta" to true)
+        val emitted = mutableListOf<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent>()
+        emitted += projection.accept(obj("method" to "item/started", "params" to obj("threadId" to native, "item" to hidden)))
+        emitted += projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+            "itemId" to "hidden", "delta" to "内部正文")))
+        emitted += projection.accept(obj("method" to "item/reasoning/textDelta", "params" to obj("threadId" to native,
+            "itemId" to "hidden", "delta" to "内部思考")))
+        emitted += projection.accept(obj("method" to "item/completed", "params" to obj("threadId" to native,
+            "item" to obj("id" to "hidden", "type" to "agentMessage", "text" to "内部终稿"))))
+        emitted += projection.accept(event(1, "assistant/message", obj("message" to message("hidden", "内部历史"))), history = true)
+        projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native,
+            "itemId" to "visible", "delta" to "正常回答")))
+        emitted += projection.accept(obj("method" to "turn/completed", "params" to obj("threadId" to native,
+            "turn" to obj("id" to "turn", "status" to "completed"))))
+        assertEquals(setOf("visible"), projection.rows.keys)
+        assertEquals("正常回答", body(projection))
+        assertTrue("内部消息不能进入镜像或通知使用的正文事件", emitted.filterIsInstance<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert>()
+            .none { it.message.id == "hidden" })
+    }
+
+    @Test fun `Harness元内容块记住索引且不影响同尝试的正常块和失败工具事实`() {
+        val projection = RemoteTimelineProjection(local)
+        val emitted = mutableListOf<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent>()
+        fun chunk(value: JsonValue) { emitted += projection.accept(obj("type" to "assistant-stream", "frame" to obj(
+            "type" to "chunk", "attemptId" to "attempt", "chunk" to value))) }
+        projection.accept(event(1, "turn/start", obj("turn" to 1)))
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "attempt", "turn" to 1)))
+        chunk(obj("type" to "block-start", "index" to 0, "blockType" to "text", "isMeta" to true))
+        chunk(obj("type" to "text-delta", "index" to 0, "text" to "内部正文"))
+        chunk(obj("type" to "reasoning-delta", "index" to 0, "text" to "内部思考"))
+        chunk(obj("type" to "block-end", "index" to 0))
+        chunk(obj("type" to "block-start", "index" to 1, "blockType" to "text"))
+        chunk(obj("type" to "text-delta", "index" to 1, "text" to "正常回答"))
+        val tools = projection.accept(event(2, "tool/result", obj("id" to "tool", "name" to "测试工具", "isError" to true)))
+        emitted += projection.accept(event(3, "turn/end", obj("turn" to 1, "reason" to obj("kind" to "error"))))
+        assertEquals("正常回答", body(projection))
+        assertTrue(projection.rows.values.all { it.reasoning.isEmpty() })
+        assertEquals(GenerationState.FAILED, projection.generationState)
+        assertTrue(tools.any { it is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ExecutionStepsUpdated })
+        assertTrue("隐藏内容不能先泄漏到任一正文事件", emitted.filterIsInstance<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert>()
+            .all { event -> event.message.parts.filterIsInstance<MessagePart.Text>().none { it.value.contains("内部") } && event.message.reasoning.none { it.text.contains("内部") } })
+    }
+
+
+    @Test fun `Harness隐藏尝试在增量结束与快照追赶后均不能复活且不跨会话实例`() {
+        listOf(false, true).forEach { fromSnapshot ->
+            val projection = RemoteTimelineProjection(local)
+            val emitted = mutableListOf<com.openandroidintelligence.conversation.ports.VerifiedConversationEvent>()
+            fun active(meta: Boolean) = obj("type" to "snapshot", "cursor" to 0, "records" to emptyList<Any>(),
+                "assistantStream" to obj("activeAttempt" to obj("attemptId" to "hidden-attempt", "turn" to 1,
+                    "isMeta" to meta, "stream" to emptyList<Any>())))
+            if (fromSnapshot) emitted += projection.accept(active(true))
+            else emitted += projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start",
+                "attemptId" to "hidden-attempt", "turn" to 1, "isMeta" to true)))
+            emitted += projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk",
+                "attemptId" to "hidden-attempt", "chunk" to obj("type" to "text-delta", "index" to 0, "text" to "内部正文"))))
+            emitted += projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "end", "attemptId" to "hidden-attempt")))
+            emitted += projection.accept(active(false))
+            emitted += projection.accept(obj("type" to "snapshot", "cursor" to 0, "records" to emptyList<Any>(),
+                "assistantStream" to obj("entries" to listOf(obj("attemptId" to "hidden-attempt",
+                    "content" to listOf(obj("type" to "text", "text" to "内部追赶")))))))
+            assertTrue("整次隐藏尝试不能被无标记增量或快照恢复", projection.rows.isEmpty())
+            assertTrue(emitted.none { it is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert })
+            val nextSession = RemoteTimelineProjection(local)
+            nextSession.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "hidden-attempt")))
+            nextSession.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "hidden-attempt",
+                "chunk" to obj("type" to "text-delta", "index" to 0, "text" to "新的正常回答"))))
+            assertEquals("新的正常回答", body(nextSession))
+        }
+    }
+
 }
