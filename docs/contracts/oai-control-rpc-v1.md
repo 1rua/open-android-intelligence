@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-13
-implementation_status: not_started
+implementation_status: in_progress
 acceptance_status: pending
 issue: 185
 upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
@@ -11,7 +11,8 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 本契约是[架构重构规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md)的目标接口，
 供原生 DSH 工具、电脑本机 Bridge、Stdio MCP 和 Android 实现共用。
-`accepted` 表示设计已经确认；运行时实现尚未开始，互操作、权限门禁和真机验收均待完成。
+`accepted` 表示设计已经确认；仓内已有运行时实现，最终同提交互操作、权限门禁和真机验收仍待完成。
+当前实现与验收证据见[验收索引](../reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)。
 上游接口事实与证据见[固定基线](../architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)。
 
 ## 1. 权威与会话边界
