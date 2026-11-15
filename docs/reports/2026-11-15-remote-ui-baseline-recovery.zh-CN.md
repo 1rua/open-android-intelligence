@@ -18,7 +18,7 @@
 | 全局提示 | 提示缺少关闭操作，遮挡输入坞；麦克风权限拒绝后缺少系统设置动作 | 恢复可关闭 Snackbar、输入坞与手势条避让、原“前往设置”应用权限页动作 |
 | 通知、助手交接、分享附件 | 成功打开会话仍被设置页遮挡 | 仅在真实消费成功后关闭设置；失败保持待消费状态 |
 | 连接与账号页 | 原分组卡片被状态文本/裸按钮替代，退出不确认，诊断路由重复主页 | 恢复原分组卡片/设置行/独立诊断页/退出确认；只展示真实 Remote 账号、origin、Client、Virtual Host、Host 与工作区状态；不将离线账号当已建立安全连接 |
-| 工作台离线与错误 | 本地只读镜像仍存在，但离线横幅、重连、可关闭重试提示未装配 | 从真实控制器 `isOnline` 呈现原离线说明，重连当前持久工作区；错误码转换原可读指引，不直接展示异常正文/地址 |
+| 工作台离线与错误 | 本地只读镜像仍存在，但离线横幅、重连、可关闭重试提示未装配 | 从真实控制器 `isOnline` 呈现原离线说明，重连当前持久工作区；错误码转换原可读指引，不直接展示异常正文/地址；未知错误完整复用原 `CONNECTION_FAILURE_FALLBACK`，仅将 Gateway 替换为 Remote |
 
 ## 全部界面差异归属
 
@@ -27,7 +27,7 @@
 | 文件或完整子组 | 源码结论 |
 | --- | --- |
 | `mobile/MainActivity.kt`、`RemoteWorkbenchRoot.kt`、`WorkbenchSettingsHost.kt` | Activity 改为 Remote 装配；本轮恢复上述根容器/转场/设置与导航。工作台设置呈现仍取宿主宽度 |
-| `mobile/GatewayLoginScreen.kt` → `RemoteLoginScreen.kt`、`RemoteConnectionFeedback.kt` | 恢复旧视觉与表单行为，只替换已授权登录入口；认证桥由独立 Remote 认证实现接入 |
+| `mobile/GatewayLoginScreen.kt` → `RemoteLoginScreen.kt`、`RemoteConnectionFeedback.kt` | 恢复旧视觉与表单行为，只替换已授权登录入口；认证桥由独立 Remote 认证实现接入。状态点须同时有在线工作台、真实已连接 Client、非切换状态，保存的端点或残留连接状态不计为已连接 |
 | `mobile/PlatformSettingsBottomSheet.kt`、`PlatformSettingsScreen.kt`、`SettingsScreen.kt`、`settings/SettingsNavHost.kt` | 原容器和页面动画未变，数据注入改为本机设置/Remote；本轮恢复正确调用容器和独立诊断路由 |
 | `mobile/SettingsViewModel.kt`、`SettingsCapabilityUi.kt` | 设置状态接线/旧协议引用退役；通用设置行、形状反馈、操作横幅本体未变 |
 | `mobile/settings/connection/ConnectionSettingsScreen.kt` → `RemoteConnectionSettingsScreen.kt` | 旧协议数据模型退出；恢复原分组视觉、确认与返回层级，以真实 Remote 数据替换 |
@@ -52,7 +52,8 @@
 
 ## 验证状态
 
-- **VERIFIED（源码）**：固定基线差异盘点、旧活跃调用链、既定退役边界与 `git diff --check`。
-- **UNVERIFIED（待集成运行）**：`RemoteLoginPresentationTest` 覆盖默认官方入口、实际认证回调、卡切换不认证/清密码、眼睛开关、校验与 Done、忙碌禁用、真实“前往设置”往返、可读错误/重试、离线重连和浅深主题 View 绘制。渲染 PNG 仅写构建报告目录，不入库。
+- **VERIFIED（仅源码静态核对）**：固定基线差异盘点、旧活跃调用链、既定退役边界与 `git diff --check`。本轮独立评审指出的连接状态误判与兜底文案缩短已在源码修正；尚未运行任何新增或既有测试，不能据此标为行为验证通过。
+- **UNVERIFIED（待集成运行）**：`RemoteLoginPresentationTest` 的 9 项测试源码包括默认官方入口、认证动作回调、卡切换不认证/清密码、眼睛开关、校验与 Done、忙碌禁用、真实“前往设置”往返、完整原文错误/重试、离线重连和浅深主题 View 绘制；这 9 项不覆盖全部 Root 行为。渲染 PNG 仅写构建报告目录，不入库。
+- **UNVERIFIED（根页面交互待运行）**：新增 `RemoteRootInteractionTest` 的 5 项源码，使用生产根页面提取的导航副作用、原 `PlatformSettingsDrawer`、`ReceivePendingConversationShares`、实际 `RemoteConnectionSettingsScreen` 验证：缺少控制器/离线/切换/残留 Client 时状态点未连接；麦克风拒绝提示动作打开本应用系统权限页；通知与助手消费失败保留抽屉和待处理请求、成功后关闭抽屉；附件等历史完成才导入并关闭抽屉一次；退出取消保留账号且确认后才调用真实 Runtime 退出。网络消费者在测试边界可控，不能将这些用例解释为真实通知/助手跨协议验收。
 - **UNVERIFIED（待同一提交回归）**：既有设置导航/响应式宿主、设置行形变、工作台布局、主题对比度以及认证桥测试；应由统一验证任务记录实际结果后更新本节。
 - **UNVERIFIED（真实环境）**：官方 OAuth/扫码登录、动态壁纸取色、真实设备页面和物理触觉。Robolectric 或静态复用不能证明这些验收。

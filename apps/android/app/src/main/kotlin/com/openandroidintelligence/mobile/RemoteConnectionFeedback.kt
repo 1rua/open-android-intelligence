@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.conversation.components.CONNECTION_FAILURE_FALLBACK
 import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
@@ -22,7 +23,7 @@ import com.openandroidintelligence.ui.resources.R as UiR
 /** 复用原有中文错误指引，仅替换已退役产品名；异常原文和服务地址不直接展示。 */
 @Composable
 internal fun remoteConnectionFailureText(code: String): String =
-    readableFailure(code, stringResource(UiR.string.conn_phase_failed)).replace("Gateway", "Remote")
+    readableFailure(code, CONNECTION_FAILURE_FALLBACK).replace("Gateway", "Remote")
 
 /** 登录阶段继续使用原来的淡化、错误色面与可重试入口。 */
 @Composable

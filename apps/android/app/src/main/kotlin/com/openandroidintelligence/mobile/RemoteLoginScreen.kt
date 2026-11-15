@@ -122,7 +122,7 @@ internal fun RemoteLoginScreen(
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(Dimensions.SpaceXLarge))
-            SignalStitch(Modifier.height(Dimensions.BrandMark))
+            SignalStitch(modifier = Modifier.height(Dimensions.BrandMark))
             Spacer(Modifier.height(Dimensions.SpaceCompact))
             Text(stringResource(UiR.string.remote_login_brand), style = AppTextStyles.BrandWordmark,
                 color = MaterialTheme.colorScheme.onSurface)

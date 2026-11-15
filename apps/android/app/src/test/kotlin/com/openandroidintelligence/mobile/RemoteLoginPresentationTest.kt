@@ -115,7 +115,7 @@ class RemoteLoginPresentationTest {
                 RemoteLoginPhase(false, "UNKNOWN_FAILURE:https://secret.example/token", { retries++ })
             }
         }
-        compose.onNodeWithText("连接失败，请检查服务器地址、网络及账号").assertIsDisplayed()
+        compose.onNodeWithText("无法连接 Remote。请检查地址与网络，并确认 App 与插件版本一致后重试；若持续失败，请查看 Remote 服务与日志。").assertIsDisplayed()
         compose.onNodeWithText("UNKNOWN_FAILURE:https://secret.example/token").assertDoesNotExist()
         compose.onNodeWithText("重试").performClick()
         assertEquals(1, retries)

@@ -2,7 +2,6 @@ package com.openandroidintelligence.mobile
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -47,6 +46,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val appearance by app.appearancePreferences.settings.collectAsState()
     val dark = when (appearance.theme) { ThemePreference.LIGHT -> false; ThemePreference.DARK -> true; ThemePreference.SYSTEM -> isSystemInDarkTheme() }
     val controller by runtime.controller.collectAsState()
+    val controllerState = controller?.state?.collectAsState()?.value
+    val clientConnection by runtime.accountRuntime.state.collectAsState()
     val connection by runtime.state.collectAsState()
     val onboarding by app.onboardingPreferences.state.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
@@ -66,15 +67,6 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         }
     }
     val activity = androidx.compose.ui.platform.LocalContext.current as androidx.activity.ComponentActivity
-    fun noticeWithSettingsAction(text: String) {
-        uiScope.launch {
-            if (snackbar.showSnackbar(text, actionLabel = app.getString(UiR.string.common_action_go_to_settings),
-                    withDismissAction = true) == SnackbarResult.ActionPerformed) {
-                activity.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.fromParts("package", activity.packageName, null)))
-            }
-        }
-    }
     val requestScreenCaptureAuthorization = com.openandroidintelligence.mobile.screen.rememberScreenCaptureAuthorization(app, activity, ::notice)
     val pluginRevision by app.pluginHost.revision.collectAsState()
     val nativeUi = remember(pluginRevision) { app.pluginHost.nativeUiProvider() }
@@ -189,7 +181,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         if (granted && target != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
             beginRecording(target)
         } else if (!granted) {
-            noticeWithSettingsAction(app.getString(UiR.string.perm_audio_required))
+            uiScope.launch { showRemoteAudioPermissionDenied(activity, snackbar) }
         }
     }
     val startVoiceInput: () -> Unit = {
@@ -222,26 +214,13 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
         onDispose { lifecycle.removeObserver(observer); permissionTarget = null; cancelRecording() }
     }
     LaunchedEffect(runtime) { runtime.restoreSessionIfAvailable() }
-    val shared by sharedAttachments.pending.collectAsState()
-    LaunchedEffect(controller, shared) {
-        controller?.let { active -> active.state.collect {
-            if (sharedAttachments.deliverTo(active, picks.receive)) settings = false
-        } }
-    }
-    LaunchedEffect(runtime, connection.account, pendingReply.value) {
-        pendingReply.value?.let { if (runtime.openReplyNotification(it)) {
-            settings = false
-            pendingReply.value = null
-            activity.intent.data = null
-        } }
-    }
-    LaunchedEffect(controller, pendingHandoff.value) {
-        pendingHandoff.value?.let { if (runtime.consumeAssistantHandoff(it)) {
-            settings = false
-            pendingHandoff.value = null
-            activity.intent.data = null
-        } }
-    }
+    ReceivePendingConversationShares(sharedAttachments, controller, picks.receive) { settings = false }
+    RemotePendingConversationNavigation(
+        connection.account, controller, pendingReply, pendingHandoff,
+        openReply = runtime::openReplyNotification,
+        consumeHandoff = runtime::consumeAssistantHandoff,
+        onOpened = { settings = false; activity.intent.data = null },
+    )
     OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = appearance.dynamicColor, palette = appearance.palette,
         reduceMotion = appearance.reduceMotion, streamingHapticFeedback = appearance.streamingHapticFeedback) {
         val reduceMotion = LocalMotionPolicy.current.reduceMotion
@@ -285,7 +264,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                         if (!onWorkbench || current == null) {
                             RemoteLoginSettingsHost(
                                 busy = connection.busy || loginEntryState.busy,
-                                connected = connection.selected != null,
+                                connected = remoteWorkbenchConnected(controllerState, clientConnection,
+                                    connection.busy || loginEntryState.busy),
                                 signedIn = connection.account != null,
                                 initialOrigin = runtime.loginOrigin(),
                                 error = loginEntryState.errorCode ?: connection.errorCode,
