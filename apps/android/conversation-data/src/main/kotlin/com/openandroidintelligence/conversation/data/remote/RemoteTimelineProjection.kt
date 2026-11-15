@@ -389,7 +389,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (content.text("type") != "text") return emptyList()
                         if (internalMessage(params) || internalMessage(update) || internalMessage(content)) {
                             if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
-                            val hidden = hide(acpMessageId, source)
+                            val currentId = requireNotNull(acpMessageId)
+                            val hidden = if (currentId in rows) emptyList() else hide(currentId, source)
                             resetAcpTurnContent()
                             return hidden
                         }
