@@ -102,9 +102,6 @@ SettingsShortcutsTest
 SmsBackgroundConsentTest
 
 [conversations]
-EncryptedSteeringPresentationTest
-RemoteContentMirrorCleanupTest
-RemoteHarnessContentIntegrationTest
 EncryptedRemoteAttachmentRecoveryTest
 RemoteAttachmentMessageRecoveryTest
 RemoteHistoryMediaCacheTest

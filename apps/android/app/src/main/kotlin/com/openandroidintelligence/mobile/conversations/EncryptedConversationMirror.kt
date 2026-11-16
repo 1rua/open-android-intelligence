@@ -195,8 +195,6 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
         "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
-        "historySequence" to m.historySequence,
-        "historyPosition" to m.historyPosition?.let { mapOf("pageId" to it.pageId,"index" to it.index) },
         "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
@@ -206,10 +204,6 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
         JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
         localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
-        historySequence=JsonFields.long(o,"historySequence"),
-        historyPosition=JsonFields.obj(JsonFields.field(o,"historyPosition"))?.let { position ->
-            HistoryMessagePosition(str(position,"pageId"),JsonFields.int(position,"index") ?: error("MIRROR_CORRUPTED"))
-        },
         reasoning=JsonFields.objects(o,"reasoning").map { block -> MessageReasoning(str(block,"id"), str(block,"text"),
             JsonFields.int(block,"bodyOffset") ?: error("MIRROR_CORRUPTED"), JsonFields.bool(block,"complete") ?: error("MIRROR_CORRUPTED")) },
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
@@ -330,7 +324,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         latestRows.forEach { row -> row.contentRevision?.let { revision -> revisions[row.id]=maxOf(revisions[row.id] ?: -1L,revision) } }
         sanitize(checkpoint.copy(messages=rows.values.filterNot { row ->
             row.isDeleted || (row.conversationId?.value ?: checkpoint.threadId)?.let { isTombstoned(it,row.id) } == true
-        }.mapNotNull(ConversationContentSanitizer::message),revisions=revisions,submission=checkpoint.submission?.takeUnless { submission -> submission.conversationId?.let { id ->
+        },revisions=revisions,submission=checkpoint.submission?.takeUnless { submission -> submission.conversationId?.let { id ->
             loadSendAtoms(id).any { it.clientMessageId.value == submission.clientMessageId && it.isDeleted }
         } == true },batches=checkpoint.batches.map { b -> b.copy(messages=b.messages.map { cleanOutgoing(b.conversationId,it) }) }))
     }
@@ -344,9 +338,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "batchId" to a.batchId,"submissionState" to a.submissionState.name,"status" to a.status?.wireValue,
         "statusRevision" to a.statusRevision,"errorCode" to a.errorCode?.wireValue,"submissionErrorCode" to a.submissionErrorCode,
         "contentRevision" to a.contentRevision,"tombstoneRevision" to a.tombstoneRevision,"snapshotDeleted" to a.snapshotDeleted,
-        "delivery" to a.delivery.wireValue,
-        "steeringEcho" to a.steeringEcho?.let { echo -> mapOf("seenMessageIds" to echo.seenMessageIds.toList(),
-            "historySequence" to echo.historySequence,"messageId" to echo.messageId,"generationId" to echo.generationId) })
+        "delivery" to a.delivery.wireValue)
 
     private fun decodeSendAtom(o: JsonValue.JObject) = LocalSendAtom(ConversationId(str(o,"conversationId")),
         ClientMessageId(str(o,"clientMessageId")),decodeParts(o),JsonFields.long(o,"timestamp") ?: 0L,
@@ -356,11 +348,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.long(o,"contentRevision") ?: -1L,JsonFields.long(o,"tombstoneRevision"),JsonFields.bool(o,"snapshotDeleted") == true,
         JsonFields.string(o,"delivery")?.let { wire ->
             MessageDeliveryMode.entries.firstOrNull { it.wireValue == wire } ?: error("MIRROR_CORRUPTED")
-        } ?: MessageDeliveryMode.NORMAL,
-        steeringEcho=JsonFields.obj(JsonFields.field(o,"steeringEcho"))?.let { echo ->
-            SteeringEchoPresentation(JsonFields.strings(echo,"seenMessageIds").toSet(),JsonFields.long(echo,"historySequence"),
-                JsonFields.string(echo,"messageId"),JsonFields.string(echo,"generationId"))
-        })
+        } ?: MessageDeliveryMode.NORMAL)
 
     private fun decodeStatus(value: String?) = value?.let { text -> AgentMessageStatus.entries.firstOrNull { it.wireValue == text }
         ?: error("MIRROR_CORRUPTED") }
@@ -381,18 +369,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         require(atoms.all { it.conversationId.value == conversationId }) { "MESSAGE_CONVERSATION_CONFLICT" }
         require(atoms.map { it.clientMessageId }.distinct().size == atoms.size) { "MESSAGE_ID_CONFLICT" }
         val merged=loadSendAtoms(conversationId).associateByTo(linkedMapOf()) { it.clientMessageId }
-        atoms.forEach { incoming ->
-            val existing=merged[incoming.clientMessageId]
-            // 首次写入先固定镜像已见边界；真正调用远端前必须完成这次可靠写盘。
-            val echo=incoming.steeringEcho
-            val prepared=if (existing == null && echo != null) {
-                val known=timeline(conversationId)?.messages.orEmpty()
-                incoming.copy(steeringEcho=echo.copy(
-                    seenMessageIds=echo.seenMessageIds + known.map { it.id },
-                    historySequence=(known.mapNotNull { it.historySequence } + listOfNotNull(echo.historySequence)).maxOrNull()))
-            } else incoming
-            merged[incoming.clientMessageId]=existing?.let { mergeAtom(it,prepared) } ?: prepared
-        }
+        atoms.forEach { incoming -> merged[incoming.clientMessageId]=merged[incoming.clientMessageId]?.let { mergeAtom(it,incoming) } ?: incoming }
         merged.replaceAll { _,atom -> withDeletionBarrier(conversationId,atom) }
         val serverIds=merged.values.mapNotNull { it.messageId }
         check(serverIds.all { it.isNotBlank() } && serverIds.distinct().size == serverIds.size) { "MESSAGE_ID_CONFLICT" }
@@ -418,11 +395,6 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val submission=if (existing.submissionState == LocalSubmissionState.ACCEPTED) LocalSubmissionState.ACCEPTED else incoming.submissionState
         return incoming.copy(
             messageId=messageId,batchId=incoming.batchId ?: existing.batchId,
-            // 正文展示对应独立且只确认一次；迟到 ACK 不得丢掉已保存的回并结果。
-            steeringEcho=existing.steeringEcho?.let { echo -> echo.copy(
-                messageId=echo.messageId ?: incoming.steeringEcho?.messageId,
-                generationId=echo.generationId ?: incoming.steeringEcho?.generationId,
-            ) } ?: incoming.steeringEcho,
             timestamp=existing.timestamp.takeIf { it > 0L } ?: incoming.timestamp,
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,
@@ -537,9 +509,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         }
     }
     private fun withDeletionBarrier(conversationId: String,atom: LocalSendAtom): LocalSendAtom {
-        val content=listOfNotNull(atom.messageId,atom.steeringEcho?.messageId)
-            .map { contentRevision(conversationId,it) }
-            .maxWithOrNull(compareBy({ it.snapshotDeleted },{ it.tombstoned },{ it.revision })) ?: return atom
+        val messageId=atom.messageId ?: return atom
+        val content=contentRevision(conversationId,messageId)
         return if (content.snapshotDeleted || atom.snapshotDeleted) atom.copy(parts=emptyList(),snapshotDeleted=true)
         else if (content.tombstoned && content.revision >= atom.contentRevision) atom.copy(parts=emptyList(),
             contentRevision=content.revision,tombstoneRevision=content.revision) else atom
@@ -646,8 +617,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val row=deletedRows[messageId]
             check(row?.conversationId?.value?.let { it == conversationId } != false) { "MESSAGE_CONVERSATION_CONFLICT" }
             val atoms=loadSendAtoms(conversationId)
-            val existing=atoms.firstOrNull { it.messageId == messageId || it.steeringEcho?.messageId == messageId ||
-                (row?.clientMessageId != null && it.clientMessageId == row.clientMessageId) }
+            val existing=atoms.firstOrNull { it.messageId == messageId || (row?.clientMessageId != null && it.clientMessageId == row.clientMessageId) }
             check(existing == null || row?.clientMessageId == null || existing.clientMessageId == row.clientMessageId) { "MESSAGE_ID_CONFLICT" }
             val baseline=timeline(conversationId)
             val legacy=legacySent(conversationId)
@@ -661,10 +631,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             enqueueMediaTransition(conversationId,messageId,null,content.deletedAttachmentIds + mediaIds,true)
             val clientId=existing?.clientMessageId ?: row?.clientMessageId
             if ((existing != null || row?.sender == "user") && clientId != null) {
-                val original=existing ?: LocalSendAtom(ConversationId(conversationId),clientId,emptyList(),row?.timestamp ?: 0L)
-                val presentedOnly=existing != null && existing.steeringEcho?.messageId == messageId && existing.messageId != messageId && row?.clientMessageId == null
-                val deleted=(if (presentedOnly) original else original.identified(messageId,row?.batchId ?: existing?.batchId))
-                    .copy(parts=emptyList(),snapshotDeleted=true)
+                val deleted=(existing ?: LocalSendAtom(ConversationId(conversationId),clientId,emptyList(),row?.timestamp ?: 0L))
+                    .identified(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
                 saveSendAtoms(conversationId,atoms.filterNot { it.clientMessageId == clientId } + deleted)
             }
             if (legacy.any { it.id == messageId }) saveLegacySent(conversationId,legacy.filterNot { it.id == messageId })
@@ -682,19 +650,17 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val rows=legacySent(conversationId).associateByTo(linkedMapOf()) { it.id }
         canonical.messages.forEach { rows[it.id]=it }
         val visible=rows.values.filterNot { isTombstoned(conversationId,it.id) }.map { withDurableStatus(conversationId,it) }
-        canonical.copy(messages=mergeLocalSendAtoms(visible,loadSendAtoms(conversationId).map { withDeletionBarrier(conversationId,it) })
-            .mapNotNull(ConversationContentSanitizer::message),
+        canonical.copy(messages=mergeLocalSendAtoms(visible,loadSendAtoms(conversationId).map { withDeletionBarrier(conversationId,it) }),
             deletedMessageIds=canonical.deletedMessageIds + canonical.messages.filter { it.isDeleted || contentRevision(conversationId,it.id).snapshotDeleted }.map { it.id })
     }
 
     /** 只比较明确单条正文版本；普通空页和全页摘要不能改写原稿。 */
     private fun reconcileSnapshotContent(id: String,page: TimelinePage): TimelinePage {
         val baseline=timeline(id)?.messages.orEmpty().associateBy { it.id }
-        return page.copy(messages=page.messages.map { incoming ->
-            val row=incoming.preservingHistoryPosition(baseline[incoming.id])
+        return page.copy(messages=page.messages.map { row ->
             val revision=row.contentRevision ?: return@map if (row.isDeleted) row else baseline[row.id]?.takeIf {
                 (it.contentRevision ?: -1L) >= 0L && it.state != "STREAMING"
-            }?.copy(historyPosition=row.historyPosition) ?: row
+            } ?: row
             if (row.isDeleted || revision < 0L) return@map row
             check(row.conversationId?.value?.let { it == id } != false) { "MESSAGE_CONVERSATION_CONFLICT" }
             val content=contentRevision(id,row.id)
@@ -703,8 +669,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val atom=atoms.firstOrNull { row.sender == "user" && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
             val known=maxOf(content.revision,atom?.contentRevision ?: -1L)
             if (revision < known || (revision == known && content.tombstoned)) {
-                return@map baseline[row.id]?.copy(historyPosition=row.historyPosition)
-                    ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
+                return@map baseline[row.id] ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
             }
             if (revision > known) {
                 if (atom != null) {
@@ -871,17 +836,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         canonical.messages.forEach { rows[it.id] = it }
         writeTimeline(id,canonical.copy(messages=rows.values.filterNot { it.isDeleted || isTombstoned(id,it.id) }.sortedBy { it.timestamp },
             deletedMessageIds=canonical.deletedMessageIds + previous?.deletedMessageIds.orEmpty() + canonical.messages.filter { it.isDeleted }.map { it.id }))
-        reconcileSteeringPresentation(id)
     }
-    @Synchronized fun timeline(id: String): TimelinePage? = if (isConversationDeleted(id)) null else read("timeline:$id")?.let { TimelinePage(JsonFields.objects(it,"messages").map(::decodeMessage).mapNotNull(ConversationContentSanitizer::message),null,
+    @Synchronized fun timeline(id: String): TimelinePage? = if (isConversationDeleted(id)) null else read("timeline:$id")?.let { TimelinePage(JsonFields.objects(it,"messages").map(::decodeMessage),null,
         JsonFields.long(it,"revision"),JsonFields.strings(it,"deletedMessageIds").toSet()) }
-    /** 只保存 UI 一对一对应，原始 timeline 与发送受理身份保持各自来源。 */
-    private fun reconcileSteeringPresentation(id: String) {
-        val atoms=loadSendAtoms(id)
-        if (atoms.none { it.steeringEcho != null }) return
-        val reconciled=reconcileSteeringEchoPresentation(timeline(id)?.messages.orEmpty(),atoms)
-        if (reconciled != atoms) saveSendAtoms(id,reconciled)
-    }
     @Synchronized fun apply(event: VerifiedConversationEvent): Unit = documents.transaction {
         if (eventConversationId(event)?.let(::isConversationDeleted) == true && event !is VerifiedConversationEvent.ConversationsChanged) return@transaction
         when(event) {
@@ -925,16 +882,14 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 enqueueMediaTransition(id,event.message.id,event.revision,previousMedia - currentMedia.toSet(),true)
                 enqueueMediaTransition(id,event.message.id,event.revision,currentMedia,false)
                 writeTimeline(id,old.copy(messages = (old.messages.filterNot { it.id == event.message.id } +
-                    withDurableStatus(id,event.message.copy(contentRevision=event.revision)
-                        .preservingHistoryPosition(old.messages.firstOrNull { it.id == event.message.id }))).sortedBy { it.timestamp }))
+                    withDurableStatus(id,event.message.copy(contentRevision=event.revision))).sortedBy { it.timestamp }))
                 saveContentRevision(id,event.message.id,event.revision,false)
-                reconcileSteeringPresentation(id)
             }
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { id ->
                 val content=contentRevision(id,event.messageId)
                 if (event.revision < content.revision) return@let
                 val atoms=loadSendAtoms(id)
-                if (event.revision < (atoms.firstOrNull { it.messageId == event.messageId || it.steeringEcho?.messageId == event.messageId }?.contentRevision ?: -1L)) return@let
+                if (event.revision < (atoms.firstOrNull { it.messageId == event.messageId }?.contentRevision ?: -1L)) return@let
                 val baseline=timeline(id)
                 val legacy=legacySent(id)
                 val mediaIds=(baseline?.messages.orEmpty().filter { it.id == event.messageId }.flatMap { it.parts } +
@@ -944,8 +899,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 // 删除屏障与附件身份先落盘，后续正文清理失败时仍可按原事件重放。
                 saveContentRevision(id,event.messageId,event.revision,true,(content.deletedAttachmentIds + mediaIds).distinct())
                 enqueueMediaTransition(id,event.messageId,event.revision,content.deletedAttachmentIds + mediaIds,true)
-                if (atoms.any { it.messageId == event.messageId || it.steeringEcho?.messageId == event.messageId }) saveSendAtoms(id,atoms.map {
-                    if (it.messageId == event.messageId || it.steeringEcho?.messageId == event.messageId) it.copy(parts=emptyList(),contentRevision=event.revision,tombstoneRevision=event.revision) else it
+                if (atoms.any { it.messageId == event.messageId }) saveSendAtoms(id,atoms.map {
+                    if (it.messageId == event.messageId) it.copy(parts=emptyList(),contentRevision=event.revision,tombstoneRevision=event.revision) else it
                 })
                 if (legacy.any { it.id == event.messageId }) saveLegacySent(id,legacy.filterNot { it.id == event.messageId })
                 baseline?.let { page -> saveTimeline(id,page.copy(messages=page.messages.filterNot { it.id == event.messageId })) }

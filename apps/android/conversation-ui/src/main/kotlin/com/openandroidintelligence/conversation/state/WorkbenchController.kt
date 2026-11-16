@@ -17,8 +17,6 @@ import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
-import com.openandroidintelligence.conversation.model.reconcileSteeringEchoPresentation
-import com.openandroidintelligence.conversation.model.SteeringEchoPresentation
 import com.openandroidintelligence.conversation.model.OriginalImageState
 import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
@@ -57,7 +55,6 @@ import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.ports.completeTimeline
-import com.openandroidintelligence.conversation.ports.preservingHistoryPosition
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -541,15 +538,6 @@ class WorkbenchController(
         latest.forEach(activeWork::atomChanged)
     }
 
-    /** 界面正文对应单独保存，不经消息受理入口升级身份。 */
-    private suspend fun reconcileSteeringPresentation(threadId: String, rows: List<TimelineMessage>) = sendAtomsMutex.withLock {
-        val existing=loadSendAtomsOnIo(threadId)
-        val reconciled=reconcileSteeringEchoPresentation(rows,existing)
-        if (reconciled != existing) saveAtoms(threadId,reconciled)
-        val latest=if (persistence != null) loadSendAtomsOnIo(threadId) else reconciled
-        sendAtomsByThread[threadId]=latest.associateByTo(linkedMapOf()) { it.clientMessageId.value }
-    }
-
     /** 每次真实重发前消费旧的未发送许可；崩溃恢复只能查询本次结果，不能沿用上次许可。 */
     private suspend fun persistDispatchBoundary(threadId: String, clients: List<ClientMessageId>) {
         sendAtomsMutex.withLock {
@@ -702,10 +690,9 @@ class WorkbenchController(
                             contentRevision = event.revision, tombstoneRevision = null)
                     }
                 } }
-                if (event.message.sender == "user") reconcileSteeringPresentation(threadId,listOf(event.message))
             }
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { threadId ->
-                val atom = loadSendAtomsOnIo(threadId).firstOrNull { it.messageId == event.messageId || it.steeringEcho?.messageId == event.messageId }
+                val atom = loadSendAtomsOnIo(threadId).firstOrNull { it.messageId == event.messageId }
                 atom?.let { known -> changeSendAtom(threadId, known.clientMessageId.value) { old ->
                     old?.let {
                         if (event.revision < it.contentRevision || event.revision <= (it.tombstoneRevision ?: -1L)) it
@@ -2108,11 +2095,8 @@ class WorkbenchController(
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
                     page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
-                        val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
+                        val message = withLatestMessageStatus(rawMessage)
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
-                        if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
-                            mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
-                        }
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                             if (message.sender == "assistant" && message.state == "CONFIRMED") {
                                 pruneConfirmedAssistantDuplicates(message)
@@ -3481,14 +3465,6 @@ class WorkbenchController(
                         if (message.text.isNotEmpty()) add(com.openandroidintelligence.conversation.model.MessagePart.Text(message.text))
                         submittedAttachments.zip(remoteIds).forEach { (att, id) -> add(verifiedAttachmentPart(id,att.filename,att.mediaType,drafts[att.draftId])) }
                     }, timestamp = entry.timestamp, delivery = submission.delivery,
-                    steeringEcho = if (authoritativeMessageIds && submission.delivery ==
-                        com.openandroidintelligence.conversation.ports.MessageDeliveryMode.STEER)
-                        SteeringEchoPresentation(
-                            seenMessageIds = mirrored.keys.toSet(),
-                            historySequence = mirrored.values.mapNotNull { it.historySequence }.maxOrNull(),
-                            generationId = submission.expectedGenerationId,
-                        )
-                    else null,
                 ) }
                 flushPendingPersistence()
                 recoveredAttachmentSubmissions.entries.removeAll { it.value.clientMessageId == submission.clientMessageId }
@@ -3654,8 +3630,6 @@ class WorkbenchController(
                                 submissionErrorCode = null,
                             )
                         }
-                        // 成功引导已结束本次提交；相同正文的下一次明确发送必须取得新的客户端身份。
-                        if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                         acceptance.generationId?.let { gen ->
                             rememberMessageGeneration(target, acceptance.messageId, message.clientMessageId.value, gen)
                         }
@@ -4978,7 +4952,7 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
                 if (event.message.state == "STREAMING" && event.message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return
-                val message = withLatestMessageStatus(event.message).preservingHistoryPosition(mirrored[event.message.id])
+                val message = withLatestMessageStatus(event.message)
                 val eventConvId = message.conversationId?.value
                 if (eventConvId != null && eventConvId != currentActiveId) {
                     refreshThreads()
@@ -5232,8 +5206,8 @@ class WorkbenchController(
                 snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deletedIds)
                 sendAtomsMutex.withLock {
                     val latestAtoms=loadSendAtomsOnIo(threadId)
-                    val reconciled=reconcileSnapshotDeletions(page.messages,reconcileSteeringEchoPresentation(page.messages,latestAtoms)).map { atom ->
-                        if (atom.messageId in deletedIds || atom.steeringEcho?.messageId in deletedIds) atom.copy(parts=emptyList(),snapshotDeleted=true) else atom
+                    val reconciled=reconcileSnapshotDeletions(page.messages,latestAtoms).map { atom ->
+                        if (atom.messageId in deletedIds) atom.copy(parts=emptyList(),snapshotDeleted=true) else atom
                     }
                     if (reconciled!=latestAtoms) saveAtoms(threadId,reconciled)
                     var epoch=sendAtomsEpoch
@@ -5252,14 +5226,11 @@ class WorkbenchController(
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
-                    val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
+                    val message = withLatestMessageStatus(rawMessage)
                     if (message.sender == "user" && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
                         message.clientMessageId?.value?.let { activeWork.settledClient(threadId, it) }
                     }
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
-                    if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
-                        mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
-                    }
                     if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
                         if (message.sender == "assistant" && message.state == "CONFIRMED") {
                             val matched = pruneConfirmedAssistantDuplicates(message)
@@ -5334,14 +5305,12 @@ class WorkbenchController(
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
             deleted.forEach { mirrored.remove(it); mirroredRevisions.remove(it) }
             page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
-                val message = withLatestMessageStatus(rawMessage).preservingHistoryPosition(mirrored[rawMessage.id])
+                val message = withLatestMessageStatus(rawMessage)
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
                     rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = revision
-                } else if (message.historyPosition != null) mirrored[message.id]?.let { existing ->
-                    mirrored[message.id] = existing.copy(historyPosition=message.historyPosition)
                 }
             }
             scheduleHistoricalMedia(threadId,page.messages)
@@ -5654,7 +5623,7 @@ class WorkbenchController(
                     .firstOrNull { it.wireValue == code }
             },
             submissionFailureCode = message.localSubmissionFailure,
-            clientMessageId = message.clientMessageId ?: message.presentationClientMessageId,
+            clientMessageId = message.clientMessageId,
             generationId = message.generationId ?: activeThreadId?.let { tid ->
                 messageGenerations[tid to message.id]?.id
                     ?: message.clientMessageId?.value?.let { cid -> messageGenerations[tid to cid]?.id }
@@ -5683,7 +5652,7 @@ class WorkbenchController(
         }.map(::renderedTimelineEntry)
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
-        val mirroredClientIds = mergedMessages.mapNotNull { (it.clientMessageId ?: it.presentationClientMessageId)?.value }.toSet()
+        val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
         val deletedClientIds = activeAtoms.filter { it.isDeleted }.map { it.clientMessageId.value }.toSet()
         val recoveredRows = recoveredAttachmentSubmissions[activeThreadId]?.let { submission ->
             if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in deletedClientIds) emptyList()
@@ -5704,43 +5673,7 @@ class WorkbenchController(
                 if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
             },
         )
-        // 手机与 Host 的时钟可能不同。只修正已回并引导与发送后同轮新助手的相对次序，
-        // 发送前已存在的助手、其他轮次及尚未出现真实回声的原稿都保持原排序。
-        val ordered=rawList.toMutableList()
-        activeAtoms.sortedBy { it.timestamp }.forEach { atom ->
-            val echo=atom.steeringEcho ?: return@forEach
-            val id=echo.messageId ?: return@forEach
-            val message=mergedMessages.firstOrNull { it.id == id && it.presentationClientMessageId == atom.clientMessageId }
-                ?: return@forEach
-            val steeringGeneration = echo.generationId
-            val generation=message.generationId ?: steeringGeneration ?: return@forEach
-            val userIndex=ordered.indexOfFirst { it.key == id }
-            if (userIndex < 0) return@forEach
-            val earlierReplies=ordered.take(userIndex).filter { candidate ->
-                if (candidate.isUser || candidate.key in echo.seenMessageIds) return@filter false
-                if (candidate.generationId != null) return@filter candidate.generationId == generation
-                // 缺少轮次时只认同一次历史页中位于回声之后的助手；更早的旧问答、
-                // 不同分页和未见过的跨轮记录都不能因手机时间较晚而被挪到引导后。
-                val echoPosition=message.historyPosition ?: return@filter false
-                val candidatePosition=mirrored[candidate.key]?.historyPosition ?: return@filter false
-                if (!candidatePosition.isAfter(echoPosition)) return@filter false
-                mergedMessages.none { between ->
-                    val position=between.historyPosition
-                    between.sender == "user" && position != null && position.isAfter(echoPosition) &&
-                        candidatePosition.isAfter(position) &&
-                        between.presentationClientMessageId?.let { client ->
-                            activeAtoms.firstOrNull { it.clientMessageId == client }?.steeringEcho?.generationId == generation
-                        } != true
-                }
-            }
-            if (earlierReplies.isNotEmpty()) {
-                // 保留原稿锚点及发送前已有行；仅把时钟偏差导致提前的同轮新回复放回输入之后。
-                val replyKeys=earlierReplies.map { it.key }.toSet()
-                ordered.removeAll { it.key in replyKeys }
-                ordered.addAll(ordered.indexOfFirst { it.key == id } + 1,earlierReplies)
-            }
-        }
-        val rendered = deduplicateTimelineEntries(ordered)
+        val rendered = deduplicateTimelineEntries(rawList)
         // Inserted after the message rules: an approval is a request, not
         // content, so the folding and pruning above must never touch it. Each
         // card still takes the place its own timestamp earned, so it reads where

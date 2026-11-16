@@ -60,31 +60,6 @@ class RemoteConversationRepositoryTest {
         assertEquals("hermes:相同/session", RemoteLocalIds.decode(local))
         first.close(); second.close()
     }
-    @Test fun `历史位置只比较同一次真实页且沿用原始记录顺序`() = runTest {
-        val workspace = RemoteWorkspace(AgentEndpoint(key("history-order"), "历史"), "/history")
-        val carrier = Carrier(workspace)
-        carrier.historyRead = { RemoteHistoryPage(listOf(
-            obj("type" to "event", "event" to obj("seq" to 50, "type" to "user/message", "data" to obj("id" to "echo",
-                "content" to listOf(obj("type" to "text", "text" to "输入"))))),
-            obj("type" to "event", "event" to obj("seq" to 51, "type" to "session/title", "data" to obj("title" to "历史标题"))),
-            obj("type" to "event", "event" to obj("seq" to 52, "type" to "assistant/message", "data" to obj("message" to obj("id" to "answer",
-                "content" to listOf(obj("type" to "text", "text" to "回答"))))))), revision = 52) }
-        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local })
-        try {
-            val first = repo.timeline(local, PageRequest()).messages.associateBy { it.id }
-            val echo = requireNotNull(first.getValue("echo").historyPosition)
-            val answer = requireNotNull(first.getValue("answer").historyPosition)
-            assertEquals(0, echo.index)
-            assertEquals(2, answer.index)
-            assertEquals(echo.pageId, answer.pageId)
-            assertTrue(answer.isAfter(echo))
-            assertNull("ACP 重投影 seq 不因此变成持久水位", first.getValue("echo").historySequence)
-            val reread = repo.timeline(local, PageRequest("another-page")).messages.associateBy { it.id }
-            val nextAnswer = requireNotNull(reread.getValue("answer").historyPosition)
-            assertNotEquals(answer.pageId, nextAnswer.pageId)
-            assertFalse("不同读取页的位置不能互相比大小", nextAnswer.isAfter(echo))
-        } finally { repo.close() }
-    }
     @Test fun `关闭旧端点会停止旧订阅且旧帧不能进入新端点`() = runTest {
         val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")
         val carrier = Carrier(workspace)
