@@ -33,7 +33,7 @@ When you run AI assistants like Claude Code, Codex, Hermes, or DSH on your compu
 | What You Can Do | Plain-Language Explanation |
 | --- | --- |
 | **Chat with Your AI Agents on Your Phone** | Install one Android app to connect to **Hermes, DSH, Codex**, and other AI agents running on your machine. Pick up your existing computer chats right on your phone, send photos or files, or set OAI as your default Android digital assistant to circle anything on your screen and ask about it. |
-| **Let AI Read Messages & Use Your Screen** | AI agents can use the phone `android_*` MCP tools to request **reading notifications, checking SMS, viewing call logs, taking screenshots, or tapping and swiping your screen**. You can also opt into pushing selected notifications or texts proactively to a chosen agent. |
+| **Let AI Read Messages & Use Your Screen** | Native DSH (`remote_*` tools) or external AI agents (via `android_*` Stdio MCP tools) can request **reading notifications, checking SMS, viewing call logs, taking screenshots, or tapping and swiping your screen**—keeping your agent on your desktop or cloud without deploying an agent on the phone. You can also opt into pushing selected notifications or texts proactively to a chosen agent. |
 | **100% of Permission Decisions Stay on Your Phone** | **No root required.** Remote authentication does not grant phone access; local Android switches and confirmation determine whether an AI may read a text or tap the screen. |
 
 ### How the Phone and Computer Connect
@@ -70,9 +70,9 @@ for the exact APK, Host, backend and device evidence; isolated tests do not prov
 3. On the Remote connection page, use the service URL, email and password for the same Remote account as the desktop Host.
 4. Refresh available computers, then manually select the Host, backend, workspace and conversation.
 5. Enable only the required local plugins, phone capabilities and Android permissions. Sensitive operations still require local confirmation.
-6. For external agents, use the [phone MCP bridge](integrations/oai-android-mcp/README.md) and its generated Stdio configuration.
-   For both native DSH and external agents, see the [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md).
-   It exposes only `android_*` tools and does not delegate across workspaces. Do not copy Remote tokens or private keys.
+6. For phone control from AI agents, see the [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md) (you can also copy or symlink `integrations/skills/oai-phone-control` into your local agent/DSH skills directory to replace the retired `oai-client` skill):
+   - **Native DSH**: directly uses `ds-harness-remote` built-in `remote_*` tools targeting `harness / phone-capabilities`.
+   - **External agents**: use the [phone MCP bridge](integrations/oai-android-mcp/README.md) and its generated `mcpServers.oai-android` Stdio configuration. It exposes only `android_*` tools and does not delegate across workspaces. Do not copy Remote tokens or private keys.
 
 Local settings backup excludes account credentials, master keys, conversation history and attachments. System permissions
 must be granted again on a new installation. Real phone, backend and network support remains subject to the acceptance ledger.
