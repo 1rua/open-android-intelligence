@@ -9,6 +9,7 @@
 `/oai-android-mcp/v1` 路由；生成目录权限为 `0700`、配置权限为 `0600`。
 把生成的 `mcpServers.oai-android` 放入外部 Agent 的原生 MCP 配置。Stdio 只访问该桥，
 不用复制 Remote token 或私钥。注销、切服务及卸载后需要重新生成配置。
+面向智能体的调用工作流与参数约束见 [OAI Phone Control Skill](../skills/oai-phone-control/SKILL.md)。
 
 调用 `android_list_devices` 确定手机目标，首次读树或截图可省略 taskSessionId 并返回新任务；
 后续必须传同一 taskSessionId，动作同时传 snapshotId。等待手机批准时返回

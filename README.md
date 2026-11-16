@@ -80,10 +80,11 @@
 4. 在本机设置中按需开启插件、手机能力和系统权限；敏感动作仍须手机本机确认。
 5. 本机设置支持备份与恢复。备份不包含账号密码、登录凭据、主密钥、会话历史或附件，系统授权仍须重新确认。
 
-### 第三步：配置手机 MCP
+### 第三步：配置手机 MCP 与 Agent Skill
 
 使用[手机 OAI MCP](integrations/oai-android-mcp/README.md)的 DSH 进程内桥与 Stdio 入口，
 把生成的 `mcpServers.oai-android` 加入外部 Agent 的原生 MCP 配置，不复制 Remote token 或私钥。
+原生 DSH 与外部 Agent 的手机操作指南见 [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md)。
 该入口只公开 `android_*` 手机工具，不提供跨工作区 Agent 委派。首次调用前核对手机目标和本机授权。
 真实后端、屏幕与短信能力的支持范围继续按验收台账分别记录，不能由隔离测试推断全部可用。
 
@@ -112,6 +113,7 @@ open-android-intelligence/
 │   └── screen-control/            #    屏幕点击、滑动、输入文字与返回键操控插件
 │
 ├── integrations/oai-android-mcp/   # 手机 MCP、进程内桥与固定上游探针
+├── integrations/skills/            # DSH Remote 手机操控 Agent Skill（oai-phone-control）
 ├── plugin-tooling/                # 插件打包与数字签名工具
 ├── tools/                         # 🛠️ 开发自测脚本（如 smart-test.py 分级测试工具）
 ├── assets/readme/                 # 🎨 README 视觉图片与可编辑 SVG 源文件
