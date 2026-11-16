@@ -71,6 +71,7 @@ for the exact APK, Host, backend and device evidence; isolated tests do not prov
 4. Refresh available computers, then manually select the Host, backend, workspace and conversation.
 5. Enable only the required local plugins, phone capabilities and Android permissions. Sensitive operations still require local confirmation.
 6. For external agents, use the [phone MCP bridge](integrations/oai-android-mcp/README.md) and its generated Stdio configuration.
+   For both native DSH and external agents, see the [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md).
    It exposes only `android_*` tools and does not delegate across workspaces. Do not copy Remote tokens or private keys.
 
 Local settings backup excludes account credentials, master keys, conversation history and attachments. System permissions
@@ -99,6 +100,7 @@ open-android-intelligence/
 │   └── screen-control/            #    Screen tap, swipe, text input & back navigation plugin
 │
 ├── integrations/oai-android-mcp/   # Phone MCP, in-process bridge and fixed upstream probes
+├── integrations/skills/            # DSH Remote phone-control Agent Skill (`oai-phone-control`)
 ├── plugin-tooling/                # Device plugin packaging and signatures
 ├── tools/                         # 🛠️ Developer verification scripts (e.g., `smart-test.py`)
 ├── assets/readme/                 # 🎨 README visual assets and editable SVG/PNG source layers
