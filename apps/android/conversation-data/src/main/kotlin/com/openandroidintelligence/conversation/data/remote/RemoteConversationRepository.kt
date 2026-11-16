@@ -4,6 +4,8 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.gateway.schema.JsonValue
+import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import java.util.UUID
@@ -52,7 +54,12 @@ class RemoteConversationRepository(
     private fun current() {
         check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
     }
-    private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex") }
+    private fun projection(id: String) = projections.computeIfAbsent(id) {
+        RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept },
+            persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex",
+            onFailedTerminal = { code -> logRemoteSessionFailure(carrier.backend, "terminal", code ?: "REMOTE_AGENT_FAILED",
+                generationState = GenerationState.FAILED) })
+    }
     fun activeConversationChanged() = generation.publish {
         val id = activeConversationId()
         val projection = id?.let(projections::get)
@@ -86,13 +93,17 @@ class RemoteConversationRepository(
         val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
         projected.forEach { rememberApproval(conversationId, it) }
         activeConversationChanged()
-        val pageIds = result.records.mapNotNull { record ->
+        // 页内顺序来自这次真实 records，不使用可能重编号的 Codex seq 或手机时钟。
+        // 每页独立身份保证分页、重读与其他会话的位置不会被拿来互相比大小。
+        val pageId = UUID.randomUUID().toString()
+        val positions = result.records.mapIndexedNotNull { index, record ->
             val event = record.at("event") ?: record
-            val data = event.at("data") ?: return@mapNotNull null
-            (data.at("message") ?: data).text("id")
-        }.toSet()
-        return TimelinePage(synchronized(target) { target.rows.values.filter { it.id in pageIds } },
-            result.nextCursor, result.revision)
+            val data = event.at("data") ?: return@mapIndexedNotNull null
+            (data.at("message") ?: data).text("id")?.let { it to HistoryMessagePosition(pageId, index) }
+        }.toMap()
+        return TimelinePage(synchronized(target) { target.rows.values.mapNotNull { row ->
+            positions[row.id]?.let { row.copy(historyPosition = it) }
+        } }, result.nextCursor, result.revision)
     }
     private suspend fun ensureFollow(id: String) {
         val opened = ready.computeIfAbsent(id) { CompletableDeferred() }
@@ -131,6 +142,7 @@ class RemoteConversationRepository(
                     throw cancelled
                 } catch (cause: Exception) {
                     val code = (cause as? RemoteSessionException)?.code ?: "REMOTE_STREAM_FAILED"
+                    logRemoteSessionFailure(carrier.backend, "stream", code, cause)
                     failure.value = code
                     health.value = StreamHealth.FAILED
                     if (!opened.isCompleted) opened.completeExceptionally(cause)
@@ -223,6 +235,9 @@ class RemoteConversationRepository(
                 settlePending(conversationId, target)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
+                logRemoteSessionFailure(carrier.backend, "prompt", (cause as? RemoteSessionException)?.code
+                    ?: (cause as? RemoteRpcException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN", cause,
+                    (cause as? RemoteRpcException)?.deliveryOutcome?.name)
                 // 已发出的 mutation 没有回执时保持原提交身份，不能画成可盲目重发的确定失败。
                 failure.value = (cause as? RemoteSessionException)?.code ?: "REMOTE_SUBMISSION_OUTCOME_UNKNOWN"
                 val rejected = (cause is RemoteRpcException && cause.deliveryOutcome == RemoteDeliveryOutcome.NOT_SENT) ||
@@ -375,4 +390,20 @@ class RemoteConversationRepository(
         pending.clear()
         acceptedUserMessages.clear()
     }
+}
+
+
+/** 只保留结构化错误码和源码栈，禁止把异常消息、正文或会话身份带入日志。 */
+internal fun logRemoteSessionFailure(backend: String, phase: String, code: String, cause: Throwable? = null,
+    deliveryOutcome: String? = null, generationState: GenerationState? = null) {
+    val safeCode = code.takeIf { it.matches(Regex("[A-Za-z][A-Za-z0-9_-]{0,95}")) } ?: "REMOTE_FAILURE"
+    val safeBackend = backend.takeIf { it.matches(Regex("[a-z][a-z0-9_-]{0,31}")) } ?: "unknown"
+    val stack = cause?.stackTrace.orEmpty().take(12).map { frame ->
+        val file = frame.fileName?.substringAfterLast('/')?.substringAfterLast('\\')
+        "${frame.className}.${frame.methodName}(${file ?: "unknown"}:${frame.lineNumber})"
+    }
+    GatewayLog.w("OaiRemoteSession", Json.canonical(obj("phase" to phase, "backend" to safeBackend,
+        "code" to safeCode, "deliveryOutcome" to deliveryOutcome?.takeIf { it in setOf("NOT_SENT", "REJECTED", "UNKNOWN") },
+        "state" to generationState?.name,
+        "exception" to cause?.javaClass?.simpleName, "sourceStack" to stack)))
 }

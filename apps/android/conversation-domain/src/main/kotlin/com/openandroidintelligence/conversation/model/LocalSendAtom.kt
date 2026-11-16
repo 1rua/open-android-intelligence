@@ -25,8 +25,10 @@ data class LocalSendAtom(
     val tombstoneRevision: Long? = null,
     /** 快照明确删除属于身份事实；分页摘要不能用作单条内容修订。 */
     val snapshotDeleted: Boolean = false,
-    /** Keep steering and queued corrections distinguishable after recovery. */
+    /** 恢复后仍区分引导与排队纠正。 */
     val delivery: MessageDeliveryMode = MessageDeliveryMode.NORMAL,
+    /** 仅 Remote 新引导开启正文展示回并；不参与受理、权限或请求身份判断。 */
+    val steeringEcho: SteeringEchoPresentation? = null,
 ) {
     val isDeleted: Boolean get() = snapshotDeleted || tombstoneRevision != null
 
@@ -66,12 +68,59 @@ data class LocalSendAtom(
     }
 }
 
+/** 已见历史排除集和一对一展示对应；旧记录缺少此字段时继续保守显示。 */
+data class SteeringEchoPresentation(
+    val seenMessageIds: Set<String>,
+    val historySequence: Long? = null,
+    val messageId: String? = null,
+    /** 发送时已知的原生轮次；旧记录为空时继续保守处理。 */
+    val generationId: String? = null,
+)
+
+/**
+ * 用户授权的正文展示回并。只消费同一会话中新出现的真实 User 行，每个原稿和回声至多使用一次。
+ * 内容相同不能证明跨客户端身份；因此这里只保存展示对应，不调用 identified，也不推进受理状态。
+ */
+fun reconcileSteeringEchoPresentation(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<LocalSendAtom> {
+    val reserved = atoms.mapNotNull { it.steeringEcho?.messageId }.toMutableSet()
+    reserved += atoms.mapNotNull { it.messageId }
+    reserved += remote.filter { it.clientMessageId != null }.map { it.id }
+    val updated = atoms.associateByTo(linkedMapOf()) { it.clientMessageId }
+    atoms.sortedBy { it.timestamp }.forEach { atom ->
+        val echo = atom.steeringEcho ?: return@forEach
+        if (atom.delivery != MessageDeliveryMode.STEER || atom.isDeleted || echo.messageId != null) return@forEach
+        val provisional = atom.messageId == null || atom.messageId == atom.clientMessageId.value ||
+            LocalSendAtom.isLegacySyntheticSteerId(atom.messageId, atom.clientMessageId)
+        if (!provisional || atom.parts.any { it !is MessagePart.Text }) return@forEach
+        val text = com.openandroidintelligence.conversation.ports.ConversationContentSanitizer.text(
+            atom.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+        if (text.isEmpty()) return@forEach
+        val row = remote.firstOrNull { row ->
+            row.sender == "user" && row.conversationId == atom.conversationId && !row.localPlaceholder && !row.isDeleted &&
+                row.clientMessageId == null && row.id !in reserved && row.id !in echo.seenMessageIds &&
+                (row.historySequence == null || echo.historySequence == null || row.historySequence > echo.historySequence) &&
+                row.parts.all { it is MessagePart.Text } &&
+                com.openandroidintelligence.conversation.ports.ConversationContentSanitizer.text(
+                    row.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }) == text
+        } ?: return@forEach
+        reserved += row.id
+        updated[atom.clientMessageId] = atom.copy(steeringEcho = echo.copy(messageId = row.id))
+    }
+    return atoms.map { updated.getValue(it.clientMessageId) }
+}
+
 /** 只认明确删除与稳定身份，不将空页或缺正文的受理查询当作删除。 */
 fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<LocalSendAtom> =
     atoms.map { atom ->
-        val deleted = findMatchingRemoteRow(remote, atom)?.takeIf { it.isDeleted }
-        if (deleted == null) atom else atom.identified(deleted.id, deleted.batchId ?: atom.batchId)
-            .copy(parts = emptyList(), snapshotDeleted = true)
+        val identified = findMatchingRemoteRow(remote, atom)?.takeIf { it.isDeleted }
+        val presented = remote.firstOrNull { it.isDeleted && it.sender == "user" && it.conversationId == atom.conversationId &&
+            it.id == atom.steeringEcho?.messageId }
+        when {
+            identified != null -> atom.identified(identified.id, identified.batchId ?: atom.batchId)
+                .copy(parts = emptyList(), snapshotDeleted = true)
+            presented != null -> atom.copy(parts = emptyList(), snapshotDeleted = true)
+            else -> atom
+        }
     }
 
 private fun TimelineMessage.isInAtomScope(atom: LocalSendAtom): Boolean {
@@ -101,11 +150,22 @@ private fun localPlaceholderId(rows: Map<String, TimelineMessage>, atom: LocalSe
     return "${baseId}_$suffix"
 }
 
-/** 仅凭明确身份回并发送事实；空快照和无正文的受理查询不能抹掉本地内容。 */
+/** 明确身份与单独授权的引导展示对应各自合并；空快照和无正文回执不能抹掉本地内容。 */
 fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom>): List<TimelineMessage> {
     val rows = remote.associateByTo(linkedMapOf()) { it.id }
-    atoms.forEach { atom ->
+    reconcileSteeringEchoPresentation(remote, atoms).forEach { atom ->
         val matching = findMatchingRemoteRow(rows.values, atom)
+        // 展示对应始终保留原始远端身份字段；本地来源单独交给渲染端处理。
+        val presented = if (matching == null) atom.steeringEcho?.messageId?.let { id -> rows[id]?.takeIf {
+            it.sender == "user" && it.conversationId == atom.conversationId && !it.localPlaceholder &&
+                (it.clientMessageId == null || it.clientMessageId == atom.clientMessageId)
+        } } else null
+        if (presented != null) {
+            if (atom.isDeleted || presented.isDeleted) rows.remove(presented.id)
+            else rows[presented.id] = presented.copy(timestamp = atom.timestamp.takeIf { it > 0L } ?: presented.timestamp,
+                presentationClientMessageId = atom.clientMessageId)
+            return@forEach
+        }
         if (atom.isDeleted || matching?.isDeleted == true) {
             matching?.let { rows.remove(it.id) }
             return@forEach
@@ -143,10 +203,16 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
                  isSyntheticSteerId ||
                  idConflict),
             generationId = matching?.generationId,
+            historyPosition = matching?.historyPosition,
+            historySequence = matching?.historySequence,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,
         )
     }
+    val presentationOrder=atoms.filter { it.steeringEcho != null }.mapIndexed { index, atom -> atom.clientMessageId to index }.toMap()
     return rows.values.filterNot { it.isDeleted }
-        .sortedBy { it.timestamp }
+        .sortedWith(compareBy<TimelineMessage> { it.timestamp }.thenBy { row ->
+            val source=row.presentationClientMessageId ?: row.clientMessageId.takeIf { row.localPlaceholder }
+            presentationOrder[source] ?: -1
+        })
 }
