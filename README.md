@@ -21,9 +21,7 @@
 
 ---
 
-> **Remote 迁移状态（2026-11-14）**：本仓按[DSH Remote 规格](docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)
-> 退出独立 OAI Core 与旧 Gateway。Android、手机控制和本机 MCP 已有迁移实现；真实 Host、设备、网络与发布验收
-> 仍以[验收台账](docs/reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)为准。本地测试通过不代表完整部署已可用。
+
 
 ## 项目介绍
 
@@ -69,15 +67,15 @@
 
 ### 第一步：准备 DSH Remote 电脑端
 
-按 [DSH Remote 上游说明](https://github.com/liguobao/ds-harness-remote)安装服务或电脑 Host，并登录 Remote 账号。
-本仓不另建 Remote 服务安装器，也不再维护旧 Core 的安装、配置和卸载脚本。
+按 [DSH Remote 上游说明](https://github.com/liguobao/ds-harness-remote)安装DSH插件，并登录 Remote 账号。
+
 
 ### 第二步：连接 Android App 与工作区
 
 1. 从 [Releases](https://github.com/1rua/open-android-intelligence/releases)选择安装包，核对其版本及迁移验收状态。
 2. 在 Remote 连接页填写服务地址、邮箱和密码。手机与电脑 Host 使用同一 Remote 账号。
 3. 刷新已登录的电脑，手动选择 Host、后端和工作区，再选择或创建对话；实际能力以远端发现结果为准。
-4. 在本机设置中按需开启插件、手机能力和系统权限；敏感动作仍须手机本机确认。
+4. 在本机设置中按需开启手机能力和系统权限；敏感动作仍须手机本机确认。
 5. 本机设置支持备份与恢复。备份不包含账号密码、登录凭据、主密钥、会话历史或附件，系统授权仍须重新确认。
 
 ### 第三步：配置手机操作（原生 DSH / 手机 MCP）与 Agent Skill
