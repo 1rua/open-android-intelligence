@@ -37,7 +37,7 @@
 | | |
 | --- | --- |
 | **在手机上随时跟你的 AI 聊天** | 一个安卓 App，同时连上你电脑或服务器里的 **Hermes、DSH、Codex** 等多种 AI 助手。直接接着电脑上的聊天记录聊，支持发相册图片、传文件，还能设成手机默认数字助理——长按电源键就能圈选当前屏幕画面向 AI 提问。 |
-| **让 AI 帮你看消息、操作手机** | 任何支持命令行或 MCP 的 AI 助手，可通过手机 `android_*` MCP 工具向你的手机申请**查通知、读短信、看通话记录、截屏，或者点击、滑动屏幕**。让Agent留在云端，用你喜欢的Agent，无需本地部署 |
+| **让 AI 帮你看消息、操作手机** | 原生 DSH 可通过 `ds-harness-remote` 内置工具，外部 Agent 可通过手机 `android_*` MCP 工具，向你的手机申请**查通知、读短信、看通话记录、截屏，或者点击、滑动屏幕**。让 Agent 留在电脑或云端，无需在手机部署本地 Agent。 |
 | **决定权 100% 留在你手里的手机上** | **不需要 Root 手机。** Remote 连接不授予手机权限；能不能看短信、能不能点屏幕，全由手机 App 上的开关和本机确认决定。 |
 
 ### 手机与电脑怎样连接？
@@ -80,12 +80,13 @@
 4. 在本机设置中按需开启插件、手机能力和系统权限；敏感动作仍须手机本机确认。
 5. 本机设置支持备份与恢复。备份不包含账号密码、登录凭据、主密钥、会话历史或附件，系统授权仍须重新确认。
 
-### 第三步：配置手机 MCP 与 Agent Skill
+### 第三步：配置手机操作（原生 DSH / 手机 MCP）与 Agent Skill
 
-使用[手机 OAI MCP](integrations/oai-android-mcp/README.md)的 DSH 进程内桥与 Stdio 入口，
-把生成的 `mcpServers.oai-android` 加入外部 Agent 的原生 MCP 配置，不复制 Remote token 或私钥。
-原生 DSH 与外部 Agent 的手机操作指南见 [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md)。
-该入口只公开 `android_*` 手机工具，不提供跨工作区 Agent 委派。首次调用前核对手机目标和本机授权。
+- **原生 DSH**：登录 DSH Remote 并保持手机在线后，可直接由内置 `remote_*` 工具连接手机的 `harness / phone-capabilities` 工作区，按 [OAI Phone Control Skill](integrations/skills/oai-phone-control/SKILL.md) 规范操控手机，无需额外配置外部 MCP。
+- **外部 Agent（Claude Code / Codex / OpenCode / Hermes ACP 等）**：使用[手机 OAI MCP](integrations/oai-android-mcp/README.md)的 DSH 进程内桥与 Stdio 入口，把生成的 `mcpServers.oai-android` 加入外部 Agent 的原生 MCP 配置，不复制 Remote token 或私钥。
+- **安装 Skill**：可将 [integrations/skills/oai-phone-control](integrations/skills/oai-phone-control/SKILL.md) 目录同步到本机 Agent / DSH 技能目录（如 `~/.agents/skills/`、`~/.dsh/skills/` 等），替代已退役的旧版 `oai-client` 技能。
+
+`oai-android-mcp` 入口只公开 `android_*` 手机工具，不提供跨工作区 Agent 委派。首次调用前核对手机目标和本机授权。
 真实后端、屏幕与短信能力的支持范围继续按验收台账分别记录，不能由隔离测试推断全部可用。
 
 ---
