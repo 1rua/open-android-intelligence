@@ -30,13 +30,6 @@ data class TimelinePage(
     /** Local fence for a verified idle-generation receipt; distinct from the Gateway history revision. */
     val idleGenerationRevision: Long? = null,
 )
-/** 仅同一次 Remote 历史页内可比较的位置；页身份不表示协议游标或跨页修订。 */
-data class HistoryMessagePosition(val pageId: String, val index: Int) {
-    init { require(pageId.isNotBlank() && index >= 0) }
-
-    fun isAfter(other: HistoryMessagePosition): Boolean = pageId == other.pageId && index > other.index
-}
-
 data class TimelineMessage(
     val id: String,
     val sender: String,
@@ -57,21 +50,10 @@ data class TimelineMessage(
     /** 仅端侧临时流式行设为 true；不能从真实 ID 的字符串形式猜测。 */
     val localPlaceholder: Boolean = false,
     val reasoning: List<MessageReasoning> = emptyList(),
-    /** 仅后端保证稳定的原生 seq；Codex/ACP 重投影序号不进入持久展示边界。 */
-    val historySequence: Long? = null,
-    /** 正文匹配得到的本地展示来源，不是远端声明的客户端身份。 */
-    val presentationClientMessageId: ClientMessageId? = null,
-    /** Remote 仓储按本次真实历史页给出，缺少时不得推测跨轮排序。 */
-    val historyPosition: HistoryMessagePosition? = null,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
 }
-
-/** 无位置的实时更新保留同一原生行的位置；新历史页的位置作为完整值整体替换。 */
-fun TimelineMessage.preservingHistoryPosition(previous: TimelineMessage?): TimelineMessage =
-    if (historyPosition == null && previous != null && previous.id == id && previous.conversationId == conversationId)
-        copy(historyPosition = previous.historyPosition) else this
 
 data class MessageBatch(
     val batchId: String,

@@ -13,7 +13,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private val mediaReference: ((String, JsonValue, RemoteMediaRevision) -> MessagePart.Attachment?)? = null,
     private val persistentMessageSequence: Boolean = true,
     private val matchStartedGenerationToSubmission: Boolean = true,
-    private val onFailedTerminal: (String?) -> Unit = {},
 ) {
     val rows = linkedMapOf<String, TimelineMessage>()
     var generationId: String? = null
@@ -26,7 +25,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         private set
     private var revision = 0L
     private var lastSeq: Long? = null
-    data class TerminalReceipt(val generationId: String, val state: GenerationState, val occurredAt: Long, val errorCode: String? = null)
+    data class TerminalReceipt(val generationId: String, val state: GenerationState, val occurredAt: Long)
     private val terminals = mutableMapOf<String, TerminalReceipt>()
     // 临时提交身份只能升级为本轮真实身份，不能在下一轮重新指向当前任务。
     private val generationAliases = mutableMapOf<String, String>()
@@ -69,16 +68,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val key = if (previous?.value?.kind == kind && !previous.value.complete) previous.key else "block:${blocks.size}"
             append(key, kind, text)
         }
-        fun remove(key: String) { blocks.remove(key) }
         fun finish(key: String) { blocks[key]?.complete = true }
         fun finish() { blocks.values.forEach { it.complete = true } }
         fun json(): List<JsonValue> = blocks.map { (id, block) -> obj("id" to id, "type" to block.kind, "text" to block.text.toString(), "complete" to block.complete) }
     }
-    // 隐藏身份只属于本次会话投影；流结束与补历史不能撤销已确认的内部内容边界。
-    private val hiddenMessages = mutableSetOf<String>()
-    private val hiddenAttempts = mutableSetOf<String>()
-    private val hiddenBlocks = mutableMapOf<String, MutableSet<String>>()
-    private val rawMessageText = mutableMapOf<String, String>()
     private val attempts = mutableMapOf<String, AssistantContent>()
     private val liveContent = mutableMapOf<String, AssistantContent>()
     private val codexContent = mutableMapOf<String, AssistantContent>()
@@ -141,14 +134,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             generationState = receipt.state
         } ?: run { generationState = GenerationState.RUNNING }
     }
-    private fun recordTerminal(id: String, state: GenerationState, source: Source, errorCode: String? = null) {
+    private fun recordTerminal(id: String, state: GenerationState, source: Source) {
         if (source.historical) return
-        val receipt = terminals.getOrPut(id) {
-            TerminalReceipt(id, state, source.time, errorCode).also {
-                // 即使本机没有 pending，也在首次收到真实失败时记录，重复终态不重复日志。
-                if (it.state == GenerationState.FAILED) onFailedTerminal(it.errorCode)
-            }
-        }
+        val receipt = terminals.getOrPut(id) { TerminalReceipt(id, state, source.time) }
         terminalGeneration = id to receipt.state
         if (id == generationId) generationState = receipt.state
     }
@@ -165,21 +153,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val events = value.requiredArray("records").flatMap { accept(it, history = true, receivedAt, historyRead) }.toMutableList()
             value.number("cursor")?.let { cursor -> if (lastSeq == null || cursor > lastSeq!!) lastSeq = cursor }
             value.at("assistantStream")?.let { snapshot ->
-                snapshot.at("activeAttempt")?.let { active ->
-                    val attempt = active.requiredText("attemptId")
-                    val snapshotSource = Source(true, 0, historyRead)
-                    if (internalMessage(active) || attempt in hiddenAttempts) {
-                        events += suppressAttempt(attempt, snapshotSource)
-                    } else {
-                        val content = AssistantContent()
-                        active.array("stream").orEmpty().forEach { record ->
-                            if (record.text("type") == "chunk") record.at("chunk")?.let { appendAssistantChunk(attempt, content, it) }
-                        }
-                        attempts[attempt] = content
-                        if (!history) active.number("turn")?.toString()?.let(::confirmGeneration)
-                        events += upsertContent("remote-stream:$attempt", content, snapshotSource)
-                    }
-                }
                 snapshot.array("entries")?.forEach { entry -> events += assistantSnapshot(entry, Source(true, 0, historyRead)) }
                 snapshot.at("message")?.let { message -> events += upsert(message, "assistant", true, null, Source(true, 0, historyRead)) }
             }
@@ -221,14 +194,14 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     else -> GenerationState.COMPLETED
                 }
                 val terminalId = turn ?: generationId
-                terminalId?.let { recordTerminal(it, terminal, source, data.at("reason")?.at("error")?.text("code")) }
+                terminalId?.let { recordTerminal(it, terminal, source) }
                 return if (source.historical || terminalId != generationId) emptyList() else finalizeStreaming(id, source)
             }
             "user/message" -> {
-                if (!source.historical && !internalMessage(data)) clientRequestId = data.at("source")?.text("rpcId")
+                if (!source.historical) clientRequestId = data.at("source")?.text("rpcId")
                 return upsert(data, "user", false, event.number("seq"), source, turn)
             }
-            "assistant/message" -> return upsert(data, "assistant", false, event.number("seq"), source, turn)
+            "assistant/message" -> return upsert(data.at("message") ?: data, "assistant", false, event.number("seq"), source, turn)
             "tool/call" -> return execution(data, id, source, false)
             "tool/result" -> return execution(data, id, source, true)
             "approval/asked" -> return approval(data.text("requestHandle") ?: data.text("id") ?: id, data, source)
@@ -241,15 +214,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
 
     private fun assistantSnapshot(entry: JsonValue, source: Source): List<VerifiedConversationEvent> {
         val attempt = entry.requiredText("attemptId")
-        if (internalMessage(entry) || entry.at("message")?.let(::internalMessage) == true || attempt in hiddenAttempts)
-            return suppressAttempt(attempt, source)
         val content = AssistantContent()
         entry.array("content")?.forEachIndexed { index, block ->
-            val key = block.text("id") ?: block.number("index")?.toString() ?: index.toString()
-            if (internalMessage(block)) hiddenBlocks.getOrPut(attempt) { mutableSetOf() } += key
             val kind = block.text("type") ?: return@forEachIndexed
-            if (key !in hiddenBlocks[attempt].orEmpty() && kind in setOf("text", "reasoning"))
-                content.append(key, kind, block.text("text").orEmpty())
+            if (kind in setOf("text", "reasoning")) content.append(index.toString(), kind, block.text("text").orEmpty())
         }
         if (entry.array("content") == null) content.append("text", entry.text("text") ?: entry.at("message")?.let(::contentText).orEmpty())
         attempts[attempt] = content
@@ -258,7 +226,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
 
     private fun assistantStream(frame: JsonValue, source: Source): List<VerifiedConversationEvent> {
         val attempt = frame.text("attemptId") ?: return emptyList()
-        if (internalMessage(frame) || attempt in hiddenAttempts) return suppressAttempt(attempt, source)
         when (frame.text("type")) {
             "start" -> {
                 attempts[attempt] = AssistantContent()
@@ -269,18 +236,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "chunk" -> {
                 val chunk = frame.at("chunk") ?: return emptyList()
-                // 未知状态或元分块不属于正文，不要求存在正文尝试；已知分块仍保留缺口检测。
-                if (chunk.text("type") !in setOf("block-start", "text-delta", "reasoning-delta", "block-end")) return emptyList()
-                val content = attempts[attempt]
-                if (content == null) {
-                    if (internalMessage(chunk) || chunk.at("block")?.let(::internalMessage) == true) {
-                        hiddenBlocks.getOrPut(attempt) { mutableSetOf() } += chunk.number("index")?.toString() ?: "0"
-                        return emptyList()
-                    }
-                    if ((chunk.number("index")?.toString() ?: "0") in hiddenBlocks[attempt].orEmpty()) return emptyList()
-                    throw RemoteSessionException("REMOTE_ASSISTANT_STREAM_GAP")
+                val content = attempts[attempt] ?: throw RemoteSessionException("REMOTE_ASSISTANT_STREAM_GAP")
+                val index = chunk.number("index")?.toString() ?: "0"
+                when (chunk.text("type")) {
+                    "block-start" -> content.start(index, chunk.text("blockType") ?: "text")
+                    "text-delta" -> content.append(index, "text", chunk.text("text").orEmpty())
+                    "reasoning-delta" -> content.append(index, "reasoning", chunk.text("text").orEmpty())
+                    "block-end" -> content.finish(index)
+                    else -> return emptyList()
                 }
-                appendAssistantChunk(attempt, content, chunk)
                 return upsertContent("remote-stream:$attempt", content, source)
             }
             "end" -> {
@@ -296,24 +260,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         return emptyList()
     }
 
-    private fun appendAssistantChunk(attempt: String, content: AssistantContent, chunk: JsonValue) {
-        val index = chunk.number("index")?.toString() ?: "0"
-        if (internalMessage(chunk) || chunk.at("block")?.let(::internalMessage) == true) {
-            hiddenBlocks.getOrPut(attempt) { mutableSetOf() } += index
-            content.remove(index)
-            return
-        }
-        if (index in hiddenBlocks[attempt].orEmpty()) return
-        when (chunk.text("type")) {
-            "block-start" -> content.start(index, chunk.text("blockType") ?: "text")
-            "text-delta" -> content.append(index, "text", chunk.text("text").orEmpty())
-            "reasoning-delta" -> content.append(index, "reasoning", chunk.text("text").orEmpty())
-            "block-end" -> content.finish(index)
-        }
-    }
-
     private fun nativeFrame(method: String, params: JsonValue, source: Source): List<VerifiedConversationEvent> {
-        // 先核对会话归属，再把外层元标记绑定到其中的 item；外部会话不能污染本投影的隐藏集合。
         if (params.text("threadId")?.let { it != nativeSessionId } == true || params.text("sessionId")?.let { it != nativeSessionId } == true) return emptyList()
         when (method) {
             "turn/started" -> if (!source.historical) {
@@ -326,22 +273,17 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     "interrupted", "cancelled" -> GenerationState.CANCELLED
                     else -> GenerationState.COMPLETED
                 }
-                terminalId?.let { recordTerminal(it, terminal, source, params.at("turn")?.at("error")?.text("code")) }
+                terminalId?.let { recordTerminal(it, terminal, source) }
                 if (source.historical || terminalId != generationId) return emptyList()
                 return finalizeStreaming("turn-end:${++liveSequence}", source)
             }
             "item/agentMessage/delta" -> {
                 val id = params.requiredText("itemId")
-                if (internalMessage(params)) return suppressMessage(id, source)
-                if (id in hiddenMessages) return emptyList()
-                // 清洗只影响发布内容；跨分块标签需要继续基于原始累计正文识别。
-                val old = rawMessageText[id].orEmpty()
+                val old = rows[id]?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("") { it.value }.orEmpty()
                 return upsert(obj("id" to id, "content" to listOf(obj("type" to "text", "text" to old + (params.text("delta") ?: "")))), "assistant", true, null, source)
             }
             "item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "item/plan/delta" -> {
                 val id = params.requiredText("itemId")
-                if (internalMessage(params)) return suppressMessage(id, source)
-                if (id in hiddenMessages) return emptyList()
                 val content = codexContent.getOrPut(id) { AssistantContent() }
                 val part = if (method.endsWith("summaryTextDelta")) "summary:${params.number("summaryIndex") ?: 0}"
                     else "content:${params.number("contentIndex") ?: 0}"
@@ -350,13 +292,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             "item/started", "item/completed" -> {
                 val item = params.at("item") ?: return emptyList()
-                val itemType = item.text("type")
-                val messageItem = itemType in setOf("agentMessage", "userMessage", "reasoning", "plan")
-                if ((internalMessage(params) || internalMessage(item)) && messageItem)
-                    return suppressMessage(item.text("id"), source)
-                if (item.text("id") in hiddenMessages && messageItem) return emptyList()
-                return when (itemType) {
-                    "agentMessage" -> upsert(withContent(item, listOf(obj("type" to "text", "text" to (item.text("text") ?: "")))), "assistant", method == "item/started", null, source)
+                return when (item.text("type")) {
+                    "agentMessage" -> upsert(obj("id" to item.requiredText("id"), "content" to listOf(obj("type" to "text", "text" to (item.text("text") ?: "")))), "assistant", method == "item/started", null, source)
                     "userMessage" -> upsert(item, "user", false, null, source, params.text("turnId"))
                     "reasoning", "plan" -> {
                         val id = item.requiredText("id")
@@ -371,29 +308,17 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (method == "item/completed") content.finish()
                         upsertContent(id, content, source, method == "item/started")
                     }
-                    "commandExecution", "mcpToolCall", "dynamicToolCall", "fileChange", "functionCallOutput", "hookPrompt",
-                    "collabAgentToolCall", "subAgentActivity", "webSearch", "imageView", "imageGeneration", "sleep",
-                    "enteredReviewMode", "exitedReviewMode", "contextCompaction" ->
-                        execution(item, item.text("id") ?: "tool:${++liveSequence}", source, method == "item/completed")
-                    else -> emptyList()
+                    else -> execution(item, item.text("id") ?: "tool:${++liveSequence}", source, method == "item/completed")
                 }
             }
             "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "session/request_permission", "cursor/ask_question", "cursor/create_plan" ->
                 return approval(params.requiredText("requestHandle"), params, source)
             "session/update" -> {
                 val update = params.at("update") ?: params
-                val updateType = update.text("sessionUpdate") ?: update.text("type")
-                when (updateType) {
+                when (update.text("sessionUpdate") ?: update.text("type")) {
                     "agent_message_chunk", "agent_message", "agent_thought_chunk", "agent_thought" -> {
                         val content = update.at("content") ?: return emptyList()
                         if (content.text("type") != "text") return emptyList()
-                        if (internalMessage(params) || internalMessage(update) || internalMessage(content)) {
-                            if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
-                            val currentId = requireNotNull(acpMessageId)
-                            val hidden = if (currentId in rows) emptyList() else hide(currentId, source)
-                            resetAcpTurnContent()
-                            return hidden
-                        }
                         if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
                         val kind = if ((update.text("sessionUpdate") ?: update.text("type")) in setOf("agent_thought_chunk", "agent_thought")) "reasoning" else "text"
                         acpContent.append(kind, content.text("text").orEmpty())
@@ -401,11 +326,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (!source.historical) generationState = GenerationState.RUNNING
                         return upsertContent(requireNotNull(acpMessageId), acpContent, source)
                     }
-                    "user_message_chunk" -> {
-                        val content = update.at("content") ?: obj()
-                        if (internalMessage(params) || internalMessage(update) || internalMessage(content)) return emptyList()
-                        return upsert(obj("id" to "remote-acp-user:${++liveSequence}", "content" to listOf(content)), "user", false, null, source)
-                    }
+                    "user_message_chunk" -> return upsert(obj("id" to "remote-acp-user:${++liveSequence}", "content" to listOf(update.at("content") ?: obj())), "user", false, null, source)
                     "tool_call", "tool_call_update" -> return execution(update, update.text("toolCallId") ?: "tool:${++liveSequence}", source,
                         update.text("status") in setOf("completed", "failed"))
                     "session_info_update" -> update.text("title")?.let { return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), it)) }
@@ -433,21 +354,19 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
 
     private fun finalizeStreaming(eventId: String, source: Source): List<VerifiedConversationEvent> {
         resetAcpTurnContent()
-        return rows.values.filter { it.state == "STREAMING" && it.generationId == generationId }.flatMap { message ->
+        return rows.values.filter { it.state == "STREAMING" && it.generationId == generationId }.map { message ->
             val content = liveContent.remove(message.id)
             val completed = generationState == GenerationState.COMPLETED
             if (completed) content?.finish()
             val confirmed = message.copy(state = "CONFIRMED", contentRevision = ++revision,
                 parts = content?.let { contentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead)) } ?: message.parts,
                 reasoning = content?.let { reasoning(it.json(), !completed) } ?: message.reasoning.map { if (completed) it.copy(complete = true) else it })
-            val visible = ConversationContentSanitizer.message(confirmed) ?: return@flatMap hide(message.id, source)
-            rows[message.id] = visible
-            listOf(VerifiedConversationEvent.TimelineUpsert(source.id("$eventId:${message.id}"), source.time, revision, visible))
+            rows[message.id] = confirmed
+            VerifiedConversationEvent.TimelineUpsert(source.id("$eventId:${message.id}"), source.time, revision, confirmed)
         }
     }
 
     private fun upsertContent(id: String, content: AssistantContent, source: Source, streaming: Boolean = true): List<VerifiedConversationEvent> {
-        if (id in hiddenMessages) return emptyList()
         liveContent[id] = content
         return upsert(obj("id" to id, "content" to content.json()), "assistant", streaming, null, source)
     }
@@ -474,16 +393,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
 
     private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, source: Source, messageGeneration: String? = generationId): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
-        if (internalMessage(value) || internalMessage(message))
-            return suppressMessage(message.text("id") ?: seq?.let { "event-message:$it" }, source)
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
-        if (id in hiddenMessages) return emptyList()
         if (persistentMessageSequence && seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
         if (source.historical && source.historyRead == null && rowHistorical[id] == false) return emptyList()
         if (seq != null) rowSequences[id] = seq
-        val blocks = message.array("content").orEmpty().filterNot(::internalMessage)
-        rawMessageText[id] = blocks.filter { it.text("type") == "text" }.joinToString("") { it.text("text").orEmpty() }
-            .ifEmpty { message.text("text").orEmpty() }
+        val blocks = message.array("content").orEmpty()
         val parts = contentParts(blocks, RemoteMediaRevision(id, seq, source.historical, source.historyRead))
             .ifEmpty { message.text("text")?.let { listOf(MessagePart.Text(it)) }.orEmpty() }
         val previous = rows[id]
@@ -500,40 +414,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val clientId = directClientId ?: previous?.clientMessageId ?: requestClientId
         val row = TimelineMessage(id, role, parts, source.time, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
             clientMessageId = clientId, contentRevision = ++revision, generationId = nativeGeneration,
-            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoning(blocks, streaming),
-            historySequence = if (persistentMessageSequence) seq ?: previous?.historySequence else null)
-        val visible = ConversationContentSanitizer.message(row) ?: return hide(id, source)
-        rows[id] = visible
+            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoning(blocks, streaming))
+        rows[id] = row
         rowHistorical[id] = source.historical
-        return listOf(VerifiedConversationEvent.TimelineUpsert(source.id("message:$id:$revision"), source.time, revision, visible,
+        return listOf(VerifiedConversationEvent.TimelineUpsert(source.id("message:$id:$revision"), source.time, revision, row,
             if (streaming && !source.historical) StreamPresentationOrigin.LIVE else StreamPresentationOrigin.SNAPSHOT))
-    }
-
-    private fun internalMessage(value: JsonValue): Boolean = value.text("role")?.let { it !in setOf("user", "assistant") } == true || value.flag("isMeta") == true
-
-    private fun withContent(value: JsonValue, content: List<JsonValue>): JsonValue = JsonValue.JObject(
-        (value as? JsonValue.JObject)?.fields.orEmpty().filterNot { it.first == "content" } + ("content" to JsonValue.JArray(content)))
-
-    private fun suppressAttempt(attempt: String, source: Source): List<VerifiedConversationEvent> {
-        hiddenAttempts += attempt
-        attempts.remove(attempt)
-        return suppressMessage("remote-stream:$attempt", source)
-    }
-
-    private fun suppressMessage(id: String?, source: Source): List<VerifiedConversationEvent> {
-        if (id == null) return emptyList()
-        hiddenMessages += id
-        rawMessageText.remove(id)
-        liveContent.remove(id)
-        codexContent.remove(id)
-        return hide(id, source)
-    }
-
-    private fun hide(id: String?, source: Source): List<VerifiedConversationEvent> {
-        if (id == null || rows.remove(id) == null) return emptyList()
-        rowHistorical.remove(id)
-        return listOf(VerifiedConversationEvent.TimelineTombstoned(source.id("hidden:$id:${++revision}"), source.time,
-            id, revision, ConversationId(sessionId)))
     }
 
     private fun contentText(value: JsonValue): String = value.array("content").orEmpty().mapNotNull { if (it.text("type") == "text") it.text("text") else null }.joinToString("")
