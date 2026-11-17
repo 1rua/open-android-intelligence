@@ -229,6 +229,8 @@
     <string name="conn_toast_download_recovery_failed">未完成的下载恢复失败，已保留恢复记录，可在附件卡片重试。</string>
 
     <!-- 首次引导与部署教程 (Onboarding) -->
+    <string name="conn_onboarding_remote_setup_category">Remote 设置</string>
+    <string name="conn_onboarding_connection_heading">连接</string>
     <string name="conn_onboarding_deploy_choice_title">准备连接\nDSH Remote</string>
     <string name="conn_onboarding_deploy_choice_desc">使用 Remote 账号登录，发现你的电脑，再手动选择后端与工作区。</string>
     <string name="conn_onboarding_deploy_choice_already_deployed">准备登录</string>

@@ -84,7 +84,7 @@ fun RemoteConnectionChoiceScreen(
             .testTag("onboarding-deployment"),
     ) {
         OnboardingStepHeader(
-            categoryTitle = "REMOTE SETUP",
+            categoryTitle = stringResource(UiR.string.conn_onboarding_remote_setup_category),
             stepIndex = 4,
             totalSteps = 5,
             onBack = onBack,
@@ -101,7 +101,7 @@ fun RemoteConnectionChoiceScreen(
                 .padding(top = Dimensions.SpaceSmall),
         ) {
             Text(
-                text = "CONNECTION",
+                text = stringResource(UiR.string.conn_onboarding_connection_heading),
                 style = MaterialTheme.typography.labelSmall,
                 letterSpacing = 2.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

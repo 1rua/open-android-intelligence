@@ -10,6 +10,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** 仓储拥有一个固定端点和连接代次；切换只能创建新实例，旧结果无法改写新分区。 */
 class RemoteConversationRepository(
@@ -46,6 +48,7 @@ class RemoteConversationRepository(
     override val generationState: StateFlow<GenerationState> = generation.generationState
     private val approvals = ConcurrentHashMap<String, Pair<String, String>>()
     private val held = ConcurrentHashMap<String, LinkedHashMap<String, OutgoingMessage>>()
+    private val deliveryLocks = ConcurrentHashMap<String, Mutex>()
     private val acceptedUserMessages = ConcurrentHashMap<Pair<String, String>, String>()
 
     init { require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" } }
@@ -124,6 +127,8 @@ class RemoteConversationRepository(
                         } } }
                         decoded.forEach { publish(id, it) }
                         settlePending(id, target)
+                        // 队列跟随原生任务状态，不依赖该轮是否由本机提交。
+                        retryPendingDeliveries(id)
                         activeConversationChanged()
                     }
                 } catch (cancelled: CancellationException) {
@@ -221,6 +226,7 @@ class RemoteConversationRepository(
                     member, AgentMessageStatus.DELIVERED, 1, null, nativeGeneration)) }
                 // 流可先于 RPC 回执完成；用持久到本连接结束的终态事实再次核对，而不是重启该轮。
                 settlePending(conversationId, target)
+                retryPendingDeliveries(conversationId)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (cause: Exception) {
                 // 已发出的 mutation 没有回执时保持原提交身份，不能画成可盲目重发的确定失败。
@@ -274,7 +280,6 @@ class RemoteConversationRepository(
                 acceptedUserMessages[id to member.value] ?: member.value, member, status, 2, if (status == AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_REQUEST_FAILED else null,
                 terminal.generationId)) }
         }
-        retryPendingDeliveries(id)
     }
     override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance =
         submitBatch(batch.clientConversationId ?: activeConversationId() ?: throw RemoteSessionException("CONVERSATION_REQUIRED"), batch)
@@ -291,10 +296,13 @@ class RemoteConversationRepository(
         synchronized(queue) { queue.values.map { PendingDelivery(it.clientMessageId, ConversationId(conversationId), it.text, it.attachmentIds.size, PendingDeliveryState.QUEUED) } }
     }.orEmpty()
     override suspend fun retryPendingDeliveries(conversationId: String) {
-        if (projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN)) return
-        val queue = held[conversationId] ?: return
-        val next = synchronized(queue) { queue.entries.firstOrNull()?.also { queue.remove(it.key) }?.value } ?: return
-        submitMessage(conversationId, next)
+        // 附件准备会挂起；同会话的其他触发者必须等队首建立任务后再判断是否继续。
+        deliveryLocks.computeIfAbsent(conversationId) { Mutex() }.withLock {
+            if (projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED, GenerationState.OUTCOME_UNKNOWN)) return@withLock
+            val queue = held[conversationId] ?: return@withLock
+            val next = synchronized(queue) { queue.entries.firstOrNull()?.also { queue.remove(it.key) }?.value } ?: return@withLock
+            submitMessage(conversationId, next)
+        }
     }
     override suspend fun retryAllPendingDeliveries() { held.keys.toList().forEach { retryPendingDeliveries(it) } }
     override suspend fun steerMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {

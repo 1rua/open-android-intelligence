@@ -149,13 +149,66 @@ class RemoteRuntimeTest {
 
     @Test fun `重新发现宿主后离线恢复不能覆盖完整工作区目录`() = runBlocking {
         ready("one")
+        val activeController = runtime.controller.value!!
+        val activeChannel = connection.channels.single()
+        activeController.editDraft("发现目录时保留草稿")
         runtime.discover(connection.listHosts().single()).join()
 
+        assertSame("发现当前宿主不能替换正在使用的工作台", activeController, runtime.controller.value)
+        assertFalse("发现当前宿主不能关闭活动通道", activeChannel.closed)
+        assertEquals("同宿主发现应复用已认证通道", 1, connection.channels.size)
+        assertTrue(runtime.controller.value!!.state.value.isOnline)
+        assertEquals("发现目录时保留草稿", runtime.controller.value!!.state.value.draft)
         assertEquals("离线恢复仍保留用户上次选择", "one", runtime.state.value.selected!!.workspaceId)
         assertEquals("设置页必须能选择宿主实际发现的所有工作区", setOf("one", "two"),
             runtime.state.value.endpoints.map { it.endpoint.key.workspaceId }.toSet())
         assertTrue("刚发现的工作区事实不能被替换成未知状态",
             runtime.state.value.endpoints.all { it.endpoint.availability == EndpointAvailability.AVAILABLE })
+    }
+
+    @Test fun `发现其他宿主后恢复原工作区在线与草稿`() = runBlocking {
+        ready("one")
+        runtime.controller.value!!.editDraft("原工作区草稿")
+        val selected = runtime.state.value.selected
+
+        runtime.discover(RemoteHostDevice("other-host", "另一台电脑", "linux", "membership", true)).join()
+
+        eventually { runtime.controller.value?.state?.value?.isOnline == true }
+        assertEquals(selected, runtime.state.value.selected)
+        assertEquals("原工作区草稿", runtime.controller.value!!.state.value.draft)
+        assertEquals(listOf("host", "other-host", "host"), connection.channels.map { it.scope.hostDeviceId })
+        assertTrue("临时发现连接必须关闭", connection.channels[1].closed)
+        assertFalse("恢复后的工作区连接必须保留", connection.channels.last().closed)
+        assertTrue(runtime.state.value.endpoints.any { it.endpoint.key.hostId == "other-host" })
+    }
+
+    @Test fun `同宿主通道已关闭时重新发现会重连并恢复在线工作区`() = runBlocking {
+        ready("one")
+        runtime.controller.value!!.editDraft("断线后保留草稿")
+        connection.channels.single().close()
+
+        runtime.discover(connection.listHosts().single()).join()
+
+        assertTrue("重新发现必须替换已关闭通道", connection.channels.size > 1)
+        eventually { runtime.controller.value?.state?.value?.isOnline == true }
+        assertEquals("断线后保留草稿", runtime.controller.value!!.state.value.draft)
+        assertEquals(setOf("one", "two"), runtime.state.value.endpoints.map { it.endpoint.key.workspaceId }.toSet())
+        assertNull(runtime.state.value.errorCode)
+        assertFalse(connection.channels.last().closed)
+    }
+
+    @Test fun `发现其他宿主失败仍恢复原工作区并保留错误`() = runBlocking {
+        ready("one")
+        val selected = runtime.state.value.selected
+        connection.failedHost = "other-host"
+
+        runtime.discover(RemoteHostDevice("other-host", "另一台电脑", "linux", "membership", true)).join()
+
+        eventually { runtime.controller.value?.state?.value?.isOnline == true }
+        assertEquals(selected, runtime.state.value.selected)
+        assertEquals("HOST_UNAVAILABLE", runtime.state.value.errorCode)
+        assertFalse(runtime.state.value.busy)
+        assertFalse(connection.channels.last().closed)
     }
 
     @Test fun `旧工作区晚到模型目录不能覆盖当前模型`() = runBlocking {
@@ -407,15 +460,19 @@ class RemoteRuntimeTest {
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
         val channels = mutableListOf<Rpc>()
+        var failedHost: String? = null
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
         override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult = error("本测试只恢复已认证账号")
         override suspend fun restore() = RemoteActiveAccount("https://remote.example", "account", 1).also { account.value = it }
         override suspend fun listHosts() = listOf(RemoteHostDevice("host", "电脑", "linux", "membership", true))
-        override suspend fun connect(hostDeviceId: String): RemoteRpcChannel = Rpc(channels.size + 1).also {
-            channels += it
-            // 主动聊天使用本机客户端角色；夹具仍保留完整认证绑定和正式指纹格式。
-            peers[it.scope.connectionId] = AuthenticatedRemotePeer(
-                it.scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.CLIENT)
+        override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
+            if (hostDeviceId == failedHost) throw RemoteRpcException("HOST_UNAVAILABLE")
+            return Rpc(channels.size + 1, hostDeviceId).also {
+                channels += it
+                // 主动聊天使用本机客户端角色；夹具仍保留完整认证绑定和正式指纹格式。
+                peers[it.scope.connectionId] = AuthenticatedRemotePeer(
+                    it.scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.CLIENT)
+            }
         }
         var peerReads = 0
         override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer {
@@ -435,8 +492,8 @@ class RemoteRuntimeTest {
             if (logoutFailure) throw RemoteRpcException("REMOTE_LOGOUT_INCOMPLETE")
         }
     }
-    private inner class Rpc(generation: Int) : RemoteRpcChannel {
-        override val scope = RemoteRpcConnectionScope("https://remote.example", "account", "host", "client", "connection-$generation", generation.toLong())
+    private inner class Rpc(generation: Int, hostDeviceId: String) : RemoteRpcChannel {
+        override val scope = RemoteRpcConnectionScope("https://remote.example", "account", hostDeviceId, "client", "connection-$generation", generation.toLong())
         override val capabilities = setOf("harness.remote.v3")
         override val events = MutableSharedFlow<RemoteRpcEvent>()
         var closed = false

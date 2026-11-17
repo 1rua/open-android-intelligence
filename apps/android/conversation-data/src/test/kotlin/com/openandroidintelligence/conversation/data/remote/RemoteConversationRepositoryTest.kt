@@ -15,7 +15,7 @@ import org.junit.Test
 class RemoteConversationRepositoryTest {
     private val local = RemoteLocalIds.encode("hermes:相同/session")
     private val scope = ConversationScope("profile", "endpoint", "account", "install")
-    private fun key(workspace: String) = EndpointKey(RemoteServiceOrigin.fromCanonicalOrigin("https://remote.example"), "account", "host", BackendId("hermes"), workspace)
+    private fun key(workspace: String, backend: String = "hermes") = EndpointKey(RemoteServiceOrigin.fromCanonicalOrigin("https://remote.example"), "account", "host", BackendId(backend), workspace)
     private class Carrier(workspace: RemoteWorkspace) : RemoteSessionCarrier {
         override val channel = object : RemoteRpcChannel {
             override val scope = RemoteRpcConnectionScope("https://remote.example", "account", "host", "client", "connection", 1)
@@ -24,9 +24,10 @@ class RemoteConversationRepositoryTest {
             override suspend fun invoke(method: String, params: JsonValue.JObject, requestId: String, timeoutMs: Long) = obj()
             override suspend fun close() = Unit
         }
-        override val backend = "hermes"
+        override val backend = workspace.endpoint.key.backendId.value
         override val capabilities = setOf(SessionCapability.LIST, SessionCapability.HISTORY, SessionCapability.CREATE, SessionCapability.SEND)
         val frames = MutableSharedFlow<JsonValue>()
+        var followFrames: (String) -> Flow<JsonValue> = { frames }
         val prompts = mutableListOf<Pair<String, List<JsonValue>>>()
         var promptResult: suspend () -> JsonValue = { obj("accepted" to true, "stopReason" to "in_progress") }
         var historyRead: suspend () -> RemoteHistoryPage = { RemoteHistoryPage(listOf(obj("type" to "event", "event" to obj(
@@ -36,7 +37,7 @@ class RemoteConversationRepositoryTest {
         override suspend fun sessions(workspace: RemoteWorkspace, page: PageRequest) = RemoteSessionPage(listOf(RemoteSessionRow("hermes:相同/session", "会话", 0, 1)))
         override suspend fun create(workspace: RemoteWorkspace) = RemoteSessionRow("hermes:相同/session", "", 0, 0)
         override suspend fun history(sessionId: String, page: PageRequest): RemoteHistoryPage { assertEquals("hermes:相同/session", sessionId); return historyRead() }
-        override fun follow(sessionId: String): Flow<JsonValue> = flow { emit(obj("type" to "remote-stream-ready")); emitAll(frames) }
+        override fun follow(sessionId: String): Flow<JsonValue> = flow { emit(obj("type" to "remote-stream-ready")); emitAll(followFrames(sessionId)) }
         override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue {
             prompts += sessionId to content; return promptResult()
         }
@@ -111,6 +112,157 @@ class RemoteConversationRepositoryTest {
         runCurrent()
         assertEquals(GenerationState.COMPLETED, repo.generationState.value)
         repo.close()
+    }
+    @Test fun `其他客户端的任务结束后按顺序自动发送排队消息`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val carrier = Carrier(workspace).apply { promptResult = { obj("turn" to obj("id" to "turn-${prompts.size}")) } }
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local })
+        repo.timeline(local, PageRequest()); runCurrent()
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj(
+            "threadId" to "hermes:相同/session", "turn" to obj("id" to "other-client-turn"))))
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("queued-first"), "排队一", delivery = MessageDeliveryMode.QUEUE))
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("queued-second"), "排队二", delivery = MessageDeliveryMode.QUEUE))
+        runCurrent()
+        assertTrue(carrier.prompts.isEmpty())
+        assertEquals(listOf("queued-first", "queued-second"), repo.pendingDeliveries(local).map { it.clientMessageId.value })
+
+        val completed = obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+            "turn" to obj("id" to "other-client-turn", "status" to "completed")))
+        carrier.frames.emit(completed); runCurrent()
+        assertEquals(listOf("排队一"), carrier.prompts.map { it.second.single().text("text") })
+        assertEquals(listOf("queued-second"), repo.pendingDeliveries(local).map { it.clientMessageId.value })
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+
+        carrier.frames.emit(completed); runCurrent()
+        assertEquals(1, carrier.prompts.size)
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+            "turn" to obj("id" to "turn-1", "status" to "completed"))))
+        runCurrent()
+        assertEquals(listOf("排队一", "排队二"), carrier.prompts.map { it.second.single().text("text") })
+        assertTrue(repo.pendingDeliveries(local).isEmpty())
+        repo.close()
+    }
+    @Test fun `本地任务结算后其他客户端的任务结束仍会发送排队消息`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val carrier = Carrier(workspace).apply { promptResult = { obj("turn" to obj("id" to "turn-${prompts.size}")) } }
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local })
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("previous-local"), "先前消息")); runCurrent()
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+            "turn" to obj("id" to "turn-1", "status" to "completed"))))
+        runCurrent()
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj(
+            "threadId" to "hermes:相同/session", "turn" to obj("id" to "other-client-turn"))))
+        runCurrent()
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("queued"), "排队消息", delivery = MessageDeliveryMode.QUEUE))
+        runCurrent()
+        assertEquals(1, carrier.prompts.size)
+        carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+            "turn" to obj("id" to "other-client-turn", "status" to "completed"))))
+        runCurrent()
+        assertEquals(listOf("先前消息", "排队消息"), carrier.prompts.map { it.second.single().text("text") })
+        assertTrue(repo.pendingDeliveries(local).isEmpty())
+        repo.close()
+    }
+    @Test fun `任务终态先到且队首等待附件时迟到回执不能越过队首发送`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val previousResponse = CompletableDeferred<JsonValue>()
+        val attachmentStarted = CompletableDeferred<Unit>()
+        val attachmentReady = CompletableDeferred<List<JsonValue>>()
+        val carrier = Carrier(workspace).apply {
+            promptResult = {
+                if (prompts.size == 1) previousResponse.await()
+                else obj("turn" to obj("id" to "turn-${prompts.size}"))
+            }
+        }
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, attachmentContent = { id, draft ->
+            assertEquals(local, id)
+            assertEquals("draft", draft)
+            attachmentStarted.complete(Unit)
+            attachmentReady.await()
+        })
+        try {
+            repo.submitMessage(local, OutgoingMessage(ClientMessageId("previous"), "原任务")); runCurrent()
+            carrier.frames.emit(obj("method" to "turn/started", "params" to obj(
+                "threadId" to "hermes:相同/session", "turn" to obj("id" to "previous-turn"))))
+            runCurrent()
+            repo.submitMessage(local, OutgoingMessage(ClientMessageId("queued-attachment"), "排队附件", listOf("draft"), delivery = MessageDeliveryMode.QUEUE))
+            repo.submitMessage(local, OutgoingMessage(ClientMessageId("queued-text"), "排队文本", delivery = MessageDeliveryMode.QUEUE))
+            carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+                "turn" to obj("id" to "previous-turn", "status" to "completed"))))
+            runCurrent()
+            assertTrue(attachmentStarted.isCompleted)
+            assertEquals(1, carrier.prompts.size)
+
+            previousResponse.complete(obj("turn" to obj("id" to "previous-turn")))
+            runCurrent()
+            assertEquals("队首附件准备完成前，迟到回执不能发送下一条消息", listOf("原任务"),
+                carrier.prompts.map { it.second.first().text("text") })
+            assertEquals(listOf("queued-text"), repo.pendingDeliveries(local).map { it.clientMessageId.value })
+
+            attachmentReady.complete(listOf(obj("type" to "resource_link", "uri" to "file:attachment")))
+            runCurrent()
+            assertEquals(listOf("原任务", "排队附件"), carrier.prompts.map { it.second.first().text("text") })
+            assertEquals(listOf("queued-text"), repo.pendingDeliveries(local).map { it.clientMessageId.value })
+            carrier.frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+                "turn" to obj("id" to "turn-2", "status" to "completed"))))
+            runCurrent()
+            assertEquals(listOf("原任务", "排队附件", "排队文本"), carrier.prompts.map { it.second.first().text("text") })
+            assertTrue(repo.pendingDeliveries(local).isEmpty())
+        } finally {
+            attachmentReady.complete(emptyList())
+            repo.close()
+        }
+    }
+    @Test fun `一个会话队首等待附件不阻塞另一个会话的队列发送`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val otherNative = "codex:另一个/session"
+        val other = RemoteLocalIds.encode(otherNative)
+        val firstFrames = MutableSharedFlow<JsonValue>()
+        val otherFrames = MutableSharedFlow<JsonValue>()
+        val attachmentStarted = CompletableDeferred<Unit>()
+        val attachmentReady = CompletableDeferred<List<JsonValue>>()
+        val carrier = Carrier(workspace).apply {
+            followFrames = { if (it == otherNative) otherFrames else firstFrames }
+            promptResult = { obj("turn" to obj("id" to "turn-${prompts.size}")) }
+        }
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, attachmentContent = { id, draft ->
+            assertEquals(local, id)
+            assertEquals("draft", draft)
+            attachmentStarted.complete(Unit)
+            attachmentReady.await()
+        })
+        try {
+            repo.submitMessage(local, OutgoingMessage(ClientMessageId("first-running"), "会话一任务")); runCurrent()
+            repo.submitMessage(other, OutgoingMessage(ClientMessageId("other-running"), "会话二任务")); runCurrent()
+            repo.submitMessage(local, OutgoingMessage(ClientMessageId("first-queued"), "会话一附件", listOf("draft"), delivery = MessageDeliveryMode.QUEUE))
+            repo.submitMessage(other, OutgoingMessage(ClientMessageId("other-queued"), "会话二排队", delivery = MessageDeliveryMode.QUEUE))
+
+            firstFrames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to "hermes:相同/session",
+                "turn" to obj("id" to "turn-1", "status" to "completed"))))
+            runCurrent()
+            assertTrue(attachmentStarted.isCompleted)
+            assertEquals(2, carrier.prompts.size)
+            otherFrames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to otherNative,
+                "turn" to obj("id" to "turn-2", "status" to "completed"))))
+            runCurrent()
+            assertEquals(listOf("会话一任务", "会话二任务", "会话二排队"),
+                carrier.prompts.map { it.second.first().text("text") })
+            assertEquals(otherNative, carrier.prompts.last().first)
+            assertTrue(repo.pendingDeliveries(other).isEmpty())
+
+            attachmentReady.complete(listOf(obj("type" to "resource_link", "uri" to "file:attachment")))
+            runCurrent()
+            assertEquals(listOf("会话一任务", "会话二任务", "会话二排队", "会话一附件"),
+                carrier.prompts.map { it.second.first().text("text") })
+            assertEquals("hermes:相同/session", carrier.prompts.last().first)
+        } finally {
+            attachmentReady.complete(emptyList())
+            repo.close()
+        }
     }
     @Test fun `连续普通发送的旧任务终态不能完成较新请求`() = runTest {
         val workspace = RemoteWorkspace(AgentEndpoint(key("first"), "一"), "/first")

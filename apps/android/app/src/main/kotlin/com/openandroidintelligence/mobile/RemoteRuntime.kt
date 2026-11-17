@@ -326,10 +326,22 @@ class RemoteRuntime(
     fun discover(host: RemoteHostDevice) = scope.launch {
         selection.withLock {
             mutableState.update { it.copy(busy = true, errorCode = null) }
+            val activeAccount = state.value.account
+            var borrowed = channel?.takeIf { it.scope.hostDeviceId == host.deviceId }
+            var previousWorkspace = repository?.workspace?.takeIf { borrowed == null }
             var discovery: RemoteRpcChannel? = null
             try {
-                retire()
-                discovery = accountRuntime.connect(host.deviceId)
+                try {
+                    borrowed?.invoke("harness.transport.describe", JsonValue.JObject(emptyList()))
+                } catch (failure: RemoteRpcException) {
+                    if (failure.deliveryOutcome != RemoteDeliveryOutcome.NOT_SENT || failure.code == "RATE_LIMITED") throw failure
+                    // 只读探测确认旧通道不可发送时，重新连接并恢复原工作区。
+                    borrowed = null
+                    previousWorkspace = repository?.workspace
+                }
+                // 同宿主发现复用活动通道，避免替换正在聊天的连接与控制器。
+                if (borrowed == null) retire()
+                discovery = borrowed ?: accountRuntime.connect(host.deviceId)
                 val carriers = carriers(discovery)
                 val failures = linkedMapOf<String, String>()
                 val endpoints = carriers.flatMap { carrier ->
@@ -347,14 +359,29 @@ class RemoteRuntime(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { fail(failure) }
             finally {
-                discovery?.close()
-                if (controller.value == null) state.value.account?.let { restoreOffline(it) }
-                mutableState.update { it.copy(busy = false) }
+                withContext(NonCancellable) {
+                    try {
+                        if (discovery !== borrowed) discovery?.close()
+                    } finally {
+                        try {
+                            // 当前传输只保留一个主动 Host；跨宿主发现结束后恢复原选择。
+                            if (previousWorkspace != null && scope.isActive && accountRuntime.account.value == activeAccount) {
+                                val discoveryError = state.value.errorCode
+                                selectLocked(previousWorkspace)
+                                if (state.value.errorCode == null && discoveryError != null)
+                                    mutableState.update { it.copy(errorCode = discoveryError) }
+                            } else if (controller.value == null) state.value.account?.let { restoreOffline(it) }
+                        } finally { mutableState.update { it.copy(busy = false) } }
+                    }
+                }
             }
         }
     }
     fun select(endpoint: RemoteWorkspace) = scope.launch { selectInternal(endpoint) }
     private suspend fun selectInternal(endpoint: RemoteWorkspace) = selection.withLock {
+        selectLocked(endpoint)
+    }
+    private suspend fun selectLocked(endpoint: RemoteWorkspace) {
         mutableState.update { it.copy(busy = true, errorCode = null, models = null) }
         try {
             retire()

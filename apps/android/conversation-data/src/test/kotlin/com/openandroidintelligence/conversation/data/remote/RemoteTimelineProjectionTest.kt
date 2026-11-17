@@ -65,6 +65,182 @@ class RemoteTimelineProjectionTest {
         assertEquals("正文", text(projection))
     }
 
+    @Test fun `ACP同一用户消息的分片更新同一气泡并保留完整正文`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val first = projection.accept(acp("user_message_chunk", "问题前半", listOf("messageId" to "user-message")))
+            .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+        val second = projection.accept(acp("user_message_chunk", "问题后半", listOf("messageId" to "user-message")))
+            .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+
+        assertEquals(first.message.id, second.message.id)
+        assertEquals(1, projection.rows.size)
+        assertEquals("问题前半问题后半", text(projection))
+        assertEquals("user", second.message.sender)
+        assertTrue(second.revision > first.revision)
+    }
+
+    @Test fun `ACP不同用户消息标识保持独立且后续分片回到原消息`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(acp("user_message_chunk", "甲前", listOf("messageId" to "user-a")))
+        projection.accept(acp("user_message_chunk", "乙", listOf("messageId" to "user-b")))
+        projection.accept(acp("user_message_chunk", "甲后", listOf("messageId" to "user-a")))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals(listOf("user", "user"), projection.rows.values.map { it.sender })
+        assertEquals("甲前甲后\n乙", text(projection))
+    }
+
+    @Test fun `ACP交错的用户和助手分片分别累加到各自消息`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        projection.accept(acp("user_message_chunk", "用户前", listOf("messageId" to "user-message")))
+        projection.accept(acp("agent_message_chunk", "助手前", listOf("messageId" to "assistant-message")))
+        projection.accept(acp("user_message_chunk", "用户后", listOf("messageId" to "user-message")))
+        projection.accept(acp("agent_message_chunk", "助手后", listOf("messageId" to "assistant-message")))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals(listOf("user", "assistant"), projection.rows.values.map { it.sender })
+        assertEquals("用户前用户后\n助手前助手后", text(projection))
+    }
+
+    @Test fun `ACP缺少或空消息标识时保持独立用户消息`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(acp("user_message_chunk", "无标识"))
+        projection.accept(acp("user_message_chunk", "空标识", listOf("messageId" to null)))
+        projection.accept(acp("user_message_chunk", "空串甲", listOf("messageId" to "")))
+        projection.accept(acp("user_message_chunk", "空串乙", listOf("messageId" to "")))
+        projection.accept(acp("user_message_chunk", "空白甲", listOf("messageId" to " \t ")))
+        projection.accept(acp("user_message_chunk", "空白乙", listOf("messageId" to " \t ")))
+
+        assertEquals(6, projection.rows.size)
+        assertEquals("无标识\n空标识\n空串甲\n空串乙\n空白甲\n空白乙", text(projection))
+    }
+
+    @Test fun `ACP交错用户分片保留消息首次出现时间与显示顺序`() {
+        var time = 1_000L
+        val projection = RemoteTimelineProjection(local, clock = { time })
+        projection.accept(acp("user_message_chunk", "甲前", listOf("messageId" to "user-a")))
+        time = 2_000L
+        projection.accept(acp("user_message_chunk", "乙", listOf("messageId" to "user-b")))
+        time = 3_000L
+        val updated = projection.accept(acp("user_message_chunk", "甲后", listOf("messageId" to "user-a")))
+            .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+
+        assertEquals(listOf(1_000L, 2_000L), projection.rows.values.map { it.timestamp })
+        assertEquals("更新事件仍保留本次接收时间", 3_000L, updated.occurredAt)
+        assertEquals(listOf("甲前甲后", "乙"), projection.rows.values.sortedBy { it.timestamp }.map {
+            it.parts.filterIsInstance<MessagePart.Text>().joinToString("") { part -> part.value }
+        })
+    }
+
+    @Test fun `ACP终态补帧不将已有用户消息移动到助手回复之后`() {
+        var time = 1_000L
+        val projection = RemoteTimelineProjection(local, clock = { time })
+        projection.beginTurn("request")
+        val user = acp("user_message_chunk", "问题", listOf("messageId" to "user-message"))
+        val answer = acp("agent_message_chunk", "回答")
+        projection.accept(user)
+        time = 2_000L
+        projection.accept(answer)
+        time = 3_000L
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(user, answer))))
+
+        assertEquals(listOf("user", "assistant"), projection.rows.values.sortedBy { it.timestamp }.map { it.sender })
+        assertEquals(1_000L, projection.rows.values.single { it.sender == "user" }.timestamp)
+    }
+
+    @Test fun `ACP终态追赶不重复同标识用户正文且保留助手补帧`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val user = acp("user_message_chunk", "问题", listOf("messageId" to "user-message"))
+        projection.accept(user)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            user, acp("agent_message_chunk", "回答"),
+        ))))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals("问题\n回答", text(projection))
+        assertEquals(listOf("user", "assistant"), projection.rows.values.map { it.sender })
+    }
+
+    @Test fun `ACP已有助手实时正文时仍补齐同标识用户缺失分片`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val userStart = acp("user_message_chunk", "问题前半", listOf("messageId" to "user-message"))
+        val answer = acp("agent_message_chunk", "回答")
+        projection.accept(userStart)
+        projection.accept(answer)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            userStart, acp("user_message_chunk", "问题后半", listOf("messageId" to "user-message")), answer,
+        ))))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals("问题前半问题后半\n回答", text(projection))
+    }
+
+    @Test fun `ACP追赶补齐同标识用户先前漏收的前后分片`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val middle = acp("user_message_chunk", "中段", listOf("messageId" to "user-message"))
+        val answer = acp("agent_message_chunk", "回答")
+        projection.accept(middle)
+        projection.accept(answer)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            acp("user_message_chunk", "前缀", listOf("messageId" to "user-message")),
+            middle,
+            acp("user_message_chunk", "后缀", listOf("messageId" to "user-message")), answer,
+        ))))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals("前缀中段后缀\n回答", text(projection))
+    }
+
+    @Test fun `ACP追赶中交错的不同用户消息分别恢复完整正文`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val userStart = acp("user_message_chunk", "甲前", listOf("messageId" to "user-a"))
+        projection.accept(userStart)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            userStart,
+            acp("user_message_chunk", "乙", listOf("messageId" to "user-b")),
+            acp("user_message_chunk", "甲后", listOf("messageId" to "user-a")),
+            acp("agent_message_chunk", "回答"),
+        ))))
+
+        assertEquals(3, projection.rows.size)
+        assertEquals("甲前甲后\n乙\n回答", text(projection))
+    }
+
+    @Test fun `ACP追赶中无标识用户消息不凭相同正文合并`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        val user = acp("user_message_chunk", "相同正文")
+        projection.accept(user)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            user, acp("agent_message_chunk", "回答"),
+        ))))
+
+        assertEquals(3, projection.rows.size)
+        assertEquals("相同正文\n相同正文\n回答", text(projection))
+    }
+
+    @Test fun `ACP追赶被截断时保留已收到的同标识用户前缀`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("request")
+        projection.accept(acp("user_message_chunk", "已知前缀", listOf("messageId" to "user-message")))
+        val middle = acp("user_message_chunk", "已知中段", listOf("messageId" to "user-message"))
+        projection.accept(middle)
+        projection.accept(acp("prompt_completed", extra = listOf("stopReason" to "end_turn", "catchUp" to listOf(
+            middle,
+            acp("user_message_chunk", "晚到尾段", listOf("messageId" to "user-message")),
+            acp("agent_message_chunk", "回答"),
+        ))))
+
+        assertEquals(2, projection.rows.size)
+        assertEquals("已知前缀已知中段\n回答", text(projection))
+    }
+
     @Test fun `Harness思考流与历史思考块使用既有思考卡片结构`() {
         val projection = RemoteTimelineProjection(local)
         projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "attempt", "turn" to 1)))

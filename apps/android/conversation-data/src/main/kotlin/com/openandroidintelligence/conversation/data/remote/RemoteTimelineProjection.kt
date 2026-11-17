@@ -103,6 +103,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private var acpContent = AssistantContent()
     private var acpTurnHadContent = false
     private var acpMessageId: String? = null
+    private val acpUserContent = mutableMapOf<String, MutableList<JsonValue>>()
     private var liveSequence = 0L
     val approvalHandles = mutableMapOf<String, String>()
 
@@ -342,17 +343,22 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         if (!source.historical) generationState = GenerationState.RUNNING
                         return upsertContent(requireNotNull(acpMessageId), acpContent, source)
                     }
-                    "user_message_chunk" -> return upsert(obj("id" to "remote-acp-user:${++liveSequence}", "content" to listOf(update.at("content") ?: obj())), "user", false, null, source)
+                    "user_message_chunk" -> {
+                        val chunk = update.at("content") ?: return emptyList()
+                        val messageId = update.text("messageId")?.takeIf { it.isNotBlank() }
+                        // 只合并后端明确标为同一消息的分片；旧协议缺少身份时不能猜测消息边界。
+                        val id = messageId?.let { "remote-acp-user:message:$it" } ?: "remote-acp-user:${++liveSequence}"
+                        val content = if (messageId != null) {
+                            acpUserContent.getOrPut(id) { mutableListOf() }.apply { add(chunk) }
+                        } else listOf(chunk)
+                        return upsert(obj("id" to id, "content" to content), "user", false, null, source,
+                            messageTimestamp = rows[id]?.timestamp?.takeIf { it > 0L } ?: source.time)
+                    }
                     "tool_call", "tool_call_update" -> return execution(update, update.text("toolCallId") ?: "tool:${++liveSequence}", source,
                         update.text("status") in setOf("completed", "failed"))
                     "session_info_update" -> update.text("title")?.let { return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), it)) }
                     "prompt_completed", "prompt_failed" -> {
-                        val catchUp = update.array("catchUp").orEmpty()
-                        val recovered = if (!acpTurnHadContent && catchUp.isNotEmpty()) {
-                            // catchUp 是本轮独立快照；清掉上一轮可能因断线残留的 ACP 内容再逐帧回放。
-                            resetAcpTurnContent()
-                            catchUp.flatMap { accept(it, source.historical, source.time) }
-                        } else emptyList()
+                        val recovered = recoverAcpCatchUp(update.array("catchUp").orEmpty(), source)
                         val state = when {
                             update.text("sessionUpdate") == "prompt_failed" -> GenerationState.FAILED
                             update.text("stopReason") == "cancelled" -> GenerationState.CANCELLED
@@ -366,6 +372,41 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
         }
         return emptyList()
+    }
+
+    private fun identifiedAcpUserChunk(frame: JsonValue): Pair<String, JsonValue>? {
+        if (frame.text("method") != "session/update") return null
+        val params = frame.at("params") ?: return null
+        if (params.text("threadId")?.let { it != nativeSessionId } == true || params.text("sessionId")?.let { it != nativeSessionId } == true) return null
+        val update = params.at("update") ?: params
+        if ((update.text("sessionUpdate") ?: update.text("type")) != "user_message_chunk") return null
+        val messageId = update.text("messageId")?.takeIf { it.isNotBlank() } ?: return null
+        val content = update.at("content") ?: return null
+        return "remote-acp-user:message:$messageId" to content
+    }
+
+    private fun recoverAcpCatchUp(frames: List<JsonValue>, source: Source): List<VerifiedConversationEvent> {
+        val users = linkedMapOf<String, MutableList<JsonValue>>()
+        frames.forEach { frame -> identifiedAcpUserChunk(frame)?.let { (id, chunk) ->
+            users.getOrPut(id) { mutableListOf() }.add(chunk)
+        } }
+        val recoverOtherContent = !acpTurnHadContent
+        if (recoverOtherContent && frames.isNotEmpty()) resetAcpTurnContent()
+        return frames.flatMap { frame ->
+            val user = identifiedAcpUserChunk(frame)
+            if (user != null) {
+                val (id, _) = user
+                val snapshot = users.remove(id) ?: return@flatMap emptyList()
+                val known = acpUserContent[id].orEmpty()
+                // 补帧可能被截断；仅在按顺序包含全部已收分片时替换，避免丢失已知正文。
+                var included = 0
+                snapshot.forEach { chunk -> if (included < known.size && chunk == known[included]) included++ }
+                if (included != known.size) return@flatMap emptyList()
+                acpUserContent[id] = snapshot
+                upsert(obj("id" to id, "content" to snapshot), "user", false, null, source,
+                    messageTimestamp = rows[id]?.timestamp?.takeIf { it > 0L } ?: source.time)
+            } else if (recoverOtherContent) accept(frame, source.historical, source.time) else emptyList()
+        }
     }
 
     private fun finalizeStreaming(eventId: String, source: Source): List<VerifiedConversationEvent> {
@@ -420,7 +461,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         } }
     }
 
-    private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, source: Source, messageGeneration: String? = generationId): List<VerifiedConversationEvent> {
+    private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, source: Source,
+        messageGeneration: String? = generationId, messageTimestamp: Long = source.time): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
         if (persistentMessageSequence && seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
@@ -492,7 +534,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             knownItem == null || knownItem == id
         } else null
         val clientId = directClientId ?: previous?.clientMessageId ?: requestClientId
-        val row = TimelineMessage(id, role, parts, source.time, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
+        val row = TimelineMessage(id, role, parts, messageTimestamp, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
             clientMessageId = clientId, contentRevision = ++revision, generationId = nativeGeneration,
             executionSteps = previous?.executionSteps.orEmpty(),
             localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoningList)
