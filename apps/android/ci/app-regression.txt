@@ -77,6 +77,8 @@ SqliteConversationMigrationTest
 TemporaryApprovalCopyTest
 TrustModePersistenceTest
 WorkbenchNavigationTest
+MediaCompressionTest
+FullTurnInteractionE2ETest
 
 [settings]
 RemoteTutorialsTest

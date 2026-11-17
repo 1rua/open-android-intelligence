@@ -92,7 +92,7 @@ internal fun rememberAssistantTimelineContent(
  * [TimelineEntry] 列表：这里只负责呈现，不持有第二份会话真相，也不连接 Gateway。
  *
  * 复用 App 内同一批渲染组件，助理界面因此不是"另一套聊天界面"：
- * - [rememberTimelineDisplayItems]：连续的助手执行过程折叠成执行段；
+ * - [rememberTimelineDisplayItems]：连续的助手执行过程整理为按时序展开的执行段；
  * - [TimelineDisplayRow]：流式文本、Markdown、思考块与工具调用块、审批卡；
  * - [AttachmentPreviewHost]：宿主级图片大图预览（列表项回收时预览不消失）；
  * - [rememberExecutionTimingStore]：会话级执行耗时；
@@ -112,7 +112,7 @@ internal fun rememberAssistantTimelineContent(
  * @param previews 会话级本地缩略图与语音时长；随会话销毁。
  * @param threadId 会话身份：解析缓存与耗时记录按它隔离，切换会话时重建。
  * @param generation 当前生成状态；用于在还没有流式正文时显示"正在思考"，
- *   并让已结束的执行段立刻折叠。
+ *   并让已结束的执行段立刻完成状态收束。
  * @param onDecide 提交一次审批决策；卡片自己把 `approvalId` 绑定进回调。
  * @param listState 宿主可注入的列表状态（例如需要与其它滚动逻辑共享时）；
  *   为 null 时由本组件自行 remember。

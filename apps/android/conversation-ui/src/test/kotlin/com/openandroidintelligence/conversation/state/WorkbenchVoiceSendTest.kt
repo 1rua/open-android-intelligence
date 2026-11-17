@@ -204,8 +204,36 @@ class WorkbenchVoiceSendTest {
         repository.generationState.value = GenerationState.IDLE
         repository.generationId.value = "gen_live"
         runCurrent()
+        assertTrue("Turn 结束后即使保留 generationId 也必须允许麦克风录音", controller.canSendVoiceAttachment("thread_a"))
+        controller.cancel()
+    }
+
+    @Test fun voiceCanBeSentConsecutivelyWhenGenerationIdLingers() = runTest {
+        val uploads = Uploads()
+        val baseRepo = Repository()
+        val repository = TrackingRepository(baseRepo)
+        val controller = controller(repository, uploads)
+        runCurrent(); controller.openThread("thread_a"); runCurrent()
+
+        val firstVoice = async { controller.sendVoiceAttachment(selection("v1.m4a"), "thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertTrue(firstVoice.await())
+        assertEquals(1, baseRepo.sent.size)
+
+        // 模拟首轮回复进行中到结束，状态回归 IDLE 但保留 generationId
+        repository.generationState.value = GenerationState.RUNNING
+        repository.generationId.value = "turn_1"
+        runCurrent()
         assertFalse(controller.canSendVoiceAttachment("thread_a"))
-        assertEquals(0, uploads.voicePrepares)
+
+        repository.generationState.value = GenerationState.IDLE
+        runCurrent()
+        assertTrue("首次发送并生成完成后，麦克风保持可用", controller.canSendVoiceAttachment("thread_a"))
+
+        val secondVoice = async { controller.sendVoiceAttachment(selection("v2.m4a"), "thread_a") }
+        runCurrent(); uploads.completeVoice(AttachmentState.VERIFIED); runCurrent()
+        assertTrue(secondVoice.await())
+        assertEquals(2, baseRepo.sent.size)
         controller.cancel()
     }
 

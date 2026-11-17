@@ -545,8 +545,11 @@ internal class NativeConversationNotifications(
         val previous = _sessions.value.firstOrNull { it.target == target }
         val terminalAt = deliveryOccurredAt.takeIf { it > 0L } ?: now()
         terminalRounds[RoundKey(target, generationId)] = NativeConversationStatus.COMPLETED
-        val next = withRemainingRounds((previous ?: NativeConversationSession(target, generationId, sessionTitle(target), NativeConversationStatus.COMPLETED, updatedAt = terminalAt))
-            .copy(generationId = generationId, status = NativeConversationStatus.COMPLETED,
+        val currentTitle = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+            ?: previous?.title?.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
+            ?: sessionTitle(target)
+        val next = withRemainingRounds((previous ?: NativeConversationSession(target, generationId, currentTitle, NativeConversationStatus.COMPLETED, updatedAt = terminalAt))
+            .copy(generationId = generationId, title = currentTitle, status = NativeConversationStatus.COMPLETED,
                 latestReply = replies[RoundKey(target, generationId)]?.text.orEmpty(), lastOutcome = NativeConversationStatus.COMPLETED,
                 updatedAt = maxOf(previous?.updatedAt ?: 0L, terminalAt)))
         update(next, terminal = !recovered, force = true)
@@ -560,14 +563,20 @@ internal class NativeConversationNotifications(
         // Publish only after the terminal commit also covers preceding buffered
         // event/revision guards; a crash in publish must not revive those deltas.
         flushMetadata("${session.target.profileId}\u0000${session.target.accountId}")
-        if (key != null) preferences.edit().putLong("realtime.terminal.$key", session.updatedAt)
-            .commitOrLog("NativeConversationNotifications")
+        if (key != null) {
+            val editor = preferences.edit().putLong("realtime.terminal.$key", session.updatedAt)
+            if (alert) editor.putLong("done.$key", session.updatedAt)
+            editor.commitOrLog("NativeConversationNotifications")
+        }
         terminalRounds[RoundKey(session.target, session.generationId)] = session.status
         reconciliationPending += session.target
         reconciliationDeadlines[session.target] = now() + FINAL_RECONCILIATION_WINDOW
         reconciliationDueAt[session.target] = now()
         reconciliationAttemptCounts[session.target] = 0
-        update(withRemainingRounds(session.copy(lastOutcome = session.status)),
+        val finalTitle = titleFor(session.target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+            ?: session.title.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
+            ?: sessionTitle(session.target)
+        update(withRemainingRounds(session.copy(title = finalTitle, lastOutcome = session.status)),
             terminal = alert && RoundKey(session.target, session.generationId) !in recoveredRounds, force = true)
     }
 
@@ -658,7 +667,7 @@ internal class NativeConversationNotifications(
     }
 
     private fun sessionTitle(target: ReplyNotificationTarget): String = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
-        ?: context.getString(UiR.string.notif_conv_fallback_title_format, target.conversationId.takeLast(12))
+        ?: context.getString(UiR.string.notif_conv_default_title)
 
     companion object {
         private const val FINAL_RECONCILIATION_WINDOW = 120_000L

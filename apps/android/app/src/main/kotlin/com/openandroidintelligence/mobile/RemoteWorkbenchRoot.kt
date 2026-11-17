@@ -108,9 +108,11 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                         } else if (!target.first.sendVoiceAttachment(voice.selection(), target.second)) {
                             notice(app.getString(UiR.string.remote_voice_not_sent))
                         }
+                    } catch (t: Throwable) {
+                        notice(app.getString(UiR.string.remote_voice_not_sent))
                     } finally {
                         voice.close()
-                        sendingTarget.compareAndSet(target, null)
+                        sendingTarget.set(null)
                     }
                 }
             },
@@ -151,7 +153,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                 runtime.controller.value?.state?.value?.activeThreadId
             }
             // 被拒绝（未在录音 / 会话已切换）时录音器已回到 Idle，目标一并清掉。
-            if (!accepted) sendingTarget.compareAndSet(target, null)
+            if (!accepted) sendingTarget.set(null)
         }
     }
     val beginRecording: (Pair<WorkbenchController, String?>) -> Unit = { target ->

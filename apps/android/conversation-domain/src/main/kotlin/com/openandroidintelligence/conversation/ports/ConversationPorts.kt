@@ -50,6 +50,7 @@ data class TimelineMessage(
     /** 仅端侧临时流式行设为 true；不能从真实 ID 的字符串形式猜测。 */
     val localPlaceholder: Boolean = false,
     val reasoning: List<MessageReasoning> = emptyList(),
+    val isMeta: Boolean = false,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)

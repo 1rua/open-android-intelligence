@@ -18,6 +18,7 @@ import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
 import com.openandroidintelligence.conversation.model.OriginalImageState
+import com.openandroidintelligence.conversation.sanitizer.SystemPromptSanitizer
 import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
@@ -129,6 +130,7 @@ data class TimelineEntry(
     /** UI 临时来源；历史装载重新建立快照基线，不进入 checkpoint。 */
     val presentation: StreamPresentationMetadata? = null,
     val reasoning: List<com.openandroidintelligence.conversation.model.MessageReasoning> = emptyList(),
+    val isMeta: Boolean = false,
 )
 
 data class WorkbenchUiState(
@@ -1740,8 +1742,7 @@ class WorkbenchController(
                     generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
                     activeThreadId?.let { rememberExecutionTerminal(it, generationId, generation) } == true
                 update { state ->
-                    val next = if (generation == GenerationState.IDLE && state.generation in setOf(GenerationState.COMPLETED,GenerationState.CANCELLED,GenerationState.FAILED,GenerationState.UNSUPPORTED)) state
-                    else if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
+                    val next = if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
                         state.copy(generation=GenerationState.CANCELLED)
                     else if (pending != null && generation != GenerationState.COMPLETED)
                         state.copy(generation=GenerationState.CANCEL_REQUESTED)
@@ -2922,9 +2923,8 @@ class WorkbenchController(
     }
 
     /** The same live gate is used before recording and before submitting its attachment. */
-    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean =        attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
+    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean = attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
             !_state.value.managingThreads && !_state.value.activeThreadArchived &&
-            (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationId?.value == null &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
             _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&
             _state.value.generation !in setOf(GenerationState.QUEUED,GenerationState.RUNNING,GenerationState.CANCEL_REQUESTED)
@@ -2991,7 +2991,13 @@ class WorkbenchController(
             sendJob = submitWhenAttachmentsVerified()
             sendJob?.join()
             val target = attempt.conversationId ?: expectedThreadId ?: activeThreadId
-            return target?.let { atomsFor(it)[submission.clientMessageId]?.submissionState == LocalSubmissionState.ACCEPTED } == true
+            return target?.let {
+                val atom = atomsFor(it)[submission.clientMessageId]
+                attempt.requestStarted && atom != null && atom.submissionState in setOf(
+                    LocalSubmissionState.PREPARED,
+                    LocalSubmissionState.ACCEPTED,
+                )
+            } ?: false
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
                 sendJob?.cancelAndJoin()
@@ -5600,10 +5606,11 @@ class WorkbenchController(
                 is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> ""
             }
         }
-        val displayText = if (textParts.isBlank() && messageAttachments.isEmpty()) {
+        val sanitizedText = SystemPromptSanitizer.sanitize(textParts)
+        val displayText = if (sanitizedText.isBlank() && messageAttachments.isEmpty()) {
             if (message.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
         } else {
-            textParts
+            sanitizedText
         }
         val entry = TimelineEntry(
             key = message.id,
@@ -5632,6 +5639,7 @@ class WorkbenchController(
             localPlaceholder = message.localPlaceholder,
             presentation = presentationOf(message),
             reasoning = message.reasoning,
+            isMeta = message.isMeta,
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
@@ -5649,7 +5657,9 @@ class WorkbenchController(
         val queuedClientIds = _state.value.pendingDeliveries.map { it.clientMessageId.value }.toSet()
         val mirroredEntries = mergedMessages.filterNot {
             it.clientMessageId?.value in queuedClientIds
-        }.map(::renderedTimelineEntry)
+        }.map(::renderedTimelineEntry).filterNot { entry ->
+            entry.isMeta || (entry.text.isBlank() && entry.attachments.isEmpty() && entry.executionSteps.isEmpty() && entry.reasoning.isEmpty() && entry.approval == null && entry.systemThreadId == null)
+        }
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()

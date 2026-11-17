@@ -176,6 +176,14 @@ internal class AndroidReplyNotificationPublisher(
             return
         }
         val hasLiveUpdate = liveUpdates.update(session)
+        val isTerminal = session.status in setOf(
+            NativeConversationStatus.COMPLETED,
+            NativeConversationStatus.FAILED,
+            NativeConversationStatus.CANCELLED
+        ) || !session.isRunning
+        if (isTerminal) {
+            liveUpdates.cancel(session.target)
+        }
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
         // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
@@ -237,9 +245,10 @@ internal class AndroidReplyNotificationPublisher(
         } }
         val style = Notification.MessagingStyle(localUser)
             .setConversationTitle(title).addMessage(preview, session.updatedAt, agent)
+        val contentTitle = if (isTerminal) title else heading
         val notification = Notification.Builder(context, REPLY_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_agent_reply)
-            .setContentTitle(heading)
+            .setContentTitle(contentTitle)
             .setContentText(preview)
             .setSubText(heading)
             .setStyle(style)

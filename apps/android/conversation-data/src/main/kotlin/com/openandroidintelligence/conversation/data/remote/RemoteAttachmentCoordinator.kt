@@ -126,13 +126,24 @@ class RemoteAttachmentCoordinator(
         current()
         val draft = drafts[draftId] ?: throw RemoteSessionException("ATTACHMENT_NOT_FOUND")
         val staged = content[draftId] ?: throw RemoteSessionException("ATTACHMENT_NOT_FOUND")
-        val image = draft.mediaType.startsWith("image/") && (carrier.backend in setOf("harness", "codex", "antigravity", "hermes"))
+        val image = draft.mediaType.startsWith("image/", ignoreCase = true)
         if (image) {
             val bytes = withContext(Dispatchers.IO) { staging.openStream(staged.id).use { it.readBytes() } }
             try {
                 val base64 = Base64.getEncoder().encodeToString(bytes)
-                return listOf(if (carrier.backend == "codex") obj("type" to "image", "mediaType" to draft.mediaType, "data" to base64)
-                    else obj("type" to "image", "mimeType" to draft.mediaType, "data" to base64))
+                return listOf(
+                    obj(
+                        "type" to "image",
+                        "mimeType" to draft.mediaType,
+                        "mediaType" to draft.mediaType,
+                        "data" to base64,
+                        "source" to obj(
+                            "type" to "base64",
+                            "media_type" to draft.mediaType,
+                            "data" to base64,
+                        ),
+                    ),
+                )
             } finally { bytes.fill(0) }
         }
         if ("workspace.upload.v1" !in carrier.channel.capabilities) throw RemoteSessionException("WORKSPACE_UPLOAD_UNSUPPORTED")

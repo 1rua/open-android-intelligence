@@ -297,22 +297,7 @@
     <string name="conv_voice_recorded_seconds">已录制 %1$d 秒</string>
     <string name="conv_voice_action_send_cd">发送语音</string>
 
-    <!-- 10. 执行过程与耗时统计 (ExecutionViews & ExecutionTiming) -->
-    <string name="conv_exec_empty_text">此消息没有可显示的文本</string>
-    <string name="conv_exec_steps_header">执行过程 · %1$d 步</string>
-    <string name="conv_exec_steps_completed">已执行 %1$d 步</string>
-    <string name="conv_exec_failed_steps_suffix"> · 含 %1$d 步失败</string>
-    <string name="conv_exec_interrupted_suffix"> · 已中断</string>
-    <string name="conv_exec_click_collapse_suffix"> · 点击收起</string>
-    <string name="conv_exec_click_expand_suffix"> · 点击展开</string>
-    <string name="conv_exec_unknown_steps_suffix"> · %1$d 步结果未知</string>
-    <string name="conv_exec_running_suffix"> · 执行中</string>
-    <string name="conv_exec_action_collapse_label">收起执行过程</string>
-    <string name="conv_exec_action_expand_label">展开执行过程</string>
-    <string name="conv_exec_desc_with_unknown">执行过程，%1$d 步%2$s%3$s，%4$s</string>
-    <string name="conv_exec_desc_normal">执行过程，已执行 %1$d 步，%2$s</string>
-    <string name="conv_exec_has_failure_desc">执行过程包含失败步骤</string>
-    <string name="conv_exec_interrupted_desc">执行过程中断</string>
+    <!-- 10. 执行耗时统计 (ExecutionTiming) -->
     <string name="conv_exec_time_less_than_second">不到 1 秒</string>
     <string name="conv_exec_time_seconds">%1$d 秒</string>
     <string name="conv_exec_time_seconds_fraction">%1$d.%2$d 秒</string>

@@ -294,8 +294,9 @@ class ReplyNotificationsTest {
         val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
         val style = android.app.Notification.Builder.recoverBuilder(context, notification).style as android.app.Notification.MessagingStyle
         val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == notification.shortcutId }
-        assertEquals("Agent 会话", shortcut.shortLabel.toString())
-        assertEquals("Agent 会话", style.conversationTitle.toString())
+        val defaultTitle = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_conv_default_title)
+        assertEquals(defaultTitle, shortcut.shortLabel.toString())
+        assertEquals(defaultTitle, style.conversationTitle.toString())
         val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
         assertEquals(2, participants.size)
         assertTrue("Android excludes only-bot shortcuts from conversation/bubble eligibility", participants.any { !it.isBot && it.key == style.user.key })

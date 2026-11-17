@@ -14,11 +14,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import kotlin.test.assertTrue
 
 /**
- * 回合级执行过程聚合的端到端界面契约：
- * - 最终回答开始后，前面所有助手消息里的思考/工具统一收进一个折叠面板；
- * - 从明确执行块出现起使用统一面板；
+ * 回合级执行步骤在真实 [MessageTimeline] 中的界面契约（R3）：
+ * - 不使用集中式“执行过程 / 已执行 N 步”折叠框，思考与工具卡片按发生先后顺序直接平铺呈现；
+ * - 完成后的单步思考/工具卡默认收起，点击各自独立展开/收起；
  * - 没有执行块的普通多条助手消息保持逐条；
  * - 中断、只有工具没有最终回答时也不伪造回答。
  */
@@ -30,7 +31,7 @@ class MessageTimelineExecutionTest {
     val compose = createComposeRule()
 
     @Test
-    fun finalAnswerStartFoldsAllProcessStepsAboveIt() {
+    fun executionStepsRenderInChronologicalOrderAboveFinalAnswerWithoutGlobalPanel() {
         val entries = listOf(
             user("帮我打开设置"),
             assistant("<think>先确认设备状态</think>", key = "msg_thought", timestamp = 2L),
@@ -51,18 +52,27 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已执行 2 步", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("设置应用已经打开了。", substring = true).assertIsDisplayed()
-        // 折叠时过程正文不可见
-        compose.onNodeWithText("先确认设备状态", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已执行 2 步", substring = true).performClick()
-        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()
+        val thoughtTop = compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val toolTop = compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+        val finalTop = compose.onNodeWithText("设置应用已经打开了。", substring = true).assertIsDisplayed()
+            .fetchSemanticsNode().boundsInRoot.top
+
+        assertTrue(thoughtTop < toolTop, "思考卡片应在工具卡片上方")
+        assertTrue(toolTop < finalTop, "工具卡片应在最终回答上方")
+
+        // 单张思考卡完成后默认收起，点击自身可独立展开
+        compose.onNodeWithText("先确认设备状态", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).performClick()
+        compose.onNodeWithText("先确认设备状态", substring = true).assertIsDisplayed()
     }
 
     @Test
-    fun liveExecutionKeepsThoughtInsideUnifiedPanelBeforeFinalAnswer() {
+    fun liveExecutionKeepsThoughtVisibleDirectlyBeforeFinalAnswer() {
         val entries = listOf(
             user("现在几点"),
             assistant("<think>正在查询系统时间", key = "msg_live", timestamp = 2L, isStreaming = true),
@@ -72,7 +82,7 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").assertIsDisplayed()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
         compose.onNodeWithText("正在思考", substring = true).assertIsDisplayed()
         compose.onNodeWithText("正在查询系统时间", substring = true).assertIsDisplayed()
         compose.onNodeWithText("已完成", substring = true).assertDoesNotExist()
@@ -96,7 +106,7 @@ class MessageTimelineExecutionTest {
     }
 
     @Test
-    fun finishedToolOnlyTurnFoldsWithoutInventingAFinalAnswer() {
+    fun finishedToolOnlyTurnRendersCardWithoutInventingAFinalAnswer() {
         val entries = listOf(
             user("执行一下"),
             assistant(
@@ -115,12 +125,15 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("[adb_shell]", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已回到桌面", substring = true).assertIsDisplayed()
         compose.onNodeWithText("此消息没有可显示的文本", substring = true).assertDoesNotExist()
     }
 
     @Test
-    fun interruptedThoughtFoldsWithAnExplicitInterruptedStatus() {
+    fun interruptedThoughtRendersCardWithExplicitInterruptedStatus() {
         val entries = listOf(
             user("分析一下"),
             assistant("<think>还没分析完就中断了", key = "msg_interrupted", timestamp = 2L),
@@ -130,11 +143,12 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(entries) }
         }
 
-        compose.onNodeWithText("已中断", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("思考已中断", substring = true).assertIsDisplayed()
         compose.onNodeWithText("还没分析完就中断了", substring = true).assertDoesNotExist()
 
-        compose.onNodeWithText("已中断", substring = true).performClick()
-        compose.onNodeWithText("思考已中断", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("思考已中断", substring = true).performClick()
+        compose.onNodeWithText("还没分析完就中断了", substring = true).assertIsDisplayed()
     }
 
     @Test
@@ -146,14 +160,14 @@ class MessageTimelineExecutionTest {
             MaterialTheme { MessageTimeline(listOf(user("继续"), current)) }
         }
 
-        // 从默认展开切到手动展开，随后验证流式增量不会丢失用户选择。
-        compose.onNodeWithText("执行过程 · 1 步 · 点击收起").performClick()
-        compose.onNodeWithText("执行过程 · 1 步 · 点击展开").performClick()
-        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).performClick()
+        compose.onNodeWithText("先检查", substring = true).assertIsDisplayed()
 
         compose.runOnIdle { streamingText = "$streamingText，第二段" }
 
         compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("先检查", substring = true).assertIsDisplayed()
         compose.onNodeWithText("第二段", substring = true).assertIsDisplayed()
     }
 

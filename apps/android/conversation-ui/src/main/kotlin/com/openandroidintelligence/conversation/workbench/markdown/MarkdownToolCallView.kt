@@ -185,9 +185,7 @@ fun MarkdownToolCallView(
     }
 
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = Dimensions.SpaceTiny),
+        modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(AppRadius.Compact),
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
@@ -305,42 +303,39 @@ private fun ToolCallDetails(
                 ),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-            ) {
-                Text(
-                    text = "命令",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
+            if (block.command.isNotBlank()) {
+                val isShellCommand = block.toolName.lowercase() in listOf(
+                    "bash", "sh", "shell", "adb", "adb_shell", "terminal", "cmd",
                 )
-                if (block.command.isNotBlank()) {
+                val parameterLabel = if (isShellCommand) "命令" else "参数" // i18n-ignore: UI 展示标签
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                ) {
+                    Text(
+                        text = parameterLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
                     CopyCommandAction(command = block.command)
                 }
-            }
 
-            if (block.command.isNotBlank()) {
                 CodeSurface(
                     text = block.command,
                     fontSizeSp = 12.5f,
                     lineHeightSp = null,
                     maxHeight = false,
                 )
-            } else {
-                Text(
-                    text = "Hermes 在消息中未提供命令参数",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (block.command.endsWith("...")) {
-                Text(
-                    text = "参数来自 Hermes 预览，可能已被截断",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+
+                if (block.command.endsWith("...")) {
+                    Text(
+                        text = "参数可能已被截断", // i18n-ignore: 截断提示文案
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             if (summaryText != null) {

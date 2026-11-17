@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.encrypted.store.*
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
@@ -129,11 +130,51 @@ class RemoteRuntime(
     /** 标题来自同账号、同端点的会话目录，路由用的编码身份不作为展示标题。 */
     private fun notificationTitle(target: ReplyNotificationTarget): String? {
         val account = state.value.account ?: return null
-        val owner = ownerConversationScope ?: return null
-        if (target.profileId != profileId(account.origin) || target.accountId != account.accountId ||
-            target.profileId != owner.profileId || target.accountId != owner.accountId || target.agentId != owner.gatewayId) return null
-        return runCatching { ownerMirror?.threads()?.firstOrNull { it.id.value == target.conversationId }?.title }.getOrNull()
-            ?.takeIf { it.isNotBlank() }
+        if (target.profileId != profileId(account.origin) || target.accountId != account.accountId) return null
+
+        fun matchesId(candidateId: String): Boolean {
+            if (candidateId == target.conversationId) return true
+            val decodedTarget = runCatching { RemoteLocalIds.decode(target.conversationId) }.getOrNull()
+            if (decodedTarget != null && candidateId == decodedTarget) return true
+            val decodedCandidate = runCatching { RemoteLocalIds.decode(candidateId) }.getOrNull()
+            if (decodedCandidate != null) {
+                if (decodedCandidate == target.conversationId) return true
+                if (decodedTarget != null && decodedCandidate == decodedTarget) return true
+            }
+            return false
+        }
+
+        fun findTitle(threads: List<ConversationSummary>?): String? =
+            threads?.firstOrNull { matchesId(it.id.value) }?.title?.trim()?.takeIf { it.isNotBlank() }
+
+        // 1) 优先查询当前活跃控制器内存中的真实会话标题
+        val mainController = controller.value
+        val mainState = mainController?.state?.value
+        if (mainState != null && mainState.activeThreadId?.let(::matchesId) == true && mainState.activeThreadTitle.isNotBlank()) {
+            return mainState.activeThreadTitle.trim()
+        }
+        val mainThreads = (mainState?.threads as? Loadable.Ready)?.value
+        findTitle(mainThreads)?.let { return it }
+
+        // 2) 其次查询 assistantControllers 中各控制器的会话列表
+        for (assistant in assistantControllers.values) {
+            val aState = assistant.state.value
+            if (aState.activeThreadId?.let(::matchesId) == true && aState.activeThreadTitle.isNotBlank()) {
+                return aState.activeThreadTitle.trim()
+            }
+            val aThreads = (aState.threads as? Loadable.Ready)?.value
+            findTitle(aThreads)?.let { return it }
+        }
+
+        // 3) 最后查询持久化镜像 ownerMirror?.threads()
+        val owner = ownerConversationScope
+        if (owner == null || target.profileId == owner.profileId && target.accountId == owner.accountId && (target.agentId == null || target.agentId == owner.gatewayId)) {
+            runCatching {
+                findTitle(ownerMirror?.threads())
+            }.getOrNull()?.let { return it }
+        }
+
+        return null
     }
     private fun refreshBackgroundWork(foregrounded: Boolean = false) = synchronized(backgroundOwnership) {
         val work = ownerActive && repository != null && state.value.account != null &&

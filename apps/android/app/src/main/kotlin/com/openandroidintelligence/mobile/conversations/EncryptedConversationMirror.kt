@@ -195,6 +195,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
         "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
+        "isMeta" to m.isMeta,
         "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
@@ -206,6 +207,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
         reasoning=JsonFields.objects(o,"reasoning").map { block -> MessageReasoning(str(block,"id"), str(block,"text"),
             JsonFields.int(block,"bodyOffset") ?: error("MIRROR_CORRUPTED"), JsonFields.bool(block,"complete") ?: error("MIRROR_CORRUPTED")) },
+        isMeta=JsonFields.bool(o,"isMeta") ?: false,
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
             str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
             com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,

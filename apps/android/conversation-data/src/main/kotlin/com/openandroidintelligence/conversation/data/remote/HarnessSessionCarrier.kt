@@ -74,8 +74,10 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
 
     override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue {
         if (model != null) selectModel(sessionId, model)
-        return invoke("session/prompt", obj("request" to obj("sessionId" to sessionId, "requestId" to requestId,
-            "mode" to "queue", "content" to content)))
+        val hasImage = content.any { it.text("type") == "image" }
+        val envelope = obj("endpoint" to "session/prompt", "payload" to obj("args" to obj("request" to obj(
+            "sessionId" to sessionId, "requestId" to requestId, "mode" to "queue", "content" to content))))
+        return wire.call(envelope, transfer = hasImage).unwrapResult().unwrapResult()
     }
 
     override suspend fun commands(sessionId: String?): com.openandroidintelligence.conversation.ports.AgentCommandCatalog {

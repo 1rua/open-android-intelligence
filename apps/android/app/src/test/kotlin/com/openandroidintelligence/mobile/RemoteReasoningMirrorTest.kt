@@ -34,4 +34,26 @@ class RemoteReasoningMirrorTest {
         assertEquals(original.reasoning, restored.reasoning)
         assertEquals(listOf(MessagePart.Text("回答")), restored.parts)
     }
+
+    @Test fun `加密镜像重开后保留isMeta标志`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val scope = ConversationScope("meta-profile", "endpoint", "account", "install")
+        val key = object : AesGcmKeyProvider {
+            override fun getOrCreate() = SecretKeySpec(ByteArray(32) { 23 }, "AES")
+            override fun delete() = Unit
+        }
+        val metaMessage = TimelineMessage(
+            id = "meta_1",
+            sender = "user",
+            parts = listOf(MessagePart.Text("internal meta")),
+            timestamp = 100L,
+            conversationId = ConversationId("session"),
+            isMeta = true,
+        )
+        val mirror = EncryptedConversationMirror(context, scope, key, Dispatchers.Unconfined)
+        mirror.saveTimeline("session", TimelinePage(listOf(metaMessage), null))
+        val reopened = EncryptedConversationMirror(context, scope, key, Dispatchers.Unconfined)
+        val restored = reopened.timeline("session")!!.messages.single()
+        assertTrue(restored.isMeta)
+    }
 }

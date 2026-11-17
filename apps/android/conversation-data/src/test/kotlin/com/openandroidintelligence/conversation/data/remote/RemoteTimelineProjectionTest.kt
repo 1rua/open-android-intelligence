@@ -2,8 +2,11 @@ package com.openandroidintelligence.conversation.data.remote
 
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.remote.RemoteLocalIds
+import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import org.junit.Assert.*
 import org.junit.Test
@@ -110,5 +113,318 @@ class RemoteTimelineProjectionTest {
             assertEquals(status, complete, projection.rows.values.single().reasoning.single().complete)
             assertEquals("CONFIRMED", projection.rows.values.single().state)
         }
+    }
+
+    // ==========================================
+    // Feature 1: 通用工具调用反序列化 (Tier 1 & Tier 2)
+    // ==========================================
+
+    @Test
+    fun t1_F1_01_ToolName_Extraction() {
+        val candidates = listOf(
+            obj("toolName" to "search_engine") to "search_engine",
+            obj("name" to "bash_runner") to "bash_runner",
+            obj("tool" to "calc") to "calc",
+            obj("title" to "Fetch User Info") to "Fetch User Info",
+            obj("function" to obj("name" to "get_weather")) to "get_weather",
+            obj("type" to "web_fetch") to "web_fetch",
+            obj("unrelated" to "value") to "tool",
+        )
+        for ((data, expectedToolName) in candidates) {
+            val projection = RemoteTimelineProjection(local)
+            val events = projection.accept(event(1, "tool/call", data))
+            val stepEvent = events.filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single()
+            assertEquals("工具名称必须准确按候选键顺序提取", expectedToolName, stepEvent.steps.single().toolName)
+        }
+    }
+
+    @Test
+    fun t1_F1_02_Input_Args_Object_And_Array() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 1. input 为 JObject
+        val objCall = event(1, "tool/call", obj("name" to "api_post", "input" to obj("query" to "android", "limit" to 10)))
+        val objStep = projection.accept(objCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("""{"limit":10,"query":"android"}""", objStep.arguments)
+
+        // 2. args 为 JArray
+        val arrCall = event(2, "tool/call", obj("name" to "exec", "args" to listOf("ls", "-la")))
+        val arrStep = projection.accept(arrCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("""["ls","-la"]""", arrStep.arguments)
+
+        // 3. command 为字符串
+        val cmdCall = event(3, "tool/call", obj("name" to "shell", "command" to "cat /etc/hosts"))
+        val cmdStep = projection.accept(cmdCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("cat /etc/hosts", cmdStep.arguments)
+
+        // 4. parameters 为 JObject
+        val paramCall = event(4, "tool/call", obj("name" to "sql", "parameters" to obj("table" to "users")))
+        val paramStep = projection.accept(paramCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("""{"table":"users"}""", paramStep.arguments)
+    }
+
+    @Test
+    fun t1_F1_03_Output_Result_Extraction() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 1. result 为 JObject 结构化对象
+        val resultCall = event(1, "tool/result", obj("name" to "api", "result" to obj("code" to 200, "status" to "success")))
+        val resultStep = projection.accept(resultCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("""{"code":200,"status":"success"}""", resultStep.output)
+        assertEquals(NativeExecutionStatus.COMPLETED, resultStep.status)
+
+        // 2. output 为字符串
+        val outputCall = event(2, "tool/result", obj("name" to "ping", "output" to "64 bytes from 127.0.0.1"))
+        val outputStep = projection.accept(outputCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("64 bytes from 127.0.0.1", outputStep.output)
+
+        // 3. content 为字符串
+        val contentCall = event(3, "tool/result", obj("name" to "read", "content" to "file payload data"))
+        val contentStep = projection.accept(contentCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("file payload data", contentStep.output)
+
+        // 4. response 为字符串
+        val responseCall = event(4, "tool/result", obj("name" to "query", "response" to "OK"))
+        val responseStep = projection.accept(responseCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("OK", responseStep.output)
+    }
+
+    @Test
+    fun t1_F1_04_No_Params_Hide_Label() {
+        val projection = RemoteTimelineProjection(local)
+        val noParamCall = event(1, "tool/call", obj("name" to "get_device_id"))
+        val step = projection.accept(noParamCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("无参数调用时arguments必须为空字符串而非null字符串", "", step.arguments)
+    }
+
+    @Test
+    fun t2_F1_01_Execution_Status_Variants() {
+        val projection = RemoteTimelineProjection(local)
+
+        // 未完成: RUNNING
+        val runningCall = event(1, "tool/call", obj("name" to "long_task"))
+        val runningStep = projection.accept(runningCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.RUNNING, runningStep.status)
+
+        // isError 标记为 true: FAILED
+        val errorCall = event(2, "tool/result", obj("name" to "task", "isError" to true, "output" to "disk full"))
+        val errorStep = projection.accept(errorCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.FAILED, errorStep.status)
+
+        // status 为 failed: FAILED
+        val failedCall = event(3, "tool/result", obj("name" to "task", "status" to "failed", "output" to "timed out"))
+        val failedStep = projection.accept(failedCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.FAILED, failedStep.status)
+
+        // 成功完成: COMPLETED
+        val completedCall = event(4, "tool/result", obj("name" to "task", "status" to "completed", "output" to "all done"))
+        val completedStep = projection.accept(completedCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals(NativeExecutionStatus.COMPLETED, completedStep.status)
+    }
+
+    @Test
+    fun t2_F1_02_Deeply_Nested_Arguments() {
+        val projection = RemoteTimelineProjection(local)
+        val deeplyNested = obj("config" to obj("database" to obj("host" to "localhost", "port" to 5432)))
+        val call = event(1, "tool/call", obj("name" to "db_connect", "input" to deeplyNested))
+        val step = projection.accept(call).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("""{"config":{"database":{"host":"localhost","port":5432}}}""", step.arguments)
+    }
+
+    // ==========================================
+    // Feature 2: 思维链流式增量打通 (Tier 1 & Tier 2)
+    // ==========================================
+
+    @Test
+    fun t1_F2_01_ACP_Thought_Chunk_Streaming() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("req-thought-1")
+
+        projection.accept(acp("agent_thought_chunk", "思考片段A-"))
+        val row1 = projection.rows.values.single()
+        assertEquals("思考片段A-", row1.reasoning.single().text)
+        assertFalse("流式推流中未完成思考complete必须为false", row1.reasoning.single().complete)
+
+        projection.accept(acp("agent_thought_chunk", "思考片段B"))
+        val row2 = projection.rows.values.single()
+        assertEquals("思考片段A-思考片段B", row2.reasoning.single().text)
+        assertFalse(row2.reasoning.single().complete)
+    }
+
+    @Test
+    fun t1_F2_02_Interleaved_Thought_And_Text_Body_Offset() {
+        val projection = RemoteTimelineProjection(local)
+        projection.beginTurn("req-interleave")
+
+        // Block 0: Text (长度 5)
+        projection.accept(acp("agent_message_chunk", "Hello"))
+        // Block 1: Thought (offset 应为 5)
+        projection.accept(acp("agent_thought_chunk", "Thinking..."))
+        // Block 2: Text (追加正文)
+        projection.accept(acp("agent_message_chunk", " World"))
+
+        val row = projection.rows.values.single()
+        val reasoning = row.reasoning.single()
+        assertEquals("Thinking...", reasoning.text)
+        assertEquals(5, reasoning.bodyOffset)
+    }
+
+    @Test
+    fun t1_F2_03_Live_Stream_Presentation_Origin() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-origin", "turn" to 1)))
+        val upserts = projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "att-origin",
+            "chunk" to obj("type" to "reasoning-delta", "index" to 0, "text" to "正在进行深度思考"))))
+        val event = upserts.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single()
+        assertEquals("实时思考流式推送必须标记为 LIVE", StreamPresentationOrigin.LIVE, event.presentationOrigin)
+    }
+
+    // ==========================================
+    // Feature 3: 数据流综合脱敏与拦截 (Tier 1 & Tier 2)
+    // ==========================================
+
+    @Test
+    fun t1_F6_01_Live_Stream_System_Reminder_Stripped() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-strip", "turn" to 1)))
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "att-strip",
+            "chunk" to obj("type" to "text-delta", "index" to 0, "text" to "正常回答前缀<system-reminder>网关注入未闭合"))))
+
+        val textValue = projection.rows.values.single().parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
+        assertEquals("实时流中的未闭合系统提示词必须即时剥离", "正常回答前缀", textValue)
+    }
+
+    @Test
+    fun t1_F6_02_Pure_Reminder_Message_Dropped() {
+        val projection = RemoteTimelineProjection(local)
+        val events = projection.accept(event(1, "assistant/message", obj("message" to obj("id" to "msg-reminder-only", "content" to listOf(
+            obj("type" to "text", "text" to "<system-reminder>Only Prompt Context</system-reminder>"),
+        )))))
+        assertTrue("纯提示词消息脱敏后为空，rows必须为空", projection.rows.isEmpty())
+        assertTrue("纯提示词消息绝不能派发TimelineUpsert事件", events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().isEmpty())
+    }
+
+    @Test
+    fun t1_F6_03_Meta_Message_Dropped() {
+        val projection = RemoteTimelineProjection(local)
+        val events = projection.accept(event(1, "assistant/message", obj("message" to obj("id" to "meta-dropped", "isMeta" to true, "content" to listOf(
+            obj("type" to "text", "text" to "元数据状态通知"),
+        )))))
+        assertTrue("isMeta消息无论有无正文均直接丢弃不上屏", projection.rows.isEmpty())
+        assertTrue("isMeta消息绝不能派发TimelineUpsert事件", events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().isEmpty())
+    }
+
+    @Test
+    fun `OpenAI风格带type为function时function_name优先于type提取`() {
+        val projection = RemoteTimelineProjection(local)
+        val openAiCall = event(1, "tool/call", obj(
+            "type" to "function",
+            "function" to obj("name" to "read_file", "arguments" to obj("path" to "src/Main.kt", "line" to 42))
+        ))
+        val step = projection.accept(openAiCall).filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        assertEquals("read_file", step.toolName)
+        assertEquals("""{"line":42,"path":"src/Main.kt"}""", step.arguments)
+        assertEquals(NativeExecutionStatus.RUNNING, step.status)
+    }
+
+    @Test
+    fun `Codex跨chunk未闭合提示词累加脱敏`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("method" to "turn/started", "params" to obj("threadId" to native, "turn" to obj("id" to "T_codex"))))
+
+        // Chunk 1: 正常前缀 + 未闭合开标签前缀
+        projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native, "itemId" to "msg1", "delta" to "你好世界<system-")))
+        val text1 = projection.rows.getValue("msg1").parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
+        assertEquals("你好世界<system-", text1)
+
+        // Chunk 2: 闭合标签后缀及内部指令 + 正常后续
+        projection.accept(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native, "itemId" to "msg1", "delta" to "reminder>机密注入</system-reminder>，有什么可以帮助你？")))
+        val text2 = projection.rows.getValue("msg1").parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
+        assertEquals("你好世界，有什么可以帮助你？", text2)
+    }
+
+    @Test
+    fun `thinking与thought别名流式增量进入思考模型`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att_thinking", "turn" to 1)))
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "att_thinking",
+            "chunk" to obj("type" to "block-start", "index" to 0, "blockType" to "thinking"))))
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "att_thinking",
+            "chunk" to obj("type" to "thinking-delta", "index" to 0, "text" to "正在深度推理中"))))
+
+        val row = projection.rows.values.single()
+        assertEquals(1, row.reasoning.size)
+        assertEquals("正在深度推理中", row.reasoning.single().text)
+        assertFalse(row.reasoning.single().complete)
+    }
+
+    @Test
+    fun `纯思考阶段消息虽然正文为空但绝不丢弃`() {
+        val projection = RemoteTimelineProjection(local)
+        val events = projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att_pure_reasoning", "turn" to 1)))
+        val upserts = projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "chunk", "attemptId" to "att_pure_reasoning",
+            "chunk" to obj("type" to "reasoning-delta", "index" to 0, "text" to "纯思考内容"))))
+
+        assertEquals(1, projection.rows.size)
+        assertTrue(projection.rows.values.single().reasoning.isNotEmpty())
+        assertEquals(1, upserts.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().size)
+    }
+
+    @Test
+    fun t2_F6_01_Assistant_Message_Outer_Data_IsMeta_Dropped() {
+        val projection = RemoteTimelineProjection(local)
+        val events = projection.accept(
+            event(
+                1,
+                "assistant/message",
+                obj(
+                    "isMeta" to true,
+                    "message" to obj(
+                        "id" to "a_outer_meta",
+                        "content" to listOf(obj("type" to "text", "text" to "外层 data.isMeta=true 的助手消息不应上屏")),
+                    ),
+                ),
+            ),
+        )
+        assertTrue("assistant/message 外层 data.isMeta=true 时 rows 必须为空", projection.rows.isEmpty())
+        assertTrue(
+            "assistant/message 外层 data.isMeta=true 时绝不能派发 TimelineUpsert",
+            events.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().isEmpty(),
+        )
+    }
+
+    @Test
+    fun t2_F6_02_Assistant_Message_Existing_Row_Flipped_To_Outer_Data_IsMeta_Emits_Tombstone() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(
+            event(
+                1,
+                "assistant/message",
+                obj(
+                    "message" to obj(
+                        "id" to "a_flip_meta",
+                        "content" to listOf(obj("type" to "text", "text" to "初始可见消息")),
+                    ),
+                ),
+            ),
+        )
+        assertEquals(1, projection.rows.size)
+
+        val flipEvents = projection.accept(
+            event(
+                2,
+                "assistant/message",
+                obj(
+                    "isMeta" to true,
+                    "message" to obj(
+                        "id" to "a_flip_meta",
+                        "content" to listOf(obj("type" to "text", "text" to "初始可见消息")),
+                    ),
+                ),
+            ),
+        )
+        assertTrue("外层 data.isMeta 翻转为 true 后必须移除旧行", projection.rows.isEmpty())
+        val tombstone = flipEvents.filterIsInstance<VerifiedConversationEvent.TimelineTombstoned>().single()
+        assertEquals("a_flip_meta", tombstone.messageId)
     }
 }
