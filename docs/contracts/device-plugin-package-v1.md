@@ -112,8 +112,7 @@ UTF8("OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n")
     "payload": "payload/plugin.wasm"
   },
   "compatibility": {
-    "androidHost": ">=2.0.0 <3.0.0",
-    "gatewayProtocol": ">=2.0 <3.0"
+    "androidHost": ">=2.0.0 <3.0.0"
   },
   "capabilities": {
     "provides": [
@@ -158,6 +157,8 @@ UTF8("OPEN-ANDROID-INTELLIGENCE-PLUGIN-PACKAGE-V1\n")
 ```
 
 所有对象默认拒绝未知字段。新增可选字段只能提升 `schemaVersion` 次版本；改变既有字段语义必须提升主版本。
+
+设备插件仅声明 Android 宿主兼容范围，不依赖远程传输协议版本。`compatibility` 只允许 `androidHost`；历史 `gatewayProtocol` 字段按未知字段拒绝，不能通过忽略字段或虚构 Remote 版本继续接受。作者签名、文件摘要、JSON Schema 和内核本机授权流程不变。
 
 ### 5.1 运行类型
 

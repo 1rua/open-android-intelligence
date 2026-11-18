@@ -51,9 +51,6 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.kernel.DeveloperTrustMode
-import com.openandroidintelligence.mobile.GatewayRuntime
-import com.openandroidintelligence.mobile.LocalOperationState
-import com.openandroidintelligence.mobile.LocalSessionState
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.PlatformSettingsEnvironment
 import com.openandroidintelligence.mobile.SettingsPresentation
@@ -67,8 +64,6 @@ import com.openandroidintelligence.mobile.settings.advanced.OpenSourceNoticesScr
 import com.openandroidintelligence.mobile.settings.backup.SettingsBackupRoute
 import com.openandroidintelligence.mobile.settings.capabilities.DeviceCapabilitiesScreen
 import com.openandroidintelligence.mobile.settings.capabilities.CapabilitySettingsScreen
-import com.openandroidintelligence.mobile.settings.connection.ConnectionSettingsScreen
-import com.openandroidintelligence.mobile.settings.connection.ConnectionDiagnosticsScreen
 import com.openandroidintelligence.mobile.settings.notifications.NotificationSettingsScreen
 import com.openandroidintelligence.mobile.settings.security.SecuritySettingsScreen
 import com.openandroidintelligence.mobile.settings.security.AuditSettingsScreen
@@ -79,13 +74,14 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
 internal fun SettingsNavHost(
     viewModel: SettingsViewModel,
     environment: PlatformSettingsEnvironment,
-    runtime: GatewayRuntime?,
     onBack: () -> Unit,
     modifier: Modifier,
     presentation: SettingsPresentation,
     onRequestScreenCaptureAuthorization: () -> Unit,
+    remoteRuntime: com.openandroidintelligence.mobile.RemoteRuntime? = null,
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val localRuntime = viewModel.localSettingsRuntime
     val nav = rememberNavController()
     val entry by nav.currentBackStackEntryAsState()
     val context = LocalContext.current
@@ -94,7 +90,6 @@ internal fun SettingsNavHost(
     val snackbar = remember { SnackbarHostState() }
     var trustDialog by rememberSaveable { mutableStateOf(false) }
     var emergencyDialog by rememberSaveable { mutableStateOf(false) }
-    var unpairDialog by rememberSaveable { mutableStateOf(false) }
     var navigationError by remember { mutableStateOf<String?>(null) }
     var shortcutSources by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var shortcutTargets by rememberSaveable { mutableStateOf(emptyList<String>()) }
@@ -111,20 +106,11 @@ internal fun SettingsNavHost(
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
-    LaunchedEffect(uiState.operationNotice) {
-        uiState.operationNotice?.let { snackbar.showSnackbar(it, withDismissAction = true); viewModel.dismissOperationNotice() }
-    }
     LaunchedEffect(uiState.localError, navigationError) {
         val message = uiState.localError ?: navigationError ?: return@LaunchedEffect
         snackbar.showSnackbar(message, withDismissAction = true)
         viewModel.dismissLocalError()
         navigationError = null
-    }
-    LaunchedEffect(uiState.accountPickerRequested, uiState.localSessionState) {
-        if (uiState.accountPickerRequested && uiState.localSessionState is LocalSessionState.AccountPicker) {
-            viewModel.consumeAccountPickerRequest()
-            onBack()
-        }
     }
 
     fun currentRoute(): String? {
@@ -166,17 +152,6 @@ internal fun SettingsNavHost(
             }
             nav.navigate(source) { launchSingleTop = true; restoreState = true }
         } else if (!nav.popBackStack()) onBack()
-    }
-    fun manageAccounts() {
-        if (runtime == null) {
-            navigationError = "当前未接入账号管理"
-            return
-        }
-        if (uiState.localSessionState is LocalSessionState.AccountPicker || !uiState.hasLocalSession) {
-            onBack()
-        } else {
-            viewModel.chooseAnotherAccount()
-        }
     }
     fun setNotifications(value: Boolean) {
         if (!viewModel.setNotificationsGrant(value)) return
@@ -236,29 +211,29 @@ internal fun SettingsNavHost(
                     onStreamingHapticFeedbackChange = viewModel::setStreamingHapticFeedback)
             }
             composable(SettingsRoutes.GATEWAY) {
-                ConnectionSettingsScreen(uiState, presentation, ::back,
-                    onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) },
-                    onSelectAgent = viewModel::selectAgent, onRefreshAgents = viewModel::refreshAgents,
-                    onSelectAccount = viewModel::selectSavedAccount, onManageAccounts = { manageAccounts() },
-                    onAddAccount = { manageAccounts() }, onRefreshSession = viewModel::refreshSession,
-                    onLogout = { viewModel.logout(true) }, onRemoveAccount = viewModel::removeLocalAccount,
-                    onRequestUnpair = { viewModel.dismissUnpairOperation(); unpairDialog = true })
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionSettingsScreen(remoteRuntime, presentation, ::back,
+                    onOpenDiagnostics = { open(SettingsRoutes.CONNECTION_DETAILS) })
+                else SettingsPageScaffold("Remote", presentation, ::back) { padding ->
+                    SettingsPageColumn(padding) { Text(androidx.compose.ui.res.stringResource(com.openandroidintelligence.ui.resources.R.string.remote_conversation_not_ready)) }
+                }
             }
-            composable(SettingsRoutes.CONNECTION_DETAILS) { ConnectionDiagnosticsScreen(uiState, presentation, ::back) }
+            composable(SettingsRoutes.CONNECTION_DETAILS) {
+                if (remoteRuntime != null) com.openandroidintelligence.mobile.RemoteConnectionDiagnosticsScreen(remoteRuntime, presentation, ::back)
+            }
             composable(SettingsRoutes.REMINDERS) { NotificationSettingsScreen(uiState, presentation, ::back, ::setNotifications) }
             composable(SettingsRoutes.PAIRING) {
-                DeviceCapabilitiesScreen(environment, runtime, presentation, ::back,
+                DeviceCapabilitiesScreen(environment, localRuntime, presentation, ::back,
                     onOpenCapability = { plugin, capability -> open(capabilitySettingsRoute(plugin, capability)) },
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.CAPABILITY, arguments = listOf(navArgument("pluginId") { type = NavType.StringType }, navArgument("capability") { type = NavType.StringType })) { destination ->
                 CapabilitySettingsScreen(destination.arguments?.getString("pluginId").orEmpty(), destination.arguments?.getString("capability").orEmpty(),
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) })
             }
             composable(SettingsRoutes.SCREEN_CAPABILITY) {
                 CapabilitySettingsScreen("org.openandroidintelligence.screen-reader", "org.openandroidintelligence.screen-reader.read",
-                    environment, runtime, presentation, ::back, onRequestScreenCaptureAuthorization,
+                    environment, localRuntime, presentation, ::back, onRequestScreenCaptureAuthorization,
                     onOpenPlugins = { open(SettingsRoutes.PLUGINS) }, showAllScreenCapabilities = true)
             }
             composable(SettingsRoutes.PLUGINS) {
@@ -292,15 +267,15 @@ internal fun SettingsNavHost(
             }
             composable(SettingsRoutes.AUDIT_LOG) { AuditSettingsScreen(uiState, presentation, ::back) }
             composable(SettingsRoutes.ADVANCED) {
-                AdvancedSettingsScreen(runtime, presentation, ::back,
+                AdvancedSettingsScreen(localRuntime, presentation, ::back,
                     onOpenUpdates = { open(SettingsRoutes.APP_UPDATES) }, onOpenBuildDetails = { open(SettingsRoutes.BUILD_DETAILS) },
                     onOpenLicenses = { open(SettingsRoutes.LICENSES) }, onOpenBackup = { open(SettingsRoutes.BACKUP) },
-                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() })
+                    onReplayOnboarding = { app?.onboardingPreferences?.startReplay(); onBack() }, remoteRuntime = remoteRuntime)
             }
             composable(SettingsRoutes.APP_UPDATES) { AppUpdateRoute(onBack = ::back, presentation = presentation) }
             composable(SettingsRoutes.BUILD_DETAILS) { BuildDetailsScreen(presentation, ::back) }
             composable(SettingsRoutes.LICENSES) { OpenSourceNoticesScreen(presentation, ::back) }
-            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(runtime, presentation, ::back) }
+            composable(SettingsRoutes.BACKUP) { SettingsBackupRoute(presentation, ::back, remoteRuntime) }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }
@@ -314,23 +289,4 @@ internal fun SettingsNavHost(
         text = { Text("将立即停止所有插件并撤销临时授权，需重启应用恢复。保存的设置与系统权限不变。") },
         confirmButton = { TextButton(onClick = { viewModel.emergencyStop(); emergencyDialog = false }) { Text("确认停止", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { emergencyDialog = false }) { Text("取消") } })
-    if (unpairDialog || uiState.unpairOperation !is LocalOperationState.Idle) {
-        val operation = uiState.unpairOperation
-        val running = operation is LocalOperationState.Running
-        AlertDialog(onDismissRequest = { if (!running) { unpairDialog = false; viewModel.dismissUnpairOperation() } },
-            title = { Text(if (operation is LocalOperationState.Completed) "设备配对已解除" else "解除设备配对？") },
-            text = { Text(when (operation) {
-                LocalOperationState.Idle -> "将取消设备配对并断开连接，清理手机上的本地聊天与缓存数据。系统权限与全局功能设置保留。"
-                LocalOperationState.Running -> "正在请求取消配对，请稍候…"
-                LocalOperationState.Completed -> "配对已解除，手机端数据已清理。"
-                is LocalOperationState.Failed -> operation.message
-            }) },
-            confirmButton = { TextButton(enabled = !running, onClick = {
-                if (operation is LocalOperationState.Completed || operation is LocalOperationState.Failed && operation.remoteCompleted) {
-                    unpairDialog = false; viewModel.dismissUnpairOperation()
-                } else viewModel.unpair()
-            }) { Text(if (operation is LocalOperationState.Completed || operation is LocalOperationState.Failed && operation.remoteCompleted) "知道了" else "确认解除", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { if (!running && operation !is LocalOperationState.Completed) TextButton(onClick = { unpairDialog = false; viewModel.dismissUnpairOperation() }) { Text("取消") } })
-    }
 }
-

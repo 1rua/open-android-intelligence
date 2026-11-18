@@ -6,11 +6,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
@@ -54,10 +56,26 @@ private class StreamingReplySource {
         }
         return start
     }
+
+    fun start(entry: TimelineEntry): Int = maxOf(start(entry.text), entry.reasoning.lastOrNull()?.bodyOffset
+        ?.coerceIn(0, entry.text.length) ?: 0)
 }
+
+/** 宿主向时间线子组件透传共享流式呈现注册表，供思考卡接入同一帧时钟与生命周期。 */
+internal val LocalStreamingPresentationRegistry = staticCompositionLocalOf<StreamingPresentationRegistry?> { null }
 
 /** 列表外只保存当前活跃正文，列表项回收和执行容器切换不重新播放。 */
 class StreamingPresentationRegistry internal constructor(initial: List<TimelineEntry>) {
+    private class ThoughtSlot(
+        val state: StreamingPresentationState,
+        var revision: Long = 0L,
+        var nextBatch: Long = 0L,
+        var lastText: String = "",
+        var lastLive: Boolean = false,
+    ) {
+        var frame by mutableStateOf<StreamingPresentationFrame?>(null)
+    }
+
     private data class Observation(val identity: ReplyIdentity, val revision: Long, val text: String) {
         constructor(entry: TimelineEntry) : this(ReplyIdentity(entry), entry.presentation?.revision ?: -1L, entry.text)
         val length: Int get() = text.length
@@ -74,6 +92,9 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
     }
     // 挂载时的所有正文都是基线，包括仍标作 LIVE 的缓存；只观察之后发生的增长。
     private val observed = initial.associate { it.key to Observation(it) }.toMutableMap()
+    private val initialThoughtBaselines = mutableMapOf<String, String>()
+    private val thoughtSlots = linkedMapOf<String, ThoughtSlot>()
+    private var thoughtSlotRevision by mutableIntStateOf(0)
     private var currentIdentity: ReplyIdentity? = null
     private var engine: StreamingPresentationState? = null
     private val source = StreamingReplySource()
@@ -89,6 +110,12 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         private set
     internal var hasPending by mutableStateOf(false)
         private set
+
+    init {
+        extractThoughts(initial).forEach { (key, text, _) ->
+            initialThoughtBaselines[key] = text
+        }
+    }
 
     /** 仅准备本次组合的投影，不写 Compose 状态或驱动动画。 */
     internal fun prepare(entries: List<TimelineEntry>, pageVisible: Boolean) {
@@ -106,19 +133,31 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val committed = frame
         if (!visible || !surfaceVisible || prepared && preparedKey != null && preparedKey != entry.key) return null
         if (currentIdentity == ReplyIdentity(entry) || currentIdentity?.isUpgrade(entry) == true) {
-            val start = source.start(entry.text)
+            val start = source.start(entry)
             return if (committed != null && committed.sourceStart != start) committed.copy(sourceStart = start) else committed
         }
         if (!canStart(entry)) return null
         // accept 在组合提交后运行；先给新 LIVE 一个仅含旧前缀的投影，首帧不能闪现整段全文。
-        return StreamingPresentationFrame(baselineText(entry), active = true, sourceStart = source.start(entry.text))
+        return StreamingPresentationFrame(baselineText(entry), active = true, sourceStart = source.start(entry))
+    }
+
+    internal fun thoughtFrameFor(thoughtKey: String?, live: Boolean = true): StreamingPresentationFrame? {
+        // 订阅槽位创建/回收，使 acceptThoughts 新建槽位时对应思考卡能立即重组订阅 slot.frame。
+        thoughtSlotRevision
+        if (thoughtKey == null || !visible || !surfaceVisible) return null
+        val slot = thoughtSlots[thoughtKey]
+        if (slot != null) return slot.frame
+        if (!live || thoughtKey in initialThoughtBaselines) return null
+        return StreamingPresentationFrame("", active = true, batchId = 0L, start = 0, end = 0)
     }
 
     internal fun accept(entries: List<TimelineEntry>, pageVisible: Boolean, now: Long, generation: GenerationState? = null) {
+        acceptThoughts(entries, pageVisible && visible, now, generation)
         if (!pageVisible || !visible) {
             clearActive()
             rememberAll(entries)
             visible = pageVisible
+            refreshHasPending()
             return
         }
         val identity = currentIdentity
@@ -128,6 +167,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         if (incoming == null || !eligible(incoming) || incoming.presentation == null) {
             clearActive()
             rememberAll(entries)
+            refreshHasPending()
             return
         }
         val metadata = incoming.presentation
@@ -153,21 +193,33 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val ownedTerminal = generation?.isTerminal() == true && generationOwner?.let {
             it == ReplyIdentity(incoming) || it.isUpgrade(incoming)
         } == true
-        sourceStart = source.start(incoming.text)
+        sourceStart = source.start(incoming)
         val advance = state.update(incoming.text, metadata.revision, metadata.origin,
             incoming.isStreaming && !scopedTerminal && !ownedTerminal, now, revealFromOffset = sourceStart)
         publish(state, advance)
+        refreshHasPending()
         rememberAll(entries)
     }
 
     internal fun advance(now: Long) {
-        if (visible && surfaceVisible) engine?.let { publish(it, it.advance(now)) }
+        if (!visible || !surfaceVisible) return
+        engine?.let { publish(it, it.advance(now)) }
+        thoughtSlots.values.forEach { slot ->
+            if (slot.state.needsFrame) {
+                publishThought(slot, slot.state.advance(now))
+            }
+        }
+        refreshHasPending()
     }
 
     internal fun close() {
         surfaceVisible = false
         visible = false
         clearActive()
+        thoughtSlots.clear()
+        initialThoughtBaselines.clear()
+        thoughtSlotRevision++
+        refreshHasPending()
         observed.clear()
         generationOwner = null
     }
@@ -177,6 +229,9 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         surfaceVisible = false
         visible = false
         clearActive()
+        thoughtSlots.clear()
+        thoughtSlotRevision++
+        refreshHasPending()
     }
 
     /** 一个可见批次最多消费一次；关闭设置后再打开也不会补震旧文字。 */
@@ -217,12 +272,149 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         currentIdentity = null
         engine = null
         frame = null
-        hasPending = false
         sourceStart = 0
+        refreshHasPending()
+    }
+
+    private fun refreshHasPending() {
+        hasPending = (engine?.needsFrame == true) || thoughtSlots.values.any { it.state.needsFrame }
+    }
+
+    private fun extractThoughts(entries: List<TimelineEntry>): List<Triple<String, String, Boolean>> {
+        val result = mutableListOf<Triple<String, String, Boolean>>()
+        entries.forEach { entry ->
+            if (!eligible(entry)) return@forEach
+            if (entry.reasoning.isEmpty() && !entry.text.contains("<think", ignoreCase = true)) return@forEach
+            var ordinal = 0
+            structuredTimelineBlocks(entry).forEach { block ->
+                if (block is TimelineBlock.ThoughtBlock) {
+                    result += Triple("${entry.key}:thought:${ordinal++}", block.thought, entry.isStreaming && !block.isComplete)
+                }
+            }
+        }
+        return result
+    }
+
+    private fun acceptThoughts(
+        entries: List<TimelineEntry>,
+        activeSurface: Boolean,
+        now: Long,
+        generation: GenerationState?,
+    ) {
+        if (!activeSurface) {
+            if (thoughtSlots.isNotEmpty()) {
+                thoughtSlots.clear()
+                thoughtSlotRevision++
+            }
+            initialThoughtBaselines.clear()
+            extractThoughts(entries).forEach { (key, text, _) ->
+                initialThoughtBaselines[key] = text
+            }
+            return
+        }
+        val activeKeys = HashSet<String>()
+        var structureChanged = false
+        entries.forEach { entry ->
+            if (!eligible(entry)) return@forEach
+            if (entry.reasoning.isEmpty() && !entry.text.contains("<think", ignoreCase = true)) return@forEach
+            val scopedTerminal = entry.executionGenerationState?.isTerminal() == true ||
+                entry.generationId?.let { id ->
+                    entries.any { it.generationId == id && it.executionGenerationState?.isTerminal() == true }
+                } == true
+            val ownedTerminal = generation?.isTerminal() == true && generationOwner?.let {
+                it == ReplyIdentity(entry) || it.isUpgrade(entry)
+            } == true
+            val entryStreaming = entry.isStreaming && !scopedTerminal && !ownedTerminal
+            val origin = entry.presentation?.origin ?: StreamPresentationOrigin.LIVE
+
+            var ordinal = 0
+            structuredTimelineBlocks(entry).forEach { block ->
+                if (block !is TimelineBlock.ThoughtBlock) return@forEach
+                val key = "${entry.key}:thought:${ordinal++}"
+                val live = entryStreaming && !block.isComplete
+                activeKeys += key
+
+                val existing = thoughtSlots[key]
+                if (existing == null) {
+                    val baseline = initialThoughtBaselines[key]
+                    val canStartNew = baseline == null && origin != StreamPresentationOrigin.SNAPSHOT && live
+                    val canContinueFromBaseline = baseline != null &&
+                        origin == StreamPresentationOrigin.LIVE &&
+                        live &&
+                        block.thought.length > baseline.length &&
+                        block.thought.startsWith(baseline)
+                    if (!canStartNew && !canContinueFromBaseline) {
+                        initialThoughtBaselines[key] = block.thought
+                        return@forEach
+                    }
+                    val slot = ThoughtSlot(
+                        StreamingPresentationState(
+                            initialText = baseline ?: "",
+                            initialRevision = 0L,
+                        ),
+                    )
+                    thoughtSlots[key] = slot
+                    structureChanged = true
+                    updateThoughtSlot(slot, block.thought, origin, live, now)
+                } else {
+                    updateThoughtSlot(existing, block.thought, origin, live, now)
+                }
+            }
+        }
+        if (thoughtSlots.keys.retainAll(activeKeys)) {
+            structureChanged = true
+        }
+        if (structureChanged) {
+            thoughtSlotRevision++
+        }
+    }
+
+    private fun updateThoughtSlot(
+        slot: ThoughtSlot,
+        text: String,
+        origin: StreamPresentationOrigin,
+        live: Boolean,
+        now: Long,
+    ) {
+        if (text == slot.lastText && live == slot.lastLive && !slot.state.needsFrame) {
+            if (!live && !slot.state.isPresenting && slot.frame?.active == true) {
+                slot.frame = slot.frame?.copy(active = false)
+            }
+            return
+        }
+        if (text != slot.lastText) slot.revision++
+        slot.lastText = text
+        slot.lastLive = live
+        val advance = slot.state.update(
+            text = text,
+            revision = slot.revision,
+            origin = origin,
+            streaming = live,
+            nowNanos = now,
+        )
+        publishThought(slot, advance)
+    }
+
+    private fun publishThought(slot: ThoughtSlot, advance: StreamingRevealAdvance) {
+        val previous = slot.frame
+        val active = slot.state.isPresenting || slot.lastLive
+        if (advance.changed) {
+            slot.frame = StreamingPresentationFrame(
+                text = slot.state.displayedText,
+                active = active,
+                batchId = ++slot.nextBatch,
+                start = if (advance.corrected) slot.state.revealOffset else advance.startOffset,
+                end = slot.state.revealOffset,
+            )
+        } else if (previous == null || previous.active != active || previous.text != slot.state.displayedText) {
+            slot.frame = (previous ?: StreamingPresentationFrame(slot.state.displayedText)).copy(
+                text = slot.state.displayedText,
+                active = active,
+            )
+        }
     }
 
     private fun publish(state: StreamingPresentationState, advance: StreamingRevealAdvance) {
-        hasPending = state.needsFrame
         val previous = frame
         if (advance.changed) {
             frame = StreamingPresentationFrame(
@@ -237,6 +429,7 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
                 text = state.displayedText, active = state.isPresenting, sourceStart = sourceStart,
             )
         }
+        refreshHasPending()
     }
 }
 
@@ -329,7 +522,7 @@ internal fun StreamingReplyBody(
     // 取原始进度而非可能仍等待后台解析的 renderFrame，避免解析完成后补播旧范围。
     val mountedBatch = remember(registry, entry.key) { frame?.batchId ?: 0L }
     val receivedSource = remember(entry.key) { StreamingReplySource() }
-    val sourceStart = if (finalOnly) frame?.sourceStart ?: receivedSource.start(entry.text) else 0
+    val sourceStart = if (finalOnly) frame?.sourceStart ?: receivedSource.start(entry) else 0
     val prefix = frame?.text ?: entry.text
     val displayed = prefix.drop(sourceStart)
     val document = rememberStreamingMarkdownDocument(displayed)

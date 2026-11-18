@@ -149,9 +149,12 @@ class AssistantTimelineViewTest {
         compose.onNodeWithText("帮我看看").assertIsDisplayed()
         // Markdown 行内加粗被渲染成一段正文（语义树里合并为一个文本节点）。
         compose.onNodeWithText("结论", substring = true).assertIsDisplayed()
-        // 思考块由共享渲染层折叠成执行段；折叠态标题是"已执行 1 步 · 点击展开"，
-        // 辅助技术读到的是同一条可点语义（contentDescription 明确写了"执行过程"）。
-        compose.onNodeWithText("已执行 1 步", substring = true).assertIsDisplayed()
+        // 思考卡直接平铺呈现，不再包进外层“执行过程 / 已执行 N 步”折叠面板。
+        compose.onNodeWithText("已执行", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("执行过程", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("已思考", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("已思考", substring = true).performClick()
+        compose.onNodeWithText("先检查磁盘", substring = true).assertIsDisplayed()
     }
 
     @Test

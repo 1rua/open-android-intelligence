@@ -123,7 +123,7 @@ fun PluginManagementScreen(
     val app = context.applicationContext as? OpenAndroidIntelligenceApplication
     val host = app?.pluginHost?.takeIf { pluginRuntimesWired }
     val pluginRevision = host?.revision?.collectAsState()?.value
-    val gatewayState = app?.gatewayRuntime?.deviceCapabilityState?.collectAsState()?.value ?: DeviceCapabilitySyncState()
+    val gatewayState = app?.remoteRuntime?.deviceCapabilityState?.collectAsState()?.value ?: DeviceCapabilitySyncState()
     // 只用于隐藏旧的发布回执，不将连接或配对状态作为本机设置的门槛。
     val localAuthorizationRevision = app?.pairingGrants?.state?.collectAsState()?.value?.revision ?: -1L
     val currentGatewayState = gatewayState.forLocalState(localAuthorizationRevision, pluginRevision ?: -1L)
@@ -208,7 +208,7 @@ fun PluginManagementScreen(
                 invokePlugin = id; invokeCapability = host.entries(id).firstOrNull()?.key.orEmpty(); invokeParameters = "{}"
             }
             UiActionId.SET_SETTING -> runCatching {
-                host.setting(id,app.gatewayRuntime.connectedAccountId ?: error("PAIRING_REQUIRED"),component,when(value) {
+                host.setting(id,app.remoteRuntime.connectedAccountId ?: error("PAIRING_REQUIRED"),component,when(value) {
                     is PluginUiActionValue.ToggleValue -> value.checked
                     is PluginUiActionValue.ChoiceValue -> value.optionId
                     else -> error("UI_ACTION_INVALID")
@@ -304,7 +304,7 @@ fun PluginManagementScreen(
                 installScope.launch {
                     try {
                         val entry = host?.entries(id)?.firstOrNull { it.key == selected } ?: error("CAPABILITY_NOT_DECLARED")
-                        val accountId = app?.gatewayRuntime?.connectedAccountId ?: error("PAIRING_REQUIRED")
+                        val accountId = app?.remoteRuntime?.connectedAccountId ?: error("PAIRING_REQUIRED")
                         val result = runInterruptible(Dispatchers.IO) { host.invoke(entry.identity,accountId,selected,Json.parse(parameters),"ui_${java.util.UUID.randomUUID()}") }
                         notice = result.decodeToString().take(4096)
                     } catch (cancelled: CancellationException) { throw cancelled }

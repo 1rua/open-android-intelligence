@@ -9,8 +9,6 @@ import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.os.Build
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.events.GatewayEvent
-import com.openandroidintelligence.gateway.events.SseParser
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.InMemoryAuditSink
 import com.openandroidintelligence.kernel.InMemoryPairingGrantStore
@@ -296,8 +294,9 @@ class ReplyNotificationsTest {
         val notification = context.getSystemService(NotificationManager::class.java).activeNotifications.single().notification
         val style = android.app.Notification.Builder.recoverBuilder(context, notification).style as android.app.Notification.MessagingStyle
         val shortcut = context.getSystemService(ShortcutManager::class.java).dynamicShortcuts.single { it.id == notification.shortcutId }
-        assertEquals("Agent 会话", shortcut.shortLabel.toString())
-        assertEquals("Agent 会话", style.conversationTitle.toString())
+        val defaultTitle = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_conv_default_title)
+        assertEquals(defaultTitle, shortcut.shortLabel.toString())
+        assertEquals(defaultTitle, style.conversationTitle.toString())
         val participants = org.robolectric.util.ReflectionHelpers.callInstanceMethod<Array<android.app.Person>>(shortcut, "getPersons")
         assertEquals(2, participants.size)
         assertTrue("Android excludes only-bot shortcuts from conversation/bubble eligibility", participants.any { !it.isBot && it.key == style.user.key })
@@ -311,43 +310,6 @@ class ReplyNotificationsTest {
         assertTrue("The separate normal notification tap remains immutable", notification.contentIntent.isImmutable)
         assertFalse(ReplyNotificationSettings(context).liveUpdatesSupported)
         assertNull(ReplyNotificationSettings(context).liveUpdatesSettingsIntent())
-    }
-
-    @Test fun authenticatedRuntimeReceivesSseAndPublishesThenTapOpensMatchingConversationOnly() {
-        clock = System.currentTimeMillis()
-        val gateway = LoopbackGatewayStub()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-        try {
-            gateway.respond("/open-android-intelligence/v2/negotiate", """{"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},"features":{"auth":["password","refresh"],"messages":"chat-v1","attachments":"staged-sha256-v1","events":"sse-cursor-v1","deviceRequests":"risk-queue-v1","conversationUi":[]},"limits":{"attachmentTtlSeconds":3600,"eventRetentionSeconds":86400,"maxClockSkewSeconds":120},"gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}""")
-            gateway.respond("/open-android-intelligence/v2/sessions/password", """{"data":{"accountId":"account-a","deviceId":"device-a","sessionId":"session-a","accessToken":"token","refreshCredential":"refresh"}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations", """{"protocol":"2.1","data":{"conversations":[{"conversationId":"initial","title":"Initial","lastMessageAt":"2026-10-17T02:00:00Z"}]}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations/initial/messages", """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}""")
-            gateway.respond("/open-android-intelligence/v2/conversations/conv-a/messages", """{"protocol":"2.1","data":{"messages":[],"nextCursor":null,"snapshotRevision":1}}""")
-            val frames = listOf(message("conversation.message.completed"), status("completed")).joinToString("") {
-                "id: ${it.id}\nevent: ${it.event}\ndata: ${it.data}\n\n"
-            }
-            gateway.respond("/open-android-intelligence/v2/events", frames, contentType = "text/event-stream")
-            val runtime = GatewayRuntime(context, scope,
-                PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink())),
-                credentialStore = InMemoryCredentialStore(), deviceKeys = InMemoryDeviceKeySource(), localDocumentKeyProvider = TestDocumentKeys)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            val manager = context.getSystemService(NotificationManager::class.java)
-            val deadline = System.currentTimeMillis() + 15_000
-            while (shadowOf(manager).allNotifications.isEmpty() && System.currentTimeMillis() < deadline) {
-                shadowOf(android.os.Looper.getMainLooper()).idle()
-                Thread.sleep(20)
-            }
-            assertEquals("Runtime's actual authenticated SSE callback must publish", 1, shadowOf(manager).allNotifications.size)
-            shadowOf(manager).allNotifications.single().contentIntent.send()
-            val target = requireNotNull(ReplyNotificationTarget.from(shadowOf(context).nextStartedActivity))
-            assertFalse(runtime.openReplyNotification(target.copy(accountId = "other-account")))
-            assertFalse(runtime.openReplyNotification(target.copy(profileId = "other-gateway-profile")))
-            assertTrue(runtime.openReplyNotification(target))
-            assertEquals("conv-a", runtime.controller.value!!.state.value.activeThreadId)
-        } finally {
-            scope.cancel()
-            gateway.closed()
-        }
     }
 
     @Test
@@ -376,6 +338,35 @@ class ReplyNotificationsTest {
         assertTrue(posts.isNotEmpty())
     }
 
+    @Test fun `类型化完成等待同轮次正文和终态且持久围栏阻止重放`() {
+        fun reply(generation: String = "generation", completed: Boolean = true) = notificationReply(clock,
+            profile = "profile-a", account = "account-a", generation = generation, completed = completed)
+        fun success(generation: String = "generation") = notificationStatus(clock,
+            profile = "profile-a", account = "account-a", generation = generation)
+        observer().accept(reply(completed = false))
+        observer().accept(success())
+        assertTrue(posts.isEmpty())
+        observer().accept(reply("other"))
+        assertTrue(posts.isEmpty())
+        observer().accept(reply())
+        assertEquals(1, posts.size)
+        observer().accept(reply())
+        observer().accept(success())
+        assertEquals(1, posts.size)
+        assertEquals("endpoint", posts.single().first.agentId)
+        assertEquals("generation", posts.single().second)
+    }
+
+    @Test fun `类型化完成拒绝其他账号与资料身份`() {
+        val observer = observer()
+        observer.accept(notificationReply(clock, profile = "other-profile", account = "account-a"))
+        observer.accept(notificationStatus(clock, profile = "profile-a", account = "account-a"))
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "other-account"))
+        assertTrue(posts.isEmpty())
+        observer.accept(notificationReply(clock, profile = "profile-a", account = "account-a"))
+        assertEquals(1, posts.size)
+    }
+
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE), "profile-a", "account-a", post, { clock },
     )
@@ -388,9 +379,8 @@ class ReplyNotificationsTest {
 
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
 
-    private fun event(type: String, payload: String, account: String = "account-a"): GatewayEvent = SseParser().feed(
-        "id: event-${++eventNumber}\nevent: $type\ndata: {\"accountId\":\"$account\",\"occurredAt\":\"${Instant.ofEpochMilli(clock)}\",\"payload\":$payload}\n\n",
-    ).single()
+    private fun event(type: String, payload: String, account: String = "account-a"): NativeNotificationInput? =
+        notificationFact("profile-a", account, "event-${++eventNumber}", clock, type, payload)
 
     private class CountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {
         var allReads = 0

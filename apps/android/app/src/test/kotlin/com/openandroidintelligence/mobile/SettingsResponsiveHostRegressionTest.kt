@@ -69,7 +69,7 @@ class SettingsResponsiveHostRegressionTest {
     @After fun close() { scope.cancel() }
 
     @Test fun workbenchUsesHostWidthAt840dpEvenThoughTheSettingsSlotIs320dp() {
-        val runtime = disconnectedRuntime()
+        val runtime: LocalSettingsRuntime? = null
         val controller = WorkbenchController(
             scope, EmptyGateway(),
             object : AgentCommandCatalogRepository {
@@ -83,20 +83,19 @@ class SettingsResponsiveHostRegressionTest {
             CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(true)) {
                 MaterialTheme {
                     Box(Modifier.size(hostWidth, 700.dp)) {
-                        GatewayWorkbenchScreen(
-                            runtime = runtime,
+                        WorkbenchSettingsHost { presentation ->
+                        com.openandroidintelligence.conversation.workbench.WorkbenchScreen(
                             controller = controller,
                             gatewayLabel = "https://gateway.example.com",
-                            onOpenSettings = {}, onPickCamera = {}, onPickGallery = {},
+                            onOpenSettings = {}, onLogout = {}, onPickCamera = {}, onPickGallery = {},
                             onPickDocument = {}, onVoiceInput = {},
                             settingsOpen = true,
-                            reduceMotion = true,
-                            settingsPanel = { presentation, _ ->
+                            settingsPanel = { _ ->
                                 Box(Modifier.fillMaxSize().testTag("workbench-settings-slot")) {
                                     Text(presentation.name)
                                 }
                             },
-                        )
+                        ) }
                     }
                 }
             }
@@ -131,7 +130,7 @@ class SettingsResponsiveHostRegressionTest {
 
     private fun assertRealSettingsNavigation(initialWidth: Dp, widths: List<Dp>, reduceMotion: Boolean) {
         val environment = settingsEnvironment()
-        val runtime = disconnectedRuntime()
+        val runtime: LocalSettingsRuntime? = null
         var width by mutableStateOf(initialWidth)
         var open by mutableStateOf(false)
         var dismissals = 0
@@ -145,7 +144,6 @@ class SettingsResponsiveHostRegressionTest {
                             open = open,
                             onDismiss = { dismissals++; open = false },
                             environment = environment,
-                            runtime = runtime,
                             onRequestScreenCaptureAuthorization = {},
                         ) {
                             TextButton(onClick = { open = true }) { Text("打开设置") }
@@ -271,12 +269,6 @@ class SettingsResponsiveHostRegressionTest {
     private fun scrollOffset(): Float = compose.onNode(hasScrollAction()).fetchSemanticsNode()
         .config[SemanticsProperties.VerticalScrollAxisRange].value()
 
-    private fun disconnectedRuntime() = GatewayRuntime(
-        context = context, scope = scope,
-        pairingGrants = PairingGrantStateHolder(InMemoryPairingGrantStore(), AndroidAuditStore(InMemoryAuditSink())),
-        credentialStore = InMemoryCredentialStore(), deviceKeys = InMemoryDeviceKeySource(),
-        localDocumentKeyProvider = TestDocumentKeys,
-    )
 
     private fun settingsEnvironment(): PlatformSettingsEnvironment {
         val trustMode = DeveloperTrustMode()

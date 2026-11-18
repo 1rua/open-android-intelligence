@@ -45,8 +45,8 @@ jobs:
     with:
       sha: ${{ github.sha }}
       wait-seconds: 2400
-      # dev 的增量 CI 由 oai-core.yml 承担。
-      required-workflow: oai-core.yml
+      # dev 的增量 CI 由 remote-client.yml 承担。
+      required-workflow: remote-client.yml
 
   sign-plugin-packages:
     runs-on: ubuntu-latest

@@ -436,7 +436,7 @@ class ClientCapabilityAuthorizationTest {
     }
 
     @Test
-    fun schedulerRequiresSeparateLocalBackgroundConsentEvenInAutomaticMode() = withCapabilityHost { host, _, calls, _ ->
+    fun schedulerRequiresSeparateLocalBackgroundConsentEvenInAutomaticMode() = withCapabilityHost { host, grants, calls, _ ->
         val id = "org.openandroidintelligence.sms"
         val entry = host.entries(id).first { it.id.endsWith(".query") }
         assertTrue(host.supportsBackground(id))
@@ -450,21 +450,105 @@ class ClientCapabilityAuthorizationTest {
             "schemaSha256" to Json.sha256(entry.schema), "query" to mapOf("limit" to 1), "expiresAt" to 2_000L)))!!
         fun run(jobId: String): List<String> {
             val states = mutableListOf<String>()
-            PluginJobScheduler.executeStoredInvocation(host, record, jobId, nowMillis = 1_000L) { state, _ -> states += state }
+            PluginJobScheduler.executeStoredInvocation(host, record, jobId, testBackgroundBinding(grants.state.value!!.revision), nowMillis = 1_000L) { state, _ -> states += state }
             return states
         }
-        assertEquals(listOf("executing", "failed"), run("job-no-background"))
+        assertEquals(listOf("authorization_expired"), run("job-no-background"))
         assertEquals(0, calls())
         host.setBackgroundEnabled(id, true)
         assertTrue(host.isBackgroundEnabled(id))
         assertTrue(host.isCapabilityEnabled(id))
         assertEquals(listOf("executing", "succeeded"), run("job-local-background"))
         assertEquals(1, calls())
+        // 稳定主体在执行前失效时不得再次调用插件。
+        val denied = mutableListOf<String>()
+        PluginJobScheduler.executeStoredInvocation(host, record, "job-revoked", testBackgroundBinding(grants.state.value!!.revision) { false },
+            nowMillis = 1_000L) { state, _ -> denied += state }
+        assertEquals(listOf("authorization_expired"),denied)
+        assertEquals(1,calls())
         host.setBackgroundEnabled(id, false)
         assertFalse(host.isBackgroundEnabled(id))
         assertTrue(host.isCapabilityEnabled(id))
-        assertEquals(listOf("executing", "failed"), run("job-background-revoked"))
+        assertEquals(listOf("authorization_expired"), run("job-background-revoked"))
         assertEquals(1, calls())
+    }
+
+    @Test
+    fun 本机定时任务无连接时恢复且密钥等待可重排并且执行中任务绝不重放() = withCapabilityHost { host, grants, calls, _ ->
+        val context=ApplicationProvider.getApplicationContext<Application>()
+        val docs=EncryptedDocuments(context,"remote-scheduled-job-recovery",com.openandroidintelligence.mobile.TestDocumentKeys)
+        val entry=host.entries(SMS_PLUGIN_ID).first { it.id.endsWith(".query") }
+        host.setCapabilityPolicy(SMS_PLUGIN_ID,entry.key,CapabilityPolicy(mode=CapabilityAuthorizationMode.READ_ONLY))
+        host.setBackgroundEnabled(SMS_PLUGIN_ID,true)
+        val subject=testBackgroundSubject(grants.state.value!!.revision)
+        val record=Json.of(mapOf("jobId" to "job-recovery", "pluginId" to entry.identity.pluginId,
+            "author" to entry.identity.authorKeyFingerprint,"version" to entry.identity.version,
+            "accountId" to subject.principal.accountId,"grantRevision" to subject.localGrantRevision,
+            "remoteSubject" to subject.encode(),"capabilityId" to entry.id,"capabilityVersion" to entry.version,
+            "schemaSha256" to Json.sha256(entry.schema),"query" to mapOf("limit" to 1),"expiresAt" to 2000L,
+            "state" to "scheduled"))
+        fun persist(state: String="scheduled") {
+            val fields=(record as JsonValue.JObject).fields.toMap()+ ("state" to Json.of(state))
+            docs.write("job-recovery",Json.canonical(JsonValue.JObject(fields.toList())).toByteArray())
+        }
+        fun stored()=Json.parse(docs.read("job-recovery")!!.decodeToString()) as JsonValue.JObject
+        fun state()=com.openandroidintelligence.gateway.schema.JsonFields.string(stored(),"state")
+        var checks=0
+        var admission: RemoteBackgroundAdmission=RemoteBackgroundAdmission.Waiting("REMOTE_IDENTITY_LOCKED")
+        val authority=RemoteBackgroundAuthority { saved -> assertEquals(subject,saved); checks++; admission }
+        grants.unbind()
+        assertNull(grants.currentKernelGrant(binding.pairingId))
+        persist()
+        assertTrue(PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-recovery",1000L))
+        assertEquals("authorization_unavailable",state())
+        assertNotNull(com.openandroidintelligence.gateway.schema.JsonFields.field(stored(),"query"))
+        assertEquals(0,calls())
+        // 新实例读取同一加密任务，系统退避后恢复，不需要网络或旧 Gateway 配对。
+        admission=RemoteBackgroundAdmission.Ready
+        val restored=EncryptedDocuments(context,"remote-scheduled-job-recovery",com.openandroidintelligence.mobile.TestDocumentKeys)
+        assertFalse(PluginJobScheduler.runStoredJob(host,grants,authority,restored,"job-recovery",1000L))
+        assertEquals("succeeded",state()); assertEquals(1,calls()); assertTrue(checks>3)
+        assertNull(com.openandroidintelligence.gateway.schema.JsonFields.field(stored(),"query"))
+        assertFalse(PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-recovery",1000L))
+        assertEquals(1,calls())
+        persist("executing")
+        assertFalse(PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-recovery",1000L))
+        assertEquals("outcome_unknown",state()); assertEquals(1,calls())
+        assertNull(com.openandroidintelligence.gateway.schema.JsonFields.field(stored(),"query"))
+        // 本机撤销改变持久revision；原授权参数不能随设置变化重新获得许可。
+        persist()
+        host.setBackgroundEnabled(SMS_PLUGIN_ID,false)
+        assertFalse(PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-recovery",1000L))
+        assertEquals("authorization_expired",state()); assertEquals(1,calls())
+    }
+
+    @Test
+    fun 本机定时调用中失去稳定主体后结果未知且持久任务不重放() {
+        var current=true
+        withCapabilityHost(beforePrimitive={ _,_,primitive,_ -> if (primitive=="kernel.sms.read") current=false }) { host,grants,calls,_ ->
+            val context=ApplicationProvider.getApplicationContext<Application>()
+            val entry=host.entries(SMS_PLUGIN_ID).first { it.id.endsWith(".query") }
+            host.setCapabilityPolicy(SMS_PLUGIN_ID,entry.key,CapabilityPolicy(mode=CapabilityAuthorizationMode.READ_ONLY))
+            host.setBackgroundEnabled(SMS_PLUGIN_ID,true)
+            val subject=testBackgroundSubject(grants.state.value!!.revision)
+            val docs=EncryptedDocuments(context,"remote-scheduled-job-unknown",com.openandroidintelligence.mobile.TestDocumentKeys)
+            docs.write("job-unknown",Json.canonical(Json.of(mapOf("state" to "scheduled","pluginId" to entry.identity.pluginId,
+                "author" to entry.identity.authorKeyFingerprint,"version" to entry.identity.version,
+                "accountId" to subject.principal.accountId,"grantRevision" to subject.localGrantRevision,"remoteSubject" to subject.encode(),
+                "capabilityId" to entry.id,"capabilityVersion" to entry.version,"schemaSha256" to Json.sha256(entry.schema),
+                "query" to mapOf("limit" to 1),"expiresAt" to 2000L))).toByteArray())
+            val authority=RemoteBackgroundAuthority { if (current) RemoteBackgroundAdmission.Ready else RemoteBackgroundAdmission.Denied("REVOKED") }
+            grants.unbind()
+            PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-unknown",1000L)
+            val stored=Json.parse(docs.read("job-unknown")!!.decodeToString()) as JsonValue.JObject
+            assertEquals("outcome_unknown",com.openandroidintelligence.gateway.schema.JsonFields.string(stored,"state"))
+            assertNull(com.openandroidintelligence.gateway.schema.JsonFields.field(stored,"query"))
+            // 最后一次本机门禁在调用提供者前拒绝，无法确定执行边界时也不重放。
+            assertEquals(0,calls())
+            current=true
+            PluginJobScheduler.runStoredJob(host,grants,authority,docs,"job-unknown",1000L)
+            assertEquals(0,calls())
+        }
     }
 
     @Test

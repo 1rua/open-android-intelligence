@@ -66,6 +66,10 @@
     <!-- 设备能力系统权限要求与手动引导 (DeviceCapabilityPermissions) -->
     <string name="perm_req_sms_title">短信读取</string>
     <string name="perm_req_sms_purpose">读取本机短信内容供助手查询。不授权时短信能力不可用，其他功能不受影响。</string>
+    <string name="perm_req_sms_send_title">短信发送</string>
+    <string name="perm_req_sms_send_purpose">通过用户明确授权的 SIM 卡发送短信。不授权时短信发送不可用，其他功能不受影响。</string>
+    <string name="perm_req_sms_subscription_title">短信 SIM 卡核验</string>
+    <string name="perm_req_sms_subscription_purpose">核验本次短信明确选择的 SIM 卡在确认前后保持一致，避免使用默认卡或已更换的卡发送。</string>
     <string name="perm_req_call_log_title">通话记录读取</string>
     <string name="perm_req_call_log_purpose">读取本机通话记录供助手查询。不授权时通话记录能力不可用。</string>
     <string name="perm_req_notification_access_title">通知使用权</string>

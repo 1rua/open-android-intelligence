@@ -57,7 +57,7 @@ internal class ScreenTreeReader {
             val record = describe(node, nodeId, windowId, parent, depth)
             if (node.visible && record.bounds.right > record.bounds.left && record.bounds.bottom > record.bounds.top &&
                 (record.text != null || record.description != null || record.resourceId != null ||
-                    record.clickable || record.longClickable || record.scrollable || record.editable)) {
+                    record.clickable || record.longClickable || record.scrollable || record.editable || record.password)) {
                 out += record
             }
             if (depth >= MAX_DEPTH) { if (node.childCount > 0) truncated = true; return }

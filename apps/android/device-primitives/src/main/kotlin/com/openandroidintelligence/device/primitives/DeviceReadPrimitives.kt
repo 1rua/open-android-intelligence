@@ -8,6 +8,7 @@ import com.openandroidintelligence.notifications.*
 import com.openandroidintelligence.policy.PersistentNotificationPolicyAuthority
 import com.openandroidintelligence.sms.*
 import java.time.Instant
+import com.openandroidintelligence.capability.SmsSendRequest
 
 /** The registered production providers, with Android adapters injected at the composition root. */
 internal class SmsReadPrimitive(
@@ -50,6 +51,50 @@ internal class SmsReadPrimitive(
 
     private fun checkPermission() {
         if (!permissionGranted()) throw CapabilityDenied("READ_SMS_REQUIRED")
+    }
+}
+
+/** 原生短信发送原语；发送正文只在此调用栈内解析，不写入审计或控制历史。 */
+internal class SmsSendPrimitive(
+    private val sender: AndroidSmsSendProvider,
+    private val beforeSystemEffect: (LocalGrantContext, SmsSendRequest) -> Unit,
+    private val permissionGranted: () -> Boolean = { true },
+    private val subscriptionBinding: (Int) -> String? = { it.toString() },
+) : KernelPrimitiveProvider {
+    override val primitiveId: String = "kernel.sms.send"
+
+    override fun availability(): String? = if (permissionGranted()) null else "SEND_SMS_REQUIRED"
+
+    override fun confirmationBinding(input: ByteArray): String {
+        val request = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
+        val id = JsonFields.int(request, "subscriptionId") ?: error("SCHEMA_INVALID")
+        if (id < 0) throw CapabilityDenied("SMS_SUBSCRIPTION_REQUIRED")
+        return subscriptionBinding(id) ?: throw CapabilityDenied("SMS_SUBSCRIPTION_UNAVAILABLE")
+    }
+
+    override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
+        if (!permissionGranted()) throw CapabilityDenied("SEND_SMS_REQUIRED")
+        val request = JsonFields.obj(Json.parse(input.decodeToString())) ?: error("SCHEMA_INVALID")
+        val sms = SmsSendRequest(
+            subscriptionId = JsonFields.int(request, "subscriptionId") ?: error("SCHEMA_INVALID"),
+            recipient = JsonFields.string(request, "recipient") ?: error("SCHEMA_INVALID"),
+            text = JsonFields.string(request, "text") ?: error("SCHEMA_INVALID"),
+        )
+        val binding = confirmationBinding(input)
+        val result = sender.send(sms, SmsSendBeforeSystemEffect {
+            if (!permissionGranted()) throw CapabilityDenied("SEND_SMS_REQUIRED")
+            if (binding != confirmationBinding(input)) throw CapabilityDenied("SMS_SUBSCRIPTION_CHANGED")
+            beforeSystemEffect(context, sms)
+        })
+        return Json.canonical(Json.of(mapOf(
+            "status" to result.status.name.lowercase(),
+            "segmentCount" to result.segmentCount,
+            "sentSegments" to result.sentSegments,
+            "failedSegments" to result.failedSegments,
+            "failureCode" to result.failureCode,
+            "deliveryConfirmed" to false,
+            "automaticRetryAllowed" to false,
+        ))).encodeToByteArray()
     }
 }
 

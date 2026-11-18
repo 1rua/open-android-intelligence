@@ -79,16 +79,31 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     lease.beforeSystemEffect()
                 }
                 fun node(id: String): ScreenNode = snapshot.nodes.singleOrNull { it.nodeId == id }
-                    ?.also { if (!it.enabled || it.password) throw ScreenOperationException("SCREEN_TARGET_NOT_INTERACTABLE") }
+                    ?.also {
+                        if (!it.enabled || it.password) throw ScreenOperationException("SCREEN_TARGET_NOT_INTERACTABLE")
+                        val b = it.bounds
+                        val protected = com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current?.protectedBounds
+                        if (protected != null && b.left < protected.right && b.right > protected.left && b.top < protected.bottom && b.bottom > protected.top)
+                            throw ScreenOperationException("SCREEN_LOCAL_UI_PROTECTED")
+                    }
                     ?: throw ScreenOperationException("SCREEN_NODE_NOT_FOUND")
                 fun point(x: Int?, y: Int?): Pair<Int, Int> {
                     if (x == null || y == null || x !in 0 until snapshot.display.widthPixels || y !in 0 until snapshot.display.heightPixels) {
                         throw ScreenOperationException("SCREEN_COORDINATES_INVALID")
                     }
+                    val protected = com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current?.protectedBounds
+                    if (protected != null && x >= protected.left && x < protected.right && y >= protected.top && y < protected.bottom)
+                        throw ScreenOperationException("SCREEN_LOCAL_UI_PROTECTED")
                     return x to y
                 }
                 fun duration(ms: Long): Long = ms.also {
                     if (it !in 50..3000) throw ScreenOperationException("SCHEMA_INVALID")
+                }
+                fun protectedPath(points: List<Pair<Int, Int>>) {
+                    val protected = com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current?.protectedBounds ?: return
+                    if (points.minOf { it.first } <= protected.right && points.maxOf { it.first } >= protected.left &&
+                        points.minOf { it.second } <= protected.bottom && points.maxOf { it.second } >= protected.top)
+                        throw ScreenOperationException("SCREEN_LOCAL_UI_PROTECTED")
                 }
                 fun semantic(id: String, kind: NativeNodeAction, text: String? = null): Boolean {
                     val target = node(id)
@@ -140,11 +155,13 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
                     })
                     is ScreenAction.Swipe -> {
                         val points = listOf(point(action.x, action.y), point(action.endX, action.endY))
+                        protectedPath(points)
                         val ms = duration(action.durationMs)
                         guard(); runtime.gesture(points, ms, generation, ::dispatchGuard)
                     }
                     is ScreenAction.Drag -> {
                         val points = listOf(point(action.x, action.y), point(action.endX, action.endY))
+                        protectedPath(points)
                         val ms = duration(action.durationMs)
                         // The runtime holds the first point before continuing the same stroke.
                         guard(); runtime.gesture(points, ms, generation, ::dispatchGuard, drag = true)

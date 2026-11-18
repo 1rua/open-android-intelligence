@@ -27,8 +27,8 @@ class WorkbenchForegroundResumeTest {
 
     @Test fun exhaustedEventAuthenticationPausesAutomaticSubscriptionsUntilAnExplicitWakeup() = runTest {
         for (failure in listOf(
-            com.openandroidintelligence.gateway.http.EventSessionRejectedException(),
-            com.openandroidintelligence.gateway.auth.SessionRecoveryPausedException("REFRESH_OUTCOME_UNKNOWN"),
+            com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException("ACCOUNT_AUTH_REQUIRED"),
+            com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException("DEVICE_REVOKED"),
         )) {
             val repository = RecordingRepository(eventsFor = { flow { throw failure } })
             val controller = controller(repository)

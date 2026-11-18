@@ -46,7 +46,8 @@ internal object TestAlpPackages {
     /** Real compiled SMS code and its checked-in schema, signed with a fresh test key. */
     fun compiledSmsPackage(queryCapabilityId: String = "org.openandroidintelligence.sms.query", queryVersion: String = "1.0.0",
         author: java.security.KeyPair = KeyPairGenerator.getInstance("Ed25519").generateKeyPair(), version: String = "1.0.0",
-        capabilityDeclaration: JsonValue.JObject? = null, pluginId: String = "org.openandroidintelligence.sms"): ByteArray {
+        capabilityDeclaration: JsonValue.JObject? = null, pluginId: String = "org.openandroidintelligence.sms",
+        payloadOverride: ByteArray? = null): ByteArray {
         var root = File(requireNotNull(System.getProperty("user.dir"))).absoluteFile
         while (!File(root, "plugins/sms/manifest.json").isFile) {
             root = root.parentFile ?: error("Repository root unavailable")
@@ -75,8 +76,8 @@ internal object TestAlpPackages {
                 else -> value
             }
         })).toByteArray()
-        val content = listOf("payload/sms.wasm" to File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes()) +
-            listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel").map { name ->
+        val content = listOf("payload/sms.wasm" to (payloadOverride ?: File(root, "plugins/target/wasm32-unknown-unknown/release/sms.wasm").readBytes())) +
+            listOf("sms", "sms-schedule", "sms-job-status", "sms-cancel", "sms-send").map { name ->
                 "schemas/$name.json" to File(root, "plugins/schemas/$name.json").readBytes()
             }
         val index = filesJson(content)
@@ -236,7 +237,7 @@ internal object TestAlpPackages {
         return ("""{"schemaVersion":"1.0","plugin":{"id":"$id","version":"$version","name":"$name","description":"测试用示例插件"},""" +
             """"author":{"algorithm":"Ed25519","publicKey":"$publicKey"},""" +
             """"runtime":{"type":"protected-wasm","abiVersion":"1.0","entrypoint":"open_android_intelligence_plugin_main","payload":"payload/plugin.wasm"},""" +
-            """"compatibility":{"androidHost":">=2.0.0 <3.0.0","gatewayProtocol":">=2.0 <3.0"},""" +
+            """"compatibility":{"androidHost":">=2.0.0 <3.0.0"},""" +
             """"capabilities":$capabilitiesSegment,""" +
             """"security":{"network":[],"background":{"requested":false,"minimumIntervalSeconds":null},""" +
             """"resources":{"maxInvocationMillis":5000,"maxMemoryBytes":16777216,"maxStorageBytes":10485760,"maxConcurrentInvocations":1,"maxDailyNetworkBytes":0}},""" +

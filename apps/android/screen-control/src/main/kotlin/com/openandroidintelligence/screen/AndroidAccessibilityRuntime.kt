@@ -57,6 +57,7 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
             val windows = service.windows.orEmpty()
             try {
                 for (window in windows.take(ScreenTreeReader.MAX_WINDOWS + 1)) {
+                    if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue
                     val root = window.root ?: continue
                     try {
                         val rect = Rect()

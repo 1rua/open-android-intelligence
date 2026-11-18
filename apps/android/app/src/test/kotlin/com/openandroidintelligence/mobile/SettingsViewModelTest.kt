@@ -2,7 +2,7 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.mobile.LocalProfile
 import com.openandroidintelligence.kernel.AndroidAuditStore
 import com.openandroidintelligence.kernel.CapabilityProviderSelector
 import com.openandroidintelligence.kernel.DeveloperTrustMode
@@ -92,7 +92,6 @@ class SettingsViewModelTest {
     fun initialUiStateReflectsEnvironment() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
         val state = viewModel.uiState.value
@@ -103,58 +102,14 @@ class SettingsViewModelTest {
         assertTrue(state.allowDeveloperTrustMode)
         assertFalse(state.isEmergencyStopped)
         assertEquals(0, state.emergencyStoppedCount)
-        assertEquals(ConnectionPhase.Disconnected, state.connectionPhase)
-        assertFalse(state.isGatewayConnected)
-        assertFalse(state.hasLocalSession)
-        assertTrue(state.localSessionState is LocalSessionState.SignedOut)
+        assertFalse(state.replyNotificationsWired)
         assertNotNull(state.pairingGrants)
-    }
-
-    @Test
-    fun localAccountControlsRemainAvailableForEveryWorkspaceConnectionPhase() {
-        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
-        val phases = listOf(
-            ConnectionPhase.Failed("PROTOCOL_INCOMPATIBLE:406"),
-            ConnectionPhase.Disconnected,
-            ConnectionPhase.Initializing,
-            ConnectionPhase.Reconnecting,
-            ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
-        )
-        phases.forEach { phase ->
-            val state = SettingsUiState(
-                connectionPhase = phase,
-                localSessionState = LocalSessionState.Workspace(account, phase),
-            )
-            assertTrue("本地工作台在 $phase 下仍须提供账号操作", state.hasLocalSession)
-            assertFalse("本地账号操作不能授予远端连接能力", state.isGatewayConnected)
-            assertEquals(account.username, state.connectedUsername)
-            assertEquals(account.gatewayBaseUrl, state.connectedGatewayUrl)
-        }
-    }
-
-    @Test
-    fun localAccountControlsRequireAWorkspaceRatherThanAnOldConnectionPhase() {
-        val account = AccountProfile("local-profile", "http://core.example.com", "operator", "")
-        val localStates = listOf(
-            LocalSessionState.LoadingLocal,
-            LocalSessionState.SignedOut(),
-            LocalSessionState.AccountPicker(listOf(account)),
-            LocalSessionState.Locked(account, "KEY_UNAVAILABLE"),
-        )
-        localStates.forEach { local ->
-            val state = SettingsUiState(
-                connectionPhase = ConnectionPhase.OfflineMirror(account.gatewayBaseUrl, account.username),
-                localSessionState = local,
-            )
-            assertFalse("$local 不拥有活动工作台，旧连接阶段不能伪造本地登录", state.hasLocalSession)
-        }
     }
 
     @Test
     fun themePreferencesUpdateCleanly() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -214,7 +169,6 @@ class SettingsViewModelTest {
 
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -239,21 +193,15 @@ class SettingsViewModelTest {
     fun replyNotificationSwitchControlsAppPreferenceWithoutGrantingNotificationCollection() {
         val context = ApplicationProvider.getApplicationContext<Application>()
         org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
-        val runtime = GatewayRuntime(
-            context = context,
-            scope = testScope,
-            pairingGrants = pairingGrants,
-            credentialStore = InMemoryCredentialStore(),
-            deviceKeys = InMemoryDeviceKeySource(),
-            localDocumentKeyProvider = TestDocumentKeys,
-        )
-        val viewModel = viewModelFor(runtime)
+        val notifications = ReplyNotificationSettings(context)
+        val local = LocalSettingsRuntime(notifications, {}, {}, {})
+        val viewModel = SettingsViewModel(environment, local, externalScope = testScope)
         val originalGrants = pairingGrants.state.value
         viewModel.setNotificationsGrant(false)
-        assertFalse(runtime.replyNotifications.enabled.value)
+        assertFalse(notifications.enabled.value)
         assertFalse(viewModel.uiState.value.isNotificationsGranted)
         viewModel.setNotificationsGrant(true)
-        assertTrue(runtime.replyNotifications.enabled.value)
+        assertTrue(notifications.enabled.value)
         assertTrue(viewModel.uiState.value.isNotificationsGranted)
         assertEquals("任务通知不授予读取其他应用通知的能力", originalGrants, pairingGrants.state.value)
         assertTrue(ReplyNotificationSettings(context).enabled.value)
@@ -261,14 +209,13 @@ class SettingsViewModelTest {
         org.robolectric.Shadows.shadowOf(context).denyPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
         viewModel.refreshReplyNotificationPermission()
         assertFalse(viewModel.uiState.value.isNotificationsGranted)
-        assertTrue("系统拒绝权限不会丢失用户的开关偏好", runtime.replyNotifications.enabled.value)
+        assertTrue("系统拒绝权限不会丢失用户的开关偏好", notifications.enabled.value)
     }
 
     @Test
     fun developerTrustModeRequiresAcknowledgement() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -308,7 +255,6 @@ class SettingsViewModelTest {
     fun emergencyStopShutsDownKernelAndRevokesTrust() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -330,7 +276,6 @@ class SettingsViewModelTest {
         // 面板关闭再打开：新的 ViewModel 必须从持有者恢复计数，而不是从 0 开始
         val recreated = SettingsViewModel(
             environment = environment.copy(emergencyStoppedCount = recorder),
-            runtime = null,
             externalScope = testScope,
         )
         assertEquals(
@@ -342,7 +287,6 @@ class SettingsViewModelTest {
         // 本界面再次触发熔断时，把真实的隔离数写回持有者
         val active = SettingsViewModel(
             environment = environment.copy(emergencyStoppedCount = recorder),
-            runtime = null,
             externalScope = testScope,
         )
         active.enableTrustMode(DeveloperTrustMode.Acknowledgement.REQUIRED_TEXT)
@@ -354,7 +298,6 @@ class SettingsViewModelTest {
     fun externalEmergencyStopUpdatesUiStateReactively() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -374,7 +317,6 @@ class SettingsViewModelTest {
     fun externalTrustModeDisableUpdatesUiStateReactively() = runBlocking {
         val viewModel = SettingsViewModel(
             environment = environment,
-            runtime = null,
             externalScope = testScope,
         )
 
@@ -386,34 +328,6 @@ class SettingsViewModelTest {
 
         assertFalse(trustMode.isEnabled())
         assertFalse(viewModel.uiState.value.isTrustModeEnabled)
-    }
-
-    @Test
-    fun gatewayRuntimePhaseUpdatesUiStateReactively() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Application>()
-        val runtime = GatewayRuntime(
-        localDocumentKeyProvider = TestDocumentKeys,
-            context = context,
-            scope = testScope,
-            pairingGrants = pairingGrants,
-        )
-        val viewModel = SettingsViewModel(
-            environment = environment,
-            runtime = runtime,
-            externalScope = testScope,
-        )
-
-        assertEquals(ConnectionPhase.Disconnected, viewModel.uiState.value.connectionPhase)
-
-        // Trigger a login with invalid URL to synchronously update connectionPhase to Failed
-        runtime.login("not-a-valid-scheme", "user", "pwd".toCharArray())
-
-        val phase = viewModel.uiState.value.connectionPhase
-        assertTrue(phase is ConnectionPhase.Failed)
-        assertEquals("AUTH_INVALID:url-scheme-required", (phase as ConnectionPhase.Failed).code)
-
-        runtime.resetFailure()
-        assertEquals(ConnectionPhase.Disconnected, viewModel.uiState.value.connectionPhase)
     }
 
     @Test
@@ -430,226 +344,4 @@ class SettingsViewModelTest {
         assertEquals(routes.size, routes.distinct().size)
     }
 
-    // ------------------------------------------------------------------
-    // 协商能力位透传（条目 3-15）：协商结果必须以三态如实抵达设置界面。
-    // 走真实的回环 Gateway 协商 → 登录 → 落盘 → ViewModel 投影全链路。
-    // ------------------------------------------------------------------
-
-    @Test
-    fun negotiatedConversationUiReachesTheSettingsUiState() {
-        val gateway = LoopbackGatewayStub()
-        try {
-            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
-            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
-            val runtime = runtimeFor(gateway)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            awaitConnected(runtime)
-
-            val state = viewModelFor(runtime).uiState.value
-
-            assertTrue(state.isGatewayConnected)
-            // 闭集 8 键一个不少
-            assertEquals(ConversationUiFeature.CLOSED_SET.size, state.conversationUi.size)
-            // 网关同意且客户端声明过：已启用
-            assertEquals(true, state.conversationUi["agent-command-catalog-v1"])
-            assertEquals(true, state.conversationUi["message-batches-v1"])
-            assertEquals(true, state.conversationUi["generation-cancel-v1"])
-            // 客户端从未声明：双方未声明，而不是「不支持」
-            assertNull("未声明的能力不得写成 false", state.conversationUi["newline-v1"])
-            assertNull(state.conversationUi["conversation-mirror-v1"])
-            assertNull(state.conversationUi["attachment-status-v1"])
-
-            assertTrue(state.isMessageBatchesAvailable)
-            assertTrue(state.isGenerationCancelAvailable)
-            assertFalse("未声明即不可用：客户端没有实现它", state.isNewlineAvailable)
-            assertFalse(state.isMirrorAvailable)
-            assertFalse(state.isAttachmentStatusAvailable)
-        } finally {
-            gateway.closed()
-        }
-    }
-
-    @Test
-    fun aFailedRefreshSurfacesAsADismissableNoticeInTheUiState() {
-        val gateway = LoopbackGatewayStub()
-        try {
-            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
-            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
-            gateway.respond(
-                "/open-android-intelligence/v2/sessions/refresh",
-                """{"error":{"code":"REFRESH_REUSED"}}""",
-                status = 401,
-            )
-            val credentialStore = InMemoryCredentialStore()
-            val runtime = GatewayRuntime(
-        localDocumentKeyProvider = TestDocumentKeys,
-                context = ApplicationProvider.getApplicationContext(),
-                scope = testScope,
-                pairingGrants = pairingGrants,
-                credentialStore = credentialStore,
-                deviceKeys = InMemoryDeviceKeySource(),
-            )
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            awaitConnected(runtime)
-            val viewModel = viewModelFor(runtime)
-
-            runtime.refreshSession()
-            val deadline = System.currentTimeMillis() + 10_000L
-            while (System.currentTimeMillis() < deadline && viewModel.uiState.value.operationNotice == null) {
-                Thread.sleep(20L)
-            }
-            val notice = viewModel.uiState.value.operationNotice
-            assertTrue(
-                "续期被拒必须经 ViewModel 透传到设置界面，而不是静默：$notice",
-                notice?.contains("重新登录") == true,
-            )
-
-            viewModel.dismissOperationNotice()
-            assertNull("提示必须可被界面关闭", viewModel.uiState.value.operationNotice)
-        } finally {
-            gateway.closed()
-        }
-    }
-
-    @Test
-    fun negotiatedDeviceRequestsReachTheSettingsUiState() {
-        val gateway = LoopbackGatewayStub()
-        try {
-            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_ALL_FIVE_BODY)
-            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
-            val runtime = runtimeFor(gateway)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            awaitConnected(runtime)
-
-            val state = viewModelFor(runtime).uiState.value
-
-            assertEquals("risk-queue-v1", state.deviceRequestChannel)
-        } finally {
-            gateway.closed()
-        }
-    }
-
-    @Test
-    fun incompleteNegotiationFailsBeforePasswordAndKeepsDeviceRequestsUnavailable() {
-        val gateway = LoopbackGatewayStub()
-        try {
-            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY)
-            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
-            val runtime = runtimeFor(gateway)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            assertTrue(awaitCondition(10_000L) { runtime.phase.value is ConnectionPhase.Failed })
-            assertFalse(gateway.targetsOf("POST").contains(PASSWORD_PATH))
-
-            val state = viewModelFor(runtime).uiState.value
-
-            assertNull("网关未提供设备请求时不得编造通路", state.deviceRequestChannel)
-        } finally {
-            gateway.closed()
-        }
-    }
-
-    @Test
-    fun aCapabilityTheGatewayRefusedReadsAsUnsupportedInUiState() {
-        val gateway = LoopbackGatewayStub()
-        try {
-            // 网关只同意 catalog 与 generation-cancel，明确没回 message-batches
-            gateway.respond(NEGOTIATE_PATH, NEGOTIATE_REFUSED_BODY)
-            gateway.respond(PASSWORD_PATH, PASSWORD_BODY)
-            val runtime = runtimeFor(gateway)
-            runtime.login(gateway.baseUrl, "operator", "secret".toCharArray())
-            awaitConnected(runtime)
-
-            val state = viewModelFor(runtime).uiState.value
-
-            assertEquals(true, state.conversationUi["generation-cancel-v1"])
-            assertEquals(
-                "客户端声明了但网关没同意，必须如实标成不支持",
-                false,
-                state.conversationUi["message-batches-v1"],
-            )
-            assertFalse(state.isMessageBatchesAvailable)
-            assertTrue(state.isGenerationCancelAvailable)
-        } finally {
-            gateway.closed()
-        }
-    }
-
-    private fun runtimeFor(gateway: LoopbackGatewayStub): GatewayRuntime = GatewayRuntime(
-        localDocumentKeyProvider = TestDocumentKeys,
-        context = ApplicationProvider.getApplicationContext(),
-        scope = testScope,
-        pairingGrants = pairingGrants,
-        credentialStore = InMemoryCredentialStore(),
-        deviceKeys = InMemoryDeviceKeySource(),
-    )
-
-    private fun viewModelFor(runtime: GatewayRuntime): SettingsViewModel = SettingsViewModel(
-        environment = environment,
-        runtime = runtime,
-        externalScope = testScope,
-    )
-
-    private fun awaitCondition(timeoutMillis: Long, condition: () -> Boolean): Boolean {
-        val deadline = System.currentTimeMillis() + timeoutMillis
-        while (System.currentTimeMillis() < deadline) {
-            if (condition()) return true
-            Thread.sleep(20L)
-        }
-        return false
-    }
-
-    private fun awaitConnected(runtime: GatewayRuntime) {
-        val deadline = System.currentTimeMillis() + 10_000L
-        while (System.currentTimeMillis() < deadline) {
-            if (runtime.phase.value is ConnectionPhase.Connected) return
-            Thread.sleep(20L)
-        }
-        error("登录没有在超时前完成，最后阶段是 ${runtime.phase.value}")
-    }
-
-    private companion object {
-        const val NEGOTIATE_PATH = "/open-android-intelligence/v2/negotiate"
-        const val PASSWORD_PATH = "/open-android-intelligence/v2/sessions/password"
-
-        val PASSWORD_BODY = """
-            {"data":{"accountId":"acc_stub","deviceId":"dev_stub","sessionId":"sess_1",
-            "accessToken":"token_1","refreshCredential":"refresh_1","pairingSummary":"stub pairing"}}
-        """.trimIndent()
-
-        /** 网关同意全部五项客户端声明过的能力。 */
-        val NEGOTIATE_ALL_FIVE_BODY = """
-            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
-            "features":{"auth":["password","refresh"],"messages":"chat-v1",
-            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
-            "deviceRequests":"risk-queue-v1",
-            "conversationUi":["agent-command-catalog-v1","agent-command-new-v1",
-            "agent-approval-cards-v1","message-batches-v1","generation-cancel-v1"]},
-            "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
-        """.trimIndent()
-
-        /** 网关只同意 catalog 与 generation-cancel；message-batches 被略去。 */
-        val NEGOTIATE_REFUSED_BODY = """
-            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
-            "features":{"auth":["password","refresh"],"messages":"chat-v1",
-            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
-            "deviceRequests":"risk-queue-v1",
-            "conversationUi":["agent-command-catalog-v1","generation-cancel-v1"]},
-            "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
-        """.trimIndent()
-
-        /** 网关没有声明 deviceRequests 能力。 */
-        val NEGOTIATE_WITHOUT_DEVICE_REQUESTS_BODY = """
-            {"protocol":"2.1","data":{"protocol":{"major":2,"minor":1},
-            "features":{"auth":["password","refresh"],"messages":"chat-v1",
-            "attachments":"staged-sha256-v1","events":"sse-cursor-v1",
-            "conversationUi":["agent-command-catalog-v1"]},
-            "limits":{            "attachmentTtlSeconds":3600,
-            "eventRetentionSeconds":86400,"maxClockSkewSeconds":120},
-            "gatewayIdentity":{"deploymentId":"dep_stub","tlsSpkiSha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}
-        """.trimIndent()
-    }
 }

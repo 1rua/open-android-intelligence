@@ -30,7 +30,7 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.conversation.theme.Dimensions
-import com.openandroidintelligence.mobile.GatewayRuntime
+import com.openandroidintelligence.mobile.LocalSettingsRuntime
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.PlatformSettingsEnvironment
 import com.openandroidintelligence.mobile.SettingsPresentation
@@ -59,7 +59,7 @@ internal fun capabilityHost(context: android.content.Context, environment: Platf
 @Composable
 internal fun DeviceCapabilitiesScreen(
     environment: PlatformSettingsEnvironment,
-    runtime: GatewayRuntime?,
+    runtime: LocalSettingsRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
     onOpenCapability: (String, String) -> Unit,

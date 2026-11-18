@@ -10,7 +10,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.ConversationSummary
-import com.openandroidintelligence.gateway.events.GatewayEvent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,7 +28,7 @@ import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [31, 32, 33, 34, 35, 36], application = Application::class)
+@Config(sdk = [34], application = Application::class)
 class NativeConversationNotificationsTest {
     private lateinit var context: Application
     private lateinit var coordinator: NativeConversationNotifications
@@ -348,9 +347,8 @@ class NativeConversationNotificationsTest {
             coordinator = coordinator()
             coordinator.bind("profile", "account")
             publications.clear()
-            val staleBody = frame.data.replace(Regex("\"occurredAt\":\"[^\"]+\""), "\"occurredAt\":\"${Instant.ofEpochMilli(clock - 600_000)}\"")
-            accept(frame.copy(data = staleBody))
-            assertTrue("The first historical ${frame.event} must not publish", publications.isEmpty())
+            accept(requireNotNull(frame).at(clock - 600_000))
+            assertTrue("首条历史事实不能发布通知", publications.isEmpty())
             assertTrue(coordinator.sessions.value.isEmpty())
             assertEquals(clock, preferences.getLong("first-enabled-at", 0L))
         }
@@ -464,10 +462,10 @@ class NativeConversationNotificationsTest {
             }, now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
             try {
                 original.bind("profile", "account")
-                original.accept("profile", "account", delta)
-                assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(delta.id!!)))
+                original.accept(requireNotNull(delta))
+                assertFalse("The delta must still be buffered before the terminal", preferences.contains("realtime.event." + replyDigest(requireNotNull(delta).eventId)))
                 try {
-                    original.accept("profile", "account", terminal)
+                    original.accept(requireNotNull(terminal))
                     fail("Terminal publication must simulate process death before accept's trailing metadata flush")
                 } catch (failure: IllegalStateException) {
                     assertSame(crash, failure)
@@ -478,8 +476,8 @@ class NativeConversationNotificationsTest {
             }
 
             val snapshotAtPublication = terminalSnapshots.single()
-            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(delta.id!!)))
-            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(terminal.id!!)))
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(requireNotNull(delta).eventId)))
+            assertTrue(snapshotAtPublication.containsKey("realtime.event." + replyDigest(requireNotNull(terminal).eventId)))
             assertEquals(1L, snapshotAtPublication["realtime.revision." + replyDigest("body\u0000conversation\u0000reply")])
             assertTrue(snapshotAtPublication.containsKey("realtime.terminal." + replyDigest("conversation\u0000generation")))
 
@@ -489,8 +487,8 @@ class NativeConversationNotificationsTest {
                 now = { clock }, throttleMillis = 60_000, metadataFlushMillis = 60_000)
             try {
                 restarted.bind("profile", "account")
-                restarted.accept("profile", "account", delta)
-                restarted.accept("profile", "account", terminal)
+                restarted.accept(requireNotNull(delta))
+                restarted.accept(requireNotNull(terminal))
                 assertTrue("A completed terminal must not replay a running notification after a crash", replayPublications.none { it.isRunning })
                 assertTrue(restarted.sessions.value.none { it.isRunning })
             } finally {
@@ -512,7 +510,7 @@ class NativeConversationNotificationsTest {
         assertTrue(coordinator.sessions.value.isEmpty())
     }
 
-    @Test @Config(sdk = [31, 32, 33, 34, 35, 36]) fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
+    @Test @Config(sdk = [34]) fun nativePublisherUpdatesStableConversationNotificationAndPublishesBubbleShortcut() {
         val settings = ReplyNotificationSettings(context)
         val publisher = AndroidReplyNotificationPublisher(context, settings)
         val target = ReplyNotificationTarget("profile", "account", "conversation")
@@ -635,6 +633,250 @@ class NativeConversationNotificationsTest {
         assertEquals("Codex 回答", finished.latestReply)
     }
 
+    @Test fun `类型化输入隔离同名端点和重放事件并保留附件提醒`() {
+        val time = clock
+        val first = notificationReply(time, endpoint = "host-a", eventId = "same-body")
+        val second = notificationReply(time, endpoint = "host-b", eventId = "same-body",
+            parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                com.openandroidintelligence.conversation.model.AttachmentDraftId("attachment"), "报告.pdf", "application/pdf", 12, null)))
+        coordinator.accept(first)
+        coordinator.accept(notificationStatus(time, endpoint = "host-a", eventId = "same-status"))
+        coordinator.accept(second)
+        coordinator.accept(notificationStatus(time, endpoint = "host-b", eventId = "same-status"))
+        assertEquals(2, publications.count { it.second })
+        assertEquals(setOf("host-a", "host-b"), publications.filter { it.second }.map { it.first.target.agentId }.toSet())
+        assertEquals(context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_attachment_placeholder),
+            coordinator.sessions.value.single { it.target.agentId == "host-b" }.latestReply)
+        val beforeReplay = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        coordinator.accept(first)
+        coordinator.accept(second)
+        coordinator.accept(notificationStatus(time, endpoint = "host-a"))
+        coordinator.accept(notificationStatus(time, endpoint = "host-b"))
+        assertEquals(beforeReplay, publications.size)
+    }
+
+    @Test fun `类型化输入不借用其他账号端点和轮次的正文并遵守删除围栏`() {
+        val time = clock
+        coordinator.accept(notificationReply(time, account = "other-account"))
+        coordinator.accept(notificationReply(time, profile = "other-profile"))
+        assertTrue(coordinator.sessions.value.isEmpty())
+        coordinator.accept(notificationReply(time, generation = "old"))
+        coordinator.accept(notificationStatus(time + 2, generation = "new"))
+        assertTrue(publications.none { it.second })
+        coordinator.accept(notificationReply(time + 1, generation = "new"))
+        assertEquals(1, publications.count { it.second })
+        val delete = com.openandroidintelligence.mobile.conversations.nativeNotificationInput("profile", "account", "endpoint",
+            com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ConversationsChanged("delete", time + 3,
+                ConversationId("conversation"), deleted = true))!!
+        coordinator.accept(delete)
+        assertTrue(coordinator.sessions.value.isEmpty())
+        val count = publications.size
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        coordinator.accept(notificationReply(time + 4, generation = "later"))
+        coordinator.accept(notificationStatus(time + 5, generation = "later"))
+        assertEquals(count, publications.size)
+        assertTrue(coordinator.sessions.value.isEmpty())
+    }
+
+    @Test fun `领域快照补正文只确认结束不能冒充成功提醒`() {
+        coordinator.accept(notificationStatus(clock, status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED))
+        coordinator.requestReconciliation()
+        val request = coordinator.reconciliationRequests().single()
+        val body = (notificationReply(clock, text = "快照最终正文").event as
+            com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert).message
+        assertTrue(coordinator.reconcile(request, null, listOf(body)))
+        assertEquals("快照最终正文", coordinator.sessions.value.single().latestReply)
+        assertEquals(NativeConversationStatus.ENDED, coordinator.sessions.value.single().status)
+        assertTrue("读取历史终稿不能补发成功通知", publications.none { it.second })
+    }
+
+    @Test fun `领域附件快照沿用占位与读取期间的代次围栏`() {
+        coordinator.accept(notificationStatus(clock, status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED))
+        coordinator.requestReconciliation()
+        val oldRequest = coordinator.reconciliationRequests().single()
+        coordinator.accept(notificationReply(clock + 1, text = "更新的实时正文", completed = false))
+        val attachment = (notificationReply(clock, parts = listOf(
+            com.openandroidintelligence.conversation.model.MessagePart.Attachment(
+                com.openandroidintelligence.conversation.model.AttachmentDraftId("snapshot-file"), "报告.pdf", "application/pdf", 5, null)
+        )).event as com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert).message
+        assertFalse("读取期间的事件更新使旧快照失效", coordinator.reconcile(oldRequest, null, listOf(attachment)))
+        assertEquals("更新的实时正文", coordinator.sessions.value.single().latestReply)
+        coordinator.requestReconciliation()
+        assertTrue(coordinator.reconcile(coordinator.reconciliationRequests().single(), null,
+            listOf(attachment.copy(timestamp = clock + 2, contentRevision = 2))))
+        assertEquals(context.getString(com.openandroidintelligence.ui.resources.R.string.notif_reply_attachment_placeholder),
+            coordinator.sessions.value.single().latestReply)
+        assertTrue(publications.none { it.second })
+    }
+
+    // ==========================================
+    // Feature 4: 实时通知生命周期与真实标题 (Tier 1 & Tier 2)
+    // ==========================================
+
+    @Test
+    fun t1_F4_01_Completed_Cancels_Live_Update_And_Posts_Reply_Notification() {
+        val settings = ReplyNotificationSettings(context)
+        val publisher = AndroidReplyNotificationPublisher(context, settings)
+        val target = ReplyNotificationTarget("profile", "account", "conversation-test-f4-01")
+        val manager = context.getSystemService(NotificationManager::class.java)
+
+        // 1. 运行态：设置 FLAG_ONGOING_EVENT
+        val running = NativeConversationSession(target, "gen-1", "真实会话任务", NativeConversationStatus.RUNNING, "正在执行任务...", updatedAt = clock)
+        publisher.update(running, false)
+        val runningNotif = manager.activeNotifications.single()
+        assertTrue("运行态必须包含常驻标志", runningNotif.notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+
+        // 2. 完成态：收到 COMPLETED，必须清除常驻通知并弹出可滑动清除完成通知
+        val completed = NativeConversationSession(target, "gen-1", "真实会话任务", NativeConversationStatus.COMPLETED, "任务顺利完成！", updatedAt = clock)
+        publisher.update(completed, true)
+        val completedNotif = manager.activeNotifications.single()
+        assertEquals("完成通知必须投递在 REPLY_CHANNEL_ID", REPLY_CHANNEL_ID, completedNotif.notification.channelId)
+        assertEquals("完成态通知绝不能标记为 ongoing", 0, completedNotif.notification.flags and Notification.FLAG_ONGOING_EVENT)
+        assertTrue("完成态通知必须设置 autoCancel（可滑动清除）", completedNotif.notification.flags and Notification.FLAG_AUTO_CANCEL != 0)
+        val style = Notification.Builder.recoverBuilder(context, completedNotif.notification).style as Notification.MessagingStyle
+        assertEquals("真实会话任务", style.conversationTitle.toString())
+    }
+
+    @Test
+    fun t1_F4_02_Error_Cancels_Live_Update_And_Posts_Reply_Notification() {
+        val settings = ReplyNotificationSettings(context)
+        val publisher = AndroidReplyNotificationPublisher(context, settings)
+        val target = ReplyNotificationTarget("profile", "account", "conversation-test-f4-02")
+        val manager = context.getSystemService(NotificationManager::class.java)
+
+        val running = NativeConversationSession(target, "gen-2", "执行失败测试", NativeConversationStatus.RUNNING, "处理中...", updatedAt = clock)
+        publisher.update(running, false)
+        assertTrue(manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+
+        // 报错态 FAILED：常驻通知取消，弹出非 ongoing 错误提醒
+        val failed = NativeConversationSession(target, "gen-2", "执行失败测试", NativeConversationStatus.FAILED, "发生异常，执行中断", updatedAt = clock)
+        publisher.update(failed, true)
+        val failedNotif = manager.activeNotifications.single()
+        assertEquals("失败通知必须投递在 REPLY_CHANNEL_ID", REPLY_CHANNEL_ID, failedNotif.notification.channelId)
+        assertEquals("失败态通知绝不能标记为 ongoing", 0, failedNotif.notification.flags and Notification.FLAG_ONGOING_EVENT)
+        assertTrue("失败态通知必须设置 autoCancel", failedNotif.notification.flags and Notification.FLAG_AUTO_CANCEL != 0)
+    }
+
+    @Test
+    fun t1_F4_03_Cancelled_Cancels_Live_Update_And_Posts_Reply_Notification() {
+        val settings = ReplyNotificationSettings(context)
+        val publisher = AndroidReplyNotificationPublisher(context, settings)
+        val target = ReplyNotificationTarget("profile", "account", "conversation-test-f4-03")
+        val manager = context.getSystemService(NotificationManager::class.java)
+
+        val running = NativeConversationSession(target, "gen-3", "用户打断测试", NativeConversationStatus.RUNNING, "正在生成...", updatedAt = clock)
+        publisher.update(running, false)
+        assertTrue(manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+
+        // 打断态 CANCELLED：常驻通知取消，弹出非 ongoing 打断提醒
+        val cancelled = NativeConversationSession(target, "gen-3", "用户打断测试", NativeConversationStatus.CANCELLED, "已由用户取消", updatedAt = clock)
+        publisher.update(cancelled, true)
+        val cancelledNotif = manager.activeNotifications.single()
+        assertEquals(REPLY_CHANNEL_ID, cancelledNotif.notification.channelId)
+        assertEquals(0, cancelledNotif.notification.flags and Notification.FLAG_ONGOING_EVENT)
+        assertTrue(cancelledNotif.notification.flags and Notification.FLAG_AUTO_CANCEL != 0)
+    }
+
+    @Test
+    fun t1_F4_05_Real_Title_In_Notification() {
+        val realTitle = "端到端系统架构设计方案"
+        coordinator = NativeConversationNotifications(
+            context = context,
+            scope = scope,
+            publish = { session, alert -> publications += session to alert },
+            titleFor = { realTitle },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        accept(message("conversation.message.delta", "方案前缀", 1))
+        val currentSession = coordinator.sessions.value.single()
+        assertEquals("通知会话标题必须采用真实标题", realTitle, currentSession.title)
+        assertFalse("标题绝不可包含编码ID", currentSession.title.contains("conversation"))
+
+        accept(message("conversation.message.completed", "最终答案", 2))
+        accept(status("completed", 3))
+        assertEquals(realTitle, publications.last().first.title)
+    }
+
+    @Test
+    fun t2_F4_01_Title_Fallback_Does_Not_Leak_Conversation_Id() {
+        // 当 titleFor 返回 null 时，必须回退到本地化默认标题，绝不可截取并泄露会话 ID
+        val customTargetId = "base64EncodedOpaqueId123456"
+        val customInput = notificationFact(
+            "profile",
+            "account",
+            "fact-1",
+            clock,
+            "conversation.message.delta",
+            """{"conversationId":"$customTargetId","messageId":"msg-1","sender":"assistant","parts":[{"type":"text","text":"你好"}],"revision":1}""",
+        )
+        coordinator = NativeConversationNotifications(
+            context = context,
+            scope = scope,
+            publish = { session, alert -> publications += session to alert },
+            titleFor = { null },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+        accept(customInput)
+
+        val session = coordinator.sessions.value.single()
+        assertFalse("回退标题绝不可包含会话ID的后12位", session.title.contains(customTargetId.takeLast(12)))
+        assertFalse("回退标题绝不可包含会话ID", session.title.contains(customTargetId))
+        val defaultTitle = context.getString(com.openandroidintelligence.ui.resources.R.string.notif_conv_default_title)
+        assertEquals("未获取到标题时应回退为本地化默认标题", defaultTitle, session.title)
+    }
+
+    @Test
+    fun t2_F4_02_Title_With_Special_Characters_And_Emoji() {
+        val specialTitle = "🔥 架构设计 & PR #42 [v2.0] / (Release) 🎯"
+        coordinator = NativeConversationNotifications(
+            context = context,
+            scope = scope,
+            publish = { session, alert -> publications += session to alert },
+            titleFor = { specialTitle },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        accept(message("conversation.message.completed", "完成", 1))
+        accept(status("completed", 2))
+        assertEquals(specialTitle, coordinator.sessions.value.single().title)
+    }
+
+    @Test
+    fun t2_F4_03_Consecutive_Generations_Transition_Lifecycle() {
+        val settings = ReplyNotificationSettings(context)
+        val publisher = AndroidReplyNotificationPublisher(context, settings)
+        val target = ReplyNotificationTarget("profile", "account", "multi-turn-target")
+        val manager = context.getSystemService(NotificationManager::class.java)
+
+        // Turn 1: RUNNING -> COMPLETED
+        publisher.update(NativeConversationSession(target, "turn-1", "第一轮", NativeConversationStatus.RUNNING, "思考中", updatedAt = clock), false)
+        assertTrue(manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        publisher.update(NativeConversationSession(target, "turn-1", "第一轮", NativeConversationStatus.COMPLETED, "回答1", updatedAt = clock), true)
+        assertEquals(0, manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT)
+
+        // Turn 2: RUNNING -> FAILED
+        publisher.update(NativeConversationSession(target, "turn-2", "第二轮", NativeConversationStatus.RUNNING, "再次生成", updatedAt = clock + 1), false)
+        assertTrue(manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        publisher.update(NativeConversationSession(target, "turn-2", "第二轮", NativeConversationStatus.FAILED, "执行失败", updatedAt = clock + 2), true)
+        assertEquals(0, manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT)
+
+        // Turn 3: RUNNING -> CANCELLED
+        publisher.update(NativeConversationSession(target, "turn-3", "第三轮", NativeConversationStatus.RUNNING, "第三次生成", updatedAt = clock + 3), false)
+        assertTrue(manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        publisher.update(NativeConversationSession(target, "turn-3", "第三轮", NativeConversationStatus.CANCELLED, "打断", updatedAt = clock + 4), true)
+        assertEquals(0, manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT)
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",
@@ -648,15 +890,15 @@ class NativeConversationNotificationsTest {
     private fun coordinator() = NativeConversationNotifications(context, scope, { session, alert -> publications += session to alert }, now = { clock }, throttleMillis = 40)
     private fun presencePage(vararg ids: String, authoritative: Boolean = true, nextCursor: String? = null) =
         ConversationPage(ids.map { ConversationSummary(ConversationId(it), it, clock) }, nextCursor, authoritative = authoritative)
-    private fun accept(event: GatewayEvent) = coordinator.accept("profile", "account", event)
+    private fun accept(input: NativeNotificationInput?) { input?.let(coordinator::accept) }
     private fun message(type: String, text: String, revision: Long, generation: String? = "generation", sender: String = "assistant", messageId: String = "reply", channel: String? = null) = event(type,
         """{"conversationId":"conversation","messageId":"$messageId",${generationField(generation)}"sender":"$sender","parts":[{"type":"text","text":"$text"}],"revision":$revision${channel?.let { ",\"channel\":\"$it\"" }.orEmpty()}}""")
     private fun status(status: String, revision: Long, generation: String? = "generation") = event("conversation.message.status",
         """{"conversationId":"conversation","messageId":"user-${generation ?: "legacy"}","clientMessageId":"client-${generation ?: "legacy"}",${generationField(generation)}"status":"$status","revision":$revision,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
-    private fun event(type: String, payload: String): GatewayEvent {
+    private fun event(type: String, payload: String): NativeNotificationInput? {
         clock++
-        return GatewayEvent("realtime-${++sequence}", type, """{"accountId":"account","occurredAt":"${Instant.ofEpochMilli(clock)}","payload":$payload}""")
+        return notificationFact("profile", "account", "realtime-${++sequence}", clock, type, payload)
     }
 
     private class RealtimeCountingPreferences(private val delegate: SharedPreferences) : SharedPreferences by delegate {

@@ -45,7 +45,7 @@ data class PlatformSettingsEnvironment(
 fun PlatformSettingsScreen(
     environment: PlatformSettingsEnvironment,
     onBack: () -> Unit,
-    runtime: GatewayRuntime? = null,
+    runtime: LocalSettingsRuntime? = null,
     modifier: Modifier = Modifier,
 ) {
     SettingsScreen(

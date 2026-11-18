@@ -48,14 +48,6 @@ inputs:
     description: 采集 App 测试进程、Gradle Profile 与 Robolectric 公开指标
     required: false
     default: 'false'
-  hermes-fixtures:
-    description: >-
-      Provision the historical Hermes HTTP fixture, the pinned native SDK and an
-      isolated virtualenv. Required by tests that drive the real Python gateway
-      fixture (conversation-data's HermesHttpInteropTest); those tests fail
-      closed rather than skipping, so the lane must provide the fixtures.
-    required: false
-    default: 'false'
   gradle-cache-read-only:
     description: >-
       Whether the Gradle build cache is read-only. PR runs from this repository
@@ -71,6 +63,24 @@ runs:
     # No checkout here: a composite action can only be used *after* the caller
     # has checked out the repository, because the action's own files come from
     # that checkout.
+
+    - name: 安装固定Remote服务端测试的Node
+      if: inputs.lane == 'android-gateway'
+      uses: actions/setup-node@v7
+      with:
+        node-version: '24.18.0'
+        cache: npm
+        cache-dependency-path: tools/remote-server/package-lock.json
+
+    - name: 安装固定Remote服务端隔离依赖
+      if: inputs.lane == 'android-gateway'
+      shell: bash
+      run: npm ci --prefix tools/remote-server --prefer-offline --no-audit --fund=false
+
+    - name: 安装官方客户端与手机Host互通隔离依赖
+      if: inputs.lane == 'android-gateway'
+      shell: bash
+      run: npm ci --prefix tools/remote-interop --prefer-offline --no-audit --fund=false
 
     - name: Set up JDK 21
       uses: actions/setup-java@v6
@@ -105,53 +115,6 @@ runs:
         name: ${{ inputs.wasm-artifact }}
         path: plugins/target/wasm32-unknown-unknown/release
 
-    # Only the lanes that actually start the Python gateway fixture pay this
-    # cost. The fixture is a separate historical repository at a pinned commit,
-    # never a current Core runtime dependency.
-    - name: Check out the historical Hermes HTTP fixture
-      if: inputs.hermes-fixtures == 'true'
-      uses: actions/checkout@v7
-      with:
-        repository: 1rua/hermes-android-gateway
-        ref: ebe527da2426dd25877dd335786e80cf85d1cdde
-        path: .hermes-gateway-plugin
-        persist-credentials: false
-
-    - name: Check out the pinned Hermes native SDK
-      if: inputs.hermes-fixtures == 'true'
-      uses: actions/checkout@v7
-      with:
-        repository: NousResearch/hermes-agent
-        ref: 75b083e9399115b12513385252811f09c3503c90
-        path: .toolchains/hermes-native-sdk
-        persist-credentials: false
-
-    - name: Install the fixture virtualenv
-      if: inputs.hermes-fixtures == 'true'
-      uses: actions/setup-python@v7
-      with:
-        python-version: "3.11"
-
-    # Cache on an explicit requirements file: setup-python's `cache: pip` needs
-    # the dependency file to exist before the fixture checkout has happened, and
-    # the fixture is installed from a local path rather than from a lockfile.
-    - name: Cache the fixture's wheels
-      if: inputs.hermes-fixtures == 'true'
-      uses: actions/cache@v4
-      with:
-        path: ~/.cache/pip
-        key: fixture-pip-${{ runner.os }}-${{ hashFiles('apps/android/ci/hermes-fixture-requirements.txt') }}
-        restore-keys: |
-          fixture-pip-${{ runner.os }}-
-
-    - name: Build the isolated fixture environment
-      if: inputs.hermes-fixtures == 'true'
-      shell: bash
-      run: |
-        python -m venv "$RUNNER_TEMP/legacy-hermes-fixture"
-        "$RUNNER_TEMP/legacy-hermes-fixture/bin/python" -m pip install --quiet \
-          .hermes-gateway-plugin -r apps/android/ci/hermes-fixture-requirements.txt
-
     - name: Install the Gradle wrapper
       shell: bash
       working-directory: apps/android
@@ -164,7 +127,6 @@ runs:
         LC_ALL: C.UTF-8
         OAI_TEST_PARALLEL_FORKS: ${{ inputs.test-parallel-forks }}
         OAI_APP_SECTIONS: ${{ inputs.app-sections }}
-        HERMES_FIXTURES: ${{ inputs.hermes-fixtures }}
         OAI_APP_JVM_MODE: ${{ inputs.app-jvm-mode }}
         OAI_APP_TEST_SEED: ${{ inputs.app-test-seed }}
         OAI_APP_JIT: ${{ inputs.app-jit }}
@@ -172,15 +134,12 @@ runs:
         OAI_APP_PERFORMANCE: ${{ inputs.app-performance }}
       run: |
         set -euo pipefail
-        if [ "$HERMES_FIXTURES" = "true" ]; then
-          # The fixture tests resolve these through the environment; a missing
-          # value fails the test instead of skipping it.
-          export HERMES_PLUGIN_ROOT="$GITHUB_WORKSPACE/.hermes-gateway-plugin"
-          export HERMES_SDK_ROOT="$GITHUB_WORKSPACE/.toolchains/hermes-native-sdk"
-          export OPEN_ANDROID_GATEWAY_CONTRACT_ROOT="$GITHUB_WORKSPACE/gateway-contract"
-          export PATH="$RUNNER_TEMP/legacy-hermes-fixture/bin:$PATH"
-        fi
         case "${{ inputs.lane }}" in
+          phone-mcp-interop)
+            # 使用同一 checkout、JDK/SDK/Gradle 缓存，先编译当前源码再运行原工具。
+            node ../../tools/remote/phone-mcp-interop.ts
+            exit 0
+            ;;
           android-device|android-platform|android-notifications|android-conversation|android-gateway|android-plugins)
             planner=(python3 ../../tools/ci/android_tasks.py --group modules --lane "${{ inputs.lane }}")
             ;;

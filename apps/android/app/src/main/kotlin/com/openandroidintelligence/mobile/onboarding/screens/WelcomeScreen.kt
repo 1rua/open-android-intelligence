@@ -37,7 +37,6 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.onboarding.components.OrbitalDiagram
 import com.openandroidintelligence.mobile.onboarding.components.TelemetryRow
 import com.openandroidintelligence.mobile.onboarding.components.halftone
-import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**

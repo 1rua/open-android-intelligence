@@ -10,6 +10,8 @@ import android.os.Build
 import android.provider.Settings
 import android.view.Display
 import android.view.WindowManager
+import com.openandroidintelligence.control.*
+import com.openandroidintelligence.control.remote.ControlRequestException
 import com.openandroidintelligence.capability.AccessibilityScreenshotRuntime
 import com.openandroidintelligence.capability.ScreenCapture
 import com.openandroidintelligence.capability.ScreenCaptureFailure
@@ -41,7 +43,54 @@ import kotlinx.coroutines.withTimeoutOrNull
  */
 class AndroidAccessibilityScreenshotRuntime(
     private val context: Context,
+    private val targetWindowId: Int? = null,
 ) : AccessibilityScreenshotRuntime {
+
+    /** SoM 只交接拥有的软件位图，不把未经保护的原始 PNG 交给远端或磁盘。 */
+    internal suspend fun takeSomFrame(snapshot: ScreenSnapshot): SomFrame {
+        val service = ScreenAccessibilityConnection.service ?: throw ControlRequestException("ACCESSIBILITY_SERVICE_UNAVAILABLE")
+        if (!hasScreenshotCapability()) throw ControlRequestException("SCREEN_CAPTURE_UNSUPPORTED")
+        val excluded = targetWindowId != null && Build.VERSION.SDK_INT >= 34
+        val capturedBounds = if (excluded) snapshot.windows.singleOrNull { it.id == targetWindowId }?.bounds
+            ?: throw ControlRequestException("SCREEN_WINDOW_UNAVAILABLE")
+        else ScreenBounds(0, 0, snapshot.display.widthPixels, snapshot.display.heightPixels)
+        return ScreenshotBufferOwner().use { owner ->
+            val pending = withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
+                withContext(Dispatchers.Main.immediate) {
+                    suspendCancellableCoroutine<Pending> { continuation ->
+                        val callback = object : AccessibilityService.TakeScreenshotCallback {
+                            override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                                owner.resume(continuation, FrameHolder(result), result.hardwareBuffer)
+                            }
+                            override fun onFailure(errorCode: Int) {
+                                if (continuation.isActive) continuation.resume(BitmapHolder(accessibilityScreenshotFailure(errorCode)))
+                            }
+                        }
+                        try {
+                            if (excluded) service.takeScreenshotOfWindow(requireNotNull(targetWindowId), Executor { it.run() }, callback)
+                            else {
+                                @Suppress("DEPRECATION")
+                                val display = context.getSystemService(WindowManager::class.java)?.defaultDisplay?.displayId
+                                    ?: throw ControlRequestException("SCREEN_DISPLAY_UNAVAILABLE")
+                                service.takeScreenshot(display, Executor { it.run() }, callback)
+                            }
+                        } catch (_: RuntimeException) {
+                            if (continuation.isActive) continuation.resume(BitmapHolder(ScreenCaptureFailure.CAPTURE_FAILED))
+                        }
+                    }
+                }
+            }
+            val result = (pending as? FrameHolder)?.result ?: throw ControlRequestException("SCREEN_CAPTURE_FAILED")
+            val wrapped = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+                ?: throw ControlRequestException("SCREEN_CAPTURE_ENCODING_FAILED")
+            try {
+                currentCoroutineContext().ensureActive()
+                val software = wrapped.copy(Bitmap.Config.ARGB_8888, true)
+                    ?: throw ControlRequestException("SCREEN_CAPTURE_ENCODING_FAILED")
+                SomFrame(software, result.timestamp, snapshot.display, capturedBounds, excluded)
+            } finally { wrapped.recycle() }
+        }
+    }
 
     override fun isServiceEnabledInSettings(): Boolean = try {
         val enabled = Settings.Secure.getString(
@@ -96,10 +145,7 @@ class AndroidAccessibilityScreenshotRuntime(
                         // 回调只交接结果，不在主线程编码；成功缓冲区先登记再恢复协程。
                         val executor = Executor { it.run() }
                         try {
-                            service.takeScreenshot(
-                                displayId,
-                                executor,
-                                object : AccessibilityService.TakeScreenshotCallback {
+                            val callback = object : AccessibilityService.TakeScreenshotCallback {
                                     override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                                         // resume 的取消回调处理恢复前被取消的结果；即使已超时后
                                         // 才收到系统回调，也由同一个所有者关闭缓冲区。
@@ -117,8 +163,14 @@ class AndroidAccessibilityScreenshotRuntime(
                                             )
                                         }
                                     }
-                                },
-                            )
+                                }
+                            if (targetWindowId != null && Build.VERSION.SDK_INT >= 34)
+                                service.takeScreenshotOfWindow(targetWindowId, executor, callback)
+                            else {
+                                if (com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.current?.protectedBounds != null)
+                                    throw IllegalStateException("SCREEN_OVERLAY_EXCLUSION_UNSUPPORTED")
+                                service.takeScreenshot(displayId, executor, callback)
+                            }
                         } catch (_: RuntimeException) {
                             // 服务刚好被系统解绑时可能抛异常：如实报告为断连，不伪装成取帧失败。
                             if (continuation.isActive) {

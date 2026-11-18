@@ -43,7 +43,7 @@ import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.gateway.schema.Json
-import com.openandroidintelligence.mobile.GatewayRuntime
+import com.openandroidintelligence.mobile.LocalSettingsRuntime
 import com.openandroidintelligence.mobile.OpenAndroidIntelligenceApplication
 import com.openandroidintelligence.mobile.PlatformSettingsEnvironment
 import com.openandroidintelligence.mobile.SettingsPresentation
@@ -93,7 +93,7 @@ internal fun CapabilitySettingsScreen(
     pluginId: String,
     capability: String,
     environment: PlatformSettingsEnvironment,
-    runtime: GatewayRuntime?,
+    runtime: LocalSettingsRuntime?,
     presentation: SettingsPresentation,
     onBack: () -> Unit,
     onRequestScreenCaptureAuthorization: () -> Unit,
@@ -121,7 +121,7 @@ internal fun CapabilitySettingsScreen(
 }
 
 @Composable
-private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime: GatewayRuntime?) {
+private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime: LocalSettingsRuntime?) {
     var confirmStop by remember { mutableStateOf(false) }
     var stopError by remember { mutableStateOf<String?>(null) }
     SectionLabel("停止屏幕请求")
@@ -140,7 +140,7 @@ private fun ScreenStopSection(environment: PlatformSettingsEnvironment, runtime:
                     environment.pairingGrants.revokeTemporaryApprovals()
                     stopError = runCatching { ScreenHostRegistry.current?.revoke() }
                         .fold(onSuccess = { null }, onFailure = { "临时授权已撤销，但未能停止屏幕请求，请重试。" })
-                    runCatching { runtime?.requestCapabilitySync() }
+                    runCatching { runtime?.refreshCapabilities?.invoke() }
                     confirmStop = false
                 }) { Text("停止并撤销") }
             }, dismissButton = { TextButton(onClick = { confirmStop = false }) { Text("取消") } })
@@ -157,7 +157,7 @@ private fun CapabilityDetailContent(
     pluginId: String,
     capability: String,
     environment: PlatformSettingsEnvironment,
-    runtime: GatewayRuntime?,
+    runtime: LocalSettingsRuntime?,
     presentation: SettingsPresentation,
     onOpenPlugins: () -> Unit,
     onRequestScreenCaptureAuthorization: () -> Unit,
@@ -167,7 +167,7 @@ private fun CapabilityDetailContent(
     val observedHost = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.pluginHost
     val hostRevision = observedHost?.revision?.collectAsState()?.value
     val localState by environment.pairingGrants.state.collectAsState()
-    val syncState = runtime?.deviceCapabilityState?.collectAsState()?.value ?: DeviceCapabilitySyncState()
+    val syncState = runtime?.capabilitySync?.collectAsState()?.value ?: DeviceCapabilitySyncState()
     val effectiveSync = syncState.forLocalState(localState?.revision ?: -1L, hostRevision ?: -1L)
     val capabilityId = capability.substringBefore('@')
     val entries = remember(host, hostRevision, pluginId, capability) {
@@ -183,7 +183,7 @@ private fun CapabilityDetailContent(
     val lifecycle = LocalLifecycleOwner.current
     fun refresh() {
         refreshTick++
-        runCatching { runtime?.requestCapabilitySync() }
+        runCatching { runtime?.refreshCapabilities?.invoke() }
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         requestedPermission?.let { permission -> deniedPermissions = if (granted) deniedPermissions - permission else deniedPermissions + permission }
@@ -428,10 +428,8 @@ private fun CapabilityDetailContent(
         SettingsSectionCard {
             Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
                 Text(localAvailabilityLabel(localStatus, localReason))
-                Text("Core 同步：${capabilityStatusLabel(diagnostic.status, diagnostic.reason)}",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                if (runtime == null) {
-                    Text("Core 未连接；本机开关与授权照常生效，连接恢复后自动同步。",
+                if (runtime?.capabilitySync != null) {
+                    Text("Core 同步：${capabilityStatusLabel(diagnostic.status, diagnostic.reason)}",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }

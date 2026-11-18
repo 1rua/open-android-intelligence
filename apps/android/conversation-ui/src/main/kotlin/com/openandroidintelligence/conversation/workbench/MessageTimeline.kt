@@ -183,19 +183,10 @@ private fun UserMessageBubble(
             onOpenPreview = onOpenAttachmentPreview,
             fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
         )
-        if (entry.text.isNotBlank() || entry.attachments.isEmpty()) {
+        if (entry.text.isNotBlank()) {
             MessageBubble(isUser = true, messageKey = entry.key) {
-                if (entry.text.isNotBlank()) {
-                    SelectionContainer {
-                        Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
-                    }
-                } else if (entry.attachments.isEmpty()) {
-                    SelectionContainer {
-                        Text(
-                            text = "此消息没有可显示的文本",
-                            style = MaterialTheme.typography.bodyLarge,
-                        )
-                    }
+                SelectionContainer {
+                    Text(text = entry.text, style = MaterialTheme.typography.bodyLarge)
                 }
             }
         }
@@ -221,7 +212,7 @@ private fun MessageRowLayout(
 ) {
     val alignment = if (isUser) Alignment.TopEnd else Alignment.TopStart
     Box(modifier.fillMaxWidth(), contentAlignment = alignment) {
-        // Use ordinary layout nodes so execution-panel expansion can remeasure
+        // Use ordinary layout nodes so expandable step cards can remeasure
         // the bubble directly, without a subcomposition in the animated parent.
         Box(Modifier.fillMaxWidth(Dimensions.MessageWidthFraction), contentAlignment = alignment) {
             Column(
@@ -728,15 +719,24 @@ private fun AssistantMessageRow(
             fileMetadata = if (fileMetadataVisible) { { MessageMetadata(entry, failed) } } else null,
         )
 
-        // 文本内容（含实时执行卡片/最终回答）统一交给执行过程渲染层；
-        // 附件、元数据与复制仍由这一层负责，保持四个宿主一致。
-        if (entry.text.isNotBlank() || entry.attachments.isEmpty() || entry.isStreaming) {
+        // 与 AssistantMessageContent 的流式光标门禁保持严格一致：仅当存在可见正文、思考、步骤或处于活跃流式时才挂载气泡，
+        // 避免在非活跃流式快照下挂载无内容的空 MessageBubble。
+        val streamingBubbleActive = entry.isStreaming &&
+            (presentations == null || presentations.frameFor(entry)?.active == true)
+        val hasVisibleContent = entry.text.isNotBlank() ||
+            entry.reasoning.isNotEmpty() ||
+            entry.executionSteps.isNotEmpty() ||
+            streamingBubbleActive
+
+        if (hasVisibleContent) {
             MessageBubble(isUser = false, messageKey = entry.key) {
                 AssistantMessageContent(entry = entry, presentations = presentations)
             }
         }
 
-        if (!fileMetadataVisible) MessageMetadata(entry = entry, failed = failed)
+        if (!fileMetadataVisible && (hasVisibleContent || entry.isStreaming || entry.attachments.isNotEmpty() || failed)) {
+            MessageMetadata(entry = entry, failed = failed)
+        }
 
         // 与用户气泡一致的「原文复制」入口：复制的是含 Markdown 标记的原始内容。
         if (entry.text.isNotBlank()) {
@@ -747,8 +747,8 @@ private fun AssistantMessageRow(
 
 /**
  * 时间线一行的一次渲染结果：普通条目仍交给 [TimelineRow]，
- * 折叠后的执行段交给 [ExecutionTurnRow]。耗时 store 在这一层注入，
- * 因此从实时卡片收进聚合面板时，已观察到的耗时不会丢失。
+ * 执行段交给 [ExecutionTurnRow]。耗时 store 在这一层注入，
+ * 因此从单条呈现转为执行段时，已观察到的耗时不会丢失。
  */
 @Composable
 fun TimelineDisplayRow(
@@ -818,7 +818,10 @@ fun TimelineDisplayRow(
             }
         }
     }
-    CompositionLocalProvider(LocalExecutionTiming provides timing) {
+    CompositionLocalProvider(
+        LocalExecutionTiming provides timing,
+        LocalStreamingPresentationRegistry provides presentations,
+    ) {
         CompositionLocalProvider(
             LocalImagePreviewScope provides (evidenceOwner ?: inheritedPreviewScope),
         ) {
@@ -847,9 +850,9 @@ fun TimelineDisplayRow(
 }
 
 /**
- * 一个被折叠的执行段：最终消息附件 → 执行过程面板 + 最终回答 → 元数据/复制。
+ * 一个助手执行段：最终消息附件 → 按时序平铺的独立步骤卡片 + 最终回答 → 元数据/复制。
  *
- * 过程条目自身的附件由 [AssistantExecutionTurnBody] 的 slot 在面板内部渲染；
+ * 过程条目自身的附件由 [AssistantExecutionTurnBody] 的 slot 在过程区域内部渲染；
  * 没有最终回答时，最终消息的附件也属于过程内容，因此不在外层重复渲染。
  */
 @Composable
@@ -877,6 +880,7 @@ private fun ExecutionTurnRow(
 
         AssistantExecutionTurnBody(
             run = run,
+            presentations = presentations,
             finalAnswerSlot = { _, _ ->
                 MessageBubble(isUser = false, messageKey = run.finalEntry.key) {
                     StreamingReplyBody(
@@ -900,7 +904,13 @@ private fun ExecutionTurnRow(
             },
         )
 
-        if (!fileMetadataVisible) MessageMetadata(entry = run.finalEntry, failed = failed)
+        val hasVisibleTurnContent = run.steps.isNotEmpty() ||
+            (run.hasFinalAnswer && run.finalBlocks.isNotEmpty()) ||
+            run.finalEntry.attachments.isNotEmpty() ||
+            run.isStreaming
+        if (!fileMetadataVisible && (hasVisibleTurnContent || failed)) {
+            MessageMetadata(entry = run.finalEntry, failed = failed)
+        }
 
         // 复制的是最终消息的原始文本（含 Markdown 标记），与既有逐条复制语义一致。
         if (run.finalEntry.text.isNotBlank()) {

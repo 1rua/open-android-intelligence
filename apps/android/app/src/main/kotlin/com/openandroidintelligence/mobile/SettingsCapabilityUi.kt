@@ -136,7 +136,7 @@ fun notificationPushCapabilityPresentation(
 /**
  * 会话级操作提示条：登出/续期这类落网结果必须可见、可关，而不是静默。
  *
- * 文案由 [GatewayRuntime] 生成——只陈述事实与下一步动作；这里只负责让它
+ * 文案由实际连接状态持有者生成——只陈述事实与下一步动作；这里只负责让它
  * 出现在界面上，并提供明确的关闭路径。
  */
 @Composable
@@ -197,7 +197,7 @@ private val visibleNegotiatedCapabilityKeys = ConversationUiFeature.CLOSED_SET.f
 }
 
 /**
- * 「协商能力」分组：按契约 §4 接收 [ConnectionPhase.Connected] 的完整能力位，
+ * 「协商能力」分组：按契约 §4 接收 已连接状态 的完整能力位，
  * 但只渲染有用户可见含义的项目。三种状态各有各的话——
  * `true`「已启用」、`false`「本网关不支持」、`null`「未声明」——任何把
  * 未声明折叠成不支持的写法都会把一台可以升级的网关说成已拒绝。

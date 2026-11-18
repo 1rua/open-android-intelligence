@@ -5,7 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
-import com.openandroidintelligence.gateway.account.AccountProfile
+import com.openandroidintelligence.mobile.LocalProfile
 import java.io.File
 import java.util.Base64
 import org.junit.Assert.*
@@ -32,20 +32,20 @@ class AccountAvatarTest {
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         assertEquals(256, bounds.outWidth)
         assertEquals(128, bounds.outHeight)
-        val store = AndroidAccountProfileStore(context)
-        store.save(AccountProfile("alice", "http://gateway.example", "alice", "",
+        val store = LocalProfileStore(context)
+        store.save(LocalProfile("alice", "http://gateway.example", "alice", "",
             avatarBase64 = Base64.getEncoder().encodeToString(bytes), agentName = "Hermes"))
         assertTrue(original.delete())
-        val restored = AndroidAccountProfileStore(context).find("alice")!!
+        val restored = LocalProfileStore(context).find("alice")!!
         assertNotNull(decodeAccountAvatar(restored.avatarBase64))
         assertEquals("Hermes", restored.agentName)
     }
 
     @Test fun avatarMetadataRemainsIsolatedFromOtherAccountsAndTheirPairingBindings() {
-        val store = AndroidAccountProfileStore(context)
-        val first = AccountProfile("alice", "http://gateway.example", "alice", "", avatarBase64 = "first-avatar")
-        val second = AccountProfile("bob", "http://gateway.example", "bob", "", avatarBase64 = "second-avatar")
-        val binding = AndroidAccountProfileStore.Binding("account_bob", "device_bob", "session_bob", 1)
+        val store = LocalProfileStore(context)
+        val first = LocalProfile("alice", "http://gateway.example", "alice", "", avatarBase64 = "first-avatar")
+        val second = LocalProfile("bob", "http://gateway.example", "bob", "", avatarBase64 = "second-avatar")
+        val binding = LocalProfileBinding("account_bob", "device_bob")
         store.save(first)
         store.save(second, binding)
         store.saveAvatar("alice", "replacement")
@@ -54,12 +54,12 @@ class AccountAvatarTest {
         assertEquals(binding, store.binding("bob"))
         store.delete("alice")
         assertNull(store.find("alice"))
-        assertEquals(second, AndroidAccountProfileStore(context).find("bob"))
+        assertEquals(second, LocalProfileStore(context).find("bob"))
     }
 
     @Test fun aLateAvatarEditCannotRecreateARemovedAccount() {
-        val store = AndroidAccountProfileStore(context)
-        store.save(AccountProfile("alice", "http://gateway.example", "alice", ""))
+        val store = LocalProfileStore(context)
+        store.save(LocalProfile("alice", "http://gateway.example", "alice", ""))
         store.delete("alice")
         assertThrows(IllegalStateException::class.java) { store.saveAvatar("alice", "late-avatar") }
         assertTrue(store.list().isEmpty())

@@ -1,5 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="${applicationId}.permission.SMS_SENT" android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.SMS_SENT" />
     <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <application>
         <provider android:name="com.openandroidintelligence.device.primitives.PrimitiveBootstrapProvider"

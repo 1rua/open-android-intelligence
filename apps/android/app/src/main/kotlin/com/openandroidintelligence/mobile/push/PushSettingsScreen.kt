@@ -28,6 +28,8 @@ import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.ui.resources.R as UiR
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -342,7 +344,10 @@ private fun EndpointChoices(kind: String, selected: Set<PushEndpoint>, options: 
             Checkbox(checked, onCheckedChange = null)
             Column(Modifier.weight(1f)) {
                 Text(option?.label?.takeIf { it.isNotBlank() } ?: key.endpointId)
-                Text("${key.coreInstanceId} / ${key.accountScope}\n${key.endpointId} · 第 ${key.generation} 代", style = MaterialTheme.typography.bodySmall)
+                val target=key.remoteTarget
+                Text(if (target == null) "${key.coreInstanceId} / ${key.accountScope}\n${key.endpointId} · 第 ${key.generation} 代"
+                    else stringResource(UiR.string.push_remote_target_identity,target.hostDeviceId,target.backend,target.workspaceId,target.sessionId),
+                    style = MaterialTheme.typography.bodySmall)
                 if (option?.available != true) {
                     val replaced = options.any { it.available && it.endpoint.replaces(key) }
                     Text(

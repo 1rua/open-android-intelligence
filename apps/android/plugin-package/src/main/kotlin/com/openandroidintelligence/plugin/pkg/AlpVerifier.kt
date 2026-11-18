@@ -354,12 +354,9 @@ class AlpVerifier(
 
         val compatibility = root.get("compatibility") as? JsonValue.JObject
             ?: throw PackageRejected("SCHEMA_INVALID:compatibility")
-        rejectUnknownFields(compatibility, setOf("androidHost", "gatewayProtocol"), "compatibilityField")
+        rejectUnknownFields(compatibility, setOf("androidHost"), "compatibilityField")
         val androidHost = (compatibility.get("androidHost") as? JsonValue.JString)?.value
             ?: throw PackageRejected("SCHEMA_INVALID:androidHost")
-        if ((compatibility.get("gatewayProtocol") as? JsonValue.JString)?.value == null) {
-            throw PackageRejected("SCHEMA_INVALID:gatewayProtocol")
-        }
         if (!hostSatisfies(hostVersion, androidHost)) {
             throw PackageRejected("INCOMPATIBLE_HOST:$androidHost")
         }

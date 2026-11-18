@@ -40,19 +40,20 @@ enum class SettingsPresentation { SCREEN, SIDEBAR }
 fun SettingsScreen(
     environment: PlatformSettingsEnvironment,
     onBack: () -> Unit,
-    runtime: GatewayRuntime? = null,
+    runtime: LocalSettingsRuntime? = null,
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onRequestScreenCaptureAuthorization: () -> Unit = {},
+    remoteRuntime: RemoteRuntime? = null,
 ) {
-    val factory = remember(environment, runtime) {
+    val factory = remember(environment, runtime, remoteRuntime) {
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = SettingsViewModel(environment, runtime) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = SettingsViewModel(environment, runtime ?: remoteRuntime?.localSettings) as T
         }
     }
     val model: SettingsViewModel = viewModel(key = "platform-settings", factory = factory)
-    SettingsNavHost(model, environment, runtime, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
+    SettingsNavHost(model, environment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization, remoteRuntime)
 }
 
 /** Kept for callers and tests that inject the existing authoritative state owner. */
@@ -63,7 +64,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onRequestScreenCaptureAuthorization: () -> Unit = {},
-) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, viewModel.gatewayRuntime, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
+) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
 
 /**
  * 兼容入口：主动推送已不再是用户可达的独立页面，配置挂在「通知读取」与「短信」详情里。

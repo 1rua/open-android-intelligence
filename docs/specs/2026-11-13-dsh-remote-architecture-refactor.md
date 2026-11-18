@@ -1,7 +1,7 @@
 ---
 status: accepted
 date: 2026-11-13
-implementation_status: not_started
+implementation_status: in_progress
 acceptance_status: pending
 issue: 185
 upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
@@ -9,9 +9,14 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 
 # DSH Remote 后端、通信与手机控制架构重构规格
 
-本规格是用户经过逐轮讨论后确认的目标架构。**架构已接受，运行时代码尚未按本规格重构，
-运行验收待进行。** 本次 issue #185 只交付文档，不能据此宣称新通道或任一 Agent 已可用。
-代码事实基线为 `dev@a7dbe3fc8f59a6f01deec101489c705c1e878661`。
+本规格是用户经过逐轮讨论后确认的目标架构。**架构已接受，仓内已有迁移实现，
+最终同提交自动化与真实环境验收仍待完成。** issue #185 交付的是设计文档，不能据此宣称新通道或任一 Agent 已可用。
+本规格最初记录的迁移前代码事实基线为 `dev@a7dbe3fc8f59a6f01deec101489c705c1e878661`。
+
+后续实施从 `dev@12094e684e4bd6d4270513d54b6ef35437536552` 启动，按
+[分阶段计划](../plans/2026-11-14-dsh-remote-migration-plan.zh-CN.md)与
+[验收台账](../reviews/2026-11-14-dsh-remote-acceptance-index.zh-CN.md)推进；关联全量跟踪 #187、P0 #188、P1 #189。
+实施启动不改变此处任何运行验收状态。
 
 术语见 [CONTEXT](../../CONTEXT.md)，固定上游证据及能力差距见
 [事实基线](../architecture/2026-11-13-dsh-remote-baseline.zh-CN.md)，
@@ -36,7 +41,9 @@ upstream_commit: ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7
 - 手机工作区固定为 `phone-capabilities`，保留常驻 `control-bus` 并允许创建独立任务会话。
   手机不运行本地 LLM，两种电脑入口共用一个确定性执行器与本机权限裁决。
 - 原生 DSH 使用已有 remote_* 工具；外部 Agent 使用电脑上的 Stdio MCP 与 DSH 进程内桥。
-  跨 Agent 委派覆盖各真实可用后端，接受串行切换电脑 DSH 当前工作区的副作用。
+  MCP 仅公开 `android_*` 手机操作，目标限定为 OAI Virtual Host 的 `phone-capabilities`。
+  跨 workspace 后台调度属于上游，本客户端不提供 `remote_agent_delegate` 或其他委派工具，
+  也不将其列为需求、实现或发布门禁；正常多 Host/DSH/Codex/ACP 的手动切换完整保留。
 - 新能力默认每次手动；用户在手机选择允许只读后，批准范围内读取免逐次确认。
   敏感操作强制本机确认。锁屏只允许已明确授予后台权限的数据请求，拒绝读屏、截图和屏幕控制。
 - Kotlin 负责屏幕感知与控制，WASM 负责离散数据能力。采用无障碍悬浮确认与紧急停止；
@@ -67,7 +74,6 @@ flowchart LR
     ACP[外部 Agent 原生 MCP 配置] --> MCP[Stdio MCP]
     MCP --> BRIDGE[DSH 进程内本地桥]
     BRIDGE <--> PHONE
-    BRIDGE --> PC
     PHONE --> KERNEL[手机平台内核与本机策略]
     KERNEL --> NATIVE[Kotlin 屏幕感知与控制]
     KERNEL --> WASM[WASM 离散数据插件]
@@ -100,7 +106,7 @@ Remote Server 仍承担账号、设备目录、在线状态、信令、TURN 凭�
 | REM-14 | 无焦点冲突的悬浮确认与紧急停止，锁屏拒绝屏幕能力 | 第三方前台应用及真机锁屏 |
 | REM-15 | 本机默认手动，独立只读/写入/后台/敏感确认，不由账号登录授权 | 权限、范围、撤销与排队复核 |
 | REM-16 | 持久防重回执、未知结果和取消不因重连或重启失真 | 崩溃点与结果交付故障注入 |
-| REM-17 | Stdio MCP 经本地 DSH 桥；全部后端委派串行切工作区 | 原生 MCP 挂载与目标切换 |
+| REM-17 | Stdio MCP 经本地 DSH 桥，仅公开 android_* 手机操作 | 原生 MCP 挂载、手机目标与工具白名单 |
 | REM-18 | 退出旧协议及所有生产、构建、安装、CI 依赖，无旧服务旁路 | 依赖清单和干净安装 |
 | REM-19 | 现有用户能力逐项落实，未支持项明确不可用而非伪造 | 第 9 节功能矩阵 |
 | REM-20 | 文档接受、实现完成、自动化与设备/部署验收分开记录 | 文档检查与逐项证据 |
@@ -194,7 +200,13 @@ Harness 使用 Typert Remote / Session V3，Codex 使用 codex.app.*，ACP 使�
 Virtual Host 对外声明真实实现的最小 Harness carrier，工作区为 `phone-capabilities`。
 `control-bus` 是常驻入口，`session/create` 返回新的独立任务会话 ID，不把固定总线冒充新会话。
 任务会话接收类型化 RPC 或同义 CLI 简写，按 request_id 返回结构化执行结果。
-每个会话的目录、历史、运行状态和结果必须真实产生；全局会话 idle 不能替代具体请求终态。
+每个会话的目录、内存历史、运行状态和结果必须真实产生；全局会话 idle 不能替代具体请求终态。
+`control-bus` 支持按可信 owner/request 隔离的单步快调；多步任务真实 create。控制任务消息、
+Prompt、树、截图和结果正文仅在当前进程内存中，重启不恢复任务、不回放、不续做。持久层只保留
+owner/request/task/op/参数摘要/execution/state/取消关联等最小防重事实；旧任务失效标记不等于
+恢复其可执行状态。正常聊天镜像、主动推送队列与定时任务仍按各自功能加密持久。
+重启后经当前总线发送只读 `request.status` 查询原最小回执，原 task ID 仅核对归属，
+正文未保留返回 `resultAvailable:false`，不伪造原结果。
 
 原生 DSH 的 remote_send_message 是电脑端工具，最终调用 session/prompt，不是同名网络 RPC。
 手机需实现工具依赖的 workspace/session 发现、列表、follow/page、create/prompt/cancel，
@@ -212,10 +224,13 @@ Stdio MCP 只转接参数和结构化结果；通道、登录状态和任务观�
 取消及任务文件读取；不把 Remote 账号 token 或私钥交给外部 Agent，不开放任意 Typert 方法代理。
 退出登录、切服务和插件卸载时，旧桥授权失效。MCP 标准输出只承载协议，诊断不能污染它。
 
-remote_agent_delegate 使用各后端实际接口，串行切换电脑 DSH 当前工作区，报告目标与选择副作用。
-Bridge 将目标切换、创建/发送和观察生命周期作为一项委派管理，不能让并发委派互相改选目标。
-返回可查询任务标识；审批等待保持待处理，不自动批准。用户手动改选、旧投影被销毁或连接失效后，
-停止依赖旧目标的新写入，按实际证据返回已完成、已取消或结果未知；不得自动抢回工作区或重放任务。
+MCP 只选择当前账号已授权的手机 OAI Virtual Host 与 `phone-capabilities`，只暴露 `android_*`。
+后台跨 workspace 的 Agent 调度（包括 `remote_agent_delegate`）归上游，不是本客户端功能、
+实现范围或验收前置。
+正常聊天中用户可随时切换 Host、DSH/Codex/ACP workspace 与对话；切换须关闭并排空旧流，
+用独立连接与连接代际拒绝迟到结果，不能限制切换、自动抢回工作区、改投新目标或重放未知写入。
+MCP 首次读树/截图可 create 并返回 taskSessionId，后续显式携带原 taskSessionId/snapshotId；
+不为每次工具调用暗中新建任务，也不以全局“最近任务”选路。
 MCP 调用退出不等于撤销已执行副作用，取消必须映射到明确的原任务。按请求取消使用带
 targetRequestId 的 request.cancel，由手机原子核对；原生 session/cancel 仅表示整任务取消，不能误停同任务下一请求。
 
@@ -265,8 +280,29 @@ Shizuku 仅在明确安装、授权、选中和可用时参与，不因失败自
 | Core 部署、管理员/旧账号与 Gateway 配对管理 | 随明确废弃服务退役，连接设置改为 Remote 授权与端点选择 | 无旧服务前置、无旧凭据继承和无隐藏兼容链路 |
 
 主动推送的稳定目标须绑定已验证的端点及其真实接收位置，不因 Host 重连、会话改名或切聊天目标改变。
-用源事件身份与投递身份去重；接收端必须提供可核验确认后才能推进投递记录。仅接受“消息已受理”
-不能代替业务投递成功；上游缺少所需确认或某后端没有接收接口时，该项保持阻塞，不取消白名单和可靠队列要求。
+用源事件身份与投递身份去重。普通 prompt 仅含非秘密 delivery/event/digest 引用，无 bearer 或正文。
+桌面 Agent 经手机 `android_read_delivery` 首次取件时，手机本机可信确认展示实际认证 Client/pin
+和已保存的完整目标 Host/pin/backend/workspace/session；用户批准后绑定该目标的收件主体，
+后续按已有推送授权自动取件。不能把手机主动 Client 与桌面来访 Client 混为一人，也不能由同账号
+或公开引用推断授权。确认建立设备对目标的访问许可，不伪称证明其来自该 Host/会话。
+
+读取不推进消费，必须由同一主体 `android_ack_delivery` 确认精确事件/摘要；确认和正文清理
+原子加密落盘，重复确认只返回元数据。仅接受“消息已受理”、turn 完成不能代替业务投递成功；
+未知结果不自动重发通知。配置、账号、身份/pin变化或急停撤销许可；正文、历史和结果出队均再次复核。
+正常手动切换不丢白名单和队列，本切片只借当前精确会话，不后台切换 workspace、不创建额外连接。
+
+继续使用安装级 `device-push-v1` 文件和 `oai_device_push_v1` 密钥别名，不能静默创建 Remote 空库。
+版本化解码保留设置、原事件正文、游标和未ACK记录；旧v5令牌摘要/reader只作审计并需重新授权，
+不能继承聊天历史里的 bearer。未知版本或损坏停止出站，不能重置数据。Remote 的账号 epoch 只代表
+账号授权代次，没有公开端点租约时 `generation` 为空，不能将 epoch 加一伪称端点代际。
+上游缺少所需确认或某后端没有接收接口时，该项保持阻塞，不取消白名单和可靠队列要求。
+
+
+本机收件绑定采用两阶段持久提交：候选`pending`不授信，保存候选后复核原认证连接和本机授权代次；
+随后与本机撤销/配置/账号变更同锁串行的`active`加密提交，是批准生效点。候选后崩溃、写失败或
+复核失败，重启仍拒绝取件并允许重新本机确认，不依赖后续回滚写入恢复安全。成功提交的许可可在
+正常重启后保留；提交后的外部断连由每次访问的当前连接检查拒绝，不宣称与网络断连跨系统原子。
+短信与通知分别允许32个目标，持久收件绑定按合法并集最多64个读取和写入，不缩小用户配置。
 
 ## 10. 实施顺序与验收
 
@@ -274,7 +310,7 @@ Shizuku 仅在明确安装、授权、选中和可用时参与，不因失败自
 | --- | --- |
 | 事实与兼容验证 | 固定上游版本、原生 Noise/协议向量互通、Host 能力矩阵及最小手机 facade 通过真实工具探测 |
 | 原生会话适配 | REM-01 至 REM-08 与既有聊天/附件/审批/助理回归完成；不依赖旧 Core |
-| 手机控制与 MCP | REM-09 至 REM-17、后台/锁屏/焦点及两种真实控机入口完成；各委派后端逐项验收 |
+| 手机控制与 MCP | REM-09 至 REM-17、后台/锁屏/焦点及两种真实手机控机入口完成 |
 | 功能覆盖与退出旧依赖 | REM-18/19 完成，主动推送、定时任务与离线能力没有遗漏；生产构建不再消费旧契约或服务 |
 | 发布验收 | 通过对应 Fast/PR/Full 门禁，记录真实设备、网络与后端矩阵；未完成项不得宣告完整重构 |
 
@@ -285,7 +321,7 @@ Shizuku 仅在明确安装、授权、选中和可用时参与，不因失败自
 
 - 固定密码/协议向量、真实 Host 握手、篡改/重放、角色隔离、Server origin 切换、撤销和公钥变更拒绝。
 - LAN、P2P、TURN、Relay 分别建立与实际选路证据；断线、切网、休眠、进程恢复后不重复副作用。
-- Harness、Hermes、Codex、Claude、OpenCode、Cursor、Pi、Antigravity 的发现、真实模型、文本、附件、审批、打断及委派逐项矩阵。
+- Harness、Hermes、Codex、Claude、OpenCode、Cursor、Pi、Antigravity 的发现、真实模型、文本、附件、审批、打断及手动切换逐项矩阵。
 - 原生 DSH remote_* 与外部 Agent 原生 MCP 配置两条控机链路，含真实任务创建、等待、读回与文件下载。
 - 原生、WebView、Flutter、图像界面语义树与 SoM；屏幕旋转、旧快照、事件风暴、400/3000ms 和动作结果未知。
 - 第三方应用前台时确认不丢焦点；远程不能确认自己的敏感请求；撤销、锁屏、紧急停止与互斥租约。

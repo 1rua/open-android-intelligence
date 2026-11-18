@@ -7,7 +7,7 @@ package com.openandroidintelligence.mobile.onboarding
  * 用户在第 3 步杀掉进程，下次应该回到第 3 步附近，而不是从头再来。
  *
  * 阶段只描述**用户走到哪一步**，不描述身份或连接状态——登录是否成功始终由
- * `ConnectionPhase` 决定，两者不得混淆（引导完成 ≠ Gateway 已连接）。
+ * Remote 连接状态 决定，两者不得混淆（引导完成 ≠ Gateway 已连接）。
  */
 enum class OnboardingStage(val persistValue: String) {
     /** 欢迎介绍页。 */

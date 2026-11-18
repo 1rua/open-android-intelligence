@@ -8,7 +8,6 @@
 com.openandroidintelligence.mobile.ArchitectureBoundaryTest
 com.openandroidintelligence.mobile.ConversationUiCapabilitiesTest
 com.openandroidintelligence.mobile.DistributionVariantTest
-com.openandroidintelligence.mobile.GatewayLoginSanitizerTest
 com.openandroidintelligence.mobile.MaterialTokenGuardTest
 com.openandroidintelligence.mobile.NativeNotificationNavigationTest
 com.openandroidintelligence.mobile.NotificationReplyExcerptTest
@@ -17,14 +16,12 @@ com.openandroidintelligence.mobile.WorkbenchNavigationTest
 com.openandroidintelligence.mobile.assistant.AssistantBridgeServiceTest
 com.openandroidintelligence.mobile.assistant.AssistantClientScopeTest
 com.openandroidintelligence.mobile.conversations.NativeNotificationBridgeTest
-com.openandroidintelligence.mobile.onboarding.GatewayTutorialsTest
 com.openandroidintelligence.mobile.onboarding.OnboardingStateTest
 com.openandroidintelligence.mobile.onboarding.PermissionCatalogTest
 com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealGeometryTest
 com.openandroidintelligence.mobile.plugins.DeviceCapabilityBlockTest
 com.openandroidintelligence.mobile.plugins.PluginCapabilityRiskTest
 com.openandroidintelligence.mobile.plugins.PluginPackageInputTest
-com.openandroidintelligence.mobile.plugins.ScreenExecutionErrorsTest
 com.openandroidintelligence.mobile.push.PushStateCodecMigrationTest
 com.openandroidintelligence.mobile.screen.AccessibilityServiceWiringTest
 com.openandroidintelligence.mobile.screen.DeviceAuthorizationCopyTest
@@ -40,12 +37,8 @@ com.openandroidintelligence.mobile.settings.capabilities.CapabilityStateTest
 # 轻量 Robolectric：显式使用普通 Application，保留各类原有的 SDK 版本矩阵。
 # 这些类仅使用 Robolectric 管理的 Android 权限、Intent、AccountManager、
 # ContentResolver、SharedPreferences 或每例独立的内存审计对象。
-com.openandroidintelligence.mobile.AndroidAccountProfileStoreTest
 com.openandroidintelligence.mobile.AndroidApiCompatibilityTest
-com.openandroidintelligence.mobile.ApprovalAuditBridgeTest
 com.openandroidintelligence.mobile.ContentResolverAttachmentSourceTest
-com.openandroidintelligence.mobile.GatewayIdentityTrustStoreTest
-com.openandroidintelligence.mobile.GatewayRefreshJournalTest
 com.openandroidintelligence.mobile.InputPlatformRegressionTest
 com.openandroidintelligence.mobile.NativeNotificationRoutingTest
 com.openandroidintelligence.mobile.PairingGrantPersistenceTest

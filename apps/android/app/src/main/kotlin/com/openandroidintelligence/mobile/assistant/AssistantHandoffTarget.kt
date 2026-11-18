@@ -49,7 +49,7 @@ internal object AssistantHandoffReasons {
  *
  * 只读 `EXTRA_SESSION_TOKEN`，并要求 action 与深链形状都符合既有回复通知约定：
  * 外部应用可以伪造任意 Intent，但主进程侧只认「刚刚接受过的那一次」token
- * （见 `GatewayRuntime.consumeAssistantHandoff`），所以这里不做额外信任。
+ * （见 `RemoteRuntime.consumeAssistantHandoff`），所以这里不做额外信任。
  */
 internal fun android.content.Intent.handoffSessionToken(): String? {
     if (action != HANDOFF_REPLY_ACTION) return null

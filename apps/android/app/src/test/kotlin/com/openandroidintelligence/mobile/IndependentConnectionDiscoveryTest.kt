@@ -2,9 +2,6 @@ package com.openandroidintelligence.mobile
 
 import com.openandroidintelligence.encrypted.store.InMemoryOutboxPersistence
 import com.openandroidintelligence.mobile.push.*
-import com.openandroidintelligence.gateway.events.InMemoryEventCursorStore
-import com.openandroidintelligence.gateway.http.*
-import com.openandroidintelligence.gateway.schema.JsonFields
 import kotlinx.coroutines.flow.emptyFlow
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.CancellationException
@@ -99,50 +96,6 @@ class IndependentConnectionDiscoveryTest {
             assertTrue(slow.isActive)
         } finally { slow.cancelAndJoin() }
     }
-
-    @Test fun temporaryPairingFailureDoesNotInvalidateTheAlreadyDiscoveredPushConnection() = runBlocking {
-        for (behavior in listOf("unavailable", "timeout", "network")) {
-            val http = pairingClient { request ->
-                assertEquals("/open-android-intelligence/v2/pairings/current", request.target)
-                when (behavior) {
-                    "timeout" -> awaitCancellation()
-                    "network" -> throw java.net.SocketTimeoutException("synthetic outage")
-                    else -> WireResponse(503, emptyList(), """{"error":{"code":"UNAVAILABLE"}}""".toByteArray())
-                }
-            }
-            assertNull(optionalDevicePairing(http, { true }, timeoutMillis = 20))
-        }
-    }
-
-    @Test fun pairingIdentityAndAuthorizationFailuresCannotBecomeTemporaryAvailability() = runBlocking {
-        val identity = GatewaySecurityException("SYNTHETIC_PIN_MISMATCH")
-        assertSame(identity, runCatching { optionalDevicePairing(pairingClient { throw identity }, { true }) }.exceptionOrNull())
-        assertNotNull(runCatching { optionalDevicePairing(pairingClient {
-            WireResponse(403, emptyList(), """{"error":{"code":"PAIRING_DENIED"}}""".toByteArray())
-        }, { true }) }.exceptionOrNull())
-        var requests = 0
-        assertNotNull(runCatching { optionalDevicePairing(pairingClient {
-            requests++
-            WireResponse(200, emptyList(), """{"protocol":"2.1","data":{"deviceId":"device","pairingGeneration":1,"grantRevision":7}}""".toByteArray())
-        }, { false }) }.exceptionOrNull())
-        assertEquals("A retired account must be rejected before transport", 0, requests)
-    }
-
-    @Test fun successfulPairingKeepsItsRealBindingForDeviceRecovery() = runBlocking {
-        val data = optionalDevicePairing(pairingClient {
-            WireResponse(200, emptyList(), """{"protocol":"2.1","data":{"deviceId":"device","pairingGeneration":3,"grantRevision":7}}""".toByteArray())
-        }, { true })!!
-        assertEquals("device", JsonFields.string(data, "deviceId"))
-        assertEquals(3, JsonFields.int(data, "pairingGeneration"))
-        assertEquals(7, JsonFields.int(data, "grantRevision"))
-    }
-
-    private fun pairingClient(execute: suspend (WireRequest) -> WireResponse) = GatewayHttpClient(
-        GatewayProfile("account", "device", "session", "https://core.example", accessToken = "access"),
-        object : GatewayByteTransport {
-            override suspend fun execute(request: WireRequest) = execute.invoke(request)
-            override fun eventStream(request: WireRequest) = emptyFlow<ByteArray>()
-        }, { ByteArray(64) }, InMemoryEventCursorStore())
 
     @Test fun parentCancellationStopsEveryPendingDiscovery() = runBlocking {
         val started = CompletableDeferred<Unit>()

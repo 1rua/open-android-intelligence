@@ -1,6 +1,5 @@
 package com.openandroidintelligence.mobile
 
-import com.openandroidintelligence.gateway.http.requireData
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -30,25 +29,4 @@ internal fun <Profile, Connection : Any> independentConnectionDiscovery(
             if (connection != null) send(connection) else unavailable(profile)
         }
     }
-}
-
-/** Preserve a verified push connection when only its independent device-recovery lookup is unavailable. */
-internal suspend fun optionalDevicePairing(
-    http: com.openandroidintelligence.gateway.http.GatewayHttpClient,
-    isCurrent: () -> Boolean,
-    timeoutMillis: Long = 5_000L,
-): com.openandroidintelligence.gateway.schema.JsonValue.JObject? {
-    val response = try {
-        withTimeoutOrNull(timeoutMillis) {
-            http.execute(com.openandroidintelligence.gateway.http.SignedGatewayRequest(
-                "GET", "/open-android-intelligence/v2/pairings/current", beforeSend = {
-                    check(isCurrent()) { "PUSH_ACCOUNT_LOGGED_OUT" }
-                }))
-        }
-    } catch (failure: java.io.IOException) {
-        if (com.openandroidintelligence.gateway.http.GatewayConnectionSecurity.isSecurityFailure(failure)) throw failure
-        null
-    }
-    if (response == null || response.status in 500..599) return null
-    return response.requireData("DEVICE_PAIRING_LOOKUP_FAILED")
 }

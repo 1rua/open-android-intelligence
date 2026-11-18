@@ -115,9 +115,9 @@ describe("reference plugin manifests conform to device-plugin-package-v1 §5", (
         const compatibility = manifest["compatibility"];
         expect(isRecord(compatibility), "compatibility 必须是对象").toBe(true);
         const record = compatibility as Record<string, unknown>;
-        requireKeys(record, ["androidHost", "gatewayProtocol"], "compatibility");
+        requireKeys(record, ["androidHost"], "compatibility");
         expect(typeof record["androidHost"]).toBe("string");
-        expect(typeof record["gatewayProtocol"]).toBe("string");
+        expect(record).not.toHaveProperty("gatewayProtocol");
       });
 
       it("declares capabilities.provides as objects with id/version/schema", () => {

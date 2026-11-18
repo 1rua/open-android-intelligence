@@ -23,6 +23,33 @@ class PrimitiveBootstrapProvider : ContentProvider() {
         KernelPrimitiveRegistry.register(SmsReadPrimitive(AndroidSmsInboxReader(app.contentResolver)) {
             app.checkSelfPermission(android.Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
         })
+        KernelPrimitiveRegistry.register(
+            SmsSendPrimitive(
+                sender = AndroidSmsSendProvider { subscriptionId -> AndroidSmsManagerPort(app, subscriptionId) },
+                beforeSystemEffect = { context, request ->
+                    (context.beforeSystemEffect ?: throw CapabilityDenied("SYSTEM_EFFECT_FENCE_UNAVAILABLE")).invoke(
+                        Json.canonical(Json.of(mapOf(
+                            "subscriptionId" to request.subscriptionId,
+                            "recipient" to request.recipient,
+                            "text" to request.text,
+                        ))).encodeToByteArray(),
+                    )
+                },
+                permissionGranted = {
+                    app.checkSelfPermission(android.Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+                },
+                subscriptionBinding = { id ->
+                    try {
+                        app.getSystemService(android.telephony.SubscriptionManager::class.java)
+                            ?.getActiveSubscriptionInfo(id)?.let {
+                                "${it.subscriptionId}:${it.simSlotIndex}:${it.cardId}:${it.carrierId}"
+                            }
+                    } catch (_: SecurityException) {
+                        throw CapabilityDenied("READ_PHONE_STATE_REQUIRED")
+                    }
+                },
+            ),
+        )
         register("kernel.call-log.read", availability = {
             if (app.checkSelfPermission(android.Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED) null else "READ_CALL_LOG_REQUIRED"
         }) { request, _ ->

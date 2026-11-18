@@ -4,16 +4,11 @@ import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.mobile.conversations.EncryptedHistoryMediaCache
 import com.openandroidintelligence.conversation.ports.*
-import com.openandroidintelligence.gateway.http.*
-import com.openandroidintelligence.gateway.events.EventCursorStore
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
 import javax.crypto.spec.SecretKeySpec
 import java.io.File
 import java.security.MessageDigest
-import java.util.Base64
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,23 +24,17 @@ class EncryptedHistoryMediaCacheTest {
     private val bytes="PRIVATE HISTORICAL MEDIA".toByteArray()
     private val metadata=HistoricalMediaMetadata("conv_media","media_one","history.txt","text/plain",bytes.size.toLong(),
         "sha256:"+MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(""){"%02x".format(it)},true,2048)
-    private fun http():GatewayHttpClient {
-        val transport=object:GatewayByteTransport {
-            override suspend fun execute(request:WireRequest):WireResponse {
-                val data=when {
-                    request.target.endsWith("/cache-grant?format=stream-v1") -> "{\"grantId\":\"${"G".repeat(43)}\"}"
-                    request.target.contains("/content?format=stream-v1&grantId=") -> "{\"mediaType\":\"text/plain\",\"contentBase64\":\"${Base64.getEncoder().encodeToString(bytes)}\"}"
-                    else -> error("UNEXPECTED_REQUEST")
-                }
-                return WireResponse(200,emptyList(),"{\"data\":$data}".toByteArray())
-            }
-            override fun eventStream(request:WireRequest):Flow<ByteArray> = emptyFlow()
+    private fun source() = object : HistoricalMediaSource {
+        override fun checkCurrent() = Unit
+        override suspend fun metadata(conversationId: String, attachmentId: String) = metadata.also {
+            check(conversationId == it.conversationId && attachmentId == it.attachmentId)
         }
-        val cursors=object:EventCursorStore {override fun load(accountId:String):String?=null;override fun save(accountId:String,cursor:String){};override fun clear(accountId:String){}}
-        return GatewayHttpClient(GatewayProfile("acct_same","dev_one","sess_one",scope.gatewayId,accessToken="test"),transport,{ByteArray(64)},cursors)
+        override suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (java.io.InputStream) -> Unit) {
+            java.io.ByteArrayInputStream(bytes).use(consume)
+        }
     }
     @Test fun explicitRetentionSurvivesOfflineRestartAndNeverCrossesGatewayOrAccount()=runBlocking {
-        val cache=EncryptedHistoryMediaCache(context,scope,http(),key)
+        val cache=EncryptedHistoryMediaCache(context,scope,source(),key)
         assertFalse(cache.isRetained(metadata.attachmentId));cache.retain(metadata);assertTrue(cache.isRetained(metadata.attachmentId))
         val offline=EncryptedHistoryMediaCache(context,scope,keyProvider=key)
         assertEquals(metadata.filename,offline.metadata(metadata.conversationId,metadata.attachmentId).filename)
@@ -56,7 +45,7 @@ class EncryptedHistoryMediaCacheTest {
         cache.clearMedia();assertFalse(offline.isRetained(metadata.attachmentId))
     }
     @Test fun anotherConversationCannotOpenOrDeleteARetainedOriginal()=runBlocking {
-        val cache=EncryptedHistoryMediaCache(context,scope,http(),key);cache.retain(metadata)
+        val cache=EncryptedHistoryMediaCache(context,scope,source(),key);cache.retain(metadata)
         assertNull(cache.localMetadata("conv_other",metadata.attachmentId))
         cache.remove("conv_other",metadata.attachmentId)
         assertArrayEquals(bytes,cache.openOriginal(metadata.conversationId,metadata.attachmentId).use { it.readBytes() })

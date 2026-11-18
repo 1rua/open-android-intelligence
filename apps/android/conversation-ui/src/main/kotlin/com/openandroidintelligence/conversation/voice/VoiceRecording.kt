@@ -121,8 +121,23 @@ class VoiceRecording(
                         recorder.start()
                     }
 
-                    override fun stop() = recorder.stop()
-                    override fun release() = recorder.release()
+                    override fun stop() {
+                        try {
+                            recorder.stop()
+                        } catch (e: RuntimeException) {
+                            file.delete()
+                            throw e
+                        } finally {
+                            runCatching { recorder.reset() }
+                            runCatching { recorder.release() }
+                        }
+                    }
+
+                    override fun release() {
+                        runCatching { recorder.reset() }
+                        runCatching { recorder.release() }
+                    }
+
                     override fun maxAmplitude(): Int = recorder.maxAmplitude
                 })
             } catch (cause: Exception) {

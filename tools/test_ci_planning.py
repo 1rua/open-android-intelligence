@@ -146,7 +146,7 @@ def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
 
 
 @pytest.mark.parametrize("path", [
-    "gateway-contract/schema/device.json",
+    "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/ControlRequest.kt",
     "apps/android/gradle.properties",
     "apps/android/build.gradle.kts",
     "apps/android/app/build.gradle.kts",
@@ -162,14 +162,8 @@ def test_security_and_build_config_paths_run_everything(impact, path):
 
 
 def test_core_security_paths_widen_the_matrix(impact):
-    result = impact.classify([("M", "oai-core/src/oai_core/gateway/transport.py")])
+    result = impact.classify([("M", "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/remote/security/AuthGate.kt")])
     assert result["full_required"] is True
-
-
-def test_plain_core_change_runs_core_only(impact):
-    result = impact.classify([("M", "oai-core/src/oai_core/cli.py")])
-    assert result["full_required"] is False
-    assert active_lanes(result) == {"core"}
 
 
 def test_single_android_module_pulls_in_app_and_play_lanes(impact):
@@ -194,13 +188,6 @@ def test_rename_counts_both_sides(impact):
         ("A", "plugins/sms-v2/src/lib.rs"),
     ])
     assert "fast" in active_lanes(result)
-
-
-def test_hermes_adapter_path_runs_core_and_hermes(impact):
-    result = impact.classify([
-        ("M", "integrations/hermes-session-adapter/src/oai_hermes_adapter/runtime.py"),
-    ])
-    assert active_lanes(result) == {"core", "hermes"}
 
 
 def test_app_sections_narrow_to_the_touched_domain(impact):
@@ -231,10 +218,10 @@ def test_app_sections_narrow_to_the_touched_domain(impact):
         {"android-device"},
     ),
     (
-        "onboarding/data/GatewayTutorials.kt",
+        "onboarding/data/RemoteTutorials.kt",
         {"core", "settings"},
-        ["GatewayTutorialsTest"],
-        {"android-gateway"},
+        ["RemoteTutorialsTest"],
+        {"android-device"},
     ),
     (
         "onboarding/motion/ButtonRevealTransition.kt",
@@ -395,24 +382,11 @@ def test_unclassified_path_is_not_masked_by_a_classified_sibling(impact):
     assert result["unclassified_paths"] == ["weird-new-dir/thing.bin"]
 
 
-def test_native_only_tests_route_to_hermes(impact):
-    """Core `--ignore`s these files; only the Hermes job executes them."""
-    for path in (
-        "oai-core/tests/test_native_event_sync.py",
-        "oai-core/tests/test_structured_tool_history.py",
-        "oai-core/tests/test_interaction_pipeline.py",
-        "oai-core/tests/test_communication_process_recovery.py",
-        "oai-core/tests/test_native_tool_events.py",
-    ):
-        lanes = impact.classify([("M", path)])["lanes"]
-        assert lanes["hermes"] is True, path
-
-
 def test_executable_manifests_are_not_documentation(impact):
     """The app regression manifest and fixture requirements control tests."""
     for path in (
         "apps/android/ci/app-regression.txt",
-        "apps/android/ci/hermes-fixture-requirements.txt",
+        "tools/remote-source-integrity.ts",
     ):
         result = impact.classify([("M", path)])
         assert result["full_required"] is True, path
@@ -433,11 +407,6 @@ def test_push_paths_win_over_broad_settings_hint(impact):
         ("M", "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/push/PushSettingsScreen.kt"),
     ])
     assert "push-notifications" in result["app_sections"]
-
-
-def test_measurement_changes_run_the_hermes_lane(impact):
-    lanes = impact.classify([("M", "tools/measure-communication.py")])["lanes"]
-    assert lanes["hermes"] is True
 
 
 def test_ui_resources_change_runs_consumer_lanes_and_all_app_sections(impact):
@@ -482,10 +451,10 @@ def test_every_module_with_tests_has_a_lane(tasks):
 
 
 def test_github_output_uses_underscore_names(impact):
-    result = impact.classify([("M", "oai-core/src/oai_core/cli.py")])
+    result = impact.classify([("M", "tools/remote/projection-scope.test.mjs")])
     output = impact.to_github_output(result)
     # Workflow outputs and `if:` conditions cannot contain dashes reliably.
-    assert "runs_core=true" in output
+    assert "runs_remote=true" in output
     assert "runs_fast=false" in output
     for line in output.splitlines():
         assert "-" not in line.split("=", 1)[0], line
@@ -625,7 +594,7 @@ def test_ci_workflow_gates_each_lane_on_its_own_output():
     import yaml
 
     workflow = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
     )
     jobs = workflow["jobs"]
     assert "changes" in jobs
@@ -647,7 +616,7 @@ def test_ci_gate_depends_on_every_android_prerequisite():
     import yaml
 
     jobs = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
     )["jobs"]
     gate_needs = set(jobs["gate"]["needs"])
     assert "android-setup" in gate_needs
@@ -660,7 +629,7 @@ def test_android_preflight_executes_i18n_gates_and_fast_tests_the_checkers():
     import yaml
 
     jobs = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
     )["jobs"]
     preflight_commands = [
         shlex.split(line)
@@ -685,7 +654,7 @@ def test_artifact_consumers_cannot_outlive_their_producer():
     import yaml
 
     jobs = yaml.safe_load(
-        (REPO_ROOT / ".github/workflows/oai-core.yml").read_text(encoding="utf-8")
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
     )["jobs"]
     setup_condition = jobs["android-setup"]["if"]
     for name, job in jobs.items():
@@ -711,7 +680,7 @@ def test_release_workflows_wait_for_verified_ci():
     import yaml
 
     for name, expected in (
-        ("dev-release.yml", "oai-core.yml"),
+        ("dev-release.yml", "remote-client.yml"),
         ("release.yml", "ci.yml"),
     ):
         jobs = yaml.safe_load(
@@ -728,3 +697,146 @@ def test_release_workflows_wait_for_verified_ci():
 def test_ci_workflow_keeps_configuration_cache_and_parallel_forks():
     properties = (REPO_ROOT / "apps/android/gradle.properties").read_text(encoding="utf-8")
     assert "org.gradle.configuration-cache=true" in properties
+
+
+@pytest.mark.parametrize("path", [
+    "tools/remote/projection-scope.test.mjs",
+    "tools/remote/fixtures/dsh-remote/acp/virtual-harness.ts",
+    "tools/remote/fixtures/dsh-remote/source.json",
+    "tools/remote/media-source.test.mjs",
+    "tools/remote/fixtures/media-upstream/source.json",
+    "tools/remote/fixtures/media-upstream/LICENSE",
+    "tools/remote/fixtures/media-upstream/packages/plugin/src/workspace-bridge.ts",
+    "tools/remote/phone-mcp-interop.ts",
+    "tools/remote-interop/original-client.mjs",
+    "tools/remote-interop/release-fixtures/source.json",
+    "tools/remote-interop/harness-fixtures/source.json",
+])
+def test_acp_projection_observation_routes_to_remote_lane(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["lanes"]["remote"]
+    assert not result["unknown"]
+    assert not result["full_required"]
+
+
+def test_remote_android_fixture_routes_to_gateway_without_legacy_dsh(impact):
+    result = impact.classify([("M", "apps/android/gateway-client/src/test/resources/dsh-remote/fixtures/crypto/v1/noise-ik.json")])
+    assert result["lanes"]["android-gateway"]
+
+
+def test_control_ports_remote_types_reach_gateway_and_ui_consumers(impact):
+    result = impact.classify([("M", "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt")])
+    expected = {"android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications", "android-app", "android-play"}
+    assert expected <= active_lanes(result)
+    assert not result["unknown"]
+
+
+def test_phone_mcp_routes_to_remote_without_legacy_adapters(impact):
+    result = impact.classify([("M", "integrations/oai-android-mcp/src/stdio.mjs")])
+    assert result["lanes"]["remote"]
+    assert not result["full_required"]
+
+
+def test_retired_service_jobs_cannot_reenter_the_current_workflow():
+    import yaml
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/remote-client.yml").read_text())
+    jobs = workflow["jobs"]
+    assert not {"core", "hermes-native", "dsh"} & jobs.keys()
+    assert "remote" in jobs
+    assert jobs["gate"]["name"] == "CI Gate"
+    assert "remote-sources" in jobs["gate"]["needs"]
+
+
+def test_release_gate_defaults_to_current_remote_workflow():
+    source = (REPO_ROOT / ".github/workflows/release-gate.yml").read_text()
+    assert "default: remote-client.yml" in source
+    assert "inputs.required-workflow || 'remote-client.yml'" in source
+    assert "head_sha={sha}" in source
+    assert 'endswith("/" + workflow_file)' in source
+
+
+@pytest.mark.parametrize("status", ["A", "M", "D"])
+@pytest.mark.parametrize("filename", ["webrtc-native-and-third-party.txt", "webrtc-LICENSE.txt", "说明.txt"])
+def test_remote_license_assets_always_execute_source_integrity_gate(impact, status, filename):
+    path = "apps/android/gateway-client/src/main/assets/licenses/remote/" + filename
+    result = impact.classify([(status, path)])
+    assert result["lanes"]["fast"]
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/remote-client.yml").read_text())["jobs"]
+    assert "runs_fast" in jobs["remote-sources"]["if"]
+    commands = "\n".join(step.get("run", "") for step in jobs["remote-sources"]["steps"])
+    assert "npm run lock:check" in commands
+
+
+def test_full_ci_preserves_android_release_tool_regressions():
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    commands = "\n".join(step.get("run", "") for job in jobs.values() for step in job.get("steps", []))
+    for filename in ("test_app_release_metadata.py", "test_extract_package_version.py",
+                     "test_prepare_release_notes.py", "test_bundled_plugins.py"):
+        assert f"unittest discover -s apps/android/tools -p '{filename}'" in commands
+
+
+@pytest.mark.parametrize("path", [
+    "apps/android/gateway-client/src/main/kotlin/com/openandroidintelligence/gateway/remote/facade/PhoneControlBus.kt",
+    "apps/android/gateway-client/src/test/kotlin/com/openandroidintelligence/gateway/remote/facade/PhoneVirtualHostProbe.kt",
+    "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/ControlOperation.kt",
+])
+def test_phone_jvm_inputs_trigger_original_tools_interop(impact, path):
+    for status in ("A", "M", "D"):
+        result = impact.classify([(status, path)])
+        assert result["lanes"]["remote"]
+
+
+def test_remote_ci_prepares_real_jvm_in_the_same_job_before_original_probe():
+    import json
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/remote-client.yml").read_text())["jobs"]
+    steps = jobs["remote"]["steps"]
+    unit = next(i for i, step in enumerate(steps) if step.get("run") == "npm run test:phone-mcp:unit")
+    media = next(i for i, step in enumerate(steps) if step.get("run") == "npm run test:remote")
+    interop = next(i for i, step in enumerate(steps) if step.get("with", {}).get("lane") == "phone-mcp-interop")
+    assert unit < interop and media < interop
+    action = yaml.safe_load((REPO_ROOT / ".github/actions/android-lane/action.yml").read_text())
+    action_steps = action["runs"]["steps"]
+    setup = next(i for i, step in enumerate(action_steps) if step.get("uses", "").startswith("gradle/actions/setup-gradle@"))
+    run = next(i for i, step in enumerate(action_steps) if "phone-mcp-interop.ts" in step.get("run", ""))
+    assert setup < run
+    assert any(step.get("with", {}).get("java-version") == "21" for step in action_steps[:run])
+    assert any(step.get("uses", "").startswith("android-actions/setup-android@") for step in action_steps[:run])
+    scripts = json.loads((REPO_ROOT / "package.json").read_text())["scripts"]
+    assert scripts["test:phone-mcp"] == "npm run test:phone-mcp:unit && npm run test:phone-mcp:interop"
+    assert "media-source.test.mjs" in scripts["test:remote"]
+    assert "phone-mcp-interop.test.mjs" in scripts["test:remote"]
+
+
+def test_full_ci_original_tools_runs_in_android_job_after_current_checkout_build():
+    import yaml
+    jobs = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    node_commands = "\n".join(step.get("run", "") for step in jobs["gateway-and-protocol"]["steps"])
+    assert "npm run test:phone-mcp:unit" in node_commands
+    assert "npm run test:phone-mcp:interop" not in node_commands
+    assert "npm run test:remote" in node_commands
+    steps = jobs["android"]["steps"]
+    build = next(i for i, step in enumerate(steps) if "./gradlew check " in step.get("run", ""))
+    interop = next(i for i, step in enumerate(steps) if "npm run test:phone-mcp:interop" in step.get("run", ""))
+    assert build < interop
+
+
+def test_history_media_regression_is_selected_for_conversation_changes(tasks):
+    sections = tasks.read_regression_sections()
+    assert "RemoteHistoryMediaCacheTest" in sections["conversations"]
+    assert "--tests=RemoteHistoryMediaCacheTest" in tasks.pr_args_for_sections(["conversations"])
+
+
+def test_typecheck_excludes_only_pinned_typescript_and_keeps_probe_source():
+    import json
+    config = json.loads((REPO_ROOT / "tsconfig.json").read_text())
+    assert config["include"] == ["tools/**/*.ts"]
+    assert set(config["exclude"]) == {
+        "tools/remote/fixtures/dsh-remote/**/*.ts",
+        "tools/remote/fixtures/media-upstream/**/*.ts",
+        "tools/remote-server/fixtures/**/*.ts",
+        "tools/remote-interop/fixtures/**/*.ts",
+        "tools/remote-interop/release-fixtures/**/*.ts",
+    }

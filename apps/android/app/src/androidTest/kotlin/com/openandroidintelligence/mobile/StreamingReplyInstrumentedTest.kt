@@ -146,8 +146,11 @@ class StreamingReplyInstrumentedTest {
         val text = "聚合最终回答首段。" + shortReply() + "聚合最终回答结束"
         update(fixture, text, streaming = true)
         awaitTailVisible(fixture, "聚合最终回答结束")
-        await("执行步骤没有聚合进共享容器") {
-            nodes().any { it.description.contains("执行过程") && it.description.contains("2 步") }
+        await("执行步骤卡片没有直接呈现且无外层集中折叠框") {
+            val currentNodes = nodes()
+            currentNodes.none { it.description.contains("执行过程") || it.text.contains("执行过程") } &&
+                currentNodes.any { it.text.contains("已思考") } &&
+                currentNodes.any { it.text.contains("[local_fixture]") }
         }
         SystemClock.sleep(220)
         assertCursorAtBodyEnd("聚合最终回答结束")

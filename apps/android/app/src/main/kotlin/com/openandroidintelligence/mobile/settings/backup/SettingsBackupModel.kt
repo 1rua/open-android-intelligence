@@ -1,6 +1,6 @@
 package com.openandroidintelligence.mobile.settings.backup
 
-import com.openandroidintelligence.gateway.http.GatewayEndpoint
+import com.openandroidintelligence.mobile.ServiceAddress
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.kernel.CapabilityAuthorizationMode
@@ -257,7 +257,7 @@ data class ConnectionSection(val gatewayUrl: String) {
         fun decode(section: JsonValue.JObject): ConnectionSection {
             val url = BackupFields.string(section, "gatewayUrl")?.takeIf { it.isNotBlank() }
                 ?: throw formatError("connection.gatewayUrl", "缺失。")
-            if (GatewayEndpoint.parse(url) == null) {
+            if (ServiceAddress.parse(url) == null) {
                 throw formatError("connection.gatewayUrl", "「$url」不是合法的 http/https 地址。")
             }
             return ConnectionSection(url)

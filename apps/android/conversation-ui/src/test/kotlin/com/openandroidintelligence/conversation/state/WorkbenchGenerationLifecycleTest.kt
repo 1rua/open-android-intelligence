@@ -408,6 +408,89 @@ class WorkbenchGenerationLifecycleTest {
         assertEquals(GenerationState.RUNNING,controller.state.value.generation)
     }
 
+    @Test fun `旧取消失败反馈不能清除新轮次正在等待的停止操作`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        assertNotNull(repository.generationSnapshot)
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING)
+        runCurrent()
+        controller.stopGeneration(); runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING)
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        assertNull(controller.state.value.notice)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_a" to "gen_b"), repository.cancellations)
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun `同帧轮次快照不会把旧终态拼接到新轮次`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING)
+        runCurrent()
+        controller.stopGeneration(); runCurrent()
+        // 模拟仓储内部的两个原始流乱序更新：界面只能看到随后发布的同帧快照。
+        repository.generationId.value = "gen_b"
+        repository.generationState.value = GenerationState.COMPLETED
+        runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING)
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_a" to "gen_b"), repository.cancellations)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.CANCELLED)); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
+    @Test fun `跨会话迟到快照不能改写当前界面或充当停止身份`() = runTest {
+        val repository = Repository().apply { useSnapshot = true }
+        val first = CompletableDeferred<CancelGenerationResult>()
+        val second = CompletableDeferred<CancelGenerationResult>()
+        repository.cancelResults["gen_a"] = first
+        repository.cancelResults["gen_b"] = second
+        val controller = controller(repository)
+        runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.RUNNING, "conv_a"); runCurrent()
+        controller.stopGeneration(); runCurrent()
+        controller.openThread("conv_b"); runCurrent()
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING, "conv_b"); runCurrent()
+        repository.publishSnapshot("gen_a", GenerationState.COMPLETED, "conv_a"); runCurrent()
+        assertEquals(GenerationState.RUNNING, controller.state.value.generation)
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a"), repository.cancellations)
+        repository.publishSnapshot("gen_b", GenerationState.RUNNING, "conv_b"); runCurrent()
+        controller.stopGeneration(); runCurrent()
+        assertEquals(listOf("conv_a" to "gen_a", "conv_b" to "gen_b"), repository.cancellations)
+        first.completeExceptionally(IllegalStateException("STALE_GENERATION")); runCurrent()
+        assertEquals(GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        repository.publishSnapshot("gen_a", GenerationState.COMPLETED, "conv_a"); runCurrent()
+        second.complete(CancelGenerationResult(CancelGenerationOutcome.OUTCOME_UNKNOWN)); runCurrent()
+        assertEquals("当前停止结果也不能借用另一会话快照结束本会话", GenerationState.CANCEL_REQUESTED, controller.state.value.generation)
+        repository.publishSnapshot("gen_b", GenerationState.CANCELLED, "conv_b"); runCurrent()
+        assertEquals(GenerationState.CANCELLED, controller.state.value.generation)
+        controller.close()
+    }
+
     @Test fun successfulStopStillSettlesTheSameGenerationWhenALateDeltaArrivesBeforeItsReceipt() = runTest {
         for (outcome in listOf(CancelGenerationOutcome.CANCELLED,CancelGenerationOutcome.ALREADY_COMPLETED)) {
             val repository=Repository()
@@ -620,15 +703,25 @@ class WorkbenchGenerationLifecycleTest {
         supportsMessageBatches=batches, persistence=persistence, persistenceDispatcher=StandardTestDispatcher(testScheduler),
         // 客户端默认立即发送；批处理用例需要一个可推进的合并窗口。
         debouncePolicy=if(batches) DebouncePolicy(delay=1_500.milliseconds) else DebouncePolicy(),
-        onActiveThreadChanged={ repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE },
+        onActiveThreadChanged={ id ->
+            repository.generationId.value=null; repository.generationState.value=GenerationState.IDLE
+            if (repository.useSnapshot) repository.publishSnapshot(null, GenerationState.IDLE, id)
+        },
         replyTimeouts=WorkbenchController.ReplyTimeouts(enabled=false))
 
     private class Repository : ConversationRepository,GenerationTracker,MessageOutcomeQuery {
         override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage?=null
         override val generationId=MutableStateFlow<String?>(null)
         override val generationState=MutableStateFlow(GenerationState.IDLE)
+        var useSnapshot = false
+        private val snapshot = MutableStateFlow(GenerationSnapshot(null, GenerationState.IDLE))
+        override val generationSnapshot: StateFlow<GenerationSnapshot>? get() = if (useSnapshot) snapshot else null
+        fun publishSnapshot(id: String?, state: GenerationState, conversationId: String? = "conv_a") {
+            snapshot.value = GenerationSnapshot(id, state, conversationId)
+        }
         val events=MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity=16)
         val cancelResult=CompletableDeferred<CancelGenerationResult>()
+        val cancelResults=mutableMapOf<String,CompletableDeferred<CancelGenerationResult>>()
         val cancellations=mutableListOf<Pair<String,String>>()
         var sendGate:CompletableDeferred<Unit>?=null
         var submitFailure:Throwable?=null
@@ -656,7 +749,7 @@ class WorkbenchGenerationLifecycleTest {
         override suspend fun cancelGeneration(generationId:String,requestId:String):CancelGenerationResult=error("unscoped cancellation")
         override suspend fun cancelGeneration(conversationId:String,generationId:String,requestId:String):CancelGenerationResult {
             cancellations+=conversationId to generationId
-            return cancelResult.await()
+            return (cancelResults[generationId] ?: cancelResult).await()
         }
     }
 }

@@ -1,0 +1,14 @@
+<resources>
+    <string name="remote_oauth_wait_title">完成浏览器授权</string>
+    <string name="remote_oauth_wait_body">请在系统浏览器中完成授权并返回应用。未完成授权时可以取消，再次选择登录方式。</string>
+    <string name="remote_pairing_title">扫码配对电脑</string>
+    <string name="remote_pairing_scan_prompt">扫描电脑本机 Remote 插件设置中的配对二维码</string>
+    <string name="remote_pairing_origin_body">本次将向官方服务 https://dsh.r2049.cn 解析配对二维码。确认后继续核对电脑身份。</string>
+    <string name="remote_pairing_host_identity">服务：https://dsh.r2049.cn\n电脑：%1$s\n公钥指纹：%2$s</string>
+    <string name="remote_pairing_confirm_body">核对服务地址、电脑名称和公钥指纹后，确认在手机上发起配对。无需 Remote 账号。</string>
+    <string name="remote_pairing_code_body">请到电脑本机 Remote 插件设置中输入手机显示的 8 位验证码，并点击“确认绑定”。验证码只有一次校验机会，电脑输错后需重新生成二维码并扫码。</string>
+    <string name="remote_pairing_retry_body">配对尚未完成。可恢复本次配对；如果二维码已失效，请取消后重新扫描。</string>
+    <string name="remote_pairing_confirm_origin">确认官方服务</string>
+    <string name="remote_pairing_confirm_host">确认电脑并配对</string>
+    <string name="remote_pairing_recover">恢复本次配对</string>
+</resources>

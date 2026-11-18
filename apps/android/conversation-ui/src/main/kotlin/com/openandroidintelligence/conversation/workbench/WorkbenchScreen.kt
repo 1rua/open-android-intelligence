@@ -146,7 +146,7 @@ fun WorkbenchScreen(
     val listState = readingPosition.listState
     var followLatest by readingPosition.followLatest
     val entries = (state.timeline as? Loadable.Ready)?.value.orEmpty()
-    // 时间线按“展示项”渲染：普通消息逐条，执行段在最终回答出现后收成一个折叠面板。
+    // 时间线按“展示项”渲染：普通消息逐条呈现，执行段按真实发生时序平铺步骤并在底部呈现最终回答。
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
     val presentations = rememberStreamingPresentations(
         entries, controller to state.activeThreadId, enabled = !settingsOpen, generation = state.generation,

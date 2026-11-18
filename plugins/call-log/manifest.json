@@ -17,8 +17,7 @@
     "payload": "payload/call_log.wasm"
   },
   "compatibility": {
-    "androidHost": ">=2.0.0 <3.0.0",
-    "gatewayProtocol": ">=2.0 <3.0"
+    "androidHost": ">=2.0.0 <3.0.0"
   },
   "capabilities": {
     "provides": [

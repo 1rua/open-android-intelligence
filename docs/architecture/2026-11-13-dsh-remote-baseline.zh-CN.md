@@ -102,7 +102,7 @@ Harness 使用官方 Typert / Session V3 carrier；Codex 使用独立 `codex.app
 | 上游回执在内存 | 工具说明重启/登出后 not_found 不能证明没有执行。[回执语义](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/remote-tools.ts#L111-L129) | 手机新增持久 request_id 账本；崩溃或断线结果未知时禁止重放 |
 | 本机 Remote 服务 | `runSessionTool` 是进程内服务；已登录 raw client、连接和工作区投影为 private。[运行时边界](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/client-runtime.ts#L62-L132) | 新增进程内 Bridge 与受限 loopback API，Stdio MCP 复用它；不是现成独立官方 SDK |
 | 领域客户端可导入 | client-core 公开重导出 Typert、Harness、Codex、ACP 客户端。[包导出](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/client-core/src/index.ts#L237-L241) | 缺口是现有已登录通道的公开租用接口，不能误写成领域类不存在，也不能私取 raw client |
-| 公开工作区选择会改目标 | Codex 与 ACP 打开工作区会替换全局 target、关闭旧投影并设置 pending selection。[选择实现](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/client-runtime.ts#L613-L767) | 已接受全部真实后端委派串行切换桌面当前工作区；用户手动切换使旧调用失效，不访问 private hooks |
+| 公开工作区选择会改目标 | Codex 与 ACP 打开工作区会替换全局 target、关闭旧投影并设置 pending selection。[选择实现](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/client-runtime.ts#L613-L767) | 后台跨 workspace 委派不属于本客户端；正常手动切换保留，以独立连接/代际及旧流取消排空拒绝迟到事件，不访问 private hooks |
 | 本机路由已有校验入口 | WebServer 注册受限 namespace，复用 `Connection.requestRejection` 和 loopback authority。[路由实现](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/control-route.ts#L47-L89) | Bridge 增加运行期 bearer、origin/账号代际绑定和固定操作白名单，不另建中心鉴权服务 |
 | ACP 不能远程注入 MCP | session/new 的 mcpServers 只允许空数组，Gateway 强制使用空数组。[参数策略](https://github.com/liguobao/ds-harness-remote/blob/ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7/packages/plugin/src/acp/method-policy.ts#L41-L45) | 由电脑端 Agent 原生配置挂载 Stdio MCP，各后端实际加载另验 |
 
@@ -173,7 +173,7 @@ MCP Bridge）、ADR-0065（Kotlin 屏幕/WASM 数据边界）记录；本表不�
 1. **协议与本地自动化**：Noise/协议向量、typed RPC、Session V3 facade、任务/连接隔离、
    持久回执、状态机、既有能力回归；不能由类型检查代替真实承载互操作。
 2. **真实 Host 与后端**：固定插件版本下每个已启用后端的发现、会话、模型/effort、
-   流、附件、审批、中断与串行委派；能力未实现/未就绪时显式禁用，不报空成功。
+   流、附件、审批、中断与手动 workspace/对话切换；能力未实现/未就绪时显式禁用，不报空成功。
 3. **Android 与网络**：目标 APK/真机的双角色、LAN/P2P/TURN/Relay、切网、前后台、
    锁屏、恢复、overlay 焦点、SoM 和 Kill Switch；上游 RN 真机记录不能替代 OAI Kotlin 验收。
 4. **交付与部署**：实际发布包、使用的服务 origin、支持的自托管能力及真实版本；

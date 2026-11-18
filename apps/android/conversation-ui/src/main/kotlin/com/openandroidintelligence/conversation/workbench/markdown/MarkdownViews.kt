@@ -67,6 +67,9 @@ fun MarkdownDocumentView(
 ) {
     val colors = defaultMarkdownColors()
     val compact = LocalMarkdownCompact.current
+    val visibleBlocks = remember(blocks) {
+        blocks.filterNot { it is TimelineBlock.Paragraph && it.text.isBlank() }
+    }
 
     Column(
         modifier = modifier,
@@ -75,8 +78,8 @@ fun MarkdownDocumentView(
             if (compact) Dimensions.SpaceTiny else Dimensions.SpaceSmall,
         ),
     ) {
-        blocks.forEachIndexed { index, block ->
-            val isLast = isStreaming && index == blocks.lastIndex
+        visibleBlocks.forEachIndexed { index, block ->
+            val isLast = isStreaming && index == visibleBlocks.lastIndex
             MarkdownBlockView(block, isLast, colors)
         }
     }

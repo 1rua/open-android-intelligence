@@ -50,13 +50,13 @@ import com.openandroidintelligence.mobile.AppearancePreferences
 import com.openandroidintelligence.mobile.AppearanceSettings
 import com.openandroidintelligence.mobile.ThemePreference
 import com.openandroidintelligence.mobile.onboarding.screens.AppearanceSetupScreen
-import com.openandroidintelligence.mobile.onboarding.data.GatewayTutorials
+import com.openandroidintelligence.mobile.onboarding.data.RemoteTutorials
 import com.openandroidintelligence.mobile.onboarding.motion.ButtonRevealTransition
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.mobile.onboarding.motion.RevealPhase
 import com.openandroidintelligence.mobile.onboarding.motion.RevealDurationMillis as RevealDurationMillisOfMotion
-import com.openandroidintelligence.mobile.onboarding.screens.DeploymentChoiceScreen
-import com.openandroidintelligence.mobile.onboarding.screens.GatewayGuideScreen
+import com.openandroidintelligence.mobile.onboarding.screens.RemoteConnectionChoiceScreen
+import com.openandroidintelligence.mobile.onboarding.screens.RemoteGuideScreen
 import com.openandroidintelligence.mobile.onboarding.screens.PermissionsScreen
 import com.openandroidintelligence.mobile.onboarding.screens.WelcomeScreen
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
@@ -71,7 +71,7 @@ import kotlinx.coroutines.launch
  *    这样登录、配对、会话逻辑一行都不用改（需求五.5、六.9）。
  * 3. **不伪造状态**：完成引导只写「用户走完了引导」，与 Gateway 是否连接完全无关。
  *
- * @param onFinished 用户点下「我已部署」或「部署完毕」并完成转场后回调。
+ * @param onFinished 用户点下「准备登录」或「了解完毕」并完成转场后回调。
  *   宿主据此把引导标记为完成，并显示原有的登录界面。
  * @param onExit 用户在欢迎页再按返回时退出引导（不标记完成，下次启动仍会展示）。
  * @param pluginPrimitives 已启用插件声明的 kernel primitive 集合，
@@ -151,7 +151,7 @@ fun OnboardingFlow(
             // 用户刚在这里拒绝，连上网关时又会被弹一次——正是需求禁止的重复弹窗。
             if (id == "notifications") {
                 (context.applicationContext as? OpenAndroidIntelligenceApplication)
-                    ?.gatewayRuntime?.replyNotifications?.markPermissionRequested()
+                    ?.remoteRuntime?.replyNotifications?.markPermissionRequested()
             }
         }
         pendingPermissionId = null
@@ -356,16 +356,16 @@ fun OnboardingFlow(
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                    OnboardingStage.DEPLOYMENT -> DeploymentChoiceScreen(
+                    OnboardingStage.DEPLOYMENT -> RemoteConnectionChoiceScreen(
                         onAlreadyDeployed = ::beginReveal,
                         onNotDeployed = { onStageChange(OnboardingStage.GUIDE) },
                         onBack = { onStageChange(OnboardingStage.PERMISSIONS) },
                         modifier = Modifier.fillMaxSize(),
                     )
 
-                    OnboardingStage.GUIDE -> GatewayGuideScreen(
+                    OnboardingStage.GUIDE -> RemoteGuideScreen(
                         selectedGatewayId = state.lastGatewayId
-                            ?: GatewayTutorials.ALL.first().id,
+                            ?: "remote",
                         onSelectGateway = onGatewaySelected,
                         onDone = ::beginReveal,
                         onBack = { onStageChange(OnboardingStage.DEPLOYMENT) },
@@ -439,7 +439,7 @@ private fun manifestPermissionToEntryId(permission: String): String? = when (per
  * 转场期间显示的品牌标识。
  *
  * 只画「信号缝线 + 字标 + 一句说明」这三样登录页本来就有的东西，
- * 不复制登录表单——表单属于既有 [GatewayLoginScreen]，引导流程不重复实现。
+ * 不复制登录表单——表单属于既有 Remote 连接页，引导流程不重复实现。
  * 它由 [ButtonRevealTransition] 裁剪在扩展面内，所以视觉上是随展开一起长出来的。
  */
 @Composable

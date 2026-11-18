@@ -49,6 +49,8 @@ data class TimelineMessage(
     val executionSteps: List<NativeExecutionStep> = emptyList(),
     /** 仅端侧临时流式行设为 true；不能从真实 ID 的字符串形式猜测。 */
     val localPlaceholder: Boolean = false,
+    val reasoning: List<MessageReasoning> = emptyList(),
+    val isMeta: Boolean = false,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
@@ -611,8 +613,23 @@ interface AgentCommandCatalogRepository {
     suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog
 }
 
+/** 已提交文件只能在原端点、工作区、会话与授权主体下复用。连接身份仅约束未知 commit 的回执恢复。 */
+data class RemoteAttachmentUpload(
+    val authority: String,
+    val conversationId: String,
+    val uploadId: String,
+    val connectionId: String,
+    val connectionGeneration: Long,
+    val phase: RemoteAttachmentUploadPhase,
+    val sizeBytes: Long,
+    val sha256Hex: String,
+    val path: String? = null,
+    val name: String? = null,
+)
+enum class RemoteAttachmentUploadPhase { PREPARING, COMMIT_UNKNOWN, CONFIRMED }
+
 data class RecoveredAttachmentDraft(val draft: AttachmentDraft, val content: StagedAttachmentContent, val remoteId: String?,
-    val clientAttachmentId: String? = null)
+    val clientAttachmentId: String? = null, val remoteUpload: RemoteAttachmentUpload? = null)
 interface AttachmentDraftRecoveryStore {
     fun load(): List<RecoveredAttachmentDraft>
     fun save(records: List<RecoveredAttachmentDraft>)
@@ -656,18 +673,46 @@ interface ConversationMirrorStore {
  * server issued. Until an event carries it there is nothing to cancel, and the
  * UI must say so rather than invent an id or pretend the stop succeeded.
  */
+/** 同一次来源更新中的轮次身份和状态，界面不得从两个独立流拼接终态。 */
+data class GenerationSnapshot(val generationId: String?, val state: GenerationState, val conversationId: String? = null)
+
 interface GenerationTracker {
     val generationId: kotlinx.coroutines.flow.StateFlow<String?>
     val generationState:kotlinx.coroutines.flow.StateFlow<GenerationState>? get()=null
+    val generationSnapshot: kotlinx.coroutines.flow.StateFlow<GenerationSnapshot>? get()=null
 }
 
 data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,
-    val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long)
+    val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long,
+    val sourceVersion: String? = null)
 /** 正文权威提交后产生的媒体变更；没有单条修订的删除是永久屏障。 */
 data class HistoricalMediaTransition(val conversationId: String, val messageId: String, val revision: Long?,
     val attachmentIds: List<String>, val deleted: Boolean) {
     init { require(revision == null || revision >= 0); require(deleted || revision != null) }
 }
+/** 内容身份与已确认修订水位分离；只有同一修订域的水位才能比较。 */
+data class HistoricalMediaReferenceState(val contentVersion: String, val revisionDomain: String? = null, val highestRevision: Long? = null)
+
+/** 已认证的原件数据源；只解析服务端确认的附件引用，不接收任意 URL 或文件路径。 */
+interface HistoricalMediaSource {
+    fun checkCurrent()
+    /** 已认证历史引用的内容版本；补全下载数据不会改变版本。 */
+    fun referenceVersion(conversationId: String, attachmentId: String): String? = null
+    fun referenceState(conversationId: String, attachmentId: String): HistoricalMediaReferenceState? =
+        referenceVersion(conversationId, attachmentId)?.let { HistoricalMediaReferenceState(it) }
+    /** 已确认引用自带的完整性；缺少摘要时不能借此认领已有原件。 */
+    fun knownMetadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata? = null
+    fun observeReferenceVersions(observer: (String, String, String) -> Unit): AutoCloseable = AutoCloseable {}
+    /** 与新引用提交共用围栏，旧原件不能跨过更新后再发布。 */
+    fun <T> withReferenceVersion(conversationId: String, attachmentId: String, expected: String?, commit: () -> T): T {
+        check(referenceVersion(conversationId, attachmentId) == expected) { "REMOTE_MEDIA_REFERENCE_CHANGED" }
+        return commit()
+    }
+    /** 上游未声明摘要时 sha256 为空；持久缓存必须在完整读取后计算真实摘要。 */
+    suspend fun metadata(conversationId: String, attachmentId: String): HistoricalMediaMetadata
+    suspend fun consumeOriginal(metadata: HistoricalMediaMetadata, consume: (InputStream) -> Unit)
+}
+
 interface HistoricalMediaPort {
     /** 只从已持久消息的明确长度及摘要恢复旧原件，默认不认领未知来源。 */
     suspend fun restoreKnownOriginal(conversationId: String, attachmentId: String, sizeBytes: Long, sha256: String): Boolean = false

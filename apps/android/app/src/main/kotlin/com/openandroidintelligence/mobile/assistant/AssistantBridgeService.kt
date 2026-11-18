@@ -48,7 +48,7 @@ import java.util.UUID
  */
 class AssistantBridgeService : Service() {
     private val jobs = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val runtime get() = (application as OpenAndroidIntelligenceApplication).gatewayRuntime
+    private val runtime get() = (application as OpenAndroidIntelligenceApplication).remoteRuntime
 
     /** 一个客户端的会话与发布状态；全部字段只在主线程读写。 */
     private class Client(

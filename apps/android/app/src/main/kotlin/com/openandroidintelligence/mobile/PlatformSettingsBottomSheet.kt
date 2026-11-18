@@ -42,7 +42,7 @@ internal fun PlatformSettingsDrawer(
     open: Boolean,
     onDismiss: () -> Unit,
     environment: PlatformSettingsEnvironment,
-    runtime: GatewayRuntime,
+    runtime: LocalSettingsRuntime? = null,
     onRequestScreenCaptureAuthorization: () -> Unit,
     content: @Composable () -> Unit,
 ) {

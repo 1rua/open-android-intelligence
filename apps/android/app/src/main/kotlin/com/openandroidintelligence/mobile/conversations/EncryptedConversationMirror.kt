@@ -20,6 +20,19 @@ import com.openandroidintelligence.encrypted.store.AndroidKeystoreOutboxKeyProvi
 import java.io.File
 import java.util.UUID
 
+/** 本机镜像身份沿用既有安全字符范围；该约束不依赖网络协议或登录。 */
+private val MIRROR_ID_ALPHABET = Regex("[A-Za-z0-9._~-]{1,128}")
+
+/** 事件检查点是 SQLite 值中的不透明身份，不继承旧请求 ID 的路径字母表。 */
+private fun validEventCheckpoint(value: String): Boolean {
+    if (value.isBlank() || value.any(Char::isISOControl)) return false
+    return try {
+        Charsets.UTF_8.newEncoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            .encode(java.nio.CharBuffer.wrap(value)).remaining() <= 4096
+    } catch (_: java.nio.charset.CharacterCodingException) { false }
+}
+
 /** 加密范围包含 Gateway 身份；不同宿主的同名账号不会共用文档。 */
 class EncryptedConversationMirror(context: Context, private val scope: ConversationScope,
     keyProvider:com.openandroidintelligence.encrypted.store.AesGcmKeyProvider?=null,
@@ -69,7 +82,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             else -> error("MIRROR_CORRUPTED")
         }
         return PendingConversationManagementOperation(str(value,"requestId").also {
-            check(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
+            check(MIRROR_ID_ALPHABET.matches(it)) { "MIRROR_CORRUPTED" }
         }, intent)
     }
     private fun pendingManagementOperation(id: String): PendingConversationManagementOperation? =
@@ -182,6 +195,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
         "contentRevision" to m.contentRevision,"generationId" to m.generationId,"localPlaceholder" to m.localPlaceholder,
+        "isMeta" to m.isMeta,
+        "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
             "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt) })
@@ -190,6 +205,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
         JsonFields.string(o,"localSubmissionFailure"),JsonFields.long(o,"contentRevision"),JsonFields.string(o,"generationId"),
         localPlaceholder=JsonFields.bool(o,"localPlaceholder") ?: false,
+        reasoning=JsonFields.objects(o,"reasoning").map { block -> MessageReasoning(str(block,"id"), str(block,"text"),
+            JsonFields.int(block,"bodyOffset") ?: error("MIRROR_CORRUPTED"), JsonFields.bool(block,"complete") ?: error("MIRROR_CORRUPTED")) },
+        isMeta=JsonFields.bool(o,"isMeta") ?: false,
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
             str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
             com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
@@ -198,101 +216,8 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "size" to a.sizeBytes,"sha256" to a.sha256,"state" to a.state.name)
     private fun decodeAttachment(o: JsonValue.JObject) = AttachmentDraft(AttachmentDraftId(str(o,"id")),str(o,"name"),str(o,"mediaType"),
         JsonFields.long(o,"size") ?: 0L,str(o,"sha256"),AttachmentState.valueOf(str(o,"state")))
-    /** 只返回有真实 generation 关联或本机未确认提交的身份；普通宿主 user 行不构成受理凭据。 */
-    @Synchronized fun nativeRecoveryIdentities(conversationId: String): List<NativeRecoveryIdentity> {
-        val links = read("generation-facts")?.let(::messageGenerations).orEmpty()
-            .filter { it.conversationId == conversationId }.associateBy { it.messageId }
-        return loadSendAtoms(conversationId).filterNot { atom -> atom.isDeleted ||
-            atom.delivery == MessageDeliveryMode.STEER || atom.status in setOf(AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED) }
-            .mapNotNull { atom ->
-                val generation = (links[atom.clientMessageId.value] ?: links[atom.messageId])?.generationId
-                if (generation == null && atom.submissionState != LocalSubmissionState.OUTCOME_UNKNOWN) null
-                else NativeRecoveryIdentity(atom.clientMessageId.value, generation)
-            }
-    }
-
-    @Synchronized fun nativeCreation(requestId: String): NativeCreationReceipt? = read("native-creation:$requestId")?.let { value ->
-        NativeCreationReceipt(com.openandroidintelligence.gateway.agents.NativeAgentSession(str(value,"id"),
-            JsonFields.string(value,"title"),JsonFields.string(value,"updatedAt"),JsonFields.bool(value,"archived") == true),
-            str(value,"eventId"),JsonFields.long(value,"occurredAt") ?: error("MIRROR_CORRUPTED"))
-    }
-
-    /** 权威创建与列表增量同事务保存；通知尚未投递时重启仍能用原 requestId 读取。 */
-    @Synchronized fun commitNativeCreation(requestId: String, receipt: NativeCreationReceipt) {
-        documents.transaction {
-            val session = receipt.session
-            val existing = nativeCreation(requestId)
-            check(existing == null || existing.session.id == session.id) { "NATIVE_CREATE_IDENTITY_CONFLICT" }
-            documents.write("native-creation:$requestId", encode(mapOf("id" to session.id,"title" to session.title,
-                "updatedAt" to session.updatedAt,"archived" to session.archived,
-                "eventId" to receipt.eventId,"occurredAt" to receipt.occurredAt)))
-            val current = threads().orEmpty()
-            if (current.none { it.id.value == session.id } && !isConversationDeleted(session.id)) {
-                saveThreads(current + ConversationSummary(ConversationId(session.id), session.title?.takeIf(String::isNotBlank) ?: "",
-                    receipt.occurredAt, session.archived))
-            }
-        }
-        documents.flush()
-    }
-
     @Synchronized fun commitNativeEvents(events: List<VerifiedConversationEvent>) {
         documents.transaction { events.forEach(::apply) }
-        documents.flush()
-    }
-
-    @Synchronized fun nativeApprovals(conversationId: String): List<com.openandroidintelligence.gateway.agents.NativeEventApproval> =
-        read("native-approvals:$conversationId")?.let { saved ->
-            JsonFields.objects(saved, "items").map { item ->
-                com.openandroidintelligence.gateway.agents.NativeEventApproval(str(item, "type"), obj(JsonFields.field(item, "approval")))
-            }
-        }.orEmpty()
-
-    @Synchronized fun commitNativeApprovals(conversationId: String,
-        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>) {
-        documents.transaction { saveNativeApprovals(conversationId, approvals) }
-        documents.flush()
-    }
-
-    private fun saveNativeApprovals(conversationId: String,
-        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>) {
-        val retained = nativeApprovals(conversationId).toMutableList()
-        for (approval in approvals) {
-            val id = str(approval.approval, "approvalId")
-            check(str(approval.approval, "conversationId") == conversationId) { "NATIVE_APPROVAL_SCOPE_MISMATCH" }
-            val resolved = retained.any { str(it.approval, "approvalId") == id && it.type == "approval_resolved" }
-            if (approval.type == "approval_requested" && resolved) continue
-            retained.removeAll { str(it.approval, "approvalId") == id && it.type == approval.type }
-            retained += approval
-        }
-        documents.write("native-approvals:$conversationId", encode(mapOf("items" to retained.map {
-            mapOf("type" to it.type, "approval" to it.approval)
-        })))
-    }
-
-    private fun nativeSyncKey(observer: String, conversationId: String) =
-        "native-event-sync:" + SqliteConversationRecords.digest(Json.canonical(Json.of(listOf(observer, conversationId))))
-
-    @Synchronized fun nativePendingAck(observer: String, conversationId: String): String? =
-        read(nativeSyncKey(observer, conversationId))?.let { JsonFields.string(it, "pending") }
-    @Synchronized fun nativeEventCursor(observer: String, conversationId: String): String? =
-        read(nativeSyncKey(observer, conversationId))?.let { JsonFields.string(it, "cursor") }
-
-    @Synchronized fun commitNativePage(observer: String, conversationId: String, events: List<VerifiedConversationEvent>,
-        approvals: List<com.openandroidintelligence.gateway.agents.NativeEventApproval>, cursor: String) {
-        documents.transaction {
-            events.forEach(::apply)
-            saveNativeApprovals(conversationId, approvals)
-            documents.write(nativeSyncKey(observer, conversationId), encode(mapOf(
-                "cursor" to nativeEventCursor(observer, conversationId), "pending" to cursor)))
-        }
-        documents.flush()
-    }
-
-    @Synchronized fun confirmNativeAck(observer: String, conversationId: String, cursor: String) {
-        documents.transaction {
-            check(nativePendingAck(observer, conversationId) == cursor) { "NATIVE_EVENT_OWNER_CHANGED" }
-            documents.write(nativeSyncKey(observer, conversationId), encode(mapOf("cursor" to cursor)))
-        }
         documents.flush()
     }
 
@@ -476,7 +401,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             parts=if (snapshotDeleted || tombstone != null) emptyList() else if (content.contentRevision >= 0L) content.parts else content.parts.ifEmpty { existing.parts },
             contentRevision=contentRevision,tombstoneRevision=tombstone,snapshotDeleted=snapshotDeleted,status=status.status,statusRevision=status.statusRevision,
             errorCode=status.errorCode,submissionState=submission,
-            submissionErrorCode=if (submission == LocalSubmissionState.FAILED) incoming.submissionErrorCode else null,
+            // 仅保留本次明确提交的“prompt 未发送、附件结果未知”事实；空值必须消费旧许可。
+            submissionErrorCode=when {
+                submission == LocalSubmissionState.FAILED -> incoming.submissionErrorCode
+                submission == LocalSubmissionState.OUTCOME_UNKNOWN &&
+                    incoming.submissionErrorCode?.startsWith("REMOTE_ATTACHMENT_MESSAGE_NOT_SENT:") == true -> incoming.submissionErrorCode
+                else -> null
+            },
         )
     }
 
@@ -832,11 +763,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
     }
     fun loadCursor(accountId: String): String? {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        return read("cursor")?.let { JsonFields.string(it,"value") }
+        return read("cursor")?.let { document -> JsonFields.string(document,"value")?.also {
+            check(validEventCheckpoint(it)) { "MIRROR_CORRUPTED" }
+        } }
     }
     fun saveCursor(accountId: String,cursor: String) {
         require(accountId == scope.accountId) { "MIRROR_SCOPE_MISMATCH" }
-        require(com.openandroidintelligence.gateway.http.GatewayHttpClient.CURSOR_ALPHABET.matches(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
+        require(validEventCheckpoint(cursor)) { "SNAPSHOT_BASELINE_INVALID" }
         documents.transaction { documents.write("cursor",encode(mapOf("value" to cursor))) }
     }
     fun clearCursor(accountId: String) {
@@ -1072,6 +1005,7 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     private var lastStreamingPersistAtNanos: Long? = null
     override val generationId get()=(delegate as GenerationTracker).generationId
     override val generationState get()=(delegate as GenerationTracker).generationState
+    override val generationSnapshot get()=(delegate as GenerationTracker).generationSnapshot
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {

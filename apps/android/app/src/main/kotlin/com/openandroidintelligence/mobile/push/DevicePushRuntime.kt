@@ -1,6 +1,8 @@
 package com.openandroidintelligence.mobile.push
 
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.control.remote.ControlOperation
+import com.openandroidintelligence.control.remote.RemoteControlPrincipal
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.kernel.SmsScopeMatcher
 import com.openandroidintelligence.kernel.SmsScopeMode
@@ -32,6 +34,8 @@ class DevicePushRuntime(
     private var state = store.load()
     private var loggedIn = false
     private var loginEpoch = 0L
+    private var remoteAccount: Triple<String,String,Long>? = null
+    private var remoteOnly = false
     private var healthy = true
     private val startedElapsed = clock.elapsedMs()
     private val startedEpoch = maxOf(clock.epochMs(), state.observedAtEpochMs)
@@ -61,6 +65,14 @@ class DevicePushRuntime(
         snapshotLocked()
     }
 
+    /** 仅配置与白名单参与授权摘要，入队、固定reader或ACK清理不会伪装成用户撤销。 */
+    internal fun authorizationDigest(): String = synchronized(lock) {
+        checkHealthy()
+        val bytes=PushStateCodec.encode(PushStoredState(state.installationId,configuration=state.configuration,authorizationGeneration=state.authorizationGeneration))
+        try { "sha256:"+java.security.MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) } }
+        finally { bytes.fill(0) }
+    }
+
     fun configure(configuration: PushConfiguration, expectedConfiguration: PushConfiguration? = null): PushSnapshot {
         val cancellations: List<ActiveAttempt>
         val notifyCleanup: Boolean
@@ -88,7 +100,9 @@ class DevicePushRuntime(
             }
             var next = state.copy(configuration = nextConfig, events = events, revokedDeliveries = state.revokedDeliveries + revoked,
                 smsCursor = state.smsCursor,
-                revocations = mergeRevocations(state.revocations, remoteRevocations))
+                revocations = mergeRevocations(state.revocations, remoteRevocations),
+                remoteRecipients = if (nextConfig == state.configuration) state.remoteRecipients else emptyMap(),
+                authorizationGeneration = if (nextConfig == state.configuration) state.authorizationGeneration else nextAuthorizationGeneration())
             next = prune(next, now)
             // Never silently evict unacknowledged data to save a smaller capacity setting.
             require(next.events.size <= nextConfig.maxEvents && queueBudgetSize(next) <= nextConfig.maxQueueBytes) {
@@ -139,10 +153,29 @@ class DevicePushRuntime(
         if (hasLoggedInAccount) wakeWork()
     }
 
+    /** Remote 单活动账号的持久代次变化会取消旧尝试，但不改投已经入队的目标。 */
+    fun onRemoteAccountChanged(origin: String?, accountId: String?, epoch: Long?) {
+        val next=if (origin != null && accountId != null && epoch != null) Triple(origin,accountId,epoch) else null
+        synchronized(lock) {
+            if (remoteOnly && remoteAccount == next) return
+            val changed=remoteOnly
+            remoteOnly=true;remoteAccount=next
+            val remaining=state.remoteRecipients.filterKeys { endpoint -> endpoint.remoteTarget?.let {
+                next == Triple(it.origin,it.accountId,it.accountEpoch)
+            } == true }
+            if (changed || remaining != state.remoteRecipients) commit(state.copy(remoteRecipients=if (changed) emptyMap() else remaining,authorizationGeneration=if (changed) nextAuthorizationGeneration() else state.authorizationGeneration))
+        }
+        onLoginStateChanged(next != null)
+    }
+
+    private fun accountPermits(endpoint: PushEndpoint): Boolean = !remoteOnly || endpoint.remoteTarget?.let {
+        remoteAccount == Triple(it.origin,it.accountId,it.accountEpoch)
+    } == true
+
     fun isCollectionAllowed(kind: PushKind): Boolean = synchronized(lock) {
         healthy && loggedIn && systemAccess.isGranted(kind) && when (kind) {
-            PushKind.NOTIFICATION -> state.configuration.notifications.let { it.enabled && it.endpoints.isNotEmpty() && it.scope.packageIds.isNotEmpty() }
-            PushKind.SMS -> state.configuration.sms.let { it.enabled && it.endpoints.isNotEmpty() &&
+            PushKind.NOTIFICATION -> state.configuration.notifications.let { it.enabled && it.endpoints.any(::accountPermits) && it.scope.packageIds.isNotEmpty() }
+            PushKind.SMS -> state.configuration.sms.let { it.enabled && it.endpoints.any(::accountPermits) &&
                 SmsScopeMatcher.hasConditions(it.scope.mode, it.scope.senderAddresses, it.scope.keywords) }
         }
     }
@@ -166,9 +199,11 @@ class DevicePushRuntime(
             record["body"] = notification.body
         }
         // Changes to a notification get distinct IDs; reconnecting the same OS record does not.
+        val eligible=settings.endpoints.filterTo(linkedSetOf(),::accountPermits)
+        if (eligible.isEmpty()) return@synchronized PushCaptureResult(PushCaptureStatus.DISABLED)
         enqueue(PushKind.NOTIFICATION, notification.postedAtEpochMs, listOf(
             notification.packageName, notification.notificationKey, notification.postedAtEpochMs, notification.title, notification.body,
-        ), record, settings.endpoints)
+        ), record, eligible)
     }.also { if (it.status == PushCaptureStatus.ENQUEUED) wakeWork() }
 
     fun onSms(sms: PushSms, expectedScope: SmsPushScope? = null): PushCaptureResult = synchronized(lock) {
@@ -195,8 +230,10 @@ class DevicePushRuntime(
             SmsScopeMatcher.matchingKeywords(sms.body, settings.scope.keywords) + sms.matchedKeywords.filter { matched ->
                 settings.scope.keywords.any { it.equals(matched, ignoreCase = true) }
             } else emptySet()
+        val eligible=settings.endpoints.filterTo(linkedSetOf(),::accountPermits)
+        if (eligible.isEmpty()) return@synchronized PushCaptureResult(PushCaptureStatus.DISABLED)
         enqueue(PushKind.SMS, sms.receivedAtEpochMs, listOf(sms.providerId, sms.receivedAtEpochMs, sms.subscriptionId),
-            record, settings.endpoints, PushSmsCursor(sms.providerId, sms.receivedAtEpochMs), proof)
+            record, eligible, PushSmsCursor(sms.providerId, sms.receivedAtEpochMs), proof)
     }.also { if (it.status == PushCaptureStatus.ENQUEUED) wakeWork() }
 
     fun smsCursor(): PushSmsCursor? = synchronized(lock) { checkHealthy(); state.smsCursor }
@@ -215,6 +252,167 @@ class DevicePushRuntime(
         maintainLocked()
         snapshotLocked()
     }
+
+    /** 在主动通知前原子保存防重栅栏；崩溃后只等待原事件的ACK，不能重发prompt。 */
+    internal fun prepareRemoteDelivery(delivery: PushDelivery): RemotePushDispatch = synchronized(lock) {
+        checkHealthy()
+        check(delivery.endpoint.remoteTarget != null && authorized(delivery,loginEpoch)) { "PUSH_AUTHORIZATION_CHANGED" }
+        state.remoteReceipts.values.firstOrNull { it.endpoint == delivery.endpoint && it.eventId == delivery.event.eventId }?.let {
+            return@synchronized RemotePushDispatch(it,false)
+        }
+        val id="delivery_"+java.util.UUID.randomUUID().toString().replace("-","")
+        val record=RemotePushReceiptRecord(id,delivery.endpoint,delivery.event.eventId,Json.sha256(Json.parse(delivery.event.payloadJson)),
+            delivery.event.expiresAtEpochMs,kind=delivery.event.kind)
+        val events=state.events.map { queued -> if (queued.event.eventId != record.eventId) queued
+            else queued.copy(targets=queued.targets+(delivery.endpoint to id)) }
+        commit(state.copy(events=events,remoteReceipts=state.remoteReceipts+(id to record)))
+        RemotePushDispatch(record,true)
+    }
+
+    internal fun remoteReceipt(deliveryId: String): RemotePushReceiptRecord? = synchronized(lock) {
+        checkHealthy();state.remoteReceipts[deliveryId]?.takeIf { it.expiresAt > now() }
+    }
+
+    /** 消费已移除队列行，但回执交付仍须服从当前账号、系统权限、范围与目标白名单。 */
+    internal fun consumedReceiptCurrent(delivery: PushDelivery,deliveryId: String): Boolean = synchronized(lock) {
+        healthy && loggedIn && accountPermits(delivery.endpoint) && systemAccess.isGranted(delivery.event.kind) &&
+            delivery.endpoint in endpoints(state.configuration,delivery.event.kind) && now() < delivery.event.expiresAtEpochMs &&
+            state.remoteRecipients[delivery.endpoint]?.let { it.active && it.configurationDigest == authorizationDigest() } == true &&
+            state.remoteReceipts[deliveryId]?.let { it.consumed && it.endpoint == delivery.endpoint && it.eventId == delivery.event.eventId &&
+                it.kind == delivery.event.kind } == true
+    }
+
+    internal fun remoteDispatchState(deliveryId: String,next: String) = synchronized(lock) {
+        checkHealthy()
+        require(next in setOf("dispatched","accepted","outcome_unknown"))
+        val receipt=state.remoteReceipts[deliveryId] ?: error("PUSH_DELIVERY_NOT_FOUND")
+        if (!receipt.consumed) commit(state.copy(remoteReceipts=state.remoteReceipts+(deliveryId to receipt.copy(dispatchState=next))))
+    }
+
+    internal fun revokeRemoteReceipts(revocation: PushRevocation) = synchronized(lock) {
+        checkHealthy()
+        check(state.events.none { it.event.eventId in revocation.eventIds && revocation.endpoint in it.targets }) { "PUSH_REVOCATION_NOT_COMMITTED" }
+        val remaining=state.remoteReceipts.filterValues { it.endpoint != revocation.endpoint || it.eventId !in revocation.eventIds }
+        if (remaining != state.remoteReceipts) commit(state.copy(remoteReceipts=remaining))
+    }
+
+    /** 无授权时只生成本机确认上下文；公开引用或同账号来访不会写入收件绑定。 */
+    internal fun recipientApproval(operation: ControlOperation.Delivery,reader: RemoteControlPrincipal): RemotePushRecipientApproval? = synchronized(lock) {
+        val receipt=verifyRemoteReceipt(operation.deliveryId,operation.eventId,operation.payloadDigest,reader)
+        requireRemoteEnabled(receipt)
+        val existing=state.remoteRecipients[receipt.endpoint]
+        if (existing?.active == true) {
+            check(existing.principalKey == reader.storageKey && existing.configurationDigest == authorizationDigest()) { "PUSH_RECIPIENT_MISMATCH" }
+            return@synchronized null
+        }
+        check(!operation.acknowledge && !receipt.consumed) { "PUSH_RECIPIENT_CONFIRMATION_REQUIRED" }
+        RemotePushRecipientApproval(receipt.deliveryId,receipt.eventId,receipt.payloadDigest,receipt.endpoint,reader,authorizationDigest())
+    }
+
+    /** pending不授信；authority复核后的active提交是本机批准的线性化点。 */
+    internal fun approveRemoteRecipient(approval: RemotePushRecipientApproval,requireCurrent: () -> Unit) = synchronized(lock) {
+        requireCurrent()
+        check(authorizationDigest() == approval.configurationDigest) { "PUSH_AUTHORIZATION_CHANGED" }
+        val receipt=verifyRemoteReceipt(approval.deliveryId,approval.eventId,approval.payloadDigest,approval.reader)
+        check(receipt.endpoint == approval.endpoint && !receipt.consumed) { "PUSH_RECEIPT_SCOPE_MISMATCH" }
+        requireRemoteEnabled(receipt)
+        val binding=RemotePushRecipientBinding(approval.reader.storageKey,approval.configurationDigest)
+        val old=state.remoteRecipients[approval.endpoint]
+        check(old?.active != true || old == binding) { "PUSH_RECIPIENT_MISMATCH" }
+        if (old == binding) return@synchronized
+        // 先持久化不授信的候选。崩溃或后续复核失败时无需依赖回滚写入恢复安全。
+        commit(state.copy(remoteRecipients=state.remoteRecipients+(approval.endpoint to binding.copy(active=false))))
+        requireCurrent()
+        check(authorizationDigest() == approval.configurationDigest) { "PUSH_AUTHORIZATION_CHANGED" }
+        requireRemoteEnabled(receipt)
+        // 同锁串行于本机撤销和账号/配置代次变更。此提交成功即批准完成；
+        // 此后的外部断连由每次调用的current门禁拒绝，不对成功许可做后验回滚。
+        commit(state.copy(remoteRecipients=state.remoteRecipients+(approval.endpoint to binding)))
+    }
+
+    internal fun revokeRemoteRecipients() = synchronized(lock) {
+        checkHealthy()
+        commit(state.copy(remoteRecipients=emptyMap(),authorizationGeneration=nextAuthorizationGeneration()))
+    }
+
+    /** 身份失效只撤销收件许可，原目标配置、事件和未ACK回执保持原归属。 */
+    internal fun invalidateRemoteRecipients(targetCurrent: (RemotePushTarget) -> Boolean) = synchronized(lock) {
+        checkHealthy()
+        val remaining=state.remoteRecipients.filterKeys { it.remoteTarget?.let(targetCurrent) == true }
+        if (remaining != state.remoteRecipients) commit(state.copy(remoteRecipients=emptyMap(),authorizationGeneration=nextAuthorizationGeneration()))
+    }
+
+    /** 读取只绑定原事件的实际收件主体，不等同消费。 */
+    internal fun readRemoteDelivery(deliveryId: String,eventId: String,payloadDigest: String,reader: RemoteControlPrincipal,
+        requireCurrent: () -> Unit = {}): String = synchronized(lock) {
+        requireCurrent()
+        val receipt=requireRemoteRecipient(deliveryId,eventId,payloadDigest,reader)
+        check(!receipt.consumed) { "PUSH_ALREADY_CONSUMED" }
+        val queued=state.events.firstOrNull { it.event.eventId == eventId && receipt.endpoint in it.targets } ?: error("PUSH_DELIVERY_REVOKED")
+        check(receipt.readerKey == null || receipt.readerKey == reader.storageKey) { "PUSH_RECEIPT_READER_MISMATCH" }
+        if (receipt.readerKey == null) commit(state.copy(remoteReceipts=state.remoteReceipts+(deliveryId to receipt.copy(readerKey=reader.storageKey))))
+        requireCurrent()
+        queued.event.payloadJson
+    }
+
+    /** ACK与删除唯一正文在同一个加密状态提交中完成；重复ACK只返回原消费状态。 */
+    internal fun acknowledgeRemoteDelivery(deliveryId: String,eventId: String,payloadDigest: String,reader: RemoteControlPrincipal,
+        requireCurrent: () -> Unit = {}): RemotePushReceiptRecord = synchronized(lock) {
+        requireCurrent()
+        val receipt=requireRemoteRecipient(deliveryId,eventId,payloadDigest,reader)
+        check(receipt.readerKey == reader.storageKey) { "PUSH_RECEIPT_READER_MISMATCH" }
+        if (receipt.consumed) return@synchronized receipt
+        val events=state.events.mapNotNull { row ->
+            if (row.event.eventId != eventId) row else (row.targets-receipt.endpoint).takeIf { it.isNotEmpty() }?.let { row.copy(targets=it) }
+        }
+        val consumed=receipt.copy(consumed=true)
+        commit(state.copy(events=events,remoteReceipts=state.remoteReceipts+(deliveryId to consumed)))
+        requireCurrent()
+        consumed
+    }
+
+    /** 缓冲历史、流和产物出队时复核，不通过再次读取来制造隐含授权或重复副作用。 */
+    internal fun requireRemoteDeliveryContent(operation: ControlOperation.Delivery,reader: RemoteControlPrincipal) = synchronized(lock) {
+        val receipt=requireRemoteRecipient(operation.deliveryId,operation.eventId,operation.payloadDigest,reader)
+        check(receipt.readerKey == reader.storageKey && (operation.acknowledge || !receipt.consumed)) { "PUSH_DELIVERY_CONTENT_UNAVAILABLE" }
+    }
+
+    internal fun remoteDeliveryEnabled(operation: ControlOperation.Delivery,reader: RemoteControlPrincipal): Boolean = synchronized(lock) {
+        runCatching { requireRemoteEnabled(verifyRemoteReceipt(operation.deliveryId,operation.eventId,operation.payloadDigest,reader)) }.isSuccess
+    }
+
+    private fun nextAuthorizationGeneration(): Long {
+        check(state.authorizationGeneration < Long.MAX_VALUE) { "PUSH_AUTHORIZATION_GENERATION_EXHAUSTED" }
+        return state.authorizationGeneration+1
+    }
+
+    private fun requireRemoteRecipient(id: String,eventId: String,digest: String,reader: RemoteControlPrincipal): RemotePushReceiptRecord {
+        val receipt=verifyRemoteReceipt(id,eventId,digest,reader)
+        requireRemoteEnabled(receipt)
+        val binding=state.remoteRecipients[receipt.endpoint]
+        check(binding != null && binding.active && binding.principalKey == reader.storageKey && binding.configurationDigest == authorizationDigest()) { "PUSH_RECIPIENT_CONFIRMATION_REQUIRED" }
+        return receipt
+    }
+
+    private fun requireRemoteEnabled(receipt: RemotePushReceiptRecord) {
+        val queued=state.events.firstOrNull { it.event.eventId == receipt.eventId && receipt.endpoint in it.targets }
+        val kind=receipt.kind ?: queued?.event?.kind ?: error("PUSH_LEGACY_RECEIPT_AUTHORIZATION_REQUIRED")
+        check(loggedIn && accountPermits(receipt.endpoint) && systemAccess.isGranted(kind) && receipt.endpoint in endpoints(state.configuration,kind)) { "PUSH_AUTHORIZATION_CHANGED" }
+        if (!receipt.consumed) {
+            check(queued != null && authorized(PushDelivery(queued.event,receipt.endpoint),loginEpoch)) { "PUSH_DELIVERY_REVOKED" }
+        }
+    }
+
+    private fun verifyRemoteReceipt(id: String,eventId: String,digest: String,reader: RemoteControlPrincipal): RemotePushReceiptRecord {
+        checkHealthy()
+        val receipt=state.remoteReceipts[id] ?: error("PUSH_DELIVERY_NOT_FOUND")
+        val target=receipt.endpoint.remoteTarget ?: error("PUSH_REMOTE_TARGET_REQUIRED")
+        check(receipt.eventId == eventId && receipt.payloadDigest == digest && receipt.expiresAt > now() && accountPermits(receipt.endpoint) &&
+            reader.origin.value == target.origin && reader.accountId == target.accountId && reader.hostDeviceId == target.phoneHostDeviceId &&
+            reader.hostKeyFingerprint == target.phoneHostKeyFingerprint) { "PUSH_RECEIPT_SCOPE_MISMATCH" }
+        return receipt
+    }
+
 
     /** One bounded drain, with no internal polling loop or implicit authentication fallback. */
     suspend fun deliver(
@@ -310,6 +508,9 @@ class DevicePushRuntime(
             (pendingId != null && receipt.deliveryId != pendingId)
         ) return AttemptOutcome.RETRY
         return synchronized(lock) {
+            // 接收者可能在prompt RPC回执之前已经消费；正文已经原子清理，不能要求旧队列行仍存在。
+            if (receipt.state == PushReceiptState.CONSUMED && epoch == loginEpoch &&
+                consumedReceiptCurrent(delivery,receipt.deliveryId)) return@synchronized AttemptOutcome.ACKNOWLEDGED
             if (!authorized(delivery, epoch)) return@synchronized AttemptOutcome.SKIPPED
             val queued = state.events.first { it.event.eventId == delivery.event.eventId }
             val targets = queued.targets.toMutableMap()
@@ -378,6 +579,7 @@ class DevicePushRuntime(
             observedAtEpochMs = now,
             events = events,
             seen = value.seen.filterValues { it > now },
+            remoteReceipts=value.remoteReceipts.filterValues { it.expiresAt > now },
             expiredEvents = value.expiredEvents + value.events.size - events.size,
             revocations = mergeRevocations(value.revocations, value.events.filter { it.retentionDeadlineEpochMs <= now }.flatMap { queued ->
                 queued.targets.keys.map { it to queued.event.eventId }
@@ -385,7 +587,7 @@ class DevicePushRuntime(
         )
     }
 
-    private fun authorized(delivery: PushDelivery, epoch: Long): Boolean = healthy && loggedIn && epoch == loginEpoch &&
+    private fun authorized(delivery: PushDelivery, epoch: Long): Boolean = healthy && loggedIn && epoch == loginEpoch && accountPermits(delivery.endpoint) &&
         systemAccess.isGranted(delivery.event.kind) &&
         now() < delivery.event.expiresAtEpochMs && delivery.endpoint in endpoints(state.configuration, delivery.event.kind) &&
         state.events.any { it.event.eventId == delivery.event.eventId && delivery.endpoint in it.targets &&
@@ -415,9 +617,12 @@ class DevicePushRuntime(
     private fun now() = maxOf(clock.epochMs(), state.observedAtEpochMs,
         startedEpoch + (clock.elapsedMs() - startedElapsed).coerceAtLeast(0))
 
-    // Reserve receipt space before admission, so HTTP acceptance cannot overflow the queue.
+    // 提前预留真实目标与收件元数据；防重栅栏写入不能挤掉未确认正文。
     private fun receiptReserve(value: PushStoredState): Int = value.events.sumOf { queued ->
-        queued.targets.values.sumOf { id -> if (id == null) 516 else 512 - id.toByteArray().size }
+        queued.targets.entries.sumOf { (endpoint,id) ->
+            (if (id == null) 516 else 512-id.toByteArray().size) +
+                (if (id == null) endpoint.remoteTarget?.let { Json.canonical(it.encode()).toByteArray().size+768 } ?: 0 else 0)
+        }
     }
 
     // Cleanup metadata has an independent bounded reserve; disabling cannot be rejected because

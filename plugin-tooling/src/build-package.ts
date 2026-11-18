@@ -40,6 +40,10 @@ export type BuiltPackage = {
  */
 export async function buildPackage(options: BuildOptions): Promise<BuiltPackage> {
   const { manifest, baseDirectory, privateKey } = options;
+  const compatibility = manifest.compatibility;
+  if (compatibility == null || typeof compatibility !== "object" ||
+      Object.keys(compatibility).length !== 1 || typeof compatibility.androidHost !== "string" ||
+      !compatibility.androidHost.trim()) throw new Error("MANIFEST_COMPATIBILITY_INVALID");
   validatePluginId(manifest.plugin.id);
   validatePaths(baseDirectory);
 

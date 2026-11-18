@@ -9,6 +9,8 @@ data class LocalGrantContext(
     val accountId: String,
     val pairingId: String,
     val correlationId: String,
+    /** 宿主给本次调用铸造的最终执行检查器，不能从远端参数解码。 */
+    val beforeSystemEffect: ((ByteArray) -> Unit)? = null,
 )
 
 /**
@@ -19,6 +21,8 @@ data class LocalGrantContext(
  */
 interface KernelPrimitiveProvider {
     val primitiveId: String
+    /** 本机确认前后使用的系统目标快照；不含收件人或正文。 */
+    fun confirmationBinding(input: ByteArray): String? = null
     /** Read-only diagnostic. Null means available; execution still rechecks every local gate. */
     fun availability(): String? = null
     suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray

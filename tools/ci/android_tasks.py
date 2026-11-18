@@ -81,7 +81,6 @@ ALWAYS_TASKS = ["noVpnSurfaceCheck", ":app:compileFullDebugKotlin"]
 PLAY_TESTS = [
     ":app:testPlayDebugUnitTest",
     "--tests=SettingsResponsiveHostRegressionTest",
-    "--tests=ScreenExecutionErrorsTest",
     "--tests=ScreenCapabilityPresentationTest",
     "--tests=ScreenCaptureSystemConsentTest",
     "--tests=ScreenControlConfirmationDialogTest",
@@ -91,16 +90,13 @@ PLAY_TESTS = [
     # reports BUILT_IN_CHANNEL_UNSUPPORTED. The class skips under the Full
     # variant, so listing it in the Full manifest does not cover this.
     "--tests=BuiltInCapabilitiesTest",
-    "--tests=CapabilityPublisherTest",
     "--tests=ApplicationCompositionTest",
     "--tests=AndroidApiCompatibilityTest",
-    "--tests=CoreAgentConversationRepositoryTest",
-    "--tests=ColdStartConnectionTest",
-    "--tests=AccountSwitchPersistenceFailureTest",
+    "--tests=RemoteRuntimeTest",
+    "--tests=RemoteLocalEntryPointsTest",
+    "--tests=LocalProfileStoreTest",
     "--tests=IndependentConnectionDiscoveryTest",
-    "--tests=AdditionalDeviceConnectionsTest",
     "--tests=SettingsViewModelTest",
-    "--tests=NativeEventDeletionPersistenceTest",
 ]
 
 

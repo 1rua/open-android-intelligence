@@ -2,16 +2,11 @@ package com.openandroidintelligence.mobile
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.openandroidintelligence.conversation.data.GatewayEventDecoder
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
-import com.openandroidintelligence.gateway.events.GatewayEvent
-import com.openandroidintelligence.gateway.conversations.GatewayTimelineMessage
-import com.openandroidintelligence.gateway.conversations.MessagePart as WireMessagePart
-import com.openandroidintelligence.gateway.schema.Json
-import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.conversation.ports.TimelineMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,7 +14,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import com.openandroidintelligence.ui.resources.R as UiR
-import java.time.Instant
 
 internal enum class NativeConversationStatus {
     QUEUED, RUNNING, COMPLETED, FAILED, CANCELLED, ENDED, DISCONNECTED;
@@ -267,7 +261,7 @@ internal class NativeConversationNotifications(
     @Synchronized fun reconcile(
         expected: NotificationReconciliationRequest,
         currentGeneration: Pair<String, String>?,
-        messages: List<GatewayTimelineMessage>,
+        messages: List<TimelineMessage>,
     ): Boolean {
         val before = expected.session
         val target = before.target
@@ -276,29 +270,29 @@ internal class NativeConversationNotifications(
         if (current != before) return false
         val key = RoundKey(target, before.generationId)
         val observed = replies[key]
-        val userIndex = userMessages[key]?.let { id -> messages.indexOfLast { it.messageId == id && it.sender == "user" } } ?: -1
-        val replyIndex = observed?.let { reply -> messages.indexOfLast { it.messageId == reply.messageId && it.sender == "assistant" } } ?: -1
+        val userIndex = userMessages[key]?.let { id -> messages.indexOfLast { it.id == id && it.sender == "user" } } ?: -1
+        val replyIndex = observed?.let { reply -> messages.indexOfLast { it.id == reply.messageId && it.sender == "assistant" } } ?: -1
         val first = when {
             userIndex >= 0 -> userIndex + 1
             replyIndex >= 0 -> replyIndex
-            else -> messages.indexOfFirst { (it.timestamp ?: 0L) >= (startedAt[key] ?: Long.MAX_VALUE) }
+            else -> messages.indexOfFirst { it.timestamp >= (startedAt[key] ?: Long.MAX_VALUE) }
         }
         val finalReply = if (first < 0) null else messages.drop(first).takeWhile { it.sender != "user" }
             .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
         val snapshotCompleted = finalReply?.state?.uppercase() in setOf("CONFIRMED", "COMPLETED")
-        val snapshotText = finalReply?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-            ?.ifBlank { if (finalReply.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+        val snapshotText = finalReply?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
+            ?.ifBlank { if (finalReply.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
         val snapshotRevision = finalReply?.contentRevision
         val canApplyBody = finalReply != null && !snapshotText.isNullOrBlank() && when {
             observed == null -> true
-            finalReply.messageId != observed.messageId -> replyIndex >= 0 && messages.indexOf(finalReply) >= replyIndex ||
-                (finalReply.timestamp ?: 0L) > observed.occurredAt
+            finalReply.id != observed.messageId -> replyIndex >= 0 && messages.indexOf(finalReply) >= replyIndex ||
+                finalReply.timestamp > observed.occurredAt
             snapshotRevision != null && snapshotRevision != observed.revision -> snapshotRevision > observed.revision
             else -> snapshotCompleted && !observed.completed || snapshotText.length >= observed.text.length
         }
         if (canApplyBody) {
-            replies[key] = ReplySnapshot(finalReply!!.messageId, snapshotText!!, finalReply.contentRevision ?: observed?.revision ?: 0L,
-                maxOf(finalReply.timestamp ?: 0L, observed?.occurredAt ?: 0L), completed = snapshotCompleted)
+            replies[key] = ReplySnapshot(finalReply!!.id, snapshotText!!, finalReply.contentRevision ?: observed?.revision ?: 0L,
+                maxOf(finalReply.timestamp, observed?.occurredAt ?: 0L), completed = snapshotCompleted)
         }
         if (currentGeneration == null) {
             // Idle attests only that work ended. It cannot distinguish a
@@ -351,14 +345,14 @@ internal class NativeConversationNotifications(
                 val newerUsers = if (anchorIndex >= 0) messages.drop(anchorIndex + 1).filter { it.sender == "user" } else emptyList()
                 if (newerUsers.size == 1) {
                     val user = newerUsers.single()
-                    userMessages[remoteKey] = user.messageId
-                    user.timestamp?.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
+                    userMessages[remoteKey] = user.id
+                    user.timestamp.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
                     val body = messages.drop(messages.indexOf(user) + 1).takeWhile { it.sender != "user" }
                         .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
-                    val text = body?.parts?.filterIsInstance<WireMessagePart.Text>()?.joinToString("\n") { it.text }
-                        ?.ifBlank { if (body.parts.any { it is WireMessagePart.AttachmentRef }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+                    val text = body?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
+                        ?.ifBlank { if (body.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
                     if (body != null && !text.isNullOrBlank()) {
-                        replies[remoteKey] = ReplySnapshot(body.messageId, text, body.contentRevision ?: 0L, body.timestamp ?: 0L,
+                        replies[remoteKey] = ReplySnapshot(body.id, text, body.contentRevision ?: 0L, body.timestamp,
                             completed = body.state.uppercase() in setOf("CONFIRMED", "COMPLETED"))
                     }
                 }
@@ -372,14 +366,13 @@ internal class NativeConversationNotifications(
         return true
     }
 
-    @Synchronized fun accept(profileId: String, accountId: String, event: GatewayEvent) {
+    @Synchronized fun accept(input: NativeNotificationInput) {
+        val target = input.target
+        val profileId = target.profileId
+        val accountId = target.accountId
         if (activeProfile != profileId || activeAccount != accountId) return
-        if (event.event !in EVENTS) return
-        val body = runCatching { JsonFields.obj(Json.parse(event.data)) }.getOrNull() ?: return
-        if (JsonFields.string(body, "accountId")?.let { it != accountId } == true) return
-        val payload = JsonFields.obj(JsonFields.field(body, "payload")) ?: return
-        val conversationId = JsonFields.string(payload, "conversationId")?.takeIf { it.isNotBlank() } ?: return
-        val occurredAt = JsonFields.string(body, "occurredAt")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() } ?: return
+        val occurredAt = input.occurredAt
+        val decoded = input.event
         val preferences = preferencesFor(profileId, accountId)
         val observerKey = "$profileId\u0000$accountId"
         // Construction persists the first-use cutoff before even the first frame
@@ -389,19 +382,13 @@ internal class NativeConversationNotifications(
         }
         val firstEnabled = preferences.getLong("first-enabled-at", 0L)
         if (occurredAt < now() - RETENTION || firstEnabled > 0L && occurredAt < firstEnabled - 300_000L) return
-        // 原生 /agents 会话的 ID 只在某个 Agent 内唯一；不带 Agent 身份会把两个
-        // Agent 的同名会话合并成同一个通知与气泡。
-        val agentId = JsonFields.string(payload, "agentId")?.takeIf { it.isNotBlank() }
-        val target = ReplyNotificationTarget(profileId, accountId, conversationId, agentId)
         val deletedKey = "realtime.deleted." + replyDigest(target.identityKey())
-        if (event.event == "conversation.deleted" || event.event == "conversation.updated" && JsonFields.bool(payload, "deleted") == true) {
+        if (input.kind == NativeNotificationKind.CONVERSATION_DELETED) {
             retireTarget(target, occurredAt)
             return
         }
-        if (event.event == "conversation.updated") return
         if (target in deletedTargets || preferences.contains(deletedKey)) return
-        val generation = JsonFields.string(payload, "generationId")?.takeIf { it.isNotBlank() }
-        val decoded = runCatching { GatewayEventDecoder.decode(event) }.getOrNull() ?: return
+        val generation = input.generationId
         if (decoded is VerifiedConversationEvent.TitleUpdated) {
             _sessions.value.firstOrNull { it.target == target }?.let {
                 val title = decoded.newTitle.trim().take(80).ifBlank { sessionTitle(target) }
@@ -421,9 +408,12 @@ internal class NativeConversationNotifications(
         val knownRound = startedAt.containsKey(roundKey)
         val terminal = terminalRounds[roundKey]
         val refinesRecoveredOutcome = knownRound && terminal == NativeConversationStatus.ENDED &&
-            event.event in setOf("conversation.message.status", "conversation.generation.cancelled")
+            input.kind in setOf(NativeNotificationKind.MESSAGE_STATUS, NativeNotificationKind.GENERATION_CANCELLED)
         val alreadyFinished = durableKey != null && (preferences.contains("done.$durableKey") || preferences.contains("realtime.terminal.$durableKey"))
-        val seenKey = event.id?.takeIf { it.isNotBlank() }?.let { "realtime.event." + replyDigest(it) }
+        // 不同端点可以使用完全相同的原生事件 ID，去重也必须包含端点归属。
+        val seenKey = input.eventId.takeIf { it.isNotBlank() }?.let {
+            "realtime.event." + replyDigest(if (input.endpointId == null) it else "${target.identityKey()}\u0000$it")
+        }
         val seen = seenKey != null && (metadata[observerKey]?.changes?.containsKey(seenKey) == true || preferences.contains(seenKey))
         val message = (decoded as? VerifiedConversationEvent.TimelineUpsert)?.message
         // 修订围栏同样要带 Agent：两个 Agent 的同名会话可能有相同的消息 ID，
@@ -451,8 +441,8 @@ internal class NativeConversationNotifications(
         val olderPreview = message != null && previousReply != null && when {
             message.id != previousReply.messageId -> occurredAt < previousReply.occurredAt
             revision != null && revision > previousReply.revision -> false
-            event.event == "conversation.message.completed" && !previousReply.completed -> false
-            previousReply.completed && terminal != null && event.event == "conversation.message.delta" && revision == previousReply.revision -> true
+            input.kind == NativeNotificationKind.REPLY_COMPLETED && !previousReply.completed -> false
+            previousReply.completed && terminal != null && input.kind == NativeNotificationKind.REPLY_DELTA && revision == previousReply.revision -> true
             else -> occurredAt < previousReply.occurredAt
         }
         val staleUnknownRound = previous != null && occurredAt < previous.updatedAt && round != previous.generationId && !knownRound
@@ -461,7 +451,7 @@ internal class NativeConversationNotifications(
         // Durable fences block replay after process death. In this process an
         // observed round may still receive a newer authoritative final body.
         if (!seen && (!alreadyFinished || knownRound && message != null || refinesRecoveredOutcome) && !staleRevision && !olderPreview) {
-            if (statusEvent != null || event.event == "conversation.generation.cancelled" || message != null && isPublicAssistantPayload(payload)) {
+            if (statusEvent != null || input.kind == NativeNotificationKind.GENERATION_CANCELLED || message != null) {
                 lastObservedAt[target] = now()
                 forcedReconciliation.remove(target)
                 reconciliationDueAt.remove(target)
@@ -484,28 +474,28 @@ internal class NativeConversationNotifications(
             var next = previous ?: NativeConversationSession(target, round, sessionTitle(target), NativeConversationStatus.RUNNING, updatedAt = occurredAt)
             startedAt.putIfAbsent(roundKey, occurredAt)
             titleFor(target)?.trim()?.takeIf { it.isNotBlank() }?.let { next = next.copy(title = it.take(80)) }
-            when (event.event) {
-                "conversation.message.delta", "conversation.message.completed" -> {
+            when (input.kind) {
+                NativeNotificationKind.REPLY_DELTA, NativeNotificationKind.REPLY_COMPLETED -> {
                     val unambiguous = generation != null || previous?.generationId == null || previous.generationId.startsWith("legacy:")
-                    if (message != null && unambiguous && isPublicAssistantPayload(payload)) {
+                    if (message != null && unambiguous) {
                         val text = message.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
                             .ifBlank { if (message.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
                         // 发送流与事件页可用不同 eventId 转发同一终稿；终态正文没有
                         // 变化时不能重发用户已经处理的通知，完成观察器仍接收原事实。
-                        val repeatedFinal = terminal != null && event.event == "conversation.message.completed" &&
+                        val repeatedFinal = terminal != null && input.kind == NativeNotificationKind.REPLY_COMPLETED &&
                             previousReply?.completed == true && previousReply.messageId == message.id &&
                             previousReply.revision == (revision ?: 0L) && previousReply.text == text
                         if (text.isNotBlank() && !repeatedFinal) {
-                            replies[roundKey] = ReplySnapshot(message.id, text, revision ?: 0L, occurredAt, event.event == "conversation.message.completed")
+                            replies[roundKey] = ReplySnapshot(message.id, text, revision ?: 0L, occurredAt, input.kind == NativeNotificationKind.REPLY_COMPLETED)
                             if (terminal == null && round != null) activeRounds.getOrPut(target) { linkedMapOf() }[round] = NativeConversationStatus.RUNNING
                             next = next.copy(generationId = round, status = terminal ?: NativeConversationStatus.RUNNING, latestReply = text,
                                 lastOutcome = terminal, updatedAt = maxOf(next.updatedAt, occurredAt))
                             if (terminal != null) next = withRemainingRounds(next)
-                            update(next, terminal = false, force = terminal != null || event.event == "conversation.message.completed")
+                            update(next, terminal = false, force = terminal != null || input.kind == NativeNotificationKind.REPLY_COMPLETED)
                         }
                     }
                 }
-                "conversation.message.status" -> {
+                NativeNotificationKind.MESSAGE_STATUS -> {
                     val status = decoded as? VerifiedConversationEvent.MessageStatus
                     if (status != null) {
                         userMessages[roundKey] = status.messageId
@@ -539,13 +529,14 @@ internal class NativeConversationNotifications(
                     }
                     }
                 }
-                "conversation.generation.cancelled" -> finish(next.copy(generationId = round, status = NativeConversationStatus.CANCELLED,
+                NativeNotificationKind.GENERATION_CANCELLED -> finish(next.copy(generationId = round, status = NativeConversationStatus.CANCELLED,
                     latestReply = replies[roundKey]?.text.orEmpty(), updatedAt = maxOf(next.updatedAt, occurredAt)), durableKey)
+                else -> Unit
             }
         }
-        if (event.event != "conversation.message.delta") flushMetadata(observerKey)
+        if (input.kind != NativeNotificationKind.REPLY_DELTA) flushMetadata(observerKey)
         deliveryOccurredAt = occurredAt
-        observer.accept(event)
+        observer.accept(input)
     }
 
     @Synchronized private fun complete(target: ReplyNotificationTarget, generationId: String) {
@@ -554,8 +545,11 @@ internal class NativeConversationNotifications(
         val previous = _sessions.value.firstOrNull { it.target == target }
         val terminalAt = deliveryOccurredAt.takeIf { it > 0L } ?: now()
         terminalRounds[RoundKey(target, generationId)] = NativeConversationStatus.COMPLETED
-        val next = withRemainingRounds((previous ?: NativeConversationSession(target, generationId, sessionTitle(target), NativeConversationStatus.COMPLETED, updatedAt = terminalAt))
-            .copy(generationId = generationId, status = NativeConversationStatus.COMPLETED,
+        val currentTitle = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+            ?: previous?.title?.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
+            ?: sessionTitle(target)
+        val next = withRemainingRounds((previous ?: NativeConversationSession(target, generationId, currentTitle, NativeConversationStatus.COMPLETED, updatedAt = terminalAt))
+            .copy(generationId = generationId, title = currentTitle, status = NativeConversationStatus.COMPLETED,
                 latestReply = replies[RoundKey(target, generationId)]?.text.orEmpty(), lastOutcome = NativeConversationStatus.COMPLETED,
                 updatedAt = maxOf(previous?.updatedAt ?: 0L, terminalAt)))
         update(next, terminal = !recovered, force = true)
@@ -569,14 +563,20 @@ internal class NativeConversationNotifications(
         // Publish only after the terminal commit also covers preceding buffered
         // event/revision guards; a crash in publish must not revive those deltas.
         flushMetadata("${session.target.profileId}\u0000${session.target.accountId}")
-        if (key != null) preferences.edit().putLong("realtime.terminal.$key", session.updatedAt)
-            .commitOrLog("NativeConversationNotifications")
+        if (key != null) {
+            val editor = preferences.edit().putLong("realtime.terminal.$key", session.updatedAt)
+            if (alert) editor.putLong("done.$key", session.updatedAt)
+            editor.commitOrLog("NativeConversationNotifications")
+        }
         terminalRounds[RoundKey(session.target, session.generationId)] = session.status
         reconciliationPending += session.target
         reconciliationDeadlines[session.target] = now() + FINAL_RECONCILIATION_WINDOW
         reconciliationDueAt[session.target] = now()
         reconciliationAttemptCounts[session.target] = 0
-        update(withRemainingRounds(session.copy(lastOutcome = session.status)),
+        val finalTitle = titleFor(session.target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+            ?: session.title.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
+            ?: sessionTitle(session.target)
+        update(withRemainingRounds(session.copy(title = finalTitle, lastOutcome = session.status)),
             terminal = alert && RoundKey(session.target, session.generationId) !in recoveredRounds, force = true)
     }
 
@@ -667,13 +667,13 @@ internal class NativeConversationNotifications(
     }
 
     private fun sessionTitle(target: ReplyNotificationTarget): String = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
-        ?: context.getString(UiR.string.notif_conv_fallback_title_format, target.conversationId.takeLast(12))
+        ?: context.getString(UiR.string.notif_conv_default_title)
 
     companion object {
         private const val FINAL_RECONCILIATION_WINDOW = 120_000L
         private const val ACTIVE_RECONCILIATION_INTERVAL = 15_000L
         private const val RETENTION = 7L * 24 * 60 * 60 * 1000
         private const val MAINTENANCE_INTERVAL = 30L * 60 * 1000
-        private val EVENTS = setOf("conversation.message.delta", "conversation.message.completed", "conversation.message.status", "conversation.generation.cancelled", "conversation.title.updated", "conversation.updated", "conversation.deleted")
+
     }
 }

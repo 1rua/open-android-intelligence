@@ -32,8 +32,29 @@ for (batch in runtime.pendingRevocations()) {
 - `pendingRevocations()` 返回独立的有界批次；接收批次之后新增的撤回 ID 不会被旧批次确认清除。
 - `acknowledgeRevocation(batch)` 只删除该稳定端点、该批事件 ID，重复确认返回 `false`。
 - 新事件入队预留收据及撤回元数据空间。清理元数据有独立硬上限，不依赖用户设置的正文容量。
-- 新格式为 v4，读取 v1/v2/v3；迁移保留原事件、正文、稳定 ID、逐端收据、短信游标、撤回账本和原过期时间。v1/v2 没有撤回账本，读为清理队列为空，不重置待发送队列；旧明确关闭的 allSenders 空范围仍不放行。未来未知版本拒绝读取，不能用默认配置替换。
+- 新格式为 v6，读取 v1–v5；保留原事件、正文、稳定 ID、逐端收据、短信游标、撤回账本和原过期时间。v5 tokenHash/readerKey仅保存审计，不继承收件许可。v1/v2 没有撤回账本，读为清理队列为空，不重置待发送队列；旧明确关闭的 allSenders 空范围仍不放行。未来未知版本拒绝读取，不能用默认配置替换。
 - 本地损坏、写失败和并发写入冲突停止出站，不生成替换密钥解读已有数据。
+
+## Remote取件与消费
+
+生产继续使用同一安装的 `device-push-v1` 文件及 `oai_device_push_v1` key alias；不能新建空Remote库。
+Remote目标保存完整账号epoch、手机Client/pin、目标Host/pin、手机Virtual Host/pin、backend/workspace/session。
+账号epoch不是端点租约，Remote `generation=null`；旧Core真实generation只在旧接口中保留。
+
+当前精确会话只接收非秘密delivery引用，普通prompt不包含token或正文。首次MCP取件由本机可信确认
+展示认证来访设备与完整目标，批准后持久绑定target→principal；同账号和公开引用本身不授权，
+也不将手机主动Client误当桌面来访Client。后续自动取件仍受本机独立推送范围、系统权限及急停约束。
+配置、账号或身份变化撤销旧绑定；正常手动切换只改变可用性，保留原队列且不改投。
+
+只有同一已读取主体的精确事件ACK推进CONSUMED；读取、prompt受理及turn结束均不消费。
+ACK清理原子提交，未知结果不重发通知，缓冲历史与结果交付时重新复核授权。
+
+
+本机收件绑定采用两阶段持久提交：候选`pending`不授信，保存候选后复核原认证连接和本机授权代次；
+随后与本机撤销/配置/账号变更同锁串行的`active`加密提交，是批准生效点。候选后崩溃、写失败或
+复核失败，重启仍拒绝取件并允许重新本机确认，不依赖后续回滚写入恢复安全。成功提交的许可可在
+正常重启后保留；提交后的外部断连由每次访问的当前连接检查拒绝，不宣称与网络断连跨系统原子。
+短信与通知分别允许32个目标，持久收件绑定按合法并集最多64个读取和写入，不缩小用户配置。
 
 ## 范围选择与实际过滤
 
@@ -68,35 +89,13 @@ for (batch in runtime.pendingRevocations()) {
 - 主动推送继续使用独立的 observer/runtime 范围和登录核验，不取决于被动 MANUAL 批准。
 - 使用普通 Application 的通知 HTTP 测试也要显式安装测试登录回调，并在结束时恢复默认拒绝。
 
-不启动 Gradle验证当前通知 service/session/source 编译与纯 JVM 行为：
-
-```sh
-python3 apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/run_push_unit_tests.py --notification-sources
-```
-
-证据写入 `apps/android/notification-collector/build/source-standalone-verification/`，不写 Gradle 报告。测试覆盖退出后不执行 raw factory、正文提取/系统快照期间退出不交付、登录恢复、门槛异常及主动/被动策略独立；不执行系统服务生命周期或 Manifest 验收。
-
 ## 验证与边界
 
-不启动 Gradle、只复用已有工具链及编译好的支持模块，可从仓库根运行：
-
-```sh
-python3 apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/run_push_unit_tests.py
-```
-
-该脚本重新编译当前 runtime/codec/transport 和 JVM 测试，输出到 `apps/android/app/build/push-standalone-verification/`，不修改 Gradle 测试报告。它不执行 Compose、Android 系统事件源或真机测试。
-
-真实 Core HTTP 撤回顺序测试：
-
-```sh
-PYTHONPATH=oai-core/src ../../.toolchains/approval-python/bin/python -m pytest -q \
-  -c oai-core/pyproject.toml \
-  apps/android/app/src/test/kotlin/com/openandroidintelligence/mobile/push/test_core_push_revocation.py
-```
-
-此命令复用仓库现有的真实 Core、签名客户端、隔离账号及接收端测试基础设施，不使用设备个人数据，也不能替代 Android 到 Core 的整机验收。Python 路径是当前工作树相对既有工具链的位置。
-
-撤回协议还必须阻止“撤回先到、原投递后到”重新暂存正文：Core 需为明确撤回的事件 ID 留有界撤销标记，并在实际提交前校验。该条件由独立顺序测试验证；是否通过必须看最新测试输出，不能仅凭 HTTP 撤回返回成功宣称完成。
+推送使用独立 Remote 连接与手机接收确认，不再依赖旧 Core `/v2/push`。
+PR 的 `push-notifications` 分组实际执行 `RemotePushTransportTest`、
+`RemotePushRecipientAuthorizationTest`、`RemotePushAuthorizationProtocolTest` 与持久队列测试。
+手机接收端、授权撤销、确认签名和丢失确认后的重投分别使用生产入口验证。
+完整测试由 `npm run test:pr` / `npm run test:full` 选择；隔离回归不代表真实 Host 或手机设备已验收。
 
 系统时钟回拨和进程重启不会直接清空未确认队列，也不会重写原事件的到期时间。
-运行期按单调时间与持久观察锚维护过期，重投保留原事件与内容摘要；实际长期断电与跨重启时钟漂移仍受Android可观察时钟限制。
+运行期按单调时间与持久观察锚维护过期，重投保留原事件与内容摘要；实际长期断电与跨重启时钟漂移仍受 Android 可观察时钟限制。

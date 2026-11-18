@@ -75,13 +75,15 @@ internal class StreamingDecorationState {
     private var notifiedBatch = Long.MIN_VALUE
     private var batchEnteredAt = 0L
 
+    fun currentClockMillis(): Long = maxOf(SystemClock.uptimeMillis(), frameMillis)
+
     fun update(document: StreamingMarkdownDocument, next: StreamingTextPresentation) {
         this.document = document
         val changed = next.batchId != presentation.batchId
         val changedPolicy = next.active != presentation.active || next.reduceMotion != presentation.reduceMotion
         presentation = next
         if (changed) {
-            batchEnteredAt = SystemClock.uptimeMillis()
+            batchEnteredAt = currentClockMillis()
             pendingHapticBatch = next.batchId
         }
         if (changed && next.sourceRevealEnd <= next.sourceRevealStart) {
@@ -138,7 +140,7 @@ internal class StreamingDecorationState {
         if (batchId != current.batchId || batchId == notifiedBatch) return
         notifiedBatch = batchId
         if (current.sourceRevealEnd <= current.sourceRevealStart ||
-            SystemClock.uptimeMillis() - batchEnteredAt > 200L) return
+            currentClockMillis() - batchEnteredAt > 200L) return
         val host = container?.takeIf { it.isAttached } ?: return
         val window = host.boundsInWindow()
         if (window.width <= 0f || window.height <= 0f) return
@@ -199,7 +201,9 @@ fun StreamingMarkdownContainer(
         var previousTime = 0L
         do {
             withFrameNanos { frame ->
-                val now = SystemClock.uptimeMillis()
+                val wallNow = SystemClock.uptimeMillis()
+                val frameDelta = if (previousTime == 0L) 0L else ((frame - previousTime) / 1_000_000L).coerceIn(0L, 100L)
+                val now = maxOf(wallNow, state.frameMillis + frameDelta)
                 val target = state.target()?.first
                 val current = state.cursorPosition
                 val changedText = state.previousBatch != state.presentation.batchId
@@ -232,7 +236,7 @@ fun StreamingMarkdownContainer(
                 if (state.batches.removeAll { now - it.enteredAt >= TextFadeMillis }) state.expireFades()
                 if (now - state.trailStarted >= CursorTrailMillis) state.trailOrigin = null
             }
-        } while (state.hasAnimation(SystemClock.uptimeMillis()))
+        } while (state.hasAnimation(state.currentClockMillis()))
     }
     CompositionLocalProvider(
         LocalStreamingDecoration provides state,
@@ -252,7 +256,7 @@ fun StreamingMarkdownContainer(
                 val height = target.second
                 val trail = state.trailOrigin
                 if (trail != null && !state.presentation.reduceMotion) {
-                    val age = ((SystemClock.uptimeMillis() - state.trailStarted).toFloat() / CursorTrailMillis).coerceIn(0f, 1f)
+                    val age = ((state.currentClockMillis() - state.trailStarted).toFloat() / CursorTrailMillis).coerceIn(0f, 1f)
                     val distance = position - trail
                     val scale = minOf(1f, height * 2.5f / distance.getDistance().coerceAtLeast(1f))
                     val start = position - distance * scale * (1f - age)
@@ -309,7 +313,7 @@ internal fun streamingAtomicModifier(
         state.frameMillis
         val batch = state.batches.lastOrNull { source.start in it.sourceStart until it.sourceEnd }
         alpha = if (state.presentation.reduceMotion || batch == null) 1f else {
-            val age = ((SystemClock.uptimeMillis() - batch.enteredAt).toFloat() / TextFadeMillis).coerceIn(0f, 1f)
+            val age = ((state.currentClockMillis() - batch.enteredAt).toFloat() / TextFadeMillis).coerceIn(0f, 1f)
             0.45f + 0.55f * age
         }
     }
@@ -358,7 +362,7 @@ internal fun streamingTextModifier(
             state.frameMillis
             if (state.presentation.reduceMotion) return@drawWithContent
             val measured = layout ?: return@drawWithContent
-            val now = SystemClock.uptimeMillis()
+            val now = state.currentClockMillis()
             fadingPaths.keys.retainAll(state.batches.toSet())
             state.batches.forEach { batch ->
                 val age = ((now - batch.enteredAt).toFloat() / TextFadeMillis).coerceIn(0f, 1f)

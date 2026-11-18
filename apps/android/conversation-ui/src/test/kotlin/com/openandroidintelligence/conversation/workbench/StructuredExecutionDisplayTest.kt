@@ -225,8 +225,8 @@ class StructuredExecutionDisplayTest {
         assertEquals(liveRun.steps.single().stepKey, historyRun.steps.single().stepKey)
         assertEquals("完整工具结果", (historyRun.steps.single() as ExecutionStep.ToolCall).block.output)
         assertEquals(2, historyItems.size)
-        assertEquals(history, (historyItems[1] as TimelineDisplayItem.Single).entry,
-            "真实来源消息的合法正文仍须独立保留")
+        assertEquals(history.copy(executionSteps = emptyList()), (historyItems[1] as TimelineDisplayItem.Single).entry,
+            "真实来源消息的合法正文仍须独立保留，且已由执行段消费的步骤不重复下发")
         assertFalse(historyRun.hasFinalAnswer)
     }
 

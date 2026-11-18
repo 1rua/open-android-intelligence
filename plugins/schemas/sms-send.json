@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "description": "经本机确认后通过指定订阅发送短信。sent 仅表示全部分段收到系统发送成功回调，不表示收件人已送达；缺失回执或中断为 outcome_unknown，禁止自动重发。",
+  "additionalProperties": false,
+  "required": ["subscriptionId", "recipient", "text"],
+  "properties": {
+    "subscriptionId": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "recipient": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 65535
+    }
+  }
+}

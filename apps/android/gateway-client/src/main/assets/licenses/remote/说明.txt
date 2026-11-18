@@ -1,0 +1,13 @@
+Remote 原生基础的随包许可证原文
+
+本目录位于 gateway-client 的 main assets，参与 Android library 与最终应用的资产合并；不是仅测试资源。
+所有许可证和版权原文保留上游语言，来源及摘要见 sources.json。
+
+1. dsh-remote-MIT.txt：固定 DSH Remote 上游的 MIT；覆盖移植/改写的 RTCH、串行发送等代码来源。
+2. noise-java-MIT.txt：signalapp/noise-java 0.1.1 的 MIT。
+3. webrtc-sdk-wrapper-MIT.txt：webrtc-sdk/android 固定发布包装代码的 MIT。
+4. webrtc-native-and-third-party.txt：同一固定发布包装仓库提供的 WebRTC BSD 与第三方 notices 汇编。
+5. webrtc-LICENSE.txt / webrtc-PATENTS.txt / webrtc-AUTHORS.txt：WebRTC 官方 M150 分支固定提交原文。
+
+AAR 二进制与官方 native 源码提交的精确映射、最终 APK 资产与全部第三方义务仍需发布审查；
+放入这些原文不意味着运行兼容或许可证合规已全部完成。不得从本目录推断全部内容统一为 MIT。

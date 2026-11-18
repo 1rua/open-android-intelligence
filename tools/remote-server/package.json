@@ -1,0 +1,12 @@
+{
+  "name": "oai-fixed-remote-server-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ws": "8.21.3",
+    "zod": "4.6.7"
+  },
+  "scripts": {
+    "test": "node --test version-policy.test.mjs"
+  }
+}
