@@ -1,9 +1,0 @@
-{
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "urn:open-android-intelligence:protocol:v1:versions-registry",
-    "type": "object", "required": ["$schema", "registry_id", "protocol_version", "versions"],
-    "properties": {
-        "$schema": { "const": "urn:open-android-intelligence:protocol:v1:versions-registry" }, "registry_id": { "const": "urn:open-android-intelligence:protocol:v1:registry:versions" }, "protocol_version": { "const": "1.0" },
-        "versions": { "const": [{ "version": "1.0", "negotiable": true }, { "version": "0.9", "negotiable": false, "fixture_owner": "Task7" }] }
-    }, "unevaluatedProperties": false
-}

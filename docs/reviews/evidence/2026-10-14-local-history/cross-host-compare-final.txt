@@ -1,3 +1,0 @@
-
- RUN  v4.1.10 /mnt/data/projects/open-android-intelligence
-
