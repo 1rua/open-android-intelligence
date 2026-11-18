@@ -9,12 +9,12 @@ avd_name=oai-local-first-20261103
 port=5562
 
 export JAVA_HOME="${JAVA_HOME:-$toolchains/jdk-21-extract/jbrsdk_jcef-21.0.10-linux-x64-b1163.110}"
-export ANDROID_HOME="${ANDROID_HOME:-$toolchains/android-sdk}"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export ANDROID_USER_HOME="$runtime_dir/android-user"
-export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
-export ANDROID_ADB_SERVER_PORT=5038
-export ADB_SERVER_PORT=5038
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$toolchains/android-sdk}}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+export ANDROID_USER_HOME="${ANDROID_USER_HOME:-$runtime_dir/android-user}"
+export ANDROID_AVD_HOME="${ANDROID_AVD_HOME:-$ANDROID_USER_HOME/avd}"
+export ADB_SERVER_PORT="${ADB_SERVER_PORT:-5038}"
+export ANDROID_ADB_SERVER_PORT="${ANDROID_ADB_SERVER_PORT:-$ADB_SERVER_PORT}"
 export TMPDIR="$runtime_dir/tmp"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 mkdir -p "$ANDROID_AVD_HOME" "$TMPDIR"

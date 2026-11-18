@@ -14,9 +14,9 @@ if [[ ${actual_patch%% *} != "$expected_patch" ]]; then
 fi
 
 export JAVA_HOME="${JAVA_HOME:-$toolchains/jdk-21-extract/jbrsdk_jcef-21.0.10-linux-x64-b1163.110}"
-export ANDROID_HOME="${ANDROID_HOME:-$toolchains/android-sdk}"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
-export ANDROID_USER_HOME="$toolchains/android-user-home"
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$toolchains/android-sdk}}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+export ANDROID_USER_HOME="${ANDROID_USER_HOME:-$toolchains/android-user-home}"
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$toolchains/gradle-user-home}"
 export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 export OAI_GIT_COMMIT="$baseline_ref"

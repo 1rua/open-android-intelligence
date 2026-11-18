@@ -14,9 +14,10 @@ import time
 ROOT = Path(__file__).resolve().parents[4]
 EVIDENCE = ROOT / "docs/reviews/evidence/2026-11-03-android-local-first-sync"
 TOOLS = Path(__file__).resolve().parent
-SERIAL = "127.0.0.1:5563"
-ADB = ["adb", "-P", "5038", "-s", SERIAL]
-ENV = {**os.environ, "ANDROID_ADB_SERVER_PORT": "5038", "ADB_SERVER_PORT": "5038"}
+SERIAL = os.environ.get("ADB_SERIAL", "127.0.0.1:5563")
+ADB_SERVER_PORT = os.environ.get("ADB_SERVER_PORT", "5038")
+ADB = ["adb", "-P", ADB_SERVER_PORT, "-s", SERIAL]
+ENV = {**os.environ, "ANDROID_ADB_SERVER_PORT": ADB_SERVER_PORT, "ADB_SERVER_PORT": ADB_SERVER_PORT}
 WANTED = {"timeline.opened", "timeline.local_read", "timeline.first_draw", "timeline.remote_synced"}
 
 
@@ -128,13 +129,20 @@ def collect_log(stream, destination):
 
 
 def main():
+    global SERIAL, ADB_SERVER_PORT, ADB, ENV
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("memory", "local", "remote"), required=True)
     parser.add_argument("--group", choices=("baseline", "candidate"), required=True)
     parser.add_argument("--apk-sha256", required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--count", type=int, default=20)
+    parser.add_argument("--serial", default=SERIAL, help="目标设备或模拟器序列号（默认读取 ADB_SERIAL 或 127.0.0.1:5563）")
+    parser.add_argument("--adb-port", default=ADB_SERVER_PORT, help="ADB Server 端口（默认读取 ADB_SERVER_PORT 或 5038）")
     args = parser.parse_args()
+    SERIAL = args.serial
+    ADB_SERVER_PORT = str(args.adb_port)
+    ADB = ["adb", "-P", ADB_SERVER_PORT, "-s", SERIAL]
+    ENV = {**os.environ, "ANDROID_ADB_SERVER_PORT": ADB_SERVER_PORT, "ADB_SERVER_PORT": ADB_SERVER_PORT}
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", args.label) or not re.fullmatch(r"[0-9a-f]{64}", args.apk_sha256):
         parser.error("invalid label or APK digest")
     if not 1 <= args.count <= 23:
