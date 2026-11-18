@@ -6,12 +6,19 @@ set -euo pipefail
 # ==============================================================================
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+TOOLCHAINS_ROOT="${OAI_TOOLCHAINS_ROOT:-$PROJECT_ROOT/.toolchains}"
 export LC_ALL="C.UTF-8"
 export LANG="C.UTF-8"
-export PATH="$HOME/.local/bin:$PROJECT_ROOT/.toolchains/android-sdk/platform-tools:$PROJECT_ROOT/.toolchains/android-sdk/cmdline-tools/latest/bin:$PATH"
-export ANDROID_HOME="$PROJECT_ROOT/.toolchains/android-sdk"
-export ANDROID_SDK_ROOT="$ANDROID_HOME"
+if [[ -n "${JAVA_HOME:-}" ]]; then
+    export JAVA_HOME
+elif [[ -d "$TOOLCHAINS_ROOT/jdk-21-extract/jbrsdk_jcef-21.0.10-linux-x64-b1163.110" ]]; then
+    export JAVA_HOME="$TOOLCHAINS_ROOT/jdk-21-extract/jbrsdk_jcef-21.0.10-linux-x64-b1163.110"
+fi
+export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$TOOLCHAINS_ROOT/android-sdk}}"
+export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
 export ANDROID_USER_HOME="${ANDROID_USER_HOME:-/tmp/android-user-home}"
+ANDROID_CLI_BIN="${ANDROID_CLI_BIN:-$(command -v android || echo "$HOME/.local/bin/android")}"
+export PATH="${JAVA_HOME:+$JAVA_HOME/bin:}$(dirname "$ANDROID_CLI_BIN"):$HOME/.local/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 mkdir -p "$ANDROID_USER_HOME"
 
 echo "=== [1/5] Checking Toolchain & Binaries ==="
@@ -19,10 +26,12 @@ echo "Java Version:"
 java -version 2>&1 | head -n 2
 
 echo "Android CLI:"
-if command -v android &>/dev/null; then
+if [ -x "$ANDROID_CLI_BIN" ]; then
+    "$ANDROID_CLI_BIN" --version 2>/dev/null || echo "android CLI present"
+elif command -v android &>/dev/null; then
     android --version 2>/dev/null || echo "android CLI present"
 else
-    echo "WARNING: 'android' command not in PATH!"
+    echo "WARNING: 'android' command not in PATH (ANDROID_CLI_BIN=$ANDROID_CLI_BIN)!"
 fi
 
 echo "ADB Version:"

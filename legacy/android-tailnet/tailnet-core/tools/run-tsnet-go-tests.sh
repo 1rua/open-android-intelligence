@@ -13,14 +13,11 @@
 # diagnostics and failure output go to stderr.
 set -euo pipefail
 
-export PATH='/usr/sbin:/usr/bin:/bin'
-
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../../.." && pwd)"
-GO_BIN='/usr/sbin/go'
-export GOROOT='/usr/lib/go'
-export GOPATH='/home/djbd/go'
-toolchains="$repo_root/.toolchains"
+GO_BIN="${GO_BIN:-$(command -v go || echo /usr/bin/go)}"
+export PATH="$(dirname "$GO_BIN"):/usr/sbin:/usr/bin:/bin"
+toolchains="${OAI_TOOLCHAINS_ROOT:-$repo_root/.toolchains}"
 wrapper_dir="$repo_root/apps/android/tailnet-core/native/tsnetbridge"
 staged_source="$toolchains/tsnet-src-v1.98.10"
 build_root="$toolchains/tsnet-go-test"
@@ -32,6 +29,17 @@ fail() { printf 'TSNET_GO_TESTS_BLOCKED: %s\n' "$1" >&2; exit 2; }
 [[ -f "$staged_source/source-metadata.json" ]] || fail "staged source has no source-metadata.json"
 [[ -f "$wrapper_dir/go.mod.template" ]] || fail "go.mod.template missing"
 [[ -f "$wrapper_dir/go.sum" ]] || fail "go.sum missing"
+
+# 在隔离 HOME 前优先继承或推导 GOPATH，并仅在未显式设置 GOROOT 且目标存在时按 go env GOROOT 推导
+export GOPATH="${GOPATH:-${HOME}/go}"
+if [[ -z "${GOROOT:-}" ]]; then
+  detected_goroot="$("$GO_BIN" env GOROOT 2>/dev/null || true)"
+  if [[ -n "$detected_goroot" && -d "$detected_goroot" ]]; then
+    export GOROOT="$detected_goroot"
+  fi
+else
+  export GOROOT
+fi
 
 export HOME="$toolchains/tsnet-home"
 export TMPDIR="$toolchains/tsnet-tmp"

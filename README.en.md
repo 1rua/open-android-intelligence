@@ -12,7 +12,7 @@ Chat with your self-hosted AI assistants from your phone anytime—and let them 
 <p>
   <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat-square&label=Release&color=D94E1F" alt="Latest Release"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/Android-12%2B-10B981?style=flat-square&logo=android&logoColor=white" alt="Android 12+"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.11%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.12%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="MIT License"></a>
 </p>
 
@@ -85,10 +85,12 @@ If you want to explore the codebase, tweak a feature, or build a custom phone pl
 open-android-intelligence/
 ├── apps/android/                  # 📱 Android App source code (Kotlin + Jetpack Compose)
 │   ├── app/                       #    Main APK: chat UI, pairing, settings & permission switches
+│   ├── gateway-client/            #    DSH Remote client & phone Virtual Host facade (Noise transport & control bus)
 │   ├── platform-kernel/           #    On-device gatekeeper: plugin lifecycle, local policy & audit log
 │   ├── plugin-runtime-wasm/       #    WebAssembly sandbox enforcing CPU, memory & storage limits
 │   ├── conversation-ui/           #    Chat timeline, thought cards & slash-command autocomplete UI
 │   ├── assistant-holder/          #    Default digital assistant entry & screen-selection capture
+│   ├── ui-resources/              #    Standalone i18n string resource library (`values/strings_*.xml`)
 │   └── ...                        #    Feature modules for SMS, notifications, call logs & screen control
 │
 ├── plugins/                       # 🧩 Official reference phone plugins (Rust -> signed .alp packages)
@@ -103,10 +105,36 @@ open-android-intelligence/
 ├── integrations/skills/            # DSH Remote phone-control Agent Skill (`oai-phone-control`)
 ├── plugin-tooling/                # Device plugin packaging and signatures
 ├── tools/                         # 🛠️ Developer verification scripts (e.g., `smart-test.py`)
+├── legacy/                        # 🗄️ Frozen historical archive (excluded from active CI and releases)
 ├── assets/readme/                 # 🎨 README visual assets and editable SVG/PNG source layers
 ├── docs/                          # 📚 Design specs, Architecture Decision Records (ADRs) & review reports
 ├── CONTEXT.md                     # 📖 Plain domain glossary explaining project terminology
 └── AGENTS.md                      # 🤖 Contributor guidelines, test tiers & Git commit conventions
+```
+
+### Environment & Local Setup
+
+Before building or running local checks, verify that your toolchain matches the versions below:
+
+| Toolchain / SDK | Required Version | Notes |
+| --- | --- | --- |
+| **Node.js** | `>=24.18.0 <25` | Defined in `.nvmrc` and root `package.json` |
+| **Python** | `3.12+` | Used by `smart-test.py`, CI impact analysis & quality gates |
+| **JDK** | `21` | Runs Gradle builds & Robolectric tests (Java 17 bytecode target) |
+| **Android SDK** | `compileSdk 36` / `targetSdk 35` / `minSdk 31` | Required for Android builds and unit tests |
+| **Rust** | `1.90.0` (`wasm32-unknown-unknown` target) | Compiles the six official WASM plugins under `plugins/` |
+
+Follow these steps to initialize your local development workspace:
+
+```bash
+# 1. Copy the environment variable template and configure local settings (never commit .env)
+cp .env.example .env
+
+# 2. Install multi-package dependencies across root, plugin-tooling, and integrations
+make bootstrap
+
+# 3. Compile the WASM payloads for all six official phone capability plugins
+make build-wasm
 ```
 
 ### Common Developer Commands

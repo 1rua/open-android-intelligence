@@ -30,7 +30,6 @@ permissions:
 concurrency:
   group: dev-release
   cancel-in-progress: false
-  queue: max
 
 jobs:
   # 与预览构建并行：构建可以立刻开始，但发布前必须确认同一 SHA 的 CI 通过。

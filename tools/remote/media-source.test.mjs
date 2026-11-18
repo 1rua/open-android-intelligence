@@ -1,29 +1,24 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
-import { createRequire, stripTypeScriptTypes } from 'node:module';
+import { mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { dirname, join, normalize, resolve } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { pathToFileURL } from 'node:url';
+import { createTsVmLoader, loadVerifiedFixtures } from './shared-vm-loader.mjs';
 
 // 复用 MCP 集成已锁定的 zod 依赖，不在探针中维护第二份依赖版本。
 const integrationRequire = createRequire(new URL('../../integrations/oai-android-mcp/package.json', import.meta.url));
 
 const fixtureRoot = new URL('./fixtures/media-upstream/', import.meta.url);
-const manifest = JSON.parse(await readFile(new URL('source.json', fixtureRoot), 'utf8'));
-assert.equal(manifest.commit, 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7');
-const sources = new Map();
-for (const entry of manifest.files) {
-  const bytes = await readFile(new URL(entry.path, fixtureRoot));
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, entry.path);
-  if (entry.gitBlob) assert.equal(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'), entry.gitBlob, entry.path);
-  sources.set(entry.path, bytes.toString('utf8'));
-}
+const { sources } = await loadVerifiedFixtures(fixtureRoot, {
+  expectedCommit: 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7',
+  pathKey: 'path',
+  verifyGitBlob: true,
+});
 
 // 只替换未调用的终端与网络边界；文件 scope、路径、stat、分块、图片编码和客户端方法执行上游原文。
-async function originalModules() {
+function originalModules() {
   class TerminalState {}
   class TerminalController { closeAll() {} }
   class GatewayError extends Error { constructor(code, message) { super(message); this.code = code; } }
@@ -39,40 +34,16 @@ async function originalModules() {
     ['packages/client-core/src/harness-questions.ts', { HarnessQuestions: class {} }],
     ['@dsh-remote/protocol', { AGENT_ACP_TRANSFER_CHUNK_BYTES: 512 * 1024, MAX_AGENT_ACP_TRANSFER_BYTES: 288 * 1024 * 1024, REMOTE_COMPACTION_CAPABILITY: 'session.compact.v1' }],
   ]);
-  const cache = new Map();
-  function synthetic(id, values) {
-    return new SyntheticModule(Object.keys(values), function () {
-      for (const [name, value] of Object.entries(values)) this.setExport(name, value);
-    }, { identifier: id });
-  }
-  async function module(id) {
-    if (cache.has(id)) return cache.get(id);
-    let result;
-    if (doubles.has(id)) result = synthetic(id, doubles.get(id));
-    else if (id.startsWith('node:')) result = synthetic(id, await import(id));
-    else if (id === 'zod') result = synthetic(id, await import(pathToFileURL(integrationRequire.resolve('zod')).href));
-    else if (id === '@dsh-remote/client-core') {
+  const virtualModules = {
+    zod: () => import(pathToFileURL(integrationRequire.resolve('zod')).href),
+    '@dsh-remote/client-core': async ({ load }) => {
       const acp = await load('packages/client-core/src/acp-client.ts');
-      result = synthetic(id, { AgentAcpClient: acp.AgentAcpClient, RemoteTypertGateway: Gateway });
-    } else {
-      assert.ok(sources.has(id), `缺少已登记上游原文：${id}`);
-      result = new SourceTextModule(stripTypeScriptTypes(sources.get(id), { mode: 'transform', sourceUrl: `fixed-upstream/${id}` }), { identifier: id });
-    }
-    cache.set(id, result);
-    return result;
-  }
-  async function load(id) {
-    const root = await module(id);
-    if (root.status === 'unlinked') await root.link((specifier, referencing) => {
-      const target = specifier.startsWith('.') ? normalize(join(dirname(referencing.identifier), specifier)).replace(/\.js$/u, '.ts') : specifier;
-      return module(target);
-    });
-    if (root.status === 'linked') await root.evaluate();
-    return root.namespace;
-  }
-  return { load };
+      return { AgentAcpClient: acp.AgentAcpClient, RemoteTypertGateway: Gateway };
+    },
+  };
+  return createTsVmLoader({ sources, doubles, virtualModules });
 }
-const original = await originalModules();
+const original = originalModules();
 
 async function workspaceFiles() {
   // 测试现场留在临时目录供复核，不调用永久删除命令。

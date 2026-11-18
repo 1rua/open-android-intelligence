@@ -17,15 +17,32 @@ import time
 import xml.etree.ElementTree as ET
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
-ANDROID_SDK = os.path.join(PROJECT_ROOT, ".toolchains/android-sdk")
-ANDROID_CLI = os.path.expanduser("~/.local/bin/android")
+TOOLCHAINS_ROOT = os.environ.get("OAI_TOOLCHAINS_ROOT") or os.path.join(PROJECT_ROOT, ".toolchains")
+ANDROID_SDK = (
+    os.environ.get("ANDROID_HOME")
+    or os.environ.get("ANDROID_SDK_ROOT")
+    or os.path.join(TOOLCHAINS_ROOT, "android-sdk")
+)
+ANDROID_CLI = os.environ.get("ANDROID_CLI_BIN") or os.path.expanduser("~/.local/bin/android")
+JAVA_HOME = os.environ.get("JAVA_HOME")
 
 ENV = os.environ.copy()
 ENV["LC_ALL"] = "C.UTF-8"
 ENV["LANG"] = "C.UTF-8"
 ENV["ANDROID_HOME"] = ANDROID_SDK
-ENV["ANDROID_SDK_ROOT"] = ANDROID_SDK
-ENV["PATH"] = f"{os.path.expanduser('~/.local/bin')}:{ANDROID_SDK}/platform-tools:{ANDROID_SDK}/cmdline-tools/latest/bin:{ENV.get('PATH', '')}"
+ENV["ANDROID_SDK_ROOT"] = os.environ.get("ANDROID_SDK_ROOT") or ANDROID_SDK
+_path_entries = [
+    os.path.dirname(ANDROID_CLI),
+    os.path.expanduser("~/.local/bin"),
+    f"{ANDROID_SDK}/platform-tools",
+    f"{ANDROID_SDK}/cmdline-tools/latest/bin",
+]
+if JAVA_HOME:
+    ENV["JAVA_HOME"] = JAVA_HOME
+    _path_entries.insert(0, os.path.join(JAVA_HOME, "bin"))
+if ENV.get("PATH"):
+    _path_entries.append(ENV["PATH"])
+ENV["PATH"] = ":".join(entry for entry in _path_entries if entry)
 
 def run_cmd(cmd, timeout=30, check=False):
     """Run shell command and return stdout, stderr, returncode."""

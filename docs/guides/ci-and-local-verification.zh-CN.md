@@ -1,5 +1,7 @@
 # CI 与本地验证分工（Agent 开发规范）
 
+> [!NOTE] 状态声明：历史基线文档（已被 DSH Remote 架构取代，现行规则请参考 [DSH Remote 架构重构规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md) 与根目录 [TEST_INFRA.md](../../TEST_INFRA.md)）。
+
 本文说明**哪些验证在本地跑、哪些交给 GitHub Actions**，以及 CI 的结构与耗时目标。
 适用于所有在本仓库改代码的 Agent 与开发者。
 

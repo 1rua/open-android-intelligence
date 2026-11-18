@@ -104,7 +104,6 @@ ANDROID_MODULE_LANES = {
     "capability-ports": "device",
     "screen-control": "device",
     "device-primitives": "device",
-    "control-plane": "device",
     "platform-kernel": "platform",
     "plugin-package": "plugins",
     "plugin-runtime-wasm": "plugins",
@@ -306,6 +305,25 @@ def classify_path(
         if path.startswith(("apps/android/gateway-client/", "apps/android/control-ports/")):
             lanes["remote"] = True
         return classify_android(status, path, lanes, sections)
+
+    # 根工程配置文件及非生产归档/端到端目录交由快速门禁验证，避免误判为 unknown 触发全量矩阵。
+    if path in {
+        ".gitignore",
+        ".gitattributes",
+        ".editorconfig",
+        ".env.example",
+        ".nvmrc",
+        "Makefile",
+        "pyproject.toml",
+        "vitest.config.ts",
+    } or path.startswith((".githooks/", "legacy/", "e2e/")):
+        lanes["fast"] = True
+        return True
+
+    # 其余工具脚本（已排除前面处理的 tools/remote* 与安全/契约清单）触发快速门禁。
+    if path.startswith("tools/") and path not in SECURITY_OR_CONTRACT_PATHS:
+        lanes["fast"] = True
+        return True
 
     return False
 

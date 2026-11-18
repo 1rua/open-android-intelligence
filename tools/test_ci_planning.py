@@ -840,3 +840,50 @@ def test_typecheck_excludes_only_pinned_typescript_and_keeps_probe_source():
         "tools/remote-interop/fixtures/**/*.ts",
         "tools/remote-interop/release-fixtures/**/*.ts",
     }
+
+
+def test_android_module_lanes_contains_no_phantom_modules(impact):
+    assert "control-plane" not in impact.ANDROID_MODULE_LANES
+    android_root = REPO_ROOT / "apps/android"
+    missing = [
+        module for module in impact.ANDROID_MODULE_LANES
+        if not (android_root / module).is_dir()
+    ]
+    assert missing == []
+
+
+@pytest.mark.parametrize("path", [
+    ".gitignore",
+    ".gitattributes",
+    ".editorconfig",
+    ".env.example",
+    ".nvmrc",
+    "Makefile",
+    "pyproject.toml",
+    "vitest.config.ts",
+    ".githooks/pre-commit",
+    "legacy/old_script.py",
+    "e2e/smoke.spec.ts",
+    "tools/check_hardcoded_chinese.py",
+])
+def test_repo_config_and_archived_paths_route_to_fast_lane(impact, path):
+    result = impact.classify([("M", path)])
+    assert result["unknown"] is False
+    assert result["full_required"] is False
+    assert active_lanes(result) == {"fast"}
+
+
+def test_remote_client_enables_app_performance_only_on_workflow_dispatch():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
+    )
+    app_pr_step = next(
+        step
+        for step in workflow["jobs"]["android-app"]["steps"]
+        if (step.get("with") or {}).get("lane") == "app-pr"
+    )
+    assert app_pr_step["with"]["app-performance"] == (
+        "${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}"
+    )

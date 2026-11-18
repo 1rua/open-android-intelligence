@@ -1,0 +1,21 @@
+# 仓库统一编辑器格式规范（供支持 EditorConfig 的编辑器与 IDE 自动遵循）
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{kt,kts,java,py,rs}]
+indent_style = space
+indent_size = 4
+
+[*.{js,mjs,ts,json,yml,yaml,xml}]
+indent_style = space
+indent_size = 2
+
+[Makefile]
+indent_style = tab

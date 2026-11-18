@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# 提交前本地快速门禁：校验远端来源锁、硬编码中文及 Android 字符串资源完整性。
+set -euo pipefail
+
+npm run lock:check
+python3 tools/check_hardcoded_chinese.py
+
+if [ -f tools/check_string_resources_integrity.py ]; then
+  python3 tools/check_string_resources_integrity.py
+elif [ -f tools/test_string_resources_integrity.py ]; then
+  python3 tools/test_string_resources_integrity.py
+else
+  printf '未找到字符串资源完整性校验脚本: tools/check_string_resources_integrity.py\n' >&2
+  exit 1
+fi
