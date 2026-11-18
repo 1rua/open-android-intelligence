@@ -382,18 +382,13 @@ class RemoteConversationRepositoryTest {
 
         repo.submitMessage(local, OutgoingMessage(ClientMessageId("client-race"), "测试文本"))
         runCurrent()
-        // 触发原生用户回声，让订阅方在背压门控处暂停，随后填满 extraBufferCapacity=4 缓冲。
+        // 触发原生用户回声，让订阅方在背压门控处暂停，确保后续 events.emit(MessageAccepted) 直接挂起。
         carrier.frames.emit(obj("method" to "item/completed", "params" to obj(
             "threadId" to "hermes:相同/session", "turnId" to "turn-race",
             "item" to obj("id" to "user-race", "type" to "userMessage", "content" to listOf(obj("type" to "text", "text" to "测试文本"))))))
         runCurrent()
-        repeat(4) { index ->
-            carrier.frames.emit(obj("method" to "item/agentMessage/delta", "params" to obj(
-                "threadId" to "hermes:相同/session", "itemId" to "reply", "delta" to "片$index")))
-        }
-        runCurrent()
 
-        // 此时 response.complete 会在 publish(MessageAccepted) 的 events.emit 挂起（持有同会话 publishLocks）。
+        // 此时 response.complete 会在 publish(MessageAccepted) 的 events.emit 挂起（持有同会话 sessionLocks）。
         response.complete(obj("turn" to obj("id" to "turn-race")))
         runCurrent()
         val completedFrameJob = backgroundScope.launch {

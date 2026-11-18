@@ -23,7 +23,7 @@ class RemoteConversationRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val mediaSource: RemoteAuthenticatedMediaSource? = null,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
-) : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery {
+) : ConversationRepository, GenerationTracker, EventCommitBarrier, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + lifetime)
@@ -37,7 +37,8 @@ class RemoteConversationRepository(
     private val batchMembers = ConcurrentHashMap<String, List<ClientMessageId>>()
     private val models = ConcurrentHashMap<String, RemoteModelSelection>()
     private val rows = ConcurrentHashMap<String, RemoteSessionRow>()
-    private val events = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 4)
+    private val events = MutableSharedFlow<VerifiedConversationEvent>()
+    private val activeEventPublishes = MutableStateFlow(0)
     private val health = MutableStateFlow(StreamHealth.IDLE)
     override val streamHealth: Flow<StreamHealth> = health
     private val failure = MutableStateFlow<String?>(null)
@@ -53,8 +54,19 @@ class RemoteConversationRepository(
     private val sessionLocks = ConcurrentHashMap<String, Mutex>()
     private val acceptedUserMessages = ConcurrentHashMap<Pair<String, String>, String>()
 
+    override suspend fun awaitPendingEventCommits() {
+        activeEventPublishes.first { it == 0 }
+    }
+
     private suspend inline fun <T> withSessionLock(id: String, crossinline block: suspend () -> T): T =
-        sessionLocks.computeIfAbsent(id) { Mutex() }.withLock { block() }
+        sessionLocks.computeIfAbsent(id) { Mutex() }.withLock {
+            activeEventPublishes.update { it + 1 }
+            try {
+                block()
+            } finally {
+                activeEventPublishes.update { (it - 1).coerceAtLeast(0) }
+            }
+        }
 
     init { require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" } }
     private fun current() {
@@ -178,12 +190,18 @@ class RemoteConversationRepository(
         current()
         ensureFollow(conversationId)
         if (message.delivery == MessageDeliveryMode.STEER) return steerMessage(conversationId, message)
-        if (message.delivery == MessageDeliveryMode.QUEUE && projection(conversationId).generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED)) {
-            val queue = held.computeIfAbsent(conversationId) { linkedMapOf() }
-            synchronized(queue) { queue[message.clientMessageId.value] = message.copy(delivery = MessageDeliveryMode.NORMAL) }
-            publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("queue:${message.clientMessageId.value}", clock(),
-                PendingDelivery(message.clientMessageId, ConversationId(conversationId), message.text, message.attachmentIds.size, PendingDeliveryState.QUEUED)))
-            return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, delivery = MessageDeliveryMode.QUEUE, authoritative = false)
+        if (message.delivery == MessageDeliveryMode.QUEUE) {
+            val queuedResult = withSessionLock(conversationId) {
+                val target = projection(conversationId)
+                val busy = synchronized(target) { target.generationState in setOf(GenerationState.RUNNING, GenerationState.QUEUED) }
+                if (!busy) return@withSessionLock null
+                val queue = held.computeIfAbsent(conversationId) { linkedMapOf() }
+                synchronized(queue) { queue[message.clientMessageId.value] = message.copy(delivery = MessageDeliveryMode.NORMAL) }
+                publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("queue:${message.clientMessageId.value}", clock(),
+                    PendingDelivery(message.clientMessageId, ConversationId(conversationId), message.text, message.attachmentIds.size, PendingDeliveryState.QUEUED)))
+                MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, delivery = MessageDeliveryMode.QUEUE, authoritative = false)
+            }
+            if (queuedResult != null) return queuedResult
         }
         val content = buildList {
             if (message.text.isNotEmpty()) add(obj("type" to "text", "text" to message.text))
@@ -260,7 +278,9 @@ class RemoteConversationRepository(
                             PendingDelivery(member, ConversationId(conversationId), message.text, message.attachmentIds.size,
                                 PendingDeliveryState.FAILED, code, localGeneration))) }
                     } else {
-                        if (projection(conversationId).generationId == localGeneration) projection(conversationId).markUnknown()
+                        synchronized(target) {
+                            if (target.generationId == localGeneration) target.markUnknown()
+                        }
                         turn.members.forEach { member -> publish(conversationId, VerifiedConversationEvent.PendingDeliveryUpdated("unknown:${member.value}", clock(),
                             PendingDelivery(member, ConversationId(conversationId), message.text, message.attachmentIds.size,
                                 PendingDeliveryState.OUTCOME_UNKNOWN, failure.value, localGeneration))) }
@@ -402,12 +422,5 @@ class RemoteConversationRepository(
         acceptedUserMessages.clear()
         sessionLocks.clear()
         deliveryLocks.clear()
-        follows.clear()
-        ready.clear()
-        projections.clear()
-        held.clear()
-        batchMembers.clear()
-        models.clear()
-        rows.clear()
     }
 }

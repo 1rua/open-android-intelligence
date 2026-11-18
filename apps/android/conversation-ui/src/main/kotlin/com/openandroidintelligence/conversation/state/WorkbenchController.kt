@@ -683,6 +683,22 @@ class WorkbenchController(
         return pendingBatch.filterNot { entry -> entry.key.removePrefix("local_") in settled }
     }
 
+    /** 统一在非权威受理返回后刷新编辑态、剔除已确认占位并按最新列表重绘时间线。 */
+    private fun updateProvisionalAcceptanceState(
+        threadId: String,
+        transform: (WorkbenchUiState) -> WorkbenchUiState = { it },
+    ) {
+        if (activeThreadId != threadId) return
+        update { state ->
+            val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+            transform(state).copy(
+                composer = ComposerState.EDITING,
+                pendingBatch = reconciledPending,
+                timeline = Loadable.Ready(renderTimeline(reconciledPending)),
+            )
+        }
+    }
+
     /**
      * 展示行缓存：不含附件的消息行只依赖消息本身与取消标记，可按消息实例复用；
      * 带附件的行依赖多张外部展示状态，任何一张变化都要重建，因此不缓存。
@@ -1644,18 +1660,17 @@ class WorkbenchController(
             generationJob=source?.let { snapshots -> workScope.launch { snapshots.collect { snapshot ->
                 if (tracker.generationSnapshot != null && snapshot.conversationId != activeThreadId) return@collect
                 val generation = snapshot.state
-                if (generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
-                    _state.value.pendingBatch.isNotEmpty()
-                ) {
-                    // 在发布终态前等待已在途的镜像落盘与控制器事件应用结束，防止终态抢跑未确认占位。
+                if (generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
+                    // 在发布终态前等待上游发布、镜像落盘与控制器事件应用全部完结，并重检当前会话与最新快照。
                     (repository as? com.openandroidintelligence.conversation.ports.EventCommitBarrier)?.awaitPendingEventCommits()
                     activeEventApplyCount.first { it == 0 }
-                    if (tracker.generationSnapshot != null &&
-                        tracker.generationSnapshot?.value?.let { latest ->
-                            latest.conversationId == activeThreadId && latest.state != generation
-                        } == true
-                    ) {
-                        return@collect
+                    if (tracker.generationSnapshot != null) {
+                        val latest = tracker.generationSnapshot?.value
+                        if (snapshot.conversationId != activeThreadId ||
+                            (latest != null && latest != snapshot)
+                        ) {
+                            return@collect
+                        }
                     }
                 }
                 val generationId = snapshot.generationId
@@ -3593,15 +3608,7 @@ class WorkbenchController(
                             submission.attachmentIds.forEach { releaseSubmittedAttachment(target, it) }
                             if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                         }
-                        if (activeThreadId == target) update { state ->
-                            val reconciledPending = settledPendingBatch(target, state.pendingBatch)
-                            state.copy(
-                                composer = ComposerState.EDITING,
-                                pendingBatch = reconciledPending,
-                                timeline = Loadable.Ready(renderTimeline(reconciledPending)),
-                                notice = null,
-                            )
-                        }
+                        updateProvisionalAcceptanceState(target) { it.copy(notice = null) }
                         persistCheckpoint()
                         return@launch
                     } else {
@@ -3738,8 +3745,7 @@ class WorkbenchController(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
             if (!acceptance.authoritative) {
-                if (activeThreadId == conversationId) update { state -> state.copy(composer=ComposerState.EDITING,
-                    timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
+                updateProvisionalAcceptanceState(conversationId)
                 persistCheckpoint()
                 return
             }
@@ -3979,14 +3985,7 @@ class WorkbenchController(
                 }
                 if (!acceptance.authoritative) {
                     nativePendingSubmissions[atom.clientMessageId.value] = threadId to retried.localDraftIds
-                    if (activeThreadId == threadId) update { state ->
-                        val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
-                        state.copy(
-                            composer = ComposerState.EDITING,
-                            pendingBatch = reconciledPending,
-                            timeline = Loadable.Ready(renderTimeline(reconciledPending)),
-                        )
-                    }
+                    updateProvisionalAcceptanceState(threadId)
                     persistCheckpoint()
                     return
                 }

@@ -1011,7 +1011,11 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     override val generationSnapshot get()=(delegate as GenerationTracker).generationSnapshot
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
     override suspend fun awaitPendingEventCommits() {
-        inFlightEventCommits.first { it == 0 }
+        val delegateBarrier = delegate as? EventCommitBarrier
+        do {
+            delegateBarrier?.awaitPendingEventCommits()
+            inFlightEventCommits.first { it == 0 }
+        } while (inFlightEventCommits.value > 0)
     }
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {
