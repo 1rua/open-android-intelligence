@@ -363,4 +363,60 @@ class RemoteConversationRepositoryTest {
         assertEquals(1, observed.filterIsInstance<VerifiedConversationEvent.MessageStatus>().count { it.status == AgentMessageStatus.COMPLETED })
         repo.close()
     }
+
+    @Test fun `Codex用户回执发布被流背压挂起时不会与终态事件乱序穿插`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        val collectorPaused = CompletableDeferred<Unit>()
+        val collectJob = backgroundScope.launch {
+            repo.observeEvents(scope).collect { event ->
+                if (event is VerifiedConversationEvent.TimelineUpsert && event.message.id == "user-race") {
+                    collectorPaused.await()
+                }
+            }
+        }
+        runCurrent()
+
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("client-race"), "测试文本"))
+        runCurrent()
+        // 触发原生用户回声，让订阅方在背压门控处暂停，随后填满 extraBufferCapacity=4 缓冲。
+        carrier.frames.emit(obj("method" to "item/completed", "params" to obj(
+            "threadId" to "hermes:相同/session", "turnId" to "turn-race",
+            "item" to obj("id" to "user-race", "type" to "userMessage", "content" to listOf(obj("type" to "text", "text" to "测试文本"))))))
+        runCurrent()
+        repeat(4) { index ->
+            carrier.frames.emit(obj("method" to "item/agentMessage/delta", "params" to obj(
+                "threadId" to "hermes:相同/session", "itemId" to "reply", "delta" to "片$index")))
+        }
+        runCurrent()
+
+        // 此时 response.complete 会在 publish(MessageAccepted) 的 events.emit 挂起（持有同会话 publishLocks）。
+        response.complete(obj("turn" to obj("id" to "turn-race")))
+        runCurrent()
+        val completedFrameJob = backgroundScope.launch {
+            carrier.frames.emit(obj("method" to "turn/completed", "params" to obj(
+                "threadId" to "hermes:相同/session", "turn" to obj("id" to "turn-race", "status" to "completed"))))
+        }
+        runCurrent()
+
+        collectorPaused.complete(Unit)
+        runCurrent()
+        completedFrameJob.join()
+
+        val acceptedIndex = observed.indexOfFirst { it is VerifiedConversationEvent.MessageAccepted && it.correlationId == "client-race" }
+        val userIdentityIndex = observed.indexOfFirst {
+            it is VerifiedConversationEvent.TimelineUpsert && it.message.id == "user-race" && it.message.clientMessageId?.value == "client-race"
+        }
+        val completedIndex = observed.indexOfFirst {
+            it is VerifiedConversationEvent.MessageStatus && it.clientMessageId.value == "client-race" && it.status == AgentMessageStatus.COMPLETED
+        }
+        assertTrue(acceptedIndex >= 0)
+        assertTrue(userIdentityIndex > acceptedIndex)
+        assertTrue(completedIndex > userIdentityIndex)
+        collectJob.cancel()
+        repo.close()
+    }
 }

@@ -7,6 +7,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import java.io.ByteArrayInputStream
@@ -2138,6 +2139,116 @@ class WorkbenchSendRegressionTest {
         assertEquals("失败的附件必须留在编辑器里，否则用户无从重试", 1, controller.state.value.attachments.size)
         assertTrue("失败的发送不得残留待发条目", controller.state.value.pendingBatch.isEmpty())
         controller.cancel()
+    }
+
+    @Test fun `终态快照在发送原子持久化完成前到达时不得在pendingBatch残留已确认用户消息占位`() = runTest {
+        val eventFlow = kotlinx.coroutines.flow.MutableSharedFlow<VerifiedConversationEvent>()
+        var pausePersistence = false
+        val pausedWrites = ArrayDeque<Runnable>()
+        val gatedPersistenceDispatcher = object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                if (pausePersistence) pausedWrites.addLast(block) else block.run()
+            }
+        }
+        val snapshot = kotlinx.coroutines.flow.MutableStateFlow(GenerationSnapshot(null, GenerationState.IDLE, "conv_1"))
+        val repository = object : RecordingRepository() {
+            override val generationSnapshot: kotlinx.coroutines.flow.StateFlow<GenerationSnapshot> = snapshot
+            override fun observeEvents(scope: ConversationScope) = eventFlow
+            override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
+                sent += message
+                return MessageAcceptance("user-a", message.clientMessageId.value, "turn-a", authoritative = false)
+            }
+        }
+        val atomsByThread = linkedMapOf<String, List<LocalSendAtom>>()
+        var checkpoint: WorkbenchCheckpoint? = null
+        var pauseNextDeliveredPersistence = false
+        val persistence = object : WorkbenchPersistence {
+            override fun load() = checkpoint
+            override fun save(checkpointValue: WorkbenchCheckpoint) { checkpoint = checkpointValue }
+            override fun loadSendAtoms(conversationId: String) = atomsByThread[conversationId].orEmpty()
+            override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
+                atomsByThread[conversationId] = atoms.toList()
+                if (pauseNextDeliveredPersistence && atoms.any { it.status == AgentMessageStatus.DELIVERED }) {
+                    pauseNextDeliveredPersistence = false
+                    pausePersistence = true
+                }
+            }
+        }
+        val controller = WorkbenchController(
+            workbenchTestScope(),
+            repository,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("v1"), emptyList())
+            },
+            { ConversationScope("profile", "gateway", "account", "install") },
+            persistence = persistence,
+            persistenceDispatcher = gatedPersistenceDispatcher,
+            replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+        )
+        runCurrent()
+        controller.openThread("conv_1")
+        runCurrent()
+
+        controller.editDraft("并发确认消息")
+        controller.sendDraft()
+        runCurrent()
+
+        val clientId = controller.state.value.pendingBatch.single().key.removePrefix("local_")
+        // 模拟原生用户回声先到但尚未携带 clientMessageId。
+        eventFlow.emit(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "evt_user_raw",
+                occurredAt = 1000L,
+                revision = 1L,
+                message = TimelineMessage(
+                    id = "user-a",
+                    sender = "user",
+                    parts = listOf(MessagePart.Text("并发确认消息")),
+                    timestamp = 1000L,
+                    state = "CONFIRMED",
+                    conversationId = ConversationId("conv_1"),
+                    generationId = "turn-a",
+                ),
+            ),
+        )
+        runCurrent()
+
+        // 暂停 DELIVERED 二次写盘回读阶段：此时 applySendEvent 已更新内存原子，但 MessageAccepted 尚未走到末尾清理。
+        pauseNextDeliveredPersistence = true
+        val acceptedJob = launch {
+            eventFlow.emit(
+                VerifiedConversationEvent.MessageAccepted(
+                    eventId = "user-accepted:$clientId",
+                    occurredAt = 1001L,
+                    messageId = "user-a",
+                    correlationId = clientId,
+                    conversationId = ConversationId("conv_1"),
+                ),
+            )
+        }
+        runCurrent()
+        assertTrue("应已停在 DELIVERED 阶段持久化调度挂起点", pausedWrites.isNotEmpty())
+
+        // 持久化写盘尚未完成时，generationJob 收到终态 COMPLETED。
+        snapshot.value = GenerationSnapshot("turn-a", GenerationState.COMPLETED, "conv_1")
+        runCurrent()
+
+        assertEquals(GenerationState.COMPLETED, controller.state.value.generation)
+        val entries = (controller.state.value.timeline as Loadable.Ready).value
+        val settledUser = entries.single { it.key == "user-a" && it.isUser }
+        assertEquals(ClientMessageId(clientId), settledUser.clientMessageId)
+        assertFalse(
+            "确认原生用户身份后对应发送成员不应残留待接收占位",
+            controller.state.value.pendingBatch.any { it.key.removePrefix("local_") == clientId },
+        )
+
+        pausePersistence = false
+        while (pausedWrites.isNotEmpty()) pausedWrites.removeFirst().run()
+        runCurrent()
+        acceptedJob.join()
+        assertTrue(controller.state.value.pendingBatch.isEmpty())
+        controller.cancel()
+        coroutineContext.cancelChildren()
     }
 
     private fun TestScope.controllerWithAttachments(

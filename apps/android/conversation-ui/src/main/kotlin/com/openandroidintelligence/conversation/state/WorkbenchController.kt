@@ -643,6 +643,60 @@ class WorkbenchController(
     private val messageStatusesById = LinkedHashMap<String, MessageStatusReceipt>()
     private val messageStatusesByClientId = LinkedHashMap<String, MessageStatusReceipt>()
 
+    /** 已确认原生身份或已在内存受理并落盘入列的消息不再保留待发占位，避免并发更新露出半结算状态。 */
+    private fun reconcilePendingBatch(threadId: String?, pendingBatch: List<TimelineEntry>): List<TimelineEntry> {
+        if (pendingBatch.isEmpty()) return pendingBatch
+        val settledClientIds = buildSet {
+            mirrored.values.forEach { message ->
+                if (!message.localPlaceholder && message.sender == "user") {
+                    message.clientMessageId?.value?.let(::add)
+                }
+            }
+            if (threadId != null) {
+                atomsFor(threadId).values.forEach { atom ->
+                    if (!atom.isDeleted &&
+                        atom.submissionState == LocalSubmissionState.ACCEPTED &&
+                        !atom.messageId.isNullOrBlank() &&
+                        atom.messageId != atom.clientMessageId.value &&
+                        mirrored[atom.messageId]?.localPlaceholder == false
+                    ) {
+                        add(atom.clientMessageId.value)
+                    }
+                }
+            }
+        }
+        if (settledClientIds.isEmpty()) return pendingBatch
+        return pendingBatch.filterNot { entry -> entry.key.removePrefix("local_") in settledClientIds }
+    }
+
+    /** 清理已受理回执对应的待发队列与本地占位，并按需刷新已就绪的时间线。 */
+    private fun settleAcceptedPendingState(
+        eventConvId: String?,
+        currentActiveId: String,
+        correlationId: String,
+        clearPendingDeliveries: Boolean,
+        alwaysRefreshTimeline: Boolean,
+    ) {
+        update { state ->
+            val pending = if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
+                state.pendingBatch.filterNot { it.key == "local_$correlationId" || it.key == correlationId }
+            } else {
+                state.pendingBatch
+            }
+            val shouldRefreshTimeline = (alwaysRefreshTimeline || pending.size != state.pendingBatch.size) &&
+                (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty)
+            state.copy(
+                pendingDeliveries = if (clearPendingDeliveries) {
+                    state.pendingDeliveries.filterNot { it.clientMessageId.value == correlationId }
+                } else {
+                    state.pendingDeliveries
+                },
+                pendingBatch = pending,
+                timeline = if (shouldRefreshTimeline) Loadable.Ready(renderTimeline(pending)) else state.timeline,
+            )
+        }
+    }
+
     /**
      * 展示行缓存：不含附件的消息行只依赖消息本身与取消标记，可按消息实例复用；
      * 带附件的行依赖多张外部展示状态，任何一张变化都要重建，因此不缓存。
@@ -1613,13 +1667,15 @@ class WorkbenchController(
                     generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
                     activeThreadId?.let { rememberExecutionTerminal(it, generationId, generation) } == true
                 update { state ->
+                    val reconciledPending = reconcilePendingBatch(activeThreadId, state.pendingBatch)
                     val next = if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
-                        state.copy(generation=GenerationState.CANCELLED)
+                        state.copy(generation=GenerationState.CANCELLED, pendingBatch=reconciledPending)
                     else if (pending != null && generation != GenerationState.COMPLETED)
-                        state.copy(generation=GenerationState.CANCEL_REQUESTED)
-                    else state.copy(generation=generation)
-                    if (executionSettled && (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
-                        next.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch))) else next
+                        state.copy(generation=GenerationState.CANCEL_REQUESTED, pendingBatch=reconciledPending)
+                    else state.copy(generation=generation, pendingBatch=reconciledPending)
+                    if ((executionSettled || reconciledPending.size != state.pendingBatch.size) &&
+                        (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
+                        next.copy(timeline = Loadable.Ready(renderTimeline(reconciledPending))) else next
                 }
             } } }
         }
@@ -3537,8 +3593,15 @@ class WorkbenchController(
                             submission.attachmentIds.forEach { releaseSubmittedAttachment(target, it) }
                             if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                         }
-                        if (activeThreadId == target) update { state -> state.copy(composer = ComposerState.EDITING,
-                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)), notice = null) }
+                        if (activeThreadId == target) update { state ->
+                            val reconciledPending = reconcilePendingBatch(target, state.pendingBatch)
+                            state.copy(
+                                composer = ComposerState.EDITING,
+                                pendingBatch = reconciledPending,
+                                timeline = Loadable.Ready(renderTimeline(reconciledPending)),
+                                notice = null,
+                            )
+                        }
                         persistCheckpoint()
                         return@launch
                     } else {
@@ -4718,11 +4781,15 @@ class WorkbenchController(
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                 val eventConvId = event.conversationId?.value
                 val correlationId = event.correlationId
-                update { state ->
-                    state.copy(pendingDeliveries = state.pendingDeliveries.filterNot {
-                        it.clientMessageId.value == correlationId
-                    })
-                }
+                // applySendEvent 已完成内存原子与落盘提交；在后续 DELIVERED 持久化挂起前同步清理待发占位，
+                // 避免 generationJob 在写盘调度期间更新终态时露出半结算的 pendingBatch。
+                settleAcceptedPendingState(
+                    eventConvId = eventConvId,
+                    currentActiveId = currentActiveId,
+                    correlationId = correlationId,
+                    clearPendingDeliveries = true,
+                    alwaysRefreshTimeline = false,
+                )
                 if (eventConvId != null && correlationId.isNotBlank() && event.messageId.isNotBlank()) {
                     // 受理早期只能用客户端占位 id；宿主报出真实 userMessageId 后升级本地身份，
                     // 后续终态事件就不会再与本地身份分叉。
@@ -4741,17 +4808,13 @@ class WorkbenchController(
                     }
                 }
                 if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
-                    update { state ->
-                        val pending = state.pendingBatch.filterNot {
-                            it.key == "local_$correlationId" || it.key == correlationId
-                        }
-                        state.copy(
-                            pendingBatch = pending,
-                            timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
-                                Loadable.Ready(renderTimeline(pending))
-                            } else state.timeline,
-                        )
-                    }
+                    settleAcceptedPendingState(
+                        eventConvId = eventConvId,
+                        currentActiveId = currentActiveId,
+                        correlationId = correlationId,
+                        clearPendingDeliveries = false,
+                        alwaysRefreshTimeline = true,
+                    )
                 }
             }
 

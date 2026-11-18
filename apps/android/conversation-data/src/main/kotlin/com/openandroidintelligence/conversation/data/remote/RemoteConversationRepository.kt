@@ -149,13 +149,26 @@ class RemoteConversationRepository(
             approvals[event.request.approvalId.value] = id to it
         }
     }
+    // 串行化同一会话内的事件发布，避免身份确认事件与终态结算状态在并发协程间乱序穿插。
+    private val publishLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+
     private suspend fun publish(id: String, event: VerifiedConversationEvent) {
+        val lock = publishLocks.getOrPut(id) { kotlinx.coroutines.sync.Mutex() }
+        lock.lock()
+        try {
+            publishLocked(id, event)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private suspend fun publishLocked(id: String, event: VerifiedConversationEvent) {
         current()
         rememberApproval(id, event)
         if (event is VerifiedConversationEvent.TimelineUpsert && event.message.sender == "user") {
             event.message.clientMessageId?.let { clientId ->
                 if (acceptedUserMessages.putIfAbsent(id to clientId.value, event.message.id) == null) {
-                    publish(id, VerifiedConversationEvent.MessageAccepted("user-accepted:${clientId.value}", event.occurredAt,
+                    publishLocked(id, VerifiedConversationEvent.MessageAccepted("user-accepted:${clientId.value}", event.occurredAt,
                         event.message.id, clientId.value, ConversationId(id)))
                 }
             }
