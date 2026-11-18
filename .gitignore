@@ -110,3 +110,47 @@ docs/mvp/evidence/
 .zcode/
 .DS_Store
 Thumbs.db
+
+# Rust 插件工具链构建产物
+plugins/target/
+plugins/dist/
+
+# Python 构建产物（Hermes 插件打包）
+integrations/hermes/dist/
+integrations/hermes/build/
+**/build/
+*.egg-info/
+.pytest_cache/
+
+# 本地测试账号与凭据
+.open-android-intelligence-hermes/
+.agent-life-hermes/
+
+apps/android/.toolchains/
+
+# Runtime reports must not make an otherwise clean source worktree dirty.
+/artifacts/e2e/
+/.worktrees/
+
+# CI 中检出的 Hermes 网关插件仓库（独立仓，本地开发可放同一路径）
+.hermes-gateway-plugin/
+.openclaw-gateway-plugin/
+oai-release.keystore
+
+# OAI Core runtime state, credentials and local virtual environments
+/oai-core/runtime/
+/.venv/
+/runtime/
+/core.json
+/start-core.sh
+/oai-core/dist/
+
+# 一次性本地运维脚本（CI 轮询等），不随仓库分发
+/.worktree-ci/
+
+# 临时测试证据
+docs/reviews/2026-11-10-device-capability-e2e/
+docs/reviews/2026-11-11-pr134-evidence/
+gateway-contract/.artifacts/
+integrations/dsh-session-adapter/.test-cache/
+fronted-preview/
