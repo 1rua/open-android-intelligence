@@ -453,11 +453,14 @@ class RemoteRuntime(
         val supported = (repo as? RemoteConversationRepository)?.carrier?.capabilities.orEmpty()
         val source = if (repo is RemoteConversationRepository) MirroredConversationRepository(repo, mirror, media) else repo
         val organization = EncryptedNativeConversationOrganizationStore(context, local, localDocumentKeyProvider)
-        val tracker = repo as? GenerationTracker ?: object : GenerationTracker {
+        val tracker = source as? GenerationTracker ?: object : GenerationTracker {
             override val generationId = MutableStateFlow<String?>(null)
             override val generationState = MutableStateFlow(GenerationState.IDLE)
         }
-        val history = object : ConversationRepository by source, GenerationTracker by tracker, MessageOutcomeQuery {
+        val history = object : ConversationRepository by source, GenerationTracker by tracker, EventCommitBarrier, MessageOutcomeQuery {
+            override suspend fun awaitPendingEventCommits() {
+                (source as? EventCommitBarrier)?.awaitPendingEventCommits()
+            }
             override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? =
                 (source as? MessageOutcomeQuery)?.queryMessage(conversationId, clientMessageId)
             override suspend fun readOrganization() = withContext(Dispatchers.IO) { organization.read(local.gatewayId) }

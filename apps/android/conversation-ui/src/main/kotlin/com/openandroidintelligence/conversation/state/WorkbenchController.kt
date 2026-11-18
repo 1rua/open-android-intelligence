@@ -468,11 +468,24 @@ class WorkbenchController(
         if (pendingSubmission?.let { it.conversationId == threadId && atomsFor(threadId)[it.clientMessageId]?.isDeleted == true } == true) pendingSubmission=null
     }
 
-    private suspend fun acceptSendAtom(threadId: String, clientId: String, messageId: String, batchId: String? = null, generationId: String? = null) {
+    private suspend fun acceptSendAtom(
+        threadId: String,
+        clientId: String,
+        messageId: String,
+        batchId: String? = null,
+        generationId: String? = null,
+        promoteDelivered: Boolean = false,
+    ) {
         val started = System.nanoTime()
         generationId?.let { rememberMessageGeneration(threadId, messageId, clientId, it) }
         activeWork.accepted(clientId, threadId, generationId)
-        changeSendAtom(threadId, clientId) { old -> old?.identified(messageId, batchId ?: old.batchId) }
+        changeSendAtom(threadId, clientId) { old ->
+            old?.identified(messageId, batchId ?: old.batchId)?.let { atom ->
+                if (promoteDelivered && atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED) {
+                    atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
+                } else atom
+            }
+        }
         identifyHistoricalAttachments(threadId, ClientMessageId(clientId), messageId)
         GatewayLog.protocolEvidence("send.acceptance_merged", mapOf("conversationId" to threadId,"clientMessageId" to clientId,
             "messageId" to messageId,"elapsedNs" to System.nanoTime()-started))
@@ -524,12 +537,7 @@ class WorkbenchController(
                 // Invalid/foreign correlation must not terminate the event consumer.
                 if (event.correlationId.isBlank() || event.messageId.isBlank() ||
                     atomsFor(target)[event.correlationId] == null) return@let
-                acceptSendAtom(target, event.correlationId, event.messageId)
-                changeSendAtom(target, event.correlationId) { old -> old?.let { atom ->
-                    if (event.agentReceived && atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED)
-                        atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
-                    else atom
-                } }
+                acceptSendAtom(target, event.correlationId, event.messageId, promoteDelivered = event.agentReceived)
                 nativePendingSubmissions.remove(event.correlationId)?.let { (threadId, attachments) ->
                     attachments.forEach { releaseSubmittedAttachment(threadId, it) }
                     if (failedSubmission?.clientMessageId == event.correlationId) failedSubmission = null
@@ -642,6 +650,54 @@ class WorkbenchController(
     private val messageStatusRevisions = LinkedHashMap<String, Long>()
     private val messageStatusesById = LinkedHashMap<String, MessageStatusReceipt>()
     private val messageStatusesByClientId = LinkedHashMap<String, MessageStatusReceipt>()
+    private val activeEventApplyCount = MutableStateFlow(0)
+
+    /** 统一收集已在镜像确认、已删除或已持有非占位远端身份的发送成员标识，消除时间线与 pendingBatch 判定分叉。 */
+    private fun settledClientIds(threadId: String?, acceptedCorrelationId: String? = null): Set<String> = buildSet {
+        if (!acceptedCorrelationId.isNullOrBlank()) add(acceptedCorrelationId)
+        mirrored.values.forEach { message ->
+            if (!message.localPlaceholder && message.sender == "user") {
+                message.clientMessageId?.value?.let(::add)
+            }
+        }
+        if (threadId != null) {
+            atomsFor(threadId).values.forEach { atom ->
+                val settled = atom.isDeleted ||
+                    (atom.submissionState == LocalSubmissionState.ACCEPTED &&
+                        !atom.messageId.isNullOrBlank() &&
+                        atom.messageId != atom.clientMessageId.value)
+                if (settled) add(atom.clientMessageId.value)
+            }
+        }
+    }
+
+    /** 剔除已确认原生身份或已受理入列的消息占位，避免状态刷新时露出半结算 pendingBatch。 */
+    private fun settledPendingBatch(
+        threadId: String?,
+        pendingBatch: List<TimelineEntry>,
+        acceptedCorrelationId: String? = null,
+    ): List<TimelineEntry> {
+        if (pendingBatch.isEmpty()) return pendingBatch
+        val settled = settledClientIds(threadId, acceptedCorrelationId)
+        if (settled.isEmpty()) return pendingBatch
+        return pendingBatch.filterNot { entry -> entry.key.removePrefix("local_") in settled }
+    }
+
+    /** 统一在非权威受理返回后刷新编辑态、剔除已确认占位并按最新列表重绘时间线。 */
+    private fun updateProvisionalAcceptanceState(
+        threadId: String,
+        transform: (WorkbenchUiState) -> WorkbenchUiState = { it },
+    ) {
+        if (activeThreadId != threadId) return
+        update { state ->
+            val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+            transform(state).copy(
+                composer = ComposerState.EDITING,
+                pendingBatch = reconciledPending,
+                timeline = Loadable.Ready(renderTimeline(reconciledPending)),
+            )
+        }
+    }
 
     /**
      * 展示行缓存：不含附件的消息行只依赖消息本身与取消标记，可按消息实例复用；
@@ -1603,7 +1659,20 @@ class WorkbenchController(
             }
             generationJob=source?.let { snapshots -> workScope.launch { snapshots.collect { snapshot ->
                 if (tracker.generationSnapshot != null && snapshot.conversationId != activeThreadId) return@collect
+                val expectedThreadId = activeThreadId
                 val generation = snapshot.state
+                if (generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
+                    // 在发布终态前等待上游发布、镜像落盘与控制器事件应用全部完结，并重检当前会话与最新快照。
+                    (repository as? com.openandroidintelligence.conversation.ports.EventCommitBarrier)?.awaitPendingEventCommits()
+                    activeEventApplyCount.first { it == 0 }
+                    if (activeThreadId != expectedThreadId) return@collect
+                    val latestSnapshot = tracker.generationSnapshot?.value
+                    if (latestSnapshot != null) {
+                        if (snapshot.conversationId != activeThreadId || latestSnapshot != snapshot) return@collect
+                    } else if (tracker.generationState?.value?.let { it != generation } == true) {
+                        return@collect
+                    }
+                }
                 val generationId = snapshot.generationId
                 observeGenerationIdentity(generationId)
                 val pending = requestedCancellations[activeThreadId to (generationId ?: lastObservedGenerationId)]
@@ -1613,13 +1682,15 @@ class WorkbenchController(
                     generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
                     activeThreadId?.let { rememberExecutionTerminal(it, generationId, generation) } == true
                 update { state ->
+                    val reconciledPending = settledPendingBatch(activeThreadId, state.pendingBatch)
                     val next = if (generation == GenerationState.FAILED && generationId != null && activeThreadId to generationId in cancelledGenerations)
-                        state.copy(generation=GenerationState.CANCELLED)
+                        state.copy(generation=GenerationState.CANCELLED, pendingBatch=reconciledPending)
                     else if (pending != null && generation != GenerationState.COMPLETED)
-                        state.copy(generation=GenerationState.CANCEL_REQUESTED)
-                    else state.copy(generation=generation)
-                    if (executionSettled && (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
-                        next.copy(timeline = Loadable.Ready(renderTimeline(state.pendingBatch))) else next
+                        state.copy(generation=GenerationState.CANCEL_REQUESTED, pendingBatch=reconciledPending)
+                    else state.copy(generation=generation, pendingBatch=reconciledPending)
+                    if ((executionSettled || reconciledPending.size != state.pendingBatch.size) &&
+                        (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty))
+                        next.copy(timeline = Loadable.Ready(renderTimeline(reconciledPending))) else next
                 }
             } } }
         }
@@ -1982,19 +2053,24 @@ class WorkbenchController(
                     val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
-                        else state.copy(
-                            timeline = if (
-                                renderTimeline(state.pendingBatch).isEmpty() &&
-                                creationReceiptRow(threadId) == null &&
-                                approvalRowsForActiveThread().isEmpty()
-                            ) {
-                                Loadable.Empty
-                            } else {
-                                Loadable.Ready(renderTimeline(state.pendingBatch))
-                            },
-                            generation = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.value
-                                ?.takeUnless { it == GenerationState.IDLE } ?: if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
-                        )
+                        else {
+                            val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+                            val rendered = renderTimeline(reconciledPending)
+                            state.copy(
+                                pendingBatch = reconciledPending,
+                                timeline = if (
+                                    rendered.isEmpty() &&
+                                    creationReceiptRow(threadId) == null &&
+                                    approvalRowsForActiveThread().isEmpty()
+                                ) {
+                                    Loadable.Empty
+                                } else {
+                                    Loadable.Ready(rendered)
+                                },
+                                generation = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.value
+                                    ?.takeUnless { it == GenerationState.IDLE } ?: if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
+                            )
+                        }
                     }
                 },
                 onFailure = { cause ->
@@ -3537,8 +3613,7 @@ class WorkbenchController(
                             submission.attachmentIds.forEach { releaseSubmittedAttachment(target, it) }
                             if (failedSubmission?.clientMessageId == submission.clientMessageId) failedSubmission = null
                         }
-                        if (activeThreadId == target) update { state -> state.copy(composer = ComposerState.EDITING,
-                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)), notice = null) }
+                        updateProvisionalAcceptanceState(target) { it.copy(notice = null) }
                         persistCheckpoint()
                         return@launch
                     } else {
@@ -3675,8 +3750,7 @@ class WorkbenchController(
                 batchId = batchId, messages = messages, clientConversationId = conversationId,
             ))
             if (!acceptance.authoritative) {
-                if (activeThreadId == conversationId) update { state -> state.copy(composer=ComposerState.EDITING,
-                    timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
+                updateProvisionalAcceptanceState(conversationId)
                 persistCheckpoint()
                 return
             }
@@ -3916,8 +3990,7 @@ class WorkbenchController(
                 }
                 if (!acceptance.authoritative) {
                     nativePendingSubmissions[atom.clientMessageId.value] = threadId to retried.localDraftIds
-                    if (activeThreadId == threadId) update { state -> state.copy(composer=ComposerState.EDITING,
-                        timeline=Loadable.Ready(renderTimeline(state.pendingBatch))) }
+                    updateProvisionalAcceptanceState(threadId)
                     persistCheckpoint()
                     return
                 }
@@ -4615,7 +4688,12 @@ class WorkbenchController(
                     var storageFailures = 0
                     while (isActive) {
                         try {
-                            applyConversationEvent(event)
+                            activeEventApplyCount.update { it + 1 }
+                            try {
+                                applyConversationEvent(event)
+                            } finally {
+                                activeEventApplyCount.update { (it - 1).coerceAtLeast(0) }
+                            }
                             // 重试时内存修订可能已推进，投影会提前返回；仍须补齐保存和事件标记。
                             if (retryingCommit && event.eventId !in handledEventIds) commitHandledEvent(event.eventId)
                             break
@@ -4718,40 +4796,19 @@ class WorkbenchController(
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.MessageAccepted -> {
                 val eventConvId = event.conversationId?.value
                 val correlationId = event.correlationId
+                val acceptedCorrelation = correlationId.takeIf { eventConvId == currentActiveId && it.isNotBlank() }
                 update { state ->
-                    state.copy(pendingDeliveries = state.pendingDeliveries.filterNot {
+                    val remainingDeliveries = state.pendingDeliveries.filterNot {
                         it.clientMessageId.value == correlationId
-                    })
-                }
-                if (eventConvId != null && correlationId.isNotBlank() && event.messageId.isNotBlank()) {
-                    // 受理早期只能用客户端占位 id；宿主报出真实 userMessageId 后升级本地身份，
-                    // 后续终态事件就不会再与本地身份分叉。
-                    changeSendAtom(eventConvId, correlationId) { old ->
-                        val identified = old?.takeIf { it.messageId == it.clientMessageId.value }
-                            ?.identified(event.messageId) ?: old
-                        // 会话流已经确认这条消息属实：先把提示从"等待接收"推进到"已接收"，
-                        // 不必等首个 token（Hermes 一轮可能要思考数秒到数十秒）。
-                        identified?.let { atom ->
-                            if (event.agentReceived && atom.submissionState == LocalSubmissionState.ACCEPTED &&
-                                atom.status == com.openandroidintelligence.conversation.ports.AgentMessageStatus.QUEUED
-                            ) {
-                                atom.copy(status = com.openandroidintelligence.conversation.ports.AgentMessageStatus.DELIVERED)
-                            } else atom
-                        }
                     }
-                }
-                if (eventConvId == currentActiveId && correlationId.isNotBlank()) {
-                    update { state ->
-                        val pending = state.pendingBatch.filterNot {
-                            it.key == "local_$correlationId" || it.key == correlationId
-                        }
-                        state.copy(
-                            pendingBatch = pending,
-                            timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
-                                Loadable.Ready(renderTimeline(pending))
-                            } else state.timeline,
-                        )
-                    }
+                    val pending = settledPendingBatch(currentActiveId, state.pendingBatch, acceptedCorrelation)
+                    state.copy(
+                        pendingDeliveries = remainingDeliveries,
+                        pendingBatch = pending,
+                        timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                            Loadable.Ready(renderTimeline(pending, remainingDeliveries))
+                        } else state.timeline,
+                    )
                 }
             }
 
@@ -4804,7 +4861,7 @@ class WorkbenchController(
                 )
                 val localKey = "local_${event.clientMessageId.value}"
                 update { state ->
-                    val pending = state.pendingBatch.map { row ->
+                    val updatedPending = state.pendingBatch.map { row ->
                         if (row.key == localKey) {
                             row.copy(
                                 messageStatus = event.status,
@@ -4812,6 +4869,7 @@ class WorkbenchController(
                             )
                         } else row
                     }
+                    val pending = settledPendingBatch(currentActiveId, updatedPending)
                     state.copy(
                         timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
                             Loadable.Ready(renderTimeline(pending))
@@ -4916,9 +4974,11 @@ class WorkbenchController(
                 }
                 update { state ->
                     if (!eventContext.isActive) return@update state
+                    val pending = settledPendingBatch(currentActiveId, state.pendingBatch)
                     state.copy(
+                        pendingBatch = pending,
                         timeline = if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
-                            Loadable.Ready(renderTimeline(state.pendingBatch))
+                            Loadable.Ready(renderTimeline(pending))
                         } else {
                             state.timeline
                         },
@@ -4970,9 +5030,11 @@ class WorkbenchController(
                         belongsToCurrentTurn = settlesCurrentTurn)
                     if (settlesCurrentTurn) observeGenerationIdentity(event.generationId)
                     update { state ->
+                        val reconciledPending = settledPendingBatch(currentActiveId, state.pendingBatch)
                         state.copy(
                             generation = if (settlesCurrentTurn) GenerationState.CANCELLED else state.generation,
-                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
+                            pendingBatch = reconciledPending,
+                            timeline = Loadable.Ready(renderTimeline(reconciledPending)),
                             notice = if (settlesCurrentTurn) {
                                 state.notice?.takeUnless { it.startsWith("AGENT_MESSAGE_FAILED:") }
                             } else state.notice,
@@ -5140,15 +5202,18 @@ class WorkbenchController(
                     if (!isActive || state.activeThreadId != threadId) state
                     else {
                         val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
+                        val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+                        val rendered = renderTimeline(reconciledPending)
                         state.copy(
+                            pendingBatch = reconciledPending,
                             timeline = if (
-                                renderTimeline(state.pendingBatch).isEmpty() &&
+                                rendered.isEmpty() &&
                                 creationReceiptRow(threadId) == null &&
                                 approvalRowsForActiveThread().isEmpty()
                             ) {
                                 Loadable.Empty
                             } else {
-                                Loadable.Ready(renderTimeline(state.pendingBatch))
+                                Loadable.Ready(rendered)
                             },
                             generation = if (hasStreaming) {
                                 GenerationState.RUNNING
@@ -5521,11 +5586,14 @@ class WorkbenchController(
         return entry
     }
 
-    private fun renderTimeline(pendingBatch: List<TimelineEntry> = _state.value.pendingBatch): List<TimelineEntry> {
+    private fun renderTimeline(
+        pendingBatch: List<TimelineEntry> = _state.value.pendingBatch,
+        pendingDeliveries: List<com.openandroidintelligence.conversation.ports.PendingDelivery> = _state.value.pendingDeliveries,
+    ): List<TimelineEntry> {
         val activeAtoms = activeThreadId?.let { atomsFor(it).values.toList() }.orEmpty()
         streamPresentations.keys.retainAll(mirrored.keys)
         val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
-        val queuedClientIds = _state.value.pendingDeliveries.map { it.clientMessageId.value }.toSet()
+        val queuedClientIds = pendingDeliveries.map { it.clientMessageId.value }.toSet()
         val mirroredEntries = mergedMessages.filterNot {
             it.clientMessageId?.value in queuedClientIds
         }.map(::renderedTimelineEntry).filterNot { entry ->
@@ -5534,9 +5602,9 @@ class WorkbenchController(
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
         val mirroredClientIds = mergedMessages.mapNotNull { it.clientMessageId?.value }.toSet()
-        val deletedClientIds = activeAtoms.filter { it.isDeleted }.map { it.clientMessageId.value }.toSet()
+        val settledAndDeletedClientIds = settledClientIds(activeThreadId)
         val recoveredRows = recoveredAttachmentSubmissions[activeThreadId]?.let { submission ->
-            if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in deletedClientIds) emptyList()
+            if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in settledAndDeletedClientIds) emptyList()
             else listOf(TimelineEntry("local_${submission.clientMessageId}","user",submission.text,true,0L,true,null,
                 clientMessageId=ClientMessageId(submission.clientMessageId),localPlaceholder=true,
                 attachments=submission.attachmentIds.map { id ->
@@ -5546,7 +5614,11 @@ class WorkbenchController(
                 }))
         }.orEmpty()
         val unconfirmedPending = (pendingBatch + recoveredRows).distinctBy { it.key }.filterNot { entry ->
-            mirroredKeys.contains(entry.key) || mirroredKeys.contains(entry.key.removePrefix("local_")) || mirroredClientIds.contains(entry.key.removePrefix("local_")) || deletedClientIds.contains(entry.key.removePrefix("local_"))
+            val rawClientId = entry.key.removePrefix("local_")
+            mirroredKeys.contains(entry.key) ||
+                mirroredKeys.contains(rawClientId) ||
+                mirroredClientIds.contains(rawClientId) ||
+                rawClientId in settledAndDeletedClientIds
         }
 
         val rawList = (mirroredEntries + unconfirmedPending).sortedWith(

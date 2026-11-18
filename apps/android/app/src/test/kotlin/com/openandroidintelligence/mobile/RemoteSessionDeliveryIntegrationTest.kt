@@ -2,15 +2,24 @@ package com.openandroidintelligence.mobile
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.openandroidintelligence.conversation.batch.DebouncePolicy
+import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.data.remote.RemoteWorkspace
 import com.openandroidintelligence.conversation.data.remote.RemoteConversationRepository
 import com.openandroidintelligence.conversation.data.remote.CodexSessionCarrier
+import com.openandroidintelligence.conversation.data.remote.RemoteHistoryPage
+import com.openandroidintelligence.conversation.data.remote.RemoteModelCatalog
+import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
+import com.openandroidintelligence.conversation.data.remote.RemoteSessionCarrier
+import com.openandroidintelligence.conversation.data.remote.RemoteSessionPage
+import com.openandroidintelligence.conversation.data.remote.RemoteSessionRow
 import com.openandroidintelligence.mobile.conversations.EncryptedConversationMirror
 import com.openandroidintelligence.mobile.conversations.MirroredConversationRepository
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.WorkbenchController
+import kotlin.time.Duration
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
@@ -268,6 +277,90 @@ class RemoteSessionDeliveryIntegrationTest {
             received.cancelAndJoin()
             repository.close()
             mirror.closeStore()
+        }
+    }
+    @Test fun `Codex多线程调度下镜像与持久化未落盘时终态快照不得穿透pendingBatch`() = runBlocking {
+        val owner = ConversationScope("mt-profile", "mt-endpoint", "account", "mt-install")
+        val endpointKey = EndpointKey(RemoteServiceOrigin.fromCanonicalOrigin("https://delivery.example"), "account", "host", BackendId("codex"), "workspace")
+        val workspace = RemoteWorkspace(AgentEndpoint(endpointKey, "工作区"), "/workspace")
+        val mtRoot = SupervisorJob()
+        val mtScope = CoroutineScope(mtRoot + Dispatchers.Default)
+        val mirror = EncryptedConversationMirror(context, owner, key)
+        val frames = MutableSharedFlow<JsonValue>()
+        val prompts = Channel<Pair<String, CompletableDeferred<JsonValue>>>(Channel.UNLIMITED)
+        val carrier = object : RemoteSessionCarrier {
+            override val backend = "codex"
+            override val channel = connection.rpc
+            override val capabilities = setOf(SessionCapability.SEND, SessionCapability.STREAM)
+            override suspend fun workspaces() = listOf(workspace)
+            override suspend fun sessions(workspace: RemoteWorkspace, page: PageRequest) = RemoteSessionPage(listOf(RemoteSessionRow(native, "已有会话标题", 1L, 1L)))
+            override suspend fun create(workspace: RemoteWorkspace): RemoteSessionRow = error("不应新建")
+            override suspend fun history(sessionId: String, page: PageRequest) = RemoteHistoryPage(emptyList())
+            override fun follow(sessionId: String): Flow<JsonValue> = flow {
+                emit(obj("type" to "remote-stream-ready"))
+                emitAll(frames)
+            }
+            override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue =
+                CompletableDeferred<JsonValue>().also { prompts.send(requestId to it) }.await()
+            override suspend fun interrupt(sessionId: String, generationId: String): JsonValue = obj()
+            override suspend fun respond(sessionId: String, handle: String, allow: Boolean): JsonValue = obj()
+            override suspend fun models(sessionId: String): RemoteModelCatalog = RemoteModelCatalog(emptyList(), emptyMap())
+            override suspend fun selectModel(sessionId: String, selection: RemoteModelSelection) = selection
+        }
+        val acceptedEmitted = Channel<String>(Channel.UNLIMITED)
+        val repository = RemoteConversationRepository(carrier, workspace, mtScope, { local }, onEvent = { _, event ->
+            mirror.commitNativeEvents(listOf(event))
+            if (event is VerifiedConversationEvent.MessageAccepted) {
+                acceptedEmitted.trySend(event.correlationId)
+            }
+        })
+        val source = MirroredConversationRepository(repository, mirror)
+        val controller = WorkbenchController(
+            mtScope, source, object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("test"), emptyList())
+            }, { owner }, debouncePolicy = DebouncePolicy(delay = Duration.ZERO), supportsMessageBatches = true,
+            replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false), clock = { 1000 }, persistence = mirror,
+        )
+        try {
+            controller.openThread(local)
+            withTimeout(5_000) {
+                controller.state.first { it.activeThreadId == local && (it.timeline is Loadable.Ready || it.timeline is Loadable.Empty) }
+            }
+            repeat(10) { round ->
+                val turnId = "mt-turn-$round"
+                val userId = "mt-user-$round"
+                val replyId = "mt-reply-$round"
+                controller.editDraft("并发$round")
+                controller.sendDraft()
+                val (clientIdValue, prompt) = withTimeout(5_000) { prompts.receive() }
+                frames.emit(obj("method" to "turn/started", "params" to obj("threadId" to native, "turn" to obj("id" to turnId))))
+                withTimeout(5_000) {
+                    controller.state.first { it.generation == GenerationState.RUNNING || it.generation == GenerationState.QUEUED }
+                }
+                frames.emit(obj("method" to "item/started", "params" to obj("threadId" to native, "turnId" to turnId,
+                    "item" to obj("id" to userId, "type" to "userMessage", "content" to listOf(obj("type" to "text", "text" to "并发$round"))))))
+                frames.emit(obj("method" to "item/agentMessage/delta", "params" to obj("threadId" to native, "turnId" to turnId,
+                    "itemId" to replyId, "delta" to "回答$round")))
+                // 完成 prompt 并确认回执已进入镜像与 IO 管道后立即触发 turn/completed，验证跨调度器零间隙屏障。
+                prompt.complete(obj("turn" to obj("id" to turnId)))
+                withTimeout(5_000) {
+                    while (acceptedEmitted.receive() != clientIdValue) Unit
+                }
+                frames.emit(obj("method" to "turn/completed", "params" to obj("threadId" to native,
+                    "turn" to obj("id" to turnId, "status" to "completed"))))
+                val terminalState = withTimeout(5_000) {
+                    controller.state.first { it.generation == GenerationState.COMPLETED }
+                }
+                assertFalse("第${round}轮进入 COMPLETED 时不应残留待接收占位", terminalState.pendingBatch.any {
+                    it.key.removePrefix("local_") == clientIdValue
+                })
+                assertSettledUserBeforeReply(controller, userId, replyId)
+            }
+        } finally {
+            controller.closeAndAwait()
+            repository.close()
+            mirror.closeStore()
+            mtRoot.cancelAndJoin()
         }
     }
     private inner class Account : RemoteAccountConnection {
