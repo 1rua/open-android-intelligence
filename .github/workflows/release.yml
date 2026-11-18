@@ -9,9 +9,8 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: dev-release
+  group: release-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
-  queue: max
 
 jobs:
   # 与构建并行执行：构建可以立刻开始（签名、打包、验签），但发布必须等这个

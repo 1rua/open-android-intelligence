@@ -144,6 +144,7 @@ jobs:
           python3 -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py
           tools/test_android_jvm_reuse.py tools/test_android_app_performance.py
           tools/test_check_hardcoded_chinese.py tools/test_test_string_resources_integrity.py
+          tools/test_verify_pr_source.py
 
   remote-sources:
     name: Remote Fixed Source Integrity
@@ -429,7 +430,7 @@ jobs:
           # 同源码、同恢复缓存实测：完整Test task 498.46→392.08秒，覆盖集合一致。
           app-jit: ${{ inputs.app-jit || 'startup' }}
           app-gc: ${{ inputs.app-gc || 'default' }}
-          app-performance: 'true'
+          app-performance: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
           # 手动性能对照只读取同一份既有缓存，避免先结束的样本替后一个写热缓存。
           gradle-cache-read-only: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
 

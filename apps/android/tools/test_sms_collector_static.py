@@ -29,18 +29,18 @@ ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 
 
 class SmsCollectorStaticTest(unittest.TestCase):
-    def sms_sources(self) -> dict[Path, str]:
-        sources = {path: path.read_text(encoding="utf-8") for path in SMS_SOURCE_ROOT.rglob("*.kt")}
+    def sms_sources(self, source_root: Path = SMS_SOURCE_ROOT) -> dict[Path, str]:
+        sources = {path: path.read_text(encoding="utf-8") for path in source_root.rglob("*.kt")}
         self.assertNotEqual({}, sources)
         return sources
 
     def test_sms_source_walk_includes_nested_kotlin_files(self):
-        with tempfile.TemporaryDirectory(dir=SMS_SOURCE_ROOT) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             nested = Path(directory) / "nested" / "NestedSmsBoundary.kt"
             nested.parent.mkdir()
             nested.write_text("package com.openandroidintelligence.sms\n", encoding="utf-8")
 
-            self.assertIn(nested, self.sms_sources())
+            self.assertIn(nested, self.sms_sources(Path(directory)))
 
     def test_sms_collector_is_registered_as_an_android_module(self):
         self.assertIn('":sms-collector"', SETTINGS_GRADLE.read_text(encoding="utf-8"))

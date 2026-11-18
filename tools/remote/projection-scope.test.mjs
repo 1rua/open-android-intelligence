@@ -1,18 +1,9 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
-import { SourceTextModule, SyntheticModule } from 'node:vm';
+import { createTsVmLoader, loadVerifiedFixtures } from './shared-vm-loader.mjs';
 
 const fixtureRoot = new URL('./fixtures/dsh-remote/', import.meta.url);
-const index = JSON.parse(await readFile(new URL('source.json', fixtureRoot), 'utf8'));
-const sources = new Map();
-for (const entry of index.files) {
-  const bytes = await readFile(new URL(entry.fixture, fixtureRoot));
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), entry.sha256, entry.fixture);
-  sources.set(entry.fixture, bytes.toString('utf8'));
-}
+const { sources } = await loadVerifiedFixtures(fixtureRoot, { pathKey: 'fixture' });
 
 // 保留原始投影、工作区映射、事件载体与队列；仅替换后端连接、会话内容和标题展示。
 async function projectionFixture() {
@@ -33,26 +24,8 @@ async function projectionFixture() {
     './virtual-live.js': { AcpLiveProjection: TestLive },
     './virtual-titles.js': { AcpSessionTitles: TestTitles },
   };
-  const modules = new Map();
-  for (const name of ['virtual-harness', 'virtual-contract', 'virtual-event-carrier', 'virtual-catalog']) {
-    modules.set(`./${name}.js`, new SourceTextModule(stripTypeScriptTypes(sources.get(`acp/${name}.ts`), {
-      mode: 'transform', sourceUrl: `fixed-upstream/acp/${name}.ts`,
-    }), { identifier: `fixed-upstream/acp/${name}.ts` }));
-  }
-  const stubs = new Map();
-  const root = modules.get('./virtual-harness.js');
-  await root.link(async specifier => {
-    if (modules.has(specifier)) return modules.get(specifier);
-    assert.ok(doubles[specifier], `未声明依赖：${specifier}`);
-    if (!stubs.has(specifier)) {
-      const values = doubles[specifier];
-      stubs.set(specifier, new SyntheticModule(Object.keys(values), function () {
-        for (const [key, value] of Object.entries(values)) this.setExport(key, value);
-      }, { identifier: specifier }));
-    }
-    return stubs.get(specifier);
-  });
-  await root.evaluate();
+  const loader = createTsVmLoader({ sources, doubles });
+  const rootNamespace = await loader.load('acp/virtual-harness.ts');
   const calls = [];
   const client = {
     async createSession(cwd) { return { sessionId: 'seed-session', cwd }; },
@@ -60,8 +33,8 @@ async function projectionFixture() {
     async loadSessionHistory() { return []; },
     async prompt(sessionId, text, signal, images, backend) { calls.push({ sessionId, backend }); },
   };
-  const projection = new root.namespace.AcpVirtualHarness(client, { deviceId: 'host-a', name: 'isolated' }, 'hermes');
-  return { projection, calls, workspaceId: path => root.namespace.acpCwdWorkspaceId(path, 'hermes') };
+  const projection = new rootNamespace.AcpVirtualHarness(client, { deviceId: 'host-a', name: 'isolated' }, 'hermes');
+  return { projection, calls, workspaceId: path => rootNamespace.acpCwdWorkspaceId(path, 'hermes') };
 }
 
 test('原始ACP投影不使用prompt中旧workspaceId阻止同名Session发往当前工作区', async () => {

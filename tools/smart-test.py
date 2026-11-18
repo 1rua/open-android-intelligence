@@ -235,7 +235,7 @@ def execute_strategy(
         ret = run_command([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
             "tools/test_smart_test.py", "tools/test_ci_planning.py", "tools/test_android_jvm_reuse.py",
             "tools/test_android_app_performance.py", "tools/test_check_hardcoded_chinese.py",
-            "tools/test_test_string_resources_integrity.py"])
+            "tools/test_test_string_resources_integrity.py", "tools/test_verify_pr_source.py"])
         if ret != 0:
             return ret
 

@@ -64,7 +64,7 @@ jobs:
           npm run lock:check
           npm test
           npm run typecheck
-          python -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py
+          python -m pytest -q -p no:cacheprovider tools/test_ci_planning.py tools/test_smart_test.py tools/test_verify_pr_source.py
       - name: 验证 Android 发布元数据与 APK 检查工具
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s apps/android/tools -p 'test_app_release_metadata.py'
