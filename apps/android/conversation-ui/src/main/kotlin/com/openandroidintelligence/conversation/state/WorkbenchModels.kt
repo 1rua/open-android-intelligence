@@ -8,11 +8,10 @@ import com.openandroidintelligence.conversation.ports.ConversationOrganization
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 
 /**
- * One timeline entry for rendering: either a mirrored server message or a local
- * send unit that is still waiting for the Gateway's acceptance.
+ * 供界面渲染的单条时间线条目：既可能是服务端镜像消息，也可能是等待网关受理的本地发送单元。
  *
- * Local units keep their own identity so a debounce batch never loses a member;
- * acceptance is the server's word, never a local timer's.
+ * 本地单元保留各自的独立身份，确保防抖合并批次不会丢失任何成员；
+ * 受理状态始终以服务端回执为准，不由本地定时器自行判定。
  */
 data class TimelineEntry(
     val key: String,
@@ -28,21 +27,17 @@ data class TimelineEntry(
     val messageStatusErrorCode: com.openandroidintelligence.conversation.ports.AgentMessageErrorCode? = null,
     val submissionFailureCode: String? = null,
     /**
-     * The conversation this row navigates to, when it is a system row rather
-     * than a message.
+     * 当本行属于系统导航行而非普通消息时，指向其创建的新会话 ID。
      *
-     * The thread a `/new` was sent from keeps a receipt for what that command
-     * created, so the new conversation stays reachable after the phone has moved
-     * — including when the user had already left the source thread when the
-     * answer arrived. A receipt is local navigation, never Gateway content.
+     * 发送 `/new` 的原会话会保留一份回执以记录新创建的会话，确保即便用户在结果到达前
+     * 已离开原会话，新会话依然可达。回执仅用于本地导航，不属于网关聊天正文。
      */
     val systemThreadId: String? = null,
     /**
-     * The approval card this row is, when it is not a message at all.
+     * 当本行用于承载网关发起的审批卡片（而非普通消息）时的卡片状态。
      *
-     * An approval is a request the Gateway made, not something the user or the
-     * Agent said, so it rides as a row of its own: message folding and
-     * duplicate-pruning never see it, and the card keeps its own state.
+     * 审批是网关发起的请求，既非用户输入也非 Agent 回复，因此作为独立行存在：
+     * 消息折叠与去重裁剪不会作用于它，卡片自身独立维护决策状态。
      */
     val approval: ApprovalCardState? = null,
     /** 明确的客户端身份优先于旧历史的正文相似判断。 */
@@ -50,7 +45,7 @@ data class TimelineEntry(
     val generationId: String? = null,
     val executionSteps: List<com.openandroidintelligence.conversation.model.NativeExecutionStep> = emptyList(),
     val localPlaceholder: Boolean = false,
-    /** View-only execution facts; this row is never an Assistant message in mirrored history. */
+    /** 仅用于展示的执行过程事实；该行在离线镜像历史中不作为助手消息持久化。 */
     val executionFact: Boolean = false,
     /** 该执行过程所属任务的明确状态，独立于消息正文是否仍在流式。 */
     val executionGenerationState: GenerationState? = null,
@@ -75,30 +70,26 @@ data class WorkbenchUiState(
     val timelineDataSource: String? = null,
     val composer: ComposerState = ComposerState.EDITING,
     val attachments: List<com.openandroidintelligence.conversation.model.AttachmentDraft> = emptyList(),
-    /** Batch members collected by the debounce window, newest last. */
+    /** 防抖窗口期内收集的待合并批次成员（最新项在最后）。 */
     val pendingBatch: List<TimelineEntry> = emptyList(),
-    /** Phone-held corrections waiting for the current Agent turn to finish. */
+    /** 等待当前 Agent 轮次结束后投递的手机端补充修正消息。 */
     val pendingDeliveries: List<com.openandroidintelligence.conversation.ports.PendingDelivery> = emptyList(),
     val notice: String? = null,
-    /** True while the Gateway's create-conversation request is in flight. */
+    /** 网关创建会话请求正在进行中时为 true。 */
     val creatingThread: Boolean = false,
-    /** The thread the create request started from, when there is one. */
+    /** 发起创建会话请求时的源会话 ID（若存在）。 */
     val creationSourceThreadId: String? = null,
-    /** Whether the inbound reply channel is alive; a dead one explains silence. */
+    /** 入站回复流通道是否存活；通道断开时用于向界面解释无响应原因。 */
     val streamHealth: com.openandroidintelligence.conversation.model.StreamHealth =
         com.openandroidintelligence.conversation.model.StreamHealth.IDLE,
     /**
-     * Whether an approval card can be answered on this Gateway at all.
+     * 当前连接的网关是否支持通过交互卡片答复审批请求。
      *
-     * False is a fact the screen has to show: the text command remains the way
-     * to answer, and no card is drawn that would pretend otherwise. It is
-     * re-asserted by every [WorkbenchController] update, so it can never drift
-     * away from the capability the Gateway actually negotiated.
+     * 为 false 时界面必须明确体现该事实：仍通过文本命令完成审批，而不绘制看似可点的无效卡片。
+     * 该标记随每次 [WorkbenchController] 更新重新断言，确保不会与网关实际协商的能力发生漂移。
      *
-     * The default is false because this is a statement about the Gateway rather
-     * than about the screen: with no negotiated capability in hand, "unsupported"
-     * is the only answer a phone is entitled to give, and drawing a card on a
-     * guess would put live buttons over a decision that has nowhere to go.
+     * 默认值为 false，反映的是网关真实能力而非界面偏好：在尚未握手协商出支持能力前，
+     * 手机端只能诚实判定为不支持，避免在无真实路由的情况下渲染可点击按钮。
      */
     val approvalCardsSupported: Boolean = false,
     val isOnline: Boolean = true,
@@ -110,7 +101,7 @@ data class WorkbenchUiState(
     /** 本地发送身份装载完成之前不允许把旧消息误作一条新提交。 */
     val historyHydrated: Boolean = true,
     val organization: ConversationOrganization = ConversationOrganization(),
-    /** Current browser selection also supplies the default for new conversations. */
+    /** 当前浏览器选中的目录，同时作为新建会话的默认归属目录。 */
     val selectedFolderId: String? = null,
     val pendingFolderAssignments: Map<String, String> = emptyMap(),
     val conversationManagementSupported: Boolean = false,
@@ -118,14 +109,14 @@ data class WorkbenchUiState(
     val conversationArchiveSupported: Boolean = false,
     val conversationUnarchiveSupported: Boolean = false,
     val conversationRenameSupported: Boolean = false,
-    /** Native Agent folders and ordering are encrypted preferences on this phone. */
+    /** 原生 Agent 文件夹与排序偏好保存在手机端加密存储中。 */
     val organizationStoredLocally: Boolean = false,
     val managingThreads: Boolean = false,
     val busyThreadIds: Set<String> = emptySet(),
-    /** Attachments held by an in-flight Gateway send, not new composer input. */
+    /** 正在随网关发送请求上传中的附件 ID，不再作为新输入草稿的一部分。 */
     val inFlightAttachmentIds: Set<String> = emptySet(),
 ) {
-    /** Keep a confirmed new conversation reachable while its durable folder work is pending. */
+    /** 在持久化目录分配请求尚未落盘前，保持已确认新建会话在对应文件夹下可见。 */
     val browserOrganization: ConversationOrganization get() = organization.copy(assignments=organization.assignments +
         pendingFolderAssignments.filter { (id, folderId) -> id !in organization.assignments && organization.folders.any { it.folderId == folderId } })
     val canSend: Boolean get() = isOnline && sendSupported && historyHydrated &&

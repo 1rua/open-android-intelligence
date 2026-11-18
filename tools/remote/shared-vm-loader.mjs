@@ -68,15 +68,14 @@ export function createTsVmLoader({
   sources,
   doubles = new Map(),
   virtualModules = new Map(),
-  resolveRelative,
 } = {}) {
   const doublesMap = toMap(doubles);
   const virtualMap = toMap(virtualModules);
-  const resolveFn = resolveRelative ?? ((specifier, referencing) => (
+  const resolveRelative = (specifier, referencing) => (
     specifier.startsWith('.')
       ? posix.normalize(posix.join(posix.dirname(referencing.identifier), specifier)).replace(/\.js$/u, '.ts')
       : specifier
-  ));
+  );
   const cache = new Map();
   const pending = new Map();
 
@@ -114,7 +113,7 @@ export function createTsVmLoader({
       await root.link((specifier, referencing) => {
         const target = (doublesMap.has(specifier) || virtualMap.has(specifier))
           ? specifier
-          : resolveFn(specifier, referencing);
+          : resolveRelative(specifier, referencing);
         return getModule(target);
       });
     }
@@ -124,5 +123,5 @@ export function createTsVmLoader({
     return root.namespace;
   }
 
-  return { load, getModule };
+  return { load };
 }

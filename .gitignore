@@ -17,8 +17,8 @@ harness-tasks.json.bak
 harness-tasks.json.tmp
 
 # 本地联调目录、空壳目录与外部插件检出
-oai-core/
-tests/
+/oai-core/
+/tests/
 /oai-core/runtime/
 /oai-core/dist/
 /runtime/

@@ -12,7 +12,7 @@ Chat with your self-hosted AI assistants from your phone anytime—and let them 
 <p>
   <a href="https://github.com/1rua/open-android-intelligence/releases/latest"><img src="https://img.shields.io/github/v/release/1rua/open-android-intelligence?style=flat-square&label=Release&color=D94E1F" alt="Latest Release"></a>
   <a href="#quick-start"><img src="https://img.shields.io/badge/Android-12%2B-10B981?style=flat-square&logo=android&logoColor=white" alt="Android 12+"></a>
-  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.11%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="#quick-start"><img src="https://img.shields.io/badge/Python-3.12%2B-3B82F6?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-64748B?style=flat-square" alt="MIT License"></a>
 </p>
 

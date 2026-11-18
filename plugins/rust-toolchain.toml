@@ -1,6 +1,5 @@
 # Open Android Intelligence 插件工具链固定版本。
-# 与 docs/superpowers/plans/2026-08-24-modular-plugin-architecture-migration.md
-# 的 Tech Stack 一致：Rust 1.88.0 + wasm32-unknown-unknown。
+# 与 CI 工作流（.github/workflows/ci.yml、remote-client.yml）一致：Rust 1.90.0 + wasm32-unknown-unknown。
 [toolchain]
 channel = "1.90.0"
 targets = ["wasm32-unknown-unknown"]
