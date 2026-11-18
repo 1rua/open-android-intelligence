@@ -1,5 +1,7 @@
 # OAI Core 架构事实基线（2026-10-26）
 
+> [!NOTE] 状态声明：历史基线文档（已被 DSH Remote 架构取代，现行规则请参考 [DSH Remote 架构重构规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md) 与根目录 [TEST_INFRA.md](../../TEST_INFRA.md)）。
+
 > **2026-11-13 目标范围更新**：下文是旧 Core 实现的历史事实；新架构目标已转向 Remote，不据此继续扩展旧中心服务。 见[新架构文档](2026-11-13-dsh-remote-baseline.zh-CN.md)。本次只更新文档，既有运行代码及历史证据不因此改变。
 
 本文件记录“统一 Core”的实现事实，每条结论都应有可核对的代码位置。

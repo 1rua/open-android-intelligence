@@ -1,6 +1,9 @@
 # Android MVP skeleton
 
-> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../../docs/superpowers/specs/2026-11-01-global-device-authorization.md)。
+> [!NOTE]
+> 当前仓库已演进至 **DSH Remote 架构**（详见 [DSH Remote 架构重构规格](../../docs/specs/2026-11-13-dsh-remote-architecture-refactor.md)）；下文关于 Bridge v1、`PairedBridgeTransport` 与 `tailnet-core` 的章节仅作历史背景参考，现行网络与控制门面已迁移至 `:gateway-client`。
+
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../../docs/specs/2026-11-01-global-device-authorization.md)。
 
 This tree is deliberately production-shaped but does not include a vendored
 Android SDK or Tailscale AAR. The only network seam is
@@ -136,7 +139,7 @@ work as reboot-resilient until that reviewed policy decision is made.
 > 打包，启动时直接从 APK 资源完成校验、注册与运行时加载，不需要用户安装、启用或初始化，
 > 也不出现在插件管理里。是否允许 Agent 使用某项能力，只由「设备能力与授权」中的能力开关、
 > 授权策略与 Android 系统权限决定。规格见
-> [内建设备能力与「设备能力与授权」页面重构](../../docs/superpowers/specs/2026-11-08-builtin-capability-consolidation.md)。
+> [内建设备能力与「设备能力与授权」页面重构](../../docs/specs/2026-11-08-builtin-capability-consolidation.md)。
 
 Full APKs carry six official capability packages under `assets/bundled-plugins/`:
 `notifications.alp`, `sms.alp`, `call-log.alp`, `screen-reader.alp`,

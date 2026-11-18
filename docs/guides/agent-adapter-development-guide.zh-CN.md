@@ -1,6 +1,8 @@
 # OAI Core 第三方 Agent 适配器开发指南
 
-> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../superpowers/specs/2026-11-01-global-device-authorization.md)。
+> [!NOTE] 状态声明：历史基线文档（已被 DSH Remote 架构取代，现行规则请参考 [DSH Remote 架构重构规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md) 与根目录 [TEST_INFRA.md](../../TEST_INFRA.md)）。
+
+> **2026-11-01 现行需求**：设备能力策略属于 Android 安装实例，独立于 Core、账号与 Agent；每项能力独立总开关及三级模式，新能力默认「每次手动」，主动推送默认关闭。旧配对 grant、迁移复核、账号能力开关和按配对后台许可已被取代。系统权限、合法设备访问关系和账号私有会话/附件隔离继续生效。以下冲突的历史描述不再生效；实现与验收尚在推进。详见 [全局授权规格](../specs/2026-11-01-global-device-authorization.md)。
 
 本指南面向希望将自己的 AI Agent（或已有商业/开源 Agent 系统）接入 Open Android Intelligence (OAI) 体系的开发者。
 

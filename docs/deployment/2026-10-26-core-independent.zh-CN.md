@@ -1,5 +1,7 @@
 # OAI Core 0.2 独立部署与 Hermes 安全切换
 
+> [!NOTE] 状态声明：历史基线文档（已被 DSH Remote 架构取代，现行规则请参考 [DSH Remote 架构重构规格](../specs/2026-11-13-dsh-remote-architecture-refactor.md) 与根目录 [TEST_INFRA.md](../../TEST_INFRA.md)）。
+
 **部署说明更新**：独立部署保留原账号、配对、主密钥和宿主历史；管理变更需要 Core 管理员认证。设备能力按 [ADR-0059](../adr/0059-android-is-the-sole-device-capability-authority.md) 由 Android 唯一授权，本地策略、系统权限和必要确认仍然生效。本说明包括历史 Hermes 切换方法，不表示生产服务、自动接入或 Android 真机已完成验收。
 
 本次依赖方向为 `Hermes Session Adapter → OAI Core`。Android 设备协议、认证、配对、

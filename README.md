@@ -97,10 +97,12 @@
 open-android-intelligence/
 ├── apps/android/                  # 📱 安卓手机 App 源码（Kotlin + Jetpack Compose）
 │   ├── app/                       #    App 主界面：聊天窗口、账号配对、设置与权限开关界面
+│   ├── gateway-client/            #    DSH Remote 客户端与手机虚拟主机门面（Noise 传输与控制总线）
 │   ├── platform-kernel/           #    手机端权限守门员：管插件安装启用、本地权限判断与操作账本
 │   ├── plugin-runtime-wasm/       #    插件安全沙箱：限制插件能用多少内存、时间和存储空间
 │   ├── conversation-ui/           #    聊天消息、思考过程卡片、斜杠命令补全等界面组件
 │   ├── assistant-holder/          #    系统默认数字助理入口（长按电源键唤出、屏幕圈选截图）
+│   ├── ui-resources/              #    独立国际化字符串资源库（values/strings_*.xml）
 │   └── ...                        #    短信、通知、通话记录、屏幕控制等各功能的安卓底层模块
 │
 ├── plugins/                       # 🧩 官方手机能力插件源码（Rust 编写，编译为安全的 .alp 插件包）
@@ -115,10 +117,36 @@ open-android-intelligence/
 ├── integrations/skills/            # DSH Remote 手机操控 Agent Skill（oai-phone-control）
 ├── plugin-tooling/                # 插件打包与数字签名工具
 ├── tools/                         # 🛠️ 开发自测脚本（如 smart-test.py 分级测试工具）
+├── legacy/                        # 🗄️ 已冻结的历史归档目录（不参与现行 CI 与发布）
 ├── assets/readme/                 # 🎨 README 视觉图片与可编辑 SVG 源文件
 ├── docs/                          # 📚 详细设计文档、架构决策记录（ADR）与测试验收报告
 ├── CONTEXT.md                     # 📖 项目核心概念词典（遇到不熟的内部词汇可以查这里）
 └── AGENTS.md                      # 🤖 代码规范、测试门禁与 Git 提交约定
+```
+
+### 开发环境与本地构建准备
+
+在本地拉起开发或测试前，请确认基础工具链版本满足以下要求：
+
+| 工具 / SDK | 版本要求 | 说明 |
+| --- | --- | --- |
+| **Node.js** | `>=24.18.0 <25` | 见 `.nvmrc` 与根目录 `package.json` |
+| **Python** | `3.12+` | 用于运行 `smart-test.py`、CI 影响分析与门禁校验脚本 |
+| **JDK** | `21` | 运行 Gradle 构建与 Robolectric 单测（Android 产物字节码目标为 Java 17） |
+| **Android SDK** | `compileSdk 36` / `targetSdk 35` / `minSdk 31` | 用于构建 Android App 与运行单元测试 |
+| **Rust** | `1.90.0`（目标 `wasm32-unknown-unknown`） | 用于编译 `plugins/` 下 6 个官方 WASM 插件 |
+
+按以下步骤完成本地环境准备与依赖安装：
+
+```bash
+# 1. 参考环境变量模板配置本机密钥与路径（切勿提交本地 .env）
+cp .env.example .env
+
+# 2. 一键安装根目录、plugin-tooling、oai-android-mcp 及工具链依赖
+make bootstrap
+
+# 3. 编译 6 个官方手机能力插件的 WASM 载荷
+make build-wasm
 ```
 
 ### 常用开发自测命令
