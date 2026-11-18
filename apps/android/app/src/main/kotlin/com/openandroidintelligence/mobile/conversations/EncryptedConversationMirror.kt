@@ -9,8 +9,10 @@ import com.openandroidintelligence.gateway.schema.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.flow.mapNotNull
-import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -1001,12 +1003,16 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
     private val streamingPersistIntervalMillis: Long = 500L,
     /** 可注入时钟：测试用假时钟验证合并不必真的等待。 */
     private val clock: () -> Long = { System.nanoTime() },
-) : ConversationRepository by delegate, GenerationTracker, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
+) : ConversationRepository by delegate, GenerationTracker, EventCommitBarrier, com.openandroidintelligence.conversation.model.StreamHealthSource, MessageOutcomeQuery {
     private var lastStreamingPersistAtNanos: Long? = null
+    private val inFlightEventCommits = MutableStateFlow(0)
     override val generationId get()=(delegate as GenerationTracker).generationId
     override val generationState get()=(delegate as GenerationTracker).generationState
     override val generationSnapshot get()=(delegate as GenerationTracker).generationSnapshot
     override val streamHealth get()=(delegate as com.openandroidintelligence.conversation.model.StreamHealthSource).streamHealth
+    override suspend fun awaitPendingEventCommits() {
+        inFlightEventCommits.first { it == 0 }
+    }
     override suspend fun queryMessage(conversationId:String,clientMessageId:ClientMessageId):TimelineMessage? =
         (delegate as? MessageOutcomeQuery)?.queryMessage(conversationId,clientMessageId)?.let {
             mirror.reconcileQuery(conversationId,clientMessageId,it).also { if (media != null) mirror.applyPendingMediaTransitions(media) }
@@ -1057,21 +1063,27 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             else throw e
         } else throw e
     }
-    override fun observeEvents(scope: ConversationScope) = delegate.observeEvents(scope).onStart {
+    override fun observeEvents(scope: ConversationScope) = flow {
         if (media != null) mirror.applyPendingMediaTransitions(media)
-    }.mapNotNull { event ->
-        val streaming = event is VerifiedConversationEvent.TimelineUpsert &&
-            event.message.sender == "assistant" && event.message.state == "STREAMING"
-        val now = clock()
-        val intervalNanos = streamingPersistIntervalMillis * 1_000_000L
-        // 中间流式快照不是最终事实：按间隔合并落盘，避免每帧一次加密事务把上游读流压成背压。
-        // 终态/用户消息/状态事件始终立即落盘，崩溃最多丢一个间隔内的中间文本。
-        val persist = !streaming || lastStreamingPersistAtNanos.let { last -> last == null || now - last >= intervalNanos }
-        if (persist) {
-            if (streaming) lastStreamingPersistAtNanos = now
-            mirror.applyAndCommit(event)
-            if (media != null) mirror.applyPendingMediaTransitions(media)
+        delegate.observeEvents(scope).collect { event ->
+            inFlightEventCommits.update { it + 1 }
+            try {
+                val streaming = event is VerifiedConversationEvent.TimelineUpsert &&
+                    event.message.sender == "assistant" && event.message.state == "STREAMING"
+                val now = clock()
+                val intervalNanos = streamingPersistIntervalMillis * 1_000_000L
+                // 中间流式快照不是最终事实：按间隔合并落盘，避免每帧一次加密事务把上游读流压成背压。
+                // 终态/用户消息/状态事件始终立即落盘，崩溃最多丢一个间隔内的中间文本。
+                val persist = !streaming || lastStreamingPersistAtNanos.let { last -> last == null || now - last >= intervalNanos }
+                if (persist) {
+                    if (streaming) lastStreamingPersistAtNanos = now
+                    mirror.applyAndCommit(event)
+                    if (media != null) mirror.applyPendingMediaTransitions(media)
+                }
+                mirror.projectEvent(event)?.let { emit(it) }
+            } finally {
+                inFlightEventCommits.update { (it - 1).coerceAtLeast(0) }
+            }
         }
-        mirror.projectEvent(event)
     }
 }

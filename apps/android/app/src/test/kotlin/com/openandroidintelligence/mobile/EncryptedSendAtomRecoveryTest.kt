@@ -509,6 +509,117 @@ class EncryptedSendAtomRecoveryTest {
         assertEquals(AgentMessageStatus.COMPLETED, EncryptedConversationMirror(context, accountScope, key, Dispatchers.Unconfined).loadSendAtoms("conv_a").single().status)
     }
 
+    @Test fun mirrorCommitBarrierHoldsTerminalSnapshotUntilInFlightApplyCompletes() = runBlocking {
+        var pauseIo = false
+        val pausedIo = ArrayDeque<Runnable>()
+        val gatedIo = object : CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+                synchronized(pausedIo) {
+                    if (pauseIo) {
+                        pausedIo.addLast(block)
+                        return
+                    }
+                }
+                block.run()
+            }
+        }
+        val mirror = EncryptedConversationMirror(context, accountScope, key, gatedIo)
+        val liveEvents = MutableSharedFlow<VerifiedConversationEvent>(extraBufferCapacity = 8)
+        val liveSnapshots = MutableStateFlow(GenerationSnapshot(null, GenerationState.IDLE, "conv_a"))
+        val repository = object : ConversationRepository, GenerationTracker, StreamHealthSource, MessageOutcomeQuery {
+            override val generationId = MutableStateFlow<String?>("turn-a")
+            override val generationSnapshot: StateFlow<GenerationSnapshot> = liveSnapshots
+            override val streamHealth = MutableStateFlow(StreamHealth.LIVE)
+            override suspend fun listConversations(scope: ConversationScope, page: PageRequest) = ConversationPage(
+                listOf(ConversationSummary(ConversationId("conv_a"), "会话", 1L)),
+                null,
+            )
+            override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(emptyList(), null, 0)
+            override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) =
+                Conversation(ConversationId("conv_a"), "会话", 1L)
+            override suspend fun submitMessage(message: OutgoingMessage) = submitMessage("conv_a", message)
+            override suspend fun submitBatch(batch: MessageBatch) = BatchAcceptance(
+                batch.batchId,
+                batch.messages.associate { it.clientMessageId.value to "user-${it.clientMessageId.value}" },
+                "turn-a",
+                authoritative = false,
+            )
+            override suspend fun submitMessage(conversationId: String, message: OutgoingMessage) =
+                MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, "turn-a", authoritative = false)
+            override suspend fun queryMessage(conversationId: String, clientMessageId: ClientMessageId): TimelineMessage? = null
+            override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = liveEvents
+            override suspend fun cancelGeneration(generationId: String, requestId: String) =
+                CancelGenerationResult(CancelGenerationOutcome.UNSUPPORTED)
+        }
+        val job = SupervisorJob()
+        val mirroredRepo = MirroredConversationRepository(repository, mirror)
+        val ctrl = WorkbenchController(
+            CoroutineScope(Dispatchers.Unconfined + job),
+            mirroredRepo,
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("test"), emptyList())
+            },
+            { accountScope },
+            debouncePolicy = DebouncePolicy(delay = Duration.ZERO),
+            replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+            clock = { 1000 },
+            persistence = mirror,
+            persistenceDispatcher = Dispatchers.Unconfined,
+        )
+        try {
+            ctrl.openThread("conv_a")
+            awaitReadyThread(ctrl, "conv_a")
+            ctrl.editDraft("等待镜像提交完成")
+            ctrl.sendDraft()
+            val pending = withTimeout(5_000) {
+                ctrl.state.first { it.pendingBatch.size == 1 }
+            }
+            val clientId = pending.pendingBatch.single().key.removePrefix("local_")
+
+            pauseIo = true
+            liveEvents.emit(
+                VerifiedConversationEvent.MessageAccepted(
+                    eventId = "evt_acc_$clientId",
+                    occurredAt = 1001L,
+                    messageId = "user-a",
+                    correlationId = clientId,
+                    conversationId = ConversationId("conv_a"),
+                ),
+            )
+            liveEvents.emit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    eventId = "evt_msg_$clientId",
+                    occurredAt = 1002L,
+                    revision = 2L,
+                    message = row("user-a", "等待镜像提交完成", clientId).copy(generationId = "turn-a"),
+                ),
+            )
+            liveSnapshots.value = GenerationSnapshot("turn-a", GenerationState.COMPLETED, "conv_a")
+
+            assertTrue("事件落盘任务应被门控挂起", synchronized(pausedIo) { pausedIo.isNotEmpty() })
+            assertNotEquals(
+                "镜像事件仍在 IO 提交时终态快照不得提前越过占位",
+                GenerationState.COMPLETED,
+                ctrl.state.value.generation,
+            )
+
+            pauseIo = false
+            while (true) {
+                val next = synchronized(pausedIo) { pausedIo.removeFirstOrNull() } ?: break
+                next.run()
+            }
+
+            withTimeout(5_000) { ctrl.state.first { it.generation == GenerationState.COMPLETED } }
+            val rows = (ctrl.state.value.timeline as Loadable.Ready).value
+            val userRow = rows.single { it.key == "user-a" && it.isUser }
+            assertEquals(ClientMessageId(clientId), userRow.clientMessageId)
+            assertTrue("终态放出时 pendingBatch 不应残留已确认占位", ctrl.state.value.pendingBatch.isEmpty())
+        } finally {
+            ctrl.closeAndAwait()
+            job.cancel()
+        }
+    }
+
     private fun controller(scope: CoroutineScope, host: Host, mirror: EncryptedConversationMirror) = WorkbenchController(
         scope, MirroredConversationRepository(host, mirror), object : AgentCommandCatalogRepository {
             override suspend fun get(gatewayId: String, languageCode: String) = AgentCommandCatalog(CatalogVersion("test"), emptyList())

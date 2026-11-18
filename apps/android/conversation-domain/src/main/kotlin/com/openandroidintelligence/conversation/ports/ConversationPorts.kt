@@ -682,6 +682,11 @@ interface GenerationTracker {
     val generationSnapshot: kotlinx.coroutines.flow.StateFlow<GenerationSnapshot>? get()=null
 }
 
+/** 镜像事件提交屏障；供工作台在消费终态快照前等待已入队的镜像持久化与事件投递完成。 */
+interface EventCommitBarrier {
+    suspend fun awaitPendingEventCommits()
+}
+
 data class HistoricalMediaMetadata(val conversationId:String,val attachmentId:String,val filename:String,val mediaType:String,
     val sizeBytes:Long,val sha256:String,val remoteAvailable:Boolean,val estimatedLocalBytes:Long,
     val sourceVersion: String? = null)

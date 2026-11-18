@@ -2161,17 +2161,12 @@ class WorkbenchSendRegressionTest {
         }
         val atomsByThread = linkedMapOf<String, List<LocalSendAtom>>()
         var checkpoint: WorkbenchCheckpoint? = null
-        var pauseNextDeliveredPersistence = false
         val persistence = object : WorkbenchPersistence {
             override fun load() = checkpoint
             override fun save(checkpointValue: WorkbenchCheckpoint) { checkpoint = checkpointValue }
             override fun loadSendAtoms(conversationId: String) = atomsByThread[conversationId].orEmpty()
             override fun saveSendAtoms(conversationId: String, atoms: List<LocalSendAtom>) {
                 atomsByThread[conversationId] = atoms.toList()
-                if (pauseNextDeliveredPersistence && atoms.any { it.status == AgentMessageStatus.DELIVERED }) {
-                    pauseNextDeliveredPersistence = false
-                    pausePersistence = true
-                }
             }
         }
         val controller = WorkbenchController(
@@ -2213,8 +2208,8 @@ class WorkbenchSendRegressionTest {
         )
         runCurrent()
 
-        // 暂停 DELIVERED 二次写盘回读阶段：此时 applySendEvent 已更新内存原子，但 MessageAccepted 尚未走到末尾清理。
-        pauseNextDeliveredPersistence = true
+        // 暂停 acceptSendAtom 初次持久化调度：即使终态快照提前到达，也不得在事件落盘完成前放出半结算状态。
+        pausePersistence = true
         val acceptedJob = launch {
             eventFlow.emit(
                 VerifiedConversationEvent.MessageAccepted(
@@ -2227,25 +2222,29 @@ class WorkbenchSendRegressionTest {
             )
         }
         runCurrent()
-        assertTrue("应已停在 DELIVERED 阶段持久化调度挂起点", pausedWrites.isNotEmpty())
+        assertTrue("应已停在 acceptSendAtom 持久化调度挂起点", pausedWrites.isNotEmpty())
 
-        // 持久化写盘尚未完成时，generationJob 收到终态 COMPLETED。
+        // 持久化写盘尚未完成时，generationJob 收到终态 COMPLETED，应等待在途事件应用完毕再结算。
         snapshot.value = GenerationSnapshot("turn-a", GenerationState.COMPLETED, "conv_1")
         runCurrent()
+        assertNotEquals(GenerationState.COMPLETED, controller.state.value.generation)
+
+        pausePersistence = false
+        while (pausedWrites.isNotEmpty()) {
+            while (pausedWrites.isNotEmpty()) pausedWrites.removeFirst().run()
+            runCurrent()
+        }
+        acceptedJob.join()
 
         assertEquals(GenerationState.COMPLETED, controller.state.value.generation)
         val entries = (controller.state.value.timeline as Loadable.Ready).value
         val settledUser = entries.single { it.key == "user-a" && it.isUser }
         assertEquals(ClientMessageId(clientId), settledUser.clientMessageId)
+        assertEquals(AgentMessageStatus.DELIVERED, settledUser.messageStatus)
         assertFalse(
             "确认原生用户身份后对应发送成员不应残留待接收占位",
             controller.state.value.pendingBatch.any { it.key.removePrefix("local_") == clientId },
         )
-
-        pausePersistence = false
-        while (pausedWrites.isNotEmpty()) pausedWrites.removeFirst().run()
-        runCurrent()
-        acceptedJob.join()
         assertTrue(controller.state.value.pendingBatch.isEmpty())
         controller.cancel()
         coroutineContext.cancelChildren()
