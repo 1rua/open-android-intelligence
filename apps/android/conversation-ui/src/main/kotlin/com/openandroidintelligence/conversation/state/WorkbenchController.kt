@@ -1659,18 +1659,18 @@ class WorkbenchController(
             }
             generationJob=source?.let { snapshots -> workScope.launch { snapshots.collect { snapshot ->
                 if (tracker.generationSnapshot != null && snapshot.conversationId != activeThreadId) return@collect
+                val expectedThreadId = activeThreadId
                 val generation = snapshot.state
                 if (generation in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) {
                     // 在发布终态前等待上游发布、镜像落盘与控制器事件应用全部完结，并重检当前会话与最新快照。
                     (repository as? com.openandroidintelligence.conversation.ports.EventCommitBarrier)?.awaitPendingEventCommits()
                     activeEventApplyCount.first { it == 0 }
-                    if (tracker.generationSnapshot != null) {
-                        val latest = tracker.generationSnapshot?.value
-                        if (snapshot.conversationId != activeThreadId ||
-                            (latest != null && latest != snapshot)
-                        ) {
-                            return@collect
-                        }
+                    if (activeThreadId != expectedThreadId) return@collect
+                    val latestSnapshot = tracker.generationSnapshot?.value
+                    if (latestSnapshot != null) {
+                        if (snapshot.conversationId != activeThreadId || latestSnapshot != snapshot) return@collect
+                    } else if (tracker.generationState?.value?.let { it != generation } == true) {
+                        return@collect
                     }
                 }
                 val generationId = snapshot.generationId
@@ -2053,19 +2053,24 @@ class WorkbenchController(
                     val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
                     update { state ->
                         if (!isActive || state.activeThreadId != threadId) state
-                        else state.copy(
-                            timeline = if (
-                                renderTimeline(state.pendingBatch).isEmpty() &&
-                                creationReceiptRow(threadId) == null &&
-                                approvalRowsForActiveThread().isEmpty()
-                            ) {
-                                Loadable.Empty
-                            } else {
-                                Loadable.Ready(renderTimeline(state.pendingBatch))
-                            },
-                            generation = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.value
-                                ?.takeUnless { it == GenerationState.IDLE } ?: if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
-                        )
+                        else {
+                            val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+                            val rendered = renderTimeline(reconciledPending)
+                            state.copy(
+                                pendingBatch = reconciledPending,
+                                timeline = if (
+                                    rendered.isEmpty() &&
+                                    creationReceiptRow(threadId) == null &&
+                                    approvalRowsForActiveThread().isEmpty()
+                                ) {
+                                    Loadable.Empty
+                                } else {
+                                    Loadable.Ready(rendered)
+                                },
+                                generation = (repository as? com.openandroidintelligence.conversation.ports.GenerationTracker)?.generationState?.value
+                                    ?.takeUnless { it == GenerationState.IDLE } ?: if (hasStreaming) GenerationState.RUNNING else GenerationState.IDLE,
+                            )
+                        }
                     }
                 },
                 onFailure = { cause ->
@@ -5025,9 +5030,11 @@ class WorkbenchController(
                         belongsToCurrentTurn = settlesCurrentTurn)
                     if (settlesCurrentTurn) observeGenerationIdentity(event.generationId)
                     update { state ->
+                        val reconciledPending = settledPendingBatch(currentActiveId, state.pendingBatch)
                         state.copy(
                             generation = if (settlesCurrentTurn) GenerationState.CANCELLED else state.generation,
-                            timeline = Loadable.Ready(renderTimeline(state.pendingBatch)),
+                            pendingBatch = reconciledPending,
+                            timeline = Loadable.Ready(renderTimeline(reconciledPending)),
                             notice = if (settlesCurrentTurn) {
                                 state.notice?.takeUnless { it.startsWith("AGENT_MESSAGE_FAILED:") }
                             } else state.notice,
@@ -5195,15 +5202,18 @@ class WorkbenchController(
                     if (!isActive || state.activeThreadId != threadId) state
                     else {
                         val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
+                        val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
+                        val rendered = renderTimeline(reconciledPending)
                         state.copy(
+                            pendingBatch = reconciledPending,
                             timeline = if (
-                                renderTimeline(state.pendingBatch).isEmpty() &&
+                                rendered.isEmpty() &&
                                 creationReceiptRow(threadId) == null &&
                                 approvalRowsForActiveThread().isEmpty()
                             ) {
                                 Loadable.Empty
                             } else {
-                                Loadable.Ready(renderTimeline(state.pendingBatch))
+                                Loadable.Ready(rendered)
                             },
                             generation = if (hasStreaming) {
                                 GenerationState.RUNNING

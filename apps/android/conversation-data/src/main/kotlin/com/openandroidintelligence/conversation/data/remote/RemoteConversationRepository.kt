@@ -8,7 +8,10 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -37,8 +40,10 @@ class RemoteConversationRepository(
     private val batchMembers = ConcurrentHashMap<String, List<ClientMessageId>>()
     private val models = ConcurrentHashMap<String, RemoteModelSelection>()
     private val rows = ConcurrentHashMap<String, RemoteSessionRow>()
-    private val events = MutableSharedFlow<VerifiedConversationEvent>()
-    private val activeEventPublishes = MutableStateFlow(0)
+    private data class DispatchedEvent(val event: VerifiedConversationEvent, val ack: CompletableDeferred<Unit>)
+    private val eventSubscribers = CopyOnWriteArrayList<Channel<DispatchedEvent>>()
+    // 统一计数：包含会话发布临界区及已派发待订阅方处理完毕的在途事件，避免跨调度器短暂全零穿透。
+    private val inFlightEventBarriers = MutableStateFlow(0)
     private val health = MutableStateFlow(StreamHealth.IDLE)
     override val streamHealth: Flow<StreamHealth> = health
     private val failure = MutableStateFlow<String?>(null)
@@ -55,16 +60,16 @@ class RemoteConversationRepository(
     private val acceptedUserMessages = ConcurrentHashMap<Pair<String, String>, String>()
 
     override suspend fun awaitPendingEventCommits() {
-        activeEventPublishes.first { it == 0 }
+        inFlightEventBarriers.first { it == 0 }
     }
 
     private suspend inline fun <T> withSessionLock(id: String, crossinline block: suspend () -> T): T =
         sessionLocks.computeIfAbsent(id) { Mutex() }.withLock {
-            activeEventPublishes.update { it + 1 }
+            inFlightEventBarriers.update { it + 1 }
             try {
                 block()
             } finally {
-                activeEventPublishes.update { (it - 1).coerceAtLeast(0) }
+                inFlightEventBarriers.update { (it - 1).coerceAtLeast(0) }
             }
         }
 
@@ -103,9 +108,11 @@ class RemoteConversationRepository(
         val result = carrier.history(RemoteLocalIds.decode(conversationId), page)
         current()
         val target = projection(conversationId)
-        val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
-        projected.forEach { rememberApproval(conversationId, it) }
-        activeConversationChanged()
+        withSessionLock(conversationId) {
+            val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
+            projected.forEach { rememberApproval(conversationId, it) }
+            activeConversationChanged()
+        }
         val pageIds = result.records.mapNotNull { record ->
             val event = record.at("event") ?: record
             val data = event.at("data") ?: return@mapNotNull null
@@ -181,9 +188,39 @@ class RemoteConversationRepository(
         }
         onEvent(workspace.endpoint.key, event)
         current()
-        events.emit(event)
+        for (channel in eventSubscribers.toList()) {
+            val ack = CompletableDeferred<Unit>()
+            inFlightEventBarriers.update { it + 1 }
+            ack.invokeOnCompletion { inFlightEventBarriers.update { count -> (count - 1).coerceAtLeast(0) } }
+            try {
+                channel.send(DispatchedEvent(event, ack))
+            } catch (_: ClosedSendChannelException) {
+                ack.complete(Unit)
+            } catch (cancelled: CancellationException) {
+                ack.complete(Unit)
+                currentCoroutineContext().ensureActive()
+            }
+        }
     }
-    override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = events.asSharedFlow()
+    override fun observeEvents(scope: ConversationScope): Flow<VerifiedConversationEvent> = flow {
+        val channel = Channel<DispatchedEvent>(
+            capacity = Channel.RENDEZVOUS,
+            onUndeliveredElement = { it.ack.complete(Unit) },
+        )
+        eventSubscribers.add(channel)
+        try {
+            for (item in channel) {
+                try {
+                    emit(item.event)
+                } finally {
+                    item.ack.complete(Unit)
+                }
+            }
+        } finally {
+            eventSubscribers.remove(channel)
+            channel.cancel()
+        }
+    }
     override suspend fun submitMessage(message: OutgoingMessage): MessageAcceptance =
         submitMessage(activeConversationId() ?: throw RemoteSessionException("CONVERSATION_REQUIRED"), message)
     override suspend fun submitMessage(conversationId: String, message: OutgoingMessage): MessageAcceptance {
@@ -415,6 +452,8 @@ class RemoteConversationRepository(
     }
     suspend fun close() {
         generation.close()
+        eventSubscribers.toList().forEach { it.cancel() }
+        eventSubscribers.clear()
         lifetime.cancelAndJoin()
         health.value = StreamHealth.IDLE
         approvals.clear()
