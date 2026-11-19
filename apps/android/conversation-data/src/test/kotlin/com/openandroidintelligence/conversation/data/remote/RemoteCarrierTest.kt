@@ -46,6 +46,20 @@ class RemoteCarrierTest {
         assertEquals("hermes", channel.calls.last().second.at("params")?.text("backend"))
     }
 
+    @Test fun `Harness以原生会话标识获取官方无版本目录数组`() = runTest {
+        val channel = Channel()
+        channel.result = { _, request ->
+            assertEquals("commands/list", request.text("endpoint"))
+            assertEquals("session:原生/标识", request.at("payload")?.at("args")?.text("agentId"))
+            obj("ok" to true, "value" to obj("ok" to true, "value" to listOf(
+                obj("name" to "inspect", "description" to "检查", "input" to obj("hint" to "<目标>")),
+            )))
+        }
+        val catalog = HarnessSessionCarrier(channel).commands("session:原生/标识")
+        assertEquals(listOf(com.openandroidintelligence.conversation.ports.AgentCommand("/inspect", "检查", "<目标>")),
+            catalog.commands)
+    }
+
     @Test fun `打开流前注册事件并在首帧后关闭同一通道的订阅`() = runTest {
         val channel = Channel()
         channel.result = { method, request ->

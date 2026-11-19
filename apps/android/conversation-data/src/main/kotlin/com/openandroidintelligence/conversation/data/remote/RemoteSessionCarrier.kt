@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.data.remote
 
+import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.AgentEndpoint
 import com.openandroidintelligence.conversation.remote.ModelKey
@@ -10,6 +11,7 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 
 /** 原生后端保留独立的网络方法，只有进入聊天领域后才共享展示模型。 */
 interface RemoteSessionCarrier {
@@ -21,14 +23,22 @@ interface RemoteSessionCarrier {
     suspend fun create(workspace: RemoteWorkspace): RemoteSessionRow
     suspend fun history(sessionId: String, page: PageRequest): RemoteHistoryPage
     fun follow(sessionId: String): Flow<JsonValue>
+    fun followWithApprovalSource(sessionId: String): Flow<RemoteFollowFrame> = flow {
+        val source = RemoteApprovalSource { handle, allow -> respond(sessionId, handle, allow) }
+        try {
+            follow(sessionId).collect { emit(RemoteFollowFrame(it, source)) }
+        } finally {
+            source.close()
+        }
+    }
     suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection? = null): JsonValue
     suspend fun interrupt(sessionId: String, generationId: String): JsonValue
     suspend fun steer(sessionId: String, generationId: String, requestId: String, text: String): JsonValue =
         throw RemoteSessionException("STEERING_UNSUPPORTED")
     suspend fun respond(sessionId: String, handle: String, allow: Boolean): JsonValue
     suspend fun models(sessionId: String): RemoteModelCatalog
-    suspend fun commands(sessionId: String?): com.openandroidintelligence.conversation.ports.AgentCommandCatalog =
-        throw RemoteSessionException("COMMANDS_UNSUPPORTED")
+    suspend fun commands(sessionId: String?): AgentCommandCatalog? = null
+    fun commandCatalogUpdate(sessionId: String, frame: JsonValue): AgentCommandCatalog? = null
     suspend fun selectModel(sessionId: String, selection: RemoteModelSelection): RemoteModelSelection
     suspend fun rename(sessionId: String, title: String): Unit = throw RemoteSessionException("RENAME_UNSUPPORTED")
     suspend fun archive(sessionId: String, archived: Boolean): Unit = throw RemoteSessionException("ARCHIVE_UNSUPPORTED")

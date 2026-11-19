@@ -9,6 +9,7 @@ import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 data class ConversationScope(
     val profileId: String,
@@ -611,6 +612,11 @@ suspend fun ConversationRepository.completeTimeline(conversationId: String): Tim
 
 interface AgentCommandCatalogRepository {
     suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog
+
+    suspend fun get(gatewayId: String, languageCode: String, conversationId: String?): AgentCommandCatalog =
+        get(gatewayId, languageCode)
+
+    fun observe(gatewayId: String, conversationId: String?): Flow<AgentCommandCatalog> = emptyFlow()
 }
 
 /** 已提交文件只能在原端点、工作区、会话与授权主体下复用。连接身份仅约束未知 commit 的回执恢复。 */

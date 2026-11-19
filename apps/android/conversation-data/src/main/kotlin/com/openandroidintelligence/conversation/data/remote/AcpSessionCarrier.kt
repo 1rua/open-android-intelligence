@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.data.remote
 
+import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
@@ -51,6 +52,15 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
 
     override fun follow(sessionId: String): Flow<JsonValue> = wire.stream(
         { id -> obj("streamId" to id, "sessionId" to sessionId) }, acceptsSessionId = sessionId)
+
+    override fun commandCatalogUpdate(sessionId: String, frame: JsonValue): AgentCommandCatalog? {
+        if (frame.text("method") != "session/update") return null
+        val params = frame.at("params") ?: return null
+        if (params.text("sessionId") != sessionId) return null
+        val update = params.at("update") ?: return null
+        if (update.text("sessionUpdate") != "available_commands_update") return null
+        return RemoteCommandCatalog.decode(update)
+    }
 
     override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue =
         call("session/prompt", obj("sessionId" to sessionId, "backend" to backend, "prompt" to content),

@@ -23,6 +23,7 @@ import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
 import com.openandroidintelligence.conversation.workbench.readOriginalBytes
+import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import kotlinx.coroutines.CancellationException
@@ -41,6 +42,7 @@ import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.toOutcome
+import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalogRepository
 import com.openandroidintelligence.conversation.ports.ConversationRepository
 import com.openandroidintelligence.conversation.ports.ConversationScope
@@ -221,6 +223,7 @@ class WorkbenchController(
         if (closed || retiring || remoteConversationOnline == online) return
         remoteConversationOnline = online
         update { it }
+        onCommandCatalogConnectivityChanged(online)
     }
     fun updateRemoteCapabilities(online: Boolean, send: Boolean, delete: Boolean, archive: Boolean,
         rename: Boolean, approvals: Boolean, unarchive: Boolean = false) {
@@ -238,6 +241,7 @@ class WorkbenchController(
         supportsConversationUnarchive = unarchive
         supportsApprovalCards = approvals
         update { it }
+        if (wasOnline != online) onCommandCatalogConnectivityChanged(online)
         if (!wasOnline && online) onForegrounded()
     }
     private val activeWork = WorkbenchActiveWork()
@@ -966,6 +970,12 @@ class WorkbenchController(
     )
     private var awaitingReply: ReplyWatchdogTarget? = null
     private var activeThreadId: String? = null
+    private data class CatalogTarget(val scope: ConversationScope, val conversationId: String?)
+    private var catalogTarget: CatalogTarget? = null
+    private var catalogRequestEpoch = 0L
+    private var catalogEventRevision = 0L
+    private var catalogLoadJob: Job? = null
+    private var catalogEventJob: Job? = null
     /** 单份旧草稿暂不展示；初始化刷新不能用空白页把它覆盖。 */
     private var deferredThreadCheckpoint: WorkbenchCheckpoint? = null
     private var retiredThreadSelection: ((String) -> Unit)? = null
@@ -1373,6 +1383,7 @@ class WorkbenchController(
         failedSubmission=failedSubmission?.takeUnless { it.conversationId == threadId }
         update { it.copy(activeThreadId=null, activeThreadTitle="", timeline=Loadable.Empty, pendingBatch=emptyList(),
             generation=GenerationState.IDLE, composer=ComposerState.EDITING, historyHydrated=true) }
+        loadCatalog()
         if (_state.value.draft.isBlank() && _state.value.attachments.isEmpty()) {
             (_state.value.threads as? Loadable.Ready)?.value?.firstOrNull { !it.archived && it.id.value !in deletedThreads }?.let { openThread(it.id.value) }
         }
@@ -1903,22 +1914,59 @@ class WorkbenchController(
         }
     }
 
-    private var catalogRequestEpoch = 0L
+    private fun onCommandCatalogConnectivityChanged(online: Boolean) {
+        catalogTarget = null
+        ++catalogRequestEpoch
+        catalogLoadJob?.cancel()
+        catalogEventJob?.cancel()
+        if (online) loadCatalog() else update { it.copy(catalog = Loadable.Idle) }
+    }
+
     fun loadCatalog() {
-        if (closed || !canReadConversations()) return
+        if (closed || retiring || !remoteConversationOnline || !canReadConversations()) return
+        val requested = CatalogTarget(scopeFactory(), activeThreadId)
+        val target = catalogTarget?.takeIf { it == requested } ?: requested
+        val changedTarget = target !== catalogTarget
+        if (changedTarget) {
+            catalogTarget = target
+            catalogEventJob?.cancel()
+        }
         val epoch = ++catalogRequestEpoch
-        val requestedScope = scopeFactory()
-        update { it.copy(catalog = Loadable.Loading) }
-        workScope.launch {
-            if (!canReadConversations()) return@launch
+        val eventRevision = catalogEventRevision
+        catalogLoadJob?.cancel()
+        if (changedTarget || _state.value.catalog !is Loadable.Ready) {
+            update { it.copy(catalog = Loadable.Loading) }
+        }
+        if (changedTarget) {
+            catalogEventJob = workScope.launch {
+                catalogRepository.observe(target.scope.gatewayId, target.conversationId).collect { catalog ->
+                    if (isCurrentCatalogTarget(target)) {
+                        catalogEventRevision++
+                        update { it.copy(catalog = catalog.toCatalogState()) }
+                    }
+                }
+            }
+        }
+        catalogLoadJob = workScope.launch {
+            if (!isCurrentCatalogTarget(target)) return@launch
             val result = try {
-                Result.success(catalogRepository.get(gatewayId=requestedScope.gatewayId,languageCode=languageCode))
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { Result.failure(failure) }
-            if (epoch != catalogRequestEpoch || scopeFactory() != requestedScope) return@launch
-            update { it.copy(catalog=result.toLoadable { catalog -> catalog.commands.isEmpty() }) }
+                Result.success(catalogRepository.get(target.scope.gatewayId, languageCode, target.conversationId))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (cause: Exception) {
+                Result.failure(cause)
+            }
+            if (epoch != catalogRequestEpoch || eventRevision != catalogEventRevision || !isCurrentCatalogTarget(target)) return@launch
+            update { it.copy(catalog = result.toLoadable { catalog -> catalog.commands.isEmpty() }) }
         }
     }
+
+    private fun isCurrentCatalogTarget(target: CatalogTarget): Boolean =
+        !closed && !retiring && remoteConversationOnline && canReadConversations() && catalogTarget === target &&
+            scopeFactory() == target.scope && activeThreadId == target.conversationId
+
+    private fun AgentCommandCatalog.toCatalogState(): Loadable<AgentCommandCatalog> =
+        if (commands.isEmpty()) Loadable.Empty else Loadable.Ready(this)
 
     /** 宿主交接期间，旧界面已到达的导航和输入仍交给同一会话上下文的新控制器。 */
     fun redirectRetiredNavigation(openThread: (String) -> Unit, editDraft: (String) -> Unit) {
@@ -2004,6 +2052,7 @@ class WorkbenchController(
             )
         }
 
+        loadCatalog()
         GatewayLog.protocolEvidence("timeline.opened", mapOf("conversationId" to threadId, "epoch" to threadEpoch,
             "source" to if (memory != null) "memory" else "pending", "clickedAtNs" to clickedAt))
         attachmentCoordinator?.let { coordinator ->
@@ -2272,7 +2321,7 @@ class WorkbenchController(
             return
         }
         val card = approvalCards[approvalId]
-        if (card !is ApprovalCardState.Waiting) return
+        if (card !is ApprovalCardState.Waiting || card.request.conversationId?.value != activeThreadId) return
         if (choice == ApprovalChoice.UNKNOWN || card.request.options.none { it.choice == choice }) return
         if (card.request.countdownAt(clock()).expired) {
             // The window the Gateway gave is over: the buttons are already grey,
@@ -2281,98 +2330,58 @@ class WorkbenchController(
             update { it.copy(notice = ApprovalNotices.EXPIRED) }
             return
         }
-        approvalCards[approvalId] = ApprovalCardState.Submitting(card.request, choice)
+        val submitting = ApprovalCardState.Submitting(card.request, choice)
+        val requestedScope = scopeFactory()
+        approvalCards[approvalId] = submitting
         reRenderApprovalRows()
         workScope.launch {
-            val result = submitApprovalDecision(approvalId, choice)
-            applyApprovalSubmission(approvalId, result)
+            val result = submitApprovalDecision(submitting.request.approvalId, choice)
+            GatewayLog.protocolEvidence("approval.submission", mapOf(
+                "outcome" to result.outcome.name,
+                "code" to result.errorCode?.takeIf { APPROVAL_ERROR_CODE.matches(it) },
+            ))
+            if (scopeFactory() != requestedScope || approvalCards[approvalId] !== submitting) return@launch
+            applyApprovalSubmission(approvalId, submitting, result)
         }
     }
 
-    private suspend fun submitApprovalDecision(
-        approvalId: String,
-        choice: ApprovalChoice,
-    ): ApprovalSubmissionResult {
-        // An id the wire format cannot carry is refused here rather than sent:
-        // the press still comes back as a live card, with the refusal stated.
-        val id = try {
-            ApprovalId(approvalId)
-        } catch (cause: Exception) {
-            // Cancellation is never a refusal: it keeps travelling.
-            if (cause is CancellationException) throw cause
-            return ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.FAILED)
+    private suspend fun submitApprovalDecision(approvalId: ApprovalId, choice: ApprovalChoice): ApprovalSubmissionResult =
+        try {
+            repository.submitApprovalDecision(approvalId, choice)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (cause: RemoteRpcException) {
+            val outcome = if (cause.deliveryOutcome == RemoteDeliveryOutcome.NOT_SENT)
+                ApprovalSubmissionOutcome.FAILED else ApprovalSubmissionOutcome.OUTCOME_UNKNOWN
+            ApprovalSubmissionResult(outcome, errorCode = cause.code)
+        } catch (_: Exception) {
+            ApprovalSubmissionResult(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, errorCode = "APPROVAL_SUBMISSION_EXCEPTION")
         }
-        return try {
-            repository.submitApprovalDecision(id, choice)
-        } catch (cause: Exception) {
-            if (cause is CancellationException) throw cause
-            ApprovalSubmissionResult(outcome = ApprovalSubmissionOutcome.FAILED)
-        }
-    }
 
-    /**
-     * Turns the Gateway's answer to one press into the card's state.
-     *
-     * `SUBMITTED` does not settle the card on its own: the phone has been told
-     * the decision is with the Gateway, not that the Gateway granted it, so the
-     * `resolved` event is what ends the wait. A refusal the Gateway explains —
-     * already answered elsewhere, or expired — is a fact it did record, so that
-     * one is final too.
-     */
     private fun applyApprovalSubmission(
         approvalId: String,
+        card: ApprovalCardState.Submitting,
         result: ApprovalSubmissionResult,
     ) {
-        val card = approvalCards[approvalId] ?: return
-        if (card !is ApprovalCardState.Submitting) return
-        when (result.outcome) {
-            ApprovalSubmissionOutcome.SUBMITTED -> {
-                // Stay in flight: only the Gateway's own event may close it.
+        val latest = when (result.outcome) {
+            // 仅有收件回执时继续等事件。带权威结果的回执可直接落定卡片。
+            ApprovalSubmissionOutcome.SUBMITTED -> result.settledOutcome ?: return
+            ApprovalSubmissionOutcome.ALREADY_RESOLVED -> result.settledOutcome
+                ?: result.choice?.toOutcome() ?: ApprovalOutcome.UNKNOWN
+            ApprovalSubmissionOutcome.EXPIRED -> result.settledOutcome ?: ApprovalOutcome.TIMED_OUT
+            ApprovalSubmissionOutcome.NOT_FOUND, ApprovalSubmissionOutcome.OUTCOME_UNKNOWN -> ApprovalOutcome.UNKNOWN
+            ApprovalSubmissionOutcome.UNSUPPORTED, ApprovalSubmissionOutcome.FAILED -> {
+                approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
+                reRenderApprovalRows()
+                if (activeThreadId == card.request.conversationId?.value) update {
+                    it.copy(notice = if (result.outcome == ApprovalSubmissionOutcome.UNSUPPORTED)
+                        ApprovalNotices.UNSUPPORTED else ApprovalNotices.FAILED)
+                }
                 return
             }
-            ApprovalSubmissionOutcome.ALREADY_RESOLVED -> {
-                approvalCards[approvalId] = ApprovalCardState.Resolved(
-                    request = card.request,
-                    // A settled verdict the Gateway named (`timeout`/`withdrawn`)
-                    // is shown as it is; a tier translates through the shared
-                    // token table, and a missing one stays unknown.
-                    outcome = result.settledOutcome
-                        ?: (result.choice?.toOutcome() ?: ApprovalOutcome.UNKNOWN),
-                    decidedAt = clock(),
-                )
-                reRenderApprovalRows()
-            }
-            ApprovalSubmissionOutcome.EXPIRED -> {
-                approvalCards[approvalId] = ApprovalCardState.Resolved(
-                    request = card.request,
-                    outcome = result.settledOutcome ?: ApprovalOutcome.TIMED_OUT,
-                    decidedAt = clock(),
-                )
-                reRenderApprovalRows()
-            }
-            ApprovalSubmissionOutcome.NOT_FOUND -> {
-                // The Gateway does not know this approval, so nothing can answer
-                // it any more. What became of the command is unknown to this
-                // phone — claiming "withdrawn" would state that it did not run,
-                // which the Gateway never said.
-                approvalCards[approvalId] = ApprovalCardState.Resolved(
-                    request = card.request,
-                    outcome = ApprovalOutcome.UNKNOWN,
-                    decidedAt = clock(),
-                )
-                reRenderApprovalRows()
-            }
-            ApprovalSubmissionOutcome.UNSUPPORTED -> {
-                approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
-                reRenderApprovalRows()
-                update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
-            }
-            ApprovalSubmissionOutcome.FAILED -> {
-                approvalCards[approvalId] = ApprovalCardState.Waiting(card.request)
-                reRenderApprovalRows()
-                update { it.copy(notice = ApprovalNotices.FAILED) }
-            }
         }
+        approvalCards[approvalId] = ApprovalCardState.Resolved(card.request, latest, result.decidedAt)
+        reRenderApprovalRows()
     }
 
     /** The rows the active thread's approval cards contribute, oldest first. */
@@ -2662,6 +2671,7 @@ class WorkbenchController(
                         timeline = if (pending.isEmpty()) Loadable.Empty else Loadable.Ready(renderTimeline(pending)),
                         pendingBatch = pending, notice = null)
                 }
+                loadCatalog()
                 observeThreadEvents()
                 refreshThreads()
                 Result.success(conversation.id.value)
@@ -2675,7 +2685,9 @@ class WorkbenchController(
 
     fun editDraft(text: String) {
         if (closed) { retiredDraftEditing?.invoke(text); return }
-        val opensCommands = text.startsWith("/") && !_state.value.draft.startsWith("/")
+        val previous = _state.value
+        val opensCommands = text.startsWith("/") && (!previous.draft.startsWith("/") ||
+            previous.catalog is Loadable.Idle || (text != previous.draft && (previous.catalog as? Loadable.Failed)?.retryable == true))
         // A frozen message belongs to its own pending send. Editing the next
         // draft must not withdraw it while its attachments are still uploading.
         if (pendingSubmission?.optimisticEntry == null) cancelPendingSubmission()
@@ -6130,7 +6142,8 @@ class WorkbenchController(
             } == true
             val versionChanged = nextDraftEpoch != current.draftEpoch || transformed.draft != current.draft
             val nextDraftVersion = if (versionChanged) maxOf(current.draftVersion+1,draftRevision) else maxOf(current.draftVersion,draftRevision)
-            val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,
+            val catalog = if (transformed.activeThreadId != current.activeThreadId) Loadable.Idle else transformed.catalog
+            val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,catalog=catalog,
                 timelineDataSource=transformed.timelineDataSource ?: if (transformed.timelineOpenedAtNs > 0 &&
                     (transformed.timeline is Loadable.Ready || transformed.timeline is Loadable.Empty)) "remote" else null,
                 isOnline=allowSending && remoteConversationOnline, sendSupported=remoteSendSupported,
@@ -6156,6 +6169,7 @@ class WorkbenchController(
 
     private companion object {
         const val MAX_ORGANIZATION_UPDATE_ATTEMPTS = 3
+        val APPROVAL_ERROR_CODE = Regex("[A-Za-z0-9_./:-]{1,128}")
 
         /**
          * 已经不可能再变成 `VERIFIED` 的附件状态。

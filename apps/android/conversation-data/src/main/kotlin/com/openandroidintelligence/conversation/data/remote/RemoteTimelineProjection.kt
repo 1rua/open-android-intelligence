@@ -6,7 +6,6 @@ import com.openandroidintelligence.conversation.remote.RemoteLocalIds
 import com.openandroidintelligence.conversation.sanitizer.SystemPromptSanitizer
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
-import java.util.Base64
 
 /** 每个仓储实例只持有一个 Endpoint，原生消息 ID 无需通过字符串猜测后端。 */
 internal class RemoteTimelineProjection(private val sessionId: String, private val nativeSessionId: String = RemoteLocalIds.decode(sessionId),
@@ -105,7 +104,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     private var acpMessageId: String? = null
     private val acpUserContent = mutableMapOf<String, MutableList<JsonValue>>()
     private var liveSequence = 0L
-    val approvalHandles = mutableMapOf<String, String>()
 
     private fun resetAcpTurnContent() {
         acpMessageId = null
@@ -144,6 +142,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         if (id == generationId) generationState = receipt.state
     }
     fun markUnknown() { generationState = GenerationState.OUTCOME_UNKNOWN }
+    fun markApprovalRequested() { generationState = GenerationState.RUNNING }
 
     fun accept(value: JsonValue, history: Boolean = false, historyRead: Long? = null): List<VerifiedConversationEvent> {
         return accept(value, history, clock(), historyRead)
@@ -162,10 +161,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             return events
         }
         if (value.text("type") == "assistant-stream") return assistantStream(value.at("frame") ?: return emptyList(), source)
-        if (value.text("type") == "waterfall" && value.text("event") == "approval/request") {
-            if (value.text("agentId") != nativeSessionId) return emptyList()
-            return approval(value.requiredText("eventId"), value.at("request") ?: obj(), source)
-        }
         if (value.text("type") == "event" || value.at("event") != null) {
             val event = value.at("event") ?: value
             val seq = event.number("seq")
@@ -207,7 +202,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "assistant/message" -> return upsert(data, "assistant", false, event.number("seq"), source, turn)
             "tool/call" -> return execution(data, id, source, false)
             "tool/result" -> return execution(data, id, source, true)
-            "approval/asked" -> return approval(data.text("requestHandle") ?: data.text("id") ?: id, data, source)
             "session/title", "title/changed" -> data.text("title")?.let { title ->
                 return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), title))
             }
@@ -327,8 +321,6 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     else -> execution(item, item.text("id") ?: "tool:${++liveSequence}", source, method == "item/completed")
                 }
             }
-            "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "session/request_permission", "cursor/ask_question", "cursor/create_plan" ->
-                return approval(params.requiredText("requestHandle"), params, source)
             "session/update" -> {
                 val update = params.at("update") ?: params
                 when (update.text("sessionUpdate") ?: update.text("type")) {
@@ -612,14 +604,4 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         ))
     }
 
-    private fun approval(handle: String, value: JsonValue, source: Source): List<VerifiedConversationEvent> {
-        val id = Base64.getUrlEncoder().withoutPadding().encodeToString(handle.toByteArray())
-        approvalHandles[id] = handle
-        if (!source.historical) generationState = GenerationState.RUNNING
-        val request = ApprovalRequest(ApprovalId(id), ConversationId(sessionId), value.text("command") ?: value.text("toolName")
-            ?: value.at("toolCall")?.text("title") ?: value.text("title") ?: Json.canonical(value), value.text("reason") ?: "",
-            options = listOf(ApprovalOption(ApprovalChoice.ONCE), ApprovalOption(ApprovalChoice.DENY)), timeoutSeconds = 0,
-            requestedAt = source.time, expiresAt = Long.MAX_VALUE)
-        return listOf(VerifiedConversationEvent.ApprovalRequested(source.id("approval:$id"), source.time, request, ConversationId(sessionId)))
-    }
 }

@@ -1,14 +1,17 @@
 package com.openandroidintelligence.conversation.data.remote
 
+import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
-import kotlinx.coroutines.flow.filterNot
 
 /** Harness 只走官方 Session V3；不经过 Codex 或 ACP 的虚拟 Harness。 */
 class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSessionCarrier {
@@ -68,9 +71,41 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
         return sessionHistoryPage(result)
     }
 
-    override fun follow(sessionId: String): Flow<JsonValue> = merge(
+    override fun follow(sessionId: String): Flow<JsonValue> = followWithApprovalSource(sessionId).map { it.value }
+
+    override fun followWithApprovalSource(sessionId: String): Flow<RemoteFollowFrame> = merge(
         stream("session/follow", obj("request" to obj("address" to obj("kind" to "session", "sessionId" to sessionId),
-            "assistantStream" to true))), stream("\$events", obj()).filterNot { it.text("type") == "remote-stream-ready" })
+            "assistantStream" to true))).map { RemoteFollowFrame(it, approvalJournal = true) }, eventStream())
+
+    private fun eventStream(): Flow<RemoteFollowFrame> = flow {
+        var clientId: String? = null
+        var source: RemoteApprovalSource? = null
+        try {
+            stream("\$events", obj()).collect { value ->
+                when (value.text("type")) {
+                    "remote-stream-ready" -> Unit
+                    "remote-stream-closed" -> source?.close()
+                    "ready" -> {
+                        val readyId = value.text("clientId")?.takeIf { it.isNotBlank() }
+                        if (readyId != clientId) {
+                            source?.close()
+                            clientId = readyId
+                            source = readyId?.let { id ->
+                                RemoteApprovalSource { handle, allow ->
+                                    wire.call(obj("endpoint" to "\$events/result", "payload" to obj("args" to obj(
+                                        "clientId" to id, "eventId" to handle, "outcome" to obj("kind" to "result",
+                                            "value" to if (allow) "allowed-once" else "rejected")))))
+                                }
+                            }
+                        }
+                    }
+                    else -> emit(RemoteFollowFrame(value, source))
+                }
+            }
+        } finally {
+            source?.close()
+        }
+    }
 
     override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue {
         if (model != null) selectModel(sessionId, model)
@@ -80,11 +115,20 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
         return wire.call(envelope, transfer = hasImage).unwrapResult().unwrapResult()
     }
 
-    override suspend fun commands(sessionId: String?): com.openandroidintelligence.conversation.ports.AgentCommandCatalog {
-        val result = invoke("commands/list", obj("request" to obj(*listOfNotNull(sessionId?.let { "sessionId" to it }).toTypedArray())))
-        val items = result.array("items") ?: result.array("commands") ?: throw RemoteSessionException("REMOTE_INVALID_COMMAND_CATALOG")
-        return com.openandroidintelligence.conversation.ports.AgentCommandCatalog(com.openandroidintelligence.conversation.model.CatalogVersion("remote"),
-            items.map { command -> com.openandroidintelligence.conversation.ports.AgentCommand(command.text("command") ?: command.requiredText("name"), command.text("description") ?: "") })
+    override suspend fun commands(sessionId: String?): AgentCommandCatalog {
+        if (sessionId == null || "harness.remote.v3" !in channel.capabilities) return RemoteCommandCatalog.empty
+        val value = try {
+            invoke("commands/list", obj("agentId" to sessionId))
+        } catch (cause: RemoteRpcException) {
+            if (cause.code == "METHOD_NOT_FOUND" || cause.code == "METHOD_NOT_ALLOWED") return RemoteCommandCatalog.empty
+            throw cause
+        } catch (cause: RemoteSessionException) {
+            if (cause.code in setOf("gateway/invocation-unavailable", "gateway/method-unavailable")) {
+                return RemoteCommandCatalog.empty
+            }
+            throw cause
+        }
+        return RemoteCommandCatalog.decode(value)
     }
 
     override suspend fun steer(sessionId: String, generationId: String, requestId: String, text: String): JsonValue =
@@ -95,8 +139,7 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
         invoke("session/cancel", obj("request" to obj("sessionId" to sessionId)))
 
     override suspend fun respond(sessionId: String, handle: String, allow: Boolean): JsonValue =
-        invoke("\$events/answer", obj("eventId" to handle, "outcome" to obj("kind" to "result",
-            "value" to if (allow) "allowed-once" else "denied")))
+        throw RemoteSessionException("REMOTE_APPROVAL_SOURCE_REQUIRED")
 
     override suspend fun models(sessionId: String): RemoteModelCatalog =
         parseModelCatalog(invoke("session/models", obj("request" to obj("sessionId" to sessionId))))
