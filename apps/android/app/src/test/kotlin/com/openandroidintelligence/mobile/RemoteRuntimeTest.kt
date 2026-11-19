@@ -411,6 +411,64 @@ class RemoteRuntimeTest {
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
     }
 
+    @Test fun `跨generation别名完成及断网快照对账都能退出LiveUpdate并停止后台保活`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val local = runtime.controller.value!!.localConversationScope
+        val endpoint = local.gatewayId
+        val convId = com.openandroidintelligence.conversation.model.ConversationId("same.runtime.conv")
+        val clientId = com.openandroidintelligence.conversation.model.ClientMessageId("client-runtime")
+        var clock = System.currentTimeMillis()
+        fun inputOf(fact: VerifiedConversationEvent, resolvedGen: String? = null): NativeNotificationInput =
+            requireNotNull(com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                local.profileId, local.accountId, endpoint, fact)).copy(resolvedGenerationId = resolvedGen)
+
+        runtime.onAppForegrounded()
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-delivered", ++clock, convId, "u-runtime", clientId, AgentMessageStatus.DELIVERED, 1, null, "req-runtime",
+        )))
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.TimelineUpsert(
+            "ev-delta", ++clock, 1, TimelineMessage("reply-runtime", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("跨别名流式内容")),
+                clock, "STREAMING", convId, generationId = "turn-runtime"),
+        ), resolvedGen = "req-runtime"))
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onAppBackgrounded()
+        assertTrue(AgentSessionRecoveryState(context).hasPendingWork)
+
+        // completed + status(COMPLETED) 使用 turn-runtime 收尾，必须清除保活并退出进行态
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.TimelineUpsert(
+            "ev-completed", ++clock, 2, TimelineMessage("reply-runtime", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("跨别名最终答案")),
+                clock, "COMPLETED", convId, generationId = "turn-runtime"),
+        ), resolvedGen = "req-runtime"))
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-completed-status", ++clock, convId, "u-runtime-srv", clientId, AgentMessageStatus.COMPLETED, 3, null, "turn-runtime",
+        )))
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        assertFalse(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
+        assertEquals(NativeConversationStatus.COMPLETED, runtime.nativeConversationNotifications.sessions.value.single().status)
+
+        // 第 2 轮断网后挂起在 DISCONNECTED，通过快照对账检测到后端已结束时需退回 ENDED 并停止保活
+        runtime.onAppForegrounded()
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-r2", ++clock, convId, "u-r2", com.openandroidintelligence.conversation.model.ClientMessageId("client-r2"),
+            AgentMessageStatus.QUEUED, 10, null, "gen-r2",
+        )))
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onNetworkLost()
+        assertEquals(NativeConversationStatus.DISCONNECTED, runtime.nativeConversationNotifications.sessions.value.single().status)
+        val req = requireNotNull(runtime.nativeConversationNotifications.reconciliationRequestFor(
+            ReplyNotificationTarget(local.profileId, local.accountId, convId.value, endpoint)))
+        assertTrue(runtime.nativeConversationNotifications.reconcile(req, null, listOf(
+            TimelineMessage("r2-final", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("断线期间已结束")),
+                clock + 50, "COMPLETED", convId, generationId = "gen-r2"),
+        )))
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        assertEquals(NativeConversationStatus.ENDED, runtime.nativeConversationNotifications.sessions.value.single().status)
+    }
+
     private fun postReply(eventId: String, complete: Boolean) {
         val local = runtime.controller.value!!.localConversationScope
         runtime.nativeConversationNotifications.accept(replyFrame(local, eventId, complete))

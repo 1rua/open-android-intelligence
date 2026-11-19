@@ -367,6 +367,27 @@ class ReplyNotificationsTest {
         assertEquals(1, posts.size)
     }
 
+    @Test fun legacyAwaitingAndChangedBackendMessageIdWithSameClientIdCompleteWithoutDuplicatePosts() {
+        val observer = observer()
+        // 1. DELIVERED 与 COMPLETED 携带不同的服务端 messageId，但共享 clientMessageId（且均省略 generationId）
+        observer.accept(status("delivered", generation = null, userId = "tmp-u1", clientId = "client-same"))
+        observer.accept(message("conversation.message.completed", id = "r1", generation = null))
+        assertTrue(posts.isEmpty())
+        observer.accept(status("completed", generation = null, userId = "srv-u1", clientId = "client-same"))
+        assertEquals(1, posts.size)
+
+        // 2. 乱序 legacy：DELIVERED(null) -> COMPLETED(null) -> REPLY_COMPLETED(null) -> 重复重放 REPLY_COMPLETED(null)
+        posts.clear()
+        clock += 50
+        observer.accept(status("delivered", generation = null, userId = "u2", clientId = "client-ooo"))
+        observer.accept(status("completed", generation = null, userId = "u2", clientId = "client-ooo"))
+        assertTrue(posts.isEmpty())
+        observer.accept(message("conversation.message.completed", id = "r2", generation = null))
+        assertEquals(1, posts.size)
+        observer.accept(message("conversation.message.completed", id = "r2", generation = null))
+        assertEquals(1, posts.size)
+    }
+
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE), "profile-a", "account-a", post, { clock },
     )
@@ -374,8 +395,8 @@ class ReplyNotificationsTest {
     private fun message(type: String, id: String = "reply", sender: String = "assistant", conversation: String = "conv-a", generation: String? = "gen-a", account: String = "account-a") = event(type,
         """{"conversationId":"$conversation","messageId":"$id",${generationField(generation)}"sender":"$sender","text":"Reply","parts":[{"type":"text","text":"Reply"}],"revision":1}""", account)
 
-    private fun status(status: String, conversation: String = "conv-a", generation: String? = "gen-a", userId: String = "user") = event("conversation.message.status",
-        """{"conversationId":"$conversation","messageId":"$userId","clientMessageId":"client-$userId",${generationField(generation)}"status":"$status","revision":2,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
+    private fun status(status: String, conversation: String = "conv-a", generation: String? = "gen-a", userId: String = "user", clientId: String = "client-$userId") = event("conversation.message.status",
+        """{"conversationId":"$conversation","messageId":"$userId","clientMessageId":"$clientId",${generationField(generation)}"status":"$status","revision":2,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
 
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
 

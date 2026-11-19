@@ -877,6 +877,217 @@ class NativeConversationNotificationsTest {
         assertEquals(0, manager.activeNotifications.single().notification.flags and Notification.FLAG_ONGOING_EVENT)
     }
 
+    @Test fun t3_01_DualEventStandardAndOutOfOrderCompleteCleanlyWithoutStuckRunning() {
+        coordinator = coordinator()
+        coordinator.bind("profile", "account")
+        val target = ReplyNotificationTarget("profile", "account", "conversation")
+
+        // 标准双事件顺序：delta -> completed -> status(COMPLETED)
+        accept(status("delivered", 1, "gen-std"))
+        clock += 50
+        accept(message("conversation.message.delta", "流式生成中...", 1, "gen-std"))
+        assertEquals(NativeConversationStatus.RUNNING, coordinator.sessions.value.single().status)
+
+        clock += 50
+        accept(message("conversation.message.completed", "标准顺序最终回复", 2, "gen-std"))
+        clock += 10
+        accept(status("completed", 3, "gen-std"))
+
+        val afterStd = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterStd.status)
+        assertEquals("标准顺序最终回复", afterStd.latestReply)
+        val stdAlerts = publications.filter { it.first.target == target && it.first.status == NativeConversationStatus.COMPLETED && it.second }
+        assertEquals(1, stdAlerts.size)
+        assertEquals("标准顺序最终回复", stdAlerts.single().first.latestReply)
+
+        // 乱序到达：status(COMPLETED) 先到，completed 后到
+        publications.clear()
+        clock += 100
+        accept(status("delivered", 10, "gen-ooo"))
+        clock += 50
+        accept(status("completed", 11, "gen-ooo"))
+        clock += 10
+        accept(message("conversation.message.completed", "乱序完整最终回复", 12, "gen-ooo"))
+
+        val afterOoo = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterOoo.status)
+        assertEquals("乱序完整最终回复", afterOoo.latestReply)
+        val oooAlerts = publications.filter { it.first.target == target && it.first.status == NativeConversationStatus.COMPLETED && it.second }
+        assertEquals(1, oooAlerts.size)
+        assertEquals("乱序完整最终回复", oooAlerts.single().first.latestReply)
+    }
+
+    @Test fun t3_02_MissingOrMismatchedGenerationIdsNeverLeaveGhostEmptyRounds() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 场景 A：后端完全省略 generationId，且 DELIVERED 与 COMPLETED 携带的后端 messageId 不同（通过 clientMessageId 对齐）
+        accept(status("delivered", 1, generation = null, messageId = "tmp-u1", clientMessageId = "cid-missing"))
+        accept(message("conversation.message.delta", "流式碎片", 1, generation = null))
+        accept(message("conversation.message.completed", "缺失generationId的最终回复", 2, generation = null))
+        accept(status("completed", 3, generation = null, messageId = "srv-u1", clientMessageId = "cid-missing"))
+
+        val afterMissing = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterMissing.status)
+        assertEquals("缺失generationId的最终回复", afterMissing.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+
+        // 场景 B：仅回复缺失 generationId（status 带 gen-only，reply 省略 generationId）
+        publications.clear()
+        clock += 50
+        accept(status("delivered", 10, generation = "gen-only", messageId = "u2", clientMessageId = "cid-half"))
+        accept(message("conversation.message.completed", "单边省略generationId最终回复", 11, generation = null))
+        accept(status("completed", 12, generation = "gen-only", messageId = "u2", clientMessageId = "cid-half"))
+
+        val afterHalfMissing = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterHalfMissing.status)
+        assertEquals("单边省略generationId最终回复", afterHalfMissing.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+
+        // 场景 C：两类事件携带不同的 generationId（如本地预生成 req-turn 与服务端 turn-real）
+        publications.clear()
+        clock += 50
+        accept(status("queued", 20, generation = "req-turn", messageId = "u3", clientMessageId = "cid-mismatch"))
+        accept(message("conversation.message.delta", "跨ID流式片段", 21, generation = "turn-real")
+            ?.copy(resolvedGenerationId = "req-turn"))
+        accept(message("conversation.message.completed", "跨generationId最终回复", 22, generation = "turn-real")
+            ?.copy(resolvedGenerationId = "req-turn"))
+        accept(status("completed", 23, generation = "turn-real", messageId = "srv-u3", clientMessageId = "cid-mismatch"))
+
+        val afterMismatch = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterMismatch.status)
+        assertEquals("跨generationId最终回复", afterMismatch.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+
+        // 场景 D：无 resolvedGenerationId 提示时，queued(req-raw) -> completed(turn-raw) -> status(completed, req-raw)
+        publications.clear()
+        clock += 50
+        accept(status("delivered", 30, generation = "req-raw", messageId = "u4", clientMessageId = "cid-raw"))
+        accept(message("conversation.message.completed", "未带别名的跨ID最终回复", 31, generation = "turn-raw"))
+        accept(status("completed", 32, generation = "req-raw", messageId = "srv-u4", clientMessageId = "cid-raw"))
+
+        val afterRawMismatch = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterRawMismatch.status)
+        assertEquals("未带别名的跨ID最终回复", afterRawMismatch.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+    }
+
+    @Test fun t3_03_TerminalBarrierBlocksLaggingReconcileAndReconnectReplay() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 先在 RUNNING 状态抓取一个尚未过期的 reconcile 请求
+        accept(status("queued", 1, generation = "gen-barrier", messageId = "u1", clientMessageId = "cid-barrier"))
+        coordinator.requestReconciliation()
+        val staleRequest = coordinator.reconciliationRequests().single()
+
+        // 对话完成并持久化终态
+        clock += 50
+        accept(message("conversation.message.completed", "已终结的最终答案", 2, generation = "gen-barrier"))
+        accept(status("completed", 3, generation = "gen-barrier", messageId = "u1", clientMessageId = "cid-barrier"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+        val completedPubCount = publications.size
+
+        // 1. 滞后的 reconcile 带着 running 快照返回：必须被单调终态屏障拦截
+        assertFalse(coordinator.reconcile(staleRequest, "gen-barrier" to "running", emptyList()))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+        assertEquals("已终结的最终答案", coordinator.sessions.value.single().latestReply)
+        assertEquals(completedPubCount, publications.size)
+
+        // 2. 重连回放同一轮次的旧事件（delta / queued / delivered）：绝不可复活进度态或清空回复
+        clock += 50
+        accept(message("conversation.message.delta", "旧流式重放", 1, generation = "gen-barrier"))
+        accept(status("queued", 1, generation = "gen-barrier", messageId = "u1", clientMessageId = "cid-barrier"))
+        accept(status("delivered", 2, generation = "gen-barrier", messageId = "u1", clientMessageId = "cid-barrier"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+        assertEquals("已终结的最终答案", coordinator.sessions.value.single().latestReply)
+        assertEquals(completedPubCount, publications.size)
+
+        // 3. 即使期间断线标记也不会把已终结会话拉回 DISCONNECTED，且重连后未知旧 running 快照不复活已终结会话
+        coordinator.disconnect()
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+    }
+
+    @Test fun t3_04_DisconnectionFollowedByLaggingReconcileCannotResurrectTerminalRound() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 先启动轮次，断线后收到 DISCONNECTED 态下的 reconcile 请求，接着终态补齐
+        accept(status("queued", 1, generation = "gen-disc", messageId = "u1", clientMessageId = "cid-disc"))
+        coordinator.disconnect()
+        assertEquals(NativeConversationStatus.DISCONNECTED, coordinator.sessions.value.single().status)
+
+        // 轮次已拿到终态消息与完成事件（比如恢复窗口内到达）
+        accept(message("conversation.message.completed", "断线前完成的回答", 2, generation = "gen-disc"))
+        accept(status("completed", 3, generation = "gen-disc", messageId = "u1", clientMessageId = "cid-disc"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+
+        // 若构造对同一轮次仍声称 running 的滞后快照请求，也绝不可覆盖终态
+        val fakeLaggingRequest = NotificationReconciliationRequest(
+            session = coordinator.sessions.value.single().copy(status = NativeConversationStatus.DISCONNECTED),
+            revision = 999L,
+        )
+        assertFalse(coordinator.reconcile(fakeLaggingRequest, "gen-disc" to "running", emptyList()))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+        assertEquals("断线前完成的回答", coordinator.sessions.value.single().latestReply)
+    }
+
+    @Test fun t3_05_ConsecutiveTurnsCleanlyRestartAndExitWithoutLeakingPreviousReply() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 第 1 轮完成
+        accept(status("delivered", 1, "gen-turn-1", messageId = "u1", clientMessageId = "cid-1"))
+        accept(message("conversation.message.completed", "第一轮结果", 2, "gen-turn-1", messageId = "r1"))
+        accept(status("completed", 3, "gen-turn-1", messageId = "u1", clientMessageId = "cid-1"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+        assertEquals("第一轮结果", coordinator.sessions.value.single().latestReply)
+
+        // 同一会话发起第 2 轮提问：必须以新轮次重新进入 QUEUED/RUNNING 且清空上一轮文本残留
+        clock += 100
+        accept(status("queued", 10, "gen-turn-2", messageId = "u2", clientMessageId = "cid-2"))
+        val turn2Queued = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.QUEUED, turn2Queued.status)
+        assertEquals("gen-turn-2", turn2Queued.generationId)
+        assertEquals("", turn2Queued.latestReply)
+
+        // 第 2 轮流式与终态
+        accept(message("conversation.message.delta", "第二轮流式", 11, "gen-turn-2", messageId = "r2"))
+        assertEquals(NativeConversationStatus.RUNNING, coordinator.sessions.value.single().status)
+        assertEquals("第二轮流式", coordinator.sessions.value.single().latestReply)
+
+        accept(message("conversation.message.completed", "第二轮最终答案", 12, "gen-turn-2", messageId = "r2"))
+        accept(status("completed", 13, "gen-turn-2", messageId = "u2", clientMessageId = "cid-2"))
+        val turn2Completed = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, turn2Completed.status)
+        assertEquals("第二轮最终答案", turn2Completed.latestReply)
+        assertEquals(2, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",
@@ -893,8 +1104,14 @@ class NativeConversationNotificationsTest {
     private fun accept(input: NativeNotificationInput?) { input?.let(coordinator::accept) }
     private fun message(type: String, text: String, revision: Long, generation: String? = "generation", sender: String = "assistant", messageId: String = "reply", channel: String? = null) = event(type,
         """{"conversationId":"conversation","messageId":"$messageId",${generationField(generation)}"sender":"$sender","parts":[{"type":"text","text":"$text"}],"revision":$revision${channel?.let { ",\"channel\":\"$it\"" }.orEmpty()}}""")
-    private fun status(status: String, revision: Long, generation: String? = "generation") = event("conversation.message.status",
-        """{"conversationId":"conversation","messageId":"user-${generation ?: "legacy"}","clientMessageId":"client-${generation ?: "legacy"}",${generationField(generation)}"status":"$status","revision":$revision,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
+    private fun status(
+        status: String,
+        revision: Long,
+        generation: String? = "generation",
+        messageId: String = "user-${generation ?: "legacy"}",
+        clientMessageId: String = "client-${generation ?: "legacy"}",
+    ) = event("conversation.message.status",
+        """{"conversationId":"conversation","messageId":"$messageId","clientMessageId":"$clientMessageId",${generationField(generation)}"status":"$status","revision":$revision,"errorCode":${if (status == "failed") "\"AGENT_UNAVAILABLE\"" else "null"}}""")
     private fun generationField(generation: String?) = generation?.let { "\"generationId\":\"$it\"," }.orEmpty()
     private fun event(type: String, payload: String): NativeNotificationInput? {
         clock++

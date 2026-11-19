@@ -414,4 +414,52 @@ class RemoteConversationRepositoryTest {
         collectJob.cancel()
         repo.close()
     }
+
+    @Test fun `Harness先收到turnStart建立别名后prompt省略turnId不报错且正常完成`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "harness"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.timeline(local, PageRequest()); runCurrent()
+
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("client-harness"), "执行"))
+        runCurrent()
+        // turn/start 在 prompt 返回之前到达，已建立 request:* -> turn-harness 别名
+        carrier.frames.emit(obj("type" to "event", "event" to obj("seq" to 1, "type" to "turn/start", "data" to obj("turnId" to "turn-harness"))))
+        runCurrent()
+        // prompt 回执不再带 turn.id，应按已建别名解析为 turn-harness 而非抛 REMOTE_GENERATION_MISMATCH
+        response.complete(obj("accepted" to true))
+        runCurrent()
+
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        carrier.frames.emit(obj("type" to "event", "event" to obj("seq" to 2, "type" to "turn/end", "data" to obj("turnId" to "turn-harness", "reason" to obj("kind" to "done")))))
+        runCurrent()
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertTrue(observed.any { it is VerifiedConversationEvent.MessageStatus && it.status == AgentMessageStatus.COMPLETED })
+        repo.close()
+    }
+
+    @Test fun `Codex第1页快照显示无活跃轮次时触发onTimelineSnapshot回调以便收口卡住通知`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val carrier = Carrier(workspace).apply {
+            historyRead = { RemoteHistoryPage(listOf(obj("id" to "assistant-1", "sender" to "assistant", "text" to "后端已完成"))) }
+        }
+        var snapshotCalls = 0
+        var lastGenerationId: String? = "initial"
+        val repo = RemoteConversationRepository(
+            carrier,
+            workspace,
+            backgroundScope,
+            { local },
+            onTimelineSnapshot = { _, _, generationId, _ ->
+                snapshotCalls++
+                lastGenerationId = generationId
+            },
+        )
+        repo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(1, snapshotCalls)
+        assertNull(lastGenerationId)
+        repo.close()
+    }
 }

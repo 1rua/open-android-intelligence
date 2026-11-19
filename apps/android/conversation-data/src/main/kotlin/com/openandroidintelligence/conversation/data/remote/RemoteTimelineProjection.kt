@@ -48,7 +48,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 GenerationState.QUEUED, GenerationState.RUNNING, GenerationState.OUTCOME_UNKNOWN)
         }
     }
-    fun terminal(id: String): TerminalReceipt? = terminals[id]
+    fun terminal(id: String): TerminalReceipt? = terminals[id] ?: terminals[resolveGeneration(id)]
     private data class Source(val historical: Boolean, val time: Long, val historyRead: Long? = null) {
         fun id(value: String) = if (historical) "history:$value" else value
     }
@@ -357,7 +357,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                             update.text("stopReason") == "end_turn" -> GenerationState.COMPLETED
                             else -> GenerationState.OUTCOME_UNKNOWN
                         }
-                        generationId?.let { recordTerminal(it, state, source) }
+                        if (!source.historical) {
+                            val terminalId = generationId ?: acpMessageId ?: "acp-turn:${++liveSequence}"
+                            if (generationId == null) generationId = terminalId
+                            recordTerminal(terminalId, state, source)
+                        }
                         return recovered + finalizeStreaming("turn-end:${++liveSequence}", source)
                     }
                 }

@@ -414,20 +414,22 @@ class RemoteRuntime(
                     runCatching { accountRuntime.authenticatedPeer(next.scope.connectionId) == mediaPeer }.getOrDefault(false)
             }
             val active = AtomicReference<String?>(null)
-            val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent, mediaSource = mediaSource) { key, event ->
-                mirror.commitNativeEvents(listOf(event))
-                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(it)
-                }
-            }
+            fun buildRepository(activeRef: AtomicReference<String?>) = RemoteConversationRepository(
+                carrier, confirmed, ownedScope, activeRef::get, attachments::promptContent,
+                mediaSource = mediaSource,
+                onEvent = { key, event ->
+                    mirror.commitNativeEvents(listOf(event))
+                    nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
+                        nativeConversationNotifications.accept(it)
+                    }
+                },
+                onTimelineSnapshot = { key, conversationId, activeGenerationId, messages ->
+                    reconcileTimelineSnapshot(local, key, conversationId, activeGenerationId, messages)
+                },
+            )
+            val repo = buildRepository(active)
             repository = repo; ownerAttachments = attachments; ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
-            surfaceRepository = { surfaceActive -> RemoteConversationRepository(carrier, confirmed, ownedScope, surfaceActive::get,
-                attachments::promptContent, mediaSource = mediaSource) { key, event ->
-                mirror.commitNativeEvents(listOf(event))
-                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(it)
-                }
-            } }
+            surfaceRepository = { surfaceActive -> buildRepository(surfaceActive) }
             nativeConversationNotifications.bind(local.profileId, local.accountId)
             val controller = createController(ownedScope, repo, mirror, media, attachments, local, active)
             mutableController.value = controller
@@ -533,6 +535,7 @@ class RemoteRuntime(
     private suspend fun retire() {
         ownerMediaSource?.close(); ownerMediaSource = null
         ownerMedia?.retireConnection()
+        ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
         synchronized(backgroundOwnership) { ownerActive = false; keepAlive.stop() }
         workObserver?.cancelAndJoin(); workObserver = null
         mutableController.value?.closeAndAwait(); mutableController.value = null
@@ -734,12 +737,28 @@ class RemoteRuntime(
         controller.value?.updateDebouncePolicy(policy)
         assistantControllers.values.forEach { it.updateDebouncePolicy(policy) }
     }
+    /** 快照加载或重连后核对同端点待决会话，由通知终态屏障决定是否结束已失联的 Live Update。 */
+    private fun reconcileTimelineSnapshot(
+        local: ConversationScope,
+        key: EndpointKey,
+        conversationId: String,
+        activeGenerationId: String?,
+        messages: List<TimelineMessage>,
+    ) {
+        val target = ReplyNotificationTarget(local.profileId, local.accountId, conversationId, endpointId(key))
+        val request = nativeConversationNotifications.reconciliationRequestFor(target) ?: return
+        nativeConversationNotifications.reconcile(request, activeGenerationId?.let { it to "running" }, messages)
+    }
+
     fun onNetworkAvailable(routeChanged: Boolean = false) {
         accountRuntime.refreshControlConnection()
         val selected = state.value.selected ?: return
         if (controller.value?.state?.value?.isOnline == false) state.value.endpoints.firstOrNull { it.endpoint.key == selected }?.let(::select)
     }
-    fun onNetworkLost() { controller.value?.setRemoteConversationOnline(false) }
+    fun onNetworkLost() {
+        controller.value?.setRemoteConversationOnline(false)
+        ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
+    }
     fun onBackgroundSessionRestarted() { restoreSessionIfAvailable() }
     fun onBackgroundSessionStopped() { onNetworkLost() }
 }

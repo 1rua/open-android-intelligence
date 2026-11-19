@@ -12,14 +12,16 @@ internal data class NativeNotificationInput(
     val target: ReplyNotificationTarget,
     val kind: NativeNotificationKind,
     val event: VerifiedConversationEvent,
+    val resolvedGenerationId: String? = null,
+    val forceLegacy: Boolean = false,
 ) {
     val eventId: String get() = event.eventId
     val occurredAt: Long get() = event.occurredAt
     val endpointId: String? get() = target.agentId
-    val generationId: String? get() = when (val fact = event) {
+    val generationId: String? get() = if (forceLegacy) null else (resolvedGenerationId ?: when (val fact = event) {
         is VerifiedConversationEvent.TimelineUpsert -> fact.message.generationId
         is VerifiedConversationEvent.MessageStatus -> fact.generationId
         is VerifiedConversationEvent.GenerationCancelled -> fact.generationId
         else -> null
-    }?.takeIf { it.isNotBlank() }
+    })?.takeIf { it.isNotBlank() }
 }

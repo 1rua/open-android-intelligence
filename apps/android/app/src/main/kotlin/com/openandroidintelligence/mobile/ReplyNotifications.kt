@@ -175,15 +175,13 @@ internal class AndroidReplyNotificationPublisher(
             cancel(session.target)
             return
         }
-        val hasLiveUpdate = liveUpdates.update(session)
-        val isTerminal = session.status in setOf(
-            NativeConversationStatus.COMPLETED,
-            NativeConversationStatus.FAILED,
-            NativeConversationStatus.CANCELLED
-        ) || !session.isRunning
-        if (isTerminal) {
+        val isTerminal = !session.isRunning
+        val activeForLiveUpdate = session.status == NativeConversationStatus.QUEUED || session.status == NativeConversationStatus.RUNNING
+        if (!activeForLiveUpdate) {
+            // 终态或断连时先彻底退出常驻 Live Update 进度通知，再决定是否发布普通回复通知。
             liveUpdates.cancel(session.target)
         }
+        val hasLiveUpdate = if (activeForLiveUpdate) liveUpdates.update(session) else false
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
         // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
@@ -375,11 +373,18 @@ internal class ReplyCompletionObserver(
         val decoded = input.event
         val conversationKey = replyDigest(identity)
         val activeKey = "legacy.current.$conversationKey"
+        val awaitingKey = "legacy.awaiting.$conversationKey"
         when (input.kind) {
             NativeNotificationKind.MESSAGE_STATUS -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
-                val round = replyDigest("legacy\u0000$identity\u0000${status.messageId}\u0000${status.clientMessageId.value}")
-                if (preferences.contains("done.$round")) return
+                val round = legacyStatusDigest(identity, status)
+                if (preferences.contains("done.$round")) {
+                    // 回放的排队/投递帧不能让先前已完成但未见正文的旧轮次继续挂起接管回放正文。
+                    if (status.status in setOf(AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED)) {
+                        clearAwaitingLegacy(conversationKey, occurredAt)
+                    }
+                    return
+                }
                 when (status.status) {
                     AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
                         if (preferences.getString(activeKey, null) != round) {
@@ -387,21 +392,42 @@ internal class ReplyCompletionObserver(
                             preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commitOrLog(TAG)
                         }
                     }
-                    AgentMessageStatus.COMPLETED, AgentMessageStatus.FAILED -> {
+                    AgentMessageStatus.COMPLETED -> {
                         val active = preferences.getString(activeKey, null)
                         val hasReply = active == round && preferences.contains("reply.$round")
-                        finish(round, occurredAt)
-                        if (active == round) removeLegacy(conversationKey)
-                        if (status.status == AgentMessageStatus.COMPLETED && hasReply) {
+                        if (hasReply) {
+                            finish(round, occurredAt)
+                            removeLegacy(conversationKey)
                             post(input.target, "legacy:$round")
+                        } else if (active == round) {
+                            // 终态先于正文到达时转入等待正文槽位，保留同轮次正文匹配能力，同时脱离活跃队列。
+                            preferences.edit()
+                                .remove(activeKey)
+                                .putString(awaitingKey, round)
+                                .putLong("success.$round", occurredAt)
+                                .commitOrLog(TAG)
+                        } else {
+                            finish(round, occurredAt)
                         }
+                    }
+                    AgentMessageStatus.FAILED -> {
+                        val active = preferences.getString(activeKey, null)
+                        val awaiting = preferences.getString(awaitingKey, null)
+                        finish(round, occurredAt)
+                        if (active == round || awaiting == round) removeLegacy(conversationKey)
                     }
                 }
             }
             NativeNotificationKind.REPLY_COMPLETED -> {
                 if (!hasAssistantReply(decoded)) return
-                val round = preferences.getString(activeKey, null) ?: return
+                val round = preferences.getString(activeKey, null) ?: preferences.getString(awaitingKey, null) ?: return
+                if (preferences.contains("done.$round")) return
                 preferences.edit().putLong("reply.$round", occurredAt).commitOrLog(TAG)
+                if (preferences.contains("success.$round")) {
+                    finish(round, occurredAt)
+                    removeLegacy(conversationKey)
+                    post(input.target, "legacy:$round")
+                }
             }
             NativeNotificationKind.GENERATION_CANCELLED -> clearLegacy(conversationId, identity, occurredAt)
             else -> Unit
@@ -417,13 +443,23 @@ internal class ReplyCompletionObserver(
 
     private fun clearLegacy(conversationId: String, identity: String, occurredAt: Long) {
         val conversationKey = replyDigest(identity)
-        val round = preferences.getString("legacy.current.$conversationKey", null) ?: return
-        finish(round, occurredAt)
+        preferences.getString("legacy.current.$conversationKey", null)?.let { finish(it, occurredAt) }
+        preferences.getString("legacy.awaiting.$conversationKey", null)?.let { finish(it, occurredAt) }
         removeLegacy(conversationKey)
     }
 
+    private fun clearAwaitingLegacy(conversationKey: String, occurredAt: Long) {
+        val awaiting = preferences.getString("legacy.awaiting.$conversationKey", null) ?: return
+        finish(awaiting, occurredAt)
+        preferences.edit().remove("legacy.awaiting.$conversationKey").commitOrLog(TAG)
+    }
+
     private fun removeLegacy(conversationKey: String) {
-        preferences.edit().remove("legacy.current.$conversationKey").remove("legacy.started.$conversationKey").commitOrLog(TAG)
+        preferences.edit()
+            .remove("legacy.current.$conversationKey")
+            .remove("legacy.awaiting.$conversationKey")
+            .remove("legacy.started.$conversationKey")
+            .commitOrLog(TAG)
     }
 
     private fun finish(key: String, occurredAt: Long) {
@@ -442,7 +478,11 @@ internal class ReplyCompletionObserver(
             val edit = preferences.edit()
             expired.forEach { key ->
                 edit.remove(key)
-                if (key.startsWith("legacy.started.")) edit.remove("legacy.current." + key.removePrefix("legacy.started."))
+                if (key.startsWith("legacy.started.")) {
+                    val suffix = key.removePrefix("legacy.started.")
+                    edit.remove("legacy.current.$suffix")
+                    edit.remove("legacy.awaiting.$suffix")
+                }
             }
             edit.commitOrLog(TAG)
         }
@@ -467,6 +507,11 @@ internal fun SharedPreferences.Editor.commitOrLog(tag: String): Boolean {
     }
     if (!committed) android.util.Log.w(tag, "SharedPreferences commit returned false")
     return committed
+}
+
+internal fun legacyStatusDigest(identity: String, status: VerifiedConversationEvent.MessageStatus): String {
+    val stableUserKey = status.clientMessageId.value.takeIf { it.isNotBlank() } ?: status.messageId
+    return replyDigest("legacy\u0000$identity\u0000$stableUserKey")
 }
 
 internal fun replyDigest(value: String): String = MessageDigest.getInstance("SHA-256")
