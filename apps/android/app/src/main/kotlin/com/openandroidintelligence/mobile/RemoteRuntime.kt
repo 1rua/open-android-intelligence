@@ -714,14 +714,21 @@ class RemoteRuntime(
     fun restoreSessionIfAvailable(): Job {
         val activeStartup = startupRecoveryJob
         if (coldStartBootstrapped && activeStartup != null && activeStartup.isActive) return activeStartup
-        if (coldStartBootstrapped && agentConnection.value.phase == AgentConnectionPhase.CONNECTED) {
+        if (coldStartBootstrapped && agentConnection.value.phase != AgentConnectionPhase.DISCONNECTED) {
+            return CompletableDeferred(Unit)
+        }
+        if (accountRuntime.account.value != null && agentConnection.value.hosts.isNotEmpty()) {
             return CompletableDeferred(Unit)
         }
         return scope.launch {
-            if (agentConnection.value.account != null || agentConnection.value.busy) return@launch
+            if (agentConnection.value.busy) return@launch
             updateLayerStates(agentTransform = { it.copy(busy = true) })
             try {
-                val account = accountRuntime.restore() ?: return@launch
+                val account = accountRuntime.account.value ?: accountRuntime.restore()
+                if (account == null) {
+                    updateLayerStates(agentTransform = { it.copy(account = null) })
+                    return@launch
+                }
                 val cachedAgents = loadDiscoveredAgents(account)
                 updateLayerStates(
                     agentTransform = {

@@ -185,6 +185,40 @@ class RemoteConnectionLifecycleTest {
         assertEquals("工作区一草稿", runtime.controller.value!!.state.value.draft)
     }
 
+    @Test
+    fun `打开会话菜单或切入Agent时自动拉取当前Agent全部工作区与各工作区会话无需二次点击Host`() = runBlocking {
+        runtime.restoreSessionIfAvailable().join()
+        val agent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+
+        // 不调用 discover(host)，直接切入 Agent
+        runtime.selectAgent(agent).join()
+        eventually {
+            val ctx = runtime.workspaceContext.value
+            ctx.catalogPhase == WorkspaceCatalogPhase.READY &&
+                ctx.workspaces.size == 2 &&
+                ctx.workspaces.all { (ctx.sessionsByWorkspace[it.endpoint.key] as? Loadable.Ready)?.value?.isNotEmpty() == true }
+        }
+
+        val ctx = runtime.workspaceContext.value
+        val wsOne = ctx.workspaces.first { it.endpoint.key.workspaceId == "one" }
+        val wsTwo = ctx.workspaces.first { it.endpoint.key.workspaceId == "two" }
+        val sessionsOne = (ctx.sessionsByWorkspace[wsOne.endpoint.key] as Loadable.Ready).value
+        val sessionsTwo = (ctx.sessionsByWorkspace[wsTwo.endpoint.key] as Loadable.Ready).value
+        assertEquals(listOf("一号会话"), sessionsOne.map { it.title })
+        assertEquals(listOf("二号会话"), sessionsTwo.map { it.title })
+
+        // 模拟服务端工作区二新增会话，打开菜单触发 hydrateWorkspaces(force = true) 自动刷新
+        account.extraWorkspaceTwoSessions += mapOf("sessionId" to "s3", "title" to "二号新增会话", "updatedAt" to 300)
+        runtime.hydrateWorkspaces(force = true).join()
+        eventually {
+            val updated = (runtime.workspaceContext.value.sessionsByWorkspace[wsTwo.endpoint.key] as? Loadable.Ready)?.value.orEmpty()
+            updated.any { it.title == "二号新增会话" }
+        }
+        val refreshedTwo = (runtime.workspaceContext.value.sessionsByWorkspace[wsTwo.endpoint.key] as Loadable.Ready).value
+        assertTrue(refreshedTwo.any { it.title == "二号会话" })
+        assertTrue(refreshedTwo.any { it.title == "二号新增会话" })
+    }
+
     private inner class FakeAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
@@ -198,6 +232,7 @@ class RemoteConnectionLifecycleTest {
             RemoteHostDevice("host-1", "主力电脑", "linux", "membership", true),
             RemoteHostDevice("host-2", "工作站", "linux", "membership", true),
         )
+        val extraWorkspaceTwoSessions = CopyOnWriteArrayList<Map<String, Any>>()
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
 
         override fun peekRestorableAccount(): RemoteActiveAccount? = account.value ?: restorableAccount
@@ -280,6 +315,7 @@ class RemoteConnectionLifecycleTest {
                     val endpoint = JsonFields.string(params, "endpoint")
                     val streamId = JsonFields.string(params, "streamId")
                     if (endpoint == "workspace/follow") {
+                        val extraIds = account.extraWorkspaceTwoSessions.map { it["sessionId"] as String }
                         events.emit(
                             RemoteRpcEvent(
                                 "harness.remote.frame",
@@ -291,7 +327,7 @@ class RemoteConnectionLifecycleTest {
                                             "value" to mapOf(
                                                 "items" to listOf(
                                                     mapOf("workspaceId" to "one", "title" to "工作区一", "path" to "/one", "sessionIds" to listOf("s1")),
-                                                    mapOf("workspaceId" to "two", "title" to "工作区二", "path" to "/two", "sessionIds" to listOf("s2")),
+                                                    mapOf("workspaceId" to "two", "title" to "工作区二", "path" to "/two", "sessionIds" to (listOf("s2") + extraIds)),
                                                 )
                                             ),
                                         ),
@@ -307,10 +343,10 @@ class RemoteConnectionLifecycleTest {
                     val value = when (JsonFields.string(params, "endpoint")) {
                         "session/list" -> Json.of(
                             mapOf(
-                                "items" to listOf(
+                                "items" to (listOf(
                                     mapOf("sessionId" to "s1", "title" to "一号会话", "updatedAt" to 100),
                                     mapOf("sessionId" to "s2", "title" to "二号会话", "updatedAt" to 200),
-                                )
+                                ) + account.extraWorkspaceTwoSessions)
                             )
                         )
                         "session/page" -> Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false))

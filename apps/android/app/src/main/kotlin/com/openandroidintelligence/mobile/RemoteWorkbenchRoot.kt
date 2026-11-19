@@ -23,11 +23,14 @@ import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.*
 import com.openandroidintelligence.conversation.workbench.WorkbenchScreen
+import com.openandroidintelligence.conversation.workbench.WorkspaceConversationGroup
+import com.openandroidintelligence.conversation.workbench.WorkspaceMenuState
 import com.openandroidintelligence.mobile.settings.appearance.AppearanceSettingsScreen
 import com.openandroidintelligence.ui.resources.R as UiR
 import java.util.concurrent.atomic.AtomicReference
@@ -49,6 +52,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val controllerState = controller?.state?.collectAsState()?.value
     val clientConnection by runtime.accountRuntime.state.collectAsState()
     val connection by runtime.state.collectAsState()
+    val agentConn by runtime.agentConnection.collectAsState()
+    val workspaceCtx by runtime.workspaceContext.collectAsState()
     val onboarding by app.onboardingPreferences.state.collectAsState()
     var settings by rememberSaveable { mutableStateOf(false) }
     val uiScope = rememberCoroutineScope()
@@ -280,10 +285,51 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 settingsContent = { presentation, close ->
                                     RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
                                 },
-                                endpointContent = { RemoteEndpointList(runtime) },
+                                endpointContent = { RemoteLoginAgentSelector(runtime) },
                             )
                         } else WorkbenchSettingsHost { presentation ->
                             val workbenchState by current.state.collectAsState()
+                            val workspacesByMenuKey = remember(workspaceCtx.workspaces) {
+                                workspaceCtx.workspaces.associateBy { runtime.endpointId(it.endpoint.key) }
+                            }
+                            val workspaceMenu = remember(
+                                agentConn.activeAgentName,
+                                workspaceCtx,
+                                workbenchState.threads,
+                                workspacesByMenuKey,
+                            ) {
+                                WorkspaceMenuState(
+                                    agentTitle = agentConn.activeAgentName,
+                                    groups = workspaceCtx.workspaces.map { ws ->
+                                        val menuKey = runtime.endpointId(ws.endpoint.key)
+                                        val isActive = ws.endpoint.key == workspaceCtx.activeWorkspace
+                                        val shortTitle = ws.endpoint.displayName.substringAfterLast(" · ")
+                                            .ifBlank { ws.endpoint.displayName }
+                                        val threads = if (isActive && workbenchState.threads != Loadable.Idle) {
+                                            workbenchState.threads
+                                        } else {
+                                            workspaceCtx.sessionsByWorkspace[ws.endpoint.key] ?: Loadable.Idle
+                                        }
+                                        WorkspaceConversationGroup(
+                                            workspaceKey = menuKey,
+                                            title = shortTitle,
+                                            subtitle = ws.path.takeIf { it.isNotBlank() },
+                                            isActive = isActive,
+                                            threads = threads,
+                                        )
+                                    },
+                                    catalogLoading = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.LOADING,
+                                    catalogError = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.FAILED,
+                                    onHydrate = { runtime.hydrateWorkspaces(force = false) },
+                                    onRefreshCatalog = { runtime.hydrateWorkspaces(force = true) },
+                                    onOpenWorkspaceThread = { wsKey, threadId ->
+                                        workspacesByMenuKey[wsKey]?.let { runtime.selectWorkspace(it, initialThreadId = threadId) }
+                                    },
+                                    onCreateWorkspaceThread = { wsKey ->
+                                        workspacesByMenuKey[wsKey]?.let { runtime.createSessionInWorkspace(it) }
+                                    },
+                                )
+                            }
                             var dismissedError by remember(connection.errorCode) { mutableStateOf(false) }
                             val retryConnection = {
                                 connection.endpoints.firstOrNull { it.endpoint.key == connection.selected }?.let { runtime.select(it) }
@@ -306,6 +352,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 settingsOpen = settings && controller != null && displayedNativeUi == null,
                                 onSettingsOpenChange = { settings = it },
                                 settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) },
+                                workspaceMenu = workspaceMenu,
                                 header = {
                                     RemoteWorkbenchNotices(offline = !workbenchState.isOnline,
                                         error = connection.errorCode.takeUnless { dismissedError },

@@ -200,6 +200,14 @@
     <string name="conv_browser_agent_delete_unsupported">当前 Agent 不支持删除对话</string>
     <string name="conv_browser_agent_busy_action_hint">任务结束后可归档或删除</string>
     <string name="conv_browser_action_open_thread">打开会话</string>
+    <string name="conv_workspace_badge_current">当前</string>
+    <string name="conv_workspace_collapse_cd">折叠工作区 %1$s</string>
+    <string name="conv_workspace_expand_cd">展开工作区 %1$s</string>
+    <string name="conv_workspace_new_session_cd">在 %1$s 中新建会话</string>
+    <string name="conv_workspace_no_sessions">该工作区暂无会话</string>
+    <string name="conv_workspace_catalog_empty">暂无可用工作区</string>
+    <string name="conv_workspace_catalog_failed">工作区列表加载失败，请重试</string>
+    <string name="conv_workspace_header_hint">按工作区查看与切换会话</string>
     <string name="conv_browser_time_just_now">刚刚</string>
     <string name="conv_browser_time_minutes_ago">%1$d 分钟前</string>
     <string name="conv_browser_time_hours_ago">%1$d 小时前</string>

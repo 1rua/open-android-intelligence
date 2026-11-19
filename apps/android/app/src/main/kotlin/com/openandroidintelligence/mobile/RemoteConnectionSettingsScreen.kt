@@ -32,34 +32,153 @@ import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.ui.resources.R as UiR
 
-/** Remote 的发现结果沿用原设置行与分组卡片，选中状态来自真实工作区。 */
+/** 登录页已登录态专用：只负责发现 Host 与选择/连接 Agent，彻底移除工作区展示与选择交互。 */
 @Composable
-internal fun RemoteEndpointList(runtime: RemoteRuntime) {
-    val state by runtime.state.collectAsState()
+internal fun RemoteLoginAgentSelector(runtime: RemoteRuntime) {
+    val agentConn by runtime.agentConnection.collectAsState()
+    var autoDiscoveredHost by remember(agentConn.account?.accountId) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(agentConn.hosts, agentConn.agents.size, agentConn.busy, agentConn.errorCode) {
+        val onlineHosts = agentConn.hosts.filter { it.online }
+        if (onlineHosts.size == 1 &&
+            agentConn.agents.isEmpty() &&
+            !agentConn.busy &&
+            agentConn.errorCode == null &&
+            autoDiscoveredHost != onlineHosts.single().deviceId
+        ) {
+            val sole = onlineHosts.single()
+            autoDiscoveredHost = sole.deviceId
+            runtime.discover(sole)
+        }
+    }
+
     SectionLabel(stringResource(UiR.string.remote_hosts))
     SettingsSectionCard {
-        state.hosts.forEach { host ->
-            val selected = state.selected?.hostId == host.deviceId
-            SettingsListItem(host.name,
+        agentConn.hosts.forEach { host ->
+            val selected = agentConn.activeAgent?.hostId == host.deviceId
+            SettingsListItem(
+                headline = host.name,
                 supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
-                selected = selected, icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                enabled = !state.busy && host.online, onClick = { runtime.discover(host) })
+                selected = selected,
+                icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                enabled = !agentConn.busy && host.online,
+                onClick = { runtime.discover(host) },
+            )
         }
-        SettingsListItem(stringResource(UiR.string.remote_refresh_hosts), enabled = !state.busy && state.account != null,
-            onClick = { runtime.refreshHosts() })
+        SettingsListItem(
+            headline = stringResource(UiR.string.remote_refresh_hosts),
+            enabled = !agentConn.busy && agentConn.account != null,
+            onClick = { runtime.refreshHosts() },
+        )
     }
-    SectionLabel(stringResource(UiR.string.remote_workspaces))
+
+    SectionLabel(stringResource(UiR.string.remote_available_agents))
     SettingsSectionCard {
-        if (state.endpoints.isEmpty()) SettingsListItem(stringResource(UiR.string.conn_agent_none_discovered),
-            supporting = stringResource(UiR.string.conn_agent_not_fetched))
-        state.endpoints.forEach { endpoint ->
-            val selected = state.selected == endpoint.endpoint.key
-            SettingsListItem(endpoint.endpoint.displayName,
-                selected = selected, icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                enabled = !state.busy, onClick = { runtime.select(endpoint) })
+        if (agentConn.agents.isEmpty()) {
+            SettingsListItem(
+                headline = stringResource(UiR.string.remote_agent_none_discovered),
+                supporting = stringResource(UiR.string.remote_agent_select_host_hint),
+            )
+        } else {
+            agentConn.agents.forEach { agent ->
+                val selected = agentConn.activeAgent == agent.key
+                val switching = agentConn.switchingAgent == agent.key
+                val statusHint = when {
+                    switching -> stringResource(UiR.string.remote_agent_switching)
+                    selected -> stringResource(UiR.string.remote_agent_active)
+                    !agent.hostOnline -> stringResource(UiR.string.common_status_offline)
+                    else -> stringResource(UiR.string.remote_agent_select_hint)
+                }
+                SettingsListItem(
+                    headline = agent.displayName,
+                    supporting = statusHint,
+                    selected = selected,
+                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                    enabled = agent.hostOnline && agentConn.switchingAgent == null,
+                    onClick = { runtime.selectAgent(agent) },
+                )
+            }
         }
-        state.backendFailures.forEach { (backend, code) ->
+        agentConn.backendFailures.forEach { (backend, code) ->
             SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER)
+        }
+    }
+}
+
+/** 设置页「连接与账号」：Host 主机 + 可用 Agent（已连接可即时切换）+ 当前 Agent 下工作区（同 Agent 复用通道切换）。 */
+@Composable
+internal fun RemoteHostAndAgentSettings(runtime: RemoteRuntime) {
+    val agentConn by runtime.agentConnection.collectAsState()
+    val workspaceCtx by runtime.workspaceContext.collectAsState()
+
+    SectionLabel(stringResource(UiR.string.remote_hosts))
+    SettingsSectionCard {
+        agentConn.hosts.forEach { host ->
+            val selected = agentConn.activeAgent?.hostId == host.deviceId
+            SettingsListItem(
+                headline = host.name,
+                supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
+                selected = selected,
+                icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                enabled = !agentConn.busy && host.online,
+                onClick = { runtime.discover(host) },
+            )
+        }
+        SettingsListItem(
+            headline = stringResource(UiR.string.remote_refresh_hosts),
+            enabled = !agentConn.busy && agentConn.account != null,
+            onClick = { runtime.refreshHosts() },
+        )
+    }
+
+    SectionLabel(stringResource(UiR.string.remote_available_agents))
+    SettingsSectionCard {
+        if (agentConn.agents.isEmpty()) {
+            SettingsListItem(
+                headline = stringResource(UiR.string.remote_agent_none_discovered),
+                supporting = stringResource(UiR.string.remote_agent_select_host_hint),
+            )
+        } else {
+            agentConn.agents.forEach { agent ->
+                val selected = agentConn.activeAgent == agent.key
+                val switching = agentConn.switchingAgent == agent.key
+                val statusHint = when {
+                    switching -> stringResource(UiR.string.remote_agent_switching)
+                    selected -> stringResource(UiR.string.remote_agent_active)
+                    !agent.hostOnline -> stringResource(UiR.string.common_status_offline)
+                    else -> agent.backendName
+                }
+                SettingsListItem(
+                    headline = agent.displayName,
+                    supporting = statusHint,
+                    selected = selected,
+                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                    enabled = agent.hostOnline && agentConn.switchingAgent == null,
+                    onClick = { runtime.selectAgent(agent) },
+                )
+            }
+        }
+        agentConn.backendFailures.forEach { (backend, code) ->
+            SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER)
+        }
+    }
+
+    if (workspaceCtx.workspaces.isNotEmpty()) {
+        SectionLabel(stringResource(UiR.string.remote_current_agent_workspaces))
+        SettingsSectionCard {
+            workspaceCtx.workspaces.forEach { ws ->
+                val selected = workspaceCtx.activeWorkspace == ws.endpoint.key
+                val title = ws.endpoint.displayName.substringAfterLast(" · ").ifBlank { ws.endpoint.displayName }
+                SettingsListItem(
+                    headline = title,
+                    supporting = ws.path.takeIf { it.isNotBlank() }
+                        ?: if (selected) stringResource(UiR.string.remote_workspace_active) else null,
+                    selected = selected,
+                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                    enabled = agentConn.switchingAgent == null,
+                    onClick = { runtime.selectWorkspace(ws) },
+                )
+            }
         }
     }
 }
@@ -98,7 +217,7 @@ internal fun RemoteConnectionSettingsScreen(
                 }
                 SettingsNavigationItem(stringResource(UiR.string.conn_item_diagnostics), onClick = onOpenDiagnostics)
             }
-            RemoteEndpointList(runtime)
+            RemoteHostAndAgentSettings(runtime)
             SectionLabel(stringResource(UiR.string.conn_section_account_management))
             SettingsSectionCard {
                 SettingsListItem(stringResource(UiR.string.conn_item_current_account), icon = Icons.Default.Person,
