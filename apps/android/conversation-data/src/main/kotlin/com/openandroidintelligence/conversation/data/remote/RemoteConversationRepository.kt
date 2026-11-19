@@ -40,6 +40,46 @@ class RemoteConversationRepository(
     private val batchMembers = ConcurrentHashMap<String, List<ClientMessageId>>()
     private val models = ConcurrentHashMap<String, RemoteModelSelection>()
     private val rows = ConcurrentHashMap<String, RemoteSessionRow>()
+    private val announcedCommands = MutableStateFlow<Map<String, AgentCommandCatalog>>(emptyMap())
+    private val commandLock = Any()
+    private class CommandCreation {
+        val candidates = mutableMapOf<String, AgentCommandCatalog>()
+    }
+    private val commandCreations = mutableSetOf<CommandCreation>()
+    private val commandAnnouncements: Flow<RemoteCommandAnnouncement>?
+
+    val commandCatalog: AgentCommandCatalogRepository = object : AgentCommandCatalogRepository {
+        override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog =
+            get(gatewayId, languageCode, activeConversationId())
+
+        override suspend fun get(gatewayId: String, languageCode: String, conversationId: String?): AgentCommandCatalog {
+            current()
+            val nativeId = conversationId?.let(RemoteLocalIds::decode)
+            val fetched = carrier.commands(nativeId)
+            current()
+            return conversationId?.let { announcedCommands.value[it] } ?: fetched ?: RemoteCommandCatalog.empty
+        }
+
+        override fun observe(gatewayId: String, conversationId: String?): Flow<AgentCommandCatalog> =
+            if (conversationId == null) emptyFlow()
+            else announcedCommands.mapNotNull { it[conversationId] }.distinctUntilChanged()
+    }
+
+    private fun acceptCommandAnnouncement(announcement: RemoteCommandAnnouncement) = synchronized(commandLock) {
+        if (!isCurrent()) return@synchronized
+        val id = try {
+            RemoteLocalIds.encode(announcement.sessionId)
+        } catch (_: IllegalArgumentException) {
+            return@synchronized
+        }
+        if (rows.containsKey(id)) {
+            announcedCommands.value += id to announcement.catalog
+        } else {
+            // 尚未确认的会话只能进入正在创建的请求，不能被目录读取或观察到。
+            commandCreations.forEach { it.candidates[id] = announcement.catalog }
+        }
+    }
+
     private data class DispatchedEvent(val event: VerifiedConversationEvent, val ack: CompletableDeferred<Unit>)
     private val eventSubscribers = CopyOnWriteArrayList<Channel<DispatchedEvent>>()
     // 统一计数：包含会话发布临界区及已派发待订阅方处理完毕的在途事件，避免跨调度器短暂全零穿透。
@@ -52,7 +92,7 @@ class RemoteConversationRepository(
     override val generationSnapshot: StateFlow<GenerationSnapshot> = generation.snapshot
     override val generationId: StateFlow<String?> = generation.generationId
     override val generationState: StateFlow<GenerationState> = generation.generationState
-    private val approvals = ConcurrentHashMap<String, Pair<String, String>>()
+    private val approvals = RemoteApprovalInbox(clock)
     private val held = ConcurrentHashMap<String, LinkedHashMap<String, OutgoingMessage>>()
     private val deliveryLocks = ConcurrentHashMap<String, Mutex>()
     // 串行化同一会话内的投影推进、事件发布与状态快照更新，防止回执与终态在不同协程间错位。
@@ -73,9 +113,19 @@ class RemoteConversationRepository(
             }
         }
 
-    init { require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" } }
+    init {
+        require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" }
+        commandAnnouncements = carrier.commandAnnouncements(workspace)
+        commandAnnouncements?.let { announcements ->
+            // 同一订阅贯穿创建和实时阶段，避免等待开流时漏收或让旧帧覆盖新值。
+            scope.launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                announcements.collect(::acceptCommandAnnouncement)
+            }
+        }
+    }
+    private fun isCurrent() = lifetime.isActive && carrier.channel.scope == connectionScope
     private fun current() {
-        check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
+        check(isCurrent()) { "REMOTE_CONNECTION_REPLACED" }
     }
     private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex") }
     fun activeConversationChanged() = generation.publish {
@@ -87,18 +137,37 @@ class RemoteConversationRepository(
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
         current()
         val result = carrier.sessions(workspace, page)
-        current()
-        result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it; mediaSource?.confirmSession(it.id) }
+        synchronized(commandLock) {
+            current()
+            result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it }
+        }
+        result.items.forEach { mediaSource?.confirmSession(it.id) }
         return ConversationPage(result.items.map { ConversationSummary(ConversationId(RemoteLocalIds.encode(it.id)), it.title, it.updatedAt, it.archived) }, result.nextCursor)
     }
     override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
         current()
-        val created = carrier.create(workspace)
-        current()
-        val localId = RemoteLocalIds.encode(created.id)
-        rows[localId] = created
-        mediaSource?.confirmSession(created.id)
-        return Conversation(ConversationId(localId), created.title, created.createdAt)
+        val creation = commandAnnouncements?.let {
+            synchronized(commandLock) {
+                current()
+                CommandCreation().also { commandCreations.add(it) }
+            }
+        }
+        try {
+            val created = carrier.create(workspace)
+            val localId = RemoteLocalIds.encode(created.id)
+            synchronized(commandLock) {
+                current()
+                // 把会话确证和候选提升放在同一处，后到的已确证公告可直接覆盖。
+                rows[localId] = created
+                if (localId !in announcedCommands.value) creation?.candidates?.get(localId)?.let { catalog ->
+                    announcedCommands.value += localId to catalog
+                }
+            }
+            mediaSource?.confirmSession(created.id)
+            return Conversation(ConversationId(localId), created.title, created.createdAt)
+        } finally {
+            if (creation != null) synchronized(commandLock) { commandCreations.remove(creation) }
+        }
     }
     override suspend fun readConversation(conversationId: String): Conversation? = rows[conversationId]?.let { Conversation(ConversationId(conversationId), it.title, it.createdAt) }
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
@@ -109,8 +178,7 @@ class RemoteConversationRepository(
         current()
         val target = projection(conversationId)
         withSessionLock(conversationId) {
-            val projected = synchronized(target) { result.records.flatMap { target.accept(it, history = true, historyRead = mediaRead) } }
-            projected.forEach { rememberApproval(conversationId, it) }
+            synchronized(target) { result.records.forEach { target.accept(it, history = true, historyRead = mediaRead) } }
             activeConversationChanged()
         }
         val pageIds = result.records.mapNotNull { record ->
@@ -127,17 +195,24 @@ class RemoteConversationRepository(
             scope.launch {
                 health.value = StreamHealth.CONNECTING
                 try {
-                    carrier.follow(RemoteLocalIds.decode(id)).collect { frame ->
+                    val sessionId = RemoteLocalIds.decode(id)
+                    carrier.followWithApprovalSource(sessionId).collect { frame ->
                         current()
-                        if (frame.text("type") == "remote-stream-ready") {
+                        if (frame.value.text("type") == "remote-stream-ready") {
                             health.value = StreamHealth.LIVE
                             opened.complete(Unit)
                             return@collect
                         }
                         withSessionLock(id) {
                             val target = projection(id)
+                            val approvalEvents = if (SessionCapability.APPROVAL in carrier.capabilities) {
+                                approvals.accept(id, sessionId, frame)
+                            } else emptyList()
                             val (decoded, ended) = synchronized(target) {
-                                val decoded = target.accept(frame)
+                                val decoded = target.accept(frame.value)
+                                if (approvalEvents.any { it is VerifiedConversationEvent.ApprovalRequested || it is VerifiedConversationEvent.ApprovalTextFallback }) {
+                                    target.markApprovalRequested()
+                                }
                                 val ended = target.terminalGeneration?.takeIf { it.first == target.generationId }
                                     ?.let { it.first to target.submittedGenerationId }
                                 decoded to ended
@@ -151,6 +226,7 @@ class RemoteConversationRepository(
                                 turns[request]?.let { turn -> target.generationId?.let { turn.generation = it } }
                             } } }
                             decoded.forEach { publish(id, it) }
+                            approvalEvents.forEach { publish(id, it) }
                             settlePending(id, target)
                             activeConversationChanged()
                         }
@@ -170,14 +246,8 @@ class RemoteConversationRepository(
         }
         opened.await()
     }
-    private fun rememberApproval(id: String, event: VerifiedConversationEvent) {
-        if (event is VerifiedConversationEvent.ApprovalRequested) projection(id).approvalHandles[event.request.approvalId.value]?.let {
-            approvals[event.request.approvalId.value] = id to it
-        }
-    }
     private suspend fun publish(id: String, event: VerifiedConversationEvent) {
         current()
-        rememberApproval(id, event)
         if (event is VerifiedConversationEvent.TimelineUpsert && event.message.sender == "user") {
             event.message.clientMessageId?.let { clientId ->
                 if (acceptedUserMessages.putIfAbsent(id to clientId.value, event.message.id) == null) {
@@ -435,13 +505,12 @@ class RemoteConversationRepository(
         } ?: throw java.io.IOException("REMOTE_MESSAGE_QUERY_UNAVAILABLE")
     }
     override suspend fun submitApprovalDecision(approvalId: ApprovalId, choice: ApprovalChoice): ApprovalSubmissionResult {
-        current()
-        if (choice !in setOf(ApprovalChoice.ONCE, ApprovalChoice.DENY)) return ApprovalSubmissionResult(ApprovalSubmissionOutcome.UNSUPPORTED)
-        val (id, handle) = approvals[approvalId.value] ?: return ApprovalSubmissionResult(ApprovalSubmissionOutcome.NOT_FOUND)
-        carrier.respond(RemoteLocalIds.decode(id), handle, choice == ApprovalChoice.ONCE)
-        current()
-        approvals.remove(approvalId.value)
-        return ApprovalSubmissionResult(ApprovalSubmissionOutcome.SUBMITTED, choice)
+        if (SessionCapability.APPROVAL !in carrier.capabilities || choice !in setOf(ApprovalChoice.ONCE, ApprovalChoice.DENY)) {
+            return ApprovalSubmissionResult(ApprovalSubmissionOutcome.UNSUPPORTED)
+        }
+        return approvals.submit(approvalId, choice) { id ->
+            lifetime.isActive && carrier.channel.scope == connectionScope && activeConversationId() == id
+        }
     }
     override suspend fun updateTitle(conversationId: String, title: String): Boolean { current(); carrier.rename(RemoteLocalIds.decode(conversationId), title); current(); return true }
     override suspend fun setArchived(conversationId: String, archived: Boolean) { current(); carrier.archive(RemoteLocalIds.decode(conversationId), archived); current() }
@@ -455,6 +524,10 @@ class RemoteConversationRepository(
         eventSubscribers.toList().forEach { it.cancel() }
         eventSubscribers.clear()
         lifetime.cancelAndJoin()
+        synchronized(commandLock) {
+            commandCreations.clear()
+            announcedCommands.value = emptyMap()
+        }
         health.value = StreamHealth.IDLE
         approvals.clear()
         pending.clear()

@@ -88,6 +88,22 @@ class RemoteHarnessCatalogTest {
         assertTrue("进入会话实际建立 Session V3 实时流", account.harnessSessionFollows > 0)
     }
 
+    @Test fun `通过工作台获取当前远程会话的实际命令并在输入斜杠时刷新`() = runBlocking {
+        runtime.restoreSessionIfAvailable().join()
+        runtime.discover(account.listHosts().single()).join()
+        runtime.select(runtime.state.value.endpoints.single { it.endpoint.key.backendId.value == "harness" }).join()
+        val controller = requireNotNull(runtime.controller.value)
+        suspend fun awaitCommand(command: String) = withTimeout(5_000) {
+            controller.state.first { (it.catalog as? Loadable.Ready)?.value?.commands?.singleOrNull()?.command == command }
+        }
+        awaitCommand("/live-first")
+        account.commandName = "live-second"
+        controller.editDraft("/")
+        val updated = awaitCommand("/live-second")
+        val catalog = updated.catalog as Loadable.Ready
+        assertEquals("<文件>", catalog.value.commands.single().argumentHint)
+    }
+
     @Test fun `类型清单列Codex但未协商Harness能力时不创建DSH工作区`() = runBlocking {
         account.harnessAvailable = false
         runtime.restoreSessionIfAvailable().join()
@@ -106,6 +122,7 @@ class RemoteHarnessCatalogTest {
         var harnessWorkspaceReads = 0
         var harnessHistoryReads = 0
         var harnessSessionFollows = 0
+        @Volatile var commandName = "live-first"
         private var generation = 0L
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
 
@@ -154,7 +171,12 @@ class RemoteHarnessCatalogTest {
                                     "id" to "historical-reply", "content" to listOf(mapOf("type" to "text", "text" to "DSH已保存的回复"))))))), "hasMore" to false)
                         }
                         "session/models" -> mapOf("groups" to emptyList<Any>())
-                        "commands/list" -> mapOf("items" to emptyList<Any>())
+                        "commands/list" -> {
+                            val payload = JsonFields.obj(JsonFields.field(params, "payload"))
+                            val args = JsonFields.obj(JsonFields.field(payload, "args"))
+                            assertEquals("harness-session", JsonFields.string(args, "agentId"))
+                            listOf(mapOf("name" to commandName, "description" to "宿主命令", "input" to mapOf("hint" to "<文件>")))
+                        }
                         else -> error("本测试不应调用其他 Harness 接口")
                     }
                     return value(mapOf("ok" to true, "value" to result))

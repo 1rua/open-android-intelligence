@@ -467,11 +467,11 @@ class RemoteRuntime(
             override suspend fun updateOrganization(expectedRevision: Long, value: ConversationOrganization) =
                 withContext(Dispatchers.IO) { organization.update(local.gatewayId, expectedRevision, value) }
         }
-        return WorkbenchController(ownedScope, history, object : AgentCommandCatalogRepository {
-            override suspend fun get(gatewayId: String, languageCode: String) =
-                (repo as? RemoteConversationRepository)?.carrier?.commands(active.get()?.let(RemoteLocalIds::decode))
-                    ?: throw RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
-        }, { local }, attachmentCoordinator = attachments,
+        val commands = (repo as? RemoteConversationRepository)?.commandCatalog ?: object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog =
+                throw RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
+        }
+        return WorkbenchController(ownedScope, history, commands, { local }, attachmentCoordinator = attachments,
             restoreLastThread = restore, supportsApprovalCards = SessionCapability.APPROVAL in supported,
             onActiveThreadChanged = { id -> active.set(id); (repo as? RemoteConversationRepository)?.activeConversationChanged(); if (restore) refreshModels(id) },
             streamHealthSource = repo as? StreamHealthSource, persistence = mirror.takeIf { restore }, media = media,
