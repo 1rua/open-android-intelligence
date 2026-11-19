@@ -139,7 +139,8 @@ class RemoteRuntimeTest {
         first.editDraft("第一个工作区草稿")
         ready("two")
         assertFalse(first.state.value.isOnline)
-        assertTrue(connection.channels.first().closed)
+        assertFalse("同 Agent 切工作区必须复用底层通道而不关闭", connection.channels.first().closed)
+        assertEquals("同 Agent 切工作区不应建立新连接", 1, connection.channels.size)
         assertEquals("", runtime.controller.value!!.state.value.draft)
         runtime.controller.value!!.editDraft("第二个工作区草稿")
         ready("one")
@@ -214,9 +215,19 @@ class RemoteRuntimeTest {
     @Test fun `旧工作区晚到模型目录不能覆盖当前模型`() = runBlocking {
         ready("one")
         val delayed = CompletableDeferred<JsonValue>()
-        connection.channels.last().models = { delayed.await() }
+        val targetChannel = connection.channels.last()
+        val readsBeforeOld = targetChannel.modelReads
+        var interceptFirst = true
+        targetChannel.models = {
+            if (interceptFirst) {
+                interceptFirst = false
+                delayed.await()
+            } else {
+                catalog("宿主模型")
+            }
+        }
         val oldRead = runtime.refreshModels()
-        eventually { connection.channels.first().modelReads > 0 }
+        eventually { targetChannel.modelReads > readsBeforeOld }
         ready("two")
         runtime.refreshModels().join()
         delayed.complete(catalog("旧模型"))

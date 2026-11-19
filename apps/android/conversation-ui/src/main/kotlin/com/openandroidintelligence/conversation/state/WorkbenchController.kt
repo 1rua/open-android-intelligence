@@ -153,6 +153,8 @@ class WorkbenchController(
     private val restoreLastThread: Boolean = true,
     /** 只读取宿主现有的 Agent 就绪状态；等待发现时不发起远端读取。 */
     private val canReadConversations: () -> Boolean = { true },
+    /** Cache-First 冷启动阶段以离线只读态构造，后台建链成功后原地升级为在线态。 */
+    private val initialOnline: Boolean = allowSending,
 ) : AutoCloseable {
     private val controllerJob=SupervisorJob(scope.coroutineContext[Job])
     // 控制器协程里的未捕获异常只应结束这一条订阅，而不是带走整个进程：
@@ -205,7 +207,7 @@ class WorkbenchController(
     // says "no negotiated fact yet", so a Gateway that did offer cards would
     // otherwise read as one that never offered them until the first update ran.
     private val _state = MutableStateFlow(WorkbenchUiState(approvalCardsSupported = supportsApprovalCards,
-        isOnline=allowSending,
+        isOnline=allowSending && initialOnline,
         conversationManagementSupported=supportsConversationManagement,
         conversationDeleteSupported=supportsConversationDelete,
         conversationArchiveSupported=supportsConversationArchive,
@@ -215,7 +217,7 @@ class WorkbenchController(
     val state: StateFlow<WorkbenchUiState> = _state.asStateFlow()
     /** 本地浏览位置归属不随同账号连接所有者重建而变化。 */
     val localConversationScope: ConversationScope get() = scopeFactory()
-    private var remoteConversationOnline = true
+    private var remoteConversationOnline = initialOnline
     private var remoteSendSupported = true
 
     /** Agent presence can change without replacing this controller or losing its draft. */
@@ -242,7 +244,10 @@ class WorkbenchController(
         supportsApprovalCards = approvals
         update { it }
         if (wasOnline != online) onCommandCatalogConnectivityChanged(online)
-        if (!wasOnline && online) onForegrounded()
+        if (!wasOnline && online) {
+            onForegrounded()
+            recoverKnownMedia()
+        }
     }
     private val activeWork = WorkbenchActiveWork()
     /** Live sends across every conversation, including work not yet acknowledged by the Gateway. */
@@ -1891,8 +1896,13 @@ class WorkbenchController(
                     update { it.copy(threads = if (cached.isEmpty()) Loadable.Empty else Loadable.Ready(cached)) }
                 }
                 if (!canReadConversations()) {
-                    if (local == null && _state.value.threads !is Loadable.Ready && _state.value.threads !is Loadable.Empty)
-                        update { it.copy(threads=Loadable.Failed("AGENT_OFFLINE")) }
+                    if (local == null && _state.value.threads !is Loadable.Ready && _state.value.threads !is Loadable.Empty) {
+                        val connecting = _state.value.streamHealth in setOf(
+                            com.openandroidintelligence.conversation.model.StreamHealth.CONNECTING,
+                            com.openandroidintelligence.conversation.model.StreamHealth.RECONNECTING,
+                        )
+                        if (!connecting) update { it.copy(threads=Loadable.Failed("AGENT_OFFLINE")) }
+                    }
                     return@launch
                 }
                 val remoteStarted = System.nanoTime()
@@ -2938,7 +2948,7 @@ class WorkbenchController(
     }
 
     /** The same live gate is used before recording and before submitting its attachment. */
-    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean = attachmentCoordinator != null && !closed && !retiring && allowSending && activeThreadId == expectedThreadId &&
+    fun canSendVoiceAttachment(expectedThreadId: String?): Boolean = attachmentCoordinator != null && !closed && !retiring && allowSending && remoteConversationOnline && remoteSendSupported && activeThreadId == expectedThreadId &&
             !_state.value.managingThreads && !_state.value.activeThreadArchived &&
             !creationBlocksActiveThread() && pendingSubmission == null &&
             _state.value.composer !in setOf(ComposerState.SUBMITTING,ComposerState.WAITING_ATTACHMENTS) &&

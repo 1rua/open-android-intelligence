@@ -18,6 +18,7 @@ RemoteLoginPresentationTest
 RemoteDeviceNameSettingTest
 RemoteRootInteractionTest
 RemoteRuntimeTest
+RemoteConnectionLifecycleTest
 RemoteHarnessCatalogTest
 RemoteNewSessionNavigationTest
 RemoteSessionDeliveryIntegrationTest

@@ -137,6 +137,10 @@ class RemoteAccountRuntime(
             active?.let { store.load(RemoteIdentityScope(it.origin, it.accountId, RemoteRole.HOST))?.identity },
         )
     }
+    /** 同步检查本机凭据信封中是否存在未被撤销的活动账号（纯本地校验，不访问网络）。 */
+    fun peekRestorableAccount(): RemoteActiveAccount? =
+        mutableAccount.value ?: runCatching { vault.activeAccount() }.getOrNull()
+
     suspend fun restore(): RemoteActiveAccount? = lifecycle.withLock {
         if (mutableAccount.value != null) return@withLock mutableAccount.value
         val active = vault.activeAccount() ?: return@withLock null
