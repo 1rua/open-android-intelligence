@@ -31,22 +31,28 @@ internal class RemoteApprovalJournal {
                 val callId = data.text("callId")?.takeIf { it.isNotBlank() } ?: return null
                 idsByCall.getOrPut(callId) { mutableSetOf() }.add(id)
                 asks.putIfAbsent(id, Ask(callId))
+                return callId
             }
             "approval/decided" -> {
                 val ask = asks[id]?.takeUnless { it.settled } ?: return null
                 ask.settled = true
                 // 快照中的已结算记录不能证明其后收到的同 callId 实时请求也已结算。
                 if (!live) return null
-                val outcome = approvalOutcome(data.text("outcome")) ?: return null
-                ask.decision = Decision(outcome, approvalDecisionTime(data) ?: approvalDecisionTime(event, "time"))
+                approvalOutcome(data.text("outcome"))?.let { outcome ->
+                    ask.decision = Decision(outcome, approvalDecisionTime(data) ?: approvalDecisionTime(event, "time"))
+                }
                 return ask.callId
             }
         }
         return null
     }
 
-    fun decision(callId: String): Decision? {
+    fun decision(callId: String): Decision? = uniqueAsk(callId)?.decision
+
+    fun hasPendingAsk(callId: String): Boolean = uniqueAsk(callId)?.settled == false
+
+    private fun uniqueAsk(callId: String): Ask? {
         val id = idsByCall[callId]?.singleOrNull() ?: return null
-        return asks[id]?.takeIf { it.callId == callId }?.decision
+        return asks[id]?.takeIf { it.callId == callId }
     }
 }

@@ -26,7 +26,8 @@ internal class RemoteApprovalSource(
 
     fun close() { isOpen = false }
 
-    suspend fun submit(handle: String, sessionId: String, choice: ApprovalChoice): ApprovalSubmissionResult {
+    /** null 表示空回执，是否继续等待由调用方根据事件证据判断。 */
+    suspend fun submit(handle: String, sessionId: String, choice: ApprovalChoice): ApprovalSubmissionResult? {
         if (!isOpen) return ApprovalSubmissionResult(ApprovalSubmissionOutcome.FAILED, errorCode = "APPROVAL_STREAM_CLOSED")
         return decodeApprovalReceipt(send(handle, choice == ApprovalChoice.ONCE), handle, sessionId, choice)
     }
@@ -54,7 +55,7 @@ private fun decodeApprovalReceipt(
     handle: String,
     sessionId: String,
     choice: ApprovalChoice,
-): ApprovalSubmissionResult {
+): ApprovalSubmissionResult? {
     // RPC 桥和业务端各自可能包一层 ok/value。显式否定的回执不能被折叠为空 ACK。
     var value = receipt
     repeat(2) {
@@ -85,7 +86,7 @@ private fun decodeApprovalReceipt(
     }
     if (value == JsonValue.JNull || (value is JsonValue.JObject && value.fields.isEmpty())) {
         // 已结算的事件也会得到空 ACK，不能由此知道哪次决策生效。
-        return ApprovalSubmissionResult(ApprovalSubmissionOutcome.SUBMITTED)
+        return null
     }
     return unknownApprovalResult("APPROVAL_INVALID_RECEIPT")
 }

@@ -4,7 +4,6 @@ import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.gateway.schema.JsonValue
-import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import java.util.UUID
@@ -42,6 +41,12 @@ class RemoteConversationRepository(
     private val models = ConcurrentHashMap<String, RemoteModelSelection>()
     private val rows = ConcurrentHashMap<String, RemoteSessionRow>()
     private val announcedCommands = MutableStateFlow<Map<String, AgentCommandCatalog>>(emptyMap())
+    private val commandLock = Any()
+    private class CommandCreation {
+        val candidates = mutableMapOf<String, AgentCommandCatalog>()
+    }
+    private val commandCreations = mutableSetOf<CommandCreation>()
+    private val commandAnnouncements: Flow<RemoteCommandAnnouncement>?
 
     val commandCatalog: AgentCommandCatalogRepository = object : AgentCommandCatalogRepository {
         override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog =
@@ -60,14 +65,19 @@ class RemoteConversationRepository(
             else announcedCommands.mapNotNull { it[conversationId] }.distinctUntilChanged()
     }
 
-    private fun updateCommandCatalog(id: String, sessionId: String, frame: JsonValue) {
-        val catalog = try {
-            carrier.commandCatalogUpdate(sessionId, frame)
-        } catch (cause: RemoteSessionException) {
-            GatewayLog.protocolEvidence("command.catalog", mapOf("code" to cause.code))
-            null
-        } ?: return
-        announcedCommands.update { it + (id to catalog) }
+    private fun acceptCommandAnnouncement(announcement: RemoteCommandAnnouncement) = synchronized(commandLock) {
+        if (!isCurrent()) return@synchronized
+        val id = try {
+            RemoteLocalIds.encode(announcement.sessionId)
+        } catch (_: IllegalArgumentException) {
+            return@synchronized
+        }
+        if (rows.containsKey(id)) {
+            announcedCommands.value += id to announcement.catalog
+        } else {
+            // 尚未确认的会话只能进入正在创建的请求，不能被目录读取或观察到。
+            commandCreations.forEach { it.candidates[id] = announcement.catalog }
+        }
     }
 
     private data class DispatchedEvent(val event: VerifiedConversationEvent, val ack: CompletableDeferred<Unit>)
@@ -103,9 +113,19 @@ class RemoteConversationRepository(
             }
         }
 
-    init { require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" } }
+    init {
+        require(workspace.endpoint.key.backendId.value == carrier.backend) { "REMOTE_BACKEND_MISMATCH" }
+        commandAnnouncements = carrier.commandAnnouncements(workspace)
+        commandAnnouncements?.let { announcements ->
+            // 同一订阅贯穿创建和实时阶段，避免等待开流时漏收或让旧帧覆盖新值。
+            scope.launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                announcements.collect(::acceptCommandAnnouncement)
+            }
+        }
+    }
+    private fun isCurrent() = lifetime.isActive && carrier.channel.scope == connectionScope
     private fun current() {
-        check(lifetime.isActive && carrier.channel.scope == connectionScope) { "REMOTE_CONNECTION_REPLACED" }
+        check(isCurrent()) { "REMOTE_CONNECTION_REPLACED" }
     }
     private fun projection(id: String) = projections.computeIfAbsent(id) { RemoteTimelineProjection(it, clock = clock, mediaReference = mediaSource?.let { source -> source::accept }, persistentMessageSequence = carrier.backend == "harness", matchStartedGenerationToSubmission = carrier.backend != "codex") }
     fun activeConversationChanged() = generation.publish {
@@ -117,18 +137,37 @@ class RemoteConversationRepository(
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage {
         current()
         val result = carrier.sessions(workspace, page)
-        current()
-        result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it; mediaSource?.confirmSession(it.id) }
+        synchronized(commandLock) {
+            current()
+            result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it }
+        }
+        result.items.forEach { mediaSource?.confirmSession(it.id) }
         return ConversationPage(result.items.map { ConversationSummary(ConversationId(RemoteLocalIds.encode(it.id)), it.title, it.updatedAt, it.archived) }, result.nextCursor)
     }
     override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
         current()
-        val created = carrier.create(workspace)
-        current()
-        val localId = RemoteLocalIds.encode(created.id)
-        rows[localId] = created
-        mediaSource?.confirmSession(created.id)
-        return Conversation(ConversationId(localId), created.title, created.createdAt)
+        val creation = commandAnnouncements?.let {
+            synchronized(commandLock) {
+                current()
+                CommandCreation().also { commandCreations.add(it) }
+            }
+        }
+        try {
+            val created = carrier.create(workspace)
+            val localId = RemoteLocalIds.encode(created.id)
+            synchronized(commandLock) {
+                current()
+                // 把会话确证和候选提升放在同一处，后到的已确证公告可直接覆盖。
+                rows[localId] = created
+                if (localId !in announcedCommands.value) creation?.candidates?.get(localId)?.let { catalog ->
+                    announcedCommands.value += localId to catalog
+                }
+            }
+            mediaSource?.confirmSession(created.id)
+            return Conversation(ConversationId(localId), created.title, created.createdAt)
+        } finally {
+            if (creation != null) synchronized(commandLock) { commandCreations.remove(creation) }
+        }
     }
     override suspend fun readConversation(conversationId: String): Conversation? = rows[conversationId]?.let { Conversation(ConversationId(conversationId), it.title, it.createdAt) }
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
@@ -164,7 +203,6 @@ class RemoteConversationRepository(
                             opened.complete(Unit)
                             return@collect
                         }
-                        updateCommandCatalog(id, sessionId, frame.value)
                         withSessionLock(id) {
                             val target = projection(id)
                             val approvalEvents = if (SessionCapability.APPROVAL in carrier.capabilities) {
@@ -486,7 +524,10 @@ class RemoteConversationRepository(
         eventSubscribers.toList().forEach { it.cancel() }
         eventSubscribers.clear()
         lifetime.cancelAndJoin()
-        announcedCommands.value = emptyMap()
+        synchronized(commandLock) {
+            commandCreations.clear()
+            announcedCommands.value = emptyMap()
+        }
         health.value = StreamHealth.IDLE
         approvals.clear()
         pending.clear()

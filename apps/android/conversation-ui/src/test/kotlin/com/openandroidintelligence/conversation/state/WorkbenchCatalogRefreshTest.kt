@@ -119,6 +119,27 @@ class WorkbenchCatalogRefreshTest {
         assertEquals(Loadable.Empty, controller.state.value.catalog)
     }
 
+    @Test fun `切回同一会话时先前访问的目录回执不能覆盖新目录`() = runTest {
+        var firstVisits = 0
+        val old = CompletableDeferred<AgentCommandCatalog>()
+        val controller = controller(object : AgentCommandCatalogRepository {
+            override suspend fun get(gatewayId: String, languageCode: String) = error("需要会话参数")
+            override suspend fun get(gatewayId: String, languageCode: String, conversationId: String?): AgentCommandCatalog {
+                if (conversationId != "first") return commands()
+                return if (++firstVisits == 1) withContext(NonCancellable) { old.await() } else commands("latest")
+            }
+        })
+        controller.openThread("first")
+        runCurrent()
+        controller.openThread("second")
+        runCurrent()
+        controller.openThread("first")
+        runCurrent()
+        old.complete(commands("late"))
+        runCurrent()
+        assertEquals(commands("latest"), (controller.state.value.catalog as Loadable.Ready).value)
+    }
+
     @Test fun `空目录时手输命令仍按原文提交`() = runTest {
         val repository = Repository()
         val controller = controller(object : AgentCommandCatalogRepository {

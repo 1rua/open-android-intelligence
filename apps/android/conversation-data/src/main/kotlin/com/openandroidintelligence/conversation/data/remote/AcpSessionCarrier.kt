@@ -1,11 +1,14 @@
 package com.openandroidintelligence.conversation.data.remote
 
-import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.*
+import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.mapNotNull
 
 /** 各 ACP 后端直接走 agent.acp.*，后端标识不会因统一界面而丢失。 */
 class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val backend: String) : RemoteSessionCarrier {
@@ -40,8 +43,16 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
     }
 
     override suspend fun create(workspace: RemoteWorkspace): RemoteSessionRow {
+        requireWorkspaceConnection(workspace)
         val result = call("session/new", obj("cwd" to workspace.path, "backend" to backend, "mcpServers" to emptyList<Any>()))
         return RemoteSessionRow(result.requiredText("sessionId"), "", 0, 0)
+    }
+
+    private fun requireWorkspaceConnection(workspace: RemoteWorkspace) {
+        val connection = channel.scope
+        val key = workspace.endpoint.key
+        check(key.origin.value == connection.origin && key.accountId == connection.accountId &&
+            key.hostId == connection.hostDeviceId && key.backendId.value == backend) { "REMOTE_WORKSPACE_MISMATCH" }
     }
 
     override suspend fun history(sessionId: String, page: PageRequest): RemoteHistoryPage {
@@ -53,13 +64,27 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
     override fun follow(sessionId: String): Flow<JsonValue> = wire.stream(
         { id -> obj("streamId" to id, "sessionId" to sessionId) }, acceptsSessionId = sessionId)
 
-    override fun commandCatalogUpdate(sessionId: String, frame: JsonValue): AgentCommandCatalog? {
-        if (frame.text("method") != "session/update") return null
-        val params = frame.at("params") ?: return null
-        if (params.text("sessionId") != sessionId) return null
-        val update = params.at("update") ?: return null
-        if (update.text("sessionUpdate") != "available_commands_update") return null
-        return RemoteCommandCatalog.decode(update)
+    override fun commandAnnouncements(workspace: RemoteWorkspace): Flow<RemoteCommandAnnouncement> {
+        requireWorkspaceConnection(workspace)
+        return channel.events.catch { cause ->
+            // 创建和订阅各自保留连接错误及原有的送达状态。
+            if (cause !is RemoteRpcException) throw cause
+        }.mapNotNull { event ->
+            if (event.event != "agent.acp.frame") return@mapNotNull null
+            val frame = event.data.at("frame") ?: return@mapNotNull null
+            if (frame.text("method") != "session/update") return@mapNotNull null
+            val params = frame.at("params") ?: return@mapNotNull null
+            val sessionId = params.text("sessionId")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            if (event.data.text("streamId") != "session:$sessionId") return@mapNotNull null
+            val update = params.at("update") ?: return@mapNotNull null
+            if (update.text("sessionUpdate") != "available_commands_update") return@mapNotNull null
+            try {
+                RemoteCommandAnnouncement(sessionId, RemoteCommandCatalog.decode(update))
+            } catch (cause: RemoteSessionException) {
+                GatewayLog.protocolEvidence("command.catalog", mapOf("code" to cause.code))
+                null
+            }
+        }
     }
 
     override suspend fun prompt(sessionId: String, requestId: String, content: List<JsonValue>, model: RemoteModelSelection?): JsonValue =

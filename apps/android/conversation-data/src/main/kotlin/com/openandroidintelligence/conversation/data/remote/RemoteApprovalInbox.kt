@@ -23,10 +23,12 @@ import kotlinx.coroutines.ensureActive
 internal class RemoteApprovalInbox(private val clock: () -> Long) {
     private data class Key(val conversationId: String, val source: RemoteApprovalSource, val handle: String)
     private data class CallKey(val conversationId: String, val callId: String)
-    private class Entry(val key: Key, val choices: Set<ApprovalChoice>) {
+    private data class Waterfall(val call: CallKey?)
+    private class Entry(val key: Key, val choices: Set<ApprovalChoice>, val waterfall: Waterfall?) {
         val id = ApprovalId(UUID.randomUUID().toString())
         var submitting = false
         var deliveryClosed = false
+        var awaitingJournal = false
         var receipt: ApprovalSubmissionResult? = null
         var terminal: ApprovalSubmissionResult? = null
     }
@@ -41,7 +43,7 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
         val value = frame.value
         if (frame.approvalJournal) {
             val call = journals.getOrPut(conversationId, ::RemoteApprovalJournal).accept(value) ?: return emptyList()
-            return listOfNotNull(reconcile(CallKey(conversationId, call)))
+            return reconcile(CallKey(conversationId, call))
         }
         val source = frame.approvalSource ?: return emptyList()
         when (value.text("type")) {
@@ -50,7 +52,7 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
                 val handle = value.text("eventId") ?: return emptyList()
                 val body = value.at("request") ?: return emptyList()
                 val call = body.text("callId")?.takeIf { it.isNotBlank() }?.let { CallKey(conversationId, it) }
-                return request(Key(conversationId, source, handle), body, standardOptions, call)
+                return request(Key(conversationId, source, handle), body, standardOptions, Waterfall(call))
             }
             "cancel" -> {
                 if (!matchesSession(value, sessionId)) return emptyList()
@@ -59,6 +61,7 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
                 if (entry.deliveryClosed || entry.terminal != null) return emptyList()
                 // 清理会通知未胜出的订阅，也可能来自宿主取消。两种情况无法从这一帧区分。
                 entry.deliveryClosed = true
+                entry.awaitingJournal = false
                 return listOf(resolution(entry, ApprovalOutcome.UNKNOWN, decidedAt = null))
             }
         }
@@ -73,6 +76,8 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
             return listOfNotNull(resolve(entry, outcome, approvalDecisionTime(body)))
         }
         val method = value.text("method")
+        // 问答需要答案内容。当前答复接口的二选一对问答都会结算为取消。
+        if (method == "cursor/ask_question") return emptyList()
         val request = when {
             type == "approval/asked" -> body
             method in approvalMethods -> value.at("params") ?: return emptyList()
@@ -84,11 +89,12 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
         return request(Key(conversationId, source, handle), request, options)
     }
 
-    private fun request(key: Key, value: JsonValue, options: List<ApprovalOption>, call: CallKey? = null): List<VerifiedConversationEvent> {
+    private fun request(key: Key, value: JsonValue, options: List<ApprovalOption>, waterfall: Waterfall? = null): List<VerifiedConversationEvent> {
         if (!key.source.isOpen || key.handle.isBlank() || key in byKey || value !is JsonValue.JObject) return emptyList()
-        val entry = Entry(key, options.map { it.choice }.toSet())
+        val entry = Entry(key, options.map { it.choice }.toSet(), waterfall)
         byKey[key] = entry
         byId[entry.id] = entry
+        val call = waterfall?.call
         if (call != null) byCall.getOrPut(call) { mutableSetOf() }.add(entry)
         val now = clock()
         val conversationId = ConversationId(key.conversationId)
@@ -100,17 +106,27 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
             entry.id, command, reason, diagnosticCode = "APPROVAL_OPTIONS_UNSUPPORTED"))
         val request = ApprovalRequest(entry.id, conversationId, command, reason, options = options, timeoutSeconds = 0,
             requestedAt = now, expiresAt = Long.MAX_VALUE)
-        return listOfNotNull(VerifiedConversationEvent.ApprovalRequested(eventId, now, request, conversationId), call?.let(::reconcile))
+        return listOf(VerifiedConversationEvent.ApprovalRequested(eventId, now, request, conversationId)) + call?.let(::reconcile).orEmpty()
     }
 
-    private fun reconcile(call: CallKey): VerifiedConversationEvent.ApprovalResolved? {
-        val entry = byCall[call]?.singleOrNull() ?: return null
-        val decision = journals[call.conversationId]?.decision(call.callId) ?: return null
-        return resolve(entry, decision.outcome, decision.decidedAt)
+    private fun reconcile(call: CallKey): List<VerifiedConversationEvent.ApprovalResolved> {
+        val candidates = byCall[call] ?: return emptyList()
+        val journal = journals[call.conversationId] ?: return emptyList()
+        val entry = candidates.singleOrNull()
+        if (entry != null) {
+            journal.decision(call.callId)?.let { return listOfNotNull(resolve(entry, it.outcome, it.decidedAt)) }
+            if (journal.hasPendingAsk(call.callId)) return emptyList()
+        }
+        return candidates.filter { it.awaitingJournal }.map {
+            it.awaitingJournal = false
+            it.receipt = uncorrelatedEmptyAck()
+            resolution(it, ApprovalOutcome.UNKNOWN, decidedAt = null)
+        }
     }
 
     private fun resolve(entry: Entry, outcome: ApprovalOutcome, decidedAt: Long?): VerifiedConversationEvent.ApprovalResolved? {
         if (entry.terminal != null) return null
+        entry.awaitingJournal = false
         entry.terminal = ApprovalSubmissionResult(
             if (outcome == ApprovalOutcome.TIMED_OUT) ApprovalSubmissionOutcome.EXPIRED else ApprovalSubmissionOutcome.ALREADY_RESOLVED,
             outcome.asChoice, settledOutcome = outcome, decidedAt = decidedAt,
@@ -148,7 +164,10 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
                 key.source.submit(key.handle, RemoteLocalIds.decode(key.conversationId), choice)
             }
         } catch (cancelled: CancellationException) {
-            finish(entry, if (attempted) unknownApprovalResult("APPROVAL_DELIVERY_UNKNOWN") else null)
+            synchronized(this) {
+                entry.submitting = false
+                if (attempted) entry.receipt = unknownApprovalResult("APPROVAL_DELIVERY_UNKNOWN")
+            }
             throw cancelled
         } catch (failure: RemoteRpcException) {
             failure.toApprovalResult()
@@ -158,15 +177,29 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
             // 缺少传输层证据时，无法安全地判断宿主是否已接到决策。
             unknownApprovalResult("APPROVAL_DELIVERY_UNKNOWN")
         }
-        return finish(entry, result) ?: result
+        return finish(entry, result)
     }
 
     @Synchronized
-    private fun finish(entry: Entry, result: ApprovalSubmissionResult?): ApprovalSubmissionResult? {
+    private fun finish(entry: Entry, result: ApprovalSubmissionResult?): ApprovalSubmissionResult {
         entry.submitting = false
-        entry.receipt = result?.takeUnless { it.outcome == ApprovalSubmissionOutcome.FAILED }
-        return entry.terminal ?: if (entry.deliveryClosed) unknownApprovalResult("APPROVAL_DELIVERY_CLOSED") else result
+        entry.terminal?.let { return it }
+        if (entry.deliveryClosed) return unknownApprovalResult("APPROVAL_DELIVERY_CLOSED")
+        val receipt = result ?: emptyAckResult(entry)
+        entry.receipt = receipt.takeUnless { it.outcome == ApprovalSubmissionOutcome.FAILED }
+        return receipt
     }
+
+    private fun emptyAckResult(entry: Entry): ApprovalSubmissionResult {
+        val waterfall = entry.waterfall ?: return ApprovalSubmissionResult(ApprovalSubmissionOutcome.SUBMITTED)
+        val call = waterfall.call ?: return uncorrelatedEmptyAck()
+        val canWait = byCall[call]?.singleOrNull() == entry && journals[call.conversationId]?.hasPendingAsk(call.callId) == true
+        if (!canWait) return uncorrelatedEmptyAck()
+        entry.awaitingJournal = true
+        return ApprovalSubmissionResult(ApprovalSubmissionOutcome.SUBMITTED)
+    }
+
+    private fun uncorrelatedEmptyAck() = unknownApprovalResult("APPROVAL_EMPTY_ACK_UNCORRELATED")
 
     @Synchronized
     fun clear() {
@@ -204,6 +237,6 @@ internal class RemoteApprovalInbox(private val clock: () -> Long) {
         val standardOptions = listOf(ApprovalOption(ApprovalChoice.ONCE), ApprovalOption(ApprovalChoice.DENY))
         val resolutionTypes = setOf("approval/resolved", "approval.resolved", "conversation.approval.resolved")
         val approvalMethods = setOf("item/commandExecution/requestApproval", "item/fileChange/requestApproval",
-            "session/request_permission", "cursor/ask_question", "cursor/create_plan")
+            "session/request_permission", "cursor/create_plan")
     }
 }

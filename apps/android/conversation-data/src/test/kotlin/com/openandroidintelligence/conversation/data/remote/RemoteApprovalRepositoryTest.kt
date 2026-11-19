@@ -35,7 +35,7 @@ import org.junit.Test
 class RemoteApprovalRepositoryTest {
     private class Channel : RemoteRpcChannel {
         override val scope = RemoteRpcConnectionScope("https://remote.example", "account", "host", "rpc-client", "connection", 1)
-        override val capabilities = setOf("harness.remote.v3", "codex.appserver.v1", "agent.acp.v1", "agent.acp.hermes.v1")
+        override val capabilities = setOf("harness.remote.v3", "codex.appserver.v1", "agent.acp.v1", "agent.acp.hermes.v1", "agent.acp.cursor.v1")
         override val events = MutableSharedFlow<RemoteRpcEvent>()
         val calls = mutableListOf<Pair<String, JsonValue.JObject>>()
         var receipt: suspend () -> JsonValue = { JsonValue.JNull }
@@ -160,7 +160,7 @@ class RemoteApprovalRepositoryTest {
             assertEquals(ApprovalSubmissionOutcome.NOT_FOUND, otherWorkspace.submitApprovalDecision(firstRequest.approvalId, ApprovalChoice.ONCE).outcome)
             assertTrue(channel.decisions.isEmpty())
             val denied = repository.submitApprovalDecision(firstRequest.approvalId, ApprovalChoice.DENY)
-            assertEquals(ApprovalSubmissionOutcome.SUBMITTED, denied.outcome)
+            assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, denied.outcome)
             assertNull(denied.settledOutcome)
             val firstArgs = channel.decisions.single().second.at("payload")?.at("args")
             assertEquals("original-client", firstArgs?.text("clientId"))
@@ -239,7 +239,13 @@ class RemoteApprovalRepositoryTest {
             runCurrent()
             val ids = events.filterIsInstance<VerifiedConversationEvent.ApprovalRequested>().map { it.request.approvalId }
             assertEquals(2, ids.size)
-            ids.forEach { assertNull(repository.submitApprovalDecision(it, ApprovalChoice.ONCE).settledOutcome) }
+            ids.forEach {
+                val result = repository.submitApprovalDecision(it, ApprovalChoice.ONCE)
+                assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, result.outcome)
+                assertEquals("APPROVAL_EMPTY_ACK_UNCORRELATED", result.errorCode)
+                assertNull(result.settledOutcome)
+                assertEquals(result, repository.submitApprovalDecision(it, ApprovalChoice.DENY))
+            }
 
             channel.audit("decided", 4, "id" to "no-call", "outcome" to "allowed-once")
             channel.audit("decided", 5, "id" to "audit-1", "outcome" to "rejected")
@@ -250,6 +256,72 @@ class RemoteApprovalRepositoryTest {
                 events.filterIsInstance<VerifiedConversationEvent.ApprovalResolved>().map { it.outcome })
             ids.forEach { assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, repository.submitApprovalDecision(it, ApprovalChoice.DENY).outcome) }
             assertEquals(2, channel.decisions.size)
+        } finally {
+            repository.close()
+        }
+    }
+
+    @Test fun `空回执无法关联日志时结束等待且迟到的权威日志仍可结算`() = runTest {
+        val channel = Channel()
+        val events = mutableListOf<VerifiedConversationEvent>()
+        val repository = repository(HarnessSessionCarrier(channel)) { events.add(it) }
+        try {
+            repository.timeline(first, PageRequest())
+            runCurrent()
+            val stream = channel.streamId()
+            channel.ready(stream)
+            channel.asked(stream, callId = "late-tool-call")
+            runCurrent()
+            val id = events.filterIsInstance<VerifiedConversationEvent.ApprovalRequested>().single().request.approvalId
+            channel.receipt = { obj("ok" to true, "value" to obj()) }
+
+            val unknown = repository.submitApprovalDecision(id, ApprovalChoice.ONCE)
+            assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, unknown.outcome)
+            assertEquals("APPROVAL_EMPTY_ACK_UNCORRELATED", unknown.errorCode)
+            assertNull(unknown.settledOutcome)
+            assertEquals(unknown, repository.submitApprovalDecision(id, ApprovalChoice.ONCE))
+            assertTrue(events.none { it is VerifiedConversationEvent.ApprovalResolved })
+
+            channel.audit("asked", 1, "id" to "late-audit-id", "callId" to "late-tool-call")
+            channel.audit("decided", 2, "id" to "late-audit-id", "outcome" to "rejected")
+            runCurrent()
+            val terminal = events.filterIsInstance<VerifiedConversationEvent.ApprovalResolved>().single()
+            assertEquals(id, terminal.approvalId)
+            assertEquals(ApprovalOutcome.DENIED, terminal.outcome)
+            assertEquals(1002L, terminal.decidedAt)
+            val resolved = repository.submitApprovalDecision(id, ApprovalChoice.ONCE)
+            assertEquals(ApprovalSubmissionOutcome.ALREADY_RESOLVED, resolved.outcome)
+            assertEquals(ApprovalOutcome.DENIED, resolved.settledOutcome)
+            assertEquals(1, channel.decisions.size)
+        } finally {
+            repository.close()
+        }
+    }
+
+    @Test fun `空回执等待期间发现同一callId的第二条日志时转为未知`() = runTest {
+        val channel = Channel()
+        val events = mutableListOf<VerifiedConversationEvent>()
+        val repository = repository(HarnessSessionCarrier(channel)) { events.add(it) }
+        try {
+            repository.timeline(first, PageRequest())
+            runCurrent()
+            val stream = channel.streamId()
+            channel.ready(stream)
+            channel.audit("asked", 1, "id" to "first-audit", "callId" to "shared-call")
+            channel.asked(stream, callId = "shared-call")
+            runCurrent()
+            val id = events.filterIsInstance<VerifiedConversationEvent.ApprovalRequested>().single().request.approvalId
+
+            assertEquals(ApprovalSubmissionOutcome.SUBMITTED, repository.submitApprovalDecision(id, ApprovalChoice.ONCE).outcome)
+            channel.audit("asked", 2, "id" to "second-audit", "callId" to "shared-call")
+            channel.audit("decided", 3, "id" to "first-audit", "outcome" to "allowed-once")
+            runCurrent()
+
+            val unresolved = events.filterIsInstance<VerifiedConversationEvent.ApprovalResolved>().single()
+            assertEquals(id, unresolved.approvalId)
+            assertEquals(ApprovalOutcome.UNKNOWN, unresolved.outcome)
+            assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, repository.submitApprovalDecision(id, ApprovalChoice.ONCE).outcome)
+            assertEquals(1, channel.decisions.size)
         } finally {
             repository.close()
         }
@@ -446,6 +518,44 @@ class RemoteApprovalRepositoryTest {
             }
             assertEquals(ApprovalSubmissionOutcome.OUTCOME_UNKNOWN, repository.submitApprovalDecision(id, ApprovalChoice.ONCE).outcome)
             assertEquals(1, channel.decisions.size)
+        } finally {
+            repository.close()
+        }
+    }
+
+    @Test fun `Cursor问答不生成审批卡而计划仍能真正通过或拒绝`() = runTest {
+        val channel = Channel()
+        val events = mutableListOf<VerifiedConversationEvent>()
+        val native = AcpSessionCarrier(channel, "cursor")
+        val carrier = object : RemoteSessionCarrier by native {
+            override suspend fun history(sessionId: String, page: PageRequest) = RemoteHistoryPage(emptyList())
+        }
+        val repository = repository(carrier) { events.add(it) }
+        try {
+            repository.timeline(first, PageRequest())
+            runCurrent()
+            val stream = channel.streamId("agent.acp", endpoint = null)
+            channel.frame(stream, obj("method" to "cursor/ask_question", "params" to obj(
+                "sessionId" to "session/一", "requestHandle" to "question", "title" to "请选择发布目标")), "agent.acp")
+            for (handle in listOf("plan-allow", "plan-deny")) {
+                channel.frame(stream, obj("method" to "cursor/create_plan", "params" to obj(
+                    "sessionId" to "session/一", "requestHandle" to handle, "title" to "发布计划")), "agent.acp")
+            }
+            runCurrent()
+
+            assertTrue(events.none { it is VerifiedConversationEvent.ApprovalTextFallback })
+            assertTrue(channel.decisions.isEmpty())
+
+            val plans = events.filterIsInstance<VerifiedConversationEvent.ApprovalRequested>().map { it.request }
+            assertEquals(listOf("发布计划", "发布计划"), plans.map { it.command })
+            plans.forEach { assertEquals(listOf(ApprovalChoice.ONCE, ApprovalChoice.DENY), it.options.map { option -> option.choice }) }
+            channel.receipt = { obj("resolved" to true) }
+            assertEquals(ApprovalOutcome.ALLOWED_ONCE, repository.submitApprovalDecision(plans[0].approvalId, ApprovalChoice.ONCE).settledOutcome)
+            assertEquals(ApprovalOutcome.DENIED, repository.submitApprovalDecision(plans[1].approvalId, ApprovalChoice.DENY).settledOutcome)
+            assertEquals(listOf(
+                "agent.acp.respond" to obj("requestHandle" to "plan-allow", "decision" to "allow-once"),
+                "agent.acp.respond" to obj("requestHandle" to "plan-deny", "decision" to "reject-once"),
+            ), channel.decisions)
         } finally {
             repository.close()
         }

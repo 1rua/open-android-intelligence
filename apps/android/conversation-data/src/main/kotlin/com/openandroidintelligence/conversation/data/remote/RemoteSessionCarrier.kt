@@ -38,7 +38,7 @@ interface RemoteSessionCarrier {
     suspend fun respond(sessionId: String, handle: String, allow: Boolean): JsonValue
     suspend fun models(sessionId: String): RemoteModelCatalog
     suspend fun commands(sessionId: String?): AgentCommandCatalog? = null
-    fun commandCatalogUpdate(sessionId: String, frame: JsonValue): AgentCommandCatalog? = null
+    fun commandAnnouncements(workspace: RemoteWorkspace): Flow<RemoteCommandAnnouncement>? = null
     suspend fun selectModel(sessionId: String, selection: RemoteModelSelection): RemoteModelSelection
     suspend fun rename(sessionId: String, title: String): Unit = throw RemoteSessionException("RENAME_UNSUPPORTED")
     suspend fun archive(sessionId: String, archived: Boolean): Unit = throw RemoteSessionException("ARCHIVE_UNSUPPORTED")
@@ -47,6 +47,7 @@ interface RemoteSessionCarrier {
 data class RemoteWorkspace(val endpoint: AgentEndpoint, val path: String, val sessionIds: Set<String>? = null)
 data class RemoteSessionRow(val id: String, val title: String, val createdAt: Long, val updatedAt: Long,
     val archived: Boolean = false, val model: RemoteModelSelection? = null)
+data class RemoteCommandAnnouncement(val sessionId: String, val catalog: AgentCommandCatalog)
 data class RemoteSessionPage(val items: List<RemoteSessionRow>, val nextCursor: String? = null)
 data class RemoteHistoryPage(val records: List<JsonValue>, val nextCursor: String? = null,
     val revision: Long? = null, val activeGenerationId: String? = null)

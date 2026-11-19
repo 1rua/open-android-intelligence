@@ -970,7 +970,8 @@ class WorkbenchController(
     )
     private var awaitingReply: ReplyWatchdogTarget? = null
     private var activeThreadId: String? = null
-    private data class CatalogTarget(val scope: ConversationScope, val conversationId: String?)
+    private data class CatalogTarget(val scope: ConversationScope, val conversationId: String?, val navigationEpoch: Long)
+    private val catalogLock = Any()
     private var catalogTarget: CatalogTarget? = null
     private var catalogRequestEpoch = 0L
     private var catalogEventRevision = 0L
@@ -1242,6 +1243,7 @@ class WorkbenchController(
     private var failedSubmission: DraftSubmission? = null
     private val nativePendingSubmissions = mutableMapOf<String, Pair<String, List<String>>>()
     private val userRenamedThreads = mutableSetOf<String>()
+    private val approvalLock = Any()
     private val approvalCards = LinkedHashMap<String, ApprovalCardState>()
     private val approvalFallbacks = LinkedHashMap<String, ApprovalCardState.TextOnly>()
     private val pendingDeliveryDrainJobs = LinkedHashMap<String, Job>()
@@ -1356,7 +1358,9 @@ class WorkbenchController(
         userRenamedThreads.remove(threadId)
         creationReceipts.remove(threadId)
         executionFacts.keys.removeAll { it.first == threadId }
-        approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
+        synchronized(approvalLock) {
+            approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
+        }
         historicalAttachments.snapshot().keys.filter { it.threadId == threadId }.forEach { historicalAttachments.remove(it) }
         val organization = _state.value.organization
         update { state ->
@@ -1521,8 +1525,10 @@ class WorkbenchController(
         pendingCreation = null
         settledCreations.clear()
         creationsAwaitingCatalog.clear()
-        approvalCards.clear()
-        approvalFallbacks.clear()
+        synchronized(approvalLock) {
+            approvalCards.clear()
+            approvalFallbacks.clear()
+        }
         eventJob?.cancel()
         healthJob?.cancel()
         generationJob?.cancel()
@@ -1914,7 +1920,7 @@ class WorkbenchController(
         }
     }
 
-    private fun onCommandCatalogConnectivityChanged(online: Boolean) {
+    private fun onCommandCatalogConnectivityChanged(online: Boolean): Unit = synchronized(catalogLock) {
         catalogTarget = null
         ++catalogRequestEpoch
         catalogLoadJob?.cancel()
@@ -1922,9 +1928,10 @@ class WorkbenchController(
         if (online) loadCatalog() else update { it.copy(catalog = Loadable.Idle) }
     }
 
-    fun loadCatalog() {
+    fun loadCatalog(): Unit = synchronized(catalogLock) {
         if (closed || retiring || !remoteConversationOnline || !canReadConversations()) return
-        val requested = CatalogTarget(scopeFactory(), activeThreadId)
+        val current = _state.value
+        val requested = CatalogTarget(scopeFactory(), current.activeThreadId, current.timelineRequestEpoch)
         val target = catalogTarget?.takeIf { it == requested } ?: requested
         val changedTarget = target !== catalogTarget
         if (changedTarget) {
@@ -1935,20 +1942,22 @@ class WorkbenchController(
         val eventRevision = catalogEventRevision
         catalogLoadJob?.cancel()
         if (changedTarget || _state.value.catalog !is Loadable.Ready) {
-            update { it.copy(catalog = Loadable.Loading) }
+            publishCommandCatalog(target, Loadable.Loading)
         }
         if (changedTarget) {
             catalogEventJob = workScope.launch {
                 catalogRepository.observe(target.scope.gatewayId, target.conversationId).collect { catalog ->
-                    if (isCurrentCatalogTarget(target)) {
-                        catalogEventRevision++
-                        update { it.copy(catalog = catalog.toCatalogState()) }
+                    synchronized(catalogLock) {
+                        if (isCurrentCatalogTarget(target)) {
+                            catalogEventRevision++
+                            publishCommandCatalog(target, catalog.toCatalogState())
+                        }
                     }
                 }
             }
         }
         catalogLoadJob = workScope.launch {
-            if (!isCurrentCatalogTarget(target)) return@launch
+            if (!synchronized(catalogLock) { isCurrentCatalogTarget(target) }) return@launch
             val result = try {
                 Result.success(catalogRepository.get(target.scope.gatewayId, languageCode, target.conversationId))
             } catch (cancelled: CancellationException) {
@@ -1956,14 +1965,23 @@ class WorkbenchController(
             } catch (cause: Exception) {
                 Result.failure(cause)
             }
-            if (epoch != catalogRequestEpoch || eventRevision != catalogEventRevision || !isCurrentCatalogTarget(target)) return@launch
-            update { it.copy(catalog = result.toLoadable { catalog -> catalog.commands.isEmpty() }) }
+            synchronized(catalogLock) {
+                if (epoch == catalogRequestEpoch && eventRevision == catalogEventRevision) {
+                    publishCommandCatalog(target, result.toLoadable { it.commands.isEmpty() })
+                }
+            }
         }
     }
 
-    private fun isCurrentCatalogTarget(target: CatalogTarget): Boolean =
+    private fun isCurrentCatalogTarget(target: CatalogTarget, state: WorkbenchUiState = _state.value): Boolean =
         !closed && !retiring && remoteConversationOnline && canReadConversations() && catalogTarget === target &&
-            scopeFactory() == target.scope && activeThreadId == target.conversationId
+            scopeFactory() == target.scope && activeThreadId == target.conversationId &&
+            state.activeThreadId == target.conversationId && state.timelineRequestEpoch == target.navigationEpoch
+
+    private fun publishCommandCatalog(target: CatalogTarget, catalog: Loadable<AgentCommandCatalog>) {
+        // 切换会话与发布目录竞争时，按同一帧状态重新校验归属。
+        update { state -> if (isCurrentCatalogTarget(target, state)) state.copy(catalog = catalog) else state }
+    }
 
     private fun AgentCommandCatalog.toCatalogState(): Loadable<AgentCommandCatalog> =
         if (commands.isEmpty()) Loadable.Empty else Loadable.Ready(this)
@@ -2228,11 +2246,11 @@ class WorkbenchController(
      */
     private fun rememberApprovalRequest(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalRequested,
-    ) {
+    ): Unit = synchronized(approvalLock) {
         // A Gateway that cannot take a decision gets no card at all: drawing one
         // would put live buttons under a command whose answer has nowhere to go
         // (contract §4 — never fake a card that cannot be submitted).
-        if (!supportsApprovalCards) return
+        if (closed || !supportsApprovalCards) return
         val existing = approvalCards[event.request.approvalId.value]
         if (existing != null) return
         approvalCards[event.request.approvalId.value] = ApprovalCardState.Waiting(event.request)
@@ -2245,7 +2263,8 @@ class WorkbenchController(
 
     private fun rememberApprovalFallback(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalTextFallback,
-    ) {
+    ): Unit = synchronized(approvalLock) {
+        if (closed) return
         val rawId = event.approvalId?.value ?: event.eventId
         val safeId = rawId.replace(Regex("[^A-Za-z0-9._~-]"), "_").take(120)
             .ifBlank { "approval_fallback" }
@@ -2279,10 +2298,13 @@ class WorkbenchController(
      */
     private fun applyApprovalResolution(
         event: com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.ApprovalResolved,
-    ) {
+    ): Unit = synchronized(approvalLock) {
+        if (closed) return
         val key = event.approvalId.value
-        val fallback = approvalFallbacks.remove(key)
+        val fallback = approvalFallbacks[key]
         if (fallback != null) {
+            if (event.conversationId != null && event.conversationId != fallback.request.conversationId) return
+            approvalFallbacks.remove(key)
             approvalCards[key] = ApprovalCardState.Resolved(
                 request = fallback.request,
                 outcome = event.outcome,
@@ -2292,6 +2314,7 @@ class WorkbenchController(
             return
         }
         val card = approvalCards[key] ?: return
+        if (event.conversationId != null && event.conversationId != card.request.conversationId) return
         if (card is ApprovalCardState.Resolved && card.outcome != ApprovalOutcome.UNKNOWN) {
             return
         }
@@ -2312,36 +2335,32 @@ class WorkbenchController(
      * structured notice — it is never painted as the decision the user asked for.
      */
     fun decideApproval(approvalId: String, choice: ApprovalChoice) {
-        if (closed || retiring) return
-        // Checked before anything else: on a Gateway without the decision
-        // endpoint there is no card to press, so a decision must be refused as
-        // an unavailable capability rather than by finding no card.
-        if (!supportsApprovalCards) {
-            update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
-            return
-        }
-        val card = approvalCards[approvalId]
-        if (card !is ApprovalCardState.Waiting || card.request.conversationId?.value != activeThreadId) return
-        if (choice == ApprovalChoice.UNKNOWN || card.request.options.none { it.choice == choice }) return
-        if (card.request.countdownAt(clock()).expired) {
-            // The window the Gateway gave is over: the buttons are already grey,
-            // and sending a decision the Gateway will refuse would only look
-            // like a failure of the app.
-            update { it.copy(notice = ApprovalNotices.EXPIRED) }
-            return
-        }
-        val submitting = ApprovalCardState.Submitting(card.request, choice)
         val requestedScope = scopeFactory()
-        approvalCards[approvalId] = submitting
-        reRenderApprovalRows()
+        val submitting = synchronized(approvalLock) {
+            if (closed || retiring) return
+            if (!supportsApprovalCards) {
+                update { it.copy(notice = ApprovalNotices.UNSUPPORTED) }
+                return
+            }
+            val card = approvalCards[approvalId]
+            if (card !is ApprovalCardState.Waiting || card.request.conversationId?.value != activeThreadId) return
+            if (choice == ApprovalChoice.UNKNOWN || card.request.options.none { it.choice == choice }) return
+            if (card.request.countdownAt(clock()).expired) {
+                update { it.copy(notice = ApprovalNotices.EXPIRED) }
+                return
+            }
+            ApprovalCardState.Submitting(card.request, choice).also {
+                approvalCards[approvalId] = it
+                reRenderApprovalRows()
+            }
+        }
         workScope.launch {
             val result = submitApprovalDecision(submitting.request.approvalId, choice)
             GatewayLog.protocolEvidence("approval.submission", mapOf(
                 "outcome" to result.outcome.name,
                 "code" to result.errorCode?.takeIf { APPROVAL_ERROR_CODE.matches(it) },
             ))
-            if (scopeFactory() != requestedScope || approvalCards[approvalId] !== submitting) return@launch
-            applyApprovalSubmission(approvalId, submitting, result)
+            applyApprovalSubmission(approvalId, requestedScope, submitting, result)
         }
     }
 
@@ -2360,9 +2379,11 @@ class WorkbenchController(
 
     private fun applyApprovalSubmission(
         approvalId: String,
+        requestedScope: ConversationScope,
         card: ApprovalCardState.Submitting,
         result: ApprovalSubmissionResult,
-    ) {
+    ): Unit = synchronized(approvalLock) {
+        if (closed || scopeFactory() != requestedScope || approvalCards[approvalId] !== card) return
         val latest = when (result.outcome) {
             // 仅有收件回执时继续等事件。带权威结果的回执可直接落定卡片。
             ApprovalSubmissionOutcome.SUBMITTED -> result.settledOutcome ?: return
@@ -2385,9 +2406,9 @@ class WorkbenchController(
     }
 
     /** The rows the active thread's approval cards contribute, oldest first. */
-    private fun approvalRowsForActiveThread(): List<TimelineEntry> {
+    private fun approvalRowsForActiveThread(): List<TimelineEntry> = synchronized(approvalLock) {
         val threadId = activeThreadId ?: return emptyList()
-        return (approvalCards.values + approvalFallbacks.values)
+        (approvalCards.values + approvalFallbacks.values)
             .filter { card -> card.request.conversationId?.value == threadId }
             .map { card ->
                 TimelineEntry(
