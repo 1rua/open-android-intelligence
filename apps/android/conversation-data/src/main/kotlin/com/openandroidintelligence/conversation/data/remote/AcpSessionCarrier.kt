@@ -75,7 +75,9 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
             if (frame.text("method") != "session/update") return@mapNotNull null
             val params = frame.at("params") ?: return@mapNotNull null
             val sessionId = params.text("sessionId")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            if (event.data.text("streamId") != "session:$sessionId") return@mapNotNull null
+            val streamId = event.data.text("streamId")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            // 显式订阅 ID 不携带会话标识，公告以帧内的会话为准。
+            if (streamId.startsWith("session:") && streamId != "session:$sessionId") return@mapNotNull null
             val update = params.at("update") ?: return@mapNotNull null
             if (update.text("sessionUpdate") != "available_commands_update") return@mapNotNull null
             try {

@@ -55,7 +55,9 @@ class RemoteCommandCatalogTest {
         second.timeline(secondId, PageRequest())
         assertEquals(emptyList<AgentCommand>(), second.commandCatalog.get("second", "zh-CN", secondId).commands)
 
-        channel.announce("session-1", "session-1", "single")
+        val firstStream = channel.sessionStreams.getValue("session-1")
+        channel.announceOnStream(firstStream, "session-1", "single")
+        channel.announceOnStream(firstStream, "unknown", "outside-stream-session")
         channel.announce("session-1", "session-2", "wrong-session")
         channel.announce("unknown", "unknown", "outside-workspace")
         runCurrent()
@@ -233,13 +235,17 @@ class RemoteCommandCatalogTest {
         override val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 16)
         val calls = mutableListOf<String>()
         val sessionsByPath = mutableMapOf<String, List<String>>()
+        val sessionStreams = mutableMapOf<String, String>()
         var onNew: suspend (JsonValue) -> JsonValue = { error("未配置会话创建响应") }
 
-        suspend fun announce(streamSession: String, frameSession: String, vararg commands: String) {
+        suspend fun announce(streamSession: String, frameSession: String, vararg commands: String) =
+            announceOnStream("session:$streamSession", frameSession, *commands)
+
+        suspend fun announceOnStream(streamId: String, frameSession: String, vararg commands: String) {
             val update = obj("sessionUpdate" to "available_commands_update", "availableCommands" to commands.map {
                 obj("name" to it, "description" to "说明", "input" to obj("hint" to "<值>"))
             })
-            events.emit(RemoteRpcEvent("agent.acp.frame", obj("streamId" to "session:$streamSession", "frame" to obj(
+            events.emit(RemoteRpcEvent("agent.acp.frame", obj("streamId" to streamId, "frame" to obj(
                 "method" to "session/update", "params" to obj("sessionId" to frameSession, "update" to update),
             ))))
         }
@@ -256,6 +262,10 @@ class RemoteCommandCatalogTest {
                         })
                         else -> error("非预期的 ACP 方法")
                     }
+                }
+                "agent.acp.stream.open" -> {
+                    sessionStreams[params.requiredText("sessionId")] = params.requiredText("streamId")
+                    obj()
                 }
                 "agent.acp.transfer.commit" -> obj("kind" to "inline", "response" to obj("events" to emptyList<Any>()))
                 else -> obj()

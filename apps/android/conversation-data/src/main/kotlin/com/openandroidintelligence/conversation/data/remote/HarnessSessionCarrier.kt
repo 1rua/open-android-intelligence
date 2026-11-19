@@ -123,10 +123,11 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
             if (cause.code == "METHOD_NOT_FOUND" || cause.code == "METHOD_NOT_ALLOWED") return RemoteCommandCatalog.empty
             throw cause
         } catch (cause: RemoteSessionException) {
-            if (cause.code in setOf("gateway/invocation-unavailable", "gateway/method-unavailable")) {
-                return RemoteCommandCatalog.empty
+            return when (cause.code) {
+                "METHOD_NOT_FOUND", "gateway/invocation-unavailable", "gateway/method-unavailable" ->
+                    RemoteCommandCatalog.empty
+                else -> throw cause
             }
-            throw cause
         }
         return RemoteCommandCatalog.decode(value)
     }

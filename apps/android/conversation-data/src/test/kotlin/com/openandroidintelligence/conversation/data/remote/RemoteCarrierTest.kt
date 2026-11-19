@@ -6,6 +6,7 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcConnectionScope
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcEvent
 import com.openandroidintelligence.gateway.schema.JsonValue
 import java.util.Base64
+import kotlin.test.assertFailsWith
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -58,6 +59,30 @@ class RemoteCarrierTest {
         val catalog = HarnessSessionCarrier(channel).commands("session:原生/标识")
         assertEquals(listOf(com.openandroidintelligence.conversation.ports.AgentCommand("/inspect", "检查", "<目标>")),
             catalog.commands)
+    }
+
+    @Test fun `Harness目录业务层缺少方法时返回空目录`() = runTest {
+        val channel = Channel()
+        channel.result = { method, request ->
+            assertEquals("harness.remote.call", method)
+            assertEquals("commands/list", request.text("endpoint"))
+            obj("ok" to true, "value" to obj("ok" to false, "error" to obj("code" to "METHOD_NOT_FOUND")))
+        }
+
+        assertEquals(RemoteCommandCatalog.empty, HarnessSessionCarrier(channel).commands("session:原生/标识"))
+        assertEquals(1, channel.calls.size)
+    }
+
+    @Test fun `Harness目录保留其他业务错误`() = runTest {
+        val channel = Channel()
+        val carrier = HarnessSessionCarrier(channel)
+        for (code in listOf("METHOD_NOT_ALLOWED", "AUTH_REQUIRED", "REQUEST_TIMEOUT")) {
+            channel.result = { _, _ ->
+                obj("ok" to true, "value" to obj("ok" to false, "error" to obj("code" to code)))
+            }
+            val failure = assertFailsWith<RemoteSessionException> { carrier.commands("session:原生/标识") }
+            assertEquals(code, failure.code)
+        }
     }
 
     @Test fun `打开流前注册事件并在首帧后关闭同一通道的订阅`() = runTest {
