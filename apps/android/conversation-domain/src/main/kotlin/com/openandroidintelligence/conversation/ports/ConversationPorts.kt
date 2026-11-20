@@ -52,6 +52,12 @@ data class TimelineMessage(
     val localPlaceholder: Boolean = false,
     val reasoning: List<MessageReasoning> = emptyList(),
     val isMeta: Boolean = false,
+    /** 协议层声明的消息可见性标识（如 hidden/internal/visible）。 */
+    val visibility: String? = null,
+    /** 协议层声明的消息类型标识（如 system/context/control/chat）。 */
+    val messageType: String? = null,
+    /** 保留未经上下文净化前的原始分段，供持久化只读镜像在投影层按最新规则重新计算。 */
+    val rawParts: List<MessagePart>? = null,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)

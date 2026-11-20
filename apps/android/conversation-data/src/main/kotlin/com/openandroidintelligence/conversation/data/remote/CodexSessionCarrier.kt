@@ -58,7 +58,10 @@ class CodexSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSessio
         return RemoteSessionPage(result.requiredArray("data").map(::row), result.text("nextCursor"))
     }
 
-    private fun row(value: JsonValue) = RemoteSessionRow(value.requiredText("id"), value.text("name") ?: value.text("preview") ?: "",
+    private fun row(value: JsonValue) = RemoteSessionRow(value.requiredText("id"),
+        com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter.sanitizeSummaryText(
+            value.text("name") ?: value.text("preview")
+        ),
         secondsMillis(value, "createdAt"), secondsMillis(value, "updatedAt"), value.flag("archived") == true,
         value.text("model")?.let { RemoteModelSelection(ModelKey(it, "codex"), value.text("reasoningEffort")) })
 

@@ -18,7 +18,7 @@ import com.openandroidintelligence.conversation.model.LocalSubmissionState
 import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.model.reconcileSnapshotDeletions
 import com.openandroidintelligence.conversation.model.OriginalImageState
-import com.openandroidintelligence.conversation.sanitizer.SystemPromptSanitizer
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.workbench.OriginalImagePolicy
 import com.openandroidintelligence.conversation.workbench.ConversationTitleResolver
 import com.openandroidintelligence.conversation.workbench.compressOriginalImageForViewer
@@ -1621,7 +1621,12 @@ class WorkbenchController(
             saved.batches.forEach { b -> if (b.sealed) frozenBatches[b.batchId]=b else b.messages.forEach { collectingUnits[it.clientMessageId.value]=b.conversationId to it } }
             activeThreadId = saved.threadId.takeIf { restoreLastThread }
             if (restoreLastThread) {
-                mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
+                mirrored.putAll(
+                    saved.messages
+                        .map(::withLatestMessageStatus)
+                        .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                        .associateBy { it.id }
+                )
                 mirroredRevisions.putAll(saved.revisions)
             }
             handledEventIds.addAll(saved.eventIds)
@@ -1637,9 +1642,10 @@ class WorkbenchController(
                     LocalSubmissionState.OUTCOME_UNKNOWN
             } == true
             val restoredRows = renderTimeline()
-            _state.value = _state.value.copy(threads = if (saved.threads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(saved.threads)),
+            val cleanSavedThreads = saved.threads.map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+            _state.value = _state.value.copy(threads = if (cleanSavedThreads.isEmpty()) Loadable.Empty else Loadable.Ready(saved.organization.sort(cleanSavedThreads)),
                 organization=saved.organization, pendingFolderAssignments=pendingFolderAssignments.toMap(),
-                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) saved.title else "",
+                activeThreadId = activeThreadId, activeThreadTitle = if (restoreLastThread) ContextInjectionFilter.sanitizeSummaryText(saved.title) else "",
                 draftVersion=saved.draftVersion,
                 draft = if (restoreComposer) {
                     if (saved.draftExplicit) saved.draft else saved.draft.ifBlank { displayedSubmission?.text.orEmpty() }
@@ -1649,7 +1655,19 @@ class WorkbenchController(
                     val restored = attachmentCoordinator?.restoredDrafts().orEmpty().associateBy { it.id }
                     owned.map { restored[it.id] ?: it }
                 } else emptyList(),
-                pendingBatch=saved.batches.filter { it.conversationId==activeThreadId }.flatMap { b -> b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m -> TimelineEntry("local_"+m.clientMessageId.value,"user",m.text,true,atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,true,b.batchId) } },
+                pendingBatch=saved.batches.filter { it.conversationId==activeThreadId }.flatMap { b ->
+                    b.messages.filterNot { atomsFor(b.conversationId)[it.clientMessageId.value]?.isDeleted == true }.map { m ->
+                        TimelineEntry(
+                            "local_"+m.clientMessageId.value,
+                            "user",
+                            ContextInjectionFilter.sanitizeText(m.text, ContextInjectionFilter.SenderRole.USER, streaming = false),
+                            true,
+                            atomsFor(b.conversationId)[m.clientMessageId.value]?.timestamp ?: 0L,
+                            true,
+                            b.batchId,
+                        )
+                    }
+                },
                 timeline = if (restoredRows.isEmpty()) Loadable.Empty else Loadable.Ready(restoredRows),
                 composer = if (restoreComposer && displayedSubmission != null) ComposerState.FAILED else ComposerState.EDITING,
                 hasRecoverableSubmissions = recoveredAttachmentSubmissions.containsKey(activeThreadId) || frozenBatches.values.any { it.conversationId == activeThreadId } || collectingUnits.values.any { it.first == activeThreadId } ||
@@ -1865,7 +1883,11 @@ class WorkbenchController(
                 }
                 if (closed || epoch != threadRequestEpoch || requestedScope != scopeFactory()) return@launch
                 if (local != null && _state.value.threads !is Loadable.Ready) {
-                    val cached = _state.value.organization.sort(local.conversations.filterNot { it.id.value in deletedThreads })
+                    val cached = _state.value.organization.sort(
+                        local.conversations
+                            .filterNot { it.id.value in deletedThreads }
+                            .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                    )
                     update { it.copy(threads = if (cached.isEmpty()) Loadable.Empty else Loadable.Ready(cached)) }
                 }
                 if (!canReadConversations()) {
@@ -1892,7 +1914,11 @@ class WorkbenchController(
                 // 原生会话已创建且可打开时，尚未进入持久化目录不等同于被删除。
                 val summaries = (catalogSummaries + creationsAwaitingCatalog.filterKeys { it.first == requestedScope }.values)
                     .distinctBy { it.id }
-                val threads=installedOrganization.sort(summaries.filterNot { it.id.value in deletedThreads })
+                val threads=installedOrganization.sort(
+                    summaries
+                        .filterNot { it.id.value in deletedThreads }
+                        .map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) }
+                )
                 update { state -> state.copy(organization=installedOrganization,
                     selectedFolderId=state.selectedFolderId?.takeIf { id -> installedOrganization.folders.any { it.folderId == id } },
                     threads=if (threads.isEmpty()) Loadable.Empty else Loadable.Ready(threads),
@@ -3309,8 +3335,13 @@ class WorkbenchController(
             activeThreadId != null) localTurnClientsByThread[requireNotNull(activeThreadId)] = setOf(frozen.clientMessageId)
         GatewayLog.protocolEvidence("send.clicked", mapOf("clientMessageId" to frozen.clientMessageId,
             "conversationId" to frozen.conversationId, "clickedAtNs" to clickedAt))
+        val localDisplayText = ContextInjectionFilter.sanitizeText(
+            frozen.text,
+            role = ContextInjectionFilter.SenderRole.USER,
+            streaming = false,
+        )
         val localEntry = TimelineEntry(
-            key = "local_${frozen.clientMessageId}", sender = "user", text = frozen.text,
+            key = "local_${frozen.clientMessageId}", sender = "user", text = localDisplayText,
             isUser = true, timestamp = activeThreadId?.let { atomsFor(it)[frozen.clientMessageId]?.timestamp }
                 ?: System.currentTimeMillis(), pendingAcceptance = true, batchGroupId = null,
             attachments = current.attachments.filter { it.id.value in frozen.attachmentIds }.map {
@@ -3430,9 +3461,14 @@ class WorkbenchController(
                 submittedAttachments.zip(remoteIds).forEach { (attachment, remoteId) ->
                     rememberHistoricalAttachment(target, attachment.copy(draftId = remoteId), ClientMessageId(submission.clientMessageId))
                 }
+                val fallbackDisplayText = ContextInjectionFilter.sanitizeText(
+                    submission.text,
+                    role = ContextInjectionFilter.SenderRole.USER,
+                    streaming = false,
+                )
                 val entry = submission.optimisticEntry ?: TimelineEntry(
                     key = "local_" + submission.clientMessageId, sender = "user",
-                    text = submission.text.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
+                    text = fallbackDisplayText.ifBlank { if (submittedAttachments.isNotEmpty()) "" else "[附件]" }, isUser = true,
                     timestamp = System.currentTimeMillis(), pendingAcceptance = true,
                     batchGroupId = null,
                     attachments = submittedAttachments,
@@ -4920,20 +4956,39 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TimelineUpsert -> {
                 if (event.message.state == "STREAMING" && event.message.generationId?.let { currentActiveId to it in finishedGenerations } == true) return
-                val message = withLatestMessageStatus(event.message)
-                val eventConvId = message.conversationId?.value
+                val rawMessage = withLatestMessageStatus(event.message)
+                val eventConvId = rawMessage.conversationId?.value
                 if (eventConvId != null && eventConvId != currentActiveId) {
                     refreshThreads()
                     return
                 }
-                if (message.isDeleted || snapshotDeletedIdsByThread[currentActiveId]?.contains(message.id) == true) {
-                    mirrored.remove(message.id)
-                    mirroredRevisions.remove(message.id)
+                if (rawMessage.isDeleted || snapshotDeletedIdsByThread[currentActiveId]?.contains(rawMessage.id) == true) {
+                    mirrored.remove(rawMessage.id)
+                    mirroredRevisions.remove(rawMessage.id)
                     update { it.copy(timeline=Loadable.Ready(renderTimeline(it.pendingBatch))) }
                     commitHandledEvent(event.eventId)
                     return
                 }
-                if (message.sender == "assistant" && message.state == "STREAMING" && message.generationId == null &&
+                val message = ContextInjectionFilter.projectMessage(rawMessage)
+                if (message == null) {
+                    val removed = mirrored.remove(rawMessage.id) != null
+                    mirroredRevisions.remove(rawMessage.id)
+                    if (removed) {
+                        update { state ->
+                            if (!eventContext.isActive) state
+                            else if (state.timeline is Loadable.Ready || state.timeline is Loadable.Empty) {
+                                val rendered = renderTimeline(state.pendingBatch)
+                                state.copy(timeline = if (rendered.isEmpty()) Loadable.Empty else Loadable.Ready(rendered))
+                            } else state
+                        }
+                    }
+                    commitHandledEvent(event.eventId)
+                    return
+                }
+                val senderRole = ContextInjectionFilter.classifySender(message.sender)
+                val isUserRole = senderRole == ContextInjectionFilter.SenderRole.USER
+                val isAssistantRole = senderRole == ContextInjectionFilter.SenderRole.ASSISTANT
+                if (isAssistantRole && message.state == "STREAMING" && message.generationId == null &&
                     ((currentActiveId to message.id) in retiredLegacyMessageIds || currentActiveId in legacyTerminalBarriers)) {
                     retireLegacyMessage(currentActiveId,message.id)
                     return
@@ -4945,13 +5000,13 @@ class WorkbenchController(
                 if (previousRevision != null && event.revision < previousRevision) {
                     return
                 }
-                if (message.sender == "user" && currentActiveId in legacyTerminalBarriers &&
+                if (isUserRole && currentActiveId in legacyTerminalBarriers &&
                     message.timestamp > legacyTerminalBarriers.getValue(currentActiveId) &&
                     message.id !in mirrored && message.clientMessageId?.value?.let { it in atomsFor(currentActiveId) } != true) {
                     beginLegacyTurn(currentActiveId)
                 }
                 var matchedCurrentTurn = false
-                if (message.sender == "assistant") {
+                if (isAssistantRole) {
                     val messageText = messageTextOf(message)
                     if (message.state == "CONFIRMED") {
                         matchedCurrentTurn = pruneConfirmedAssistantDuplicates(message)
@@ -4972,22 +5027,26 @@ class WorkbenchController(
                         }
                         observeGenerationIdentity(message.generationId)
                         // Prune any other older streaming assistant message with different id
-                        val oldStreamingKeys = mirrored.filterValues { it.sender == "assistant" && it.state == "STREAMING" && it.id != message.id &&
-                            !haveDistinctNativeAssistantIds(it, message) &&
-                            (it.generationId == null || message.generationId == null || it.generationId == message.generationId) }.keys.toList()
+                        val oldStreamingKeys = mirrored.filterValues {
+                            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                                it.state == "STREAMING" && it.id != message.id &&
+                                !haveDistinctNativeAssistantIds(it, message) &&
+                                (it.generationId == null || message.generationId == null || it.generationId == message.generationId)
+                        }.keys.toList()
                         for (k in oldStreamingKeys) {
                             mirrored.remove(k)
                             mirroredRevisions.remove(k)
                         }
                     }
                 }
-                if (message.sender == "user" || message.sender == "assistant") {
-                    if (message.sender == "user") {
+                if (isUserRole || isAssistantRole) {
+                    if (isUserRole) {
                         val clientId = message.clientMessageId?.value
                         if (clientId != null) {
                             // 只用明确 client 关联替换本地占位；两个真实宿主 ID 不互相吞并。
                             mirrored.entries.filter { (key, row) ->
-                                key != message.id && row.sender == "user" &&
+                                key != message.id &&
+                                    ContextInjectionFilter.classifySender(row.sender) == ContextInjectionFilter.SenderRole.USER &&
                                     (!authoritativeMessageIds || row.localPlaceholder) &&
                                     row.clientMessageId?.value == clientId
                             }.map { it.key }.forEach { stale ->
@@ -5000,7 +5059,7 @@ class WorkbenchController(
                     mirrored[message.id] = message
                     mirroredRevisions[message.id] = event.revision
                 }
-                if (message.sender == "assistant" &&
+                if (isAssistantRole &&
                     (message.state == "STREAMING" || message.state == "CONFIRMED")
                 ) {
                     promotePromptsDelivered(currentActiveId, message)
@@ -5015,9 +5074,9 @@ class WorkbenchController(
                         } else {
                             state.timeline
                         },
-                        generation = if (message.sender == "assistant" && message.state == "STREAMING") {
+                        generation = if (isAssistantRole && message.state == "STREAMING") {
                             GenerationState.RUNNING
-                        } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                        } else if (isAssistantRole && message.state == "CONFIRMED") {
                             if (message.generationId == null && matchedCurrentTurn && (state.generation == GenerationState.RUNNING || state.generation == GenerationState.QUEUED)) {
                                 GenerationState.COMPLETED
                             } else {
@@ -5045,9 +5104,10 @@ class WorkbenchController(
 
             is com.openandroidintelligence.conversation.ports.VerifiedConversationEvent.TitleUpdated -> {
                 val threadId = event.conversationId.value
-                if (!userRenamedThreads.contains(threadId)) {
+                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(event.newTitle)
+                if (cleanTitle.isNotEmpty() && !userRenamedThreads.contains(threadId)) {
                     if (threadId == activeThreadId) {
-                        update { it.copy(activeThreadTitle = event.newTitle) }
+                        update { it.copy(activeThreadTitle = cleanTitle) }
                     }
                 }
                 refreshThreads()
@@ -5198,13 +5258,21 @@ class WorkbenchController(
                 var receivedConfirmedAssistantForCurrentTurn = false
                 page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
-                    val message = withLatestMessageStatus(rawMessage)
-                    if (message.sender == "user" && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
+                    val withStatus = withLatestMessageStatus(rawMessage)
+                    val message = ContextInjectionFilter.projectMessage(withStatus) ?: run {
+                        mirrored.remove(withStatus.id)
+                        mirroredRevisions.remove(withStatus.id)
+                        return@forEach
+                    }
+                    val senderRole = ContextInjectionFilter.classifySender(message.sender)
+                    val isUserRole = senderRole == ContextInjectionFilter.SenderRole.USER
+                    val isAssistantRole = senderRole == ContextInjectionFilter.SenderRole.ASSISTANT
+                    if (isUserRole && message.state.lowercase() in setOf("completed", "failed", "cancelled")) {
                         message.clientMessageId?.value?.let { activeWork.settledClient(threadId, it) }
                     }
                     val currentRevision = mirroredRevisions[message.id] ?: 0L
                     if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
-                        if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                        if (isAssistantRole && message.state == "CONFIRMED") {
                             val matched = pruneConfirmedAssistantDuplicates(message)
                             if (matched) {
                                 receivedConfirmedAssistantForCurrentTurn = true
@@ -5218,7 +5286,7 @@ class WorkbenchController(
                         rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
                         mirrored[message.id] = message
                         mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
-                    } else if (message.sender == "assistant" && message.state == "CONFIRMED") {
+                    } else if (isAssistantRole && message.state == "CONFIRMED") {
                         val matched = pruneConfirmedAssistantDuplicates(message)
                         if (matched) {
                             receivedConfirmedAssistantForCurrentTurn = true
@@ -5234,7 +5302,10 @@ class WorkbenchController(
                 update { state ->
                     if (!isActive || state.activeThreadId != threadId) state
                     else {
-                        val hasStreaming = mirrored.values.any { it.sender == "assistant" && it.state == "STREAMING" }
+                        val hasStreaming = mirrored.values.any {
+                            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                                it.state == "STREAMING"
+                        }
                         val reconciledPending = settledPendingBatch(threadId, state.pendingBatch)
                         val rendered = renderTimeline(reconciledPending)
                         state.copy(
@@ -5280,7 +5351,7 @@ class WorkbenchController(
             snapshotDeletedIdsByThread.getOrPut(threadId) { linkedSetOf() }.addAll(deleted)
             deleted.forEach { mirrored.remove(it); mirroredRevisions.remove(it) }
             page.messages.filterNot { it.isDeleted || it.id in deleted }.forEach { rawMessage ->
-                val message = withLatestMessageStatus(rawMessage)
+                val message = ContextInjectionFilter.projectMessage(withLatestMessageStatus(rawMessage)) ?: return@forEach
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
                     rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
@@ -5534,7 +5605,15 @@ class WorkbenchController(
                 ?.takeIf { it.message === message && it.cancelled == cancelled && it.entry.presentation == presentationOf(message) }
                 ?.let { return it.entry }
         }
-        val messageAttachments = message.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
+        val sourceParts = message.rawParts ?: message.parts
+        val senderRole = ContextInjectionFilter.classifySender(message.sender)
+        val isUserRole = senderRole == ContextInjectionFilter.SenderRole.USER
+        val sanitizedParts = ContextInjectionFilter.sanitizeParts(
+            parts = sourceParts,
+            role = if (isUserRole) ContextInjectionFilter.SenderRole.USER else ContextInjectionFilter.SenderRole.ASSISTANT,
+            streaming = message.state == "STREAMING",
+        )
+        val messageAttachments = sanitizedParts.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
             .map { att ->
                 val id = att.draftId.value
                 val visible = activeThreadId?.let { historicalAttachments[historicalAttachmentKey(it, id)]?.attachment }?.let { cached ->
@@ -5568,24 +5647,29 @@ class WorkbenchController(
                     localState=presentation.localState,localError=presentation.localError,
                     downloadState=presentation.downloadState,downloadError=presentation.downloadError)
             }
-        val textParts = message.parts.joinToString("") { part ->
+        val sanitizedText = sanitizedParts.parts.joinToString("") { part ->
             when (part) {
                 is com.openandroidintelligence.conversation.model.MessagePart.Text -> part.value
                 is com.openandroidintelligence.conversation.model.MessagePart.Command -> part.rawText
                 is com.openandroidintelligence.conversation.model.MessagePart.Attachment -> ""
             }
         }
-        val sanitizedText = SystemPromptSanitizer.sanitize(textParts)
         val displayText = if (sanitizedText.isBlank() && messageAttachments.isEmpty()) {
-            if (message.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
+            if (sanitizedParts.parts.any { it is com.openandroidintelligence.conversation.model.MessagePart.Attachment }) "[附件]" else ""
         } else {
             sanitizedText
         }
+        val isInternalOrHidden = ContextInjectionFilter.isNonConversationalMessage(
+            sender = message.sender,
+            isMeta = message.isMeta,
+            visibility = message.visibility,
+            messageType = message.messageType,
+        )
         val entry = TimelineEntry(
             key = message.id,
             sender = message.sender,
             text = displayText,
-            isUser = message.sender == "user",
+            isUser = isUserRole,
             timestamp = message.timestamp,
             pendingAcceptance = message.state == "PENDING",
             batchGroupId = message.batchId,
@@ -5608,7 +5692,7 @@ class WorkbenchController(
             localPlaceholder = message.localPlaceholder,
             presentation = presentationOf(message),
             reasoning = message.reasoning,
-            isMeta = message.isMeta,
+            isMeta = isInternalOrHidden,
         )
         if (cacheable) {
             renderedEntryCache[message.id] = RenderedTimelineEntry(message, cancelled, entry)
@@ -5628,9 +5712,18 @@ class WorkbenchController(
         val mergedMessages = mergeLocalSendAtoms(mirrored.values.toList(), activeAtoms)
         val queuedClientIds = pendingDeliveries.map { it.clientMessageId.value }.toSet()
         val mirroredEntries = mergedMessages.filterNot {
-            it.clientMessageId?.value in queuedClientIds
+            it.isDeleted || it.clientMessageId?.value in queuedClientIds
         }.map(::renderedTimelineEntry).filterNot { entry ->
-            entry.isMeta || (entry.text.isBlank() && entry.attachments.isEmpty() && entry.executionSteps.isEmpty() && entry.reasoning.isEmpty() && entry.approval == null && entry.systemThreadId == null)
+            val isLocalSynthetic = entry.approval != null || entry.systemThreadId != null || entry.executionFact
+            ContextInjectionFilter.shouldDropMessage(
+                text = entry.text,
+                hasAttachments = entry.attachments.isNotEmpty(),
+                hasSteps = entry.executionSteps.isNotEmpty(),
+                hasReasoning = entry.reasoning.isNotEmpty(),
+                isMeta = entry.isMeta,
+                sender = entry.sender,
+                isLocalSyntheticHint = isLocalSynthetic,
+            )
         }
 
         val mirroredKeys = mergedMessages.map { it.id }.toSet()
@@ -5638,7 +5731,9 @@ class WorkbenchController(
         val settledAndDeletedClientIds = settledClientIds(activeThreadId)
         val recoveredRows = recoveredAttachmentSubmissions[activeThreadId]?.let { submission ->
             if (submission.clientMessageId in mirroredClientIds || submission.clientMessageId in settledAndDeletedClientIds) emptyList()
-            else listOf(TimelineEntry("local_${submission.clientMessageId}","user",submission.text,true,0L,true,null,
+            else listOf(TimelineEntry("local_${submission.clientMessageId}","user",
+                ContextInjectionFilter.sanitizeText(submission.text, ContextInjectionFilter.SenderRole.USER, streaming = false),
+                true,0L,true,null,
                 clientMessageId=ClientMessageId(submission.clientMessageId),localPlaceholder=true,
                 attachments=submission.attachmentIds.map { id ->
                     val draft=attachmentCoordinator?.restoredDrafts()?.firstOrNull { it.id.value == id }

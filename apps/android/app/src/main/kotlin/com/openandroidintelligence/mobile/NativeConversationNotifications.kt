@@ -7,6 +7,7 @@ import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.ConversationPage
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -257,6 +258,15 @@ internal class NativeConversationNotifications(
         }
     }
 
+    private fun extractNotificationReplyText(message: TimelineMessage): String {
+        val projected = ContextInjectionFilter.projectMessage(message)?.takeUnless { it.isDeleted } ?: return ""
+        val rawJoined = projected.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
+        val cleanText = ContextInjectionFilter.sanitizeNotificationPreview(rawJoined)
+        return cleanText.ifBlank {
+            if (projected.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else ""
+        }
+    }
+
     /** A failed/incomplete fetch never calls this method and cannot end a task. */
     @Synchronized fun reconcile(
         expected: NotificationReconciliationRequest,
@@ -270,18 +280,26 @@ internal class NativeConversationNotifications(
         if (current != before) return false
         val key = RoundKey(target, before.generationId)
         val observed = replies[key]
-        val userIndex = userMessages[key]?.let { id -> messages.indexOfLast { it.id == id && it.sender == "user" } } ?: -1
-        val replyIndex = observed?.let { reply -> messages.indexOfLast { it.id == reply.messageId && it.sender == "assistant" } } ?: -1
+        val userIndex = userMessages[key]?.let { id ->
+            messages.indexOfLast { it.id == id && ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.USER }
+        } ?: -1
+        val replyIndex = observed?.let { reply ->
+            messages.indexOfLast { it.id == reply.messageId && ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT }
+        } ?: -1
         val first = when {
             userIndex >= 0 -> userIndex + 1
             replyIndex >= 0 -> replyIndex
             else -> messages.indexOfFirst { it.timestamp >= (startedAt[key] ?: Long.MAX_VALUE) }
         }
-        val finalReply = if (first < 0) null else messages.drop(first).takeWhile { it.sender != "user" }
-            .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
+        val finalReply = if (first < 0) null else messages.drop(first)
+            .takeWhile { ContextInjectionFilter.classifySender(it.sender) != ContextInjectionFilter.SenderRole.USER }
+            .lastOrNull {
+                ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                    it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") &&
+                    extractNotificationReplyText(it).isNotBlank()
+            }
         val snapshotCompleted = finalReply?.state?.uppercase() in setOf("CONFIRMED", "COMPLETED")
-        val snapshotText = finalReply?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
-            ?.ifBlank { if (finalReply.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+        val snapshotText = finalReply?.let(::extractNotificationReplyText)
         val snapshotRevision = finalReply?.contentRevision
         val canApplyBody = finalReply != null && !snapshotText.isNullOrBlank() && when {
             observed == null -> true
@@ -342,15 +360,23 @@ internal class NativeConversationNotifications(
                 // One new user after an exact known round anchor has a safe
                 // owner; several unseen users cannot be assigned to generations.
                 val anchorIndex = if (userIndex >= 0) userIndex else replyIndex
-                val newerUsers = if (anchorIndex >= 0) messages.drop(anchorIndex + 1).filter { it.sender == "user" } else emptyList()
+                val newerUsers = if (anchorIndex >= 0) {
+                    messages.drop(anchorIndex + 1).filter {
+                        ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.USER
+                    }
+                } else emptyList()
                 if (newerUsers.size == 1) {
                     val user = newerUsers.single()
                     userMessages[remoteKey] = user.id
                     user.timestamp.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
-                    val body = messages.drop(messages.indexOf(user) + 1).takeWhile { it.sender != "user" }
-                        .lastOrNull { it.sender == "assistant" && it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") }
-                    val text = body?.parts?.filterIsInstance<MessagePart.Text>()?.joinToString("\n") { it.value }
-                        ?.ifBlank { if (body.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+                    val body = messages.drop(messages.indexOf(user) + 1)
+                        .takeWhile { ContextInjectionFilter.classifySender(it.sender) != ContextInjectionFilter.SenderRole.USER }
+                        .lastOrNull {
+                            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                                it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") &&
+                                extractNotificationReplyText(it).isNotBlank()
+                        }
+                    val text = body?.let(::extractNotificationReplyText)
                     if (body != null && !text.isNullOrBlank()) {
                         replies[remoteKey] = ReplySnapshot(body.id, text, body.contentRevision ?: 0L, body.timestamp,
                             completed = body.state.uppercase() in setOf("CONFIRMED", "COMPLETED"))
@@ -391,7 +417,8 @@ internal class NativeConversationNotifications(
         val generation = input.generationId
         if (decoded is VerifiedConversationEvent.TitleUpdated) {
             _sessions.value.firstOrNull { it.target == target }?.let {
-                val title = decoded.newTitle.trim().take(80).ifBlank { sessionTitle(target) }
+                val title = ContextInjectionFilter.sanitizeSummaryText(decoded.newTitle, maxLength = 80)
+                    .ifBlank { sessionTitle(target) }
                 if (it.isRunning) update(it.copy(title = title), terminal = false)
                 else _sessions.value = _sessions.value.map { session -> if (session.target == target) session.copy(title = title) else session }
             }
@@ -473,13 +500,14 @@ internal class NativeConversationNotifications(
             val sameGeneration = previous != null && (round == null || previous.generationId == round)
             var next = previous ?: NativeConversationSession(target, round, sessionTitle(target), NativeConversationStatus.RUNNING, updatedAt = occurredAt)
             startedAt.putIfAbsent(roundKey, occurredAt)
-            titleFor(target)?.trim()?.takeIf { it.isNotBlank() }?.let { next = next.copy(title = it.take(80)) }
+            titleFor(target)?.let { ContextInjectionFilter.sanitizeSummaryText(it, maxLength = 80) }
+                ?.takeIf { it.isNotBlank() }
+                ?.let { next = next.copy(title = it) }
             when (input.kind) {
                 NativeNotificationKind.REPLY_DELTA, NativeNotificationKind.REPLY_COMPLETED -> {
                     val unambiguous = generation != null || previous?.generationId == null || previous.generationId.startsWith("legacy:")
                     if (message != null && unambiguous) {
-                        val text = message.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
-                            .ifBlank { if (message.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else "" }
+                        val text = extractNotificationReplyText(message)
                         // 发送流与事件页可用不同 eventId 转发同一终稿；终态正文没有
                         // 变化时不能重发用户已经处理的通知，完成观察器仍接收原事实。
                         val repeatedFinal = terminal != null && input.kind == NativeNotificationKind.REPLY_COMPLETED &&
