@@ -1162,6 +1162,41 @@ class NativeConversationNotificationsTest {
         assertEquals("同毫秒并发正文", remaining.latestReply)
     }
 
+    @Test fun t3_08_EmptyPreviousCompletionDoesNotSwallowNewTurnStartingWithBodyAndUpgradedFenceHolds() {
+        val prefs = replyCompletionPreferences(context, "profile", "account")
+        val target = ReplyNotificationTarget("profile", "account", "conversation")
+        val legacyOldDigest = replyDigest("legacy\u0000${target.identityKey()}\u0000u-legacy-old\u0000cid-legacy-old")
+        prefs.edit().putLong("realtime.terminal.$legacyOldDigest", clock - 1_000L).commit()
+
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 1. 升级前已终结的 legacy 轮次在重放时不得重新进入 RUNNING
+        accept(status("delivered", 1, generation = null, messageId = "u-legacy-old", clientMessageId = "cid-legacy-old"))
+        assertTrue(coordinator.sessions.value.isEmpty())
+
+        // 2. 第 1 轮以无正文终态结束，随后第 2 轮直接先来 REPLY_COMPLETED 再来 status(COMPLETED)：不得并入第 1 轮
+        accept(status("delivered", 2, generation = "turn-empty", messageId = "u1", clientMessageId = "cid-1"))
+        accept(status("completed", 3, generation = "turn-empty", messageId = "u1", clientMessageId = "cid-1"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+
+        clock += 50
+        accept(message("conversation.message.completed", "新轮次直达正文", 4, generation = "turn-new", messageId = "r-new"))
+        assertEquals("turn-new", coordinator.sessions.value.single().generationId)
+        accept(status("completed", 5, generation = "turn-new", messageId = "u2", clientMessageId = "cid-2"))
+        val finalSession = coordinator.sessions.value.single()
+        assertEquals("turn-new", finalSession.generationId)
+        assertEquals(NativeConversationStatus.COMPLETED, finalSession.status)
+        assertEquals("新轮次直达正文", finalSession.latestReply)
+        assertEquals(1, publications.count { it.first.generationId == "turn-new" && it.second })
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

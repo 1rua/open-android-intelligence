@@ -388,6 +388,29 @@ class ReplyNotificationsTest {
         assertEquals(1, posts.size)
     }
 
+    @Test fun preUpgradeLegacyFenceAndReplayedDeliveryDuringAwaitingAreHandledSafely() {
+        val prefs = context.getSharedPreferences("completion-test", Context.MODE_PRIVATE)
+        val delivered = requireNotNull(status("delivered", generation = null, userId = "u-upg", clientId = "client-upg"))
+        val identity = delivered.target.identityKey()
+        val oldDigest = replyDigest("legacy\u0000$identity\u0000u-upg\u0000client-upg")
+        prefs.edit().putLong("done.$oldDigest", clock - 1_000L).commit()
+
+        val observer = observer()
+        // 1. 升级前已完成的旧版 legacy 摘要，重放同一轮事件绝不可重复提醒
+        observer.accept(delivered)
+        observer.accept(message("conversation.message.completed", id = "r-upg", generation = null))
+        observer.accept(status("completed", generation = null, userId = "u-upg", clientId = "client-upg"))
+        assertTrue("旧版 done 围栏升级后仍应阻止重复提醒", posts.isEmpty())
+
+        // 2. COMPLETED 先到进入 awaiting 后，若旧 DELIVERED 重放，仍必须保留 awaiting 等待正文触发提醒
+        clock += 50
+        observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(status("completed", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(message("conversation.message.completed", id = "r-wait", generation = null))
+        assertEquals(1, posts.size)
+    }
+
     private fun observer(post: (ReplyNotificationTarget, String) -> Unit = { target, generation -> posts += target to generation }) = ReplyCompletionObserver(
         context.getSharedPreferences("completion-test", Context.MODE_PRIVATE), "profile-a", "account-a", post, { clock },
     )

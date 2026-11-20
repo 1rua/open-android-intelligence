@@ -210,7 +210,7 @@ class RemoteRuntime(
         }
     }
     private suspend fun reconcileActiveNotifications(repo: RemoteConversationRepository?, key: EndpointKey?) {
-        if (repo == null || key == null || repository !== repo || state.value.selected != key) return
+        if (!networkConnected || repo == null || key == null || repository !== repo || state.value.selected != key) return
         if (repo.carrier.backend !in setOf("harness", "codex")) return
         val targetAgent = endpointId(key)
         val due = nativeConversationNotifications.reconciliationRequests()
@@ -802,6 +802,9 @@ class RemoteRuntime(
             targetWorkspace?.let(::select)
         } else {
             refreshBackgroundWork()
+            if (nativeConversationNotifications.hasPendingReconciliation()) {
+                scope.launch { reconcileActiveNotifications(repository, state.value.selected) }
+            }
         }
     }
     fun onNetworkLost() {

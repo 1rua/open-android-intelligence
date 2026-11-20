@@ -471,13 +471,18 @@ class RemoteRuntimeTest {
         }
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
 
-        // UI 控制器直接发起任务后（controller.hasActiveWork == true）断网，仍必须立刻停止前台保活
+        // UI 控制器直接发起任务后（controller.hasActiveWork == true）断网，仍必须立刻停止前台保活且离线期暂停轮询对账
         val controller = runtime.controller.value!!
         controller.submitComposerDraft("测试UI断网停保活", controller.state.value.draftEpoch,
             com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL)
         eventually { controller.hasActiveWork.value && AgentSessionRecoveryState(context).hasPendingWork }
+        val activeChannel = connection.channels.last()
         runtime.onNetworkLost()
         eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        val offlinePageReads = activeChannel.pageReads
+        runtime.onAppForegrounded()
+        delay(50)
+        assertEquals("断网期间不得继续轮询远端历史接口", offlinePageReads, activeChannel.pageReads)
     }
 
     private fun postReply(eventId: String, complete: Boolean) {
@@ -567,6 +572,7 @@ class RemoteRuntimeTest {
         override val events = MutableSharedFlow<RemoteRpcEvent>()
         var closed = false
         var modelReads = 0
+        var pageReads = 0
         var models: suspend () -> JsonValue = { catalog("宿主模型") }
         override suspend fun invoke(method: String, params: JsonValue.JObject, requestId: String, timeoutMs: Long): JsonValue {
             if (closed) throw RemoteRpcException("TRANSPORT_CLOSED", RemoteDeliveryOutcome.NOT_SENT)
@@ -580,7 +586,7 @@ class RemoteRuntimeTest {
             if (method == "harness.remote.stream.close") return Json.of(emptyMap<String, Any>())
             val value = when (JsonFields.string(params, "endpoint")) {
                 "session/list" -> Json.of(mapOf("items" to listOf(mapOf("sessionId" to "same:原生/session", "title" to "会话", "updatedAt" to 1))))
-                "session/page" -> Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false))
+                "session/page" -> { pageReads++; Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false)) }
                 "session/models" -> { modelReads++; models() }
                 "commands/list" -> Json.of(mapOf("items" to emptyList<Any>()))
                 else -> Json.of(emptyMap<String, Any>())

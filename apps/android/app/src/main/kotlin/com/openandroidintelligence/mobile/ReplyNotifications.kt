@@ -388,8 +388,13 @@ internal class ReplyCompletionObserver(
         when (input.kind) {
             NativeNotificationKind.MESSAGE_STATUS -> {
                 val status = decoded as? VerifiedConversationEvent.MessageStatus ?: return
-                val round = legacyStatusDigest(identity, status)
-                if (preferences.contains("done.$round")) {
+                val digests = legacyCompatibleStatusDigests(identity, status)
+                val round = digests.first()
+                val upgradedLegacyHit = digests.drop(1).any { preferences.contains("done.$it") }
+                if (upgradedLegacyHit && !preferences.contains("done.$round")) {
+                    preferences.edit().putLong("done.$round", occurredAt).commitOrLog(TAG)
+                }
+                if (preferences.contains("done.$round") || upgradedLegacyHit) {
                     // 回放的排队/投递帧不能让先前已完成但未见正文的旧轮次继续挂起接管回放正文。
                     if (status.status in setOf(AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED)) {
                         clearAwaitingLegacy(conversationKey, occurredAt)
@@ -398,6 +403,8 @@ internal class ReplyCompletionObserver(
                 }
                 when (status.status) {
                     AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
+                        // 若同轮次因终态先到而处于等待正文槽位，重复到达的旧排队/投递帧必须忽略，保留等待槽位。
+                        if (preferences.getString(awaitingKey, null) == round) return
                         if (preferences.getString(activeKey, null) != round) {
                             clearLegacy(conversationId, identity, occurredAt)
                             preferences.edit().putString(activeKey, round).putLong("legacy.started.$conversationKey", occurredAt).commitOrLog(TAG)
@@ -523,6 +530,16 @@ internal fun SharedPreferences.Editor.commitOrLog(tag: String): Boolean {
 internal fun legacyStatusDigest(identity: String, status: VerifiedConversationEvent.MessageStatus): String {
     val stableUserKey = status.clientMessageId.value.takeIf { it.isNotBlank() } ?: status.messageId
     return replyDigest("legacy\u0000$identity\u0000$stableUserKey")
+}
+
+/** 兼容升级前基于 messageId+clientMessageId 生成的旧版 legacy 完成围栏摘要，避免重放重复提醒。 */
+internal fun legacyCompatibleStatusDigests(
+    identity: String,
+    status: VerifiedConversationEvent.MessageStatus,
+): List<String> {
+    val current = legacyStatusDigest(identity, status)
+    val previous = replyDigest("legacy\u0000$identity\u0000${status.messageId}\u0000${status.clientMessageId.value}")
+    return if (previous == current) listOf(current) else listOf(current, previous)
 }
 
 internal fun replyDigest(value: String): String = MessageDigest.getInstance("SHA-256")

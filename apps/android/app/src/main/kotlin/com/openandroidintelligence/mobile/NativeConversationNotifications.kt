@@ -478,7 +478,17 @@ internal class NativeConversationNotifications(
         val terminal = terminalRounds[roundKey]
         val refinesRecoveredOutcome = knownRound && terminal == NativeConversationStatus.ENDED &&
             input.kind in setOf(NativeNotificationKind.MESSAGE_STATUS, NativeNotificationKind.GENERATION_CANCELLED)
-        val alreadyFinished = durableKey != null && (preferences.contains("done.$durableKey") || preferences.contains("realtime.terminal.$durableKey"))
+        val legacyOldKeys = if (statusEvent != null && generation == null) {
+            legacyCompatibleStatusDigests(target.identityKey(), statusEvent).drop(1)
+        } else emptyList()
+        val upgradedLegacyFinished = legacyOldKeys.any {
+            preferences.contains("done.$it") || preferences.contains("realtime.terminal.$it")
+        }
+        val alreadyFinished = upgradedLegacyFinished || (durableKey != null &&
+            (preferences.contains("done.$durableKey") || preferences.contains("realtime.terminal.$durableKey")))
+        if (upgradedLegacyFinished && durableKey != null && !preferences.contains("realtime.terminal.$durableKey")) {
+            preferences.edit().putLong("realtime.terminal.$durableKey", occurredAt).commitOrLog("NativeConversationNotifications")
+        }
         // 不同端点可以使用完全相同的原生事件 ID，去重也必须包含端点归属。
         val seenKey = input.eventId.takeIf { it.isNotBlank() }?.let {
             "realtime.event." + replyDigest(if (input.endpointId == null) it else "${target.identityKey()}\u0000$it")
@@ -702,10 +712,12 @@ internal class NativeConversationNotifications(
                 }
             }
             val previousRound = previous?.generationId
+            val previousSnapshot = previousRound?.let { replies[RoundKey(target, it)] }
+            val provenSamePendingMessage = previousSnapshot != null && !previousSnapshot.completed &&
+                messageId != null && previousSnapshot.messageId == messageId
             if (rounds.isNullOrEmpty() && previous != null && !previous.isRunning &&
                 previous.status == NativeConversationStatus.COMPLETED && kind == NativeNotificationKind.REPLY_COMPLETED &&
-                previousRound != null && replies[RoundKey(target, previousRound)]?.completed != true &&
-                RoundKey(target, resolved) !in terminalRounds
+                previousRound != null && provenSamePendingMessage && RoundKey(target, resolved) !in terminalRounds
             ) {
                 roundAliases[RoundKey(target, resolved)] = previousRound
                 return previousRound
