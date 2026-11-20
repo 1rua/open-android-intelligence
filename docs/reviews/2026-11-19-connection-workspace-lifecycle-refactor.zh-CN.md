@@ -59,10 +59,11 @@
   - 普通网络异常（含 `TimeoutCancellationException` 映射的 `CONNECT_TIMEOUT`）失败后保持停留在会话页并恢复可重试；
   - 仅当服务端明确返回凭据撤销或认证失效错误码（由 `isAuthRevokedError()` 按分隔符拆词精确匹配 `AUTH_REVOKED_ERROR_CODES`）时，转入 `AUTH_REVOKED` 回退登录页并显示清晰中文说明（`conn_toast_session_revoked`）。
 
-### 5. 独立代码评审后的边界加固
+### 5. 独立代码评审后的边界加固与 `dev` 变基兼容
 - **热升级媒体与资源句柄**：移除 `retireOnlineHandlesOnly()` 对 `ownerMedia?.retireConnection()` 的误调用，防止原地重连或跨站发现后历史媒体读取抛出 `LOCAL_MEDIA_DELETED`；并在 `retireWorkspaceContextKeepingChannel()` 开头先解绑热升级仓储再关闭通道，对离线/切换期间的原生存储初始化失败增加异常关闭守卫，同时消除 `switchWorkspaceControllerLocked()` 中的重复在线绑定构造并抽取共享 `buildOnlineWorkspaceBinding()` / `buildAssistantWorkspace()` / `beginAccountReset()` helper。
 - **超时与取消区分及并发态收敛**：新增 `isTrueCancellation()` 区分 `TimeoutCancellationException` 与真实协程取消；对 `selectAgentLocked()` 跨站切换失败时补齐 `detachOnlineWorkspaceInPlace()` 与原工作区后台重连恢复；为 `channel`、`activeCarriers`、`hydratedAgentForChannel` 添加 `@Volatile`，将 `cachedWorkspacesByAgent` 统一收口到 `stateLock` 保护，并为操作协程加入基于 `switchGeneration` ticket 的 `NonCancellable` 收尾清理；同时为 `HotSwappableConversationRepository.attachOnline()` 的流收集器加入身份锁校验。
 - **水合刷新窗口与未缓存空态**：新增 `WORKSPACE_HYDRATION_STALE_WINDOW_MS`（2 秒）刷新窗口并扩展 `WorkbenchScreen` 宽屏自动水合触发依赖；对本地无缓存的兄弟工作区在 `loadCachedWorkspaceSessionsSnapshot()` 中写入 `Loadable.Empty` 以消除离线抽屉转圈。
+- **变基最新 `dev`（兼容 PR #209）与竞态隔离**：`HotSwappableCommandCatalogRepository` 完整实现 `AgentCommandCatalogRepository` 的 `get(gatewayId, languageCode)`、`get(gatewayId, languageCode, conversationId)` 与 `observe(gatewayId, conversationId)` 公告流热切换委托；`WorkbenchController.updateRemoteCapabilities` 集成 `onCommandCatalogConnectivityChanged(online)` 避免重复拉取；`discover()` 仅回填自身 `ownDiscoveryError` 并在通道更换/失效关闭时自增 `modelSequence`，消除与后台 `refreshModels()` 的竞态。
 
 ---
 
@@ -94,26 +95,33 @@
 
 ## 四、已执行的自动化验证与结果
 
-1. **静态门禁（已通过）**：
-   - `python3 tools/check_hardcoded_chinese.py` → 通过（新增违规 0 处）
+1. **静态与规划门禁（已通过）**：
+   - `python3 tools/check_hardcoded_chinese.py` → 通过（已豁免基线 1457 处，新增违规 0 处）
    - `python3 tools/test_string_resources_integrity.py` → 通过
+   - `npm run lock:check` → 通过（96 份原文与许可）
+   - `pytest tools/test_ci_planning.py` → 121 passed
 
-2. **Conversation UI 工作区分组与既有抽屉回归（已通过，全绿 0 跳过）**：
-   - 命令：`./apps/android/gradlew -p apps/android :conversation-ui:testDebugUnitTest --tests com.openandroidintelligence.conversation.workbench.WorkspaceConversationBrowserTest --tests com.openandroidintelligence.conversation.workbench.ConversationBrowserTest --tests com.openandroidintelligence.conversation.workbench.ThreadDrawerAccountTest --tests com.openandroidintelligence.conversation.workbench.WorkbenchLayoutRegressionTest`
-   - 结果：
-     - `WorkspaceConversationBrowserTest`：4/4 通过（含按工作区折叠展开、跨工作区打开/新建、排序模式切换、受控删除确认、不支持删除提示与无文件夹校验）
-     - `ConversationBrowserTest`：10/10 通过
-     - `ThreadDrawerAccountTest`：2/2 通过
-     - `WorkbenchLayoutRegressionTest`：17/17 通过
+2. **受影响 Android 模块全量测试与越权面校验（已通过，全绿 0 跳过，零 CloseGuard 警告）**：
+   - 命令：`./apps/android/gradlew -p apps/android noVpnSurfaceCheck :gateway-client:testDebugUnitTest :conversation-domain:testDebugUnitTest :conversation-data:testDebugUnitTest :conversation-ui:testDebugUnitTest`
+   - 结果（已于本地离线补装 `tools/remote-interop` 依赖以恢复 `ws` 互通校验）：
+     - `noVpnSurfaceCheck`：通过
+     - `:gateway-client:testDebugUnitTest`：307/307 通过（含 `OriginalPluginHostInteropTest`）
+     - `:conversation-domain:testDebugUnitTest`：77/77 通过
+     - `:conversation-data:testDebugUnitTest`：142/142 通过
+     - `:conversation-ui:testDebugUnitTest`：1003/1003 通过（含 `WorkspaceConversationBrowserTest` 4/4、`ConversationBrowserTest` 10/10、`ThreadDrawerAccountTest` 2/2、`WorkbenchLayoutRegressionTest` 17/17、`WorkbenchCatalogRefreshTest`、`ApprovalStateMachineTest` 等）
 
-3. **App 连接生命周期、冷启动缓存优先、UI 解耦与既有回归（已通过，全绿 0 跳过，零 CloseGuard 警告）**：
-   - 命令：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --tests com.openandroidintelligence.mobile.RemoteConnectionLifecycleTest --tests com.openandroidintelligence.mobile.RemoteWorkspaceUiDecouplingTest --tests com.openandroidintelligence.mobile.RemoteRuntimeTest --tests com.openandroidintelligence.mobile.RemoteHarnessCatalogTest --tests com.openandroidintelligence.mobile.RemoteSessionDeliveryIntegrationTest --tests com.openandroidintelligence.mobile.RemoteLoginPresentationTest --tests com.openandroidintelligence.mobile.SettingsNavigationTest --tests com.openandroidintelligence.mobile.MaterialTokenGuardTest`
-   - 结果：
-     - `RemoteConnectionLifecycleTest`：11/11 通过（完整覆盖已连接切换不同 Agent、同 Agent 切工作区复用通道、打开菜单自动拉取工作区与会话、冷启动首帧直达会话与宽限期不弹离线、瞬时抖动宽限期内原地热升级同步增量消息、宽限期耗尽降级与后台静默重连升级、离线重试防重入且保持会话路由、明确凭据撤销 `DEVICE_REVOKED` 回退登录、热升级媒体防误退役、真实 `TimeoutCancellationException` 超时降级与复位、离线未缓存兄弟工作区 `Loadable.Empty` 空态不转圈）
+3. **App 连接生命周期、冷启动缓存优先、UI 解耦与核心回归（22 个测试类共 136/136 通过，0 跳过）**：
+   - 主体命令：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --rerun --tests com.openandroidintelligence.mobile.RemoteConnectionLifecycleTest ...`（共 21 个顶层包核心回归类：134/134 通过）
+   - 独立子包补充：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --tests com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspaceTest`（2/2 通过）
+   - 重点覆盖结果：
+     - `RemoteConnectionLifecycleTest`：11/11 通过（已连接切换不同 Agent、同 Agent 切工作区复用通道、打开菜单自动拉取工作区与会话、冷启动首帧直达会话与宽限期不弹离线、瞬时抖动宽限期内原地热升级同步增量消息、宽限期耗尽降级与后台静默重连升级、离线重试防重入且保持会话路由、明确凭据撤销 `DEVICE_REVOKED` 回退登录、热升级媒体防误退役、真实 `TimeoutCancellationException` 超时降级与复位、离线未缓存兄弟工作区 `Loadable.Empty` 空态不转圈）
      - `RemoteWorkspaceUiDecouplingTest`：4/4 通过（登录页不暴露工作区、设置页已连接切换即时生效、离线横幅原位重连展示与防重入、凭据撤销说明与宽限期横幅隐藏）
      - `RemoteRuntimeTest`：21/21 通过
-     - `RemoteHarnessCatalogTest`：2/2 通过
+     - `RemoteHarnessCatalogTest`：3/3 通过
      - `RemoteSessionDeliveryIntegrationTest`：7/7 通过
      - `RemoteLoginPresentationTest`：9/9 通过
-     - `SettingsNavigationTest`：2/2 通过
-     - `MaterialTokenGuardTest`：2/2 通过
+     - `RemoteRootInteractionTest`：5/5 通过
+     - `BubbleConversationTest`：30/30 通过
+     - 其余受影响校验类（`ArchitectureBoundaryTest` 2/2、`ConversationUiCapabilitiesTest` 5/5、`LocalConversationFirstFrameTest` 6/6、`MaterialTokenGuardTest` 2/2、`NativeNotificationNavigationTest` 2/2、`NativeNotificationRoutingTest` 3/3、`RemoteDeviceNameSettingTest` 2/2、`RemoteLocalEntryPointsTest` 4/4、`RemoteNewSessionNavigationTest` 5/5、`SettingsNavigationTest` 2/2、`SettingsResponsiveHostRegressionTest` 5/5、`SettingsStateIntegrityTest` 4/4、`WorkbenchNavigationTest` 2/2、`AssistantConversationWorkspaceTest` 2/2）：全部通过
+   - 说明：`Remote*`、`Settings*`、`Bubble*`、`:conversation-*` 与 `:gateway-client` 测试报告中零 CloseGuard 警告；既有 `LocalConversationFirstFrameTest` XML 含既有的 Robolectric `SQLiteOpenHelper` CloseGuard 日志，与本次连接层改造无关。
+   - 本地 `npm run test:pr` 说明：除上述已全部单独回归通过的受影响模块外，本地未修改模块的离线环境缺失前提仅出现在 `:plugin-runtime-wasm`（`CompiledReferencePluginTest` 2/3 需预编 Rust 参考插件）与 `:sms-collector`（`AndroidSmsManagerPortTest` 9/9 需离线拉取 Robolectric SDK 31/32/33 jar），相关全矩阵构建交由 GitHub Actions CI 验证。
