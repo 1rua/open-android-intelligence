@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.title
 
 import com.openandroidintelligence.conversation.ports.OutgoingMessage
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import java.text.BreakIterator
 import java.util.Locale
 
@@ -13,7 +14,11 @@ object ConversationTitlePolicy {
         attachmentNames: List<String> = emptyList(),
         locale: Locale = Locale.getDefault(),
     ): String {
-        val rawText = firstMessage.text.trim()
+        val rawText = ContextInjectionFilter.sanitizeText(
+            text = firstMessage.text,
+            role = ContextInjectionFilter.SenderRole.USER,
+            streaming = false,
+        )
         if (rawText == "/new" || rawText.startsWith("/new ")) {
             return ""
         }

@@ -5,6 +5,7 @@ import com.openandroidintelligence.conversation.data.remote.*
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.control.remote.*
@@ -147,13 +148,17 @@ class RemoteRuntime(
         }
 
         fun findTitle(threads: List<ConversationSummary>?): String? =
-            threads?.firstOrNull { matchesId(it.id.value) }?.title?.trim()?.takeIf { it.isNotBlank() }
+            threads?.firstOrNull { matchesId(it.id.value) }?.title
+                ?.let { ContextInjectionFilter.sanitizeSummaryText(it) }
+                ?.takeIf { it.isNotBlank() }
 
         // 1) 优先查询当前活跃控制器内存中的真实会话标题
         val mainController = controller.value
         val mainState = mainController?.state?.value
-        if (mainState != null && mainState.activeThreadId?.let(::matchesId) == true && mainState.activeThreadTitle.isNotBlank()) {
-            return mainState.activeThreadTitle.trim()
+        if (mainState != null && mainState.activeThreadId?.let(::matchesId) == true) {
+            ContextInjectionFilter.sanitizeSummaryText(mainState.activeThreadTitle)
+                .takeIf { it.isNotBlank() }
+                ?.let { return it }
         }
         val mainThreads = (mainState?.threads as? Loadable.Ready)?.value
         findTitle(mainThreads)?.let { return it }
@@ -161,8 +166,10 @@ class RemoteRuntime(
         // 2) 其次查询 assistantControllers 中各控制器的会话列表
         for (assistant in assistantControllers.values) {
             val aState = assistant.state.value
-            if (aState.activeThreadId?.let(::matchesId) == true && aState.activeThreadTitle.isNotBlank()) {
-                return aState.activeThreadTitle.trim()
+            if (aState.activeThreadId?.let(::matchesId) == true) {
+                ContextInjectionFilter.sanitizeSummaryText(aState.activeThreadTitle)
+                    .takeIf { it.isNotBlank() }
+                    ?.let { return it }
             }
             val aThreads = (aState.threads as? Loadable.Ready)?.value
             findTitle(aThreads)?.let { return it }

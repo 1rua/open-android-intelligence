@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.data.remote
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.gateway.schema.JsonValue
 import com.openandroidintelligence.gateway.remote.rpc.RemoteDeliveryOutcome
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
@@ -150,7 +151,17 @@ class RemoteConversationRepository(
             result.items.forEach { rows[RemoteLocalIds.encode(it.id)] = it }
         }
         result.items.forEach { mediaSource?.confirmSession(it.id) }
-        return ConversationPage(result.items.map { ConversationSummary(ConversationId(RemoteLocalIds.encode(it.id)), it.title, it.updatedAt, it.archived) }, result.nextCursor)
+        return ConversationPage(
+            result.items.map {
+                ConversationSummary(
+                    ConversationId(RemoteLocalIds.encode(it.id)),
+                    ContextInjectionFilter.sanitizeSummaryText(it.title),
+                    it.updatedAt,
+                    it.archived,
+                )
+            },
+            result.nextCursor,
+        )
     }
     override suspend fun createConversation(scope: ConversationScope, clientConversationId: String): Conversation {
         current()
@@ -172,12 +183,13 @@ class RemoteConversationRepository(
                 }
             }
             mediaSource?.confirmSession(created.id)
-            return Conversation(ConversationId(localId), created.title, created.createdAt)
+            return Conversation(ConversationId(localId), ContextInjectionFilter.sanitizeSummaryText(created.title), created.createdAt)
         } finally {
             if (creation != null) synchronized(commandLock) { commandCreations.remove(creation) }
         }
     }
-    override suspend fun readConversation(conversationId: String): Conversation? = rows[conversationId]?.let { Conversation(ConversationId(conversationId), it.title, it.createdAt) }
+    override suspend fun readConversation(conversationId: String): Conversation? =
+        rows[conversationId]?.let { Conversation(ConversationId(conversationId), ContextInjectionFilter.sanitizeSummaryText(it.title), it.createdAt) }
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
         loadTimeline(conversationId, page, notifySnapshot = true).first
 
@@ -288,7 +300,9 @@ class RemoteConversationRepository(
     }
     private suspend fun publish(id: String, event: VerifiedConversationEvent) {
         current()
-        if (event is VerifiedConversationEvent.TimelineUpsert && event.message.sender == "user") {
+        if (event is VerifiedConversationEvent.TimelineUpsert &&
+            ContextInjectionFilter.classifySender(event.message.sender) == ContextInjectionFilter.SenderRole.USER
+        ) {
             event.message.clientMessageId?.let { clientId ->
                 if (acceptedUserMessages.putIfAbsent(id to clientId.value, event.message.id) == null) {
                     publish(id, VerifiedConversationEvent.MessageAccepted("user-accepted:${clientId.value}", event.occurredAt,

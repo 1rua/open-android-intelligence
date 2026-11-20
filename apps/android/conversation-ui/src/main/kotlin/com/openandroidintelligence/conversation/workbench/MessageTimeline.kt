@@ -52,6 +52,7 @@ import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
@@ -147,7 +148,11 @@ fun TimelineRow(
             onRequestOriginalAttachment = onRequestOriginalAttachment,
             onOpenAttachmentPreview = onOpenAttachmentPreview,
         )
-    } else {
+    } else if (
+        entry.systemThreadId != null ||
+        entry.executionFact ||
+        ContextInjectionFilter.classifySender(entry.sender) == ContextInjectionFilter.SenderRole.ASSISTANT
+    ) {
         AssistantMessageRow(
             entry = entry,
             presentations = presentations,
@@ -159,6 +164,7 @@ fun TimelineRow(
             },
         )
     }
+    // 缺失或非对话角色（system/developer/context/tool/unknown）在非本地特殊卡片场景下严禁退化渲染为助手气泡
 }
 
 /**

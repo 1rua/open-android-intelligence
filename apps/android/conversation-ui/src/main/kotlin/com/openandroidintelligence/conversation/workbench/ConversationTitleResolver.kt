@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.workbench
 import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.ui.resources.R
 
 /**
@@ -13,15 +14,17 @@ import com.openandroidintelligence.ui.resources.R
 object ConversationTitleResolver {
     /**
      * 判定指定标题是否属于占位（未命名）标题：
-     * 只认 null 或空白；非空标题没有来源凭据，不能仅凭字面值覆盖用户或服务端命名。
+     * 经上下文注入净化后为空或空白时视作无有效命名，回落到底层安全默认标题。
      */
     fun isPlaceholderTitle(title: String?): Boolean {
-        return title.isNullOrBlank()
+        return ContextInjectionFilter.sanitizeSummaryText(title).isEmpty()
     }
 
-    /** 展示与搜索共用同一个已本地化的默认值，不改写领域模型或持久化数据。 */
-    fun resolve(title: String?, defaultTitle: String): String =
-        if (isPlaceholderTitle(title)) defaultTitle else title!!
+    /** 展示与搜索共用同一个已本地化的默认值，同时净化可能混入的动态注入信封。 */
+    fun resolve(title: String?, defaultTitle: String): String {
+        val cleaned = ContextInjectionFilter.sanitizeSummaryText(title)
+        return cleaned.ifEmpty { defaultTitle }
+    }
 
     /**
      * Compose 环境下的动态本地化会话标题解析
@@ -35,11 +38,7 @@ object ConversationTitleResolver {
      * Context / Service / Notification 环境下的动态本地化会话标题解析
      */
     fun resolve(title: String?, context: Context): String {
-        return if (isPlaceholderTitle(title)) {
-            context.getString(R.string.conv_title_new_default)
-        } else {
-            title!!
-        }
+        return resolve(title, context.getString(R.string.conv_title_new_default))
     }
 }
 

@@ -3,7 +3,7 @@ package com.openandroidintelligence.conversation.data.remote
 import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.RemoteLocalIds
-import com.openandroidintelligence.conversation.sanitizer.SystemPromptSanitizer
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
 
@@ -87,7 +87,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     fun bindUserRequest(nativeGeneration: String, clientId: ClientMessageId): List<VerifiedConversationEvent> {
         val previous = userRequestsByGeneration.putIfAbsent(nativeGeneration, clientId)
         check(previous == null || previous == clientId) { "REMOTE_GENERATION_MISMATCH" }
-        val candidates = rows.values.filter { it.sender == "user" && it.generationId == nativeGeneration }
+        val candidates = rows.values.filter {
+            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.USER &&
+                it.generationId == nativeGeneration
+        }
         if (candidates.size > 1) ambiguousUserGenerations += nativeGeneration
         val row = candidates.singleOrNull()?.takeUnless { nativeGeneration in ambiguousUserGenerations }
             ?: return emptyList()
@@ -202,8 +205,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "assistant/message" -> return upsert(data, "assistant", false, event.number("seq"), source, turn)
             "tool/call" -> return execution(data, id, source, false)
             "tool/result" -> return execution(data, id, source, true)
-            "session/title", "title/changed" -> data.text("title")?.let { title ->
-                return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), title))
+            "session/title", "title/changed" -> data.text("title")?.let { rawTitle ->
+                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(rawTitle)
+                if (cleanTitle.isEmpty()) return emptyList()
+                return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), cleanTitle))
             }
         }
         return emptyList()
@@ -355,7 +360,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     }
                     "tool_call", "tool_call_update" -> return execution(update, update.text("toolCallId") ?: "tool:${++liveSequence}", source,
                         update.text("status") in setOf("completed", "failed"))
-                    "session_info_update" -> update.text("title")?.let { return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), it)) }
+                    "session_info_update" -> update.text("title")?.let { rawTitle ->
+                        val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(rawTitle)
+                        if (cleanTitle.isEmpty()) return emptyList()
+                        return listOf(VerifiedConversationEvent.TitleUpdated(source.id("title:${++revision}"), source.time, ConversationId(sessionId), cleanTitle))
+                    }
                     "prompt_completed", "prompt_failed" -> {
                         val recovered = recoverAcpCatchUp(update.array("catchUp").orEmpty(), source)
                         val state = when {
@@ -425,20 +434,56 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val content = liveContent.remove(message.id)
             val completed = generationState == GenerationState.COMPLETED
             if (completed) content?.finish()
-            val newParts = content?.let { contentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead)) } ?: message.parts
-            val newReasoning = content?.let { reasoning(it.json(), !completed) } ?: message.reasoning.map { if (completed) it.copy(complete = true) else it }
+            val rawCandidateParts = content?.let {
+                rawContentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead))
+            } ?: (message.rawParts ?: message.parts)
+            val role = ContextInjectionFilter.contentSanitizationRole(message.sender)
+            val rawReasoning = content?.let { reasoning(it.json(), !completed) }
+            val sanitized = ContextInjectionFilter.sanitizeParts(
+                parts = rawCandidateParts,
+                role = role,
+                streaming = !completed,
+                reasoning = rawReasoning.orEmpty(),
+            )
+            val newParts = sanitized.parts
+            val preservedRaw = message.rawParts ?: sanitized.rawParts
+            val newReasoning = if (rawReasoning != null) {
+                sanitized.reasoning
+            } else {
+                val completedReasoning = message.reasoning.map { if (completed) it.copy(complete = true) else it }
+                ContextInjectionFilter.rebaseReasoningOnProjection(
+                    message = message.copy(reasoning = completedReasoning),
+                    targetParts = newParts,
+                    role = role,
+                    streaming = !completed,
+                )
+            }
             val sanitizedText = newParts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
             val hasAttachments = newParts.any { it is MessagePart.Attachment }
             val hasSteps = message.executionSteps.isNotEmpty()
             val hasReasoning = newReasoning.isNotEmpty()
-            if (SystemPromptSanitizer.shouldDropMessage(sanitizedText, hasAttachments, hasSteps, hasReasoning, false)) {
+            if (ContextInjectionFilter.shouldDropMessage(
+                    text = sanitizedText,
+                    hasAttachments = hasAttachments,
+                    hasSteps = hasSteps,
+                    hasReasoning = hasReasoning,
+                    isMeta = message.isMeta,
+                    sender = message.sender,
+                    visibility = message.visibility,
+                    messageType = message.messageType,
+                )
+            ) {
                 rows.remove(message.id)
                 return@mapNotNull null
             }
-            val confirmed = message.copy(state = "CONFIRMED", contentRevision = ++revision,
+            val confirmed = message.copy(
+                state = "CONFIRMED",
+                contentRevision = ++revision,
                 parts = newParts,
                 reasoning = newReasoning,
-                generationId = message.generationId ?: generationId)
+                generationId = message.generationId ?: generationId,
+                rawParts = preservedRaw,
+            )
             rows[message.id] = confirmed
             VerifiedConversationEvent.TimelineUpsert(source.id("$eventId:${message.id}"), source.time, revision, confirmed)
         }
@@ -449,18 +494,17 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         return upsert(obj("id" to id, "content" to content.json()), "assistant", streaming, null, source)
     }
 
-    private fun contentParts(blocks: List<JsonValue>, mediaRevision: RemoteMediaRevision): List<MessagePart> = blocks.mapNotNull { block -> when (block.text("type")) {
-        "text" -> {
-            val sanitized = SystemPromptSanitizer.sanitize(block.text("text").orEmpty())
-            if (sanitized.isEmpty()) null else MessagePart.Text(sanitized)
+    private fun rawContentParts(blocks: List<JsonValue>, mediaRevision: RemoteMediaRevision): List<MessagePart> = blocks.mapNotNull { block ->
+        when (block.text("type")) {
+            "text" -> MessagePart.Text(block.text("text").orEmpty())
+            "image", "file" -> {
+                if (mediaReference != null) return@mapNotNull mediaReference.invoke(sessionId, block, mediaRevision)
+                val ref = block.text("id") ?: block.text("path") ?: block.text("url") ?: block.at("source")?.text("url")
+                ref?.let { MessagePart.Attachment(AttachmentDraftId(RemoteLocalIds.encode(it)), block.text("name").orEmpty(), block.text("mimeType").orEmpty()) }
+            }
+            else -> null
         }
-        "image", "file" -> {
-            if (mediaReference != null) return@mapNotNull mediaReference.invoke(sessionId, block, mediaRevision)
-            val ref = block.text("id") ?: block.text("path") ?: block.text("url") ?: block.at("source")?.text("url")
-            ref?.let { MessagePart.Attachment(AttachmentDraftId(RemoteLocalIds.encode(it)), block.text("name").orEmpty(), block.text("mimeType").orEmpty()) }
-        }
-        else -> null
-    } }
+    }
 
     private fun reasoning(blocks: List<JsonValue>, streaming: Boolean): List<MessageReasoning> {
         var offset = 0
@@ -472,15 +516,51 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         } }
     }
 
-    private fun upsert(value: JsonValue, role: String, streaming: Boolean, seq: Long?, source: Source,
+    private fun upsert(value: JsonValue, fallbackRole: String, streaming: Boolean, seq: Long?, source: Source,
         messageGeneration: String? = generationId, messageTimestamp: Long = source.time): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
+        val metadataObj = message.at("metadata") ?: value.at("metadata")
+        // 显式保留协议层声明的发送者（含明确空字符串），并将 user/assistant 别名归一为标准角色，防止缺失发送者误默认归类为 assistant 或无法匹配本地原子
+        val explicitSenderPresent = firstPresentText(
+            message.text("sender"),
+            message.text("role"),
+            message.at("author")?.text("role"),
+            message.at("author")?.text("sender"),
+            value.text("sender"),
+            value.text("role"),
+            metadataObj?.text("role"),
+            metadataObj?.text("sender"),
+        )
+        val role = ContextInjectionFilter.canonicalSender(explicitSenderPresent ?: fallbackRole)
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
         if (persistentMessageSequence && seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
         if (source.historical && source.historyRead == null && rowHistorical[id] == false) return emptyList()
         if (seq != null) rowSequences[id] = seq
 
-        val isMeta = message.flag("isMeta") == true || value.flag("isMeta") == true || message.at("metadata")?.flag("isMeta") == true
+        val visibility = firstNonBlankText(
+            message.text("visibility"),
+            message.text("displayVisibility"),
+            value.text("visibility"),
+            metadataObj?.text("visibility"),
+        )
+        val messageType = firstNonBlankText(
+            message.text("messageType"),
+            message.text("message_type"),
+            message.text("kind"),
+            message.text("type"),
+            value.text("messageType"),
+            value.text("message_type"),
+            metadataObj?.text("messageType"),
+            metadataObj?.text("message_type"),
+            metadataObj?.text("kind"),
+        )
+        val isMeta = hasInternalMetaFlag(message, value, metadataObj) ||
+            ContextInjectionFilter.isNonConversationalMessage(
+                sender = role,
+                isMeta = false,
+                visibility = visibility,
+                messageType = messageType,
+            )
         if (isMeta) {
             val hadRow = rows.containsKey(id)
             rows.remove(id)
@@ -498,26 +578,35 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         }
 
         val blocks = message.array("content").orEmpty()
-        val parts = contentParts(blocks, RemoteMediaRevision(id, seq, source.historical, source.historyRead))
+        val rawCandidateParts = rawContentParts(blocks, RemoteMediaRevision(id, seq, source.historical, source.historyRead))
             .ifEmpty {
-                message.text("text")?.let { raw ->
-                    val sanitized = SystemPromptSanitizer.sanitize(raw)
-                    if (sanitized.isNotEmpty()) listOf(MessagePart.Text(sanitized)) else emptyList()
-                }.orEmpty()
+                message.text("text")?.let { raw -> listOf(MessagePart.Text(raw)) }.orEmpty()
             }
+        val rawReasoning = reasoning(blocks, streaming)
+        val sanitizedResult = ContextInjectionFilter.sanitizeParts(
+            parts = rawCandidateParts,
+            role = ContextInjectionFilter.contentSanitizationRole(role),
+            streaming = streaming,
+            reasoning = rawReasoning,
+        )
+        val parts = sanitizedResult.parts
+        val preservedRawParts = sanitizedResult.rawParts
         val previous = rows[id]
-        val reasoningList = reasoning(blocks, streaming)
+        val reasoningList = sanitizedResult.reasoning
         val hasAttachments = parts.any { it is MessagePart.Attachment }
         val hasSteps = previous?.executionSteps?.isNotEmpty() == true
         val hasReasoning = reasoningList.isNotEmpty()
         val sanitizedText = parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
 
-        if (SystemPromptSanitizer.shouldDropMessage(
+        if (ContextInjectionFilter.shouldDropMessage(
                 text = sanitizedText,
                 hasAttachments = hasAttachments,
                 hasSteps = hasSteps,
                 hasReasoning = hasReasoning,
-                isMeta = false
+                isMeta = false,
+                sender = role,
+                visibility = visibility,
+                messageType = messageType,
             )) {
             val hadRow = rows.containsKey(id)
             rows.remove(id)
@@ -548,7 +637,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val row = TimelineMessage(id, role, parts, messageTimestamp, if (streaming) "STREAMING" else "CONFIRMED", ConversationId(sessionId),
             clientMessageId = clientId, contentRevision = ++revision, generationId = nativeGeneration,
             executionSteps = previous?.executionSteps.orEmpty(),
-            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"), reasoning = reasoningList)
+            localPlaceholder = id.startsWith("remote-stream:") || id.startsWith("remote-acp-stream:"),
+            reasoning = reasoningList,
+            visibility = visibility,
+            messageType = messageType,
+            rawParts = preservedRawParts)
         rows[id] = row
         rowHistorical[id] = source.historical
         return listOf(VerifiedConversationEvent.TimelineUpsert(source.id("message:$id:$revision"), source.time, revision, row,
@@ -621,6 +714,50 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             source.id(eventId), source.time, ConversationId(sessionId),
             generationId ?: "remote-execution:$sessionId", ++revision, listOf(step)
         ))
+    }
+
+    private fun firstPresentText(vararg candidates: String?): String? {
+        for (candidate in candidates) {
+            if (candidate != null) return candidate.trim()
+        }
+        return null
+    }
+
+    private fun firstNonBlankText(vararg candidates: String?): String? {
+        for (candidate in candidates) {
+            val trimmed = candidate?.trim()
+            if (!trimmed.isNullOrEmpty()) return trimmed
+        }
+        return null
+    }
+
+    private fun hasInternalMetaFlag(message: JsonValue, value: JsonValue, metadataObj: JsonValue?): Boolean {
+        val keys = listOf(
+            "isMeta",
+            "is_meta",
+            "hidden",
+            "isHidden",
+            "is_hidden",
+            "internal",
+            "isInternal",
+            "is_internal",
+            "ephemeral",
+            "isEphemeral",
+            "is_ephemeral",
+            "synthetic",
+            "isSynthetic",
+            "is_synthetic",
+            "injected",
+            "isInjected",
+            "is_injected",
+            "systemOnly",
+            "system_only",
+            "contextOnly",
+            "context_only",
+        )
+        return keys.any { key ->
+            message.flag(key) == true || value.flag(key) == true || metadataObj?.flag(key) == true
+        }
     }
 
 }

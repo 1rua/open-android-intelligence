@@ -3,6 +3,7 @@ package com.openandroidintelligence.conversation.data.remote
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.*
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.schema.Json
@@ -49,7 +50,7 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
             ?: throw RemoteSessionException("REMOTE_WORKSPACE_NOT_FOUND")
         val rows = invoke("session/list", obj("_request" to obj())).requiredArray("items")
             .filter { it.text("sessionId") in allowed && it.text("parentSessionId") == null && it.text("origin") != "subagent" }
-            .map { row -> RemoteSessionRow(row.requiredText("sessionId"), row.text("title") ?: "",
+            .map { row -> RemoteSessionRow(row.requiredText("sessionId"), ContextInjectionFilter.sanitizeSummaryText(row.text("title")),
                 millis(row, "createdAt"), millis(row, "updatedAt"), row.flag("archived") == true) }
         return RemoteSessionPage(rows)
     }
