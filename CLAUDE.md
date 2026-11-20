@@ -10,6 +10,8 @@
 - **PR / Level 2**：发起 PR 前执行 `npm run test:pr`，覆盖直接/间接依赖模块、核心安全规则与契约兼容性。
 - **Full / Level 3**：正式发布前执行 `npm run test:full`，做全量模块回归与 APK 完整性校验。
 - **CI**：严禁在 Agent 循环中轮询长时间 CI；利用 Actions `concurrency` 自动终止旧 commit 的无意义构建。
+- **Gradle 多模块过滤与强跑边界**：`--tests` 会作用于同一 `./gradlew` 命令中的全部测试任务，定向用例须与全量模块测试分开执行；`--rerun` 仅紧邻修饰前一个任务，多任务强跑须逐任务加 `--rerun`。
+- **多语言环境与本机 JDK 边界**：`make bootstrap` 与本地验证须兼顾 Node 与 Python 开发依赖（`pyproject.toml` `[dev]`）；若本机默认 JDK 17 触发 `:app:testFullDebugUnitTest` 中 Robolectric SDK 36 用例报 `DefaultSdkProvider.java:170`（`requires Java 21`），属环境版本差异，本地拆分模块定向回归并如实说明，完整 SDK 36 回归交由 CI（Java 21）验证。
 
 ### 3. 通用开发约束
 
@@ -17,6 +19,7 @@
 - **优先官方标准**：优先查看官方标准文档、搜索context7，优先遵循官方文档标准或现成的第三方库实现，优先复用已实现的标准和代码，避免重复造轮子。
 - **文档入库**：设计规格、审查报告、技术方案等必须提交至仓库对应文档目录，禁止留在临时环境。
 - **修改自测铁律**：修改完毕禁止未经测试直接汇报，必须通过自动化测试。
+- **配置、脚本与版本声明对齐源码**：修改 `.env.example`、`Makefile`、`.github/workflows/*` 或文档版本徽章前，须对照 `apps/android/app/build.gradle.kts`、`pyproject.toml`、`rust-toolchain.toml`、`package.json` 核对变量名、相对路径解析基准目录与版本约束，且发布类 workflow 不得随意移除排队保护（`queue: max`）。
 
 ### 4. 前端变动规范
 
@@ -43,3 +46,4 @@
   - **Agent 配置**：`/.codex/`、`/.claude/`、`/.codebuddy/`、`/.trae/` 等
   - **Android 本地配置**：`apps/android/local.properties`
 - 新增文件或目录时确认归属，必要时同步更新 `.gitignore`。
+- 仅针对仓库根目录的本地目录/空壳目录在 `.gitignore` 中必须加前导 `/` 锚定（如 `/oai-core/`、`/tests/`），防止全局误伤子模块目录。
