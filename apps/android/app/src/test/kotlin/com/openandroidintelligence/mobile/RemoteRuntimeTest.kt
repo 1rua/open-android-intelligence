@@ -470,6 +470,14 @@ class RemoteRuntimeTest {
                 .firstOrNull { it.target.conversationId == liveConvId.value }?.status == NativeConversationStatus.ENDED
         }
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+
+        // UI 控制器直接发起任务后（controller.hasActiveWork == true）断网，仍必须立刻停止前台保活
+        val controller = runtime.controller.value!!
+        controller.submitComposerDraft("测试UI断网停保活", controller.state.value.draftEpoch,
+            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL)
+        eventually { controller.hasActiveWork.value && AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onNetworkLost()
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
     }
 
     private fun postReply(eventId: String, complete: Boolean) {

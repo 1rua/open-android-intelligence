@@ -264,6 +264,12 @@ internal class AndroidReplyNotificationPublisher(
             .setOngoing(activeForLiveUpdate)
             .setAutoCancel(!activeForLiveUpdate)
             .setOnlyAlertOnce(hasLiveUpdate || !alert)
+            .apply {
+                if (hasLiveUpdate || !alert) {
+                    setGroup("silent-$tag")
+                    setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
+                }
+            }
             .setContentIntent(pendingIntent)
             .addAction(Notification.Action.Builder(null, context.getString(UiR.string.notif_action_open_conversation),
                 PendingIntent.getActivity(context, 0, bubbleIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())

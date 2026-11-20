@@ -246,6 +246,22 @@ class LiveUpdateNotificationsTest {
             val secondReply = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
             val secondStyle = Notification.Builder.recoverBuilder(context, secondReply).style as Notification.MessagingStyle
             assertEquals("先终态后正文的跨ID回复", secondStyle.messages.single().text.toString())
+
+            // 场景 3：已有流式文本时 status(COMPLETED) 先到、completed 后到，中期回落通知必须静默，不触发双提醒
+            advanceClock(100)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u3","clientMessageId":"cid-3","generationId":"req-3","status":"delivered","revision":20}""", null)
+            emit("conversation.message.delta", """{"conversationId":"conversation","messageId":"r3","generationId":"req-3","sender":"assistant","parts":[{"type":"text","text":"半截流式内容"}],"revision":20}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u3","clientMessageId":"cid-3","generationId":"req-3","status":"completed","revision":21}""", null)
+            val interim = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
+            assertTrue("终态早于终稿时中期普通通知必须带静默标记", interim.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+            assertEquals("终态早于终稿时首帖普通通知也需静音组行为，避免在正式终稿前先响一次", Notification.GROUP_ALERT_SUMMARY, interim.groupAlertBehavior)
+
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r3","generationId":"turn-3","sender":"assistant","parts":[{"type":"text","text":"跨ID最终答复正文"}],"revision":22}""", null)
+            val thirdReply = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
+            assertEquals("最终答复到达时只响一次正式提醒", 0, thirdReply.flags and Notification.FLAG_ONLY_ALERT_ONCE)
+            assertNull("正式终稿发布时取消静默分组限制以允许正常响铃提醒", thirdReply.group)
+            val thirdStyle = Notification.Builder.recoverBuilder(context, thirdReply).style as Notification.MessagingStyle
+            assertEquals("跨ID最终答复正文", thirdStyle.messages.single().text.toString())
         }
 
     @Test fun endToEndConsecutiveTurnsRestartLiveUpdateAndExitCleanly() =

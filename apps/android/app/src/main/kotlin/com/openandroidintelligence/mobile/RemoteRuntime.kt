@@ -105,6 +105,7 @@ class RemoteRuntime(
     private val keepAlive = AgentSessionKeepAlive(context)
     private val backgroundOwnership = Any()
     private var ownerActive = false
+    @Volatile private var networkConnected = true
     private var workObserver: Job? = null
     private var reconcileObserver: Job? = null
     private val publisher = AndroidReplyNotificationPublisher(context, replyNotifications) { target ->
@@ -178,7 +179,7 @@ class RemoteRuntime(
         return null
     }
     private fun refreshBackgroundWork(foregrounded: Boolean = false) = synchronized(backgroundOwnership) {
-        val work = ownerActive && repository != null && state.value.account != null &&
+        val work = ownerActive && networkConnected && repository != null && state.value.account != null &&
             replyNotifications.enabled.value && replyNotifications.allowed.value &&
             (controller.value?.hasActiveWork?.value == true || assistantWorkspace?.hasActiveWork?.value == true ||
                 nativeConversationNotifications.sessions.value.any {
@@ -416,6 +417,7 @@ class RemoteRuntime(
         selectLocked(endpoint)
     }
     private suspend fun selectLocked(endpoint: RemoteWorkspace) {
+        networkConnected = true
         mutableState.update { it.copy(busy = true, errorCode = null, models = null) }
         try {
             retire()
@@ -791,17 +793,22 @@ class RemoteRuntime(
     }
 
     fun onNetworkAvailable(routeChanged: Boolean = false) {
+        networkConnected = true
         accountRuntime.refreshControlConnection()
         val selected = state.value.selected ?: return
         if (controller.value?.state?.value?.isOnline == false) {
             val targetWorkspace = state.value.endpoints.firstOrNull { it.endpoint.key == selected }
                 ?: repository?.workspace?.takeIf { it.endpoint.key == selected }
             targetWorkspace?.let(::select)
+        } else {
+            refreshBackgroundWork()
         }
     }
     fun onNetworkLost() {
+        networkConnected = false
         controller.value?.setRemoteConversationOnline(false)
         ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
+        refreshBackgroundWork()
     }
     fun onBackgroundSessionRestarted() { restoreSessionIfAvailable() }
     fun onBackgroundSessionStopped() { onNetworkLost() }
