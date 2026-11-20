@@ -365,6 +365,7 @@ class RemoteRuntime(
             var borrowed = channel?.takeIf { it.scope.hostDeviceId == host.deviceId }
             var previousWorkspace = repository?.workspace?.takeIf { borrowed == null }
             var discovery: RemoteRpcChannel? = null
+            var discoveryError: String? = null
             try {
                 try {
                     borrowed?.invoke("harness.transport.describe", JsonValue.JObject(emptyList()))
@@ -392,7 +393,10 @@ class RemoteRuntime(
                 endpoints.forEach(::saveEndpoint)
                 mutableState.update { old -> old.copy(endpoints = old.endpoints.filter { it.endpoint.key.hostId != host.deviceId } + endpoints, backendFailures = failures) }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { fail(failure) }
+            catch (failure: Exception) {
+                discoveryError = failureCode(failure)
+                fail(failure)
+            }
             finally {
                 withContext(NonCancellable) {
                     try {
@@ -401,7 +405,6 @@ class RemoteRuntime(
                         try {
                             // 当前传输只保留一个主动 Host；跨宿主发现结束后恢复原选择。
                             if (previousWorkspace != null && scope.isActive && accountRuntime.account.value == activeAccount) {
-                                val discoveryError = state.value.errorCode
                                 selectLocked(previousWorkspace)
                                 if (state.value.errorCode == null && discoveryError != null)
                                     mutableState.update { it.copy(errorCode = discoveryError) }
@@ -630,7 +633,9 @@ class RemoteRuntime(
         if (endpointId(key) != target.agentId) return null
         return RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4])
     }
-    private fun fail(failure: Exception) { mutableState.update { it.copy(errorCode = (failure as? RemoteRpcException)?.code ?: (failure as? RemoteSessionException)?.code ?: "REMOTE_CONNECTION_FAILED") } }
+    private fun failureCode(failure: Exception): String =
+        (failure as? RemoteRpcException)?.code ?: (failure as? RemoteSessionException)?.code ?: "REMOTE_CONNECTION_FAILED"
+    private fun fail(failure: Exception) { mutableState.update { it.copy(errorCode = failureCode(failure)) } }
     private fun carriers(channel: RemoteRpcChannel): List<RemoteSessionCarrier> = buildList {
         fun ready(backend: String, capability: String): Boolean {
             if (capability !in channel.capabilities) return false
