@@ -377,18 +377,25 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
 /** 把一条线上投影还原为界面条目。 */
 fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
     val role = ContextInjectionFilter.classifySender(sender)
-    val sanitizedText = if (approval != null || executionFact) {
-        text
+    val mappedReasoning = reasoning.map {
+        com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete)
+    }
+    val (sanitizedText, rebasedReasoning) = if (approval != null || executionFact) {
+        text to mappedReasoning
     } else {
-        ContextInjectionFilter.sanitizeText(
-            text = text,
+        val result = ContextInjectionFilter.sanitizeParts(
+            parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Text(text)),
             role = ContextInjectionFilter.contentSanitizationRole(sender),
             streaming = streaming,
+            reasoning = mappedReasoning,
         )
+        val cleaned = result.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+            .joinToString("") { it.value }
+        cleaned to result.reasoning
     }
     return TimelineEntry(
         key = id,
-        sender = sender,
+        sender = ContextInjectionFilter.canonicalSender(sender),
         text = sanitizedText,
         isUser = role == ContextInjectionFilter.SenderRole.USER,
         timestamp = 0L,
@@ -408,7 +415,7 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
         executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
         presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
             ?.let { StreamPresentationMetadata(it, presentationRevision) },
-        reasoning = reasoning.map { com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete) },
+        reasoning = rebasedReasoning,
     )
 }
 

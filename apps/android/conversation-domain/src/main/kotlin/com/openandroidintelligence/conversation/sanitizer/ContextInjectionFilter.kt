@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.sanitizer
 
 import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.model.MessageReasoning
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 
 /**
@@ -27,13 +28,81 @@ object ContextInjectionFilter {
         UNKNOWN,
     }
 
-    /** 分段净化结果，携带是否包含原始文本与空白编辑语义供保留判断使用。 */
+    /** 分段净化结果，携带是否包含原始文本、空白编辑语义及重映射后的思考偏移供保留与展示判断使用。 */
     data class SanitizedPartsResult(
         val parts: List<MessagePart>,
         val rawParts: List<MessagePart>?,
         val hadOriginalText: Boolean,
         val hadExplicitEmptyTextPart: Boolean,
+        val reasoning: List<MessageReasoning> = emptyList(),
     )
+
+    private class IndexedText(
+        val text: String,
+        val indices: IntArray,
+    ) {
+        fun slice(startInclusive: Int, endExclusive: Int): IndexedText =
+            if (startInclusive >= endExclusive) {
+                IndexedText("", IntArray(0))
+            } else {
+                IndexedText(
+                    text = text.substring(startInclusive, endExclusive),
+                    indices = indices.copyOfRange(startInclusive, endExclusive),
+                )
+            }
+
+        fun trimmed(): IndexedText {
+            var start = 0
+            var end = text.length
+            while (start < end && text[start].isWhitespace()) start++
+            while (end > start && text[end - 1].isWhitespace()) end--
+            return if (start == 0 && end == text.length) this else slice(start, end)
+        }
+
+        fun trimmedEnd(): IndexedText {
+            var end = text.length
+            while (end > 0 && text[end - 1].isWhitespace()) end--
+            return if (end == text.length) this else slice(0, end)
+        }
+
+        fun removeRanges(removedRanges: List<IntRange>): IndexedText {
+            if (removedRanges.isEmpty()) return this
+            val sorted = removedRanges.sortedBy { it.first }
+            val sb = StringBuilder(text.length)
+            val kept = IntArray(text.length)
+            var keptSize = 0
+            var rangeIdx = 0
+            var i = 0
+            while (i < text.length) {
+                while (rangeIdx < sorted.size && i > sorted[rangeIdx].last) {
+                    rangeIdx++
+                }
+                if (rangeIdx < sorted.size && i in sorted[rangeIdx]) {
+                    i = sorted[rangeIdx].last + 1
+                    continue
+                }
+                sb.append(text[i])
+                kept[keptSize++] = indices[i]
+                i++
+            }
+            return IndexedText(sb.toString(), kept.copyOf(keptSize))
+        }
+
+        fun rebasedOffset(rawOffset: Int): Int {
+            if (rawOffset <= 0 || indices.isEmpty()) return 0
+            var lo = 0
+            var hi = indices.size
+            while (lo < hi) {
+                val mid = (lo + hi) ushr 1
+                if (indices[mid] < rawOffset) {
+                    lo = mid + 1
+                } else {
+                    hi = mid
+                }
+            }
+            return lo
+        }
+    }
 
     private const val MAX_PEEL_ITERATIONS = 32
     private const val MAX_OPEN_TAG_SCAN = 512
@@ -375,6 +444,34 @@ object ContextInjectionFilter {
         "local_command_stdout",
     )
 
+    /** 终态助手消息或通知预览若在以下严格系统/上下文根标签内部被截断，同样按未闭合信封剥离至结尾，避免泄露注入文本。 */
+    private val COMPLETED_UNCLOSED_ROOT_CONTEXT_TAGS = MID_ASSISTANT_STRICT_INJECTION_TAGS + setOf(
+        "system_prompt",
+        "system_instructions",
+        "developer_prompt",
+        "developer_instructions",
+        "user_instructions",
+        "system_context",
+        "runtime_context",
+        "memory_context",
+        "developer_context",
+        "user_context",
+        "turn_context",
+        "session_context",
+        "system_message",
+        "developer_message",
+        "antml_context",
+    )
+
+    private val STRICT_UNCLOSED_QUALIFIERS = setOf(
+        "system", "sys", "developer", "runtime", "environment", "env",
+        "injected", "hook", "harness", "dsh", "openclaw", "hermes", "codex", "acp", "available", "local",
+    )
+
+    private val STRICT_UNCLOSED_NOUNS = setOf(
+        "reminder", "reminders", "prompt", "instructions", "context", "skills", "caveat",
+    )
+
     /** 流式传输末尾出现未完整闭合尖括号前缀时，参与匹配的候选根前缀集合。 */
     private val STREAMING_TAG_PREFIX_ANCHORS = (EXACT_CONTEXT_ENVELOPE_TAGS + CONTEXT_TAG_QUALIFIERS)
         .flatMap { token ->
@@ -563,6 +660,13 @@ object ContextInjectionFilter {
     fun contentSanitizationRole(sender: String?): SenderRole =
         if (classifySender(sender) == SenderRole.USER) SenderRole.USER else SenderRole.ASSISTANT
 
+    /** 将已识别的对话发送者别名（如 `human`/`end_user`、`model`/`agent`）归一为 `"user"` / `"assistant"`；内部或未知发送者保持原样。 */
+    fun canonicalSender(sender: String?): String = when (classifySender(sender)) {
+        SenderRole.USER -> "user"
+        SenderRole.ASSISTANT -> "assistant"
+        SenderRole.INTERNAL, SenderRole.UNKNOWN -> sender ?: ""
+    }
+
     private fun isInternalSenderNormalized(normalized: String): Boolean {
         if (normalized in INTERNAL_SENDERS) return true
         return normalized.startsWith("system_") ||
@@ -648,35 +752,42 @@ object ContextInjectionFilter {
         text: String,
         role: SenderRole = SenderRole.ASSISTANT,
         streaming: Boolean = false,
-    ): String {
-        if (text.isEmpty()) return ""
-        var current = text.trim()
-        if (current.isEmpty()) return ""
+    ): String = sanitizeTextIndexed(text, role, streaming).text
+
+    private fun sanitizeTextIndexed(
+        text: String,
+        role: SenderRole,
+        streaming: Boolean,
+    ): IndexedText {
+        if (text.isEmpty()) return IndexedText("", IntArray(0))
+        var current = IndexedText(text, IntArray(text.length) { it }).trimmed()
+        if (current.text.isEmpty()) return current
 
         var strippedAny = false
         for (iteration in 0 until MAX_PEEL_ITERATIONS) {
-            val protectedRanges = findProtectedCodeRanges(current, streaming)
-            val peeledLeading = peelLeadingEnvelope(current, protectedRanges, streaming, strippedAny)
-            if (peeledLeading != null && peeledLeading.length != current.length) {
-                current = peeledLeading.trim()
+            val protectedRanges = findProtectedCodeRanges(current.text, streaming)
+            val peeledLeading = peelLeadingEnvelope(current.text, protectedRanges, role, streaming, strippedAny)
+            if (peeledLeading != null && peeledLeading.length != current.text.length) {
+                val removedPrefix = current.text.length - peeledLeading.length
+                current = current.slice(removedPrefix, current.text.length).trimmed()
                 strippedAny = true
-                if (current.isEmpty()) break
+                if (current.text.isEmpty()) break
                 continue
             }
 
-            val peeledTrailing = peelTrailingEnvelope(current, protectedRanges, streaming, strippedAny)
-            if (peeledTrailing != null && peeledTrailing.length != current.length) {
-                current = peeledTrailing.trim()
+            val peeledTrailing = peelTrailingEnvelope(current.text, protectedRanges, role, streaming, strippedAny)
+            if (peeledTrailing != null && peeledTrailing.length != current.text.length) {
+                current = current.slice(0, peeledTrailing.length).trimmed()
                 strippedAny = true
-                if (current.isEmpty()) break
+                if (current.text.isEmpty()) break
                 continue
             }
 
-            val strippedUnambiguousLine = stripUnambiguousTelemetryLines(current, protectedRanges)
-            if (strippedUnambiguousLine != current) {
-                current = strippedUnambiguousLine.trim()
+            val telemetryRanges = findUnambiguousTelemetryLineRanges(current.text, protectedRanges)
+            if (telemetryRanges.isNotEmpty()) {
+                current = current.removeRanges(telemetryRanges).trimmed()
                 strippedAny = true
-                if (current.isEmpty()) break
+                if (current.text.isEmpty()) break
                 continue
             }
 
@@ -685,36 +796,51 @@ object ContextInjectionFilter {
 
         // 流式助手消息中间可能夹带后续文本到达的运行时 `<system-reminder>...</system-reminder>`；
         // 严格限定在助手角色且位于 Markdown 代码保护区之外的成对闭环标签，绝不误杀用户输入或代码示例。
-        if (role == SenderRole.ASSISTANT && current.isNotEmpty()) {
-            val midProtected = findProtectedCodeRanges(current, streaming)
-            val midStripped = stripMidAssistantStrictTags(current, midProtected)
-            if (midStripped != current) {
-                current = midStripped.trim()
+        if (role == SenderRole.ASSISTANT && current.text.isNotEmpty()) {
+            val midProtected = findProtectedCodeRanges(current.text, streaming)
+            val midTagRanges = findMidAssistantStrictTagRanges(current.text, midProtected)
+            if (midTagRanges.isNotEmpty()) {
+                current = current.removeRanges(midTagRanges).trimmed()
                 strippedAny = true
             }
         }
 
         // 若剥离后剩余内容处于明确的运行时输入外壳标签内（如 <user_message>...</user_message>），解包保留真实内容
-        if (strippedAny && current.isNotEmpty()) {
-            current = unwrapSingleBodyContainer(current, streaming).trim()
+        if (strippedAny && current.text.isNotEmpty()) {
+            unwrapSingleBodyContainerRange(current.text, streaming)?.let { range ->
+                current = current.slice(range.first, range.last + 1).trimmed()
+            }
         }
 
         // 用户角色输入绝不剥离正文中间的普通内容；若流式尾巴出现半截标签前缀则在流式态暂缓展示
-        if (streaming && current.isNotEmpty()) {
-            val protectedRanges = findProtectedCodeRanges(current, streaming = true)
-            current = trimTrailingPartialTagForStreaming(current, protectedRanges).trimEnd()
+        if (streaming && current.text.isNotEmpty()) {
+            val protectedRanges = findProtectedCodeRanges(current.text, streaming = true)
+            val partialTrimmed = trimTrailingPartialTagForStreaming(current.text, protectedRanges)
+            if (partialTrimmed.length != current.text.length) {
+                current = current.slice(0, partialTrimmed.length)
+            }
+            current = current.trimmedEnd()
         }
 
-        return current.trim()
+        return current.trimmed()
     }
 
+    private data class TextSegmentMap(
+        val rawStart: Int,
+        val rawEnd: Int,
+        val cleanStart: Int,
+        val indexed: IndexedText,
+    )
+
     /**
-     * 对消息分段列表执行合并文本清洗，并无损保留附件与原始未清洗分段（仅在发生变化时记录 [rawParts]）。
+     * 对消息分段列表执行合并文本清洗，无损保留附件与原始未清洗分段（仅在发生变化时记录 [rawParts]），
+     * 并同步按移除区间重映射思考块 [MessageReasoning.bodyOffset] 至净化后的展示文本坐标系。
      */
     fun sanitizeParts(
         parts: List<MessagePart>,
         role: SenderRole = SenderRole.ASSISTANT,
         streaming: Boolean = false,
+        reasoning: List<MessageReasoning> = emptyList(),
     ): SanitizedPartsResult {
         if (parts.isEmpty()) {
             return SanitizedPartsResult(
@@ -722,6 +848,7 @@ object ContextInjectionFilter {
                 rawParts = null,
                 hadOriginalText = false,
                 hadExplicitEmptyTextPart = false,
+                reasoning = if (reasoning.isEmpty()) emptyList() else reasoning.map { it.copy(bodyOffset = 0) },
             )
         }
 
@@ -732,15 +859,24 @@ object ContextInjectionFilter {
         // 合并相邻连续文本分段再做净化，防止注入信封跨 content block 切分导致漏网
         val output = mutableListOf<MessagePart>()
         val pendingText = StringBuilder()
+        val segmentMaps = mutableListOf<TextSegmentMap>()
+        var rawCursor = 0
+        var cleanCursor = 0
 
         fun flushPendingText() {
             if (pendingText.isEmpty()) return
             val rawChunk = pendingText.toString()
             pendingText.clear()
-            val cleaned = sanitizeText(rawChunk, role = role, streaming = streaming)
-            if (cleaned.isNotEmpty()) {
-                output += MessagePart.Text(cleaned)
+            val indexed = sanitizeTextIndexed(rawChunk, role = role, streaming = streaming)
+            val segRawStart = rawCursor
+            val segRawEnd = rawCursor + rawChunk.length
+            rawCursor = segRawEnd
+            val segCleanStart = cleanCursor
+            if (indexed.text.isNotEmpty()) {
+                output += MessagePart.Text(indexed.text)
+                cleanCursor += indexed.text.length
             }
+            segmentMaps += TextSegmentMap(segRawStart, segRawEnd, segCleanStart, indexed)
         }
 
         for (part in parts) {
@@ -754,13 +890,74 @@ object ContextInjectionFilter {
         }
         flushPendingText()
 
+        fun rebaseOffset(rawOffset: Int): Int {
+            if (rawOffset <= 0 || segmentMaps.isEmpty()) return 0
+            var rebased = 0
+            for (seg in segmentMaps) {
+                when {
+                    rawOffset >= seg.rawEnd -> rebased = seg.cleanStart + seg.indexed.text.length
+                    rawOffset <= seg.rawStart -> return rebased
+                    else -> return seg.cleanStart + seg.indexed.rebasedOffset(rawOffset - seg.rawStart)
+                }
+            }
+            return rebased
+        }
+
+        val rebasedReasoning = if (reasoning.isEmpty()) {
+            emptyList()
+        } else {
+            reasoning.map { item ->
+                val mapped = rebaseOffset(item.bodyOffset)
+                if (mapped == item.bodyOffset) item else item.copy(bodyOffset = mapped)
+            }
+        }
+
         val rawPartsIfChanged = if (output != parts) parts else null
         return SanitizedPartsResult(
             parts = output,
             rawParts = rawPartsIfChanged,
             hadOriginalText = hadOriginalText,
             hadExplicitEmptyTextPart = hadExplicitEmptyTextPart,
+            reasoning = rebasedReasoning,
         )
+    }
+
+    /**
+     * 以消息当前已落盘的 `reasoning`（处于 `message.parts` 坐标系）为基准，
+     * 在展示导出路径按需重映射偏移，防止对已被 [sanitizeParts] 映射过的思考块重复偏移。
+     */
+    fun rebaseReasoningOnProjection(
+        message: TimelineMessage,
+        targetParts: List<MessagePart>,
+        role: SenderRole = contentSanitizationRole(message.sender),
+        streaming: Boolean = message.state.equals("STREAMING", ignoreCase = true),
+    ): List<MessageReasoning> {
+        if (message.reasoning.isEmpty()) return emptyList()
+        val currentCleanLen = message.parts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
+        val targetCleanLen = targetParts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
+        if (message.rawParts != null && targetParts == message.parts) {
+            return message.reasoning.map { r ->
+                if (r.bodyOffset <= targetCleanLen) r else r.copy(bodyOffset = targetCleanLen)
+            }
+        }
+        val repass = sanitizeParts(
+            parts = message.parts,
+            role = role,
+            streaming = streaming,
+            reasoning = message.reasoning,
+        )
+        return if (repass.parts == targetParts) {
+            repass.reasoning
+        } else {
+            message.reasoning.map { r ->
+                val proportional = if (currentCleanLen > 0) {
+                    ((r.bodyOffset.toLong() * targetCleanLen) / currentCleanLen).toInt().coerceIn(0, targetCleanLen)
+                } else {
+                    0
+                }
+                r.copy(bodyOffset = proportional)
+            }
+        }
     }
 
     /**
@@ -785,11 +982,13 @@ object ContextInjectionFilter {
             return null
         }
 
+        val canonicalSenderValue = canonicalSender(message.sender)
         val sourceParts = message.rawParts ?: message.parts
         val role = classifySender(message.sender)
+        val sanitizationRole = contentSanitizationRole(message.sender)
         val sanitized = sanitizeParts(
             parts = sourceParts,
-            role = contentSanitizationRole(message.sender),
+            role = sanitizationRole,
             streaming = streaming,
         )
 
@@ -817,12 +1016,20 @@ object ContextInjectionFilter {
         }
 
         val preservedRaw = message.rawParts ?: sanitized.rawParts
-        return if (effectiveParts == message.parts && preservedRaw == message.rawParts) {
+        val projectedReasoning = rebaseReasoningOnProjection(message, effectiveParts, sanitizationRole, streaming)
+        return if (
+            canonicalSenderValue == message.sender &&
+            effectiveParts == message.parts &&
+            preservedRaw == message.rawParts &&
+            projectedReasoning == message.reasoning
+        ) {
             message
         } else {
             message.copy(
+                sender = canonicalSenderValue,
                 parts = effectiveParts,
                 rawParts = preservedRaw,
+                reasoning = projectedReasoning,
             )
         }
     }
@@ -1022,6 +1229,7 @@ object ContextInjectionFilter {
     private fun peelLeadingEnvelope(
         text: String,
         protectedRanges: List<IntRange>,
+        role: SenderRole,
         streaming: Boolean,
         alreadyStripped: Boolean,
     ): String? {
@@ -1034,13 +1242,13 @@ object ContextInjectionFilter {
         stripLeadingUntrustedMetadata(text, streaming)?.let { return it }
 
         // 3. <<<...>>>...<<<END_...>>>、--- BEGIN ... ---、HTML 注释上下文字段
-        stripLeadingDelimiterOrCommentBlock(text, streaming)?.let { return it }
+        stripLeadingDelimiterOrCommentBlock(text, role, streaming)?.let { return it }
 
         // 4. ChatML / Llama / control token 段落
         stripLeadingChatMl(text, alreadyStripped)?.let { return it }
 
-        // 5. 成对结构化 XML 上下文信封（支持同名嵌套与属性）
-        stripLeadingXmlEnvelope(text, protectedRanges, streaming)?.let { return it }
+        // 5. 成对或助手终态截断的结构化 XML 上下文信封（支持同名嵌套与属性）
+        stripLeadingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
 
         // 6. 方括号控制/时间/环境头或成对 [SYSTEM]...[/SYSTEM]
         stripLeadingBracketEnvelope(text, streaming)?.let { return it }
@@ -1057,6 +1265,7 @@ object ContextInjectionFilter {
     private fun peelTrailingEnvelope(
         text: String,
         protectedRanges: List<IntRange>,
+        role: SenderRole,
         streaming: Boolean,
         alreadyStripped: Boolean,
     ): String? {
@@ -1064,8 +1273,9 @@ object ContextInjectionFilter {
         val lastIdx = text.length - 1
         val trailingProtected = isProtected(lastIdx, protectedRanges)
 
-        // 若末尾是 `untrusted metadata` 所带围栏块，则由 header 定位检查而非普通代码保护阻断
+        // 若末尾是 `untrusted metadata` 所带围栏块或根上下文 XML 信封（含内部被截断围栏），各自校验起始标签是否在保护区外
         stripTrailingUntrustedMetadata(text, streaming)?.let { return it }
+        stripTrailingXmlEnvelope(text, protectedRanges, role, streaming)?.let { return it }
 
         if (trailingProtected) return null
 
@@ -1073,10 +1283,9 @@ object ContextInjectionFilter {
             stripLeadingInstructionsBlock(tail, shiftedProtected, streaming)
         }?.let { return it }
         stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
-            stripLeadingDelimiterOrCommentBlock(tail, streaming)
+            stripLeadingDelimiterOrCommentBlock(tail, role, streaming)
         }?.let { return it }
-        stripTrailingChatMl(text, streaming, alreadyStripped)?.let { return it }
-        stripTrailingXmlEnvelope(text, protectedRanges, streaming)?.let { return it }
+        stripTrailingChatMl(text, role, streaming, alreadyStripped)?.let { return it }
         stripTrailingBracketEnvelope(text, protectedRanges)?.let { return it }
         stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
             stripLeadingMachineSkillSection(tail)
@@ -1179,11 +1388,15 @@ object ContextInjectionFilter {
         return null
     }
 
-    private fun stripLeadingDelimiterOrCommentBlock(text: String, streaming: Boolean): String? {
+    private fun stripLeadingDelimiterOrCommentBlock(
+        text: String,
+        role: SenderRole,
+        streaming: Boolean,
+    ): String? {
         EXTERNAL_DELIMITER_START_REGEX.find(text)?.takeIf { it.range.first == 0 }?.let {
             return text.substring(it.range.last + 1)
         }
-        if (streaming && EXTERNAL_DELIMITER_UNCLOSED_REGEX.matchesAt(text, 0)) {
+        if ((streaming || role == SenderRole.ASSISTANT) && EXTERNAL_DELIMITER_UNCLOSED_REGEX.matchesAt(text, 0)) {
             return ""
         }
         val bannerMatch = BANNER_BEGIN_REGEX.find(text)
@@ -1222,8 +1435,13 @@ object ContextInjectionFilter {
         return null
     }
 
-    private fun stripTrailingChatMl(text: String, streaming: Boolean, alreadyStripped: Boolean): String? {
-        if (streaming) {
+    private fun stripTrailingChatMl(
+        text: String,
+        role: SenderRole,
+        streaming: Boolean,
+        alreadyStripped: Boolean,
+    ): String? {
+        if (streaming || role == SenderRole.ASSISTANT) {
             CHATML_TRAILING_OPEN_REGEX.find(text)?.let {
                 return text.substring(0, it.range.first)
             }
@@ -1247,7 +1465,12 @@ object ContextInjectionFilter {
         return null
     }
 
-    private fun stripLeadingXmlEnvelope(text: String, protectedRanges: List<IntRange>, streaming: Boolean): String? {
+    private fun stripLeadingXmlEnvelope(
+        text: String,
+        protectedRanges: List<IntRange>,
+        role: SenderRole,
+        streaming: Boolean,
+    ): String? {
         val open = parseOpenTagAt(text, 0) ?: return null
         if (!isContextEnvelopeTag(open.tagName)) return null
         if (open.selfClosing) {
@@ -1257,7 +1480,7 @@ object ContextInjectionFilter {
         if (closeEnd >= 0) {
             return text.substring(closeEnd)
         }
-        if (streaming) {
+        if (shouldStripUnclosedEnvelope(text, 0, open, role, streaming)) {
             return ""
         }
         return null
@@ -1266,6 +1489,7 @@ object ContextInjectionFilter {
     private fun stripTrailingXmlEnvelope(
         text: String,
         protectedRanges: List<IntRange>,
+        role: SenderRole,
         streaming: Boolean,
     ): String? {
         // 情况 A：文本末尾紧跟闭合标签 </tag>
@@ -1282,18 +1506,21 @@ object ContextInjectionFilter {
             }
         }
 
-        // 情况 B：流式传输状态下末尾存在未闭合的上下文注入信封（尚未收到 </tag>）
-        if (streaming) {
-            val unclosedStart = findTrailingUnclosedEnvelopeStart(text, protectedRanges)
-            if (unclosedStart >= 0) {
-                return text.substring(0, unclosedStart)
-            }
+        // 情况 B：流式传输或助手终态回复在严格根上下文信封内被截断至末尾（尚未收到 </tag>）
+        val unclosedStart = findTrailingUnclosedEnvelopeStart(text, protectedRanges, role, streaming)
+        if (unclosedStart >= 0) {
+            return text.substring(0, unclosedStart)
         }
 
         return null
     }
 
-    private fun findTrailingUnclosedEnvelopeStart(text: String, protectedRanges: List<IntRange>): Int {
+    private fun findTrailingUnclosedEnvelopeStart(
+        text: String,
+        protectedRanges: List<IntRange>,
+        role: SenderRole,
+        streaming: Boolean,
+    ): Int {
         var idx = text.length - 1
         while (idx >= 0) {
             val lt = text.lastIndexOf('<', idx)
@@ -1302,8 +1529,7 @@ object ContextInjectionFilter {
                 val open = parseOpenTagAt(text, lt)
                 if (open != null && !open.selfClosing && isContextEnvelopeTag(open.tagName)) {
                     val closeEnd = findMatchingXmlCloseEnd(text, lt, open.tagName, protectedRanges)
-                    if (closeEnd < 0) {
-                        // 确保该未闭合标签属于尾部边界：之前要么紧接空白，要么之前属于正文后直接续流式标签
+                    if (closeEnd < 0 && shouldStripUnclosedEnvelope(text, lt, open, role, streaming)) {
                         return lt
                     }
                 }
@@ -1311,6 +1537,41 @@ object ContextInjectionFilter {
             idx = lt - 1
         }
         return -1
+    }
+
+    private fun shouldStripUnclosedEnvelope(
+        text: String,
+        tagStart: Int,
+        open: ParsedOpenTag,
+        role: SenderRole,
+        streaming: Boolean,
+    ): Boolean {
+        if (streaming) return true
+        if (role != SenderRole.ASSISTANT) return false
+        if (!isStrictRootContextTag(open.tagName)) return false
+        return !looksLikeInlineTagMentionInProse(text, tagStart, open.endExclusive)
+    }
+
+    private fun isStrictRootContextTag(tagName: String): Boolean {
+        val normalized = normalizeTagName(tagName)
+        if (normalized in COMPLETED_UNCLOSED_ROOT_CONTEXT_TAGS) return true
+        val parts = normalized.split('_', ':', '-').filter { it.isNotEmpty() }
+        if (parts.size < 2) return false
+        return parts.any { it in STRICT_UNCLOSED_QUALIFIERS } && parts.any { it in STRICT_UNCLOSED_NOUNS }
+    }
+
+    private fun looksLikeInlineTagMentionInProse(text: String, tagStart: Int, afterTagIndex: Int): Boolean {
+        val hasLeadingInlineSpace = tagStart > 0 && text[tagStart - 1] != '\n' && text[tagStart - 1].isWhitespace()
+        if (!hasLeadingInlineSpace) return false
+        val after = text.substring(afterTagIndex)
+        if ('\n' in after) return false
+        if (after.isEmpty()) return true
+        if (!after[0].isWhitespace()) return false
+        val trimmedAfter = after.trim()
+        if (trimmedAfter.isEmpty()) return true
+        if (trimmedAfter.startsWith('<')) return false
+        if (trimmedAfter.endsWith('?') || trimmedAfter.endsWith('？')) return true
+        return !trimmedAfter[0].isUpperCase()
     }
 
     private fun trimTrailingPartialTagForStreaming(text: String, protectedRanges: List<IntRange>): String {
@@ -1571,61 +1832,45 @@ object ContextInjectionFilter {
         return keys.size >= 3 && keys.any { it in TEMPORAL_OR_ENV_ANCHOR_KEYS }
     }
 
-    private fun stripUnambiguousTelemetryLines(text: String, protectedRanges: List<IntRange>): String {
+    private fun findUnambiguousTelemetryLineRanges(text: String, protectedRanges: List<IntRange>): List<IntRange> {
         val matches = BROWSER_TIMEZONE_LINE_REGEX.findAll(text).toList()
-        if (matches.isEmpty()) return text
-        val builder = StringBuilder(text.length)
-        var lastCursor = 0
-        var changed = false
-        for (match in matches) {
-            if (isProtected(match.range.first, protectedRanges)) continue
-            builder.append(text, lastCursor, match.range.first)
-            lastCursor = match.range.last + 1
-            changed = true
+        if (matches.isEmpty()) return emptyList()
+        return matches.mapNotNull { match ->
+            if (isProtected(match.range.first, protectedRanges)) null else match.range
         }
-        if (!changed) return text
-        builder.append(text, lastCursor, text.length)
-        return builder.toString()
     }
 
-    private fun stripMidAssistantStrictTags(text: String, protectedRanges: List<IntRange>): String {
-        val builder = StringBuilder(text.length)
+    private fun findMidAssistantStrictTagRanges(text: String, protectedRanges: List<IntRange>): List<IntRange> {
+        val removed = mutableListOf<IntRange>()
         var cursor = 0
-        var changed = false
         while (cursor < text.length) {
             val lt = text.indexOf('<', cursor)
-            if (lt < 0) {
-                builder.append(text, cursor, text.length)
-                break
-            }
+            if (lt < 0) break
             if (!isProtected(lt, protectedRanges)) {
                 val open = parseOpenTagAt(text, lt)
                 if (open != null && !isMixedPascalCaseUiTag(open.tagName)) {
                     val normalized = normalizeTagName(open.tagName)
                     if (normalized in MID_ASSISTANT_STRICT_INJECTION_TAGS) {
                         if (open.selfClosing) {
-                            builder.append(text, cursor, lt)
+                            removed += lt until open.endExclusive
                             cursor = open.endExclusive
-                            changed = true
                             continue
                         }
                         val closeEnd = findMatchingXmlCloseEnd(text, lt, open.tagName, protectedRanges)
                         if (closeEnd >= 0) {
-                            builder.append(text, cursor, lt)
+                            removed += lt until closeEnd
                             cursor = closeEnd
-                            changed = true
                             continue
                         }
                     }
                 }
             }
-            builder.append(text, cursor, lt + 1)
             cursor = lt + 1
         }
-        return if (changed) builder.toString() else text
+        return removed
     }
 
-    private fun unwrapSingleBodyContainer(text: String, streaming: Boolean): String {
+    private fun unwrapSingleBodyContainerRange(text: String, streaming: Boolean): IntRange? {
         val open = parseOpenTagAt(text, 0)
         if (open != null && !open.selfClosing) {
             val normalized = normalizeTagName(open.tagName)
@@ -1634,23 +1879,23 @@ object ContextInjectionFilter {
                 val closeEnd = findMatchingXmlCloseEnd(text, 0, open.tagName, protectedRanges)
                 if (closeEnd == text.length) {
                     val closeStart = text.lastIndexOf("</", ignoreCase = true)
-                    if (closeStart > open.endExclusive) {
-                        return text.substring(open.endExclusive, closeStart)
+                    if (closeStart >= open.endExclusive) {
+                        return open.endExclusive until closeStart
                     }
                 } else if (closeEnd < 0 && streaming) {
-                    return text.substring(open.endExclusive)
+                    return open.endExclusive until text.length
                 }
             }
         }
         val bracketHeader = Regex("(?im)^\\[(?:User Message|Actual User Input|Assistant Response)\\]\\s*(?:\\r?\\n|$)").find(text)
         if (bracketHeader != null && bracketHeader.range.first == 0) {
-            return text.substring(bracketHeader.range.last + 1)
+            return (bracketHeader.range.last + 1) until text.length
         }
         val markdownHeader = Regex("(?im)^#{1,3}\\s*(?:User Message|Actual User Input|User Prompt)\\s*(?:\\r?\\n|$)").find(text)
         if (markdownHeader != null && markdownHeader.range.first == 0) {
-            return text.substring(markdownHeader.range.last + 1)
+            return (markdownHeader.range.last + 1) until text.length
         }
-        return text
+        return null
     }
 
     private fun stripTrailingParagraphBlock(

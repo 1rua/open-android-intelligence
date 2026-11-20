@@ -1,7 +1,10 @@
 package com.openandroidintelligence.conversation.data.remote
 
+import com.openandroidintelligence.conversation.model.ClientMessageId
 import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.MessagePart
+import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
 import com.openandroidintelligence.conversation.remote.AgentEndpoint
@@ -252,5 +255,64 @@ class CrossAgentContextInjectionProjectionTest {
         // 通过 row 提取验证摘要已净化
         val page = carrier.sessions(workspace, PageRequest())
         assertEquals("查看异常堆栈", page.items.single().title)
+    }
+
+    @Test
+    fun `user别名echo可绑定并合并本地发送原子且剥离注入后思考块偏移同步重算与终态未闭合信封剥离`() {
+        val projection = RemoteTimelineProjection(local)
+        val gen = "gen-alias"
+        projection.beginTurn(gen)
+        val clientId = ClientMessageId("cli-alias-1")
+        projection.bindUserRequest(gen, clientId)
+
+        // 1. 后端回传 sender = "human" 的用户回声，必须归一为 user 并成功关联 clientMessageId，mergeLocalSendAtoms 不产生重复行
+        projection.accept(
+            event(
+                seq = 200,
+                kind = "user/message",
+                data = obj(
+                    "turnId" to gen,
+                    "message" to obj(
+                        "id" to "u-human",
+                        "sender" to "human",
+                        "text" to "<environment_context><cwd>/repo</cwd></environment_context>\n真实用户请求",
+                    ),
+                ),
+            ),
+        )
+        val echoed = projection.rows.getValue("u-human")
+        assertEquals("user", echoed.sender)
+        assertEquals(clientId, echoed.clientMessageId)
+        assertEquals("真实用户请求", textOf(echoed.parts))
+        val merged = mergeLocalSendAtoms(
+            remote = listOf(echoed),
+            atoms = listOf(LocalSendAtom(ConversationId(local), clientId, listOf(MessagePart.Text("真实用户请求")), 10L)),
+        )
+        assertEquals(1, merged.size)
+        assertEquals("u-human", merged.single().id)
+
+        // 2. 助手消息在思考块之前含 <environment_context> 时，bodyOffset 必须基于净化后文本重算为 "第一步：".length，而不是原长度
+        projection.accept(
+            event(
+                seq = 201,
+                kind = "assistant/message",
+                data = obj(
+                    "turnId" to gen,
+                    "message" to obj(
+                        "id" to "a-reasoning-rebase",
+                        "role" to "model",
+                        "content" to listOf(
+                            obj("type" to "text", "text" to "<environment_context><cwd>/repo</cwd></environment_context>\n第一步："),
+                            obj("type" to "reasoning", "id" to "r-mid", "text" to "中间推理过程", "complete" to true),
+                            obj("type" to "text", "text" to "最终答案。<system-reminder>尾部截断未闭合提示词"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val rebasedRow = projection.rows.getValue("a-reasoning-rebase")
+        assertEquals("assistant", rebasedRow.sender)
+        assertEquals("第一步：最终答案。", textOf(rebasedRow.parts))
+        assertEquals("第一步：".length, rebasedRow.reasoning.single().bodyOffset)
     }
 }

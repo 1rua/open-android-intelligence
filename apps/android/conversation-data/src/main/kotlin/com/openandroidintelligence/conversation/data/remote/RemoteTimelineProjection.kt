@@ -87,7 +87,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     fun bindUserRequest(nativeGeneration: String, clientId: ClientMessageId): List<VerifiedConversationEvent> {
         val previous = userRequestsByGeneration.putIfAbsent(nativeGeneration, clientId)
         check(previous == null || previous == clientId) { "REMOTE_GENERATION_MISMATCH" }
-        val candidates = rows.values.filter { it.sender == "user" && it.generationId == nativeGeneration }
+        val candidates = rows.values.filter {
+            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.USER &&
+                it.generationId == nativeGeneration
+        }
         if (candidates.size > 1) ambiguousUserGenerations += nativeGeneration
         val row = candidates.singleOrNull()?.takeUnless { nativeGeneration in ambiguousUserGenerations }
             ?: return emptyList()
@@ -416,14 +419,27 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val rawCandidateParts = content?.let {
                 rawContentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead))
             } ?: (message.rawParts ?: message.parts)
+            val role = ContextInjectionFilter.contentSanitizationRole(message.sender)
+            val rawReasoning = content?.let { reasoning(it.json(), !completed) }
             val sanitized = ContextInjectionFilter.sanitizeParts(
                 parts = rawCandidateParts,
-                role = ContextInjectionFilter.contentSanitizationRole(message.sender),
+                role = role,
                 streaming = !completed,
+                reasoning = rawReasoning.orEmpty(),
             )
             val newParts = sanitized.parts
             val preservedRaw = message.rawParts ?: sanitized.rawParts
-            val newReasoning = content?.let { reasoning(it.json(), !completed) } ?: message.reasoning.map { if (completed) it.copy(complete = true) else it }
+            val newReasoning = if (rawReasoning != null) {
+                sanitized.reasoning
+            } else {
+                val completedReasoning = message.reasoning.map { if (completed) it.copy(complete = true) else it }
+                ContextInjectionFilter.rebaseReasoningOnProjection(
+                    message = message.copy(reasoning = completedReasoning),
+                    targetParts = newParts,
+                    role = role,
+                    streaming = !completed,
+                )
+            }
             val sanitizedText = newParts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
             val hasAttachments = newParts.any { it is MessagePart.Attachment }
             val hasSteps = message.executionSteps.isNotEmpty()
@@ -485,7 +501,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         messageGeneration: String? = generationId, messageTimestamp: Long = source.time): List<VerifiedConversationEvent> {
         val message = value.at("message") ?: value
         val metadataObj = message.at("metadata") ?: value.at("metadata")
-        // 显式保留协议层声明的发送者（含明确空字符串），防止将缺失或非对话发送者误默认归类为 assistant
+        // 显式保留协议层声明的发送者（含明确空字符串），并将 user/assistant 别名归一为标准角色，防止缺失发送者误默认归类为 assistant 或无法匹配本地原子
         val explicitSenderPresent = firstPresentText(
             message.text("sender"),
             message.text("role"),
@@ -496,7 +512,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             metadataObj?.text("role"),
             metadataObj?.text("sender"),
         )
-        val role = explicitSenderPresent ?: fallbackRole
+        val role = ContextInjectionFilter.canonicalSender(explicitSenderPresent ?: fallbackRole)
         val id = message.text("id") ?: seq?.let { "event-message:$it" } ?: throw RemoteSessionException("REMOTE_MESSAGE_ID_MISSING")
         if (persistentMessageSequence && seq != null && rowSequences[id]?.let { it > seq } == true) return emptyList()
         if (source.historical && source.historyRead == null && rowHistorical[id] == false) return emptyList()
@@ -547,15 +563,17 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             .ifEmpty {
                 message.text("text")?.let { raw -> listOf(MessagePart.Text(raw)) }.orEmpty()
             }
+        val rawReasoning = reasoning(blocks, streaming)
         val sanitizedResult = ContextInjectionFilter.sanitizeParts(
             parts = rawCandidateParts,
             role = ContextInjectionFilter.contentSanitizationRole(role),
             streaming = streaming,
+            reasoning = rawReasoning,
         )
         val parts = sanitizedResult.parts
         val preservedRawParts = sanitizedResult.rawParts
         val previous = rows[id]
-        val reasoningList = reasoning(blocks, streaming)
+        val reasoningList = sanitizedResult.reasoning
         val hasAttachments = parts.any { it is MessagePart.Attachment }
         val hasSteps = previous?.executionSteps?.isNotEmpty() == true
         val hasReasoning = reasoningList.isNotEmpty()

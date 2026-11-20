@@ -59,10 +59,16 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             }
         }
     }
+    private fun isUserSender(sender: String?): Boolean =
+        ContextInjectionFilter.classifySender(sender) == ContextInjectionFilter.SenderRole.USER
+
+    private fun isAssistantSender(sender: String?): Boolean =
+        ContextInjectionFilter.classifySender(sender) == ContextInjectionFilter.SenderRole.ASSISTANT
+
     init {
         documents.transaction {
             load()?.let { checkpoint ->
-                checkpoint.messages.filter { it.sender == "assistant" }.groupBy { it.conversationId?.value ?: checkpoint.threadId }
+                checkpoint.messages.filter { isAssistantSender(it.sender) }.groupBy { it.conversationId?.value ?: checkpoint.threadId }
                     .forEach { (id,rows) -> id?.let { saveTimeline(it,TimelinePage(rows,null)) } }
             }
         }
@@ -429,7 +435,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         val migrated=linkedMapOf<String,LinkedHashMap<ClientMessageId,LocalSendAtom>>()
         val legacy=linkedMapOf<String,LinkedHashMap<String,TimelineMessage>>()
         fun remember(atom: LocalSendAtom) { migrated.getOrPut(atom.conversationId.value) { linkedMapOf() }.putIfAbsent(atom.clientMessageId,atom) }
-        checkpoint.messages.filter { it.sender == "user" }.forEach { row ->
+        checkpoint.messages.filter { isUserSender(it.sender) }.forEach { row ->
             val conversationId=row.conversationId?.value ?: checkpoint.threadId ?: return@forEach
             val clientId=row.clientMessageId
             if (clientId == null) {
@@ -655,7 +661,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 (content.deletedAttachmentIds + mediaIds).distinct(),snapshotDeleted=true)
             enqueueMediaTransition(conversationId,messageId,null,content.deletedAttachmentIds + mediaIds,true)
             val clientId=existing?.clientMessageId ?: row?.clientMessageId
-            if ((existing != null || row?.sender == "user") && clientId != null) {
+            if ((existing != null || isUserSender(row?.sender)) && clientId != null) {
                 val deleted=(existing ?: LocalSendAtom(ConversationId(conversationId),clientId,emptyList(),row?.timestamp ?: 0L))
                     .identified(messageId,row?.batchId ?: existing?.batchId).copy(parts=emptyList(),snapshotDeleted=true)
                 saveSendAtoms(conversationId,atoms.filterNot { it.clientMessageId == clientId } + deleted)
@@ -693,7 +699,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             val content=contentRevision(id,row.id)
             if (content.snapshotDeleted) return@map row
             val atoms=loadSendAtoms(id)
-            val atom=atoms.firstOrNull { row.sender == "user" && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
+            val atom=atoms.firstOrNull { isUserSender(row.sender) && (it.messageId == row.id || (row.clientMessageId != null && it.clientMessageId == row.clientMessageId)) }
             val known=maxOf(content.revision,atom?.contentRevision ?: -1L)
             if (revision < known || (revision == known && content.tombstoned)) {
                 return@map baseline[row.id] ?: atom?.let { row.copy(parts=it.parts,contentRevision=it.contentRevision) } ?: row
@@ -893,7 +899,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 if (event.revision < (existing?.contentRevision ?: -1L) ||
                     (event.revision == existing?.tombstoneRevision)) return@let
                 val clientId=existing?.clientMessageId ?: event.message.clientMessageId
-                if (event.message.sender == "user" && clientId != null) {
+                if (isUserSender(event.message.sender) && clientId != null) {
                     val status=statusRevision(id,event.message.id)
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),clientId,event.message.parts,event.message.timestamp))
                         .identified(event.message.id,event.message.batchId ?: existing?.batchId).copy(
@@ -951,7 +957,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                     SavedMessageGeneration(id,it,generation,event.revision)
                 }) }
                 val baseline=timeline(id)
-                val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && it.sender == "user" }
+                val knownRow=baseline?.messages?.firstOrNull { it.id == event.messageId && isUserSender(it.sender) }
                 if (existing != null || knownRow != null) {
                     val atom=(existing ?: LocalSendAtom(ConversationId(id),event.clientMessageId,knownRow!!.parts,knownRow.timestamp))
                         .identified(event.messageId).copy(status=event.status,statusRevision=event.revision,errorCode=event.errorCode)

@@ -5674,9 +5674,15 @@ class WorkbenchController(
             visibility = message.visibility,
             messageType = message.messageType,
         )
+        val rebasedReasoning = ContextInjectionFilter.rebaseReasoningOnProjection(
+            message = message,
+            targetParts = sanitizedParts.parts,
+            role = ContextInjectionFilter.contentSanitizationRole(message.sender),
+            streaming = message.state == "STREAMING",
+        )
         val entry = TimelineEntry(
             key = message.id,
-            sender = message.sender,
+            sender = ContextInjectionFilter.canonicalSender(message.sender),
             text = displayText,
             isUser = isUserRole,
             timestamp = message.timestamp,
@@ -5700,7 +5706,7 @@ class WorkbenchController(
             executionSteps = message.executionSteps,
             localPlaceholder = message.localPlaceholder,
             presentation = presentationOf(message),
-            reasoning = message.reasoning,
+            reasoning = rebasedReasoning,
             isMeta = isInternalOrHidden,
         )
         if (cacheable) {

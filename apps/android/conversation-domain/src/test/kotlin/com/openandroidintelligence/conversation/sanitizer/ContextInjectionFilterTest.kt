@@ -1,10 +1,14 @@
 package com.openandroidintelligence.conversation.sanitizer
 
 import com.openandroidintelligence.conversation.model.AttachmentDraftId
+import com.openandroidintelligence.conversation.model.ClientMessageId
+import com.openandroidintelligence.conversation.model.ConversationId
+import com.openandroidintelligence.conversation.model.LocalSendAtom
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.model.MessageReasoning
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
+import com.openandroidintelligence.conversation.model.mergeLocalSendAtoms
 import com.openandroidintelligence.conversation.ports.TimelineMessage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -474,6 +478,109 @@ class ContextInjectionFilterTest {
             "真实回答内容",
             ContextInjectionFilter.sanitizeText(raw, ContextInjectionFilter.SenderRole.ASSISTANT, streaming = false),
         )
+    }
+
+    @Test
+    fun `助手终态回复与通知在严格根上下文信封内被截断时仍完整剥离且保留行内标签问答`() {
+        val role = ContextInjectionFilter.SenderRole.ASSISTANT
+        assertEquals(
+            "已完成排查",
+            ContextInjectionFilter.sanitizeText(
+                "已完成排查\n<system-reminder>内部规则尚未闭合就被截断",
+                role = role,
+                streaming = false,
+            ),
+        )
+        assertEquals(
+            "正在查询数据...",
+            ContextInjectionFilter.sanitizeText(
+                "正在查询数据... <system-reminder>Secret truncated rule",
+                role = role,
+                streaming = false,
+            ),
+        )
+        assertEquals(
+            "结果如下",
+            ContextInjectionFilter.sanitizeText(
+                "结果如下\n<environment_context>\n<cwd>/workspace</cwd>\n```json\n{\"k\":1",
+                role = role,
+                streaming = false,
+            ),
+        )
+        assertEquals(
+            "",
+            ContextInjectionFilter.sanitizeText(
+                "<system-reminder>仅包含未闭合系统提醒的终态文本",
+                role = role,
+                streaming = false,
+            ),
+        )
+        assertNull(
+            ContextInjectionFilter.filterNotificationPreview(
+                sender = "assistant",
+                rawText = "<system-reminder>truncated notification leak",
+            ),
+        )
+        // 行内普通提问包含未闭合标签名仍不得误杀
+        val question = "请问 <system-reminder> 和 <environment_context> 是什么标签？"
+        assertEquals(question, ContextInjectionFilter.sanitizeText(question, role = role, streaming = false))
+    }
+
+    @Test
+    fun `用户与助手别名归一及思考偏移随注入剥离准确重映射且不重复偏移`() {
+        assertEquals("user", ContextInjectionFilter.canonicalSender("human"))
+        assertEquals("user", ContextInjectionFilter.canonicalSender("end_user"))
+        assertEquals("user", ContextInjectionFilter.canonicalSender("client"))
+        assertEquals("assistant", ContextInjectionFilter.canonicalSender("model"))
+        assertEquals("assistant", ContextInjectionFilter.canonicalSender("agent"))
+        assertEquals("system", ContextInjectionFilter.canonicalSender("system"))
+        assertEquals("", ContextInjectionFilter.canonicalSender(""))
+
+        val atom = LocalSendAtom(
+            conversationId = ConversationId("c-alias"),
+            clientMessageId = ClientMessageId("cli-1"),
+            parts = listOf(MessagePart.Text("真实发送内容")),
+            timestamp = 100L,
+        )
+        val humanEcho = TimelineMessage(
+            id = "srv-1",
+            sender = "human",
+            parts = listOf(MessagePart.Text("真实发送内容")),
+            timestamp = 101L,
+            state = "CONFIRMED",
+            conversationId = ConversationId("c-alias"),
+            clientMessageId = ClientMessageId("cli-1"),
+        )
+        val merged = mergeLocalSendAtoms(listOf(humanEcho), listOf(atom))
+        assertEquals(1, merged.size)
+        assertEquals("srv-1", merged.single().id)
+        assertEquals("user", merged.single().sender)
+
+        val prefix = "<environment_context><cwd>/repo</cwd></environment_context>\n"
+        val rawCombined = "${prefix}第一步：完成分析。"
+        val rawOffsetAfterStep1 = prefix.length + "第一步：".length
+        val sanitized = ContextInjectionFilter.sanitizeParts(
+            parts = listOf(MessagePart.Text(rawCombined)),
+            role = ContextInjectionFilter.SenderRole.ASSISTANT,
+            streaming = false,
+            reasoning = listOf(MessageReasoning(id = "r1", text = "思考过程", bodyOffset = rawOffsetAfterStep1, complete = true)),
+        )
+        assertEquals("第一步：完成分析。", (sanitized.parts.single() as MessagePart.Text).value)
+        assertEquals("第一步：".length, sanitized.reasoning.single().bodyOffset)
+
+        // 对已经投影过的消息再次调用 projectMessage 绝不能发生二次偏移
+        val projectedOnce = ContextInjectionFilter.projectMessage(
+            TimelineMessage(
+                id = "a1",
+                sender = "model",
+                parts = sanitized.parts,
+                rawParts = sanitized.rawParts,
+                timestamp = 200L,
+                reasoning = sanitized.reasoning,
+            ),
+        )!!
+        assertEquals("assistant", projectedOnce.sender)
+        assertEquals("第一步：".length, projectedOnce.reasoning.single().bodyOffset)
     }
 
     private fun msg(
