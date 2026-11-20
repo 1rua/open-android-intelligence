@@ -6,6 +6,7 @@ import com.openandroidintelligence.conversation.data.remote.RemoteWorkspace
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.Loadable
+import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
@@ -70,6 +71,8 @@ class RemoteConnectionLifecycleTest {
             backgroundReconnectMaxDelayMillis = 120L,
         ),
         delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+        customScope: CoroutineScope = scope,
+        customAccount: FakeAccountConnection = account,
     ): RemoteRuntime {
         val audit = AndroidAuditStore(InMemoryAuditSink())
         grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
@@ -91,15 +94,45 @@ class RemoteConnectionLifecycleTest {
         )
         return RemoteRuntime(
             context = context,
-            scope = scope,
+            scope = customScope,
             pluginHost = host,
             grants = grants,
             confirmLocally = { _, _, _ -> false },
-            accountFactory = { account },
+            accountFactory = { customAccount },
             localDocumentKeyProvider = key,
             recoveryPolicy = policy,
             delayFn = delayFn,
         )
+    }
+
+    private suspend fun seedSavedWorkspaceWithCachedTimeline(
+        workspaceId: String = "one",
+        sessionId: String = "s1",
+        cachedText: String = "冷启动本地缓存回复",
+    ) {
+        val seedAccount = FakeAccountConnection().apply {
+            initialHistoryText = cachedText
+        }
+        val seedRoot = SupervisorJob()
+        val seedScope = CoroutineScope(seedRoot + Dispatchers.Unconfined)
+        val seedRuntime = buildRuntime(customScope = seedScope, customAccount = seedAccount)
+        try {
+            seedRuntime.restoreSessionIfAvailable().join()
+            val targetAgent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            seedRuntime.selectAgent(targetAgent).join()
+            val targetWs = seedRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == workspaceId }
+            seedRuntime.selectWorkspace(targetWs, initialThreadId = RemoteLocalIds.encode(sessionId)).join()
+            eventually {
+                val st = seedRuntime.controller.value?.state?.value ?: return@eventually false
+                val timeline = (st.timeline as? Loadable.Ready)?.value.orEmpty()
+                st.activeThreadId == RemoteLocalIds.encode(sessionId) &&
+                    (st.threads as? Loadable.Ready)?.value?.isNotEmpty() == true &&
+                    timeline.any { msg -> msg.text == cachedText }
+            }
+        } finally {
+            seedRuntime.closeRuntimeWithoutClearingCacheForTest()
+            seedRoot.cancelAndJoin()
+        }
     }
 
     private suspend fun eventually(check: () -> Boolean) = withTimeout(5_000) {
@@ -219,6 +252,278 @@ class RemoteConnectionLifecycleTest {
         assertTrue(refreshedTwo.any { it.title == "二号新增会话" })
     }
 
+    @Test
+    fun `冷启动命中本地缓存时首帧直达会话页展示缓存且宽限期内不弹离线横幅`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(cachedText = "冷启动本地缓存回复")
+        val firstConnectGate = CompletableDeferred<Unit>()
+        val graceDelayGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            connectGate = firstConnectGate
+            connectFailuresBeforeSuccess = 1
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val offlineConfirmedObserved = CopyOnWriteArrayList<Boolean>()
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 2_000L,
+                graceRetryAttempts = 2,
+                graceRetryDelayMillis = 30L,
+            ),
+            delayFn = { ms ->
+                if (ms == 30L) graceDelayGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val observer = scope.launch {
+            coldRuntime.agentConnection.collect { offlineConfirmedObserved += it.offlineConfirmed }
+        }
+        try {
+            // 第 0 帧立即直达会话页，不经过登录页，且尚未确认离线
+            val firstController = coldRuntime.controller.value
+            assertNotNull("命中缓存冷启动首帧必须立即挂载会话控制器", firstController)
+            assertEquals(AgentConnectionPhase.CONNECTING, coldRuntime.agentConnection.value.phase)
+            assertFalse("宽限期内严禁过早确认离线", coldRuntime.agentConnection.value.offlineConfirmed)
+
+            val firstThreads = (firstController!!.state.value.threads as? Loadable.Ready)?.value.orEmpty()
+            assertTrue("首帧应立即展示本地缓存会话列表", firstThreads.any { it.title == "一号会话" })
+            val firstMessages = (firstController.state.value.timeline as? Loadable.Ready)?.value.orEmpty()
+            assertTrue(
+                "首帧应立即展示本地缓存消息历史",
+                firstMessages.any { msg -> msg.text == "冷启动本地缓存回复" },
+            )
+
+            // 放行首次建链（失败一次）并卡在宽限重试等待中：仍不弹离线横幅
+            firstConnectGate.complete(Unit)
+            eventually { coldAccount.connectCalls >= 1 }
+            coldAccount.connectGate = null
+            assertFalse("宽限期内首连失败不应弹出离线横幅", coldRuntime.agentConnection.value.offlineConfirmed)
+            assertEquals(AgentConnectionPhase.CONNECTING, coldRuntime.agentConnection.value.phase)
+            assertFalse("整个宽限期尚未耗尽前从未出现过 offlineConfirmed=true", offlineConfirmedObserved.any { it })
+            graceDelayGate.complete(Unit)
+            eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED }
+        } finally {
+            firstConnectGate.complete(Unit)
+            graceDelayGate.complete(Unit)
+            observer.cancelAndJoin()
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `冷启动瞬时网络抖动在宽限期内重试成功时原地升级在线且不重建控制器`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(cachedText = "首帧已有缓存回复")
+        val coldAccount = FakeAccountConnection().apply {
+            connectFailuresBeforeSuccess = 1
+            initialHistoryText = "首帧已有缓存回复"
+            incrementalReplyText = "在线恢复同步的新增消息"
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val offlineConfirmedObserved = CopyOnWriteArrayList<Boolean>()
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 2_000L,
+                graceRetryAttempts = 2,
+                graceRetryDelayMillis = 15L,
+            ),
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val initialController = coldRuntime.controller.value!!
+        val controllerInstances = CopyOnWriteArrayList<WorkbenchController?>()
+        val observer = scope.launch {
+            launch { coldRuntime.agentConnection.collect { offlineConfirmedObserved += it.offlineConfirmed } }
+            launch { coldRuntime.controller.collect { controllerInstances += it } }
+        }
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    initialController.state.value.isOnline
+            }
+            assertSame("在线升级必须原地复用同一个 WorkbenchController", initialController, coldRuntime.controller.value)
+            assertTrue("全程不应销毁或清空 controller", controllerInstances.all { it === initialController })
+            assertFalse("宽限期内恢复成功全程不应弹出离线横幅", offlineConfirmedObserved.any { it })
+            assertFalse("瞬时抖动后不应置位 offlineConfirmed", coldRuntime.agentConnection.value.offlineConfirmed)
+            eventually {
+                val timeline = (initialController.state.value.timeline as? Loadable.Ready)?.value.orEmpty()
+                timeline.any { msg -> msg.text == "在线恢复同步的新增消息" }
+            }
+        } finally {
+            observer.cancelAndJoin()
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `冷启动宽限期耗尽降级离线后由后台静默重连恢复并原地热升级`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline()
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 200L,
+                graceRetryAttempts = 1,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 40L,
+                backgroundReconnectMaxDelayMillis = 80L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 40L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val initialController = coldRuntime.controller.value!!
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    coldRuntime.agentConnection.value.offlineConfirmed
+            }
+            assertSame("降级离线时不得销毁控制器", initialController, coldRuntime.controller.value)
+            assertFalse(initialController.state.value.isOnline)
+
+            // 远端恢复可达，放行后台静默重连轮次
+            coldAccount.nextConnectError = null
+            backgroundReconnectGate.complete(Unit)
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    !coldRuntime.agentConnection.value.offlineConfirmed &&
+                    initialController.state.value.isOnline
+            }
+            assertSame("后台重连成功必须原地升级同一个控制器", initialController, coldRuntime.controller.value)
+        } finally {
+            backgroundReconnectGate.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `离线态点击重试全程停留在会话页不踢回登录页且防重复触发`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline()
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 100L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 60_000L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val beforeController = coldRuntime.controller.value!!
+        val reconnectGate = CompletableDeferred<Unit>()
+        val controllerHistory = CopyOnWriteArrayList<WorkbenchController?>()
+        val collector = scope.launch {
+            coldRuntime.controller.collect { controllerHistory += it }
+        }
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    coldRuntime.agentConnection.value.offlineConfirmed
+            }
+
+            // 1) 重连进行中：展示 reconnectingInPlace 且防重复点击
+            coldAccount.connectGate = reconnectGate
+            val callsBeforeRetry = coldAccount.connectCalls
+            val firstRetryJob = coldRuntime.reconnectInPlace()
+            assertTrue("重连进行中应置位 reconnectingInPlace", coldRuntime.agentConnection.value.reconnectingInPlace)
+            assertEquals(AgentConnectionPhase.RECONNECTING, coldRuntime.agentConnection.value.phase)
+            eventually { coldAccount.connectCalls == callsBeforeRetry + 1 }
+
+            val secondRetryJob = coldRuntime.reconnectInPlace()
+            assertSame("防重入应复用同一重连任务而不重复发起", firstRetryJob, secondRetryJob)
+
+            // 放行但依然失败：停留在会话页，不回登录页
+            reconnectGate.complete(Unit)
+            firstRetryJob.join()
+            assertEquals("单次重连失败仅应发起 1 次建链请求", callsBeforeRetry + 1, coldAccount.connectCalls)
+            assertEquals(AgentConnectionPhase.OFFLINE, coldRuntime.agentConnection.value.phase)
+            assertTrue(coldRuntime.agentConnection.value.offlineConfirmed)
+            assertFalse(coldRuntime.agentConnection.value.reconnectingInPlace)
+            assertSame("重连失败后必须保留原工作台控制器", beforeController, coldRuntime.controller.value)
+
+            // 2) 恢复网络并再次就地重试：成功升级在线并收起离线标志
+            coldAccount.connectGate = null
+            coldAccount.nextConnectError = null
+            coldRuntime.reconnectInPlace().join()
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    !coldRuntime.agentConnection.value.offlineConfirmed &&
+                    beforeController.state.value.isOnline
+            }
+            assertSame("就地重连成功不能替换控制器实例", beforeController, coldRuntime.controller.value)
+            assertTrue("整个离线重连恢复过程控制器从未变为 null（严禁踢回登录页）", controllerHistory.all { it === beforeController })
+        } finally {
+            reconnectGate.complete(Unit)
+            backgroundReconnectGate.complete(Unit)
+            collector.cancelAndJoin()
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `离线重连仅当服务端明确返回凭据撤销时才退出到登录态并保留错误码`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline()
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 100L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 60_000L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    coldRuntime.agentConnection.value.offlineConfirmed
+            }
+
+            coldAccount.nextConnectError = RemoteRpcException("DEVICE_REVOKED")
+            coldRuntime.reconnectInPlace().join()
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.AUTH_REVOKED &&
+                    coldRuntime.controller.value == null
+            }
+            assertEquals("DEVICE_REVOKED", coldRuntime.agentConnection.value.errorCode)
+        } finally {
+            backgroundReconnectGate.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
     private inner class FakeAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
@@ -228,6 +533,9 @@ class RemoteConnectionLifecycleTest {
         var connectCalls = 0
         var connectFailuresBeforeSuccess = 0
         var nextConnectError: Exception? = null
+        var connectGate: CompletableDeferred<Unit>? = null
+        var initialHistoryText: String = "冷启动本地缓存回复"
+        var incrementalReplyText: String? = null
         var availableHosts = listOf(
             RemoteHostDevice("host-1", "主力电脑", "linux", "membership", true),
             RemoteHostDevice("host-2", "工作站", "linux", "membership", true),
@@ -240,21 +548,20 @@ class RemoteConnectionLifecycleTest {
         override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
             error("测试不走密码登录")
 
-        override suspend fun restore(): RemoteActiveAccount? {
-            nextConnectError?.let { throw it }
-            return restorableAccount?.also { account.value = it }
-        }
+        override suspend fun restore(): RemoteActiveAccount? =
+            restorableAccount?.also { account.value = it }
 
         override suspend fun listHosts(): List<RemoteHostDevice> = availableHosts
 
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
             connectCalls++
+            connectGate?.await()
             if (connectFailuresBeforeSuccess > 0) {
                 connectFailuresBeforeSuccess--
                 throw RemoteRpcException("NETWORK_UNREACHABLE")
             }
             nextConnectError?.let { throw it }
-            return FakeRpcChannel(channels.size + 1, hostDeviceId).also { ch ->
+            return FakeRpcChannel(channels.size + 1, hostDeviceId, this).also { ch ->
                 channels += ch
                 peers[ch.scope.connectionId] = AuthenticatedRemotePeer(
                     ch.scope,
@@ -278,7 +585,11 @@ class RemoteConnectionLifecycleTest {
         }
     }
 
-    private inner class FakeRpcChannel(generation: Int, hostDeviceId: String) : RemoteRpcChannel {
+    private inner class FakeRpcChannel(
+        generation: Int,
+        hostDeviceId: String,
+        private val owner: FakeAccountConnection,
+    ) : RemoteRpcChannel {
         override val scope = RemoteRpcConnectionScope(
             origin,
             accountId,
@@ -315,7 +626,7 @@ class RemoteConnectionLifecycleTest {
                     val endpoint = JsonFields.string(params, "endpoint")
                     val streamId = JsonFields.string(params, "streamId")
                     if (endpoint == "workspace/follow") {
-                        val extraIds = account.extraWorkspaceTwoSessions.map { it["sessionId"] as String }
+                        val extraIds = owner.extraWorkspaceTwoSessions.map { it["sessionId"] as String }
                         events.emit(
                             RemoteRpcEvent(
                                 "harness.remote.frame",
@@ -346,10 +657,46 @@ class RemoteConnectionLifecycleTest {
                                 "items" to (listOf(
                                     mapOf("sessionId" to "s1", "title" to "一号会话", "updatedAt" to 100),
                                     mapOf("sessionId" to "s2", "title" to "二号会话", "updatedAt" to 200),
-                                ) + account.extraWorkspaceTwoSessions)
+                                ) + owner.extraWorkspaceTwoSessions)
                             )
                         )
-                        "session/page" -> Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false))
+                        "session/page" -> {
+                            val records = buildList {
+                                add(
+                                    mapOf(
+                                        "type" to "event",
+                                        "event" to mapOf(
+                                            "seq" to 1,
+                                            "type" to "assistant/message",
+                                            "data" to mapOf(
+                                                "message" to mapOf(
+                                                    "id" to "seed-msg-1",
+                                                    "content" to listOf(mapOf("type" to "text", "text" to owner.initialHistoryText)),
+                                                )
+                                            ),
+                                        ),
+                                    )
+                                )
+                                owner.incrementalReplyText?.let { inc ->
+                                    add(
+                                        mapOf(
+                                            "type" to "event",
+                                            "event" to mapOf(
+                                                "seq" to 2,
+                                                "type" to "assistant/message",
+                                                "data" to mapOf(
+                                                    "message" to mapOf(
+                                                        "id" to "inc-msg-2",
+                                                        "content" to listOf(mapOf("type" to "text", "text" to inc)),
+                                                    )
+                                                ),
+                                            ),
+                                        )
+                                    )
+                                }
+                            }
+                            Json.of(mapOf("cursor" to records.size, "records" to records, "hasMore" to false))
+                        }
                         "session/models" -> Json.of(mapOf("groups" to emptyList<Any>()))
                         "commands/list" -> Json.of(mapOf("items" to emptyList<Any>()))
                         else -> Json.of(emptyMap<String, Any>())
@@ -384,7 +731,7 @@ class RemoteConnectionLifecycleTest {
 
         override suspend fun close() {
             closed = true
-            account.releasePeer(scope.connectionId)
+            owner.releasePeer(scope.connectionId)
         }
     }
 }

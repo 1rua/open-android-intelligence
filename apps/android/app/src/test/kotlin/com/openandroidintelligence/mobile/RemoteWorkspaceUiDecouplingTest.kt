@@ -4,6 +4,9 @@ import android.app.Application
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -186,6 +189,78 @@ class RemoteWorkspaceUiDecouplingTest {
                 runtime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED
         }
         assertNull(runtime.agentConnection.value.errorCode)
+    }
+
+    @Test
+    fun `离线横幅就地重连期间显示原位加载并防重复点击`() {
+        var offline by mutableStateOf(true)
+        var reconnecting by mutableStateOf(true)
+        var retries = 0
+
+        compose.setContent {
+            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
+                RemoteWorkbenchNotices(
+                    offline = offline,
+                    error = null,
+                    onRetry = { retries++ },
+                    onDismiss = {},
+                    reconnecting = reconnecting,
+                )
+            }
+        }
+
+        compose.onNodeWithText(context.getString(UiR.string.conn_status_reconnecting_in_place)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(UiR.string.conn_action_reconnect)).assertIsNotEnabled()
+        compose.onNodeWithText(context.getString(UiR.string.conn_action_reconnect)).performClick()
+        compose.runOnIdle { assertEquals("重连进行中必须防重复点击", 0, retries) }
+
+        compose.runOnIdle { reconnecting = false }
+        compose.onNodeWithText(context.getString(UiR.string.conn_status_offline_mode_hint)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(UiR.string.conn_action_reconnect)).assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, retries); offline = false }
+        compose.onNodeWithText(context.getString(UiR.string.conn_status_offline_mode_hint)).assertDoesNotExist()
+    }
+
+    @Test
+    fun `凭据撤销时展示重新登录说明且宽限期不弹出离线横幅`() {
+        var signedIn by mutableStateOf(false)
+        var error by mutableStateOf<String?>("DEVICE_REVOKED")
+        var offlineBannerVisible by mutableStateOf(false)
+
+        compose.setContent {
+            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                    if (!signedIn) {
+                        RemoteLoginScreen(
+                            busy = false,
+                            connected = false,
+                            signedIn = false,
+                            initialOrigin = origin,
+                            error = error,
+                            onOpenSettings = {},
+                            onLogin = { _, _, _ -> },
+                            onScanPairing = {},
+                            onOAuthLogin = {},
+                        )
+                    } else {
+                        RemoteWorkbenchNotices(
+                            offline = offlineBannerVisible,
+                            error = null,
+                            onRetry = {},
+                            onDismiss = {},
+                        )
+                    }
+                }
+            }
+        }
+
+        // 凭据被明确撤销：停留在登录页，呈现清晰中文说明与登录表单
+        compose.onNodeWithText(context.getString(UiR.string.conn_toast_session_revoked)).assertIsDisplayed()
+        compose.onNodeWithTag("remote-login-card").assertIsDisplayed()
+
+        // 宽限期内：不显示离线横幅
+        compose.runOnIdle { signedIn = true; error = null; offlineBannerVisible = false }
+        compose.onNodeWithText(context.getString(UiR.string.conn_status_offline_mode_hint)).assertDoesNotExist()
     }
 
     private inner class FakeUiAccountConnection : RemoteAccountConnection {

@@ -23,6 +23,7 @@ import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
@@ -270,12 +271,12 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                         val current = controller
                         if (!onWorkbench || current == null) {
                             RemoteLoginSettingsHost(
-                                busy = connection.busy || loginEntryState.busy,
+                                busy = agentConn.busy || loginEntryState.busy,
                                 connected = remoteWorkbenchConnected(controllerState, clientConnection,
-                                    connection.busy || loginEntryState.busy),
-                                signedIn = connection.account != null,
+                                    agentConn.busy || loginEntryState.busy),
+                                signedIn = agentConn.account != null && agentConn.phase != AgentConnectionPhase.AUTH_REVOKED,
                                 initialOrigin = runtime.loginOrigin(),
-                                error = loginEntryState.errorCode ?: connection.errorCode,
+                                error = loginEntryState.errorCode ?: agentConn.errorCode,
                                 settingsOpen = settings && controller == null && displayedNativeUi == null,
                                 onSettingsOpenChange = { settings = it },
                                 onLogin = { origin, account, secret -> runtime.login(origin, account, secret) },
@@ -330,13 +331,18 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                     },
                                 )
                             }
-                            var dismissedError by remember(connection.errorCode) { mutableStateOf(false) }
-                            val retryConnection = {
-                                connection.endpoints.firstOrNull { it.endpoint.key == connection.selected }?.let { runtime.select(it) }
-                                    ?: runtime.refreshHosts()
-                                Unit
+                            var dismissedError by remember(agentConn.errorCode) { mutableStateOf(false) }
+                            val mappedHealth = when (agentConn.phase) {
+                                AgentConnectionPhase.CONNECTING -> StreamHealth.CONNECTING
+                                AgentConnectionPhase.RECONNECTING -> StreamHealth.RECONNECTING
+                                AgentConnectionPhase.OFFLINE, AgentConnectionPhase.AUTH_REVOKED -> StreamHealth.FAILED
+                                AgentConnectionPhase.CONNECTED -> if (workbenchState.isOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
+                                AgentConnectionPhase.DISCONNECTED -> if (!workbenchState.isOnline) StreamHealth.FAILED else null
                             }
-                            WorkbenchScreen(current, connection.selected?.origin?.value.orEmpty(),
+                            val offlineBannerVisible = agentConn.offlineConfirmed &&
+                                (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
+                            val bannerError = agentConn.errorCode.takeUnless { dismissedError || offlineBannerVisible }
+                            WorkbenchScreen(current, (workspaceCtx.activeWorkspace ?: connection.selected)?.origin?.value.orEmpty(),
                                 onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
                                 onPickDocument = picks.document,
                                 onVoiceInput = startVoiceInput, recording = activeRecording,
@@ -344,9 +350,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 isDarkTheme = dark,
                                 onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
                                 onLogout = { runtime.logout() }, onPasteImages = picks.paste,
-                                accountName = connection.account?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
+                                accountName = (agentConn.account ?: connection.account)?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
                                 accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
-                                connectionHealth = if (!workbenchState.isOnline) com.openandroidintelligence.conversation.model.StreamHealth.FAILED else null,
+                                connectionHealth = mappedHealth,
                                 pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
                                     runtime.connectedAccountId) { settings = true } },
                                 settingsOpen = settings && controller != null && displayedNativeUi == null,
@@ -354,9 +360,16 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) },
                                 workspaceMenu = workspaceMenu,
                                 header = {
-                                    RemoteWorkbenchNotices(offline = !workbenchState.isOnline,
-                                        error = connection.errorCode.takeUnless { dismissedError },
-                                        onRetry = retryConnection, onDismiss = { dismissedError = true })
+                                    RemoteWorkbenchNotices(
+                                        offline = offlineBannerVisible,
+                                        error = bannerError,
+                                        onRetry = { runtime.reconnectInPlace() },
+                                        onDismiss = {
+                                            dismissedError = true
+                                            runtime.dismissConnectionError()
+                                        },
+                                        reconnecting = agentConn.reconnectingInPlace,
+                                    )
                                     RemoteModelSelector(runtime)
                                 })
                         }

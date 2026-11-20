@@ -1997,6 +1997,25 @@ class RemoteRuntime(
         }
     }
 
+    /** 仅供单元测试模拟进程终止重启（停止全部协程并关闭加密存储句柄，但保留本地缓存与选定配置）。 */
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun closeRuntimeWithoutClearingCacheForTest() {
+        switchGeneration.incrementAndGet()
+        startupRecoveryJob?.cancelAndJoin()
+        reconnectLoopJob?.cancelAndJoin()
+        hydrationJob?.cancelAndJoin()
+        activeOperationJob?.cancelAndJoin()
+        selection.withLock {
+            retireAllAndClearController()
+            val retired = synchronized(registrationLock) { registered.values.toList().also { registered.clear() } }
+            closeRemoteConnectionResources(
+                *retired.map { old -> { old.registration.close() } }.toTypedArray(),
+                { nativeConversationNotifications.leave() },
+            )
+            coldStartBootstrapped = false
+        }
+    }
+
     private suspend fun handleAuthRevoked(code: String) {
         switchGeneration.incrementAndGet()
         reconnectLoopJob?.cancel()
