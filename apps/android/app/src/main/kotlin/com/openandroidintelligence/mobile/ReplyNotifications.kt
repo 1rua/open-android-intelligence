@@ -21,6 +21,7 @@ import androidx.core.content.ContextCompat
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.security.MessageDigest
@@ -187,7 +188,8 @@ internal class AndroidReplyNotificationPublisher(
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
         // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
-        val title = session.title.ifBlank { context.getString(UiR.string.notif_conv_default_title) }
+        val title = ContextInjectionFilter.sanitizeSummaryText(session.title)
+            .ifBlank { context.getString(UiR.string.notif_conv_default_title) }
         val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
@@ -409,8 +411,10 @@ internal class ReplyCompletionObserver(
     }
 
     private fun hasAssistantReply(decoded: VerifiedConversationEvent): Boolean {
-        val message = (decoded as? VerifiedConversationEvent.TimelineUpsert)?.message ?: return false
-        return message.sender == "assistant" && message.id.isNotBlank() && message.parts.any {
+        val raw = (decoded as? VerifiedConversationEvent.TimelineUpsert)?.message ?: return false
+        if (ContextInjectionFilter.classifySender(raw.sender) != ContextInjectionFilter.SenderRole.ASSISTANT) return false
+        val projected = ContextInjectionFilter.projectMessage(raw)?.takeUnless { it.isDeleted } ?: return false
+        return projected.id.isNotBlank() && projected.parts.any {
             it is MessagePart.Attachment || it is MessagePart.Text && it.value.isNotBlank()
         }
     }

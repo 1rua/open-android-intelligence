@@ -14,6 +14,7 @@ import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.state.StreamPresentationMetadata
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
@@ -332,9 +333,20 @@ private fun parseState(root: JSONObject): AssistantStateDto = AssistantStateDto(
     handoff = root.optJSONObject("handoff")?.toHandoffDto(),
 )
 
-/** 把状态里的时间线投影还原为界面使用的 [TimelineEntry]。 */
+/** 把状态里的时间线投影还原为界面使用的 [TimelineEntry]，并经过统一上下文过滤管线兜底。 */
 fun decodeTimeline(dto: AssistantStateDto): List<TimelineEntry> =
-    dto.timeline.map { it.toTimelineEntry() }
+    dto.timeline.map { it.toTimelineEntry() }.filterNot { entry ->
+        val isLocalSynthetic = entry.approval != null || entry.systemThreadId != null || entry.executionFact
+        ContextInjectionFilter.shouldDropMessage(
+            text = entry.text,
+            hasAttachments = entry.attachments.isNotEmpty(),
+            hasSteps = entry.executionSteps.isNotEmpty(),
+            hasReasoning = entry.reasoning.isNotEmpty(),
+            isMeta = false,
+            sender = entry.sender,
+            isLocalSyntheticHint = isLocalSynthetic,
+        )
+    }
 
 // ---------------------------------------------------------------------------
 // DTO ↔ 领域模型
@@ -363,30 +375,49 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
 )
 
 /** 把一条线上投影还原为界面条目。 */
-fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry = TimelineEntry(
-    key = id,
-    sender = sender,
-    text = text,
-    isUser = sender == SENDER_USER,
-    timestamp = 0L,
-    pendingAcceptance = false,
-    batchGroupId = null,
-    attachments = attachments.map { it.toTimelineAttachment() },
-    isStreaming = streaming,
-    messageStatus = AgentMessageStatus.entries.firstOrNull { it.wireValue == messageStatus },
-    submissionFailureCode = submissionFailureCode,
-    approval = approval?.toApprovalCardState(),
-    clientMessageId = clientMessageId?.takeIf { it.isNotBlank() }?.let { runCatching { ClientMessageId(it) }.getOrNull() },
-    executionSteps = executionSteps.map { it.toNativeExecutionStep() },
-    localPlaceholder = localPlaceholder,
-    generationId = generationId,
-    executionFact = executionFact,
-    // 未知状态名折成 null：宁可「不知道任务结论」，也不能猜成已完成或失败。
-    executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
-    presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
-        ?.let { StreamPresentationMetadata(it, presentationRevision) },
-    reasoning = reasoning.map { com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete) },
-)
+fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
+    val role = ContextInjectionFilter.classifySender(sender)
+    val mappedReasoning = reasoning.map {
+        com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete)
+    }
+    val (sanitizedText, rebasedReasoning) = if (approval != null || executionFact) {
+        text to mappedReasoning
+    } else {
+        val result = ContextInjectionFilter.sanitizeParts(
+            parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Text(text)),
+            role = ContextInjectionFilter.contentSanitizationRole(sender),
+            streaming = streaming,
+            reasoning = mappedReasoning,
+        )
+        val cleaned = result.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
+            .joinToString("") { it.value }
+        cleaned to result.reasoning
+    }
+    return TimelineEntry(
+        key = id,
+        sender = ContextInjectionFilter.canonicalSender(sender),
+        text = sanitizedText,
+        isUser = role == ContextInjectionFilter.SenderRole.USER,
+        timestamp = 0L,
+        pendingAcceptance = false,
+        batchGroupId = null,
+        attachments = attachments.map { it.toTimelineAttachment() },
+        isStreaming = streaming,
+        messageStatus = AgentMessageStatus.entries.firstOrNull { it.wireValue == messageStatus },
+        submissionFailureCode = submissionFailureCode,
+        approval = approval?.toApprovalCardState(),
+        clientMessageId = clientMessageId?.takeIf { it.isNotBlank() }?.let { runCatching { ClientMessageId(it) }.getOrNull() },
+        executionSteps = executionSteps.map { it.toNativeExecutionStep() },
+        localPlaceholder = localPlaceholder,
+        generationId = generationId,
+        executionFact = executionFact,
+        // 未知状态名折成 null：宁可「不知道任务结论」，也不能猜成已完成或失败。
+        executionGenerationState = GenerationState.entries.firstOrNull { it.name == executionGenerationState },
+        presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
+            ?.let { StreamPresentationMetadata(it, presentationRevision) },
+        reasoning = rebasedReasoning,
+    )
+}
 
 private fun TimelineAttachment.toAssistantAttachmentDto(): AssistantAttachmentDto = AssistantAttachmentDto(
     draftId = draftId,

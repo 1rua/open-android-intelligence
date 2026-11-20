@@ -1,6 +1,7 @@
 package com.openandroidintelligence.mobile.conversations
 
 import com.openandroidintelligence.conversation.ports.VerifiedConversationEvent
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.mobile.NativeNotificationInput
 import com.openandroidintelligence.mobile.NativeNotificationKind
 import com.openandroidintelligence.mobile.ReplyNotificationTarget
@@ -37,7 +38,14 @@ internal fun nativeNotificationInput(
         is VerifiedConversationEvent.TimelineUpsert -> {
             val message = event.message
             conversationId = message.conversationId?.value ?: return null
-            if (message.sender != "assistant") return null
+            if (ContextInjectionFilter.classifySender(message.sender) != ContextInjectionFilter.SenderRole.ASSISTANT) return null
+            if (ContextInjectionFilter.isNonConversationalMessage(
+                    sender = message.sender,
+                    isMeta = message.isMeta,
+                    visibility = message.visibility,
+                    messageType = message.messageType,
+                )
+            ) return null
             kind = when (message.state.uppercase()) {
                 "STREAMING" -> NativeNotificationKind.REPLY_DELTA
                 "CONFIRMED", "COMPLETED" -> NativeNotificationKind.REPLY_COMPLETED

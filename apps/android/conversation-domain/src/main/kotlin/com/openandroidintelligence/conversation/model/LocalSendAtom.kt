@@ -4,6 +4,7 @@ import com.openandroidintelligence.conversation.ports.AgentMessageErrorCode
 import com.openandroidintelligence.conversation.ports.AgentMessageStatus
 import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
 import com.openandroidintelligence.conversation.ports.TimelineMessage
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 
 /** 本地提交状态与 Agent 投递状态各自保存，HTTP 接受不代表 Agent 已完成。 */
 enum class LocalSubmissionState { PREPARED, QUEUED, ACCEPTED, FAILED, OUTCOME_UNKNOWN }
@@ -75,7 +76,8 @@ fun reconcileSnapshotDeletions(remote: List<TimelineMessage>, atoms: List<LocalS
     }
 
 private fun TimelineMessage.isInAtomScope(atom: LocalSendAtom): Boolean {
-    return sender == "user" && (conversationId == null || conversationId == atom.conversationId)
+    return ContextInjectionFilter.classifySender(sender) == ContextInjectionFilter.SenderRole.USER &&
+        (conversationId == null || conversationId == atom.conversationId)
 }
 
 private fun findMatchingRemoteRow(rows: Collection<TimelineMessage>, atom: LocalSendAtom): TimelineMessage? {
