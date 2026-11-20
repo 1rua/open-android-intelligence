@@ -58,7 +58,7 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
     override suspend fun history(sessionId: String, page: PageRequest): RemoteHistoryPage {
         if (page.cursor != null) throw RemoteSessionException("CURSOR_EXPIRED")
         val result = call("dsh/sessionHistory", obj("sessionId" to sessionId, "backend" to backend), transfer = true)
-        return RemoteHistoryPage(result.requiredArray("events"))
+        return RemoteHistoryPage(result.requiredArray("events"), activityKnown = false)
     }
 
     override fun follow(sessionId: String): Flow<JsonValue> = wire.stream(

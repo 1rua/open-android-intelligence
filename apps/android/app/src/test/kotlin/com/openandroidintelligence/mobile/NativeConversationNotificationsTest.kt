@@ -1197,6 +1197,85 @@ class NativeConversationNotificationsTest {
         assertEquals(1, publications.count { it.first.generationId == "turn-new" && it.second })
     }
 
+    @Test fun unmatchedLegacyCompletionStaysOnOwnRoundAndDoesNotCloseActiveLegacyTurn() {
+        val target = ReplyNotificationTarget("profile", "account", "conversation")
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 先发起 Turn B（尚未流式输出正文）
+        accept(status("queued", 10, generation = null, messageId = "user-B", clientMessageId = "client-B"))
+        assertTrue(coordinator.sessions.value.single().isRunning)
+
+        // Turn A 迟到的未匹配 COMPLETED（无 generationId 且消息标识完全不属于 B）绝不能关闭 B 或落盘 B 的终态围栏
+        accept(status("completed", 11, generation = null, messageId = "user-A", clientMessageId = "client-A"))
+        val afterTurnA = coordinator.sessions.value.single()
+        assertTrue("未匹配的旧轮次 COMPLETED 不得终止当前活跃 Turn B", afterTurnA.isRunning)
+        assertEquals(0, publications.count { it.second })
+
+        // 再发带明确正文与 clientMessageId 的 Turn B-2，验证有正文与不同 clientMessageId 场景同样不被 Turn A-2 提前终结
+        accept(status("delivered", 20, generation = null, messageId = "user-B2", clientMessageId = "client-B2"))
+        accept(message("conversation.message.delta", "Turn B2 流式思考", 21, generation = null))
+        accept(status("completed", 22, generation = null, messageId = "user-A2", clientMessageId = "client-A2"))
+        val stillRunningB2 = coordinator.sessions.value.single()
+        assertTrue(stillRunningB2.isRunning)
+        assertEquals("Turn B2 流式思考", stillRunningB2.latestReply)
+        assertEquals(0, publications.count { it.second })
+
+        // Turn B2 自身完成正文与匹配 COMPLETED 到达后，应干净退出并触发 1 次通知
+        accept(message("conversation.message.completed", "Turn B2 最终回复", 23, generation = null))
+        accept(status("completed", 24, generation = null, messageId = "user-B2", clientMessageId = "client-B2"))
+        val done = coordinator.sessions.value.single()
+        assertFalse(done.isRunning)
+        assertEquals(NativeConversationStatus.COMPLETED, done.status)
+        assertEquals("Turn B2 最终回复", done.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+        assertTrue(replyCompletionPreferences(context, "profile", "account").contains(
+            "realtime.terminal." + replyDigest("legacy\u0000${target.identityKey()}\u0000client-B2")))
+    }
+
+    @Test fun reconciliationRequestsFilterByAgentBeforeBatchAndUnknownActivityPreservesRunning() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 先在其他端点制造 10 个已到期的 RUNNING 会话（超过单批 8 条上限），再到选中端点创建 1 个会话
+        for (i in 1..10) {
+            accept(notificationFact("profile", "account", "other-ev-$i", clock, "conversation.message.status",
+                """{"agentId":"other-agent","conversationId":"conv-other-$i","messageId":"u-$i","clientMessageId":"c-$i","generationId":"g-$i","status":"delivered","revision":1,"errorCode":null}"""))
+        }
+        accept(notificationFact("profile", "account", "sel-ev", clock, "conversation.message.status",
+            """{"agentId":"selected-agent","conversationId":"conv-selected","messageId":"u-sel","clientMessageId":"c-sel","generationId":"g-sel","status":"delivered","revision":1,"errorCode":null}"""))
+
+        clock += 20_000L
+        val selectedBatch = coordinator.reconciliationRequests("selected-agent")
+        assertEquals(1, selectedBatch.size)
+        assertEquals("conv-selected", selectedBatch.single().session.target.conversationId)
+
+        // 其他端点的配额/下次重试时间未被 selected-agent 的批次消耗
+        val otherBatch = coordinator.reconciliationRequests("other-agent")
+        assertEquals(8, otherBatch.size)
+
+        // 当快照缺少活跃轮次元数据（activityKnown=false）且仅传 null 时，进行中会话必须保持 RUNNING 且不落盘终态围栏
+        val req = selectedBatch.single()
+        assertTrue(coordinator.reconcile(req, null, emptyList(), activityKnown = false))
+        val selectedSession = coordinator.sessions.value.first { it.target.conversationId == "conv-selected" }
+        assertTrue(selectedSession.isRunning)
+        assertEquals(NativeConversationStatus.RUNNING, selectedSession.status)
+        val durable = replyDigest("${selectedSession.target.identityKey()}\u0000g-sel")
+        assertFalse(replyCompletionPreferences(context, "profile", "account").contains("realtime.terminal.$durable"))
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

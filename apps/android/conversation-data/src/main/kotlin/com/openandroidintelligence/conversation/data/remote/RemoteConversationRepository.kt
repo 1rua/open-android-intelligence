@@ -16,6 +16,13 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** 历史快照对账视图：显式区分“远端已证明空闲”与“分页响应缺失活跃轮次元数据”。 */
+data class RemoteReconciliationSnapshot(
+    val activeGenerationId: String?,
+    val activityKnown: Boolean,
+    val messages: List<TimelineMessage>,
+)
+
 /** 仓储拥有一个固定端点和连接代次；切换只能创建新实例，旧结果无法改写新分区。 */
 class RemoteConversationRepository(
     val carrier: RemoteSessionCarrier,
@@ -26,7 +33,7 @@ class RemoteConversationRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val mediaSource: RemoteAuthenticatedMediaSource? = null,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
-    private val onTimelineSnapshot: (EndpointKey, String, String?, List<TimelineMessage>) -> Unit = { _, _, _, _ -> },
+    private val onTimelineSnapshot: (EndpointKey, String, RemoteReconciliationSnapshot) -> Unit = { _, _, _ -> },
 ) : ConversationRepository, GenerationTracker, EventCommitBarrier, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
@@ -174,17 +181,17 @@ class RemoteConversationRepository(
     override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
         loadTimeline(conversationId, page, notifySnapshot = true).first
 
-    /** 仅拉取并合并第 1 页权威快照，供通知对账器直接读取远端真实活跃轮次而避免重复扣减节流配额。 */
-    suspend fun fetchReconciliationSnapshot(conversationId: String): Pair<String?, List<TimelineMessage>> {
-        val (_, activeGenerationId, snapshotMessages) = loadTimeline(conversationId, PageRequest(), notifySnapshot = false)
-        return activeGenerationId to snapshotMessages
+    /** 仅拉取并合并第 1 页权威快照，供通知对账器读取远端活跃轮次、元数据确定性与最新消息。 */
+    suspend fun fetchReconciliationSnapshot(conversationId: String): RemoteReconciliationSnapshot {
+        val (_, snapshot) = loadTimeline(conversationId, PageRequest(), notifySnapshot = false)
+        return snapshot
     }
 
     private suspend fun loadTimeline(
         conversationId: String,
         page: PageRequest,
         notifySnapshot: Boolean,
-    ): Triple<TimelinePage, String?, List<TimelineMessage>> {
+    ): Pair<TimelinePage, RemoteReconciliationSnapshot> {
         current()
         ensureFollow(conversationId)
         val mediaRead = mediaSource?.beginHistoryRead()
@@ -203,15 +210,16 @@ class RemoteConversationRepository(
         val (snapshotRows, snapshotMessages) = synchronized(target) {
             target.rows.values.filter { it.id in pageIds } to target.rows.values.toList()
         }
+        val snapshot = RemoteReconciliationSnapshot(result.activeGenerationId, result.activityKnown, snapshotMessages)
         if (notifySnapshot && page.cursor == null && carrier.backend in setOf("harness", "codex")) {
             val hasPending = pending[conversationId]?.let { turns -> synchronized(turns) { turns.isNotEmpty() } } == true
             val currentState = synchronized(target) { target.generationState }
-            val authoritativeSnapshot = result.revision != null || result.activeGenerationId != null
+            val authoritativeSnapshot = (result.revision != null && result.activityKnown) || result.activeGenerationId != null
             if (!hasPending && (authoritativeSnapshot || currentState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING))) {
-                onTimelineSnapshot(workspace.endpoint.key, conversationId, result.activeGenerationId, snapshotMessages)
+                onTimelineSnapshot(workspace.endpoint.key, conversationId, snapshot)
             }
         }
-        return Triple(TimelinePage(snapshotRows, result.nextCursor, result.revision), result.activeGenerationId, snapshotMessages)
+        return TimelinePage(snapshotRows, result.nextCursor, result.revision) to snapshot
     }
     private suspend fun ensureFollow(id: String) {
         val opened = ready.computeIfAbsent(id) { CompletableDeferred() }

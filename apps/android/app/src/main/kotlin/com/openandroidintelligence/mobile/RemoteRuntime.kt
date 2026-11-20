@@ -213,13 +213,17 @@ class RemoteRuntime(
         if (!networkConnected || repo == null || key == null || repository !== repo || state.value.selected != key) return
         if (repo.carrier.backend !in setOf("harness", "codex")) return
         val targetAgent = endpointId(key)
-        val due = nativeConversationNotifications.reconciliationRequests()
-            .filter { it.session.target.agentId == targetAgent }
+        val due = nativeConversationNotifications.reconciliationRequests(targetAgent)
         for (request in due) {
             if (!currentCoroutineContext().isActive || repository !== repo || state.value.selected != key) return
             try {
-                val (activeGenerationId, messages) = repo.fetchReconciliationSnapshot(request.session.target.conversationId)
-                nativeConversationNotifications.reconcile(request, activeGenerationId?.let { it to "running" }, messages)
+                val snapshot = repo.fetchReconciliationSnapshot(request.session.target.conversationId)
+                nativeConversationNotifications.reconcile(
+                    request,
+                    snapshot.activeGenerationId?.let { it to "running" },
+                    snapshot.messages,
+                    activityKnown = snapshot.activityKnown,
+                )
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -462,8 +466,8 @@ class RemoteRuntime(
                         nativeConversationNotifications.accept(it)
                     }
                 },
-                onTimelineSnapshot = { key, conversationId, activeGenerationId, messages ->
-                    reconcileTimelineSnapshot(local, key, conversationId, activeGenerationId, messages)
+                onTimelineSnapshot = { key, conversationId, snapshot ->
+                    reconcileTimelineSnapshot(local, key, conversationId, snapshot)
                 },
             )
             val repo = buildRepository(active)
@@ -789,12 +793,16 @@ class RemoteRuntime(
         local: ConversationScope,
         key: EndpointKey,
         conversationId: String,
-        activeGenerationId: String?,
-        messages: List<TimelineMessage>,
+        snapshot: RemoteReconciliationSnapshot,
     ) {
         val target = ReplyNotificationTarget(local.profileId, local.accountId, conversationId, endpointId(key))
         val request = nativeConversationNotifications.reconciliationRequestFor(target) ?: return
-        nativeConversationNotifications.reconcile(request, activeGenerationId?.let { it to "running" }, messages)
+        nativeConversationNotifications.reconcile(
+            request,
+            snapshot.activeGenerationId?.let { it to "running" },
+            snapshot.messages,
+            activityKnown = snapshot.activityKnown,
+        )
     }
 
     fun onNetworkAvailable(routeChanged: Boolean = false) {

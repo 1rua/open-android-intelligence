@@ -49,8 +49,13 @@ data class RemoteSessionRow(val id: String, val title: String, val createdAt: Lo
     val archived: Boolean = false, val model: RemoteModelSelection? = null)
 data class RemoteCommandAnnouncement(val sessionId: String, val catalog: AgentCommandCatalog)
 data class RemoteSessionPage(val items: List<RemoteSessionRow>, val nextCursor: String? = null)
-data class RemoteHistoryPage(val records: List<JsonValue>, val nextCursor: String? = null,
-    val revision: Long? = null, val activeGenerationId: String? = null)
+data class RemoteHistoryPage(
+    val records: List<JsonValue>,
+    val nextCursor: String? = null,
+    val revision: Long? = null,
+    val activeGenerationId: String? = null,
+    val activityKnown: Boolean = true,
+)
 data class RemoteModelSelection(val key: ModelKey, val effortId: String? = null)
 data class RemoteModelCatalog(val models: List<SessionModelOption>,
     val efforts: Map<ModelKey, List<ReasoningEffortOption>>, val selected: RemoteModelSelection? = null)

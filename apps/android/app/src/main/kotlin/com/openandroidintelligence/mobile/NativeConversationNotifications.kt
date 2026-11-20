@@ -269,9 +269,10 @@ internal class NativeConversationNotifications(
     }
 
     /** Bound each network pass and rotate busy conversations rather than starve them. */
-    @Synchronized fun reconciliationRequests(): List<NotificationReconciliationRequest> {
+    @Synchronized fun reconciliationRequests(agentId: String? = null): List<NotificationReconciliationRequest> {
         val currentTime = now()
-        val candidates = _sessions.value.filter { eligibleForReconciliation(it, currentTime) }
+        val candidates = _sessions.value
+            .filter { (agentId == null || it.target.agentId == agentId) && eligibleForReconciliation(it, currentTime) }
             .sortedBy { reconciliationAttempts[it.target] ?: Long.MIN_VALUE }.take(8)
         return candidates.map { createReconciliationRequest(it, currentTime) }
     }
@@ -299,6 +300,7 @@ internal class NativeConversationNotifications(
         expected: NotificationReconciliationRequest,
         currentGeneration: Pair<String, String>?,
         messages: List<TimelineMessage>,
+        activityKnown: Boolean = true,
     ): Boolean {
         val before = expected.session
         val target = before.target
@@ -332,6 +334,13 @@ internal class NativeConversationNotifications(
                 maxOf(finalReply.timestamp, observed?.occurredAt ?: 0L), completed = snapshotCompleted)
         }
         if (currentGeneration == null) {
+            if (!activityKnown) {
+                if (canApplyBody) {
+                    val updated = before.copy(latestReply = replies[key]?.text ?: before.latestReply)
+                    if (updated != before) update(updated, terminal = false, force = true)
+                }
+                return true
+            }
             // Idle attests only that work ended. It cannot distinguish a
             // successful answer from cancellation or a remote failure.
             val outcome = terminalRounds[key] ?: before.status.takeUnless { it.isRunning } ?: NativeConversationStatus.ENDED
@@ -690,7 +699,8 @@ internal class NativeConversationNotifications(
     ): String? = rounds?.keys?.firstOrNull { candidate ->
         val candidateKey = RoundKey(target, candidate)
         userMessages[candidateKey] == messageId ||
-            (clientMessageId.isNotBlank() && clientMessages[candidateKey] == clientMessageId)
+            (clientMessageId.isNotBlank() &&
+                (clientMessages[candidateKey] == clientMessageId || candidate == "request:$clientMessageId"))
     }
 
     private fun resolveRoundForMessage(
@@ -784,15 +794,6 @@ internal class NativeConversationNotifications(
         if (matched != null) return matched
         val canonicalLegacy = canonicalRound(target, legacyStatusRound)!!
         if (canonicalLegacy != legacyStatusRound) return canonicalLegacy
-        if (isTerminalStatus) {
-            if (legacyStatusRound in rounds.orEmpty() || RoundKey(target, legacyStatusRound) in terminalRounds) {
-                return legacyStatusRound
-            }
-            rounds?.keys?.singleOrNull()?.let { return it }
-            if (rounds.isNullOrEmpty() && previous?.isRunning == true && previous.generationId != null) {
-                return previous.generationId
-            }
-        }
         return legacyStatusRound
     }
 
@@ -885,15 +886,21 @@ internal class NativeConversationNotifications(
         val terminalKey = terminal.generationId?.let { RoundKey(terminal.target, it) }
         val terminalStart = terminalKey?.let { startedAt[it] } ?: finishedAt
         val terminalClientId = terminalKey?.let { clientMessages[it] }
+        val terminalUserId = terminalKey?.let { userMessages[it] }
         // 清理已终结、别名归并、同/早先起始的空占位及更早无主空轮次，严禁残留空轮次把已完成通知拉回“任务进行中”。
         rounds.keys.removeAll { candidate ->
             val candidateKey = RoundKey(terminal.target, candidate)
             val isAlias = roundAliases.containsKey(candidateKey)
             val isTerminal = candidateKey in terminalRounds
+            val candidateClientId = clientMessages[candidateKey]
+            val candidateUserId = userMessages[candidateKey]
+            val sameOrUnownedOwner = (terminalClientId != null && candidateClientId == terminalClientId) ||
+                (terminalUserId != null && candidateUserId == terminalUserId) ||
+                (candidateClientId == null && candidateUserId == null)
             val emptyPlaceholder = isPlaceholderRound(candidate) &&
                 replies[candidateKey] == null &&
                 (startedAt[candidateKey] ?: 0L) <= terminalStart &&
-                (clientMessages[candidateKey] == null || clientMessages[candidateKey] == terminalClientId)
+                sameOrUnownedOwner
             val unownedOlder = !userMessages.containsKey(candidateKey) && !clientMessages.containsKey(candidateKey) &&
                 replies[candidateKey] == null && (startedAt[candidateKey] ?: 0L) < terminalStart
             isAlias || isTerminal || emptyPlaceholder || unownedOlder
