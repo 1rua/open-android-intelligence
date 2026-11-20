@@ -3,6 +3,7 @@ package com.openandroidintelligence.mobile
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import com.openandroidintelligence.conversation.data.remote.RemoteWorkspace
+import com.openandroidintelligence.conversation.model.*
 import com.openandroidintelligence.conversation.ports.*
 import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.Loadable
@@ -16,6 +17,7 @@ import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.remote.runtime.*
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.mobile.conversations.HotSwappableAttachmentCoordinator
 import com.openandroidintelligence.mobile.plugins.thirdPartyOnlyHost
 import java.util.concurrent.CopyOnWriteArrayList
 import javax.crypto.spec.SecretKeySpec
@@ -73,6 +75,7 @@ class RemoteConnectionLifecycleTest {
         delayFn: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
         customScope: CoroutineScope = scope,
         customAccount: FakeAccountConnection = account,
+        customKeyProvider: AesGcmKeyProvider = key,
     ): RemoteRuntime {
         val audit = AndroidAuditStore(InMemoryAuditSink())
         grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
@@ -99,7 +102,7 @@ class RemoteConnectionLifecycleTest {
             grants = grants,
             confirmLocally = { _, _, _ -> false },
             accountFactory = { customAccount },
-            localDocumentKeyProvider = key,
+            localDocumentKeyProvider = customKeyProvider,
             recoveryPolicy = policy,
             delayFn = delayFn,
         )
@@ -684,6 +687,218 @@ class RemoteConnectionLifecycleTest {
         }
     }
 
+    @Test
+    fun `同Agent切工作区初始化目标工作区失败时保留旧控制器存活不破坏在线态`() = runBlocking {
+        var failKeyInit = false
+        val flakyKeyProvider = object : AesGcmKeyProvider {
+            override fun getOrCreate() = if (failKeyInit) error("KEYSTORE_UNAVAILABLE") else key.getOrCreate()
+            override fun delete() = key.delete()
+        }
+        val testRoot = SupervisorJob()
+        val testScope = CoroutineScope(testRoot + Dispatchers.Default)
+        val testRuntime = buildRuntime(customScope = testScope, customKeyProvider = flakyKeyProvider)
+        try {
+            testRuntime.restoreSessionIfAvailable().join()
+            val agent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            testRuntime.selectAgent(agent).join()
+            eventually {
+                testRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    testRuntime.workspaceContext.value.workspaces.size == 2
+            }
+            val wsOne = testRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "one" }
+            val wsTwo = testRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "two" }
+            testRuntime.selectWorkspace(wsOne).join()
+            val firstController = testRuntime.controller.value!!
+            firstController.editDraft("切工作区失败应保活旧草稿")
+
+            failKeyInit = true
+            testRuntime.selectWorkspace(wsTwo).join()
+
+            assertSame("目标工作区构造失败时必须保留原控制器引用", firstController, testRuntime.controller.value)
+            assertTrue("原控制器在线态不能被提前关闭", firstController.state.value.isOnline)
+            assertEquals("切工作区失败应保活旧草稿", firstController.state.value.draft)
+            assertEquals(wsOne.endpoint.key, testRuntime.workspaceContext.value.activeWorkspace)
+            assertEquals(AgentConnectionPhase.CONNECTED, testRuntime.agentConnection.value.phase)
+            assertEquals("KEYSTORE_UNAVAILABLE", testRuntime.agentConnection.value.errorCode)
+        } finally {
+            failKeyInit = false
+            testRuntime.logout().join()
+            testRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `跨宿主发现恢复原工作区失败自动触发后台重连并自愈`() = runBlocking {
+        val reconnectDelayGate = CompletableDeferred<Unit>()
+        val testRoot = SupervisorJob()
+        val testScope = CoroutineScope(testRoot + Dispatchers.Default)
+        val testAccount = FakeAccountConnection()
+        val testRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 100L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 40L,
+                backgroundReconnectMaxDelayMillis = 80L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 40L) reconnectDelayGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = testScope,
+            customAccount = testAccount,
+        )
+        try {
+            testRuntime.restoreSessionIfAvailable().join()
+            val host1Harness = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            testRuntime.selectAgent(host1Harness).join()
+            eventually {
+                testRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    testRuntime.controller.value?.state?.value?.isOnline == true
+            }
+            val initialController = testRuntime.controller.value!!
+
+            // 跨宿主发现期间 host-1 掉线：发现成功后恢复原工作区失败，应自动调度后台重连
+            testAccount.hostOneOffline = true
+            val host2 = testAccount.availableHosts.first { it.deviceId == "host-2" }
+            testRuntime.discover(host2).join()
+            eventually {
+                testRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    testRuntime.agentConnection.value.offlineConfirmed
+            }
+
+            // host-1 恢复可达并放行后台重连：无需人工点击即自动恢复 CONNECTED
+            testAccount.hostOneOffline = false
+            reconnectDelayGate.complete(Unit)
+            eventually {
+                testRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    !testRuntime.agentConnection.value.offlineConfirmed &&
+                    initialController.state.value.isOnline
+            }
+            assertSame(initialController, testRuntime.controller.value)
+        } finally {
+            testAccount.hostOneOffline = false
+            reconnectDelayGate.complete(Unit)
+            testRuntime.logout().join()
+            testRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `水合工作区沿nextCursor翻页拉全多页会话`() = runBlocking {
+        account.codexThreadPages[null] = listOf(
+            mapOf("id" to "cx-thread-1", "name" to "Codex第一页会话", "cwd" to "/cx-one", "createdAt" to 1, "updatedAt" to 20),
+        ) to "cursor-page-2"
+        account.codexThreadPages["cursor-page-2"] = listOf(
+            mapOf("id" to "cx-thread-2", "name" to "Codex第二页会话", "cwd" to "/cx-one", "createdAt" to 2, "updatedAt" to 30),
+        ) to null
+
+        runtime.restoreSessionIfAvailable().join()
+        val codexAgent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("codex"))
+        runtime.selectAgent(codexAgent).join()
+        eventually {
+            val ctx = runtime.workspaceContext.value
+            val wsOne = ctx.workspaces.firstOrNull { it.endpoint.key.workspaceId == "cx-one" } ?: return@eventually false
+            val titles = (ctx.sessionsByWorkspace[wsOne.endpoint.key] as? Loadable.Ready)?.value?.map { it.title }.orEmpty()
+            "Codex第一页会话" in titles && "Codex第二页会话" in titles
+        }
+        val wsOne = runtime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "cx-one" }
+        val titles = (runtime.workspaceContext.value.sessionsByWorkspace[wsOne.endpoint.key] as Loadable.Ready).value.map { it.title }
+        assertTrue(titles.containsAll(listOf("Codex第一页会话", "Codex第二页会话")))
+    }
+
+    @Test
+    fun `服务端成功返回空工作区列表时清空内存与持久化缓存`() = runBlocking {
+        val testRoot = SupervisorJob()
+        val testScope = CoroutineScope(testRoot + Dispatchers.Unconfined)
+        val testAccount = FakeAccountConnection()
+        val firstRuntime = buildRuntime(customScope = testScope, customAccount = testAccount)
+        try {
+            firstRuntime.restoreSessionIfAvailable().join()
+            val agent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            firstRuntime.selectAgent(agent).join()
+            eventually { firstRuntime.workspaceContext.value.workspaces.size == 2 }
+
+            testAccount.harnessWorkspacesOverride = emptyList()
+            firstRuntime.hydrateWorkspaces(force = true).join()
+            eventually {
+                firstRuntime.workspaceContext.value.catalogPhase == WorkspaceCatalogPhase.READY &&
+                    firstRuntime.workspaceContext.value.workspaces.isEmpty()
+            }
+            assertTrue("状态投影中的遗留端点也必须清空", firstRuntime.state.value.endpoints.isEmpty())
+            firstRuntime.closeRuntimeWithoutClearingCacheForTest()
+        } finally {
+            testRoot.cancelAndJoin()
+        }
+
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val offlineAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 80L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            customScope = coldScope,
+            customAccount = offlineAccount,
+        )
+        try {
+            coldRuntime.restoreSessionIfAvailable().join()
+            coldRuntime.hydrateWorkspaces().join()
+            assertTrue("重建后持久化缓存不应复活已删除工作区", coldRuntime.workspaceContext.value.workspaces.isEmpty())
+            assertTrue("重建后兼容投影 endpoints 应为空", coldRuntime.state.value.endpoints.isEmpty())
+        } finally {
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `离线订阅HotSwappableAttachmentCoordinator后热升级自动接收VERIFIED`() = runBlocking {
+        val hotCoordinator = HotSwappableAttachmentCoordinator()
+        val observedStates = CopyOnWriteArrayList<AttachmentState>()
+        val observedErrors = CopyOnWriteArrayList<String?>()
+        val collectorJob = scope.launch {
+            hotCoordinator.observe("draft-1").collect { state ->
+                observedStates += state.state
+                observedErrors += state.errorMessage
+            }
+        }
+        eventually {
+            AttachmentState.RETRYABLE_FAILURE in observedStates &&
+                "REMOTE_ATTACHMENT_OFFLINE" in observedErrors
+        }
+
+        val onlineFlow = MutableStateFlow(AttachmentDraftState(AttachmentDraftId("draft-1"), AttachmentState.UPLOADING, 0.5f))
+        val stubOnline = object : AttachmentDraftCoordinator {
+            override fun restoredDrafts(): List<AttachmentDraft> = emptyList()
+            override suspend fun prepare(selection: LocalAttachmentSelection) = error("unused")
+            override suspend fun armSubmission(draftId: String, revision: Long) = error("unused")
+            override suspend fun cancelSubmission(intentId: String) = CancelSubmissionResult(false)
+            override fun observe(draftId: String): Flow<AttachmentDraftState> = onlineFlow
+            override fun retry(draftId: String) = Unit
+            override suspend fun discard(draftId: String) = Unit
+            override suspend fun releaseAfterSubmit(draftId: String) = Unit
+            override suspend fun archiveSubmitted(conversationId: String, draftId: String, media: HistoricalMediaPort) = Unit
+            override suspend fun ensureSubmittedSource(conversationId: String, draftId: String, media: HistoricalMediaPort) = Unit
+            override suspend fun retrySubmittedSource(conversationId: String, draftId: String, media: HistoricalMediaPort) = error("unused")
+            override fun remoteAttachmentId(draftId: String): String? = null
+        }
+
+        try {
+            hotCoordinator.attach(stubOnline)
+            eventually { AttachmentState.UPLOADING in observedStates }
+            onlineFlow.value = AttachmentDraftState(AttachmentDraftId("draft-1"), AttachmentState.VERIFIED, 1.0f)
+            eventually { AttachmentState.VERIFIED in observedStates }
+        } finally {
+            collectorJob.cancelAndJoin()
+        }
+    }
+
     private inner class FakeAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
@@ -694,6 +909,7 @@ class RemoteConnectionLifecycleTest {
         var connectFailuresBeforeSuccess = 0
         var nextConnectError: Exception? = null
         var connectTimeoutMillis: Long? = null
+        var hostOneOffline = false
         var connectGate: CompletableDeferred<Unit>? = null
         var initialHistoryText: String = "冷启动本地缓存回复"
         var incrementalReplyText: String? = null
@@ -702,6 +918,8 @@ class RemoteConnectionLifecycleTest {
             RemoteHostDevice("host-2", "工作站", "linux", "membership", true),
         )
         val extraWorkspaceTwoSessions = CopyOnWriteArrayList<Map<String, Any>>()
+        var harnessWorkspacesOverride: List<Map<String, Any>>? = null
+        val codexThreadPages = linkedMapOf<String?, Pair<List<Map<String, Any>>, String?>>()
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
 
         override fun peekRestorableAccount(): RemoteActiveAccount? = account.value ?: restorableAccount
@@ -719,6 +937,9 @@ class RemoteConnectionLifecycleTest {
             connectGate?.await()
             connectTimeoutMillis?.let { timeoutMs ->
                 withTimeout(timeoutMs) { delay(timeoutMs + 200L) }
+            }
+            if (hostDeviceId == "host-1" && hostOneOffline) {
+                throw RemoteRpcException("HOST_UNREACHABLE")
             }
             if (connectFailuresBeforeSuccess > 0) {
                 connectFailuresBeforeSuccess--
@@ -791,6 +1012,10 @@ class RemoteConnectionLifecycleTest {
                     val streamId = JsonFields.string(params, "streamId")
                     if (endpoint == "workspace/follow") {
                         val extraIds = owner.extraWorkspaceTwoSessions.map { it["sessionId"] as String }
+                        val items = owner.harnessWorkspacesOverride ?: listOf(
+                            mapOf("workspaceId" to "one", "title" to "工作区一", "path" to "/one", "sessionIds" to listOf("s1")),
+                            mapOf("workspaceId" to "two", "title" to "工作区二", "path" to "/two", "sessionIds" to (listOf("s2") + extraIds)),
+                        )
                         events.emit(
                             RemoteRpcEvent(
                                 "harness.remote.frame",
@@ -799,12 +1024,7 @@ class RemoteConnectionLifecycleTest {
                                         "streamId" to streamId,
                                         "value" to mapOf(
                                             "type" to "baseline",
-                                            "value" to mapOf(
-                                                "items" to listOf(
-                                                    mapOf("workspaceId" to "one", "title" to "工作区一", "path" to "/one", "sessionIds" to listOf("s1")),
-                                                    mapOf("workspaceId" to "two", "title" to "工作区二", "path" to "/two", "sessionIds" to (listOf("s2") + extraIds)),
-                                                )
-                                            ),
+                                            "value" to mapOf("items" to items),
                                         ),
                                     )
                                 ),
@@ -876,13 +1096,27 @@ class RemoteConnectionLifecycleTest {
                             )
                         )
                     )
-                    "thread/list" -> Json.of(
-                        mapOf(
-                            "data" to listOf(
-                                mapOf("id" to "cx-thread-1", "name" to "Codex会话", "cwd" to "/cx-one", "createdAt" to 1, "updatedAt" to 10)
+                    "thread/list" -> {
+                        if (owner.codexThreadPages.isNotEmpty()) {
+                            val nested = JsonFields.obj(JsonFields.field(params, "params"))
+                            val cursor = nested?.let { JsonFields.string(it, "cursor") }
+                            val (items, nextCursor) = owner.codexThreadPages[cursor] ?: (emptyList<Map<String, Any>>() to null)
+                            Json.of(
+                                buildMap {
+                                    put("data", items)
+                                    if (nextCursor != null) put("nextCursor", nextCursor)
+                                }
                             )
-                        )
-                    )
+                        } else {
+                            Json.of(
+                                mapOf(
+                                    "data" to listOf(
+                                        mapOf("id" to "cx-thread-1", "name" to "Codex会话", "cwd" to "/cx-one", "createdAt" to 1, "updatedAt" to 10)
+                                    )
+                                )
+                            )
+                        }
+                    }
                     "dsh/sessionHistory" -> Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false))
                     "model/list" -> Json.of(mapOf("data" to emptyList<Any>()))
                     "thread/read" -> Json.of(mapOf("thread" to mapOf("id" to "cx-thread-1")))

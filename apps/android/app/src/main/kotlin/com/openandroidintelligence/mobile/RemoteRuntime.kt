@@ -219,7 +219,10 @@ class RemoteRuntime(
             val nextAgent = agentTransform(mutableAgentConnection.value)
             val nextWorkspace = workspaceTransform(mutableWorkspaceContext.value)
             val agentKey = nextWorkspace.agentKey
-            if (agentKey != null && agentKey == nextAgent.activeAgent && nextWorkspace.workspaces.isNotEmpty()) {
+            if (agentKey != null &&
+                agentKey == nextAgent.activeAgent &&
+                (nextWorkspace.workspaces.isNotEmpty() || nextWorkspace.catalogPhase == WorkspaceCatalogPhase.READY)
+            ) {
                 cachedWorkspacesByAgent[agentKey] = nextWorkspace.workspaces
             }
             mutableAgentConnection.value = nextAgent
@@ -320,16 +323,32 @@ class RemoteRuntime(
         }
     }
 
-    private fun installOfflineWorkspaceSynchronously(
+    private class OfflineWorkspaceHandle(
+        val owner: CompletableJob,
+        val mirror: EncryptedConversationMirror,
+        val media: EncryptedHistoryMediaCache,
+        val local: ConversationScope,
+        val hotRepo: HotSwappableConversationRepository,
+        val hotAttach: HotSwappableAttachmentCoordinator,
+        val mediaSource: HotSwappableHistoricalMediaSource,
+        val hotCat: HotSwappableCommandCatalogRepository,
+        val activeRef: AtomicReference<String?>,
+        val controller: WorkbenchController,
+    )
+
+    private fun buildOfflineWorkspaceHandle(
         workspace: RemoteWorkspace,
         initialHealth: StreamHealth,
-    ) {
+    ): OfflineWorkspaceHandle {
         val local = conversationScope(workspace.endpoint.key)
-        val mirror = EncryptedConversationMirror(context, local, localDocumentKeyProvider)
-        val mediaSource = HotSwappableHistoricalMediaSource()
-        val media = EncryptedHistoryMediaCache(context, local, source = mediaSource, keyProvider = localDocumentKeyProvider)
         val owner = SupervisorJob(scope.coroutineContext[Job])
+        var mirror: EncryptedConversationMirror? = null
+        var media: EncryptedHistoryMediaCache? = null
+        var controller: WorkbenchController? = null
         try {
+            mirror = EncryptedConversationMirror(context, local, localDocumentKeyProvider)
+            val mediaSource = HotSwappableHistoricalMediaSource()
+            media = EncryptedHistoryMediaCache(context, local, source = mediaSource, keyProvider = localDocumentKeyProvider)
             val ownedScope = CoroutineScope(scope.coroutineContext + owner)
             val hotRepo = HotSwappableConversationRepository(OfflineMirrorRepository(mirror), ownedScope, initialHealth)
             val hotAttach = HotSwappableAttachmentCoordinator()
@@ -337,7 +356,7 @@ class RemoteRuntime(
             val hotCat = HotSwappableCommandCatalogRepository {
                 RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
             }
-            val controller = createController(
+            controller = createController(
                 ownedScope = ownedScope,
                 repo = hotRepo,
                 catalogRepo = hotCat,
@@ -350,24 +369,47 @@ class RemoteRuntime(
                 initialOnline = false,
                 canReadConversations = { hotRepo.isOnline },
             )
-            workspaceOwnerJob = owner
-            ownerMirror = mirror
-            ownerMedia = media
-            ownerConversationScope = local
-            hotRepository = hotRepo
-            hotAttachments = hotAttach
-            hotMediaSource = mediaSource
-            hotCatalog = hotCat
-            activeThreadRef = activeRef
-            nativeConversationNotifications.bind(local.profileId, local.accountId)
-            mutableController.value = controller
-            observeBackgroundWork()
+            return OfflineWorkspaceHandle(
+                owner = owner,
+                mirror = mirror,
+                media = media,
+                local = local,
+                hotRepo = hotRepo,
+                hotAttach = hotAttach,
+                mediaSource = mediaSource,
+                hotCat = hotCat,
+                activeRef = activeRef,
+                controller = controller,
+            )
         } catch (failure: Throwable) {
-            runCatching { media.retireConnection() }
-            runCatching { mirror.closeNativeStore() }
+            runCatching { controller?.close() }
+            runCatching { media?.retireConnection() }
+            runCatching { mirror?.closeNativeStore() }
             owner.cancel()
             throw failure
         }
+    }
+
+    private fun publishOfflineWorkspaceHandle(handle: OfflineWorkspaceHandle) {
+        workspaceOwnerJob = handle.owner
+        ownerMirror = handle.mirror
+        ownerMedia = handle.media
+        ownerConversationScope = handle.local
+        hotRepository = handle.hotRepo
+        hotAttachments = handle.hotAttach
+        hotMediaSource = handle.mediaSource
+        hotCatalog = handle.hotCat
+        activeThreadRef = handle.activeRef
+        nativeConversationNotifications.bind(handle.local.profileId, handle.local.accountId)
+        mutableController.value = handle.controller
+        observeBackgroundWork()
+    }
+
+    private fun installOfflineWorkspaceSynchronously(
+        workspace: RemoteWorkspace,
+        initialHealth: StreamHealth,
+    ) {
+        publishOfflineWorkspaceHandle(buildOfflineWorkspaceHandle(workspace, initialHealth))
     }
 
     private suspend fun runColdStartGracefulRecovery(
@@ -896,7 +938,7 @@ class RemoteRuntime(
                                     availability = EndpointAvailability.AVAILABLE,
                                 )
                             }
-                            if (workspaces.isNotEmpty()) {
+                            if (failures[carrier.backend] == null) {
                                 saveAgentWorkspaces(agentKey, workspaces)
                                 putCachedWorkspaces(agentKey, workspaces)
                             }
@@ -914,10 +956,13 @@ class RemoteRuntime(
                             },
                             workspaceTransform = { current ->
                                 val activeAgent = current.agentKey
-                                if (activeAgent != null && activeAgent.hostId == host.deviceId) {
+                                if (activeAgent != null &&
+                                    activeAgent.hostId == host.deviceId &&
+                                    failures[activeAgent.backendId.value] == null
+                                ) {
                                     val updated = cachedWorkspacesByAgent[activeAgent].orEmpty()
                                     current.copy(
-                                        workspaces = if (updated.isNotEmpty()) updated else current.workspaces,
+                                        workspaces = updated,
                                         catalogPhase = WorkspaceCatalogPhase.READY,
                                     )
                                 } else {
@@ -952,9 +997,11 @@ class RemoteRuntime(
                                                     it.copy(
                                                         phase = AgentConnectionPhase.OFFLINE,
                                                         offlineConfirmed = true,
+                                                        reconnectingInPlace = false,
                                                     )
                                                 },
                                             )
+                                            startBackgroundReconnectLoop(previousWorkspace!!, ticket)
                                         }
                                         if (ownDiscoveryError != null && agentConnection.value.errorCode == null) {
                                             updateLayerStates(agentTransform = { it.copy(errorCode = ownDiscoveryError) })
@@ -1082,10 +1129,8 @@ class RemoteRuntime(
                     ),
                 )
             }
-            if (formattedWorkspaces.isNotEmpty()) {
-                saveAgentWorkspaces(agent, formattedWorkspaces)
-                putCachedWorkspaces(agent, formattedWorkspaces)
-            }
+            saveAgentWorkspaces(agent, formattedWorkspaces)
+            putCachedWorkspaces(agent, formattedWorkspaces)
 
             val targetWorkspace = chooseTargetWorkspace(agent, formattedWorkspaces, preferredWorkspace)
                 ?: throw RemoteSessionException("REMOTE_WORKSPACE_NOT_FOUND")
@@ -1099,13 +1144,25 @@ class RemoteRuntime(
                 availability = EndpointAvailability.AVAILABLE,
             )
 
-            switchWorkspaceControllerLocked(
-                account = activeAccount,
-                channel = targetChannel,
-                carrier = carrier,
-                workspace = targetWorkspace,
-                initialThreadId = initialThreadId,
-            )
+            val reuseExistingController = mutableController.value != null &&
+                hotRepository?.isOnline == true &&
+                agent == prevActiveAgent &&
+                workspaceContext.value.activeWorkspace == targetWorkspace.endpoint.key
+            if (reuseExistingController) {
+                val activeCtrl = mutableController.value
+                if (initialThreadId != null) {
+                    activeCtrl?.openThread(initialThreadId)
+                }
+                refreshModels(activeCtrl?.state?.value?.activeThreadId)
+            } else {
+                switchWorkspaceControllerLocked(
+                    account = activeAccount,
+                    channel = targetChannel,
+                    carrier = carrier,
+                    workspace = targetWorkspace,
+                    initialThreadId = initialThreadId,
+                )
+            }
 
             val cachedSessions = withContext(Dispatchers.IO) {
                 loadCachedWorkspaceSessionsSnapshot(formattedWorkspaces)
@@ -1389,23 +1446,12 @@ class RemoteRuntime(
                         ),
                     )
                 }
-                if (workspaces.isNotEmpty()) {
-                    saveAgentWorkspaces(currentAgent, workspaces)
-                    putCachedWorkspaces(currentAgent, workspaces)
-                }
+                saveAgentWorkspaces(currentAgent, workspaces)
+                putCachedWorkspaces(currentAgent, workspaces)
                 val sessionsMap = linkedMapOf<EndpointKey, Loadable<List<ConversationSummary>>>()
                 workspaces.forEach { ws ->
                     sessionsMap[ws.endpoint.key] = try {
-                        val page = currentCarrier.sessions(ws, PageRequest())
-                        val summaries = page.items.map { item ->
-                            ConversationSummary(
-                                ConversationId(RemoteLocalIds.encode(item.id)),
-                                item.title,
-                                item.updatedAt,
-                                item.archived,
-                            )
-                        }
-                        Loadable.Ready(summaries)
+                        Loadable.Ready(fetchAllWorkspaceSessions(currentCarrier, ws))
                     } catch (failure: Exception) {
                         if (failure.isTrueCancellation()) throw failure
                         val fallback = workspaceContext.value.sessionsByWorkspace[ws.endpoint.key]
@@ -1419,7 +1465,7 @@ class RemoteRuntime(
                         workspaceTransform = { current ->
                             if (current.agentKey == currentAgent) {
                                 current.copy(
-                                    workspaces = if (workspaces.isNotEmpty()) workspaces else current.workspaces,
+                                    workspaces = workspaces,
                                     catalogPhase = WorkspaceCatalogPhase.READY,
                                     catalogErrorCode = null,
                                     sessionsByWorkspace = sessionsMap,
@@ -1865,7 +1911,7 @@ class RemoteRuntime(
         )
     }
 
-    /** 切换至新工作区上下文并原子发布新控制器（先刷盘关闭旧工作区，但严禁把 controller 置 null）。 */
+    /** 切换至新工作区上下文并原子发布新控制器（新上下文就绪前保留旧控制器存活，切换失败不波及旧工作台）。 */
     private suspend fun switchWorkspaceControllerLocked(
         account: RemoteActiveAccount,
         channel: RemoteRpcChannel,
@@ -1878,18 +1924,24 @@ class RemoteRuntime(
             ?: throw RemoteSessionException("REMOTE_WORKSPACE_NOT_FOUND")
         val confirmed = confirmedRaw.copy(endpoint = workspace.endpoint)
 
-        // 先停止旧工作区（在关闭期间保持 mutableController.value 不变，不置 null！）
-        retireWorkspaceContextKeepingChannel()
+        val local = conversationScope(confirmed.endpoint.key)
+        val sameLocalScope = ownerConversationScope == local
+        if (sameLocalScope) {
+            // 复用同一本地存储路径时先释放旧数据库句柄，避免并发持锁冲突
+            retireWorkspaceContextKeepingChannel()
+        }
 
         val owner = SupervisorJob(scope.coroutineContext[Job])
         val ownedScope = CoroutineScope(scope.coroutineContext + owner)
-        val local = conversationScope(confirmed.endpoint.key)
-        val mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local, localDocumentKeyProvider) }
-        val hotMedia = HotSwappableHistoricalMediaSource()
-        val media = EncryptedHistoryMediaCache(context, local, source = hotMedia, keyProvider = localDocumentKeyProvider)
-        val active = AtomicReference<String?>(null)
+        var mirror: EncryptedConversationMirror? = null
+        var media: EncryptedHistoryMediaCache? = null
         var binding: OnlineWorkspaceBinding? = null
+        var newController: WorkbenchController? = null
         try {
+            mirror = withContext(Dispatchers.IO) { EncryptedConversationMirror(context, local, localDocumentKeyProvider) }
+            val hotMedia = HotSwappableHistoricalMediaSource()
+            media = EncryptedHistoryMediaCache(context, local, source = hotMedia, keyProvider = localDocumentKeyProvider)
+            val active = AtomicReference<String?>(null)
             binding = buildOnlineWorkspaceBinding(
                 account = account,
                 targetChannel = channel,
@@ -1913,8 +1965,7 @@ class RemoteRuntime(
                 attach(binding.repo.commandCatalog)
             }
 
-            nativeConversationNotifications.bind(local.profileId, local.accountId)
-            val controller = createController(
+            newController = createController(
                 ownedScope = ownedScope,
                 repo = hotRepo,
                 catalogRepo = hotCat,
@@ -1928,7 +1979,11 @@ class RemoteRuntime(
                 canReadConversations = { hotRepo.isOnline },
                 capabilitiesOverride = carrier.capabilities,
             )
-            initialThreadId?.let(controller::openThread)
+            if (!sameLocalScope) {
+                // 新工作区全部句柄与控制器构建就绪后再退休旧工作区，确保构造失败时旧控制器与UI仍完整存活
+                retireWorkspaceContextKeepingChannel()
+            }
+
             networkConnected = true
             workspaceOwnerJob = owner
             ownerMediaSource = binding.mediaSource
@@ -1943,15 +1998,22 @@ class RemoteRuntime(
             hotMediaSource = hotMedia
             hotCatalog = hotCat
             activeThreadRef = active
-            mutableController.value = controller
+            nativeConversationNotifications.bind(local.profileId, local.accountId)
+            mutableController.value = newController
             assistantWorkspace = buildAssistantWorkspace(local, confirmed, ownedScope)
-            saveSelection(confirmed)
+            initialThreadId?.let(newController::openThread)
+            newController.state.value.activeThreadId?.let { activeId ->
+                binding.repo.activeConversationChanged()
+                refreshModels(activeId)
+            }
+            runCatching { saveSelection(confirmed) }
             observeBackgroundWork()
         } catch (failure: Throwable) {
+            runCatching { newController?.close() }
             runCatching { binding?.repo?.close() }
             runCatching { binding?.mediaSource?.close() }
-            runCatching { media.retireConnection() }
-            runCatching { mirror.closeNativeStore() }
+            runCatching { media?.retireConnection() }
+            runCatching { mirror?.closeNativeStore() }
             owner.cancel()
             throw failure
         }
@@ -1961,9 +2023,18 @@ class RemoteRuntime(
         workspace: RemoteWorkspace,
         initialThreadId: String?,
     ) {
-        retireWorkspaceContextKeepingChannel()
-        installOfflineWorkspaceSynchronously(workspace, StreamHealth.RECONNECTING)
-        initialThreadId?.let { mutableController.value?.openThread(it) }
+        val targetScope = conversationScope(workspace.endpoint.key)
+        val sameLocalScope = ownerConversationScope == targetScope
+        val handle = if (sameLocalScope) {
+            retireWorkspaceContextKeepingChannel()
+            buildOfflineWorkspaceHandle(workspace, StreamHealth.RECONNECTING)
+        } else {
+            val prepared = buildOfflineWorkspaceHandle(workspace, StreamHealth.RECONNECTING)
+            retireWorkspaceContextKeepingChannel()
+            prepared
+        }
+        publishOfflineWorkspaceHandle(handle)
+        initialThreadId?.let { handle.controller.openThread(it) }
         saveSelection(workspace)
         val agentKey = AgentKey.fromEndpointKey(workspace.endpoint.key)
         updateLayerStates(
@@ -1974,6 +2045,31 @@ class RemoteRuntime(
                 )
             },
         )
+    }
+
+    private suspend fun fetchAllWorkspaceSessions(
+        carrier: RemoteSessionCarrier,
+        workspace: RemoteWorkspace,
+    ): List<ConversationSummary> {
+        val merged = linkedMapOf<String, ConversationSummary>()
+        val seenCursors = hashSetOf<String>()
+        var cursor: String? = null
+        while (true) {
+            val page = carrier.sessions(workspace, PageRequest(cursor = cursor))
+            page.items.forEach { item ->
+                val encodedId = RemoteLocalIds.encode(item.id)
+                merged[encodedId] = ConversationSummary(
+                    id = ConversationId(encodedId),
+                    title = item.title,
+                    updatedAt = item.updatedAt,
+                    archived = item.archived,
+                )
+            }
+            val next = page.nextCursor?.takeIf { it.isNotBlank() } ?: break
+            if (!seenCursors.add(next)) break
+            cursor = next
+        }
+        return merged.values.toList()
     }
 
     private fun createController(
@@ -2016,8 +2112,10 @@ class RemoteRuntime(
             supportsApprovalCards = SessionCapability.APPROVAL in supported,
             onActiveThreadChanged = { id ->
                 active.set(id)
-                repository?.activeConversationChanged()
-                if (restore) refreshModels(id)
+                if (activeThreadRef === active) {
+                    repository?.activeConversationChanged()
+                    if (restore) refreshModels(id)
+                }
             },
             streamHealthSource = repo as? StreamHealthSource,
             persistence = mirror.takeIf { restore },
@@ -2315,8 +2413,32 @@ class RemoteRuntime(
     }
 
     private fun saveAgentWorkspaces(agent: AgentKey, workspaces: List<RemoteWorkspace>) {
-        workspaces.forEach(::saveEndpoint)
         val profile = profileId(agent.origin.value)
+        val retainedKeys = workspaces.map { ws ->
+            saveEndpoint(ws)
+            "endpoint:$profile:${ws.endpoint.key.accountId}:${endpointId(ws.endpoint.key)}"
+        }.toSet()
+        val editor = preferences.edit()
+        val endpointPrefix = "endpoint:$profile:${agent.accountId}:"
+        preferences.all.keys.filter { it.startsWith(endpointPrefix) && it !in retainedKeys }.forEach { prefKey ->
+            val raw = preferences.getString(prefKey, null) ?: return@forEach
+            val existing = decodeWorkspaceArray(RemoteActiveAccount(agent.origin.value, agent.accountId, 0L), raw)
+            if (existing != null && agent.matches(existing.endpoint.key)) {
+                editor.remove(prefKey)
+            }
+        }
+        val retainedIds = workspaces.map { it.endpoint.key.workspaceId }.toSet()
+        val lastWorkspaceId = loadAgentLastWorkspaceId(agent)
+        if (lastWorkspaceId != null && lastWorkspaceId !in retainedIds) {
+            editor.remove("agent-last-workspace:$profile:${agent.accountId}:${agent.hostId}:${agent.backendId.value}")
+        }
+        val account = RemoteActiveAccount(agent.origin.value, agent.accountId, 0L)
+        val savedSelection = loadSavedSelection(account)
+        if (savedSelection != null && agent.matches(savedSelection.endpoint.key) &&
+            workspaces.none { it.endpoint.key == savedSelection.endpoint.key }
+        ) {
+            editor.remove("selection:$profile:${agent.accountId}")
+        }
         val encoded = Json.canonical(
             Json.of(
                 workspaces.map { ws ->
@@ -2325,34 +2447,35 @@ class RemoteRuntime(
                 },
             ),
         )
-        preferences.edit()
-            .putString("agent-workspaces:$profile:${agent.accountId}:${agent.hostId}:${agent.backendId.value}", encoded)
+        editor.putString("agent-workspaces:$profile:${agent.accountId}:${agent.hostId}:${agent.backendId.value}", encoded)
             .commit()
     }
 
     private fun loadCachedAgentWorkspaces(agent: AgentKey): List<RemoteWorkspace> {
         val profile = profileId(agent.origin.value)
         val encoded = preferences.getString("agent-workspaces:$profile:${agent.accountId}:${agent.hostId}:${agent.backendId.value}", null)
-        val list = mutableListOf<RemoteWorkspace>()
         if (encoded != null) {
             val array = runCatching { Json.parse(encoded) }.getOrNull() as? JsonValue.JArray
-            array?.items?.forEach { item ->
-                val values = (item as? JsonValue.JArray)?.items?.mapNotNull { (it as? JsonValue.JString)?.value }
-                if (values != null && values.size == 5) {
-                    val key = EndpointKey(agent.origin, agent.accountId, values[0], BackendId(values[1]), values[2])
-                    if (agent.matches(key)) {
-                        list += RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4])
+            if (array != null) {
+                val list = mutableListOf<RemoteWorkspace>()
+                array.items.forEach { item ->
+                    val values = (item as? JsonValue.JArray)?.items?.mapNotNull { (it as? JsonValue.JString)?.value }
+                    if (values != null && values.size == 5) {
+                        val key = EndpointKey(agent.origin, agent.accountId, values[0], BackendId(values[1]), values[2])
+                        if (agent.matches(key)) {
+                            list += RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4])
+                        }
                     }
                 }
+                return list.distinctBy { it.endpoint.key }
             }
         }
-        if (list.isEmpty()) {
-            val prefix = "endpoint:$profile:${agent.accountId}:"
-            preferences.all.keys.filter { it.startsWith(prefix) }.forEach { prefKey ->
-                val raw = preferences.getString(prefKey, null) ?: return@forEach
-                val ws = decodeWorkspaceArray(RemoteActiveAccount(agent.origin.value, agent.accountId, 0L), raw) ?: return@forEach
-                if (agent.matches(ws.endpoint.key)) list += ws
-            }
+        val list = mutableListOf<RemoteWorkspace>()
+        val prefix = "endpoint:$profile:${agent.accountId}:"
+        preferences.all.keys.filter { it.startsWith(prefix) }.forEach { prefKey ->
+            val raw = preferences.getString(prefKey, null) ?: return@forEach
+            val ws = decodeWorkspaceArray(RemoteActiveAccount(agent.origin.value, agent.accountId, 0L), raw) ?: return@forEach
+            if (agent.matches(ws.endpoint.key)) list += ws
         }
         return list.distinctBy { it.endpoint.key }
     }

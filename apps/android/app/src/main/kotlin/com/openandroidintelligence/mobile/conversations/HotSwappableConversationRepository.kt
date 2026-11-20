@@ -8,6 +8,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -206,18 +207,22 @@ class HotSwappableConversationRepository(
 }
 
 /** 支持在线升级原地接入的附件草稿协调器。 */
+@OptIn(ExperimentalCoroutinesApi::class)
 class HotSwappableAttachmentCoordinator : AttachmentDraftCoordinator {
     @Volatile
     private var delegate: AttachmentDraftCoordinator? = null
+    private val delegateFlow = MutableStateFlow<AttachmentDraftCoordinator?>(null)
 
     val isAttached: Boolean get() = delegate != null
 
     fun attach(coordinator: AttachmentDraftCoordinator) {
         delegate = coordinator
+        delegateFlow.value = coordinator
     }
 
     fun detach() {
         delegate = null
+        delegateFlow.value = null
     }
 
     override fun restoredDrafts(): List<AttachmentDraft> = delegate?.restoredDrafts().orEmpty()
@@ -232,8 +237,22 @@ class HotSwappableAttachmentCoordinator : AttachmentDraftCoordinator {
         delegate?.cancelSubmission(intentId) ?: CancelSubmissionResult(false)
 
     override fun observe(draftId: String): Flow<AttachmentDraftState> =
-        delegate?.observe(draftId)
-            ?: flowOf(AttachmentDraftState(AttachmentDraftId(draftId), AttachmentState.RETRYABLE_FAILURE, errorMessage = "REMOTE_ATTACHMENT_OFFLINE"))
+        delegateFlow.flatMapLatest { current ->
+            if (current != null) {
+                current.observe(draftId)
+            } else {
+                flow {
+                    emit(
+                        AttachmentDraftState(
+                            AttachmentDraftId(draftId),
+                            AttachmentState.RETRYABLE_FAILURE,
+                            errorMessage = "REMOTE_ATTACHMENT_OFFLINE",
+                        ),
+                    )
+                    awaitCancellation()
+                }
+            }
+        }
 
     override fun retry(draftId: String) {
         delegate?.retry(draftId)

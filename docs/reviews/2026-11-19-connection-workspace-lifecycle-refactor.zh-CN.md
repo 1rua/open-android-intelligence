@@ -65,6 +65,13 @@
 - **水合刷新窗口与未缓存空态**：新增 `WORKSPACE_HYDRATION_STALE_WINDOW_MS`（2 秒）刷新窗口并扩展 `WorkbenchScreen` 宽屏自动水合触发依赖；对本地无缓存的兄弟工作区在 `loadCachedWorkspaceSessionsSnapshot()` 中写入 `Loadable.Empty` 以消除离线抽屉转圈。
 - **变基最新 `dev`（兼容 PR #209）与竞态隔离**：`HotSwappableCommandCatalogRepository` 完整实现 `AgentCommandCatalogRepository` 的 `get(gatewayId, languageCode)`、`get(gatewayId, languageCode, conversationId)` 与 `observe(gatewayId, conversationId)` 公告流热切换委托；`WorkbenchController.updateRemoteCapabilities` 集成 `onCommandCatalogConnectivityChanged(online)` 避免重复拉取；`discover()` 仅回填自身 `ownDiscoveryError` 并在通道更换/失效关闭时自增 `modelSequence`，消除与后台 `refreshModels()` 的竞态。
 
+### 6. PR #207 自动化评审反馈响应（5 项全部采纳并修复）
+- **新工作区就绪前保留旧控制器存活（#4646712815）**：重构 `switchWorkspaceControllerLocked()` 与 `switchOfflineWorkspaceOnlyLocked()`，在目标工作区不共用本地存储路径时先完成全部加密存储、媒体与新控制器构建，就绪后再调用 `retireWorkspaceContextKeepingChannel()` 并原子发布新控制器；异常分支仅清理新上下文半成品句柄；同时在 `onActiveThreadChanged` 中校验 `activeThreadRef === active`，且在 `selectAgentLocked()` 命中相同在线工作区时直接复用现有控制器。
+- **跨宿主发现恢复失败调度后台重连（#4646712824）**：在 `discover()` 的 `finally` 中当 `restoredOnline == false` 时显式复位 `reconnectingInPlace = false` 并调用 `startBackgroundReconnectLoop()`，确保原宿主重新上线后自动静默重连。
+- **水合沿 `nextCursor` 翻页拉全会话（#4646712834）**：在 `RemoteRuntime.kt` 新增 `fetchAllWorkspaceSessions()` 循坏按 `nextCursor` 分页合并会话（带游标循环保护），使 Codex 等分页后端超过单页上限的会话不再被截断。
+- **服务端返回空工作区列表时清空内存与持久化缓存（#4646712839）**：`hydrateWorkspaces()`、`discover()`（无错响应）与 `selectAgentLocked()` 无条件落盘最新工作区清单；`saveAgentWorkspaces()` 为空目录持久化 `"[]"` 并清理该 Agent 遗留的 `"endpoint:*"`、`"agent-last-workspace:*"` 与失效 `"selection:*"` 键，`loadCachedAgentWorkspaces()` 在存在 `"agent-workspaces:*"` 权威 JSON 时直接返回（空数组即返回空集合，不再回退旧端点键值），`updateLayerStates()` 在 `catalogPhase == READY` 时同步清空 `cachedWorkspacesByAgent`。
+- **热升级后自动续订已恢复附件观察流（#4646712846）**：`HotSwappableAttachmentCoordinator` 增加 `delegateFlow` 并在 `observe(draftId)` 中通过 `flatMapLatest` 订阅，在离线分支发射可重试状态后使用 `awaitCancellation()` 挂起而非直接完成流；后台热升级 `attach(realAttachments)` 后自动无缝切流并向既有订阅者发布 `VERIFIED`。
+
 ---
 
 ## 三、涉及改动文件清单
@@ -113,15 +120,14 @@
 3. **App 连接生命周期、冷启动缓存优先、UI 解耦与核心回归（22 个测试类共 136/136 通过，0 跳过）**：
    - 主体命令：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --rerun --tests com.openandroidintelligence.mobile.RemoteConnectionLifecycleTest ...`（共 21 个顶层包核心回归类：134/134 通过）
    - 独立子包补充：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --tests com.openandroidintelligence.mobile.assistant.AssistantConversationWorkspaceTest`（2/2 通过）
+   - PR 评审修复后复测命令：`./apps/android/gradlew -p apps/android :app:testFullDebugUnitTest --rerun --tests com.openandroidintelligence.mobile.RemoteConnectionLifecycleTest --tests com.openandroidintelligence.mobile.RemoteRuntimeTest --tests com.openandroidintelligence.mobile.RemoteWorkspaceUiDecouplingTest --tests com.openandroidintelligence.mobile.RemoteHarnessCatalogTest --tests com.openandroidintelligence.mobile.RemoteSessionDeliveryIntegrationTest --tests com.openandroidintelligence.mobile.RemoteAttachmentMessageRecoveryTest`（全部通过，0 失败 0 跳过，零 CloseGuard 警告）
    - 重点覆盖结果：
-     - `RemoteConnectionLifecycleTest`：11/11 通过（已连接切换不同 Agent、同 Agent 切工作区复用通道、打开菜单自动拉取工作区与会话、冷启动首帧直达会话与宽限期不弹离线、瞬时抖动宽限期内原地热升级同步增量消息、宽限期耗尽降级与后台静默重连升级、离线重试防重入且保持会话路由、明确凭据撤销 `DEVICE_REVOKED` 回退登录、热升级媒体防误退役、真实 `TimeoutCancellationException` 超时降级与复位、离线未缓存兄弟工作区 `Loadable.Empty` 空态不转圈）
+     - `RemoteConnectionLifecycleTest`：16/16 通过（在原 11 项基础上新增：同 Agent 切工作区初始化失败保留旧控制器存活、跨宿主发现恢复失败自动触发后台重连并自愈、Codex 沿 `nextCursor` 翻页拉全多页会话、服务端返回空工作区列表清空内存与重启后持久化缓存、离线订阅 `HotSwappableAttachmentCoordinator.observe()` 后热升级自动接收 `VERIFIED`）
      - `RemoteWorkspaceUiDecouplingTest`：4/4 通过（登录页不暴露工作区、设置页已连接切换即时生效、离线横幅原位重连展示与防重入、凭据撤销说明与宽限期横幅隐藏）
      - `RemoteRuntimeTest`：21/21 通过
      - `RemoteHarnessCatalogTest`：3/3 通过
      - `RemoteSessionDeliveryIntegrationTest`：7/7 通过
-     - `RemoteLoginPresentationTest`：9/9 通过
-     - `RemoteRootInteractionTest`：5/5 通过
-     - `BubbleConversationTest`：30/30 通过
-     - 其余受影响校验类（`ArchitectureBoundaryTest` 2/2、`ConversationUiCapabilitiesTest` 5/5、`LocalConversationFirstFrameTest` 6/6、`MaterialTokenGuardTest` 2/2、`NativeNotificationNavigationTest` 2/2、`NativeNotificationRoutingTest` 3/3、`RemoteDeviceNameSettingTest` 2/2、`RemoteLocalEntryPointsTest` 4/4、`RemoteNewSessionNavigationTest` 5/5、`SettingsNavigationTest` 2/2、`SettingsResponsiveHostRegressionTest` 5/5、`SettingsStateIntegrityTest` 4/4、`WorkbenchNavigationTest` 2/2、`AssistantConversationWorkspaceTest` 2/2）：全部通过
+     - `RemoteAttachmentMessageRecoveryTest`：1/1 通过
+     - 前次全受影响 22 类（`4eb26c3a`）中其余 17 类（`RemoteLoginPresentationTest` 9/9、`RemoteRootInteractionTest` 5/5、`BubbleConversationTest` 30/30、`ArchitectureBoundaryTest` 2/2、`ConversationUiCapabilitiesTest` 5/5、`LocalConversationFirstFrameTest` 6/6、`MaterialTokenGuardTest` 2/2、`NativeNotificationNavigationTest` 2/2、`NativeNotificationRoutingTest` 3/3、`RemoteDeviceNameSettingTest` 2/2、`RemoteLocalEntryPointsTest` 4/4、`RemoteNewSessionNavigationTest` 5/5、`SettingsNavigationTest` 2/2、`SettingsResponsiveHostRegressionTest` 5/5、`SettingsStateIntegrityTest` 4/4、`WorkbenchNavigationTest` 2/2、`AssistantConversationWorkspaceTest` 2/2）：均已通过
    - 说明：`Remote*`、`Settings*`、`Bubble*`、`:conversation-*` 与 `:gateway-client` 测试报告中零 CloseGuard 警告；既有 `LocalConversationFirstFrameTest` XML 含既有的 Robolectric `SQLiteOpenHelper` CloseGuard 日志，与本次连接层改造无关。
    - 本地 `npm run test:pr` 说明：除上述已全部单独回归通过的受影响模块外，本地未修改模块的离线环境缺失前提仅出现在 `:plugin-runtime-wasm`（`CompiledReferencePluginTest` 2/3 需预编 Rust 参考插件）与 `:sms-collector`（`AndroidSmsManagerPortTest` 9/9 需离线拉取 Robolectric SDK 31/32/33 jar），相关全矩阵构建交由 GitHub Actions CI 验证。
