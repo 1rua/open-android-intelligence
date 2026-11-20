@@ -841,6 +841,7 @@ class RemoteRuntime(
                     }
                     var borrowed = channel?.takeIf { it.scope.hostDeviceId == host.deviceId }
                     var discovery: RemoteRpcChannel? = null
+                    var ownDiscoveryError: String? = null
                     try {
                         try {
                             borrowed?.invoke("harness.transport.describe", JsonValue.JObject(emptyList()))
@@ -851,6 +852,9 @@ class RemoteRuntime(
                             borrowed = null
                         } catch (_: TimeoutCancellationException) {
                             borrowed = null
+                        }
+                        if (borrowed == null) {
+                            modelSequence.incrementAndGet()
                         }
                         if (borrowed == null && previousWorkspace != null && mutableController.value != null) {
                             // 跨宿主发现将替换底层隧道：先让原工作台原地退回本地镜像与重连中指示，绝不清空控制器踢回登录页。
@@ -923,6 +927,7 @@ class RemoteRuntime(
                         )
                     } catch (failure: Exception) {
                         if (failure.isTrueCancellation()) throw failure
+                        ownDiscoveryError = errorCodeOf(failure)
                         fail(failure)
                     } finally {
                         withContext(NonCancellable) {
@@ -936,7 +941,6 @@ class RemoteRuntime(
                                         currentAccount == activeAccount &&
                                         workspaceContext.value.activeWorkspace == previousWorkspace.endpoint.key
                                     if (borrowed == null && stillSameTarget && scope.isActive && switchGeneration.get() == ticket) {
-                                        val discoveryError = agentConnection.value.errorCode
                                         val restoredOnline = runCatching {
                                             connectAndUpgradeCurrentWorkspaceLocked(currentAccount!!, previousWorkspace!!)
                                         }.onFailure {
@@ -952,8 +956,8 @@ class RemoteRuntime(
                                                 },
                                             )
                                         }
-                                        if (discoveryError != null && agentConnection.value.errorCode == null) {
-                                            updateLayerStates(agentTransform = { it.copy(errorCode = discoveryError) })
+                                        if (ownDiscoveryError != null && agentConnection.value.errorCode == null) {
+                                            updateLayerStates(agentTransform = { it.copy(errorCode = ownDiscoveryError) })
                                         }
                                     }
                                 } finally {
@@ -2048,7 +2052,9 @@ class RemoteRuntime(
                 }
             } catch (failure: Exception) {
                 if (failure.isTrueCancellation()) throw failure
-                if (repository === repo) fail(failure)
+                if (repository === repo && modelSequence.get() == sequence && !agentConnection.value.busy) {
+                    fail(failure)
+                }
             } finally {
                 if (repository === repo && modelSequence.get() == sequence) {
                     updateLayerStates(workspaceTransform = { it.copy(modelBusy = false) })
@@ -2177,6 +2183,7 @@ class RemoteRuntime(
     }
 
     private suspend fun retireOnlineHandlesOnly() {
+        modelSequence.incrementAndGet()
         reconcileObserver?.cancelAndJoin(); reconcileObserver = null
         hotCatalog?.detach()
         ownerMediaSource?.close(); ownerMediaSource = null
@@ -2192,6 +2199,7 @@ class RemoteRuntime(
 
     /** 关闭当前工作区控制器与镜像上下文，但保留底层 Host 通道以供同 Agent/同 Host 复用。 */
     private suspend fun retireWorkspaceContextKeepingChannel() {
+        modelSequence.incrementAndGet()
         hotRepository?.detachOnline(StreamHealth.IDLE)
         hotAttachments?.detach()
         hotMediaSource?.detach()
@@ -2224,6 +2232,7 @@ class RemoteRuntime(
     }
 
     private suspend fun closeChannelOnly() {
+        modelSequence.incrementAndGet()
         activeCarriers = emptyList()
         hydratedAgentForChannel = null
         lastHydratedAtMs = 0L
