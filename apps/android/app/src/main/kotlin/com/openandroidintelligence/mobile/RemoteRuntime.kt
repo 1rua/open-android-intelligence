@@ -583,9 +583,8 @@ class RemoteRuntime(
                     snapshot.messages,
                     activityKnown = snapshot.activityKnown,
                 )
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
+            } catch (failure: Exception) {
+                if (failure.isTrueCancellation()) throw failure
                 // 对账失败时保留待核对状态，等待后续恢复或周期重试。
             }
         }
@@ -1801,6 +1800,57 @@ class RemoteRuntime(
         val currentScope = ownerConversationScope
         val currentActiveRef = activeThreadRef
 
+        fun publishConnectedLayerState() {
+            val agentKey = AgentKey.fromEndpointKey(formattedConfirmed.endpoint.key)
+            updateLayerStates(
+                agentTransform = { current ->
+                    val resolvedHostName = current.activeHostName
+                        ?: current.hosts.firstOrNull { h -> h.deviceId == agentKey.hostId }?.name
+                        ?: current.agents.firstOrNull { a -> a.key == agentKey }?.hostName
+                    val backendName = backendDisplayName(agentKey.backendId.value)
+                    val resolvedAgentName = current.agents.firstOrNull { a -> a.key == agentKey }?.displayName
+                        ?: resolvedHostName?.let { h -> "$h · $backendName" }
+                        ?: current.activeAgentName
+                        ?: backendName
+                    val discoveredEntry = DiscoveredAgent(
+                        key = agentKey,
+                        hostName = resolvedHostName ?: agentKey.hostId,
+                        backendName = backendName,
+                        displayName = resolvedAgentName,
+                        hostOnline = true,
+                        availability = EndpointAvailability.AVAILABLE,
+                    )
+                    val mergedAgents = (current.agents.filterNot { a -> a.key == agentKey } + discoveredEntry)
+                        .distinctBy { a -> a.key }
+                    saveDiscoveredAgents(account, mergedAgents)
+                    current.copy(
+                        account = account,
+                        agents = mergedAgents,
+                        activeAgent = agentKey,
+                        activeHostName = resolvedHostName,
+                        activeAgentName = resolvedAgentName,
+                        phase = AgentConnectionPhase.CONNECTED,
+                        offlineConfirmed = false,
+                        reconnectingInPlace = false,
+                        busy = false,
+                        errorCode = null,
+                    )
+                },
+                workspaceTransform = { current ->
+                    val list = if (current.workspaces.any { it.endpoint.key == formattedConfirmed.endpoint.key }) {
+                        current.workspaces
+                    } else {
+                        current.workspaces + formattedConfirmed
+                    }
+                    current.copy(
+                        agentKey = agentKey,
+                        workspaces = list,
+                        activeWorkspace = formattedConfirmed.endpoint.key,
+                    )
+                },
+            )
+        }
+
         if (currentController == null ||
             currentHotRepo == null ||
             currentHotMedia == null ||
@@ -1814,6 +1864,8 @@ class RemoteRuntime(
             currentActiveRef == null
         ) {
             switchWorkspaceControllerLocked(account, nextChannel, carrier, formattedConfirmed, null)
+            publishConnectedLayerState()
+            refreshBackgroundWork()
         } else {
             // 先释放旧在线子句柄，保留控制器与本地镜像及媒体缓存
             retireOnlineHandlesOnly()
@@ -1847,6 +1899,10 @@ class RemoteRuntime(
             assistantWorkspace = buildAssistantWorkspace(currentScope, formattedConfirmed, ownedScope)
             mutableAssistantVersion.value++
 
+            saveSelection(formattedConfirmed)
+            publishConnectedLayerState()
+            observeBackgroundWork()
+
             val supported = carrier.capabilities
             currentController.updateRemoteCapabilities(
                 online = true,
@@ -1857,58 +1913,7 @@ class RemoteRuntime(
                 approvals = SessionCapability.APPROVAL in supported,
                 unarchive = SessionCapability.UNARCHIVE in supported,
             )
-            saveSelection(formattedConfirmed)
-            observeBackgroundWork()
         }
-
-        val agentKey = AgentKey.fromEndpointKey(formattedConfirmed.endpoint.key)
-        updateLayerStates(
-            agentTransform = { current ->
-                val resolvedHostName = current.activeHostName
-                    ?: current.hosts.firstOrNull { h -> h.deviceId == agentKey.hostId }?.name
-                    ?: current.agents.firstOrNull { a -> a.key == agentKey }?.hostName
-                val backendName = backendDisplayName(agentKey.backendId.value)
-                val resolvedAgentName = current.agents.firstOrNull { a -> a.key == agentKey }?.displayName
-                    ?: resolvedHostName?.let { h -> "$h · $backendName" }
-                    ?: current.activeAgentName
-                    ?: backendName
-                val discoveredEntry = DiscoveredAgent(
-                    key = agentKey,
-                    hostName = resolvedHostName ?: agentKey.hostId,
-                    backendName = backendName,
-                    displayName = resolvedAgentName,
-                    hostOnline = true,
-                    availability = EndpointAvailability.AVAILABLE,
-                )
-                val mergedAgents = (current.agents.filterNot { a -> a.key == agentKey } + discoveredEntry)
-                    .distinctBy { a -> a.key }
-                saveDiscoveredAgents(account, mergedAgents)
-                current.copy(
-                    account = account,
-                    agents = mergedAgents,
-                    activeAgent = agentKey,
-                    activeHostName = resolvedHostName,
-                    activeAgentName = resolvedAgentName,
-                    phase = AgentConnectionPhase.CONNECTED,
-                    offlineConfirmed = false,
-                    reconnectingInPlace = false,
-                    busy = false,
-                    errorCode = null,
-                )
-            },
-            workspaceTransform = { current ->
-                val list = if (current.workspaces.any { it.endpoint.key == formattedConfirmed.endpoint.key }) {
-                    current.workspaces
-                } else {
-                    current.workspaces + formattedConfirmed
-                }
-                current.copy(
-                    agentKey = agentKey,
-                    workspaces = list,
-                    activeWorkspace = formattedConfirmed.endpoint.key,
-                )
-            },
-        )
     }
 
     /** 切换至新工作区上下文并原子发布新控制器（新上下文就绪前保留旧控制器存活，切换失败不波及旧工作台）。 */
@@ -2060,7 +2065,7 @@ class RemoteRuntime(
                 val encodedId = RemoteLocalIds.encode(item.id)
                 merged[encodedId] = ConversationSummary(
                     id = ConversationId(encodedId),
-                    title = item.title,
+                    title = ContextInjectionFilter.sanitizeSummaryText(item.title),
                     updatedAt = item.updatedAt,
                     archived = item.archived,
                 )
@@ -2527,7 +2532,11 @@ class RemoteRuntime(
                     }
                 }
             }.getOrNull()
-            result[ws.endpoint.key] = if (cached != null) Loadable.Ready(cached) else Loadable.Empty
+            result[ws.endpoint.key] = if (cached != null) {
+                Loadable.Ready(cached.map { it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title)) })
+            } else {
+                Loadable.Empty
+            }
         }
         return result
     }
