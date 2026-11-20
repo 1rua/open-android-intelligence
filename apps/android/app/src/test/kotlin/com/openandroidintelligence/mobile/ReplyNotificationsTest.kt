@@ -402,9 +402,13 @@ class ReplyNotificationsTest {
         observer.accept(status("completed", generation = null, userId = "u-upg", clientId = "client-upg"))
         assertTrue("旧版 done 围栏升级后仍应阻止重复提醒", posts.isEmpty())
 
-        // 2. COMPLETED 先到进入 awaiting 后，若旧 DELIVERED 重放，仍必须保留 awaiting 等待正文触发提醒
+        // 2. COMPLETED 先到进入 awaiting 后，若旧 DELIVERED 重放或重复 COMPLETED 到达，仍必须保留 awaiting 等待正文触发提醒
         clock += 50
         observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
+        observer.accept(status("completed", generation = null, userId = "u-wait", clientId = "client-wait"))
+        // 另一个已完成旧轮次 u-upg 重放 DELIVERED，绝不能误清当前 u-wait 的 awaiting 状态
+        observer.accept(status("delivered", generation = null, userId = "u-upg", clientId = "client-upg"))
+        // 同一等待中轮次再次收到重复 COMPLETED（如修订号更新）也必须保留 awaiting 状态
         observer.accept(status("completed", generation = null, userId = "u-wait", clientId = "client-wait"))
         observer.accept(status("delivered", generation = null, userId = "u-wait", clientId = "client-wait"))
         observer.accept(message("conversation.message.completed", id = "r-wait", generation = null))

@@ -328,6 +328,7 @@ internal class ReplyCompletionObserver(
     private val firstEnabledAt = preferences.getLong("first-enabled-at", 0L).takeIf { it > 0L }
         ?: now().also { preferences.edit().putLong("first-enabled-at", it).commitOrLog(TAG) }
     private var nextPruneAt = Long.MIN_VALUE
+    private val liveAwaitingRounds = mutableMapOf<String, String>()
 
     @Synchronized fun accept(input: NativeNotificationInput) {
         if (input.target.profileId != profileId || input.target.accountId != accountId) return
@@ -395,9 +396,9 @@ internal class ReplyCompletionObserver(
                     preferences.edit().putLong("done.$round", occurredAt).commitOrLog(TAG)
                 }
                 if (preferences.contains("done.$round") || upgradedLegacyHit) {
-                    // 回放的排队/投递帧不能让先前已完成但未见正文的旧轮次继续挂起接管回放正文。
+                    // 仅清理与当前已终结轮次匹配的 awaiting 槽位，绝不能误清后续新轮次的 awaiting 状态。
                     if (status.status in setOf(AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED)) {
-                        clearAwaitingLegacy(conversationKey, occurredAt)
+                        clearAwaitingLegacy(conversationKey, occurredAt, digests)
                     }
                     return
                 }
@@ -412,19 +413,22 @@ internal class ReplyCompletionObserver(
                     }
                     AgentMessageStatus.COMPLETED -> {
                         val active = preferences.getString(activeKey, null)
-                        val hasReply = active == round && preferences.contains("reply.$round")
+                        val awaiting = preferences.getString(awaitingKey, null)
+                        val matchesRound = active == round || awaiting == round
+                        val hasReply = matchesRound && preferences.contains("reply.$round")
                         if (hasReply) {
                             finish(round, occurredAt)
                             removeLegacy(conversationKey)
                             post(input.target, "legacy:$round")
                         } else if (active == round) {
                             // 终态先于正文到达时转入等待正文槽位，保留同轮次正文匹配能力，同时脱离活跃队列。
+                            liveAwaitingRounds[conversationKey] = round
                             preferences.edit()
                                 .remove(activeKey)
                                 .putString(awaitingKey, round)
                                 .putLong("success.$round", occurredAt)
                                 .commitOrLog(TAG)
-                        } else {
+                        } else if (awaiting != round) {
                             finish(round, occurredAt)
                         }
                     }
@@ -466,13 +470,16 @@ internal class ReplyCompletionObserver(
         removeLegacy(conversationKey)
     }
 
-    private fun clearAwaitingLegacy(conversationKey: String, occurredAt: Long) {
+    private fun clearAwaitingLegacy(conversationKey: String, occurredAt: Long, expectedRounds: List<String>) {
         val awaiting = preferences.getString("legacy.awaiting.$conversationKey", null) ?: return
+        if (awaiting !in expectedRounds && liveAwaitingRounds[conversationKey] == awaiting) return
         finish(awaiting, occurredAt)
+        liveAwaitingRounds.remove(conversationKey)
         preferences.edit().remove("legacy.awaiting.$conversationKey").commitOrLog(TAG)
     }
 
     private fun removeLegacy(conversationKey: String) {
+        liveAwaitingRounds.remove(conversationKey)
         preferences.edit()
             .remove("legacy.current.$conversationKey")
             .remove("legacy.awaiting.$conversationKey")
