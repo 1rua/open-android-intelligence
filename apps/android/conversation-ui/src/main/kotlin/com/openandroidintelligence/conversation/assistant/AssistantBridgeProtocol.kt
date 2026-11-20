@@ -382,11 +382,7 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
     } else {
         ContextInjectionFilter.sanitizeText(
             text = text,
-            role = if (role == ContextInjectionFilter.SenderRole.USER) {
-                ContextInjectionFilter.SenderRole.USER
-            } else {
-                ContextInjectionFilter.SenderRole.ASSISTANT
-            },
+            role = ContextInjectionFilter.contentSanitizationRole(sender),
             streaming = streaming,
         )
     }

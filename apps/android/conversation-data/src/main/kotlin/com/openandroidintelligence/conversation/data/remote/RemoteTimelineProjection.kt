@@ -202,8 +202,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "assistant/message" -> return upsert(data, "assistant", false, event.number("seq"), source, turn)
             "tool/call" -> return execution(data, id, source, false)
             "tool/result" -> return execution(data, id, source, true)
-            "session/title", "title/changed" -> data.text("title")?.let { title ->
-                return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), title))
+            "session/title", "title/changed" -> data.text("title")?.let { rawTitle ->
+                val cleanTitle = ContextInjectionFilter.sanitizeSummaryText(rawTitle)
+                if (cleanTitle.isEmpty()) return emptyList()
+                return listOf(VerifiedConversationEvent.TitleUpdated(source.id(id), time, ConversationId(sessionId), cleanTitle))
             }
         }
         return emptyList()
@@ -414,14 +416,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val rawCandidateParts = content?.let {
                 rawContentParts(it.json(), RemoteMediaRevision(message.id, rowSequences[message.id], source.historical, source.historyRead))
             } ?: (message.rawParts ?: message.parts)
-            val senderRoleEnum = if (ContextInjectionFilter.classifySender(message.sender) == ContextInjectionFilter.SenderRole.USER) {
-                ContextInjectionFilter.SenderRole.USER
-            } else {
-                ContextInjectionFilter.SenderRole.ASSISTANT
-            }
             val sanitized = ContextInjectionFilter.sanitizeParts(
                 parts = rawCandidateParts,
-                role = senderRoleEnum,
+                role = ContextInjectionFilter.contentSanitizationRole(message.sender),
                 streaming = !completed,
             )
             val newParts = sanitized.parts
@@ -550,14 +547,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             .ifEmpty {
                 message.text("text")?.let { raw -> listOf(MessagePart.Text(raw)) }.orEmpty()
             }
-        val senderRoleEnum = if (ContextInjectionFilter.classifySender(role) == ContextInjectionFilter.SenderRole.USER) {
-            ContextInjectionFilter.SenderRole.USER
-        } else {
-            ContextInjectionFilter.SenderRole.ASSISTANT
-        }
         val sanitizedResult = ContextInjectionFilter.sanitizeParts(
             parts = rawCandidateParts,
-            role = senderRoleEnum,
+            role = ContextInjectionFilter.contentSanitizationRole(role),
             streaming = streaming,
         )
         val parts = sanitizedResult.parts

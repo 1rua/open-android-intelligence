@@ -258,12 +258,37 @@ internal class NativeConversationNotifications(
         }
     }
 
+    private fun sanitizedTitleFor(target: ReplyNotificationTarget): String? =
+        titleFor(target)?.let { ContextInjectionFilter.sanitizeSummaryText(it, maxLength = 80) }
+            ?.takeIf { it.isNotBlank() }
+
+    private fun latestAssistantNotificationReply(
+        messages: List<TimelineMessage>,
+        startIndex: Int,
+    ): TimelineMessage? = if (startIndex < 0) null else {
+        messages.drop(startIndex)
+            .takeWhile { ContextInjectionFilter.classifySender(it.sender) != ContextInjectionFilter.SenderRole.USER }
+            .lastOrNull {
+                ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                    it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") &&
+                    extractNotificationReplyText(it).isNotBlank()
+            }
+    }
+
     private fun extractNotificationReplyText(message: TimelineMessage): String {
         val projected = ContextInjectionFilter.projectMessage(message)?.takeUnless { it.isDeleted } ?: return ""
         val rawJoined = projected.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.value }
-        val cleanText = ContextInjectionFilter.sanitizeNotificationPreview(rawJoined)
-        return cleanText.ifBlank {
-            if (projected.parts.any { it is MessagePart.Attachment }) context.getString(UiR.string.notif_reply_attachment_placeholder) else ""
+        val hasAttachments = projected.parts.any { it is MessagePart.Attachment }
+        val cleanPreview = ContextInjectionFilter.filterNotificationPreview(
+            sender = projected.sender,
+            isMeta = projected.isMeta,
+            visibility = projected.visibility,
+            messageType = projected.messageType,
+            rawText = rawJoined,
+            hasAttachments = hasAttachments,
+        ) ?: return ""
+        return cleanPreview.ifBlank {
+            if (hasAttachments) context.getString(UiR.string.notif_reply_attachment_placeholder) else ""
         }
     }
 
@@ -291,13 +316,7 @@ internal class NativeConversationNotifications(
             replyIndex >= 0 -> replyIndex
             else -> messages.indexOfFirst { it.timestamp >= (startedAt[key] ?: Long.MAX_VALUE) }
         }
-        val finalReply = if (first < 0) null else messages.drop(first)
-            .takeWhile { ContextInjectionFilter.classifySender(it.sender) != ContextInjectionFilter.SenderRole.USER }
-            .lastOrNull {
-                ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
-                    it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") &&
-                    extractNotificationReplyText(it).isNotBlank()
-            }
+        val finalReply = latestAssistantNotificationReply(messages, first)
         val snapshotCompleted = finalReply?.state?.uppercase() in setOf("CONFIRMED", "COMPLETED")
         val snapshotText = finalReply?.let(::extractNotificationReplyText)
         val snapshotRevision = finalReply?.contentRevision
@@ -369,13 +388,11 @@ internal class NativeConversationNotifications(
                     val user = newerUsers.single()
                     userMessages[remoteKey] = user.id
                     user.timestamp.takeIf { it > 0L }?.let { startedAt.putIfAbsent(remoteKey, it) }
-                    val body = messages.drop(messages.indexOf(user) + 1)
-                        .takeWhile { ContextInjectionFilter.classifySender(it.sender) != ContextInjectionFilter.SenderRole.USER }
-                        .lastOrNull {
-                            ContextInjectionFilter.classifySender(it.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
-                                it.state.uppercase() in setOf("CONFIRMED", "COMPLETED", "STREAMING") &&
-                                extractNotificationReplyText(it).isNotBlank()
-                        }
+                    val userIndexInTimeline = messages.indexOf(user)
+                    val body = latestAssistantNotificationReply(
+                        messages = messages,
+                        startIndex = if (userIndexInTimeline >= 0) userIndexInTimeline + 1 else -1,
+                    )
                     val text = body?.let(::extractNotificationReplyText)
                     if (body != null && !text.isNullOrBlank()) {
                         replies[remoteKey] = ReplySnapshot(body.id, text, body.contentRevision ?: 0L, body.timestamp,
@@ -500,9 +517,7 @@ internal class NativeConversationNotifications(
             val sameGeneration = previous != null && (round == null || previous.generationId == round)
             var next = previous ?: NativeConversationSession(target, round, sessionTitle(target), NativeConversationStatus.RUNNING, updatedAt = occurredAt)
             startedAt.putIfAbsent(roundKey, occurredAt)
-            titleFor(target)?.let { ContextInjectionFilter.sanitizeSummaryText(it, maxLength = 80) }
-                ?.takeIf { it.isNotBlank() }
-                ?.let { next = next.copy(title = it) }
+            sanitizedTitleFor(target)?.let { next = next.copy(title = it) }
             when (input.kind) {
                 NativeNotificationKind.REPLY_DELTA, NativeNotificationKind.REPLY_COMPLETED -> {
                     val unambiguous = generation != null || previous?.generationId == null || previous.generationId.startsWith("legacy:")
@@ -573,7 +588,7 @@ internal class NativeConversationNotifications(
         val previous = _sessions.value.firstOrNull { it.target == target }
         val terminalAt = deliveryOccurredAt.takeIf { it > 0L } ?: now()
         terminalRounds[RoundKey(target, generationId)] = NativeConversationStatus.COMPLETED
-        val currentTitle = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+        val currentTitle = sanitizedTitleFor(target)
             ?: previous?.title?.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
             ?: sessionTitle(target)
         val next = withRemainingRounds((previous ?: NativeConversationSession(target, generationId, currentTitle, NativeConversationStatus.COMPLETED, updatedAt = terminalAt))
@@ -601,7 +616,7 @@ internal class NativeConversationNotifications(
         reconciliationDeadlines[session.target] = now() + FINAL_RECONCILIATION_WINDOW
         reconciliationDueAt[session.target] = now()
         reconciliationAttemptCounts[session.target] = 0
-        val finalTitle = titleFor(session.target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+        val finalTitle = sanitizedTitleFor(session.target)
             ?: session.title.takeIf { it.isNotBlank() && it != context.getString(UiR.string.notif_conv_default_title) }
             ?: sessionTitle(session.target)
         update(withRemainingRounds(session.copy(title = finalTitle, lastOutcome = session.status)),
@@ -694,7 +709,7 @@ internal class NativeConversationNotifications(
         edit.apply()
     }
 
-    private fun sessionTitle(target: ReplyNotificationTarget): String = titleFor(target)?.trim()?.take(80)?.takeIf { it.isNotBlank() }
+    private fun sessionTitle(target: ReplyNotificationTarget): String = sanitizedTitleFor(target)
         ?: context.getString(UiR.string.notif_conv_default_title)
 
     companion object {

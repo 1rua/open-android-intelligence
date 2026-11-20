@@ -461,6 +461,21 @@ class ContextInjectionFilterTest {
         )
     }
 
+    @Test
+    fun `XML信封内含代码块同名闭合标签示例时不提前截断`() {
+        val raw = """
+            <system-reminder>
+            请勿将 `</system-reminder>` 直接打印给终端用户。
+            </system-reminder>
+
+            真实回答内容
+        """.trimIndent()
+        assertEquals(
+            "真实回答内容",
+            ContextInjectionFilter.sanitizeText(raw, ContextInjectionFilter.SenderRole.ASSISTANT, streaming = false),
+        )
+    }
+
     private fun msg(
         id: String = "m1",
         sender: String = "assistant",

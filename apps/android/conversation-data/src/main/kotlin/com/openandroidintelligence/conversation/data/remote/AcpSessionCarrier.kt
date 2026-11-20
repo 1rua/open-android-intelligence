@@ -2,6 +2,7 @@ package com.openandroidintelligence.conversation.data.remote
 
 import com.openandroidintelligence.conversation.ports.PageRequest
 import com.openandroidintelligence.conversation.remote.*
+import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
@@ -37,8 +38,8 @@ class AcpSessionCarrier(override val channel: RemoteRpcChannel, override val bac
         if (page.cursor != null) throw RemoteSessionException("CURSOR_EXPIRED")
         val result = call("dsh/sessionList", obj("path" to workspace.path, "backend" to backend))
         return RemoteSessionPage(result.requiredArray("items").map { row ->
-            RemoteSessionRow(row.requiredText("conversationId"), row.text("title") ?: "", millis(row, "createdAt"),
-                millis(row, "updatedAt"), row.flag("archived") == true)
+            RemoteSessionRow(row.requiredText("conversationId"), ContextInjectionFilter.sanitizeSummaryText(row.text("title")),
+                millis(row, "createdAt"), millis(row, "updatedAt"), row.flag("archived") == true)
         })
     }
 

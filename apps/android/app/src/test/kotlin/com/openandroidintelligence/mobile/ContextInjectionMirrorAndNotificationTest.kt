@@ -241,6 +241,9 @@ class ContextInjectionMirrorAndNotificationTest {
         val listPage = repo.listConversations(scope, PageRequest())
         assertEquals("干净标题", listPage.conversations.single().title)
 
+        val pagedList = repo.listConversations(scope, PageRequest(cursor = "page-2"))
+        assertEquals("干净标题", pagedList.conversations.single().title)
+
         val observed = repo.observeEvents(scope).toList()
         // 非对话 context 消息被 projectEvent 转为 Tombstoned / 屏蔽；代码防误杀消息原样放行
         assertTrue(observed[0] is VerifiedConversationEvent.TimelineTombstoned)

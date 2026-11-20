@@ -1051,7 +1051,11 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
         }
     override suspend fun listConversations(scope: ConversationScope, page: PageRequest): ConversationPage = try {
         if (page.cursor == null) refreshCompleteHistory(scope)
-        else delegate.listConversations(scope,page)
+        else delegate.listConversations(scope,page).let { paged ->
+            paged.copy(conversations = paged.conversations.map {
+                it.copy(title = ContextInjectionFilter.sanitizeSummaryText(it.title))
+            })
+        }
     } catch (c: CancellationException) { throw c } catch (e: java.io.IOException) {
         if (page.cursor == null) withContext(Dispatchers.IO) { mirror.threads()?.let { ConversationPage(it,null,mirror.threadsSnapshotRevision(),authoritative=false) } } ?: throw e else throw e
     }
@@ -1106,7 +1110,8 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
             inFlightEventCommits.update { it + 1 }
             try {
                 val streaming = event is VerifiedConversationEvent.TimelineUpsert &&
-                    event.message.sender == "assistant" && event.message.state == "STREAMING"
+                    ContextInjectionFilter.classifySender(event.message.sender) == ContextInjectionFilter.SenderRole.ASSISTANT &&
+                    event.message.state == "STREAMING"
                 val now = clock()
                 val intervalNanos = streamingPersistIntervalMillis * 1_000_000L
                 // 中间流式快照不是最终事实：按间隔合并落盘，避免每帧一次加密事务把上游读流压成背压。

@@ -205,6 +205,15 @@ class CrossAgentContextInjectionProjectionTest {
         assertEquals("修复通知栏泄漏问题", titleEvent.newTitle)
         assertEquals(ConversationId(local), titleEvent.conversationId)
 
+        val durableTitleEvent = projection.accept(
+            event(
+                seq = 99,
+                kind = "session/title",
+                data = obj("title" to "<system-reminder>hidden</system-reminder>\n长连标题同步"),
+            ),
+        ).filterIsInstance<VerifiedConversationEvent.TitleUpdated>().single()
+        assertEquals("长连标题同步", durableTitleEvent.newTitle)
+
         val channel = object : RemoteRpcChannel {
             override val scope = RemoteRpcConnectionScope("https://remote.example", "acc", "host", "cli", "conn", 1)
             override val capabilities = setOf("codex.appserver.v1")

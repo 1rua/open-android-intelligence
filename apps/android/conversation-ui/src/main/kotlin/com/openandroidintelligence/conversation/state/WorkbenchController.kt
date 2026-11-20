@@ -2051,7 +2051,11 @@ class WorkbenchController(
         // already settled must not come back as a question.
         // (mirrored/mirroredRevisions are message state and are cleared above.)
         memory?.let { saved ->
-            mirrored.putAll(saved.messages.associateBy { it.id })
+            mirrored.putAll(
+                saved.messages
+                    .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .associateBy { it.id }
+            )
             mirroredRevisions.putAll(saved.revisions)
             messageStatusRevisions.putAll(saved.statusRevisions)
             messageStatusesById.putAll(saved.statusesById)
@@ -2059,7 +2063,12 @@ class WorkbenchController(
         }
         restored?.let { saved ->
             draftRevision = saved.draftRevision
-            mirrored.putAll(saved.messages.map(::withLatestMessageStatus).associateBy { it.id })
+            mirrored.putAll(
+                saved.messages
+                    .map(::withLatestMessageStatus)
+                    .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .associateBy { it.id }
+            )
             mirroredRevisions.putAll(saved.revisions)
         }
         timelineJob?.cancel()
@@ -5610,7 +5619,7 @@ class WorkbenchController(
         val isUserRole = senderRole == ContextInjectionFilter.SenderRole.USER
         val sanitizedParts = ContextInjectionFilter.sanitizeParts(
             parts = sourceParts,
-            role = if (isUserRole) ContextInjectionFilter.SenderRole.USER else ContextInjectionFilter.SenderRole.ASSISTANT,
+            role = ContextInjectionFilter.contentSanitizationRole(message.sender),
             streaming = message.state == "STREAMING",
         )
         val messageAttachments = sanitizedParts.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Attachment>()
