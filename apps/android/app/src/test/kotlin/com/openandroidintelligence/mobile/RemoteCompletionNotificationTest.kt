@@ -145,6 +145,33 @@ class RemoteCompletionNotificationTest {
         }
     }
 
+    @Test fun `ACP非本机发起的连续两轮在省略generationId时均能补发终态并正常推送正文`() = runBlocking {
+        verifyBackendCompletion(
+            backend = "hermes",
+            capability = "agent.acp.v1",
+            prefName = "remote-acp-external-multiturn-test",
+        ) { _, _, frames, _, native, publications ->
+            // 第 1 轮非本机发起（未调用 submitMessage）
+            frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to native,
+                "update" to obj("sessionUpdate" to "agent_message_chunk", "content" to obj("type" to "text", "text" to "外源ACP第一轮正文")))))
+            frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to native,
+                "update" to obj("sessionUpdate" to "prompt_completed", "stopReason" to "end_turn"))))
+            withTimeout(5_000) { while (publications.count { it.second } < 1) delay(10) }
+            assertEquals("外源ACP第一轮正文", publications.last().first.latestReply)
+            assertEquals(NativeConversationStatus.COMPLETED, publications.last().first.status)
+
+            // 第 2 轮外源 ACP 轮次：必须分配新轮次标识，不被第一轮终态屏障吞掉
+            frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to native,
+                "update" to obj("sessionUpdate" to "agent_message_chunk", "content" to obj("type" to "text", "text" to "外源ACP第二轮正文")))))
+            frames.emit(obj("method" to "session/update", "params" to obj("sessionId" to native,
+                "update" to obj("sessionUpdate" to "prompt_completed", "stopReason" to "end_turn"))))
+            withTimeout(5_000) { while (publications.count { it.second } < 2) delay(10) }
+            assertEquals(2, publications.count { it.second })
+            assertEquals("外源ACP第二轮正文", publications.last().first.latestReply)
+            assertEquals(NativeConversationStatus.COMPLETED, publications.last().first.status)
+        }
+    }
+
     private suspend fun verifyBackendCompletion(
         backend: String,
         capability: String,

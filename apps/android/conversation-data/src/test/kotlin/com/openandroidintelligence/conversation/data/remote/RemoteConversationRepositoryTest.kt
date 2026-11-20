@@ -443,7 +443,7 @@ class RemoteConversationRepositoryTest {
     @Test fun `Codex第1页快照显示无活跃轮次时触发onTimelineSnapshot回调以便收口卡住通知`() = runTest {
         val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
         val carrier = Carrier(workspace).apply {
-            historyRead = { RemoteHistoryPage(listOf(obj("id" to "assistant-1", "sender" to "assistant", "text" to "后端已完成"))) }
+            historyRead = { RemoteHistoryPage(listOf(obj("id" to "assistant-1", "sender" to "assistant", "text" to "后端已完成")), revision = 5L) }
         }
         var snapshotCalls = 0
         var lastGenerationId: String? = "initial"
@@ -457,8 +457,14 @@ class RemoteConversationRepositoryTest {
                 lastGenerationId = generationId
             },
         )
+        // 即使本地投影仍卡在 RUNNING，只要权威快照返回 activeGenerationId=null 就必须触发收口回调
         repo.timeline(local, PageRequest()); runCurrent()
         assertEquals(1, snapshotCalls)
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "stuck-turn"))))
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        repo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(2, snapshotCalls)
         assertNull(lastGenerationId)
         repo.close()
     }

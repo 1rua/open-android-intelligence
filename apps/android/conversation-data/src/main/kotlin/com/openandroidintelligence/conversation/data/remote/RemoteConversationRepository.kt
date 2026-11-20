@@ -171,7 +171,20 @@ class RemoteConversationRepository(
         }
     }
     override suspend fun readConversation(conversationId: String): Conversation? = rows[conversationId]?.let { Conversation(ConversationId(conversationId), it.title, it.createdAt) }
-    override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+    override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
+        loadTimeline(conversationId, page, notifySnapshot = true).first
+
+    /** 仅拉取并合并第 1 页权威快照，供通知对账器直接读取远端真实活跃轮次而避免重复扣减节流配额。 */
+    suspend fun fetchReconciliationSnapshot(conversationId: String): Pair<String?, List<TimelineMessage>> {
+        val (_, activeGenerationId, snapshotMessages) = loadTimeline(conversationId, PageRequest(), notifySnapshot = false)
+        return activeGenerationId to snapshotMessages
+    }
+
+    private suspend fun loadTimeline(
+        conversationId: String,
+        page: PageRequest,
+        notifySnapshot: Boolean,
+    ): Triple<TimelinePage, String?, List<TimelineMessage>> {
         current()
         ensureFollow(conversationId)
         val mediaRead = mediaSource?.beginHistoryRead()
@@ -190,14 +203,15 @@ class RemoteConversationRepository(
         val (snapshotRows, snapshotMessages) = synchronized(target) {
             target.rows.values.filter { it.id in pageIds } to target.rows.values.toList()
         }
-        if (page.cursor == null && carrier.backend in setOf("harness", "codex")) {
+        if (notifySnapshot && page.cursor == null && carrier.backend in setOf("harness", "codex")) {
             val hasPending = pending[conversationId]?.let { turns -> synchronized(turns) { turns.isNotEmpty() } } == true
             val currentState = synchronized(target) { target.generationState }
-            if (!hasPending && currentState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING)) {
+            val authoritativeSnapshot = result.revision != null || result.activeGenerationId != null
+            if (!hasPending && (authoritativeSnapshot || currentState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING))) {
                 onTimelineSnapshot(workspace.endpoint.key, conversationId, result.activeGenerationId, snapshotMessages)
             }
         }
-        return TimelinePage(snapshotRows, result.nextCursor, result.revision)
+        return Triple(TimelinePage(snapshotRows, result.nextCursor, result.revision), result.activeGenerationId, snapshotMessages)
     }
     private suspend fun ensureFollow(id: String) {
         val opened = ready.computeIfAbsent(id) { CompletableDeferred() }

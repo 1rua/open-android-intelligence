@@ -191,40 +191,18 @@ class LiveUpdateNotificationsTest {
         assertFalse(settings.canPostLiveUpdates())
     }
 
-    @Test fun endToEndCompletionExitsLiveUpdateAndPostsSwipeableReplyNotificationWithoutStuckPlaceholder() {
-        replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        var clock = System.currentTimeMillis()
-        var seq = 0
-        val wiredPublisher = AndroidReplyNotificationPublisher(context, settings, suppress = { false })
-        val coordinator = NativeConversationNotifications(
-            context = context,
-            scope = scope,
-            publish = wiredPublisher::update,
-            titleFor = { "架构联调会话" },
-            now = { clock },
-            throttleMillis = 0L,
-            cancel = wiredPublisher::cancel,
-            forget = wiredPublisher::forget,
-        )
-        try {
-            coordinator.bind("profile", "account")
-            fun acceptEvent(type: String, payload: String) {
-                clock += 10
-                coordinator.accept(requireNotNull(notificationFact("profile", "account", "lu-${++seq}", clock, type, payload)))
-            }
-
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"gen-e2e-1","status":"delivered","revision":1}""")
+    @Test fun endToEndCompletionExitsLiveUpdateAndPostsSwipeableReplyNotificationWithoutStuckPlaceholder() =
+        withWiredCoordinator(title = "架构联调会话") { coordinator, emit, _ ->
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"gen-e2e-1","status":"delivered","revision":1}""", null)
             coordinator.requestReconciliation()
             val staleRequest = coordinator.reconciliationRequests().single()
             assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
 
-            acceptEvent("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"正在组织最终结论..."}],"revision":1}""")
+            emit("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"正在组织最终结论..."}],"revision":1}""", null)
             assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
 
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"完整最终答复"}],"revision":2}""")
-            // completed 先到、status(COMPLETED) 后到时，仍应退出 Live Update 并切换为普通通知
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"gen-e2e-1","status":"completed","revision":3}""")
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"完整最终答复"}],"revision":2}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"gen-e2e-1","status":"completed","revision":3}""", null)
 
             assertTrue("终态后常驻 Live Update 必须彻底退出", manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
             val replyNotif = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
@@ -238,121 +216,108 @@ class LiveUpdateNotificationsTest {
 
             // 终态后滞后 reconcile 或重连回放绝不复活 Live Update
             assertFalse(coordinator.reconcile(staleRequest, "gen-e2e-1" to "running", emptyList()))
-            acceptEvent("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"重放旧碎片"}],"revision":1}""")
+            emit("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","generationId":"gen-e2e-1","sender":"assistant","parts":[{"type":"text","text":"重放旧碎片"}],"revision":1}""", null)
             assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
             assertEquals(listOf(REPLY_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
-        } finally {
-            scope.cancel()
         }
-    }
 
-    @Test fun endToEndMissingAndMismatchedGenerationIdsExitLiveUpdateWithoutPlaceholder() {
-        replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        var clock = System.currentTimeMillis()
-        var seq = 0
-        val wiredPublisher = AndroidReplyNotificationPublisher(context, settings, suppress = { false })
-        val coordinator = NativeConversationNotifications(
-            context = context,
-            scope = scope,
-            publish = wiredPublisher::update,
-            titleFor = { "无ID兼容会话" },
-            now = { clock },
-            throttleMillis = 0L,
-            cancel = wiredPublisher::cancel,
-            forget = wiredPublisher::forget,
-        )
-        try {
-            coordinator.bind("profile", "account")
-            fun acceptEvent(type: String, payload: String, resolvedGenerationId: String? = null) {
-                clock += 10
-                val fact = requireNotNull(notificationFact("profile", "account", "lu-miss-${++seq}", clock, type, payload))
-                coordinator.accept(fact.copy(resolvedGenerationId = resolvedGenerationId))
-            }
-
+    @Test fun endToEndMissingAndMismatchedGenerationIdsExitLiveUpdateWithoutPlaceholder() =
+        withWiredCoordinator(title = "无ID兼容会话") { _, emit, advanceClock ->
             // 场景 1：无 generationId + messageId 在 status 前后变化
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"tmp-u1","clientMessageId":"cid-1","status":"delivered","revision":1}""")
-            acceptEvent("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","sender":"assistant","parts":[{"type":"text","text":"草稿"}],"revision":1}""")
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","sender":"assistant","parts":[{"type":"text","text":"缺失ID完整回复"}],"revision":2}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"srv-u1","clientMessageId":"cid-1","status":"completed","revision":3}""")
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"tmp-u1","clientMessageId":"cid-1","status":"delivered","revision":1}""", null)
+            emit("conversation.message.delta", """{"conversationId":"conversation","messageId":"r1","sender":"assistant","parts":[{"type":"text","text":"草稿"}],"revision":1}""", null)
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","sender":"assistant","parts":[{"type":"text","text":"缺失ID完整回复"}],"revision":2}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"srv-u1","clientMessageId":"cid-1","status":"completed","revision":3}""", null)
 
             assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
             val firstReply = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
             val firstStyle = Notification.Builder.recoverBuilder(context, firstReply).style as Notification.MessagingStyle
             assertEquals("缺失ID完整回复", firstStyle.messages.single().text.toString())
 
-            // 场景 2：status(COMPLETED) 先到、completed 后到，且中间 generationId 不一致
-            clock += 100
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"cid-2","generationId":"req-2","status":"delivered","revision":10}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"cid-2","generationId":"turn-2","status":"completed","revision":11}""")
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"turn-2","sender":"assistant","parts":[{"type":"text","text":"先终态后正文的跨ID回复"}],"revision":12}""", resolvedGenerationId = "req-2")
+            // 场景 2：status(COMPLETED) 先到、completed 后到，且无正文时不闪现空占位普通通知
+            advanceClock(100)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"cid-2","generationId":"req-2","status":"delivered","revision":10}""", null)
+            assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"cid-2","generationId":"turn-2","status":"completed","revision":11}""", null)
+            assertTrue("终态早于正文时必须立刻撤下 Live Update 且不闪现空占位通知", manager.activeNotifications.isEmpty())
 
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"turn-2","sender":"assistant","parts":[{"type":"text","text":"先终态后正文的跨ID回复"}],"revision":12}""", "req-2")
             assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
             val secondReply = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
             val secondStyle = Notification.Builder.recoverBuilder(context, secondReply).style as Notification.MessagingStyle
             assertEquals("先终态后正文的跨ID回复", secondStyle.messages.single().text.toString())
-        } finally {
-            scope.cancel()
         }
-    }
 
-    @Test fun endToEndConsecutiveTurnsRestartLiveUpdateAndExitCleanly() {
-        replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        var clock = System.currentTimeMillis()
-        var seq = 0
-        val wiredPublisher = AndroidReplyNotificationPublisher(context, settings, suppress = { false })
-        val coordinator = NativeConversationNotifications(
-            context = context,
-            scope = scope,
-            publish = wiredPublisher::update,
-            titleFor = { "多轮追问会话" },
-            now = { clock },
-            throttleMillis = 0L,
-            cancel = wiredPublisher::cancel,
-            forget = wiredPublisher::forget,
-        )
-        try {
-            coordinator.bind("profile", "account")
-            fun acceptEvent(type: String, payload: String) {
-                clock += 10
-                coordinator.accept(requireNotNull(notificationFact("profile", "account", "lu-multi-${++seq}", clock, type, payload)))
-            }
-
+    @Test fun endToEndConsecutiveTurnsRestartLiveUpdateAndExitCleanly() =
+        withWiredCoordinator(title = "多轮追问会话") { coordinator, emit, advanceClock ->
             // 第一轮完成
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"delivered","revision":1}""")
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"g1","sender":"assistant","parts":[{"type":"text","text":"第一轮完成"}],"revision":2}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"completed","revision":3}""")
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"delivered","revision":1}""", null)
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"g1","sender":"assistant","parts":[{"type":"text","text":"第一轮完成"}],"revision":2}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"completed","revision":3}""", null)
             assertEquals(listOf(REPLY_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
 
             // 第二轮重新拉起 Live Update，并互斥撤下上一轮普通回复通知
-            clock += 100
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2","status":"queued","revision":10}""")
+            advanceClock(100)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2","status":"queued","revision":10}""", null)
             assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
 
-            // 第二轮完成再次干净退出
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"g2","sender":"assistant","parts":[{"type":"text","text":"第二轮完成"}],"revision":11}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2","status":"completed","revision":12}""")
+            // 断连态下同样退出 Live Update 且回落普通通知必须可滑动关闭（非 ongoing）
+            coordinator.disconnect()
+            assertTrue(manager.activeNotifications.none { it.notification.channelId == LIVE_UPDATE_CHANNEL_ID })
+            val discNotif = manager.activeNotifications.single { it.notification.channelId == REPLY_CHANNEL_ID }.notification
+            assertEquals("断连兜底通知不能锁死为不可划除常驻", 0, discNotif.flags and Notification.FLAG_ONGOING_EVENT)
+            assertTrue(discNotif.flags and Notification.FLAG_AUTO_CANCEL != 0)
+
+            // 恢复流式并在第二轮完成后再次干净退出
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"g2","sender":"assistant","parts":[{"type":"text","text":"第二轮完成"}],"revision":11}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2","status":"completed","revision":12}""", null)
             assertEquals(listOf(REPLY_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
             val finalStyle = Notification.Builder.recoverBuilder(context, manager.activeNotifications.single().notification).style as Notification.MessagingStyle
             assertEquals("第二轮完成", finalStyle.messages.single().text.toString())
-        } finally {
-            scope.cancel()
+        }
+
+    @Test fun endToEndForegroundSuppressionAndBackgroundHandoffAreMutuallyExclusive() {
+        var inForeground = true
+        withWiredCoordinator(title = "前后台互斥会话", suppress = { inForeground }) { _, emit, advanceClock ->
+            // 前台可见时，进行中和完成均不得显示任何 Live Update 或普通回复通知
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g-fg","status":"delivered","revision":1}""", null)
+            assertTrue(manager.activeNotifications.isEmpty())
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"g-fg","sender":"assistant","parts":[{"type":"text","text":"前台已读"}],"revision":2}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g-fg","status":"completed","revision":3}""", null)
+            assertTrue(manager.activeNotifications.isEmpty())
+
+            // 后台发起轮次 -> 显示 Live Update；完成瞬间切回前台 -> 必须清理 Live Update 且不发普通通知
+            advanceClock(100)
+            inForeground = false
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g-bg-to-fg","status":"queued","revision":10}""", null)
+            assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
+
+            inForeground = true
+            emit("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"g-bg-to-fg","sender":"assistant","parts":[{"type":"text","text":"切回前台时完成"}],"revision":11}""", null)
+            emit("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g-bg-to-fg","status":"completed","revision":12}""", null)
+            assertTrue("切回前台完成时常驻 Live Update 也必须退出", manager.activeNotifications.isEmpty())
         }
     }
 
-    @Test fun endToEndForegroundSuppressionAndBackgroundHandoffAreMutuallyExclusive() {
+    private fun withWiredCoordinator(
+        title: String,
+        suppress: () -> Boolean = { false },
+        block: (
+            coordinator: NativeConversationNotifications,
+            emit: (type: String, payload: String, resolvedGenerationId: String?) -> Unit,
+            advanceClock: (Long) -> Unit,
+        ) -> Unit,
+    ) {
         replyCompletionPreferences(context, "profile", "account").edit().clear().commit()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         var clock = System.currentTimeMillis()
         var seq = 0
-        var inForeground = true
-        val wiredPublisher = AndroidReplyNotificationPublisher(context, settings, suppress = { inForeground })
+        val wiredPublisher = AndroidReplyNotificationPublisher(context, settings, suppress = { suppress() })
         val coordinator = NativeConversationNotifications(
             context = context,
             scope = scope,
             publish = wiredPublisher::update,
-            titleFor = { "前后台互斥会话" },
+            titleFor = { title },
             now = { clock },
             throttleMillis = 0L,
             cancel = wiredPublisher::cancel,
@@ -360,28 +325,15 @@ class LiveUpdateNotificationsTest {
         )
         try {
             coordinator.bind("profile", "account")
-            fun acceptEvent(type: String, payload: String) {
-                clock += 10
-                coordinator.accept(requireNotNull(notificationFact("profile", "account", "lu-fg-${++seq}", clock, type, payload)))
-            }
-
-            // 前台可见时，进行中和完成均不得显示任何 Live Update 或普通回复通知
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g-fg","status":"delivered","revision":1}""")
-            assertTrue(manager.activeNotifications.isEmpty())
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r1","generationId":"g-fg","sender":"assistant","parts":[{"type":"text","text":"前台已读"}],"revision":2}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g-fg","status":"completed","revision":3}""")
-            assertTrue(manager.activeNotifications.isEmpty())
-
-            // 后台发起轮次 -> 显示 Live Update；完成瞬间切回前台 -> 必须清理 Live Update 且不发普通通知
-            clock += 100
-            inForeground = false
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g-bg-to-fg","status":"queued","revision":10}""")
-            assertEquals(listOf(LIVE_UPDATE_CHANNEL_ID), manager.activeNotifications.map { it.notification.channelId })
-
-            inForeground = true
-            acceptEvent("conversation.message.completed", """{"conversationId":"conversation","messageId":"r2","generationId":"g-bg-to-fg","sender":"assistant","parts":[{"type":"text","text":"切回前台时完成"}],"revision":11}""")
-            acceptEvent("conversation.message.status", """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g-bg-to-fg","status":"completed","revision":12}""")
-            assertTrue("切回前台完成时常驻 Live Update 也必须退出", manager.activeNotifications.isEmpty())
+            block(
+                coordinator,
+                { type, payload, resolvedGenerationId ->
+                    clock += 10
+                    val fact = requireNotNull(notificationFact("profile", "account", "lu-e2e-${++seq}", clock, type, payload))
+                    coordinator.accept(fact.copy(resolvedGenerationId = resolvedGenerationId))
+                },
+                { delta -> clock += delta },
+            )
         } finally {
             scope.cancel()
         }

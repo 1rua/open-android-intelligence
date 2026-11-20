@@ -469,7 +469,7 @@ internal class NativeConversationNotifications(
         val round = when {
             statusEvent != null -> resolveRoundForStatus(target, statusEvent, generation, legacyStatusRound!!, previous)
             input.kind == NativeNotificationKind.GENERATION_CANCELLED -> resolveRoundForCancelled(target, generation, previous)
-            message != null -> resolveRoundForMessage(target, input.kind, generation, previous)
+            message != null -> resolveRoundForMessage(target, input.kind, generation, previous, message.id)
             else -> canonicalRound(target, generation) ?: previous?.generationId
         }
         val durableKey = durableKeyFor(target, round)
@@ -516,11 +516,13 @@ internal class NativeConversationNotifications(
             input.kind == NativeNotificationKind.REPLY_COMPLETED && !previousReply.completed -> false
             else -> occurredAt < previousReply.occurredAt
         }))
-        val staleUnknownRound = previous != null && occurredAt < previous.updatedAt && round != previous.generationId && !knownRound
+        val startsNewActiveRoundAfterTerminal = previous != null && !previous.isRunning && !alreadyFinished && terminal == null &&
+            statusEvent?.status in setOf(AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED)
+        val staleUnknownRound = previous != null && occurredAt < previous.updatedAt &&
+            round != previous.generationId && !knownRound && !startsNewActiveRoundAfterTerminal
         if (decoded is VerifiedConversationEvent.MessageStatus && staleRevision || staleUnknownRound) return
         if (message != null && previousRevision != null && revision != null && previousRevision > revision) return
         var deferredTerminalSession: NativeConversationSession? = null
-        var deferredTerminalDurableKey: String? = null
         // Durable fences block replay after process death. In this process an
         // observed round may still receive a newer authoritative final body.
         if (!seen && (!alreadyFinished || knownRound && message != null || refinesRecoveredOutcome) && !staleRevision && !olderPreview) {
@@ -584,7 +586,8 @@ internal class NativeConversationNotifications(
                         }
                         when (status.status) {
                         AgentMessageStatus.QUEUED, AgentMessageStatus.DELIVERED -> {
-                            val staleReopen = previous != null && !previous.isRunning && (round == previous.generationId || occurredAt < previous.updatedAt)
+                            val staleReopen = previous != null && !previous.isRunning &&
+                                (round == previous.generationId || (knownRound && occurredAt < previous.updatedAt))
                             if (terminal == null && !alreadyFinished && !staleReopen && (!sameGeneration || next.isRunning)) {
                                 val startsNewLegacy = generation == null && previous?.generationId != legacyStatusRound
                                 val rounds = activeRounds.getOrPut(target) { linkedMapOf() }
@@ -606,7 +609,6 @@ internal class NativeConversationNotifications(
                                 updatedAt = maxOf(next.updatedAt, occurredAt))
                             if (persistTerminal(completedSession, durableKey, alert = false)) {
                                 deferredTerminalSession = completedSession
-                                deferredTerminalDurableKey = durableKey
                             }
                         }
                     }
@@ -667,11 +669,26 @@ internal class NativeConversationNotifications(
         }
     }
 
+    private fun isPlaceholderRound(round: String): Boolean =
+        round.startsWith("legacy:") || round.startsWith("request:")
+
+    private fun findRoundByMessageIdentifiers(
+        rounds: Map<String, NativeConversationStatus>?,
+        target: ReplyNotificationTarget,
+        messageId: String,
+        clientMessageId: String,
+    ): String? = rounds?.keys?.firstOrNull { candidate ->
+        val candidateKey = RoundKey(target, candidate)
+        userMessages[candidateKey] == messageId ||
+            (clientMessageId.isNotBlank() && clientMessages[candidateKey] == clientMessageId)
+    }
+
     private fun resolveRoundForMessage(
         target: ReplyNotificationTarget,
         kind: NativeNotificationKind,
         rawGeneration: String?,
         previous: NativeConversationSession?,
+        messageId: String? = null,
     ): String? {
         if (rawGeneration != null) {
             val resolved = canonicalRound(target, rawGeneration)!!
@@ -679,16 +696,19 @@ internal class NativeConversationNotifications(
             if (rounds != null && resolved !in rounds && RoundKey(target, resolved) !in terminalRounds) {
                 if (rounds.size == 1) {
                     val sole = rounds.keys.single()
-                    if (replies[RoundKey(target, sole)] == null) aliasRound(target, sole, resolved)
+                    val soleReply = replies[RoundKey(target, sole)]
+                    val samePendingMessage = messageId != null && soleReply != null && !soleReply.completed && soleReply.messageId == messageId
+                    if (soleReply == null || samePendingMessage) aliasRound(target, sole, resolved)
                 }
             }
+            val previousRound = previous?.generationId
             if (rounds.isNullOrEmpty() && previous != null && !previous.isRunning &&
                 previous.status == NativeConversationStatus.COMPLETED && kind == NativeNotificationKind.REPLY_COMPLETED &&
-                previous.generationId != null && previous.latestReply.isBlank() &&
-                replies[RoundKey(target, previous.generationId)] == null && RoundKey(target, resolved) !in terminalRounds
+                previousRound != null && replies[RoundKey(target, previousRound)]?.completed != true &&
+                RoundKey(target, resolved) !in terminalRounds
             ) {
-                roundAliases[RoundKey(target, resolved)] = previous.generationId
-                return previous.generationId
+                roundAliases[RoundKey(target, resolved)] = previousRound
+                return previousRound
             }
             return resolved
         }
@@ -721,18 +741,14 @@ internal class NativeConversationNotifications(
                 if (rounds != null && resolved !in rounds && RoundKey(target, resolved) !in terminalRounds &&
                     RoundKey(target, resolved) !in replies
                 ) {
-                    val matched = rounds.keys.firstOrNull { candidate ->
-                        val candidateKey = RoundKey(target, candidate)
-                        userMessages[candidateKey] == status.messageId ||
-                            (status.clientMessageId.value.isNotBlank() && clientMessages[candidateKey] == status.clientMessageId.value)
-                    }
+                    val matched = findRoundByMessageIdentifiers(rounds, target, status.messageId, status.clientMessageId.value)
                     if (matched != null) {
                         roundAliases[RoundKey(target, resolved)] = matched
                         return matched
                     }
                     if (rounds.size == 1) {
                         val sole = rounds.keys.single()
-                        if (sole.startsWith("legacy:") || sole.startsWith("request:")) {
+                        if (isPlaceholderRound(sole)) {
                             aliasRound(target, sole, resolved)
                             return resolved
                         }
@@ -752,11 +768,7 @@ internal class NativeConversationNotifications(
             return resolved
         }
         val rounds = activeRounds[target]
-        val matched = rounds?.keys?.firstOrNull { candidate ->
-            val candidateKey = RoundKey(target, candidate)
-            userMessages[candidateKey] == status.messageId ||
-                (status.clientMessageId.value.isNotBlank() && clientMessages[candidateKey] == status.clientMessageId.value)
-        }
+        val matched = findRoundByMessageIdentifiers(rounds, target, status.messageId, status.clientMessageId.value)
         if (matched != null) return matched
         val canonicalLegacy = canonicalRound(target, legacyStatusRound)!!
         if (canonicalLegacy != legacyStatusRound) return canonicalLegacy
@@ -782,7 +794,7 @@ internal class NativeConversationNotifications(
             val rounds = activeRounds[target]
             if (rounds != null && resolved !in rounds && RoundKey(target, resolved) !in terminalRounds && rounds.size == 1) {
                 val sole = rounds.keys.single()
-                if (sole.startsWith("legacy:") || sole.startsWith("request:") || replies[RoundKey(target, sole)] == null) {
+                if (isPlaceholderRound(sole) || replies[RoundKey(target, sole)] == null) {
                     aliasRound(target, sole, resolved)
                 }
             }
@@ -858,15 +870,20 @@ internal class NativeConversationNotifications(
     private fun withRemainingRounds(terminal: NativeConversationSession, finishedAt: Long = terminal.updatedAt): NativeConversationSession {
         val rounds = activeRounds[terminal.target] ?: return terminal
         terminal.generationId?.let(rounds::remove)
-        // 清理已终结、别名归并、空占位及无归属旧轮次，严禁残留空轮次把已完成通知拉回“任务进行中”。
+        val terminalKey = terminal.generationId?.let { RoundKey(terminal.target, it) }
+        val terminalStart = terminalKey?.let { startedAt[it] } ?: finishedAt
+        val terminalClientId = terminalKey?.let { clientMessages[it] }
+        // 清理已终结、别名归并、同/早先起始的空占位及更早无主空轮次，严禁残留空轮次把已完成通知拉回“任务进行中”。
         rounds.keys.removeAll { candidate ->
             val candidateKey = RoundKey(terminal.target, candidate)
             val isAlias = roundAliases.containsKey(candidateKey)
             val isTerminal = candidateKey in terminalRounds
-            val emptyPlaceholder = (candidate.startsWith("legacy:") || candidate.startsWith("request:")) &&
-                replies[candidateKey] == null && (startedAt[candidateKey] ?: 0L) <= finishedAt
+            val emptyPlaceholder = isPlaceholderRound(candidate) &&
+                replies[candidateKey] == null &&
+                (startedAt[candidateKey] ?: 0L) <= terminalStart &&
+                (clientMessages[candidateKey] == null || clientMessages[candidateKey] == terminalClientId)
             val unownedOlder = !userMessages.containsKey(candidateKey) && !clientMessages.containsKey(candidateKey) &&
-                (startedAt[candidateKey] ?: 0L) <= finishedAt
+                replies[candidateKey] == null && (startedAt[candidateKey] ?: 0L) < terminalStart
             isAlias || isTerminal || emptyPlaceholder || unownedOlder
         }
         if (rounds.isEmpty()) { activeRounds.remove(terminal.target); return terminal }

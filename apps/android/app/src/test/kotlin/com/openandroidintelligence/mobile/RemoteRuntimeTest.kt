@@ -449,24 +449,27 @@ class RemoteRuntimeTest {
         assertFalse(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
         assertEquals(NativeConversationStatus.COMPLETED, runtime.nativeConversationNotifications.sessions.value.single().status)
 
-        // 第 2 轮断网后挂起在 DISCONNECTED，通过快照对账检测到后端已结束时需退回 ENDED 并停止保活
+        // 第 2 轮断网后挂起在 DISCONNECTED：保活需立即停止且切回网络时自动通过第 1 页快照对账收敛至 ENDED
+        val liveConvId = com.openandroidintelligence.conversation.model.ConversationId(
+            requireNotNull(runtime.controller.value!!.state.value.activeThreadId))
         runtime.onAppForegrounded()
         runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
-            "ev-r2", ++clock, convId, "u-r2", com.openandroidintelligence.conversation.model.ClientMessageId("client-r2"),
+            "ev-r2", ++clock, liveConvId, "u-r2", com.openandroidintelligence.conversation.model.ClientMessageId("client-r2"),
             AgentMessageStatus.QUEUED, 10, null, "gen-r2",
         )))
         eventually { AgentSessionRecoveryState(context).hasPendingWork }
         runtime.onNetworkLost()
-        assertEquals(NativeConversationStatus.DISCONNECTED, runtime.nativeConversationNotifications.sessions.value.single().status)
-        val req = requireNotNull(runtime.nativeConversationNotifications.reconciliationRequestFor(
-            ReplyNotificationTarget(local.profileId, local.accountId, convId.value, endpoint)))
-        assertTrue(runtime.nativeConversationNotifications.reconcile(req, null, listOf(
-            TimelineMessage("r2-final", "assistant",
-                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("断线期间已结束")),
-                clock + 50, "COMPLETED", convId, generationId = "gen-r2"),
-        )))
+        val discSession = runtime.nativeConversationNotifications.sessions.value.first { it.target.conversationId == liveConvId.value }
+        assertEquals(NativeConversationStatus.DISCONNECTED, discSession.status)
         eventually { !AgentSessionRecoveryState(context).hasPendingWork }
-        assertEquals(NativeConversationStatus.ENDED, runtime.nativeConversationNotifications.sessions.value.single().status)
+
+        // 网络恢复后重新连接并自动拉取时间线快照对账，将断联卡住会话收敛至 ENDED
+        runtime.onNetworkAvailable()
+        eventually {
+            runtime.nativeConversationNotifications.sessions.value
+                .firstOrNull { it.target.conversationId == liveConvId.value }?.status == NativeConversationStatus.ENDED
+        }
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
     }
 
     private fun postReply(eventId: String, complete: Boolean) {

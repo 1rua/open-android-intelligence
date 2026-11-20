@@ -1088,6 +1088,80 @@ class NativeConversationNotificationsTest {
         assertEquals(2, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
     }
 
+    @Test fun t3_06_CrossKeyDeltaThenStateFirstCompletedDoesNotResurrectRunningWhenFinalBodyArrives() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 1. status(delivered, req) -> delta(req) -> status(completed, req) -> completed(turn)
+        accept(status("delivered", 1, generation = "req-cross", messageId = "u1", clientMessageId = "cid-cross"))
+        accept(message("conversation.message.delta", "流式半截文本", 1, generation = "req-cross", messageId = "r-cross"))
+        accept(status("completed", 2, generation = "req-cross", messageId = "u1", clientMessageId = "cid-cross"))
+        assertEquals(NativeConversationStatus.COMPLETED, coordinator.sessions.value.single().status)
+
+        accept(message("conversation.message.completed", "迟到不同key最终回复", 3, generation = "turn-cross", messageId = "r-cross"))
+        val afterCross = coordinator.sessions.value.single()
+        assertEquals("跨key终稿绝不能复活成 RUNNING", NativeConversationStatus.COMPLETED, afterCross.status)
+        assertFalse(afterCross.isRunning)
+        assertEquals("迟到不同key最终回复", afterCross.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+
+        // 2. delta(req2) -> completed(turn2,同messageId) -> status(completed, req2)
+        publications.clear()
+        clock += 50
+        accept(message("conversation.message.delta", "无状态流式片段", 10, generation = "req-same-msg", messageId = "r-same"))
+        accept(message("conversation.message.completed", "同消息跨key最终正文", 11, generation = "turn-same-msg", messageId = "r-same"))
+        accept(status("completed", 12, generation = "req-same-msg", messageId = "u2", clientMessageId = "cid-same-msg"))
+        val afterSameMsg = coordinator.sessions.value.single()
+        assertEquals(NativeConversationStatus.COMPLETED, afterSameMsg.status)
+        assertEquals("同消息跨key最终正文", afterSameMsg.latestReply)
+        assertEquals(1, publications.count { it.first.status == NativeConversationStatus.COMPLETED && it.second })
+    }
+
+    @Test fun t3_07_ClockSkewAndSameMillisecondConcurrentRoundArePreserved() {
+        coordinator = NativeConversationNotifications(
+            context,
+            scope,
+            { session, alert -> publications += session to alert },
+            now = { clock },
+            throttleMillis = 0,
+        )
+        coordinator.bind("profile", "account")
+
+        // 第 1 轮在本地较大时间戳完成
+        val serverBase = clock - 1_000L
+        accept(notificationFact("profile", "account", "ev-clk-1", clock, "conversation.message.status",
+            """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"delivered","revision":1}"""))
+        accept(notificationFact("profile", "account", "ev-clk-2", clock + 50, "conversation.message.completed",
+            """{"conversationId":"conversation","messageId":"r1","generationId":"g1","sender":"assistant","parts":[{"type":"text","text":"轮1结果"}],"revision":2}"""))
+        accept(notificationFact("profile", "account", "ev-clk-3", clock + 100, "conversation.message.status",
+            """{"conversationId":"conversation","messageId":"u1","clientMessageId":"c1","generationId":"g1","status":"completed","revision":3}"""))
+
+        // 第 2 轮来自远端服务端较早时钟的新轮次，绝不能被 staleUnknownRound / staleReopen 误丢
+        accept(notificationFact("profile", "account", "ev-clk-4", serverBase, "conversation.message.status",
+            """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2-skew","status":"queued","revision":1}"""))
+        assertEquals(NativeConversationStatus.QUEUED, coordinator.sessions.value.single().status)
+        assertEquals("g2-skew", coordinator.sessions.value.single().generationId)
+
+        // 同毫秒并发新轮次在旧轮完成时绝不能被 withRemainingRounds 误删
+        val concurrentTs = clock + 200
+        accept(notificationFact("profile", "account", "ev-clk-4b", concurrentTs, "conversation.message.delta",
+            """{"conversationId":"conversation","messageId":"r2","generationId":"g2-skew","sender":"assistant","parts":[{"type":"text","text":"轮2进行中"}],"revision":1}"""))
+        accept(notificationFact("profile", "account", "ev-clk-5", concurrentTs, "conversation.message.delta",
+            """{"conversationId":"conversation","messageId":"r3","generationId":"g3-same-ms","sender":"assistant","parts":[{"type":"text","text":"同毫秒并发正文"}],"revision":1}"""))
+        accept(notificationFact("profile", "account", "ev-clk-6", concurrentTs, "conversation.message.status",
+            """{"conversationId":"conversation","messageId":"u2","clientMessageId":"c2","generationId":"g2-skew","status":"completed","revision":2}"""))
+        val remaining = coordinator.sessions.value.single()
+        assertEquals("g3-same-ms", remaining.generationId)
+        assertEquals(NativeConversationStatus.RUNNING, remaining.status)
+        assertEquals("同毫秒并发正文", remaining.latestReply)
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

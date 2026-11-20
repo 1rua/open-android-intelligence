@@ -184,9 +184,14 @@ internal class AndroidReplyNotificationPublisher(
         val hasLiveUpdate = if (activeForLiveUpdate) liveUpdates.update(session) else false
         if (!settings.enabled.value || !settings.isAllowed()) return
         val target = session.target
+        val tag = notificationTag(target)
+        if (!alert && session.status == NativeConversationStatus.COMPLETED && session.latestReply.isBlank()) {
+            // 终态早于正文到达时先撤下 Live Update 且不闪现空占位通知，等待正文补齐后统一提醒。
+            manager.cancel(tag, 0)
+            return
+        }
         // 底层保留空标题，系统快捷方式和通知展示必须使用非空的本地化名称。
         val title = session.title.ifBlank { context.getString(UiR.string.notif_conv_default_title) }
-        val tag = notificationTag(target)
         val shortcutId = "agent-conversation-$tag"
         val icon = Icon.createWithResource(context, R.drawable.ic_agent_bubble)
         val participantKey = replyDigest("${target.profileId}\u0000${target.accountId}")
@@ -256,8 +261,8 @@ internal class AndroidReplyNotificationPublisher(
             .setCategory(Notification.CATEGORY_MESSAGE)
             .addExtras(android.os.Bundle().apply { putString("reply-account", accountGroup) })
             .setVisibility(Notification.VISIBILITY_PRIVATE)
-            .setOngoing(session.isRunning)
-            .setAutoCancel(!session.isRunning)
+            .setOngoing(activeForLiveUpdate)
+            .setAutoCancel(!activeForLiveUpdate)
             .setOnlyAlertOnce(hasLiveUpdate || !alert)
             .setContentIntent(pendingIntent)
             .addAction(Notification.Action.Builder(null, context.getString(UiR.string.notif_action_open_conversation),

@@ -327,7 +327,14 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     "agent_message_chunk", "agent_message", "agent_thought_chunk", "agent_thought" -> {
                         val content = update.at("content") ?: return emptyList()
                         if (content.text("type") != "text" && content !is JsonValue.JString && update.text("delta") == null) return emptyList()
-                        if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
+                        if (acpMessageId == null) {
+                            if (!source.historical && (generationId == null ||
+                                (generationState in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
+                                    terminals.containsKey(resolveGeneration(generationId!!))))) {
+                                generationId = "acp-turn:${++liveSequence}"
+                            }
+                            acpMessageId = "remote-acp-stream:${++liveSequence}"
+                        }
                         val kind = if ((update.text("sessionUpdate") ?: update.text("type")) in setOf("agent_thought_chunk", "agent_thought")) "reasoning" else "text"
                         val textDelta = content.text("text") ?: (content as? JsonValue.JString)?.value ?: update.text("delta").orEmpty()
                         acpContent.append(kind, textDelta)
@@ -357,12 +364,13 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                             update.text("stopReason") == "end_turn" -> GenerationState.COMPLETED
                             else -> GenerationState.OUTCOME_UNKNOWN
                         }
+                        val previousGeneration = generationId
                         if (!source.historical) {
                             val terminalId = generationId ?: acpMessageId ?: "acp-turn:${++liveSequence}"
                             if (generationId == null) generationId = terminalId
                             recordTerminal(terminalId, state, source)
                         }
-                        return recovered + finalizeStreaming("turn-end:${++liveSequence}", source)
+                        return recovered + finalizeStreaming("turn-end:${++liveSequence}", source, previousGeneration)
                     }
                 }
             }
@@ -405,9 +413,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         }
     }
 
-    private fun finalizeStreaming(eventId: String, source: Source): List<VerifiedConversationEvent> {
+    private fun finalizeStreaming(
+        eventId: String,
+        source: Source,
+        previousGeneration: String? = generationId,
+    ): List<VerifiedConversationEvent> {
         resetAcpTurnContent()
-        return rows.values.filter { it.state == "STREAMING" && it.generationId == generationId }.mapNotNull { message ->
+        return rows.values.filter {
+            it.state == "STREAMING" && (it.generationId == generationId || it.generationId == previousGeneration)
+        }.mapNotNull { message ->
             val content = liveContent.remove(message.id)
             val completed = generationState == GenerationState.COMPLETED
             if (completed) content?.finish()
@@ -423,7 +437,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             }
             val confirmed = message.copy(state = "CONFIRMED", contentRevision = ++revision,
                 parts = newParts,
-                reasoning = newReasoning)
+                reasoning = newReasoning,
+                generationId = message.generationId ?: generationId)
             rows[message.id] = confirmed
             VerifiedConversationEvent.TimelineUpsert(source.id("$eventId:${message.id}"), source.time, revision, confirmed)
         }
