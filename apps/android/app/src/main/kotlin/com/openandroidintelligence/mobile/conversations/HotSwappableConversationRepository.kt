@@ -261,25 +261,41 @@ class HotSwappableAttachmentCoordinator : AttachmentDraftCoordinator {
     override fun remoteAttachmentId(draftId: String): String? = delegate?.remoteAttachmentId(draftId)
 }
 
-/** 支持冷启动后在线补拉的命令目录仓储。 */
+/** 支持冷启动后在线补拉的命令目录仓储（完整透传会话维度的查询与公告流）。 */
+@OptIn(ExperimentalCoroutinesApi::class)
 class HotSwappableCommandCatalogRepository(
     private val offlineFailureFactory: () -> Throwable = { IOException("COMMANDS_UNAVAILABLE_OFFLINE") },
 ) : AgentCommandCatalogRepository {
     @Volatile
-    private var onlineLoader: (suspend (gatewayId: String, languageCode: String) -> AgentCommandCatalog)? = null
+    private var delegate: AgentCommandCatalogRepository? = null
+    private val delegateFlow = MutableStateFlow<AgentCommandCatalogRepository?>(null)
 
-    fun attach(loader: suspend (gatewayId: String, languageCode: String) -> AgentCommandCatalog) {
-        onlineLoader = loader
+    fun attach(repository: AgentCommandCatalogRepository) {
+        delegate = repository
+        delegateFlow.value = repository
     }
 
     fun detach() {
-        onlineLoader = null
+        delegate = null
+        delegateFlow.value = null
     }
 
     override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog {
-        val loader = onlineLoader ?: throw offlineFailureFactory()
-        return loader(gatewayId, languageCode)
+        val current = delegate ?: throw offlineFailureFactory()
+        return current.get(gatewayId, languageCode)
     }
+
+    override suspend fun get(
+        gatewayId: String,
+        languageCode: String,
+        conversationId: String?,
+    ): AgentCommandCatalog {
+        val current = delegate ?: throw offlineFailureFactory()
+        return current.get(gatewayId, languageCode, conversationId)
+    }
+
+    override fun observe(gatewayId: String, conversationId: String?): Flow<AgentCommandCatalog> =
+        delegateFlow.flatMapLatest { it?.observe(gatewayId, conversationId) ?: emptyFlow() }
 }
 
 /** 支持冷启动先本地初始化媒体缓存、建链后再接入认证源的热升级媒体数据源。 */

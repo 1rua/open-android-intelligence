@@ -1787,9 +1787,7 @@ class RemoteRuntime(
             currentHotAttach.attach(binding.attachments)
             repository = binding.repo
             surfaceRepository = binding.surfaceRepo
-            currentHotCat.attach { _, _ ->
-                binding.repo.carrier.commands(currentActiveRef.get()?.let(RemoteLocalIds::decode))
-            }
+            currentHotCat.attach(binding.repo.commandCatalog)
 
             networkConnected = true
             val mirroredOnline = MirroredConversationRepository(binding.repo, currentMirror, currentMedia)
@@ -1908,7 +1906,7 @@ class RemoteRuntime(
             val hotCat = HotSwappableCommandCatalogRepository {
                 RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
             }.apply {
-                attach { _, _ -> binding.repo.carrier.commands(active.get()?.let(RemoteLocalIds::decode)) }
+                attach(binding.repo.commandCatalog)
             }
 
             nativeConversationNotifications.bind(local.profileId, local.accountId)
@@ -2498,7 +2496,7 @@ class RemoteRuntime(
         val hotCat = HotSwappableCommandCatalogRepository {
             RemoteSessionException("COMMANDS_UNAVAILABLE_OFFLINE")
         }.apply {
-            attach { _, _ -> repo.carrier.commands(active.get()?.let(RemoteLocalIds::decode)) }
+            attach(repo.commandCatalog)
         }
         return createController(
             CoroutineScope(scope.coroutineContext + owner),
