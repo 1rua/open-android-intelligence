@@ -1,6 +1,9 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.openandroidintelligence.conversation.model.CatalogVersion
@@ -188,6 +191,64 @@ class WorkspaceConversationBrowserTest {
             assertEquals(listOf("ws-two"), created)
             assertEquals(2, closedDrawer)
         }
+    }
+
+    @Test
+    fun `工作区浏览器保留排序切换与受控删除能力且不展示文件夹入口`() {
+        val sortedModes = mutableListOf<ConversationSortMode>()
+        val deletedIds = mutableListOf<String>()
+        val menu = WorkspaceMenuState(
+            agentTitle = "主力电脑 · DSH",
+            groups = sampleGroups(),
+        )
+        var deleteSupported by mutableStateOf(true)
+
+        compose.setContent {
+            MaterialTheme {
+                WorkspaceConversationBrowser(
+                    workspaceMenu = menu,
+                    activeThreadId = "t1",
+                    onOpenThread = {},
+                    onCreateThread = {},
+                    onRefresh = {},
+                    organization = ConversationOrganization(),
+                    managementSupported = true,
+                    deleteSupported = deleteSupported,
+                    archiveSupported = true,
+                    renameSupported = true,
+                    online = true,
+                    actions = ConversationBrowserActions(
+                        sort = { sortedModes += it },
+                        delete = { deletedIds += it },
+                    ),
+                )
+            }
+        }
+
+        // 排序切换生效
+        compose.onNodeWithTag("workspace-browser-sort-button").performClick()
+        compose.onNodeWithText("自定义顺序").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(ConversationSortMode.CUSTOM), sortedModes)
+        }
+
+        // 支持删除时打开更多菜单并确认删除
+        compose.onNodeWithContentDescription("管理会话 工作区一对话").performClick()
+        compose.onNodeWithText("删除对话").performClick()
+        compose.onNodeWithText("确定删除“工作区一对话”？对话记录将从 Gateway 删除。").assertIsDisplayed()
+        compose.onNodeWithText("删除").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("t1"), deletedIds)
+        }
+
+        // 禁用删除时给出不支持提示，且始终不存在文件夹入口
+        deleteSupported = false
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("管理会话 工作区一对话").performClick()
+        compose.onNodeWithText("当前 Agent 不支持删除对话").assertIsDisplayed()
+        compose.onNodeWithContentDescription("管理文件夹").assertDoesNotExist()
+        compose.onNodeWithText("新建文件夹").assertDoesNotExist()
+        compose.onNodeWithText("移动到文件夹").assertDoesNotExist()
     }
 
     private class StubConversationRepository : ConversationRepository {

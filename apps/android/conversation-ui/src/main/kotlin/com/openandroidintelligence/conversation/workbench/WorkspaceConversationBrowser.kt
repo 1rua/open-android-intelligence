@@ -2,11 +2,15 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,12 +20,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.openandroidintelligence.conversation.components.bouncyClickable
+import com.openandroidintelligence.conversation.ports.ConversationOrganization
+import com.openandroidintelligence.conversation.ports.ConversationSortMode
 import com.openandroidintelligence.conversation.ports.ConversationSummary
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -29,6 +42,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /** 抽屉中按当前 Agent 下的工作区分类展示的单组工作区及会话列表。 */
 data class WorkspaceConversationGroup(
@@ -54,10 +68,13 @@ data class WorkspaceMenuState(
 private const val WORKSPACE_FILTER_ALL = "all"
 private const val WORKSPACE_FILTER_ARCHIVED = "archived"
 
+private fun workspaceThreadRowKey(workspaceKey: String, threadId: String): String =
+    "ws-row:$workspaceKey:$threadId"
+
 /**
  * 基于工作区分组的可折叠会话浏览器：
  * 彻底移除旧的自定义文件夹创建/管理/移动入口，自动展示当前 Agent 下的全部工作区与下属会话，
- * 支持单工作区折叠/展开、按工作区新建与跨工作区直接切换会话。
+ * 支持单工作区折叠/展开、按工作区新建、跨工作区切换、排序与当前工作区拖拽调序及会话删除。
  */
 @Composable
 fun WorkspaceConversationBrowser(
@@ -67,7 +84,9 @@ fun WorkspaceConversationBrowser(
     onCreateThread: () -> Unit,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    organization: ConversationOrganization = ConversationOrganization(),
     managementSupported: Boolean = false,
+    deleteSupported: Boolean = managementSupported,
     archiveSupported: Boolean = managementSupported,
     unarchiveSupported: Boolean = archiveSupported,
     renameSupported: Boolean = managementSupported,
@@ -79,10 +98,89 @@ fun WorkspaceConversationBrowser(
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(WORKSPACE_FILTER_ALL) }
     var showFilter by remember { mutableStateOf(false) }
+    var showSort by remember { mutableStateOf(false) }
     var collapsedKeys by rememberSaveable { mutableStateOf(emptyList<String>()) }
     var renameTarget by remember { mutableStateOf<ConversationSummary?>(null) }
+    var deleteTarget by remember { mutableStateOf<ConversationSummary?>(null) }
     val canManage = managementSupported && online && !managing
     val defaultTitle = stringResource(UiR.string.conv_title_new_default)
+    val moveUpLabel = stringResource(UiR.string.conv_browser_action_move_up)
+    val moveDownLabel = stringResource(UiR.string.conv_browser_action_move_down)
+    val listState = rememberLazyListState()
+
+    val activeGroup = workspaceMenu.groups.firstOrNull { it.isActive }
+    val activeWorkspaceKey = activeGroup?.workspaceKey
+    val activeOrdered = remember(activeGroup?.threads, organization) {
+        orderConversationRows((activeGroup?.threads as? Loadable.Ready)?.value.orEmpty(), organization)
+    }
+    val activeFiltered = remember(activeOrdered, query, filter, defaultTitle) {
+        activeOrdered.filter { thread ->
+            ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) &&
+                if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
+        }
+    }
+    val activeRowsById = remember(activeOrdered) { activeOrdered.associateBy { it.id.value } }
+
+    var draggedId by remember { mutableStateOf<String?>(null) }
+    var previewIds by remember { mutableStateOf<List<String>?>(null) }
+    var originalIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var dragStartOffset by remember { mutableFloatStateOf(0f) }
+    var dragDistance by remember { mutableFloatStateOf(0f) }
+    var dragHeight by remember { mutableIntStateOf(0) }
+
+    val currentOrdered by rememberUpdatedState(activeOrdered)
+    val currentFiltered by rememberUpdatedState(activeFiltered)
+    val currentReorder by rememberUpdatedState(actions.reorder)
+    val currentCanManage by rememberUpdatedState(canManage)
+    val currentActiveWorkspaceKey by rememberUpdatedState(activeWorkspaceKey)
+
+    fun cancelDrag() {
+        draggedId = null
+        previewIds = null
+        dragDistance = 0f
+    }
+
+    fun reorderUnderPointer() {
+        val wsKey = currentActiveWorkspaceKey ?: return
+        val id = draggedId ?: return
+        val ids = previewIds ?: return
+        val center = dragStartOffset + dragDistance + dragHeight / 2f
+        val prefix = "ws-row:$wsKey:"
+        val target = listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
+            val rawKey = item.key as? String ?: return@firstOrNull false
+            if (!rawKey.startsWith(prefix)) return@firstOrNull false
+            val itemId = rawKey.removePrefix(prefix)
+            itemId in ids && itemId != id && center >= item.offset && center <= item.offset + item.size
+        }?.key as? String ?: return
+        val targetId = target.removePrefix(prefix)
+        val from = ids.indexOf(id)
+        val to = ids.indexOf(targetId)
+        if (from >= 0 && to >= 0 && from != to) {
+            previewIds = ids.toMutableList().apply { add(to, removeAt(from)) }
+        }
+    }
+
+    val edgeSize = with(LocalDensity.current) { 48.dp.toPx() }
+    val scrollStep = with(LocalDensity.current) { 12.dp.toPx() }
+    LaunchedEffect(draggedId) {
+        while (draggedId != null) {
+            val center = dragStartOffset + dragDistance + dragHeight / 2f
+            val viewport = listState.layoutInfo
+            val scroll = when {
+                center < viewport.viewportStartOffset + edgeSize -> -scrollStep
+                center > viewport.viewportEndOffset - edgeSize -> scrollStep
+                else -> 0f
+            }
+            if (scroll != 0f) {
+                listState.scrollBy(scroll)
+                reorderUnderPointer()
+            }
+            delay(16)
+        }
+    }
+    LaunchedEffect(canManage, query, filter, activeWorkspaceKey) {
+        if (!canManage || draggedId != null) cancelDrag()
+    }
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -94,6 +192,7 @@ fun WorkspaceConversationBrowser(
 
     LazyColumn(
         modifier = modifier.fillMaxSize().testTag("workspace-conversation-browser"),
+        state = listState,
         contentPadding = PaddingValues(
             start = Dimensions.SpaceCompact,
             top = Dimensions.SpaceSmall,
@@ -152,6 +251,41 @@ fun WorkspaceConversationBrowser(
                         )
                     }
                 }
+                Box {
+                    TextButton(
+                        onClick = { showSort = true },
+                        enabled = canManage,
+                        contentPadding = PaddingValues(horizontal = 4.dp),
+                        modifier = Modifier.testTag("workspace-browser-sort-button"),
+                    ) {
+                        Text(
+                            text = stringResource(
+                                if (organization.sortMode == ConversationSortMode.CUSTOM) {
+                                    UiR.string.conv_browser_sort_custom
+                                } else {
+                                    UiR.string.conv_browser_sort_recent
+                                }
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Sort,
+                            contentDescription = stringResource(UiR.string.conv_browser_sort_cd),
+                            modifier = Modifier.size(Dimensions.SmallIcon),
+                        )
+                    }
+                    DropdownMenu(expanded = showSort, onDismissRequest = { showSort = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(UiR.string.conv_browser_sort_by_update_desc)) },
+                            onClick = { showSort = false; actions.sort(ConversationSortMode.UPDATED_DESC) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(stringResource(UiR.string.conv_browser_sort_custom)) },
+                            onClick = { showSort = false; actions.sort(ConversationSortMode.CUSTOM) },
+                        )
+                    }
+                }
                 IconButton(onClick = { workspaceMenu.onRefreshCatalog(); onRefresh() }) {
                     Icon(Icons.Default.Refresh, contentDescription = stringResource(UiR.string.conv_browser_refresh_cd))
                 }
@@ -164,14 +298,28 @@ fun WorkspaceConversationBrowser(
         item(key = "ws-browser-hint") {
             val subtitle = workspaceMenu.agentTitle?.takeIf { it.isNotBlank() }
                 ?: stringResource(UiR.string.conv_workspace_header_hint)
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-            )
+            Column(modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val managementHint = when {
+                    !managementSupported -> stringResource(UiR.string.conv_browser_mgmt_unsupported)
+                    !online -> stringResource(UiR.string.conv_browser_mgmt_need_online)
+                    managing -> stringResource(UiR.string.conv_browser_mgmt_saving)
+                    else -> stringResource(UiR.string.conv_browser_mgmt_drag_hint)
+                }
+                Text(
+                    text = managementHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
 
         if (workspaceMenu.catalogLoading && workspaceMenu.groups.isEmpty()) {
@@ -202,11 +350,20 @@ fun WorkspaceConversationBrowser(
 
         workspaceMenu.groups.forEach { group ->
             val collapsed = group.workspaceKey in collapsedKeys
-            val readyRows = (group.threads as? Loadable.Ready)?.value.orEmpty()
-                .sortedWith(compareByDescending<ConversationSummary> { it.updatedAt }.thenBy { it.id.value })
-            val visibleRows = readyRows.filter { thread ->
-                ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) &&
-                    if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
+            val visibleRows = if (group.isActive) {
+                activeFiltered
+            } else {
+                (group.threads as? Loadable.Ready)?.value.orEmpty()
+                    .sortedWith(compareByDescending<ConversationSummary> { it.updatedAt }.thenBy { it.id.value })
+                    .filter { thread ->
+                        ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) &&
+                            if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
+                    }
+            }
+            val displayedRows = if (group.isActive) {
+                previewIds?.mapNotNull { id -> activeRowsById[id] } ?: visibleRows
+            } else {
+                visibleRows
             }
 
             item(key = "ws-header:${group.workspaceKey}") {
@@ -247,7 +404,7 @@ fun WorkspaceConversationBrowser(
                             }
                         }
                     }
-                    else -> if (visibleRows.isEmpty()) {
+                    else -> if (displayedRows.isEmpty()) {
                         item(key = "ws-empty:${group.workspaceKey}") {
                             val emptyText = when {
                                 query.isNotBlank() -> stringResource(UiR.string.conv_browser_empty_search)
@@ -263,19 +420,81 @@ fun WorkspaceConversationBrowser(
                         }
                     } else {
                         items(
-                            items = visibleRows,
-                            key = { thread -> "ws-row:${group.workspaceKey}:${thread.id.value}" },
+                            items = displayedRows,
+                            key = { thread -> workspaceThreadRowKey(group.workspaceKey, thread.id.value) },
                         ) { thread ->
                             val id = thread.id.value
                             val isActiveThread = group.isActive && id == activeThreadId
                             val busy = group.isActive && id in busyThreadIds
+                            val isDragged = group.isActive && id == draggedId
+                            val dragOffset = if (isDragged) dragDistance else 0f
+                            val rowModifier = Modifier
+                                .testTag("workspace-thread:${group.workspaceKey}:$id")
+                                .let { base ->
+                                    if (!group.isActive) base
+                                    else base
+                                        .zIndex(if (isDragged) 1f else 0f)
+                                        .offset { IntOffset(0, dragOffset.roundToInt()) }
+                                        .semantics {
+                                            if (canManage) {
+                                                customActions = listOf(-1 to moveUpLabel, 1 to moveDownLabel).map { (delta, label) ->
+                                                    CustomAccessibilityAction(label) {
+                                                        val ids = currentFiltered.map { it.id.value }
+                                                        val from = ids.indexOf(id)
+                                                        val to = from + delta
+                                                        if (from >= 0 && to in ids.indices) {
+                                                            val moved = ids.toMutableList().apply { add(to, removeAt(from)) }
+                                                            currentReorder(reorderVisibleConversationIds(currentOrdered.map { it.id.value }, moved))
+                                                            true
+                                                        } else false
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        .pointerInput(id, canManage, group.workspaceKey) {
+                                            if (canManage) {
+                                                val itemKey = workspaceThreadRowKey(group.workspaceKey, id)
+                                                detectDragGesturesAfterLongPress(
+                                                    onDragStart = {
+                                                        val item = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == itemKey }
+                                                        if (item != null && currentCanManage) {
+                                                            originalIds = currentFiltered.map { it.id.value }
+                                                            previewIds = originalIds
+                                                            draggedId = id
+                                                            dragStartOffset = item.offset.toFloat()
+                                                            dragHeight = item.size
+                                                            dragDistance = 0f
+                                                        }
+                                                    },
+                                                    onDragCancel = { cancelDrag() },
+                                                    onDragEnd = {
+                                                        val moved = previewIds
+                                                        if (moved != null && moved != originalIds && currentCanManage) {
+                                                            currentReorder(reorderVisibleConversationIds(currentOrdered.map { it.id.value }, moved))
+                                                        }
+                                                        cancelDrag()
+                                                    },
+                                                    onDrag = { change, amount ->
+                                                        if (draggedId == id) {
+                                                            change.consume()
+                                                            dragDistance += amount.y
+                                                            reorderUnderPointer()
+                                                        }
+                                                    },
+                                                )
+                                            }
+                                        }
+                                }
                             WorkspaceThreadRow(
                                 thread = thread,
                                 selected = isActiveThread,
                                 busy = busy,
                                 showManageMenu = group.isActive,
+                                canReorder = group.isActive && canManage,
                                 canRename = group.isActive && canManage && renameSupported,
                                 canArchive = group.isActive && canManage && archiveSupported && (!thread.archived || unarchiveSupported),
+                                canDelete = group.isActive && canManage && deleteSupported,
+                                deleteSupported = deleteSupported,
                                 relativeTime = relativeThreadTime(thread.updatedAt, now),
                                 onOpen = {
                                     if (group.isActive) onOpenThread(id)
@@ -283,7 +502,8 @@ fun WorkspaceConversationBrowser(
                                 },
                                 onRename = { renameTarget = thread },
                                 onArchive = { actions.archive(id, !thread.archived) },
-                                modifier = Modifier.testTag("workspace-thread:${group.workspaceKey}:$id"),
+                                onDelete = { deleteTarget = thread },
+                                modifier = rowModifier,
                             )
                         }
                     }
@@ -319,6 +539,33 @@ fun WorkspaceConversationBrowser(
             },
             dismissButton = {
                 TextButton(onClick = { renameTarget = null }) {
+                    Text(stringResource(UiR.string.common_action_cancel))
+                }
+            },
+        )
+    }
+
+    deleteTarget?.let { thread ->
+        val displayTitle = resolveDisplayConversationTitle(thread.title)
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(stringResource(UiR.string.conv_browser_dialog_delete_thread_title)) },
+            text = { Text(stringResource(UiR.string.conv_browser_dialog_delete_thread_message, displayTitle)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        actions.delete(thread.id.value)
+                        deleteTarget = null
+                    },
+                ) {
+                    Text(
+                        text = stringResource(UiR.string.common_action_delete),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
                     Text(stringResource(UiR.string.common_action_cancel))
                 }
             },
@@ -420,12 +667,16 @@ private fun WorkspaceThreadRow(
     selected: Boolean,
     busy: Boolean,
     showManageMenu: Boolean,
+    canReorder: Boolean,
     canRename: Boolean,
     canArchive: Boolean,
+    canDelete: Boolean,
+    deleteSupported: Boolean,
     relativeTime: String,
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onArchive: () -> Unit,
+    onDelete: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -458,6 +709,16 @@ private fun WorkspaceThreadRow(
                 )
             }
         } else null,
+        leadingContent = if (canReorder) {
+            {
+                Icon(
+                    imageVector = Icons.Default.DragHandle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(Dimensions.SmallIcon),
+                )
+            }
+        } else null,
         trailingContent = if (showManageMenu) {
             {
                 Box {
@@ -486,6 +747,32 @@ private fun WorkspaceThreadRow(
                             enabled = canArchive && !busy,
                             onClick = { menu = false; onArchive() },
                         )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = stringResource(UiR.string.conv_browser_menu_delete),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            },
+                            enabled = canDelete && !busy,
+                            onClick = { menu = false; onDelete() },
+                        )
+                        if (!deleteSupported) {
+                            Text(
+                                text = stringResource(UiR.string.conv_browser_agent_delete_unsupported),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                        if (busy) {
+                            Text(
+                                text = stringResource(UiR.string.conv_browser_agent_busy_action_hint),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
                     }
                 }
             }

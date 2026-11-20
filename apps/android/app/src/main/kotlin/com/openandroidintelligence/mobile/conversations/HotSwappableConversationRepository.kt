@@ -68,12 +68,20 @@ class HotSwappableConversationRepository(
             bridgeJob = scope.launch {
                 launch {
                     online.streamHealth.collect { raw ->
-                        mutableStreamHealth.value = if (raw == StreamHealth.IDLE) StreamHealth.LIVE else raw
+                        synchronized(bridgeLock) {
+                            if (onlineDelegate === online) {
+                                mutableStreamHealth.value = if (raw == StreamHealth.IDLE) StreamHealth.LIVE else raw
+                            }
+                        }
                     }
                 }
                 launch {
                     online.streamFailure.collect { failure ->
-                        mutableStreamFailure.value = failure
+                        synchronized(bridgeLock) {
+                            if (onlineDelegate === online) {
+                                mutableStreamFailure.value = failure
+                            }
+                        }
                     }
                 }
                 val snapshots = online.generationSnapshot ?: online.generationState?.map { state ->
@@ -82,9 +90,13 @@ class HotSwappableConversationRepository(
                 if (snapshots != null) {
                     launch {
                         snapshots.collect { snapshot ->
-                            mutableGenerationId.value = snapshot.generationId
-                            mutableGenerationState.value = snapshot.state
-                            mutableGenerationSnapshot.value = snapshot
+                            synchronized(bridgeLock) {
+                                if (onlineDelegate === online) {
+                                    mutableGenerationId.value = snapshot.generationId
+                                    mutableGenerationState.value = snapshot.state
+                                    mutableGenerationSnapshot.value = snapshot
+                                }
+                            }
                         }
                     }
                 }
@@ -251,10 +263,23 @@ class HotSwappableAttachmentCoordinator : AttachmentDraftCoordinator {
 
 /** 支持冷启动后在线补拉的命令目录仓储。 */
 class HotSwappableCommandCatalogRepository(
-    private val loader: suspend (gatewayId: String, languageCode: String) -> AgentCommandCatalog,
+    private val offlineFailureFactory: () -> Throwable = { IOException("COMMANDS_UNAVAILABLE_OFFLINE") },
 ) : AgentCommandCatalogRepository {
-    override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog =
-        loader(gatewayId, languageCode)
+    @Volatile
+    private var onlineLoader: (suspend (gatewayId: String, languageCode: String) -> AgentCommandCatalog)? = null
+
+    fun attach(loader: suspend (gatewayId: String, languageCode: String) -> AgentCommandCatalog) {
+        onlineLoader = loader
+    }
+
+    fun detach() {
+        onlineLoader = null
+    }
+
+    override suspend fun get(gatewayId: String, languageCode: String): AgentCommandCatalog {
+        val loader = onlineLoader ?: throw offlineFailureFactory()
+        return loader(gatewayId, languageCode)
+    }
 }
 
 /** 支持冷启动先本地初始化媒体缓存、建链后再接入认证源的热升级媒体数据源。 */

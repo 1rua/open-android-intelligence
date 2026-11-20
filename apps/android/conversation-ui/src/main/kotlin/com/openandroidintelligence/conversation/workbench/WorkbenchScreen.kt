@@ -324,7 +324,7 @@ fun WorkbenchScreen(
 
         val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
         val workspaceMenuVisible = expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open
-        LaunchedEffect(workspaceMenuVisible, workspaceMenu != null) {
+        LaunchedEffect(workspaceMenuVisible, workspaceMenu != null, workspaceMenu?.agentTitle, state.isOnline) {
             if (workspaceMenu != null && workspaceMenuVisible) {
                 latestWorkspaceHydrate?.invoke()
             }

@@ -52,57 +52,11 @@ internal fun RemoteLoginAgentSelector(runtime: RemoteRuntime) {
         }
     }
 
-    SectionLabel(stringResource(UiR.string.remote_hosts))
-    SettingsSectionCard {
-        agentConn.hosts.forEach { host ->
-            val selected = agentConn.activeAgent?.hostId == host.deviceId
-            SettingsListItem(
-                headline = host.name,
-                supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
-                selected = selected,
-                icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                enabled = !agentConn.busy && host.online,
-                onClick = { runtime.discover(host) },
-            )
-        }
-        SettingsListItem(
-            headline = stringResource(UiR.string.remote_refresh_hosts),
-            enabled = !agentConn.busy && agentConn.account != null,
-            onClick = { runtime.refreshHosts() },
-        )
-    }
-
-    SectionLabel(stringResource(UiR.string.remote_available_agents))
-    SettingsSectionCard {
-        if (agentConn.agents.isEmpty()) {
-            SettingsListItem(
-                headline = stringResource(UiR.string.remote_agent_none_discovered),
-                supporting = stringResource(UiR.string.remote_agent_select_host_hint),
-            )
-        } else {
-            agentConn.agents.forEach { agent ->
-                val selected = agentConn.activeAgent == agent.key
-                val switching = agentConn.switchingAgent == agent.key
-                val statusHint = when {
-                    switching -> stringResource(UiR.string.remote_agent_switching)
-                    selected -> stringResource(UiR.string.remote_agent_active)
-                    !agent.hostOnline -> stringResource(UiR.string.common_status_offline)
-                    else -> stringResource(UiR.string.remote_agent_select_hint)
-                }
-                SettingsListItem(
-                    headline = agent.displayName,
-                    supporting = statusHint,
-                    selected = selected,
-                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                    enabled = agent.hostOnline && agentConn.switchingAgent == null,
-                    onClick = { runtime.selectAgent(agent) },
-                )
-            }
-        }
-        agentConn.backendFailures.forEach { (backend, code) ->
-            SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER)
-        }
-    }
+    RemoteHostAndAgentSections(
+        runtime = runtime,
+        agentConn = agentConn,
+        fallbackAgentHint = { stringResource(UiR.string.remote_agent_select_hint) },
+    )
 }
 
 /** 设置页「连接与账号」：Host 主机 + 可用 Agent（已连接可即时切换）+ 当前 Agent 下工作区（同 Agent 复用通道切换）。 */
@@ -111,57 +65,11 @@ internal fun RemoteHostAndAgentSettings(runtime: RemoteRuntime) {
     val agentConn by runtime.agentConnection.collectAsState()
     val workspaceCtx by runtime.workspaceContext.collectAsState()
 
-    SectionLabel(stringResource(UiR.string.remote_hosts))
-    SettingsSectionCard {
-        agentConn.hosts.forEach { host ->
-            val selected = agentConn.activeAgent?.hostId == host.deviceId
-            SettingsListItem(
-                headline = host.name,
-                supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
-                selected = selected,
-                icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                enabled = !agentConn.busy && host.online,
-                onClick = { runtime.discover(host) },
-            )
-        }
-        SettingsListItem(
-            headline = stringResource(UiR.string.remote_refresh_hosts),
-            enabled = !agentConn.busy && agentConn.account != null,
-            onClick = { runtime.refreshHosts() },
-        )
-    }
-
-    SectionLabel(stringResource(UiR.string.remote_available_agents))
-    SettingsSectionCard {
-        if (agentConn.agents.isEmpty()) {
-            SettingsListItem(
-                headline = stringResource(UiR.string.remote_agent_none_discovered),
-                supporting = stringResource(UiR.string.remote_agent_select_host_hint),
-            )
-        } else {
-            agentConn.agents.forEach { agent ->
-                val selected = agentConn.activeAgent == agent.key
-                val switching = agentConn.switchingAgent == agent.key
-                val statusHint = when {
-                    switching -> stringResource(UiR.string.remote_agent_switching)
-                    selected -> stringResource(UiR.string.remote_agent_active)
-                    !agent.hostOnline -> stringResource(UiR.string.common_status_offline)
-                    else -> agent.backendName
-                }
-                SettingsListItem(
-                    headline = agent.displayName,
-                    supporting = statusHint,
-                    selected = selected,
-                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
-                    enabled = agent.hostOnline && agentConn.switchingAgent == null,
-                    onClick = { runtime.selectAgent(agent) },
-                )
-            }
-        }
-        agentConn.backendFailures.forEach { (backend, code) ->
-            SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER)
-        }
-    }
+    RemoteHostAndAgentSections(
+        runtime = runtime,
+        agentConn = agentConn,
+        fallbackAgentHint = { it.backendName },
+    )
 
     if (workspaceCtx.workspaces.isNotEmpty()) {
         SectionLabel(stringResource(UiR.string.remote_current_agent_workspaces))
@@ -179,6 +87,65 @@ internal fun RemoteHostAndAgentSettings(runtime: RemoteRuntime) {
                     onClick = { runtime.selectWorkspace(ws) },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RemoteHostAndAgentSections(
+    runtime: RemoteRuntime,
+    agentConn: AgentConnectionState,
+    fallbackAgentHint: @Composable (DiscoveredAgent) -> String,
+) {
+    SectionLabel(stringResource(UiR.string.remote_hosts))
+    SettingsSectionCard {
+        agentConn.hosts.forEach { host ->
+            val selected = agentConn.activeAgent?.hostId == host.deviceId
+            SettingsListItem(
+                headline = host.name,
+                supporting = stringResource(if (host.online) UiR.string.common_status_online else UiR.string.common_status_offline),
+                selected = selected,
+                icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                enabled = !agentConn.busy && host.online,
+                onClick = { runtime.discover(host) },
+            )
+        }
+        SettingsListItem(
+            headline = stringResource(UiR.string.remote_refresh_hosts),
+            enabled = !agentConn.busy && agentConn.account != null,
+            onClick = { runtime.refreshHosts() },
+        )
+    }
+
+    SectionLabel(stringResource(UiR.string.remote_available_agents))
+    SettingsSectionCard {
+        if (agentConn.agents.isEmpty()) {
+            SettingsListItem(
+                headline = stringResource(UiR.string.remote_agent_none_discovered),
+                supporting = stringResource(UiR.string.remote_agent_select_host_hint),
+            )
+        } else {
+            agentConn.agents.forEach { agent ->
+                val selected = agentConn.activeAgent == agent.key
+                val switching = agentConn.switchingAgent == agent.key
+                val statusHint = when {
+                    switching -> stringResource(UiR.string.remote_agent_switching)
+                    selected -> stringResource(UiR.string.remote_agent_active)
+                    !agent.hostOnline -> stringResource(UiR.string.common_status_offline)
+                    else -> fallbackAgentHint(agent)
+                }
+                SettingsListItem(
+                    headline = agent.displayName,
+                    supporting = statusHint,
+                    selected = selected,
+                    icon = if (selected) Icons.Default.Check else Icons.Default.Hub,
+                    enabled = agent.hostOnline && agentConn.switchingAgent == null,
+                    onClick = { runtime.selectAgent(agent) },
+                )
+            }
+        }
+        agentConn.backendFailures.forEach { (backend, code) ->
+            SettingsListItem(backend, supporting = remoteConnectionFailureText(code), tone = SettingsTone.DANGER)
         }
     }
 }

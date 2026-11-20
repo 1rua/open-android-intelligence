@@ -524,6 +524,166 @@ class RemoteConnectionLifecycleTest {
         }
     }
 
+    @Test
+    fun `断网就地重连与跨站发现热升级后历史媒体缓存仍可读且不误退役`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(workspaceId = "one")
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection()
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 100L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 60_000L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    coldRuntime.controller.value?.state?.value?.isOnline == true
+            }
+            val initialController = coldRuntime.controller.value!!
+            val mediaPort = WorkbenchController::class.java
+                .getDeclaredField("media")
+                .apply { isAccessible = true }
+                .get(initialController) as HistoricalMediaPort
+            val epochBefore = mediaPort.originalEpoch("conv", "att-1")
+            assertTrue(epochBefore.isNotBlank())
+
+            // 模拟断网降级 -> 就地重连原地热升级
+            coldRuntime.onNetworkLost()
+            eventually { coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE }
+            coldRuntime.reconnectInPlace().join()
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    initialController.state.value.isOnline
+            }
+            val epochAfterReconnect = mediaPort.originalEpoch("conv", "att-1")
+            assertTrue(epochAfterReconnect.isNotBlank())
+
+            // 模拟跨 Host 发现触发原地退网再恢复原通道：媒体缓存句柄依然可用
+            coldRuntime.discover(RemoteHostDevice("host-2", "工作站", "linux", "membership", true)).join()
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    initialController.state.value.isOnline
+            }
+            assertSame(initialController, coldRuntime.controller.value)
+            val epochAfterDiscover = mediaPort.originalEpoch("conv", "att-1")
+            assertTrue(epochAfterDiscover.isNotBlank())
+        } finally {
+            backgroundReconnectGate.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `建链抛出TimeoutCancellationException时正常降级OFFLINE并复位reconnectingInPlace`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(workspaceId = "one")
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            connectTimeoutMillis = 1L
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 80L,
+                graceRetryAttempts = 1,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 60_000L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        val initialController = coldRuntime.controller.value!!
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    coldRuntime.agentConnection.value.offlineConfirmed
+            }
+            assertEquals("CONNECT_TIMEOUT", coldRuntime.agentConnection.value.errorCode)
+            assertFalse(coldRuntime.agentConnection.value.reconnectingInPlace)
+            assertSame(initialController, coldRuntime.controller.value)
+
+            // 点击就地重试再次超时：必须停留在会话页、给出超时错误码并复位 reconnectingInPlace
+            coldRuntime.reconnectInPlace().join()
+            assertEquals(AgentConnectionPhase.OFFLINE, coldRuntime.agentConnection.value.phase)
+            assertTrue(coldRuntime.agentConnection.value.offlineConfirmed)
+            assertFalse(coldRuntime.agentConnection.value.reconnectingInPlace)
+            assertEquals("CONNECT_TIMEOUT", coldRuntime.agentConnection.value.errorCode)
+            assertSame(initialController, coldRuntime.controller.value)
+
+            // 恢复网络后可再次点击就地重试并成功恢复在线态
+            coldAccount.connectTimeoutMillis = null
+            coldRuntime.reconnectInPlace().join()
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                    !coldRuntime.agentConnection.value.offlineConfirmed &&
+                    initialController.state.value.isOnline
+            }
+            assertFalse(coldRuntime.agentConnection.value.reconnectingInPlace)
+        } finally {
+            backgroundReconnectGate.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `离线态未缓存兄弟工作区标记为Empty而非停留Loading或Idle`() = runBlocking {
+        seedSavedWorkspaceWithCachedTimeline(workspaceId = "one")
+        val backgroundReconnectGate = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 80L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            delayFn = { ms ->
+                if (ms >= 60_000L) backgroundReconnectGate.await() else kotlinx.coroutines.delay(ms)
+            },
+            customScope = coldScope,
+            customAccount = coldAccount,
+        )
+        try {
+            eventually {
+                coldRuntime.agentConnection.value.phase == AgentConnectionPhase.OFFLINE &&
+                    coldRuntime.agentConnection.value.offlineConfirmed
+            }
+            coldRuntime.hydrateWorkspaces().join()
+            val ctx = coldRuntime.workspaceContext.value
+            val wsOne = ctx.workspaces.first { it.endpoint.key.workspaceId == "one" }
+            val wsTwo = ctx.workspaces.first { it.endpoint.key.workspaceId == "two" }
+            assertEquals(WorkspaceCatalogPhase.READY, ctx.catalogPhase)
+            assertTrue(ctx.sessionsByWorkspace[wsOne.endpoint.key] is Loadable.Ready)
+            assertEquals(Loadable.Empty, ctx.sessionsByWorkspace[wsTwo.endpoint.key])
+        } finally {
+            backgroundReconnectGate.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
     private inner class FakeAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
@@ -533,6 +693,7 @@ class RemoteConnectionLifecycleTest {
         var connectCalls = 0
         var connectFailuresBeforeSuccess = 0
         var nextConnectError: Exception? = null
+        var connectTimeoutMillis: Long? = null
         var connectGate: CompletableDeferred<Unit>? = null
         var initialHistoryText: String = "冷启动本地缓存回复"
         var incrementalReplyText: String? = null
@@ -556,6 +717,9 @@ class RemoteConnectionLifecycleTest {
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
             connectCalls++
             connectGate?.await()
+            connectTimeoutMillis?.let { timeoutMs ->
+                withTimeout(timeoutMs) { delay(timeoutMs + 200L) }
+            }
             if (connectFailuresBeforeSuccess > 0) {
                 connectFailuresBeforeSuccess--
                 throw RemoteRpcException("NETWORK_UNREACHABLE")

@@ -115,6 +115,7 @@ private val AUTH_REVOKED_ERROR_CODES = setOf(
 /** 仅识别明确的凭据撤销或认证拒绝；普通网络中断、超时与 Host 离线一律返回 false。 */
 internal fun isAuthRevokedError(code: String?): Boolean {
     val normalized = code?.trim()?.uppercase() ?: return false
-    return normalized in AUTH_REVOKED_ERROR_CODES ||
-        AUTH_REVOKED_ERROR_CODES.any { normalized.contains(it) }
+    return normalized
+        .split(':', ' ', ',', ';', '\t', '\n')
+        .any { token -> token.isNotEmpty() && token in AUTH_REVOKED_ERROR_CODES }
 }
