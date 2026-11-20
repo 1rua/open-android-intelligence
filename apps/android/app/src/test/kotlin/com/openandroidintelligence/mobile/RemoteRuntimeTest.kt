@@ -411,6 +411,161 @@ class RemoteRuntimeTest {
         assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
     }
 
+    @Test fun `跨generation别名完成及断网快照对账都能退出LiveUpdate并停止后台保活`() = runBlocking {
+        ready("one")
+        org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+        val local = runtime.controller.value!!.localConversationScope
+        val endpoint = local.gatewayId
+        val convId = com.openandroidintelligence.conversation.model.ConversationId("same.runtime.conv")
+        val clientId = com.openandroidintelligence.conversation.model.ClientMessageId("client-runtime")
+        var clock = System.currentTimeMillis()
+        fun inputOf(fact: VerifiedConversationEvent, resolvedGen: String? = null): NativeNotificationInput =
+            requireNotNull(com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                local.profileId, local.accountId, endpoint, fact)).copy(resolvedGenerationId = resolvedGen)
+
+        runtime.onAppForegrounded()
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-delivered", ++clock, convId, "u-runtime", clientId, AgentMessageStatus.DELIVERED, 1, null, "req-runtime",
+        )))
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.TimelineUpsert(
+            "ev-delta", ++clock, 1, TimelineMessage("reply-runtime", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("跨别名流式内容")),
+                clock, "STREAMING", convId, generationId = "turn-runtime"),
+        ), resolvedGen = "req-runtime"))
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onAppBackgrounded()
+        assertTrue(AgentSessionRecoveryState(context).hasPendingWork)
+
+        // completed + status(COMPLETED) 使用 turn-runtime 收尾，必须清除保活并退出进行态
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.TimelineUpsert(
+            "ev-completed", ++clock, 2, TimelineMessage("reply-runtime", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("跨别名最终答案")),
+                clock, "COMPLETED", convId, generationId = "turn-runtime"),
+        ), resolvedGen = "req-runtime"))
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-completed-status", ++clock, convId, "u-runtime-srv", clientId, AgentMessageStatus.COMPLETED, 3, null, "turn-runtime",
+        )))
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        assertFalse(runtime.nativeConversationNotifications.sessions.value.single().isRunning)
+        assertEquals(NativeConversationStatus.COMPLETED, runtime.nativeConversationNotifications.sessions.value.single().status)
+
+        // 第 2 轮断网后挂起在 DISCONNECTED：保活需立即停止且切回网络时自动通过第 1 页快照对账收敛至 ENDED
+        val liveConvId = com.openandroidintelligence.conversation.model.ConversationId(
+            requireNotNull(runtime.controller.value!!.state.value.activeThreadId))
+        runtime.onAppForegrounded()
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "ev-r2", ++clock, liveConvId, "u-r2", com.openandroidintelligence.conversation.model.ClientMessageId("client-r2"),
+            AgentMessageStatus.QUEUED, 10, null, "gen-r2",
+        )))
+        eventually { AgentSessionRecoveryState(context).hasPendingWork }
+        runtime.onNetworkLost()
+        val discSession = runtime.nativeConversationNotifications.sessions.value.first { it.target.conversationId == liveConvId.value }
+        assertEquals(NativeConversationStatus.DISCONNECTED, discSession.status)
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+
+        // 网络恢复后重新连接并通过包含 turn/end 的真实 Harness 分页快照将断联卡住会话收敛至 ENDED
+        connection.defaultSessionPage = {
+            mapOf(
+                "cursor" to 2,
+                "records" to listOf(
+                    mapOf("type" to "event", "event" to mapOf("seq" to 1, "type" to "turn/start", "data" to mapOf("turn" to 1, "turnId" to "gen-r2"))),
+                    mapOf("type" to "event", "event" to mapOf("seq" to 2, "type" to "turn/end", "data" to mapOf("turn" to 1, "turnId" to "gen-r2", "reason" to mapOf("kind" to "done")))),
+                ),
+                "hasMore" to false,
+            )
+        }
+        runtime.onNetworkAvailable()
+        eventually {
+            runtime.nativeConversationNotifications.sessions.value
+                .firstOrNull { it.target.conversationId == liveConvId.value }?.status == NativeConversationStatus.ENDED
+        }
+        assertFalse(AgentSessionRecoveryState(context).hasPendingWork)
+
+        // UI 控制器直接发起任务后（controller.hasActiveWork == true）断网，仍必须立刻停止前台保活且离线期暂停轮询对账
+        val controller = runtime.controller.value!!
+        controller.submitComposerDraft("测试UI断网停保活", controller.state.value.draftEpoch,
+            com.openandroidintelligence.conversation.ports.MessageDeliveryMode.NORMAL)
+        eventually { controller.hasActiveWork.value && AgentSessionRecoveryState(context).hasPendingWork }
+        val activeChannel = connection.channels.last()
+        runtime.onNetworkLost()
+        eventually { !AgentSessionRecoveryState(context).hasPendingWork }
+        val offlinePageReads = activeChannel.pageReads
+        runtime.onAppForegrounded()
+        delay(50)
+        assertEquals("断网期间不得继续轮询远端历史接口", offlinePageReads, activeChannel.pageReads)
+    }
+
+    @Test fun `Harness省略activeTurnId且存在大量跨端点待对账会话时仍立即核对选中端点且不误杀进行中通知`() = runBlocking {
+        runtime.restoreSessionIfAvailable().join()
+        runtime.discover(accountHost()).join()
+        val first = runtime.state.value.endpoints.first { it.endpoint.key.workspaceId == "one" }
+        runtime.select(first).join()
+        eventually { runtime.controller.value?.state?.value?.activeThreadId != null }
+        val convId = com.openandroidintelligence.conversation.model.ConversationId(
+            requireNotNull(runtime.controller.value!!.state.value.activeThreadId))
+        val local = runtime.controller.value!!.localConversationScope
+        var clock = System.currentTimeMillis()
+        fun inputOf(fact: VerifiedConversationEvent, agentOverride: String = local.gatewayId): NativeNotificationInput =
+            requireNotNull(com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                local.profileId, local.accountId, agentOverride, fact))
+
+        // 先在其他端点制造 10 个待对账会话，验证不会挤占选中端点的 8 条对账配额
+        for (i in 1..10) {
+            runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+                "other-ev-$i", ++clock, com.openandroidintelligence.conversation.model.ConversationId("other-conv-$i"),
+                "u-$i", com.openandroidintelligence.conversation.model.ClientMessageId("c-$i"),
+                AgentMessageStatus.DELIVERED, 1, null, "gen-other-$i",
+            ), agentOverride = "other-endpoint-$i"))
+        }
+        val selectedClientId = com.openandroidintelligence.conversation.model.ClientMessageId("cid-no-active-turn")
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "sel-ev-1", ++clock, convId, "u-sel-1", selectedClientId, AgentMessageStatus.DELIVERED, 1, null, "turn-omitted",
+        )))
+
+        // 模拟真实 Harness session/page：省略 activeTurnId 且暂未包含 turn/start 或 turn/end
+        val activeChannel = connection.channels.last()
+        val beforeReads = activeChannel.pageReads
+        activeChannel.sessionPage = {
+            mapOf(
+                "cursor" to 5,
+                "records" to listOf(mapOf("type" to "event", "event" to mapOf(
+                    "seq" to 5,
+                    "type" to "assistant/message",
+                    "data" to mapOf("message" to mapOf(
+                        "id" to "a-partial",
+                        "content" to listOf(mapOf("type" to "text", "text" to "中间步骤消息")),
+                    )),
+                ))),
+                "hasMore" to false,
+            )
+        }
+        runtime.nativeConversationNotifications.requestReconciliation()
+        runtime.onAppForegrounded()
+
+        eventually { activeChannel.pageReads > beforeReads }
+        val selectedSession = runtime.nativeConversationNotifications.sessions.value
+            .first { it.target.conversationId == convId.value && it.target.agentId == local.gatewayId }
+        assertTrue("缺失 activeTurnId 的 Harness 分页绝不能把进行中 Live Update 标为 ENDED", selectedSession.isRunning)
+        assertEquals(NativeConversationStatus.RUNNING, selectedSession.status)
+
+        // 随后到达的最终回复与 COMPLETED 状态仍能正常完成（未被误写入终态围栏阻断）
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.TimelineUpsert(
+            "sel-ev-2", ++clock, 2, TimelineMessage("reply-omitted", "assistant",
+                listOf(com.openandroidintelligence.conversation.model.MessagePart.Text("真实Harness最终答复")),
+                clock, "COMPLETED", convId, generationId = "turn-omitted"),
+        )))
+        runtime.nativeConversationNotifications.accept(inputOf(VerifiedConversationEvent.MessageStatus(
+            "sel-ev-3", ++clock, convId, "u-sel-1", selectedClientId, AgentMessageStatus.COMPLETED, 3, null, "turn-omitted",
+        )))
+        val finished = runtime.nativeConversationNotifications.sessions.value
+            .first { it.target.conversationId == convId.value && it.target.agentId == local.gatewayId }
+        assertFalse(finished.isRunning)
+        assertEquals(NativeConversationStatus.COMPLETED, finished.status)
+        assertEquals("真实Harness最终答复", finished.latestReply)
+    }
+
+    private suspend fun accountHost() = connection.listHosts().single()
+
     private fun postReply(eventId: String, complete: Boolean) {
         val local = runtime.controller.value!!.localConversationScope
         runtime.nativeConversationNotifications.accept(replyFrame(local, eventId, complete))
@@ -460,6 +615,7 @@ class RemoteRuntimeTest {
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
         val channels = mutableListOf<Rpc>()
+        var defaultSessionPage: () -> Map<String, Any?> = { mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false) }
         var failedHost: String? = null
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
         override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult = error("本测试只恢复已认证账号")
@@ -498,7 +654,9 @@ class RemoteRuntimeTest {
         override val events = MutableSharedFlow<RemoteRpcEvent>()
         var closed = false
         var modelReads = 0
+        var pageReads = 0
         var models: suspend () -> JsonValue = { catalog("宿主模型") }
+        var sessionPage: () -> Map<String, Any?> = connection.defaultSessionPage
         override suspend fun invoke(method: String, params: JsonValue.JObject, requestId: String, timeoutMs: Long): JsonValue {
             if (closed) throw RemoteRpcException("TRANSPORT_CLOSED", RemoteDeliveryOutcome.NOT_SENT)
             if (method == "harness.remote.stream.open") {
@@ -511,7 +669,7 @@ class RemoteRuntimeTest {
             if (method == "harness.remote.stream.close") return Json.of(emptyMap<String, Any>())
             val value = when (JsonFields.string(params, "endpoint")) {
                 "session/list" -> Json.of(mapOf("items" to listOf(mapOf("sessionId" to "same:原生/session", "title" to "会话", "updatedAt" to 1))))
-                "session/page" -> Json.of(mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false))
+                "session/page" -> { pageReads++; Json.of(sessionPage()) }
                 "session/models" -> { modelReads++; models() }
                 "commands/list" -> Json.of(mapOf("items" to emptyList<Any>()))
                 else -> Json.of(emptyMap<String, Any>())

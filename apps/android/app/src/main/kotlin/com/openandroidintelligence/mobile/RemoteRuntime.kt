@@ -106,7 +106,9 @@ class RemoteRuntime(
     private val keepAlive = AgentSessionKeepAlive(context)
     private val backgroundOwnership = Any()
     private var ownerActive = false
+    @Volatile private var networkConnected = true
     private var workObserver: Job? = null
+    private var reconcileObserver: Job? = null
     private val publisher = AndroidReplyNotificationPublisher(context, replyNotifications) { target ->
         assistantControllers.any { (token, controller) -> assistantPresence.values.any { it.first == token && it.second } &&
             controller.state.value.activeThreadId == target.conversationId && target.agentId == state.value.selected?.let(::endpointId) }
@@ -184,19 +186,56 @@ class RemoteRuntime(
         return null
     }
     private fun refreshBackgroundWork(foregrounded: Boolean = false) = synchronized(backgroundOwnership) {
-        val work = ownerActive && repository != null && state.value.account != null &&
+        val work = ownerActive && networkConnected && repository != null && state.value.account != null &&
             replyNotifications.enabled.value && replyNotifications.allowed.value &&
             (controller.value?.hasActiveWork?.value == true || assistantWorkspace?.hasActiveWork?.value == true ||
-                nativeConversationNotifications.sessions.value.any { it.isRunning && it.target.agentId == state.value.selected?.let(::endpointId) })
+                nativeConversationNotifications.sessions.value.any {
+                    (it.status == NativeConversationStatus.QUEUED || it.status == NativeConversationStatus.RUNNING) &&
+                        it.target.agentId == state.value.selected?.let(::endpointId)
+                })
         if (foregrounded) keepAlive.onForegrounded(work) else keepAlive.update(work, foreground)
     }
     private fun observeBackgroundWork() {
         workObserver?.cancel()
+        reconcileObserver?.cancel()
         synchronized(backgroundOwnership) { ownerActive = true }
         workObserver = scope.launch {
             val main = controller.value ?: return@launch
             val assistant = assistantWorkspace?.hasActiveWork ?: MutableStateFlow(false)
             combine(main.hasActiveWork, assistant) { _, _ -> Unit }.collect { refreshBackgroundWork() }
+        }
+        val activeRepo = repository
+        val selectedKey = state.value.selected
+        if (activeRepo != null && selectedKey != null && activeRepo.carrier.backend in setOf("harness", "codex")) {
+            reconcileObserver = scope.launch {
+                reconcileActiveNotifications(activeRepo, selectedKey)
+                while (currentCoroutineContext().isActive) {
+                    delay(15_000L)
+                    reconcileActiveNotifications(activeRepo, selectedKey)
+                }
+            }
+        }
+    }
+    private suspend fun reconcileActiveNotifications(repo: RemoteConversationRepository?, key: EndpointKey?) {
+        if (!networkConnected || repo == null || key == null || repository !== repo || state.value.selected != key) return
+        if (repo.carrier.backend !in setOf("harness", "codex")) return
+        val targetAgent = endpointId(key)
+        val due = nativeConversationNotifications.reconciliationRequests(targetAgent)
+        for (request in due) {
+            if (!currentCoroutineContext().isActive || repository !== repo || state.value.selected != key) return
+            try {
+                val snapshot = repo.fetchReconciliationSnapshot(request.session.target.conversationId)
+                nativeConversationNotifications.reconcile(
+                    request,
+                    snapshot.activeGenerationId?.let { it to "running" },
+                    snapshot.messages,
+                    activityKnown = snapshot.activityKnown,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // 对账失败时保留待核对状态，等待后续恢复或周期重试。
+            }
         }
     }
     val connectedAccountId: String? get() = state.value.account?.accountId
@@ -337,6 +376,7 @@ class RemoteRuntime(
             var borrowed = channel?.takeIf { it.scope.hostDeviceId == host.deviceId }
             var previousWorkspace = repository?.workspace?.takeIf { borrowed == null }
             var discovery: RemoteRpcChannel? = null
+            var discoveryError: String? = null
             try {
                 try {
                     borrowed?.invoke("harness.transport.describe", JsonValue.JObject(emptyList()))
@@ -364,7 +404,10 @@ class RemoteRuntime(
                 endpoints.forEach(::saveEndpoint)
                 mutableState.update { old -> old.copy(endpoints = old.endpoints.filter { it.endpoint.key.hostId != host.deviceId } + endpoints, backendFailures = failures) }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { fail(failure) }
+            catch (failure: Exception) {
+                discoveryError = failureCode(failure)
+                fail(failure)
+            }
             finally {
                 withContext(NonCancellable) {
                     try {
@@ -373,7 +416,6 @@ class RemoteRuntime(
                         try {
                             // 当前传输只保留一个主动 Host；跨宿主发现结束后恢复原选择。
                             if (previousWorkspace != null && scope.isActive && accountRuntime.account.value == activeAccount) {
-                                val discoveryError = state.value.errorCode
                                 selectLocked(previousWorkspace)
                                 if (state.value.errorCode == null && discoveryError != null)
                                     mutableState.update { it.copy(errorCode = discoveryError) }
@@ -389,6 +431,7 @@ class RemoteRuntime(
         selectLocked(endpoint)
     }
     private suspend fun selectLocked(endpoint: RemoteWorkspace) {
+        networkConnected = true
         mutableState.update { it.copy(busy = true, errorCode = null, models = null) }
         try {
             retire()
@@ -421,20 +464,22 @@ class RemoteRuntime(
                     runCatching { accountRuntime.authenticatedPeer(next.scope.connectionId) == mediaPeer }.getOrDefault(false)
             }
             val active = AtomicReference<String?>(null)
-            val repo = RemoteConversationRepository(carrier, confirmed, ownedScope, active::get, attachments::promptContent, mediaSource = mediaSource) { key, event ->
-                mirror.commitNativeEvents(listOf(event))
-                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(it)
-                }
-            }
+            fun buildRepository(activeRef: AtomicReference<String?>) = RemoteConversationRepository(
+                carrier, confirmed, ownedScope, activeRef::get, attachments::promptContent,
+                mediaSource = mediaSource,
+                onEvent = { key, event ->
+                    mirror.commitNativeEvents(listOf(event))
+                    nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
+                        nativeConversationNotifications.accept(it)
+                    }
+                },
+                onTimelineSnapshot = { key, conversationId, snapshot ->
+                    reconcileTimelineSnapshot(local, key, conversationId, snapshot)
+                },
+            )
+            val repo = buildRepository(active)
             repository = repo; ownerAttachments = attachments; ownerMirror = mirror; ownerMedia = media; ownerConversationScope = local
-            surfaceRepository = { surfaceActive -> RemoteConversationRepository(carrier, confirmed, ownedScope, surfaceActive::get,
-                attachments::promptContent, mediaSource = mediaSource) { key, event ->
-                mirror.commitNativeEvents(listOf(event))
-                nativeNotificationInput(local.profileId, local.accountId, endpointId(key), event)?.let {
-                    nativeConversationNotifications.accept(it)
-                }
-            } }
+            surfaceRepository = { surfaceActive -> buildRepository(surfaceActive) }
             nativeConversationNotifications.bind(local.profileId, local.accountId)
             val controller = createController(ownedScope, repo, mirror, media, attachments, local, active)
             mutableController.value = controller
@@ -540,8 +585,10 @@ class RemoteRuntime(
     private suspend fun retire() {
         ownerMediaSource?.close(); ownerMediaSource = null
         ownerMedia?.retireConnection()
+        ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
         synchronized(backgroundOwnership) { ownerActive = false; keepAlive.stop() }
         workObserver?.cancelAndJoin(); workObserver = null
+        reconcileObserver?.cancelAndJoin(); reconcileObserver = null
         mutableController.value?.closeAndAwait(); mutableController.value = null
         assistantWorkspace?.closeAndAwait(); assistantWorkspace = null
         assistantControllers.values.forEach { it.closeAndAwait() }; assistantControllers.clear()
@@ -597,7 +644,9 @@ class RemoteRuntime(
         if (endpointId(key) != target.agentId) return null
         return RemoteWorkspace(AgentEndpoint(key, values[3], EndpointAvailability.UNKNOWN), values[4])
     }
-    private fun fail(failure: Exception) { mutableState.update { it.copy(errorCode = (failure as? RemoteRpcException)?.code ?: (failure as? RemoteSessionException)?.code ?: "REMOTE_CONNECTION_FAILED") } }
+    private fun failureCode(failure: Exception): String =
+        (failure as? RemoteRpcException)?.code ?: (failure as? RemoteSessionException)?.code ?: "REMOTE_CONNECTION_FAILED"
+    private fun fail(failure: Exception) { mutableState.update { it.copy(errorCode = failureCode(failure)) } }
     private fun carriers(channel: RemoteRpcChannel): List<RemoteSessionCarrier> = buildList {
         fun ready(backend: String, capability: String): Boolean {
             if (capability !in channel.capabilities) return false
@@ -706,6 +755,11 @@ class RemoteRuntime(
         synchronized(backgroundOwnership) { foreground = true }
         replyNotifications.refreshPermission(); nativeConversationNotifications.refreshActive()
         refreshBackgroundWork(foregrounded = true)
+        val currentRepo = repository
+        val currentSelected = state.value.selected
+        if (currentRepo != null && currentSelected != null && nativeConversationNotifications.hasPendingReconciliation()) {
+            scope.launch { reconcileActiveNotifications(currentRepo, currentSelected) }
+        }
     }
     @Volatile private var foreground = false
     fun onAppBackgrounded() {
@@ -741,12 +795,44 @@ class RemoteRuntime(
         controller.value?.updateDebouncePolicy(policy)
         assistantControllers.values.forEach { it.updateDebouncePolicy(policy) }
     }
+    /** 快照加载或重连后核对同端点待决会话，由通知终态屏障决定是否结束已失联的 Live Update。 */
+    private fun reconcileTimelineSnapshot(
+        local: ConversationScope,
+        key: EndpointKey,
+        conversationId: String,
+        snapshot: RemoteReconciliationSnapshot,
+    ) {
+        val target = ReplyNotificationTarget(local.profileId, local.accountId, conversationId, endpointId(key))
+        val request = nativeConversationNotifications.reconciliationRequestFor(target) ?: return
+        nativeConversationNotifications.reconcile(
+            request,
+            snapshot.activeGenerationId?.let { it to "running" },
+            snapshot.messages,
+            activityKnown = snapshot.activityKnown,
+        )
+    }
+
     fun onNetworkAvailable(routeChanged: Boolean = false) {
+        networkConnected = true
         accountRuntime.refreshControlConnection()
         val selected = state.value.selected ?: return
-        if (controller.value?.state?.value?.isOnline == false) state.value.endpoints.firstOrNull { it.endpoint.key == selected }?.let(::select)
+        if (controller.value?.state?.value?.isOnline == false) {
+            val targetWorkspace = state.value.endpoints.firstOrNull { it.endpoint.key == selected }
+                ?: repository?.workspace?.takeIf { it.endpoint.key == selected }
+            targetWorkspace?.let(::select)
+        } else {
+            refreshBackgroundWork()
+            if (nativeConversationNotifications.hasPendingReconciliation()) {
+                scope.launch { reconcileActiveNotifications(repository, state.value.selected) }
+            }
+        }
     }
-    fun onNetworkLost() { controller.value?.setRemoteConversationOnline(false) }
+    fun onNetworkLost() {
+        networkConnected = false
+        controller.value?.setRemoteConversationOnline(false)
+        ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
+        refreshBackgroundWork()
+    }
     fun onBackgroundSessionRestarted() { restoreSessionIfAvailable() }
     fun onBackgroundSessionStopped() { onNetworkLost() }
 }

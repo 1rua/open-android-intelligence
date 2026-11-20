@@ -414,4 +414,96 @@ class RemoteConversationRepositoryTest {
         collectJob.cancel()
         repo.close()
     }
+
+    @Test fun `Harness先收到turnStart建立别名后prompt省略turnId不报错且正常完成`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "harness"), "一"), "/first")
+        val response = CompletableDeferred<JsonValue>()
+        val carrier = Carrier(workspace).apply { promptResult = { response.await() } }
+        val observed = mutableListOf<VerifiedConversationEvent>()
+        val repo = RemoteConversationRepository(carrier, workspace, backgroundScope, { local }, onEvent = { _, event -> observed += event })
+        repo.timeline(local, PageRequest()); runCurrent()
+
+        repo.submitMessage(local, OutgoingMessage(ClientMessageId("client-harness"), "执行"))
+        runCurrent()
+        // turn/start 在 prompt 返回之前到达，已建立 request:* -> turn-harness 别名
+        carrier.frames.emit(obj("type" to "event", "event" to obj("seq" to 1, "type" to "turn/start", "data" to obj("turnId" to "turn-harness"))))
+        runCurrent()
+        // prompt 回执不再带 turn.id，应按已建别名解析为 turn-harness 而非抛 REMOTE_GENERATION_MISMATCH
+        response.complete(obj("accepted" to true))
+        runCurrent()
+
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        carrier.frames.emit(obj("type" to "event", "event" to obj("seq" to 2, "type" to "turn/end", "data" to obj("turnId" to "turn-harness", "reason" to obj("kind" to "done")))))
+        runCurrent()
+        assertEquals(GenerationState.COMPLETED, repo.generationState.value)
+        assertTrue(observed.any { it is VerifiedConversationEvent.MessageStatus && it.status == AgentMessageStatus.COMPLETED })
+        repo.close()
+    }
+
+    @Test fun `Codex第1页快照显示无活跃轮次时触发onTimelineSnapshot回调以便收口卡住通知`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val carrier = Carrier(workspace).apply {
+            historyRead = { RemoteHistoryPage(listOf(obj("id" to "assistant-1", "sender" to "assistant", "text" to "后端已完成")), revision = 5L) }
+        }
+        var snapshotCalls = 0
+        var lastGenerationId: String? = "initial"
+        var lastActivityKnown = false
+        val repo = RemoteConversationRepository(
+            carrier,
+            workspace,
+            backgroundScope,
+            { local },
+            onTimelineSnapshot = { _, _, snapshot ->
+                snapshotCalls++
+                lastGenerationId = snapshot.activeGenerationId
+                lastActivityKnown = snapshot.activityKnown
+            },
+        )
+        // 即使本地投影仍卡在 RUNNING，只要权威快照返回 activeGenerationId=null 就必须触发收口回调
+        repo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(1, snapshotCalls)
+        assertTrue(lastActivityKnown)
+        carrier.frames.emit(obj("method" to "turn/started", "params" to obj("threadId" to "hermes:相同/session", "turn" to obj("id" to "stuck-turn"))))
+        runCurrent()
+        assertEquals(GenerationState.RUNNING, repo.generationState.value)
+        repo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(2, snapshotCalls)
+        assertNull(lastGenerationId)
+        assertTrue(lastActivityKnown)
+        repo.close()
+    }
+
+    @Test fun `Harness分页响应省略activeTurnId时从事件流派生进行态且不将缺省字段误判为空闲`() {
+        val missingMetadata = harnessHistoryPage(obj(
+            "cursor" to 5,
+            "records" to listOf(obj("type" to "event", "event" to obj(
+                "seq" to 5, "type" to "assistant/message",
+                "data" to obj("message" to obj("id" to "a1", "content" to listOf(obj("type" to "text", "text" to "进行中输出"))))))),
+            "hasMore" to false,
+        ))
+        assertNull(missingMetadata.activeGenerationId)
+        assertFalse(missingMetadata.activityKnown)
+
+        val openTurnPage = harnessHistoryPage(obj(
+            "cursor" to 6,
+            "records" to listOf(
+                obj("type" to "event", "event" to obj("seq" to 5, "type" to "turn/start", "data" to obj("turn" to 2, "turnId" to "turn-2"))),
+                obj("type" to "event", "event" to obj("seq" to 6, "type" to "user/message", "data" to obj("id" to "u2", "content" to listOf(obj("type" to "text", "text" to "继续"))))),
+            ),
+            "hasMore" to false,
+        ))
+        assertEquals("turn-2", openTurnPage.activeGenerationId)
+        assertTrue(openTurnPage.activityKnown)
+
+        val closedTurnPage = harnessHistoryPage(obj(
+            "cursor" to 7,
+            "records" to listOf(
+                obj("type" to "event", "event" to obj("seq" to 5, "type" to "turn/start", "data" to obj("turn" to 2))),
+                obj("type" to "event", "event" to obj("seq" to 7, "type" to "turn/end", "data" to obj("turn" to 2, "reason" to obj("kind" to "done")))),
+            ),
+            "hasMore" to false,
+        ))
+        assertNull(closedTurnPage.activeGenerationId)
+        assertTrue(closedTurnPage.activityKnown)
+    }
 }

@@ -48,7 +48,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 GenerationState.QUEUED, GenerationState.RUNNING, GenerationState.OUTCOME_UNKNOWN)
         }
     }
-    fun terminal(id: String): TerminalReceipt? = terminals[id]
+    fun terminal(id: String): TerminalReceipt? = terminals[id] ?: terminals[resolveGeneration(id)]
     private data class Source(val historical: Boolean, val time: Long, val historyRead: Long? = null) {
         fun id(value: String) = if (historical) "history:$value" else value
     }
@@ -332,7 +332,14 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     "agent_message_chunk", "agent_message", "agent_thought_chunk", "agent_thought" -> {
                         val content = update.at("content") ?: return emptyList()
                         if (content.text("type") != "text" && content !is JsonValue.JString && update.text("delta") == null) return emptyList()
-                        if (acpMessageId == null) acpMessageId = "remote-acp-stream:${++liveSequence}"
+                        if (acpMessageId == null) {
+                            if (!source.historical && (generationId == null ||
+                                (generationState in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED) &&
+                                    terminals.containsKey(resolveGeneration(generationId!!))))) {
+                                generationId = "acp-turn:${++liveSequence}"
+                            }
+                            acpMessageId = "remote-acp-stream:${++liveSequence}"
+                        }
                         val kind = if ((update.text("sessionUpdate") ?: update.text("type")) in setOf("agent_thought_chunk", "agent_thought")) "reasoning" else "text"
                         val textDelta = content.text("text") ?: (content as? JsonValue.JString)?.value ?: update.text("delta").orEmpty()
                         acpContent.append(kind, textDelta)
@@ -366,8 +373,13 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                             update.text("stopReason") == "end_turn" -> GenerationState.COMPLETED
                             else -> GenerationState.OUTCOME_UNKNOWN
                         }
-                        generationId?.let { recordTerminal(it, state, source) }
-                        return recovered + finalizeStreaming("turn-end:${++liveSequence}", source)
+                        val previousGeneration = generationId
+                        if (!source.historical) {
+                            val terminalId = generationId ?: acpMessageId ?: "acp-turn:${++liveSequence}"
+                            if (generationId == null) generationId = terminalId
+                            recordTerminal(terminalId, state, source)
+                        }
+                        return recovered + finalizeStreaming("turn-end:${++liveSequence}", source, previousGeneration)
                     }
                 }
             }
@@ -410,9 +422,15 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         }
     }
 
-    private fun finalizeStreaming(eventId: String, source: Source): List<VerifiedConversationEvent> {
+    private fun finalizeStreaming(
+        eventId: String,
+        source: Source,
+        previousGeneration: String? = generationId,
+    ): List<VerifiedConversationEvent> {
         resetAcpTurnContent()
-        return rows.values.filter { it.state == "STREAMING" && it.generationId == generationId }.mapNotNull { message ->
+        return rows.values.filter {
+            it.state == "STREAMING" && (it.generationId == generationId || it.generationId == previousGeneration)
+        }.mapNotNull { message ->
             val content = liveContent.remove(message.id)
             val completed = generationState == GenerationState.COMPLETED
             if (completed) content?.finish()
@@ -463,6 +481,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 contentRevision = ++revision,
                 parts = newParts,
                 reasoning = newReasoning,
+                generationId = message.generationId ?: generationId,
                 rawParts = preservedRaw,
             )
             rows[message.id] = confirmed

@@ -69,7 +69,7 @@ class HarnessSessionCarrier(override val channel: RemoteRpcChannel) : RemoteSess
             request += "beforeSeq" to (parsed.number("beforeSeq") ?: throw RemoteSessionException("CURSOR_EXPIRED"))
         }
         val result = invoke("session/page", obj("request" to obj(*request.toTypedArray())))
-        return sessionHistoryPage(result)
+        return harnessHistoryPage(result)
     }
 
     override fun follow(sessionId: String): Flow<JsonValue> = followWithApprovalSource(sessionId).map { it.value }
@@ -164,7 +164,72 @@ internal fun sessionHistoryPage(result: JsonValue): RemoteHistoryPage {
         if (before == null || before <= 0) throw RemoteSessionException("REMOTE_INVALID_HISTORY_CURSOR")
         Json.canonical(obj("throughSeq" to cursor, "beforeSeq" to before))
     } else null
-    return RemoteHistoryPage(records, next, cursor, result.text("activeTurnId"))
+    val activeTurnId = result.text("activeTurnId")?.takeIf { it.isNotBlank() }
+    return RemoteHistoryPage(records, next, cursor, activeTurnId, activityKnown = true)
+}
+
+/** Harness session/page 允许省略可选 activeTurnId；缺失时必须结合流式基线与 turn 生命周期判定活跃态。 */
+internal fun harnessHistoryPage(result: JsonValue): RemoteHistoryPage {
+    val base = sessionHistoryPage(result)
+    val explicitField = result.at("activeTurnId")
+    if (explicitField != null) {
+        val activeTurnId = (explicitField as? JsonValue.JString)?.value?.takeIf { it.isNotBlank() }
+        if (activeTurnId != null || explicitField is JsonValue.JNull) {
+            return base.copy(activeGenerationId = activeTurnId, activityKnown = true)
+        }
+    }
+    var openTurn: String? = null
+    var openTurnNumber: String? = null
+    var sawTurnEnd = false
+    var activityAfterLastTurnEnd = false
+    base.records.forEachIndexed { index, record ->
+        val event = record.at("event") ?: record
+        when (event.text("type")) {
+            "turn/start" -> {
+                val data = event.at("data")
+                val turnId = data?.text("turnId")?.takeIf { it.isNotBlank() }
+                val turnNumber = data?.number("turn")?.toString()
+                openTurn = turnId ?: turnNumber ?: "event:${event.number("seq") ?: index}"
+                openTurnNumber = turnNumber
+                activityAfterLastTurnEnd = true
+            }
+            "turn/end" -> {
+                val data = event.at("data")
+                val endedId = data?.text("turnId")?.takeIf { it.isNotBlank() }
+                val endedNumber = data?.number("turn")?.toString()
+                val matchesOpen = openTurn == null ||
+                    (endedId == null && endedNumber == null) ||
+                    endedId == openTurn ||
+                    endedNumber == openTurn ||
+                    (endedNumber != null && endedNumber == openTurnNumber)
+                if (matchesOpen) {
+                    openTurn = null
+                    openTurnNumber = null
+                }
+                sawTurnEnd = true
+                activityAfterLastTurnEnd = false
+            }
+            "user/message", "assistant/message", "tool/call", "tool/result" -> {
+                if (sawTurnEnd) activityAfterLastTurnEnd = true
+            }
+        }
+    }
+    val activeAttempt = result.at("assistantStream")?.at("activeAttempt") as? JsonValue.JObject
+    if (activeAttempt != null) {
+        val attemptTurn = openTurn
+            ?: activeAttempt.number("turn")?.toString()
+            ?: activeAttempt.text("attemptId")?.takeIf { it.isNotBlank() }
+        if (attemptTurn != null) {
+            return base.copy(activeGenerationId = attemptTurn, activityKnown = true)
+        }
+    }
+    if (openTurn != null) {
+        return base.copy(activeGenerationId = openTurn, activityKnown = true)
+    }
+    if (sawTurnEnd && !activityAfterLastTurnEnd) {
+        return base.copy(activeGenerationId = null, activityKnown = true)
+    }
+    return base.copy(activeGenerationId = null, activityKnown = false)
 }
 
 internal fun parseSelection(value: JsonValue): RemoteModelSelection = RemoteModelSelection(

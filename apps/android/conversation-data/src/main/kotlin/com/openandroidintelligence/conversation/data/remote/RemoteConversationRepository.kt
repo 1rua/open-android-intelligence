@@ -17,6 +17,13 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** 历史快照对账视图：显式区分“远端已证明空闲”与“分页响应缺失活跃轮次元数据”。 */
+data class RemoteReconciliationSnapshot(
+    val activeGenerationId: String?,
+    val activityKnown: Boolean,
+    val messages: List<TimelineMessage>,
+)
+
 /** 仓储拥有一个固定端点和连接代次；切换只能创建新实例，旧结果无法改写新分区。 */
 class RemoteConversationRepository(
     val carrier: RemoteSessionCarrier,
@@ -27,6 +34,7 @@ class RemoteConversationRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val mediaSource: RemoteAuthenticatedMediaSource? = null,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
+    private val onTimelineSnapshot: (EndpointKey, String, RemoteReconciliationSnapshot) -> Unit = { _, _, _ -> },
 ) : ConversationRepository, GenerationTracker, EventCommitBarrier, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
@@ -182,7 +190,20 @@ class RemoteConversationRepository(
     }
     override suspend fun readConversation(conversationId: String): Conversation? =
         rows[conversationId]?.let { Conversation(ConversationId(conversationId), ContextInjectionFilter.sanitizeSummaryText(it.title), it.createdAt) }
-    override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage {
+    override suspend fun timeline(conversationId: String, page: PageRequest): TimelinePage =
+        loadTimeline(conversationId, page, notifySnapshot = true).first
+
+    /** 仅拉取并合并第 1 页权威快照，供通知对账器读取远端活跃轮次、元数据确定性与最新消息。 */
+    suspend fun fetchReconciliationSnapshot(conversationId: String): RemoteReconciliationSnapshot {
+        val (_, snapshot) = loadTimeline(conversationId, PageRequest(), notifySnapshot = false)
+        return snapshot
+    }
+
+    private suspend fun loadTimeline(
+        conversationId: String,
+        page: PageRequest,
+        notifySnapshot: Boolean,
+    ): Pair<TimelinePage, RemoteReconciliationSnapshot> {
         current()
         ensureFollow(conversationId)
         val mediaRead = mediaSource?.beginHistoryRead()
@@ -198,8 +219,19 @@ class RemoteConversationRepository(
             val data = event.at("data") ?: return@mapNotNull null
             (data.at("message") ?: data).text("id")
         }.toSet()
-        return TimelinePage(synchronized(target) { target.rows.values.filter { it.id in pageIds } },
-            result.nextCursor, result.revision)
+        val (snapshotRows, snapshotMessages) = synchronized(target) {
+            target.rows.values.filter { it.id in pageIds } to target.rows.values.toList()
+        }
+        val snapshot = RemoteReconciliationSnapshot(result.activeGenerationId, result.activityKnown, snapshotMessages)
+        if (notifySnapshot && page.cursor == null && carrier.backend in setOf("harness", "codex")) {
+            val hasPending = pending[conversationId]?.let { turns -> synchronized(turns) { turns.isNotEmpty() } } == true
+            val currentState = synchronized(target) { target.generationState }
+            val authoritativeSnapshot = (result.revision != null && result.activityKnown) || result.activeGenerationId != null
+            if (!hasPending && (authoritativeSnapshot || currentState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING))) {
+                onTimelineSnapshot(workspace.endpoint.key, conversationId, snapshot)
+            }
+        }
+        return TimelinePage(snapshotRows, result.nextCursor, result.revision) to snapshot
     }
     private suspend fun ensureFollow(id: String) {
         val opened = ready.computeIfAbsent(id) { CompletableDeferred() }
@@ -239,7 +271,15 @@ class RemoteConversationRepository(
                             } } }
                             decoded.forEach { publish(id, it) }
                             approvalEvents.forEach { publish(id, it) }
-                            settlePending(id, target)
+                            val settledCount = settlePending(id, target)
+                            if (ended != null && settledCount == 0) {
+                                val hasPending = pending[id]?.let { turns -> synchronized(turns) { turns.isNotEmpty() } } == true
+                                if (!hasPending) {
+                                    synchronized(target) { target.terminal(ended.first) }?.let { terminal ->
+                                        publishRemoteTurnTerminal(id, terminal)
+                                    }
+                                }
+                            }
                             activeConversationChanged()
                         }
                         // 队列跟随原生任务状态，不依赖该轮是否由本机提交。
@@ -356,11 +396,14 @@ class RemoteConversationRepository(
             try {
                 val result = carrier.prompt(RemoteLocalIds.decode(conversationId), message.clientMessageId.value, content, models[conversationId])
                 current()
-                val nativeGeneration = result.at("turn")?.text("id") ?: result.text("generationId") ?: turn.generation
+                val explicitGeneration = result.at("turn")?.text("id") ?: result.text("generationId")
                 if (result.flag("accepted") == false) {
                     throw RemoteSessionException("REMOTE_PROMPT_NOT_ACCEPTED")
                 }
                 val settledInLock = withSessionLock(conversationId) {
+                    val nativeGeneration = synchronized(target) {
+                        explicitGeneration ?: target.resolveGeneration(turn.generation)
+                    }
                     turn.generation = nativeGeneration
                     val identified = synchronized(target) {
                         target.bindSubmittedGeneration(localGeneration, nativeGeneration)
@@ -417,14 +460,16 @@ class RemoteConversationRepository(
         return MessageAcceptance(message.clientMessageId.value, message.clientMessageId.value, localGeneration,
             message.delivery, authoritative = false)
     }
-    private suspend fun settlePending(id: String, target: RemoteTimelineProjection) {
-        val turns = pending[id] ?: return
+    private suspend fun settlePending(id: String, target: RemoteTimelineProjection): Int {
+        val turns = pending[id] ?: return 0
         val entries = synchronized(turns) { turns.values.mapNotNull { turn ->
             synchronized(target) { target.terminal(turn.generation) }?.let { turn to it }
         } }
-        if (entries.isEmpty()) return
+        if (entries.isEmpty()) return 0
+        var settled = 0
         entries.forEach { (entry, terminal) ->
             if (synchronized(turns) { turns.remove(entry.message.clientMessageId.value) } !== entry) return@forEach
+            settled++
             if (terminal.state == GenerationState.CANCELLED) {
                 publish(id, VerifiedConversationEvent.GenerationCancelled("cancelled:${entry.message.clientMessageId.value}", terminal.occurredAt,
                     terminal.generationId, ConversationId(id)))
@@ -439,6 +484,30 @@ class RemoteConversationRepository(
                 acceptedUserMessages[id to member.value] ?: member.value, member, status, 2, if (status == AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_REQUEST_FAILED else null,
                 terminal.generationId)) }
         }
+        return settled
+    }
+    /** 远端或恢复流中观测到的非本机发起轮次结束时，向持久化/通知宿补发同轮次终态事件。 */
+    private suspend fun publishRemoteTurnTerminal(id: String, terminal: RemoteTimelineProjection.TerminalReceipt) {
+        current()
+        val event = when (terminal.state) {
+            GenerationState.CANCELLED -> VerifiedConversationEvent.GenerationCancelled(
+                "remote-cancelled:${terminal.generationId}", terminal.occurredAt, terminal.generationId, ConversationId(id),
+            )
+            GenerationState.COMPLETED, GenerationState.FAILED -> {
+                val status = if (terminal.state == GenerationState.FAILED) AgentMessageStatus.FAILED else AgentMessageStatus.COMPLETED
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(terminal.generationId.toByteArray()).joinToString("") { "%02x".format(it) }.take(24)
+                val syntheticUser = "remote-turn-$digest"
+                VerifiedConversationEvent.MessageStatus(
+                    "remote-terminal:${terminal.generationId}", terminal.occurredAt, ConversationId(id),
+                    syntheticUser, ClientMessageId(syntheticUser), status, 2,
+                    if (status == AgentMessageStatus.FAILED) AgentMessageErrorCode.AGENT_REQUEST_FAILED else null,
+                    terminal.generationId,
+                )
+            }
+            else -> return
+        }
+        onEvent(workspace.endpoint.key, event)
     }
     override suspend fun submitBatch(batch: MessageBatch): BatchAcceptance =
         submitBatch(batch.clientConversationId ?: activeConversationId() ?: throw RemoteSessionException("CONVERSATION_REQUIRED"), batch)
