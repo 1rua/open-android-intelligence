@@ -346,10 +346,16 @@ fun WorkbenchScreen(
                 val delta = height - previous
                 if (previous > 0 && delta > 0 && followLatest) {
                     // Snapshot.sendApplyNotifications() 可能在 SubcomposeLayout 布局/放置阶段触发，
-                    // 等待下一帧回调后再执行 scrollBy，避免重入 measureAndLayout。
+                    // 等待下一帧回调后再执行滚动，避免重入 measureAndLayout。
                     withFrameNanos { }
                     if (followLatest && listState.canScrollForward) {
-                        listState.scrollBy(delta.toFloat())
+                        // 若此时已有尾部新增触发的程序化平滑滚动在途，直接落位最新项，
+                        // 避免 scrollBy 抢占 MutatorMutex 取消 animateScrollToItem 后停在半途。
+                        if (listState.isScrollInProgress && !timelineDragged) {
+                            latestScrollTarget()?.takeIf { it > 0 }?.let { listState.scrollToItem(it) }
+                        } else {
+                            listState.scrollBy(delta.toFloat())
+                        }
                     }
                 }
             }

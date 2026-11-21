@@ -2,9 +2,13 @@
 
 - **关联 Issue**：#216
 - **排查范围**：最近合并至 `dev` 的 5 个 PR（#205、`#209`、`#213`、#211、`#207`）
-- **排查结论摘要**：
-  - **PR #209（审批提交与斜杠命令目录发现）**：**不是根因**。该 PR 未修改任何 Compose UI / 布局 / WindowInsets / 焦点代码；点击输入框获焦唤起键盘（未输入 `/` 前）不会触发 `editDraft`、`loadCatalog` 或 `submitApprovalDecision`。
-  - **真正根因**：由工作台原有架构隐患（`WorkbenchScreen` 的 `bottomDockHeightPx` 在顶层组合作用域被读取，导致 IME 动画**每一帧**都触发全树重组与 `animateScrollToItem` 反复打断重启）被 **PR #207** 与 **PR #213** 叠加放大所致。
+- **排查结论摘要（5 个 PR 责任归属）**：
+  - **PR #205（消除原生会话回执与终态快照并发导致 pendingBatch 残留）**：**不是根因**。仅改动数据层回执屏障、镜像与 `WorkbenchController` 队列结算逻辑，未触及任何 Compose UI、焦点或 WindowInsets 链路。
+  - **PR #209（审批提交与斜杠命令目录发现）**：**不是根因**。未修改任何 Compose UI / 布局 / WindowInsets / 焦点代码；点击输入框获焦唤起键盘（未输入 `/` 前）不会触发 `editDraft`、`loadCatalog` 或 `submitApprovalDecision`。
+  - **PR #211（Live Update 实时通知退出与状态机收敛）**：**不是根因**。仅改动通知栏状态机、`RemoteRuntime` 通知对账与数据载体，未触及主工作台 Compose 布局或 IME 动画。
+  - **PR #207（连接生命周期、Agent/工作区解耦与抽屉按工作区分组自动水合）**：**核心放大器之一**。将侧边抽屉升级为自动水合全工作区会话的 `WorkspaceConversationBrowser`，但 `ThreadDrawer` 每次重组重建 `workspaceMenu.copy(...)` 导致无法跳过，且 `WorkspaceConversationBrowser` 在 `LazyColumn` 内对全部非活跃工作区未 `remember` 重排与过滤；同时 `RemoteWorkbenchRoot` 顶层与工作台分支重复全量订阅 `controller.state`。
+  - **PR #213（跨 Agent 通用上下文注入提示词净化与过滤管线）**：**核心放大器之一**。将 `ConversationTitleResolver.resolve` 从原 O(1) 判空改为执行完整的 `ContextInjectionFilter.sanitizeSummaryText`（单次约 50 个正则且无常规文本快速路径），在 PR #207 的全工作区每帧重过滤中被成百倍放大。
+  - **底层触发点（历史架构隐患）**：`WorkbenchScreen` 的 `bottomDockHeightPx` 在顶层组合作用域（`LaunchedEffect(bottomDockHeightPx)`）及 `mainContent`（`CommandMenu` 底部偏移）被直接读取，导致 IME 键盘动画**每一帧**都触发整屏重组（含处于关闭态的侧边抽屉 `ThreadDrawer` / `WorkspaceConversationBrowser`）并反复打断重启 `animateScrollToItem`。
 
 ---
 

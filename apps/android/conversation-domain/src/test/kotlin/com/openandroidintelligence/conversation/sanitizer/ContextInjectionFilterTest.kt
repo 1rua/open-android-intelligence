@@ -437,6 +437,15 @@ class ContextInjectionFilterTest {
 
         assertEquals("", ContextInjectionFilter.sanitizeSummaryText("<system-reminder>internal only</system-reminder>"))
 
+        // 混合横线与等号的 [-=]{3,} 分隔横幅（首部与尾部）不得被快速路径漏过
+        val mixedLeadingBanner = "-=- BEGIN SYSTEM -=-\ninternal rules\n-=- END SYSTEM -=-\n真实问题标题"
+        assertEquals("真实问题标题", ContextInjectionFilter.sanitizeSummaryText(mixedLeadingBanner))
+        val mixedTrailingBanner = "真实回答内容\n\n--= BEGIN CONTEXT --=\nhidden\n--= END CONTEXT --="
+        assertEquals(
+            "真实回答内容",
+            ContextInjectionFilter.sanitizeText(mixedTrailingBanner, ContextInjectionFilter.SenderRole.ASSISTANT),
+        )
+
         assertNull(
             ContextInjectionFilter.filterNotificationPreview(
                 sender = "system",

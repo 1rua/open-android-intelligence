@@ -763,28 +763,32 @@ object ContextInjectionFilter {
     /**
      * 快速特征预检：所有上下文注入信封（XML/ChatML/HTML 注释/外部界定符/方括号头/
      * Markdown 指令与技能段/KV 元数据/浏览器时区/横线分隔横幅）至少包含
-     * `<`、`[`、`#`、`:`、`---` 或 `===` 之一；不含这些特征的常规纯文本可直接短路。
+     * `<`、`[`、`#`、`:` 或连续 3 个 `[-=]` 之一；不含这些特征的常规纯文本可直接短路。
      */
     private fun mayContainContextInjectionMarker(text: String): Boolean {
-        var dashRun = 0
-        var equalRun = 0
+        var bannerRun = 0
         for (i in text.indices) {
             when (text[i]) {
                 '<', '[', '#', ':' -> return true
-                '-' -> {
-                    dashRun++
-                    equalRun = 0
-                    if (dashRun >= 3) return true
+                '-', '=' -> {
+                    bannerRun++
+                    if (bannerRun >= 3) return true
                 }
-                '=' -> {
-                    equalRun++
-                    dashRun = 0
-                    if (equalRun >= 3) return true
-                }
-                else -> {
-                    dashRun = 0
-                    equalRun = 0
-                }
+                else -> bannerRun = 0
+            }
+        }
+        return false
+    }
+
+    private fun containsBannerRun(text: String): Boolean {
+        var run = 0
+        for (i in text.indices) {
+            val ch = text[i]
+            if (ch == '-' || ch == '=') {
+                run++
+                if (run >= 3) return true
+            } else {
+                run = 0
             }
         }
         return false
@@ -1341,7 +1345,7 @@ object ContextInjectionFilter {
                 stripLeadingInstructionsBlock(tail, shiftedProtected, streaming)
             }?.let { return it }
         }
-        if (text.indexOf('<') >= 0 || text.contains("---") || text.contains("===")) {
+        if (text.indexOf('<') >= 0 || containsBannerRun(text)) {
             stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
                 stripLeadingDelimiterOrCommentBlock(tail, role, streaming)
             }?.let { return it }

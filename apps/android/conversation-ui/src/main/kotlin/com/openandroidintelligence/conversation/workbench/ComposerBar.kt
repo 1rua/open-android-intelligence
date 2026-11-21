@@ -58,7 +58,9 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.ceil
 import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
@@ -453,7 +455,11 @@ private fun ComposerInputField(
                 drawContent()
                 val color = borderColorState.value
                 if (color.alpha > 0f) {
-                    val strokePx = Dimensions.StrokeHairline.toPx()
+                    val strokePx = if (Dimensions.StrokeHairline == Dp.Hairline) {
+                        1f
+                    } else {
+                        ceil(Dimensions.StrokeHairline.toPx())
+                    }
                     val halfStroke = strokePx / 2f
                     val radiusPx = (AppRadius.Bubble.toPx() - halfStroke).coerceAtLeast(0f)
                     drawRoundRect(
