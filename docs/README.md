@@ -12,6 +12,7 @@
 | 主题 | 推荐文档 | 说明 |
 | --- | --- | --- |
 | **全局项目架构** | [PROJECT.md](../PROJECT.md) | DSH Remote 三端架构、仓库模块拓扑与本机安全边界 |
+| **全局设计规范** | [DESIGN.md](../DESIGN.md) | 完全遵循 Google Material Design 3 官方标准的色彩、动效、交互与布局规范 |
 | **全局测试与门禁** | [TEST_INFRA.md](../TEST_INFRA.md) | `test:fast`/`test:pr`/`test:full`、CI 影响图与各项质量门禁 |
 | **核心词汇表** | [CONTEXT.md](../CONTEXT.md) | DSH Remote、Virtual Host、Protected Mode 等统一领域术语 |
 | **DSH Remote 总规格** | [2026-11-13-dsh-remote-architecture-refactor.md](specs/2026-11-13-dsh-remote-architecture-refactor.md) | 现行目标架构、模块边界与 REM-01~20 需求定义 |
