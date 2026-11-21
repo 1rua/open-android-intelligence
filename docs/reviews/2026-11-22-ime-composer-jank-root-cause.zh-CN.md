@@ -43,9 +43,10 @@
    - 贴底跟随改为在 `LaunchedEffect(readingPosition)` 内通过 `snapshotFlow { bottomDockHeightPx.intValue }` 监听增量 `delta = height - previous`，当 `previous > 0 && delta > 0 && followLatest && listState.canScrollForward` 时调用 `listState.scrollBy(delta.toFloat())` 与键盘帧 1:1 同步上推，彻底消除每帧全树重组与 `animateScrollToItem` 反复取消重启。
    - `CommandMenu` 浮层与 `Snackbar` 的底部避让改用纯布局阶段 `Modifier.layout` 修饰符读取 `bottomDockHeightPx.intValue`，不在组合期产生快照订阅。
    - 抽屉自动水合触发条件改在 `LaunchedEffect` 中通过 `snapshotFlow { expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open }.distinctUntilChanged()` 监听；并缓存 `displayKeyList`/`displayKeySet`、`allAttachments`、`ConversationBrowserActions` 与抽屉回调。
-2. **修复 `ThreadDrawer`、`WorkspaceConversationBrowser` 与 `ConversationBrowser` 跳过失效与未缓存过滤（`ThreadDrawer.kt`、`WorkspaceConversationBrowser.kt`、`ConversationBrowser.kt`）**：
+2. **修复 `ThreadDrawer`、`WorkspaceConversationBrowser`、`ConversationBrowser` 与控制器状态引用抖动（`ThreadDrawer.kt`、`WorkspaceConversationBrowser.kt`、`ConversationBrowser.kt`、`WorkbenchModels.kt`、`WorkbenchController.kt`）**：
    - `ThreadDrawer` 中使用 `remember(workspaceMenu, onCloseDrawer)` 稳定包装 `WorkspaceMenuState` 与回调，使关闭态抽屉在父级重组时可直接跳过。
-   - `WorkspaceConversationBrowser` 与 `ConversationBrowser` 使用 `remember` 缓存排序与过滤结果；当搜索词 `query` 为空时不再为 `.contains("")` 徒劳调用 `ConversationTitleResolver.resolve()`；单行渲染缓存标题解析结果。
+   - `WorkspaceConversationBrowser` 与 `ConversationBrowser` 使用 `remember` 缓存排序与过滤结果；当搜索词 `query` 为空时不再为 `.contains("")` 徒劳调用 `ConversationTitleResolver.resolve()`；`ConversationTitleResolver.resolve(title)` 在 Compose 环境内缓存解析结果。
+   - `WorkbenchUiState.browserOrganization` 在 `pendingFolderAssignments` 为空时直接复用 `organization` 引用，且 `WorkbenchController.update` 在 `pendingFolderAssignments` / `busyThreadIds` 值未变时复用原集合引用，消除打字与流式输出时因不稳定参数引用抖动导致的关闭态抽屉重组。
 3. **聚焦描边动画下沉至绘制阶段（`ComposerBar.kt`）**：
    - `ComposerInputField` 聚焦边框动画改为在 `drawWithContent` 绘制阶段读取 `borderColorState.value`，聚焦瞬间 0 次组合开销。
 4. **消除 `RemoteWorkbenchRoot` 冗余全量订阅（`RemoteWorkbenchRoot.kt`）**：
@@ -57,4 +58,14 @@
 
 ## 三、修复前后验证记录
 
-（待修复实施与回归测试完成后补充实测前后对比数据。）
+同环境（Robolectric SDK 34，`w411dp-h891dp-420dpi`，5 个工作区 × 40 条会话，20 帧 IME 0px → 800px）对比结果：
+
+| 指标 | 修复前（基线 `dev`） | 修复后 | 改善幅度 |
+|---|---:|---:|---|
+| 点击输入框获焦重组（`wb` / `ws` / `input`） | 0 / 0 / 逐帧描边重组 | **0 / 0 / 1**（仅聚焦态翻转 1 次，描边动画纯绘制层） | 描边组合开销清零 |
+| IME 20 帧上推重组（`wb` / `ws` / `input`） | **20 / 20 / 20** | **0 / 0 / 0**（经阳性对照 `draftControl(wb=1, ws=0)` 验证探针有效） | **-100%** |
+| 打字变更草稿时关闭态工作区浏览器重组 | 每字重组 | **0 次**（`draftControl(wb=1, ws=0)`） | **-100%** |
+| IME 20 帧 `animateScrollToItem` 取消重启 | **20 次** | **0 次**（改为 `withFrameNanos` + `scrollBy(delta)` 同步贴底） | **-100%** |
+| IME 20 帧抽屉标题净化调用次数 | **3,300 次**（165 次/帧） | **0 次**（关闭态不再重组且列表缓存、空搜索词短路） | **-100%** |
+| `sanitizeSummaryText` 200 标题 × 20 帧微基准 | **69.55ms（3.48ms/帧）** | **8.82ms–14.16ms（0.44–0.71ms/帧）** | **5×–7.9× 提速** |
+

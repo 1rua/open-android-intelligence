@@ -6284,11 +6284,22 @@ class WorkbenchController(
             val versionChanged = nextDraftEpoch != current.draftEpoch || transformed.draft != current.draft
             val nextDraftVersion = if (versionChanged) maxOf(current.draftVersion+1,draftRevision) else maxOf(current.draftVersion,draftRevision)
             val catalog = if (transformed.activeThreadId != current.activeThreadId) Loadable.Idle else transformed.catalog
+            val nextPendingFolders = if (pendingFolderAssignments == current.pendingFolderAssignments) {
+                current.pendingFolderAssignments
+            } else {
+                pendingFolderAssignments.toMap()
+            }
+            val computedBusyThreadIds = managementBusyThreadIds(transformed) + externalBusyThreadIds()
+            val stableBusyThreadIds = if (computedBusyThreadIds == current.busyThreadIds) {
+                current.busyThreadIds
+            } else {
+                computedBusyThreadIds
+            }
             val next = transformed.copy(draftEpoch=nextDraftEpoch,draftVersion=nextDraftVersion,catalog=catalog,
                 timelineDataSource=transformed.timelineDataSource ?: if (transformed.timelineOpenedAtNs > 0 &&
                     (transformed.timeline is Loadable.Ready || transformed.timeline is Loadable.Empty)) "remote" else null,
                 isOnline=allowSending && remoteConversationOnline, sendSupported=remoteSendSupported,
-                pendingFolderAssignments=pendingFolderAssignments.toMap(), hasRecoverableSubmissions = recoverable,
+                pendingFolderAssignments=nextPendingFolders, hasRecoverableSubmissions = recoverable,
                 hasUnknownSubmissionOutcome = unknownSubmissionOutcome,
                 conversationManagementSupported=supportsConversationManagement,
                 conversationDeleteSupported=supportsConversationDelete && remoteConversationOnline,
@@ -6296,7 +6307,7 @@ class WorkbenchController(
                 conversationUnarchiveSupported=supportsConversationUnarchive && remoteConversationOnline,
                 conversationRenameSupported=supportsConversationRename && remoteConversationOnline,
                 organizationStoredLocally=organizationStoredLocally,
-                busyThreadIds=managementBusyThreadIds(transformed)+externalBusyThreadIds())
+                busyThreadIds=stableBusyThreadIds)
             if (next.approvalCardsSupported == supportsApprovalCards
             ) next else next.copy(
                 approvalCardsSupported = supportsApprovalCards,

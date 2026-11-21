@@ -26,7 +26,7 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -35,7 +35,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
 import com.openandroidintelligence.conversation.components.SignalStitch
@@ -57,6 +61,22 @@ import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+
+/** 仅模块内测试使用的组合观测缝，生产环境默认为 null，不产生额外分配或快照订阅。 */
+internal val LocalWorkbenchCompositionObserver = staticCompositionLocalOf<((String) -> Unit)?> { null }
+
+private fun Modifier.dockBottomPadding(
+    extra: Dp = 0.dp,
+    bottomPx: () -> Int,
+): Modifier = layout { measurable, constraints ->
+    val bottom = (bottomPx() + extra.roundToPx()).coerceAtLeast(0)
+    val placeable = measurable.measure(constraints.offset(vertical = -bottom))
+    val width = constraints.constrainWidth(placeable.width)
+    val height = constraints.constrainHeight(placeable.height + bottom)
+    layout(width, height) {
+        placeable.placeRelative(0, 0)
+    }
+}
 
 private data class TimelineReadingAnchor(val key: String, val offset: Int)
 
@@ -131,6 +151,7 @@ fun WorkbenchScreen(
     settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
     workspaceMenu: WorkspaceMenuState? = null,
 ) {
+    LocalWorkbenchCompositionObserver.current?.invoke("workbench")
     val state by controller.state.collectAsState()
     val displayStreamHealth = workbenchDisplayStreamHealth(connectionHealth, state.streamHealth)
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -176,7 +197,9 @@ fun WorkbenchScreen(
                 "visibleItems" to visible))
         }
     }
-    val currentDisplayKeys by rememberUpdatedState(displayItems.map { it.key }.toSet())
+    val displayKeyList = remember(displayItems) { displayItems.map { it.key } }
+    val displayKeySet = remember(displayKeyList) { displayKeyList.toHashSet() }
+    val currentDisplayKeys by rememberUpdatedState(displayKeySet)
     LaunchedEffect(readingPosition) {
         snapshotFlow {
             listState.layoutInfo.visibleItemsInfo.firstOrNull { item ->
@@ -198,8 +221,9 @@ fun WorkbenchScreen(
     var approvalHintDismissed by remember { mutableStateOf(false) }
     val reduceMotion = LocalMotionPolicy.current.reduceMotion
 
-    // 顶栏与输入坞都量过了才知道 Snackbar 要抬多高；dock 高度包含它自己的安全区。
-    var bottomDockHeightPx by remember { mutableIntStateOf(0) }
+    // 顶栏与输入坞都量过了才知道 Snackbar/命令浮层要抬多高；dock 高度包含它自己的安全区。
+    // 以 MutableIntState 对象透传，避免在顶层组合期读取导致 IME 动画逐帧触发整屏重组。
+    val bottomDockHeightPx = remember { mutableIntStateOf(0) }
     val density = LocalDensity.current
 
     val firstFrameRecorded = remember(controller, state.activeThreadId, state.timelineRequestEpoch) {
@@ -240,7 +264,7 @@ fun WorkbenchScreen(
 
     val freshEntryKeys = rememberFreshTimelineKeys(
         threadId = state.activeThreadId,
-        keys = displayItems.map { it.key },
+        keys = displayKeyList,
     )
 
     LaunchedEffect(state.notice) {
@@ -310,24 +334,92 @@ fun WorkbenchScreen(
     // M05/M12：文字在流式增长时不做逐 token 动画，只按「最后一条长高了多少」增量贴底。
     var lastEntryHeightPx by remember(state.activeThreadId) { mutableIntStateOf(0) }
     var lastEntryKey by remember(state.activeThreadId) { mutableStateOf<String?>(null) }
-    // 键盘弹出、附件条出现会让输入坞变高（可视区变矮）；停留在底部时跟着贴底。
-    LaunchedEffect(bottomDockHeightPx) {
-        if (!followLatest) return@LaunchedEffect
-        val target = latestScrollTarget()?.takeIf { it > 0 } ?: return@LaunchedEffect
-        if (listState.canScrollForward) {
-            if (reduceMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
+    // 键盘弹出、附件条出现会让输入坞变高（可视区变矮）；停留在底部时按高度增量同步贴底，
+    // 避免在组合期读取 bottomDockHeightPx 触发全屏重组或每帧取消重启 animateScrollToItem。
+    LaunchedEffect(readingPosition) {
+        var previousHeight = bottomDockHeightPx.intValue
+        snapshotFlow { bottomDockHeightPx.intValue }
+            .distinctUntilChanged()
+            .collect { height ->
+                val previous = previousHeight
+                previousHeight = height
+                val delta = height - previous
+                if (previous > 0 && delta > 0 && followLatest) {
+                    // Snapshot.sendApplyNotifications() 可能在 SubcomposeLayout 布局/放置阶段触发，
+                    // 等待下一帧回调后再执行 scrollBy，避免重入 measureAndLayout。
+                    withFrameNanos { }
+                    if (followLatest && listState.canScrollForward) {
+                        listState.scrollBy(delta.toFloat())
+                    }
+                }
+            }
+    }
+
+    val browserActions = remember(controller) {
+        ConversationBrowserActions(
+            rename = controller::renameThread,
+            archive = controller::archiveThread,
+            delete = controller::deleteThread,
+            createFolder = controller::createFolder,
+            renameFolder = controller::renameFolder,
+            deleteFolder = controller::deleteFolder,
+            assignFolder = controller::assignThreadToFolder,
+            sort = controller::setThreadSortMode,
+            reorder = controller::reorderThreads,
+            selectFolder = controller::selectFolder,
+        )
+    }
+    val currentOnOpenSettings by rememberUpdatedState(onOpenSettings)
+    val currentOnLogout by rememberUpdatedState(onLogout)
+    val onDrawerOpenThread = remember(controller, scope, drawer) {
+        { id: String ->
+            controller.openThread(id)
+            scope.launch { drawer.close() }
+            Unit
         }
+    }
+    val onDrawerCreateThread = remember(controller, scope, drawer) {
+        {
+            controller.createThread()
+            scope.launch { drawer.close() }
+            Unit
+        }
+    }
+    val onDrawerClose = remember(scope, drawer) {
+        {
+            scope.launch { drawer.close() }
+            Unit
+        }
+    }
+    val onDrawerOpenAttachments = remember(scope, drawer) {
+        {
+            scope.launch { drawer.close() }
+            showAttachmentLibrary = true
+        }
+    }
+    val onDrawerLogout = remember(scope, drawer) {
+        {
+            scope.launch { drawer.close() }
+            currentOnLogout()
+        }
+    }
+    val allAttachments = remember(entries) { entries.flatMap { it.attachments } }
+    val browserOrganization = remember(state.organization, state.pendingFolderAssignments) {
+        state.browserOrganization
     }
 
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
 
         val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
-        val workspaceMenuVisible = expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open
-        LaunchedEffect(workspaceMenuVisible, workspaceMenu != null, workspaceMenu?.agentTitle, state.isOnline) {
-            if (workspaceMenu != null && workspaceMenuVisible) {
-                latestWorkspaceHydrate?.invoke()
-            }
+        val hasWorkspaceMenu = workspaceMenu != null
+        LaunchedEffect(expanded, hasWorkspaceMenu, workspaceMenu?.agentTitle, state.isOnline, drawer) {
+            if (!hasWorkspaceMenu) return@LaunchedEffect
+            snapshotFlow { expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open }
+                .distinctUntilChanged()
+                .collect { visible ->
+                    if (visible) latestWorkspaceHydrate?.invoke()
+                }
         }
 
         // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
@@ -336,6 +428,15 @@ fun WorkbenchScreen(
             if (!settingsOpen && expanded) settingsFromConversations = false
             if (settingsOpen && !expanded && (drawer.isOpen || drawer.isAnimationRunning)) {
                 drawer.snapTo(DrawerValue.Closed)
+            }
+        }
+
+        val hasSettingsPanel = settingsPanel != null
+        val onDrawerOpenSettings = remember(hasSettingsPanel, expanded, scope, drawer) {
+            {
+                settingsFromConversations = hasSettingsPanel
+                if (!hasSettingsPanel || !expanded) scope.launch { drawer.close() }
+                currentOnOpenSettings()
             }
         }
 
@@ -349,7 +450,7 @@ fun WorkbenchScreen(
                 gatewayLabel = gatewayLabel,
                 threads = state.threads,
                 activeThreadId = state.activeThreadId,
-                organization = state.browserOrganization,
+                organization = browserOrganization,
                 selectedFolderId = state.selectedFolderId,
                 managementSupported = state.conversationManagementSupported,
                 deleteSupported = state.conversationDeleteSupported,
@@ -360,42 +461,15 @@ fun WorkbenchScreen(
                 managing = state.managingThreads,
                 online = state.isOnline,
                 busyThreadIds = state.busyThreadIds,
-                actions = ConversationBrowserActions(
-                    rename = controller::renameThread,
-                    archive = controller::archiveThread,
-                    delete = controller::deleteThread,
-                    createFolder = controller::createFolder,
-                    renameFolder = controller::renameFolder,
-                    deleteFolder = controller::deleteFolder,
-                    assignFolder = controller::assignThreadToFolder,
-                    sort = controller::setThreadSortMode,
-                    reorder = controller::reorderThreads,
-                    selectFolder = controller::selectFolder,
-                ),
-                onOpenThread = {
-                    controller.openThread(it)
-                    scope.launch { drawer.close() }
-                },
-                onCreateThread = {
-                    controller.createThread()
-                    scope.launch { drawer.close() }
-                },
+                actions = browserActions,
+                onOpenThread = onDrawerOpenThread,
+                onCreateThread = onDrawerCreateThread,
                 onRefresh = controller::refreshThreads,
-                onOpenSettings = {
-                    settingsFromConversations = settingsPanel != null
-                    if (settingsPanel == null || !expanded) scope.launch { drawer.close() }
-                    onOpenSettings()
-                },
-                onCloseDrawer = { scope.launch { drawer.close() } },
+                onOpenSettings = onDrawerOpenSettings,
+                onCloseDrawer = onDrawerClose,
                 showClose = !expanded,
-                onOpenAttachments = {
-                    scope.launch { drawer.close() }
-                    showAttachmentLibrary = true
-                },
-                onLogout = {
-                    scope.launch { drawer.close() }
-                    onLogout()
-                },
+                onOpenAttachments = onDrawerOpenAttachments,
+                onLogout = onDrawerLogout,
                 workspaceMenu = workspaceMenu,
             )
         }
@@ -419,12 +493,10 @@ fun WorkbenchScreen(
                         Snackbar(
                             snackbarData = data,
                             shape = RoundedCornerShape(AppRadius.Small),
-                            modifier = Modifier.padding(
-                                start = Dimensions.TimelineHorizontal,
-                                end = Dimensions.TimelineHorizontal,
-                                // M15：Snackbar 必须避让输入坞 + 系统手势条。
-                                bottom = with(density) { bottomDockHeightPx.toDp() } + Dimensions.SpaceSmall,
-                            ),
+                            modifier = Modifier
+                                .padding(horizontal = Dimensions.TimelineHorizontal)
+                                // M15：Snackbar 必须避让输入坞 + 系统手势条；在布局阶段读取避免组合期重组。
+                                .dockBottomPadding(extra = Dimensions.SpaceSmall) { bottomDockHeightPx.intValue },
                         )
                     }
                 },
@@ -527,7 +599,7 @@ fun WorkbenchScreen(
                                             val downloadAction =
                                                 if (controller.downloadsSupported) controller::downloadAttachment else null
                                             AttachmentPreviewHost(
-                                                attachments = entries.flatMap { it.attachments },
+                                                attachments = allAttachments,
                                                 onDownload = downloadAction,
                                                 onRequestOriginal = controller::requestOriginalImage,
                                                 modifier = Modifier.fillMaxSize(),
@@ -663,8 +735,10 @@ fun WorkbenchScreen(
                                             WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom,
                                         ),
                                     )
-                                    .onGloballyPositioned { coordinates ->
-                                        bottomDockHeightPx = coordinates.size.height
+                                    .onSizeChanged { size ->
+                                        if (bottomDockHeightPx.intValue != size.height) {
+                                            bottomDockHeightPx.intValue = size.height
+                                        }
                                     },
                             ) {
                                 PendingBatchStrip(state.pendingBatch)
@@ -725,13 +799,12 @@ fun WorkbenchScreen(
                             }
                         }
 
-                        // c) Command autocomplete popup overlay
-                        val bottomOffset = with(density) { bottomDockHeightPx.toDp() } + 8.dp
+                        // c) Command autocomplete popup overlay（在布局阶段读取输入坞高度，避免 IME 动画逐帧触发重组）
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
                                 .fillMaxWidth()
-                                .padding(bottom = bottomOffset),
+                                .dockBottomPadding(extra = 8.dp) { bottomDockHeightPx.intValue },
                         ) {
                             CommandMenu(
                                 catalogState = state.catalog,

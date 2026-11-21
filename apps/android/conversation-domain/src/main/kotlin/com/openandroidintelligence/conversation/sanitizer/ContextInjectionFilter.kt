@@ -752,7 +752,59 @@ object ContextInjectionFilter {
         text: String,
         role: SenderRole = SenderRole.ASSISTANT,
         streaming: Boolean = false,
-    ): String = sanitizeTextIndexed(text, role, streaming).text
+    ): String {
+        if (text.isEmpty()) return ""
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return ""
+        if (!mayContainContextInjectionMarker(trimmed)) return trimmed
+        return sanitizeTextIndexed(trimmed, role, streaming).text
+    }
+
+    /**
+     * 快速特征预检：所有上下文注入信封（XML/ChatML/HTML 注释/外部界定符/方括号头/
+     * Markdown 指令与技能段/KV 元数据/浏览器时区/横线分隔横幅）至少包含
+     * `<`、`[`、`#`、`:`、`---` 或 `===` 之一；不含这些特征的常规纯文本可直接短路。
+     */
+    private fun mayContainContextInjectionMarker(text: String): Boolean {
+        var dashRun = 0
+        var equalRun = 0
+        for (i in text.indices) {
+            when (text[i]) {
+                '<', '[', '#', ':' -> return true
+                '-' -> {
+                    dashRun++
+                    equalRun = 0
+                    if (dashRun >= 3) return true
+                }
+                '=' -> {
+                    equalRun++
+                    dashRun = 0
+                    if (equalRun >= 3) return true
+                }
+                else -> {
+                    dashRun = 0
+                    equalRun = 0
+                }
+            }
+        }
+        return false
+    }
+
+    private fun hasCollapsibleWhitespace(text: String): Boolean {
+        var previousSpace = false
+        for (i in text.indices) {
+            val ch = text[i]
+            if (ch == ' ') {
+                if (previousSpace) return true
+                previousSpace = true
+            } else if (ch.isWhitespace()) {
+                return true
+            } else {
+                previousSpace = false
+            }
+        }
+        return false
+    }
 
     private fun sanitizeTextIndexed(
         text: String,
@@ -1043,9 +1095,13 @@ object ContextInjectionFilter {
      */
     fun sanitizeSummaryText(raw: String?, maxLength: Int = 160): String {
         if (raw.isNullOrBlank()) return ""
-        val cleaned = sanitizeText(raw, role = SenderRole.ASSISTANT, streaming = false)
-            .replace(SUMMARY_WHITESPACE_REGEX, " ")
-            .trim()
+        val sanitized = sanitizeText(raw, role = SenderRole.ASSISTANT, streaming = false)
+        if (sanitized.isEmpty()) return ""
+        val cleaned = if (hasCollapsibleWhitespace(sanitized)) {
+            sanitized.replace(SUMMARY_WHITESPACE_REGEX, " ").trim()
+        } else {
+            sanitized
+        }
         if (cleaned.isEmpty()) return ""
         return if (cleaned.length > maxLength) cleaned.take(maxLength).trimEnd() else cleaned
     }
@@ -1114,6 +1170,7 @@ object ContextInjectionFilter {
         findProtectedCodeRanges(text, streaming)
 
     private fun findProtectedCodeRanges(text: String, streaming: Boolean): List<IntRange> {
+        if (text.indexOf('`') < 0 && text.indexOf('~') < 0) return emptyList()
         val ranges = mutableListOf<IntRange>()
         var lineStart = 0
         var inFence = false
@@ -1279,17 +1336,23 @@ object ContextInjectionFilter {
 
         if (trailingProtected) return null
 
-        stripTrailingParagraphBlock(text, protectedRanges) { tail, shiftedProtected ->
-            stripLeadingInstructionsBlock(tail, shiftedProtected, streaming)
-        }?.let { return it }
-        stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
-            stripLeadingDelimiterOrCommentBlock(tail, role, streaming)
-        }?.let { return it }
+        if (text.indexOf('#') >= 0 || text.contains("Instructions from:", ignoreCase = true)) {
+            stripTrailingParagraphBlock(text, protectedRanges) { tail, shiftedProtected ->
+                stripLeadingInstructionsBlock(tail, shiftedProtected, streaming)
+            }?.let { return it }
+        }
+        if (text.indexOf('<') >= 0 || text.contains("---") || text.contains("===")) {
+            stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
+                stripLeadingDelimiterOrCommentBlock(tail, role, streaming)
+            }?.let { return it }
+        }
         stripTrailingChatMl(text, role, streaming, alreadyStripped)?.let { return it }
         stripTrailingBracketEnvelope(text, protectedRanges)?.let { return it }
-        stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
-            stripLeadingMachineSkillSection(tail)
-        }?.let { return it }
+        if (text.indexOf('#') >= 0) {
+            stripTrailingParagraphBlock(text, protectedRanges) { tail, _ ->
+                stripLeadingMachineSkillSection(tail)
+            }?.let { return it }
+        }
         stripTrailingRuntimeKvParagraph(text, protectedRanges)?.let { return it }
 
         return null
@@ -1300,6 +1363,9 @@ object ContextInjectionFilter {
         protectedRanges: List<IntRange>,
         streaming: Boolean,
     ): String? {
+        if (text.isEmpty()) return null
+        val first = text[0]
+        if (first != '#' && first != 'I' && first != 'i') return null
         val headerMatch = MARKDOWN_AGENT_HEADER_REGEX.find(text)
         if (headerMatch != null && headerMatch.range.first == 0) {
             var cursor = headerMatch.range.last + 1
@@ -1318,6 +1384,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripLeadingUntrustedMetadata(text: String, streaming: Boolean): String? {
+        if (text.indexOf(':') < 0 || !text.contains("untrusted", ignoreCase = true)) return null
         val headerMatch = UNTRUSTED_METADATA_HEADER_REGEX.find(text) ?: return null
         if (headerMatch.range.first != 0) return null
         var cursor = headerMatch.range.last + 1
@@ -1375,6 +1442,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripTrailingUntrustedMetadata(text: String, streaming: Boolean): String? {
+        if (text.indexOf(':') < 0 || !text.contains("untrusted", ignoreCase = true)) return null
         val matches = UNTRUSTED_METADATA_HEADER_REGEX.findAll(text).toList()
         if (matches.isEmpty()) return null
         val candidate = matches.last()
@@ -1393,6 +1461,9 @@ object ContextInjectionFilter {
         role: SenderRole,
         streaming: Boolean,
     ): String? {
+        if (text.isEmpty()) return null
+        val first = text[0]
+        if (first != '<' && first != '-' && first != '=') return null
         EXTERNAL_DELIMITER_START_REGEX.find(text)?.takeIf { it.range.first == 0 }?.let {
             return text.substring(it.range.last + 1)
         }
@@ -1418,6 +1489,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripLeadingChatMl(text: String, alreadyStripped: Boolean): String? {
+        if (!text.startsWith("<|")) return null
         CHATML_START_REGEX.find(text)?.takeIf { it.range.first == 0 }?.let {
             return text.substring(it.range.last + 1)
         }
@@ -1441,6 +1513,7 @@ object ContextInjectionFilter {
         streaming: Boolean,
         alreadyStripped: Boolean,
     ): String? {
+        if (!text.contains("<|")) return null
         if (streaming || role == SenderRole.ASSISTANT) {
             CHATML_TRAILING_OPEN_REGEX.find(text)?.let {
                 return text.substring(0, it.range.first)
@@ -1492,6 +1565,7 @@ object ContextInjectionFilter {
         role: SenderRole,
         streaming: Boolean,
     ): String? {
+        if (text.indexOf('<') < 0) return null
         // 情况 A：文本末尾紧跟闭合标签 </tag>
         if (text.endsWith(">")) {
             val lt = text.lastIndexOf('<')
@@ -1734,6 +1808,9 @@ object ContextInjectionFilter {
     }
 
     private fun stripLeadingBracketEnvelope(text: String, streaming: Boolean): String? {
+        if (text.isEmpty()) return null
+        val first = text[0]
+        if (first != '[' && first != 'S' && first != 's') return null
         val pairedMatch = BRACKET_PAIRED_START_REGEX.find(text)
         if (pairedMatch != null && pairedMatch.range.first == 0) {
             val label = Regex.escape(pairedMatch.groupValues[1])
@@ -1758,6 +1835,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripTrailingBracketEnvelope(text: String, protectedRanges: List<IntRange>): String? {
+        if (text.indexOf('[') < 0 && !text.contains("System:", ignoreCase = true)) return null
         BRACKET_INLINE_SUFFIX_REGEX.find(text)?.let {
             if (!isProtected(it.range.first, protectedRanges)) {
                 return text.substring(0, it.range.first)
@@ -1769,6 +1847,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripLeadingMachineSkillSection(text: String): String? {
+        if (text.isEmpty() || text[0] != '#') return null
         val heading = SKILL_SECTION_HEADING_REGEX.find(text) ?: return null
         if (heading.range.first != 0) return null
         val bodyStart = heading.range.last + 1
@@ -1802,7 +1881,8 @@ object ContextInjectionFilter {
     }
 
     private fun stripLeadingRuntimeKvParagraph(text: String): String? {
-        val blankSplit = TRAILING_PARAGRAPH_SPLIT_REGEX.find(text)
+        if (text.indexOf(':') < 0) return null
+        val blankSplit = if (text.indexOf('\n') >= 0) TRAILING_PARAGRAPH_SPLIT_REGEX.find(text) else null
         val firstParagraphEnd = blankSplit?.range?.first ?: text.length
         val paragraph = text.substring(0, firstParagraphEnd)
         if (!isStructuredRuntimeKvParagraph(paragraph)) return null
@@ -1810,6 +1890,7 @@ object ContextInjectionFilter {
     }
 
     private fun stripTrailingRuntimeKvParagraph(text: String, protectedRanges: List<IntRange>): String? {
+        if (text.indexOf(':') < 0) return null
         val starts = findParagraphBoundaryStarts(text)
         val lastStart = starts.lastOrNull() ?: 0
         if (isProtected(lastStart, protectedRanges)) return null
@@ -1819,10 +1900,18 @@ object ContextInjectionFilter {
     }
 
     private fun isStructuredRuntimeKvParagraph(paragraph: String): Boolean {
+        var firstNonWs = 0
+        while (firstNonWs < paragraph.length && paragraph[firstNonWs].isWhitespace()) firstNonWs++
+        if (firstNonWs >= paragraph.length) return false
+        val startChar = paragraph[firstNonWs]
+        if (startChar !in 'A'..'Z' && startChar !in 'a'..'z') return false
         val lines = paragraph.lines().map { it.trim() }.filter { it.isNotEmpty() }
         if (lines.isEmpty()) return false
         val keys = mutableListOf<String>()
         for (line in lines) {
+            val first = line[0]
+            if (first !in 'A'..'Z' && first !in 'a'..'z') return false
+            if (line.indexOf(':') < 0) return false
             val match = KV_LINE_REGEX.matchEntire(line) ?: return false
             val key = match.groupValues[1].trim().lowercase().replace(SUMMARY_WHITESPACE_REGEX, " ")
             if (key !in ALL_RUNTIME_KV_KEYS) return false
@@ -1833,6 +1922,7 @@ object ContextInjectionFilter {
     }
 
     private fun findUnambiguousTelemetryLineRanges(text: String, protectedRanges: List<IntRange>): List<IntRange> {
+        if (!text.contains("Browser time zone", ignoreCase = true)) return emptyList()
         val matches = BROWSER_TIMEZONE_LINE_REGEX.findAll(text).toList()
         if (matches.isEmpty()) return emptyList()
         return matches.mapNotNull { match ->
@@ -1919,6 +2009,7 @@ object ContextInjectionFilter {
     }
 
     private fun findParagraphBoundaryStarts(text: String): List<Int> {
+        if (text.indexOf('\n') < 0) return listOf(0)
         val starts = mutableListOf(0)
         TRAILING_PARAGRAPH_SPLIT_REGEX.findAll(text).forEach { match ->
             val next = match.range.last + 1
