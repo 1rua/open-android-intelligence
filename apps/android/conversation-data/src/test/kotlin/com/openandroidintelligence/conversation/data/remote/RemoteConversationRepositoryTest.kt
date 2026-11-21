@@ -473,6 +473,46 @@ class RemoteConversationRepositoryTest {
         repo.close()
     }
 
+    @Test fun `prepareTimelineSnapshot围栏在远端历史读取之前捕获并仅向匹配回调投递快照`() = runTest {
+        val workspace = RemoteWorkspace(AgentEndpoint(key("first", "codex"), "一"), "/first")
+        val trace = mutableListOf<String>()
+        val carrier = Carrier(workspace).apply {
+            historyRead = {
+                trace += "history"
+                RemoteHistoryPage(listOf(obj("id" to "assistant-1", "sender" to "assistant", "text" to "远端已结束")), revision = 3L)
+            }
+        }
+        val repo = RemoteConversationRepository(
+            carrier,
+            workspace,
+            backgroundScope,
+            { local },
+            prepareTimelineSnapshot = { _, _ ->
+                trace += "prepare"
+                { snapshot ->
+                    trace += "reconcile:${snapshot.activityKnown}:${snapshot.activeGenerationId}"
+                }
+            },
+        )
+        repo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(listOf("prepare", "history", "reconcile:true:null"), trace)
+        repo.close()
+
+        // 当 prepareTimelineSnapshot 返回 null 时，不得调用回调也不得回退触发 onTimelineSnapshot。
+        var fallbackCalls = 0
+        val skippedRepo = RemoteConversationRepository(
+            carrier,
+            workspace,
+            backgroundScope,
+            { local },
+            onTimelineSnapshot = { _, _, _ -> fallbackCalls++ },
+            prepareTimelineSnapshot = { _, _ -> null },
+        )
+        skippedRepo.timeline(local, PageRequest()); runCurrent()
+        assertEquals(0, fallbackCalls)
+        skippedRepo.close()
+    }
+
     @Test fun `Harness分页响应省略activeTurnId时从事件流派生进行态且不将缺省字段误判为空闲`() {
         val missingMetadata = harnessHistoryPage(obj(
             "cursor" to 5,

@@ -71,6 +71,19 @@ private const val WORKSPACE_FILTER_ARCHIVED = "archived"
 private fun workspaceThreadRowKey(workspaceKey: String, threadId: String): String =
     "ws-row:$workspaceKey:$threadId"
 
+private fun matchesWorkspaceFilter(
+    thread: ConversationSummary,
+    filter: String,
+    query: String,
+    defaultTitle: String,
+): Boolean {
+    val archiveMatched = if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
+    return archiveMatched && (
+        query.isEmpty() ||
+            ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true)
+        )
+}
+
 /**
  * 基于工作区分组的可折叠会话浏览器：
  * 彻底移除旧的自定义文件夹创建/管理/移动入口，自动展示当前 Agent 下的全部工作区与下属会话，
@@ -95,6 +108,7 @@ fun WorkspaceConversationBrowser(
     busyThreadIds: Set<String> = emptySet(),
     actions: ConversationBrowserActions = ConversationBrowserActions(),
 ) {
+    LocalWorkbenchCompositionObserver.current?.invoke("workspace_browser")
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(WORKSPACE_FILTER_ALL) }
     var showFilter by remember { mutableStateOf(false) }
@@ -114,9 +128,20 @@ fun WorkspaceConversationBrowser(
         orderConversationRows((activeGroup?.threads as? Loadable.Ready)?.value.orEmpty(), organization)
     }
     val activeFiltered = remember(activeOrdered, query, filter, defaultTitle) {
-        activeOrdered.filter { thread ->
-            ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) &&
-                if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
+        activeOrdered.filter { thread -> matchesWorkspaceFilter(thread, filter, query, defaultTitle) }
+    }
+    val visibleRowsByWorkspace = remember(workspaceMenu.groups, activeFiltered, query, filter, defaultTitle) {
+        workspaceMenu.groups.associate { group ->
+            val rows = if (group.isActive) {
+                activeFiltered
+            } else {
+                (group.threads as? Loadable.Ready)?.value.orEmpty()
+                    .asSequence()
+                    .filter { thread -> matchesWorkspaceFilter(thread, filter, query, defaultTitle) }
+                    .sortedWith(compareByDescending<ConversationSummary> { it.updatedAt }.thenBy { it.id.value })
+                    .toList()
+            }
+            group.workspaceKey to rows
         }
     }
     val activeRowsById = remember(activeOrdered) { activeOrdered.associateBy { it.id.value } }
@@ -350,16 +375,7 @@ fun WorkspaceConversationBrowser(
 
         workspaceMenu.groups.forEach { group ->
             val collapsed = group.workspaceKey in collapsedKeys
-            val visibleRows = if (group.isActive) {
-                activeFiltered
-            } else {
-                (group.threads as? Loadable.Ready)?.value.orEmpty()
-                    .sortedWith(compareByDescending<ConversationSummary> { it.updatedAt }.thenBy { it.id.value })
-                    .filter { thread ->
-                        ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) &&
-                            if (filter == WORKSPACE_FILTER_ARCHIVED) thread.archived else !thread.archived
-                    }
-            }
+            val visibleRows = visibleRowsByWorkspace[group.workspaceKey].orEmpty()
             val displayedRows = if (group.isActive) {
                 previewIds?.mapNotNull { id -> activeRowsById[id] } ?: visibleRows
             } else {

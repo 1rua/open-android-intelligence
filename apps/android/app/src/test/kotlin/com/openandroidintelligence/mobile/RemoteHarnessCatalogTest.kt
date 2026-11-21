@@ -140,7 +140,7 @@ class RemoteHarnessCatalogTest {
                 override val capabilities = setOf("codex.appserver.v1") + if (harnessAvailable) setOf("harness.remote.v3") else emptySet()
                 override val workspaceTypes = listOf(value(mapOf("id" to "codex", "name" to "CodeX",
                     "capability" to "codex.appserver.v1", "available" to true)) as JsonValue.JObject)
-                override val events = MutableSharedFlow<RemoteRpcEvent>()
+                override val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 64)
                 override suspend fun invoke(method: String, params: JsonValue.JObject, requestId: String, timeoutMs: Long): JsonValue {
                     if (method == "harness.remote.stream.open") {
                         if (JsonFields.string(params, "endpoint") == "session/follow") harnessSessionFollows++

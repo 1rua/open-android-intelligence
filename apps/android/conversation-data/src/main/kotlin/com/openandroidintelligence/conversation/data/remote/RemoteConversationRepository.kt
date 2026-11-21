@@ -35,6 +35,7 @@ class RemoteConversationRepository(
     private val mediaSource: RemoteAuthenticatedMediaSource? = null,
     private val onEvent: suspend (EndpointKey, VerifiedConversationEvent) -> Unit = { _, _ -> },
     private val onTimelineSnapshot: (EndpointKey, String, RemoteReconciliationSnapshot) -> Unit = { _, _, _ -> },
+    private val prepareTimelineSnapshot: ((EndpointKey, String) -> ((RemoteReconciliationSnapshot) -> Unit)?)? = null,
 ) : ConversationRepository, GenerationTracker, EventCommitBarrier, StreamHealthSource, MessageOutcomeQuery {
     private val connectionScope = carrier.channel.scope
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
@@ -206,6 +207,11 @@ class RemoteConversationRepository(
     ): Pair<TimelinePage, RemoteReconciliationSnapshot> {
         current()
         ensureFollow(conversationId)
+        val shouldNotifySnapshot = notifySnapshot && page.cursor == null && carrier.backend in setOf("harness", "codex")
+        // 身份围栏必须在远端历史读取前捕获，防止旧在途快照晚于新事件或主动对账返回时误吞配额。
+        val preparedSnapshotCallback = if (shouldNotifySnapshot) {
+            prepareTimelineSnapshot?.invoke(workspace.endpoint.key, conversationId)
+        } else null
         val mediaRead = mediaSource?.beginHistoryRead()
         val result = carrier.history(RemoteLocalIds.decode(conversationId), page)
         current()
@@ -223,12 +229,16 @@ class RemoteConversationRepository(
             target.rows.values.filter { it.id in pageIds } to target.rows.values.toList()
         }
         val snapshot = RemoteReconciliationSnapshot(result.activeGenerationId, result.activityKnown, snapshotMessages)
-        if (notifySnapshot && page.cursor == null && carrier.backend in setOf("harness", "codex")) {
+        if (shouldNotifySnapshot) {
             val hasPending = pending[conversationId]?.let { turns -> synchronized(turns) { turns.isNotEmpty() } } == true
             val currentState = synchronized(target) { target.generationState }
             val authoritativeSnapshot = (result.revision != null && result.activityKnown) || result.activeGenerationId != null
             if (!hasPending && (authoritativeSnapshot || currentState !in setOf(GenerationState.QUEUED, GenerationState.RUNNING))) {
-                onTimelineSnapshot(workspace.endpoint.key, conversationId, snapshot)
+                if (prepareTimelineSnapshot != null) {
+                    preparedSnapshotCallback?.invoke(snapshot)
+                } else {
+                    onTimelineSnapshot(workspace.endpoint.key, conversationId, snapshot)
+                }
             }
         }
         return TimelinePage(snapshotRows, result.nextCursor, result.revision) to snapshot

@@ -103,9 +103,21 @@ fun ThreadDrawer(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+            val openThreadAndClose = remember(onOpenThread, onCloseDrawer) {
+                { id: String ->
+                    onOpenThread(id)
+                    onCloseDrawer()
+                }
+            }
+            val createThreadAndClose = remember(onCreateThread, onCloseDrawer) {
+                {
+                    onCreateThread()
+                    onCloseDrawer()
+                }
+            }
             if (workspaceMenu != null) {
-                WorkspaceConversationBrowser(
-                    workspaceMenu = workspaceMenu.copy(
+                val drawerWorkspaceMenu = remember(workspaceMenu, onCloseDrawer) {
+                    workspaceMenu.copy(
                         onOpenWorkspaceThread = { workspaceKey, threadId ->
                             workspaceMenu.onOpenWorkspaceThread(workspaceKey, threadId)
                             onCloseDrawer()
@@ -114,10 +126,13 @@ fun ThreadDrawer(
                             workspaceMenu.onCreateWorkspaceThread(workspaceKey)
                             onCloseDrawer()
                         },
-                    ),
+                    )
+                }
+                WorkspaceConversationBrowser(
+                    workspaceMenu = drawerWorkspaceMenu,
                     activeThreadId = activeThreadId,
-                    onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
-                    onCreateThread = { onCreateThread(); onCloseDrawer() },
+                    onOpenThread = openThreadAndClose,
+                    onCreateThread = createThreadAndClose,
                     onRefresh = onRefresh,
                     organization = organization,
                     managementSupported = managementSupported,
@@ -146,8 +161,8 @@ fun ThreadDrawer(
                     managing = managing,
                     online = online,
                     busyThreadIds = busyThreadIds,
-                    onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
-                    onCreateThread = { onCreateThread(); onCloseDrawer() },
+                    onOpenThread = openThreadAndClose,
+                    onCreateThread = createThreadAndClose,
                     onRefresh = onRefresh,
                     actions = actions,
                     modifier = Modifier.weight(1f).fillMaxWidth(),

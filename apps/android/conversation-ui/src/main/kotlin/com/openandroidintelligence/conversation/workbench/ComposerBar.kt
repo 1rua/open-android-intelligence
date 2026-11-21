@@ -26,7 +26,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -42,9 +41,14 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -54,7 +58,9 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.ceil
 import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
@@ -404,6 +410,7 @@ private fun ComposerInputField(
     onPasteImages: ((PastedImageContent) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
+    LocalWorkbenchCompositionObserver.current?.invoke("composer_input")
     val reduced = LocalMotionPolicy.current.reduceMotion
     val shape = RoundedCornerShape(AppRadius.Bubble)
     // The state-based editor supports Android's image paste/IME content contract.
@@ -429,7 +436,7 @@ private fun ComposerInputField(
             }
         }
     }
-    val borderColor by animateColorAsState(
+    val borderColorState = animateColorAsState(
         targetValue = if (isFocused) {
             MaterialTheme.colorScheme.primary
         } else {
@@ -444,7 +451,29 @@ private fun ComposerInputField(
         modifier = modifier
             .heightIn(min = Dimensions.ComposerMinHeight)
             .animateContentSize(MotionSpecs.morph(reduced))
-            .border(Dimensions.StrokeHairline, borderColor, shape),
+            .drawWithContent {
+                drawContent()
+                val color = borderColorState.value
+                if (color.alpha > 0f) {
+                    val strokePx = if (Dimensions.StrokeHairline == Dp.Hairline) {
+                        1f
+                    } else {
+                        ceil(Dimensions.StrokeHairline.toPx())
+                    }
+                    val halfStroke = strokePx / 2f
+                    val radiusPx = (AppRadius.Bubble.toPx() - halfStroke).coerceAtLeast(0f)
+                    drawRoundRect(
+                        color = color,
+                        topLeft = Offset(halfStroke, halfStroke),
+                        size = Size(
+                            width = (size.width - strokePx).coerceAtLeast(0f),
+                            height = (size.height - strokePx).coerceAtLeast(0f),
+                        ),
+                        cornerRadius = CornerRadius(radiusPx, radiusPx),
+                        style = Stroke(width = strokePx),
+                    )
+                }
+            },
     ) {
         BasicTextField(
             state = editor,

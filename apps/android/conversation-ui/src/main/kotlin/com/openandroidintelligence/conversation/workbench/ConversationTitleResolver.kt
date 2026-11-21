@@ -2,6 +2,7 @@ package com.openandroidintelligence.conversation.workbench
 
 import android.content.Context
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.res.stringResource
 import com.openandroidintelligence.conversation.sanitizer.ContextInjectionFilter
 import com.openandroidintelligence.ui.resources.R
@@ -31,7 +32,8 @@ object ConversationTitleResolver {
      */
     @Composable
     fun resolve(title: String?): String {
-        return resolve(title, stringResource(R.string.conv_title_new_default))
+        val defaultTitle = stringResource(R.string.conv_title_new_default)
+        return remember(title, defaultTitle) { resolve(title, defaultTitle) }
     }
 
     /**

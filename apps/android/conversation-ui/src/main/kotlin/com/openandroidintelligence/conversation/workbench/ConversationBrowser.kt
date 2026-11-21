@@ -160,7 +160,9 @@ fun ConversationBrowser(
     var deleteFolder by remember { mutableStateOf<ConversationFolder?>(null) }
     val canManage = managementSupported && online && !managing
     val listState = rememberLazyListState()
-    val ordered = orderConversationRows((threads as? Loadable.Ready)?.value.orEmpty(), organization)
+    val ordered = remember(threads, organization) {
+        orderConversationRows((threads as? Loadable.Ready)?.value.orEmpty(), organization)
+    }
     val folderId = filter.takeIf { it.startsWith(FOLDER_PREFIX) }?.removePrefix(FOLDER_PREFIX)
     val selectedFolder = organization.folders.firstOrNull { it.folderId == folderId }
     LaunchedEffect(selectedFolderId) {
@@ -174,12 +176,18 @@ fun ConversationBrowser(
         }
     }
     val defaultTitle = stringResource(UiR.string.conv_title_new_default)
-    val filtered = ordered.filter { thread ->
-        ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true) && when (filter) {
-            ARCHIVED_THREADS -> thread.archived
-            UNFILED_THREADS -> !thread.archived && organization.assignments[thread.id.value] == null
-            ALL_THREADS -> !thread.archived
-            else -> !thread.archived && organization.assignments[thread.id.value] == folderId
+    val filtered = remember(ordered, query, filter, folderId, organization.assignments, defaultTitle) {
+        ordered.filter { thread ->
+            val scopeMatched = when (filter) {
+                ARCHIVED_THREADS -> thread.archived
+                UNFILED_THREADS -> !thread.archived && organization.assignments[thread.id.value] == null
+                ALL_THREADS -> !thread.archived
+                else -> !thread.archived && organization.assignments[thread.id.value] == folderId
+            }
+            scopeMatched && (
+                query.isEmpty() ||
+                    ConversationTitleResolver.resolve(thread.title, defaultTitle).contains(query, ignoreCase = true)
+                )
         }
     }
     var draggedId by remember { mutableStateOf<String?>(null) }
@@ -191,7 +199,7 @@ fun ConversationBrowser(
     // 列表首次进入做一次错峰入场（M19）；筛选变化不重放，避免每次搜索都闪一遍。
     var rowsRevealed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { rowsRevealed = true }
-    val rowsById = ordered.associateBy { it.id.value }
+    val rowsById = remember(ordered) { ordered.associateBy { it.id.value } }
     val displayed = previewIds?.mapNotNull(rowsById::get) ?: filtered
     val currentOrdered by rememberUpdatedState(ordered)
     val currentFiltered by rememberUpdatedState(filtered)

@@ -1276,6 +1276,26 @@ class NativeConversationNotificationsTest {
         assertFalse(replyCompletionPreferences(context, "profile", "account").contains("realtime.terminal.$durable"))
     }
 
+    @Test fun `超慢时间线快照跨周期返回时因对账尝试序号推进不得误吞下一周期配额`() {
+        accept(status("delivered", 1, generation = "slow-turn"))
+        val target = coordinator.sessions.value.single().target
+        // 第 1 个 15s 周期到期：捕获非消耗性时间线围栏（attemptSequence = 0），但不推进 requestEpoch 或 revision。
+        clock += 15_000L
+        val staleFence = requireNotNull(coordinator.captureTimelineReconciliationFence(target))
+
+        // 期间另一路径执行了一轮对账（attemptSequence 推进至 1），远端返回 activityKnown=false 未改 revision。
+        val midReq = coordinator.reconciliationRequests().single()
+        assertTrue(coordinator.reconcile(midReq, currentGeneration = null, messages = emptyList(), activityKnown = false))
+
+        // 又过 15s 进入下一对账周期：未调 requestReconciliation（requestEpoch 未变）且 revision 未变，
+        // 迟到的旧快照仍必须被 attemptSequence 围栏拒绝，且保留本周期对账资格。
+        clock += 15_000L
+        assertTrue(coordinator.hasPendingReconciliation())
+        assertFalse(coordinator.reconcileWithFence(staleFence, currentGeneration = null, messages = emptyList(), activityKnown = true))
+        assertTrue("旧快照被拒绝后不得消耗下一周期对账配额", coordinator.hasPendingReconciliation())
+        assertEquals(NativeConversationStatus.RUNNING, coordinator.sessions.value.single().status)
+    }
+
     private fun agentMessage(agent: String, messageId: String, text: String, revision: Long) = event(
         "conversation.message.completed",
         """{"agentId":"$agent","conversationId":"conversation","messageId":"$messageId","generationId":"generation","sender":"assistant","parts":[{"type":"text","text":"$text"}],"revision":$revision}""",

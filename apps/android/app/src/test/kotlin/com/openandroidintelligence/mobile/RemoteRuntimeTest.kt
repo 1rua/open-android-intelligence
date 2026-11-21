@@ -38,6 +38,7 @@ class RemoteRuntimeTest {
     private val scope = CoroutineScope(root + Dispatchers.Unconfined)
     private val connection = Account()
     private lateinit var runtime: RemoteRuntime
+    private lateinit var runtimeFactory: (suspend (Long) -> Unit) -> RemoteRuntime
     private lateinit var phoneHandler: RemoteRpcHostHandler
     private lateinit var grants: PairingGrantStateHolder
     private val key = object : AesGcmKeyProvider {
@@ -53,7 +54,10 @@ class RemoteRuntimeTest {
         host.attach(PluginKernel(HostEnvelope(host.hostCapabilities), PhoneLimits(host.phoneCapabilities),
             host.runtimes, audit, trust, host.nativeLoader, host.selector, grants::currentKernelGrant,
             mediate = host::mediate, authorizeInvocation = host::authorizeKernelInvocation))
-        runtime = RemoteRuntime(context, scope, host, grants, { _, _, _ -> false }, { handler -> phoneHandler = handler; connection }, key)
+        runtimeFactory = { delayFn ->
+            RemoteRuntime(context, scope, host, grants, { _, _, _ -> false }, { handler -> phoneHandler = handler; connection }, key, delayFn = delayFn)
+        }
+        runtime = runtimeFactory { delay(it) }
     }
     @After fun close() = runBlocking {
         runtime.logout().join()
@@ -575,6 +579,199 @@ class RemoteRuntimeTest {
         assertEquals("真实Harness最终答复", finished.latestReply)
     }
 
+    @Test fun `断网处理排队期间网络已恢复时必须补一次重连而不是空等宽限期`() = runBlocking {
+        // 宽限期永不结束：若断网处理释放锁后不立刻补发重连，用例必然超时失败，不依赖宿主机快慢。
+        runtime.logout().join()
+        runtime = runtimeFactory { awaitCancellation() }
+        ready("one")
+        val gate = CompletableDeferred<Unit>()
+        connection.restoreGate = gate
+        runtime.reconnectInPlace() // 占住 selection 锁直至 gate 放行
+        runtime.onNetworkLost()    // 断网清理在 selection 锁外排队
+        runtime.onNetworkAvailable() // 清理尚未完成前网络已恢复
+        connection.restoreGate = null
+        gate.complete(Unit)
+        eventually {
+            connection.channels.size >= 2 && !connection.channels.last().closed &&
+                runtime.controller.value?.state?.value?.isOnline == true &&
+                runtime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                !runtime.agentConnection.value.offlineConfirmed
+        }
+    }
+
+    @Test fun `断网排队期间连续闪断闪连或切工作区不会落入假在线僵尸态`() = runBlocking {
+        // 场景 A：断网清理在锁外排队期间用户切换工作区，旧断网协程不得拆毁新工作区健康连接。
+        ready("one")
+        val gateA = CompletableDeferred<Unit>()
+        connection.restoreGate = gateA
+        runtime.reconnectInPlace() // 占住 selection 锁
+        runtime.onNetworkLost()    // L1 排队
+        val switchJob = runtime.select(endpoint("two"))
+        connection.restoreGate = null
+        gateA.complete(Unit)
+        switchJob.join()
+        eventually {
+            runtime.state.value.selected?.workspaceId == "two" &&
+                runtime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                runtime.controller.value?.state?.value?.isOnline == true &&
+                !connection.channels.last().closed
+        }
+
+        // 场景 B（FIFO Mutex ABA）+ 建链中途断网不覆写 networkConnected：
+        // 锁被占期间依次触发 Lost #1 -> Available #1 -> Lost #2，最终必须停在断联态而非假 CONNECTED 僵尸态。
+        runtime.logout().join()
+        runtime = runtimeFactory { awaitCancellation() }
+        ready("one")
+        val gateB = CompletableDeferred<Unit>()
+        connection.restoreGate = gateB
+        runtime.reconnectInPlace()   // 占住 selection 锁
+        runtime.onNetworkLost()      // L1 入队（epoch 1）
+        runtime.onNetworkAvailable() // 网络短暂恢复
+        runtime.onNetworkLost()      // L2 入队（epoch 2，网络最终保持断开）
+        connection.restoreGate = null
+        gateB.complete(Unit)
+        eventually {
+            runtime.agentConnection.value.phase == AgentConnectionPhase.RECONNECTING &&
+                runtime.controller.value?.state?.value?.isOnline == false
+        }
+        // 验证网络仍断开时未误触发补连，直到显式 onNetworkAvailable 才恢复 CONNECTED。
+        val channelsWhileOffline = connection.channels.size
+        runtime.onNetworkAvailable()
+        eventually {
+            connection.channels.size > channelsWhileOffline &&
+                runtime.agentConnection.value.phase == AgentConnectionPhase.CONNECTED &&
+                runtime.controller.value?.state?.value?.isOnline == true
+        }
+
+        // 场景 C：DISCONNECTED 态首次 select 中途断网，不能跳过断网代际或把 networkConnected 覆写回 true 导致僵尸在线态。
+        runtime.logout().join()
+        runtime = runtimeFactory { awaitCancellation() }
+        runtime.restoreSessionIfAvailable().join()
+        val gateC = CompletableDeferred<Unit>()
+        connection.connectGate = gateC
+        val initialSelect = runtime.select(endpoint("one"))
+        runtime.onNetworkLost()
+        connection.connectGate = null
+        gateC.complete(Unit)
+        initialSelect.join()
+        eventually {
+            runtime.agentConnection.value.phase == AgentConnectionPhase.RECONNECTING &&
+                runtime.controller.value?.state?.value?.isOnline == false
+        }
+    }
+
+    @Test fun `非空时间线对账围栏在主动对账或新事件推进后必须拒绝旧快照且不吞配额`() = runBlocking {
+        ready("one")
+        val convId = com.openandroidintelligence.conversation.model.ConversationId(
+            requireNotNull(runtime.controller.value!!.state.value.activeThreadId))
+        val local = runtime.controller.value!!.localConversationScope
+        val target = ReplyNotificationTarget(local.profileId, local.accountId, convId.value, local.gatewayId)
+        runtime.nativeConversationNotifications.accept(requireNotNull(
+            com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                local.profileId,
+                local.accountId,
+                local.gatewayId,
+                VerifiedConversationEvent.MessageStatus(
+                    "fence-ev-1",
+                    System.currentTimeMillis(),
+                    convId,
+                    "u-fence-1",
+                    com.openandroidintelligence.conversation.model.ClientMessageId("cid-fence-1"),
+                    AgentMessageStatus.DELIVERED,
+                    1,
+                    null,
+                    "turn-fence-1",
+                ),
+            )
+        ))
+        // 先触发一次主动对账使会话处于可捕获非空围栏状态。
+        runtime.nativeConversationNotifications.requestReconciliation()
+        val capturedFence = requireNotNull(runtime.nativeConversationNotifications.captureTimelineReconciliationFence(target))
+
+        // 模拟远端历史读取在途期间发生新的主动对账请求，推进 requestEpoch。
+        runtime.nativeConversationNotifications.requestReconciliation()
+        val staleApplied = runtime.nativeConversationNotifications.reconcileWithFence(
+            capturedFence,
+            currentGeneration = null,
+            messages = emptyList(),
+            activityKnown = true,
+        )
+        assertFalse("旧非空围栏在主动对账代际推进后必须被拒绝", staleApplied)
+        assertTrue("拒绝旧非空围栏时绝不能吞掉后续主动对账配额", runtime.nativeConversationNotifications.hasPendingReconciliation())
+        val stillRunning = runtime.nativeConversationNotifications.sessions.value.first { it.target == target }
+        assertTrue("被拒绝的旧快照不得把进行中通知结束为 ENDED", stillRunning.isRunning)
+        assertEquals(NativeConversationStatus.RUNNING, stillRunning.status)
+    }
+
+    @Test fun `在途旧时间线快照晚于主动对账请求返回时不得吞掉前台对账配额`() = runBlocking {
+        val firstPageEntered = CompletableDeferred<Unit>()
+        val releaseStalePage = CompletableDeferred<Unit>()
+        val interceptedInitialLoad = java.util.concurrent.atomic.AtomicBoolean(false)
+        connection.defaultSessionPage = {
+            if (interceptedInitialLoad.compareAndSet(false, true)) {
+                firstPageEntered.complete(Unit)
+                releaseStalePage.await()
+            }
+            mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false)
+        }
+        runtime.restoreSessionIfAvailable().join()
+        runtime.discover(accountHost()).join()
+        val first = runtime.state.value.endpoints.first { it.endpoint.key.workspaceId == "one" }
+        runtime.select(first).join()
+        eventually { runtime.controller.value?.state?.value?.activeThreadId != null }
+        withTimeout(5_000) { firstPageEntered.await() }
+
+        val convId = com.openandroidintelligence.conversation.model.ConversationId(
+            requireNotNull(runtime.controller.value!!.state.value.activeThreadId))
+        val local = runtime.controller.value!!.localConversationScope
+        val activeChannel = connection.channels.last()
+        val beforeReads = activeChannel.pageReads
+        runtime.nativeConversationNotifications.accept(requireNotNull(
+            com.openandroidintelligence.mobile.conversations.nativeNotificationInput(
+                local.profileId,
+                local.accountId,
+                local.gatewayId,
+                VerifiedConversationEvent.MessageStatus(
+                    "stale-race-ev-1",
+                    System.currentTimeMillis(),
+                    convId,
+                    "u-stale-1",
+                    com.openandroidintelligence.conversation.model.ClientMessageId("cid-stale-1"),
+                    AgentMessageStatus.DELIVERED,
+                    1,
+                    null,
+                    "turn-stale-1",
+                ),
+            )
+        ))
+        activeChannel.sessionPage = {
+            mapOf(
+                "cursor" to 5,
+                "records" to listOf(mapOf("type" to "event", "event" to mapOf(
+                    "seq" to 5,
+                    "type" to "assistant/message",
+                    "data" to mapOf("message" to mapOf(
+                        "id" to "a-fresh",
+                        "content" to listOf(mapOf("type" to "text", "text" to "前台主动对账快照")),
+                    )),
+                ))),
+                "hasMore" to false,
+            )
+        }
+        runtime.nativeConversationNotifications.requestReconciliation()
+        // 放行在 requestReconciliation 之前已发出的旧时间线读取，并确定性等待其落地到时间线状态后再触发前台对账。
+        releaseStalePage.complete(Unit)
+        eventually { runtime.controller.value?.state?.value?.timeline !is com.openandroidintelligence.conversation.state.Loadable.Loading }
+        assertTrue("旧在途时间线快照不得消耗后续主动对账请求", runtime.nativeConversationNotifications.hasPendingReconciliation())
+
+        runtime.onAppForegrounded()
+        eventually { activeChannel.pageReads > beforeReads }
+        val selected = runtime.nativeConversationNotifications.sessions.value
+            .first { it.target.conversationId == convId.value && it.target.agentId == local.gatewayId }
+        assertTrue(selected.isRunning)
+        assertEquals(NativeConversationStatus.RUNNING, selected.status)
+    }
+
     private suspend fun accountHost() = connection.listHosts().single()
 
     private fun postReply(eventId: String, complete: Boolean) {
@@ -625,14 +822,20 @@ class RemoteRuntimeTest {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
-        val channels = mutableListOf<Rpc>()
-        var defaultSessionPage: () -> Map<String, Any?> = { mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false) }
-        var failedHost: String? = null
-        private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
+        val channels = java.util.concurrent.CopyOnWriteArrayList<Rpc>()
+        @Volatile var defaultSessionPage: suspend () -> Map<String, Any?> = { mapOf("cursor" to 0, "records" to emptyList<Any>(), "hasMore" to false) }
+        @Volatile var failedHost: String? = null
+        @Volatile var restoreGate: CompletableDeferred<Unit>? = null
+        @Volatile var connectGate: CompletableDeferred<Unit>? = null
+        private val peers = java.util.concurrent.ConcurrentHashMap<String, AuthenticatedRemotePeer>()
         override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult = error("本测试只恢复已认证账号")
-        override suspend fun restore() = RemoteActiveAccount("https://remote.example", "account", 1).also { account.value = it }
+        override suspend fun restore(): RemoteActiveAccount {
+            restoreGate?.await()
+            return RemoteActiveAccount("https://remote.example", "account", 1).also { account.value = it }
+        }
         override suspend fun listHosts() = listOf(RemoteHostDevice("host", "电脑", "linux", "membership", true))
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
+            connectGate?.await()
             if (hostDeviceId == failedHost) throw RemoteRpcException("HOST_UNAVAILABLE")
             return Rpc(channels.size + 1, hostDeviceId).also {
                 channels += it
@@ -641,9 +844,12 @@ class RemoteRuntimeTest {
                     it.scope, "sha256:" + "1".repeat(64), "sha256:" + "2".repeat(64), RemoteRole.CLIENT)
             }
         }
-        var peerReads = 0
+        private val peerReadCount = java.util.concurrent.atomic.AtomicInteger(0)
+        var peerReads: Int
+            get() = peerReadCount.get()
+            set(value) = peerReadCount.set(value)
         override fun authenticatedPeer(connectionId: String): AuthenticatedRemotePeer {
-            peerReads++
+            peerReadCount.incrementAndGet()
             return peers[connectionId] ?: throw RemoteRpcException("CONNECTION_BINDING_MISMATCH")
         }
         fun acceptPhone(scope: RemoteRpcConnectionScope) {
@@ -662,12 +868,15 @@ class RemoteRuntimeTest {
     private inner class Rpc(generation: Int, hostDeviceId: String) : RemoteRpcChannel {
         override val scope = RemoteRpcConnectionScope("https://remote.example", "account", hostDeviceId, "client", "connection-$generation", generation.toLong())
         override val capabilities = setOf("harness.remote.v3")
-        override val events = MutableSharedFlow<RemoteRpcEvent>()
-        var closed = false
-        var modelReads = 0
-        var pageReads = 0
-        var models: suspend () -> JsonValue = { catalog("宿主模型") }
-        var sessionPage: () -> Map<String, Any?> = connection.defaultSessionPage
+        // 与生产 RemoteRpcSession(Channel(128)) 保持一致的缓冲广播语义，避免零缓冲 SharedFlow 在并发开流/取消下死锁。
+        override val events = MutableSharedFlow<RemoteRpcEvent>(extraBufferCapacity = 64)
+        @Volatile var closed = false
+        private val modelReadCount = java.util.concurrent.atomic.AtomicInteger(0)
+        private val pageReadCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val modelReads: Int get() = modelReadCount.get()
+        val pageReads: Int get() = pageReadCount.get()
+        @Volatile var models: suspend () -> JsonValue = { catalog("宿主模型") }
+        @Volatile var sessionPage: suspend () -> Map<String, Any?> = connection.defaultSessionPage
         override suspend fun invoke(method: String, params: JsonValue.JObject, requestId: String, timeoutMs: Long): JsonValue {
             if (closed) throw RemoteRpcException("TRANSPORT_CLOSED", RemoteDeliveryOutcome.NOT_SENT)
             if (method == "harness.remote.stream.open") {
@@ -680,8 +889,8 @@ class RemoteRuntimeTest {
             if (method == "harness.remote.stream.close") return Json.of(emptyMap<String, Any>())
             val value = when (JsonFields.string(params, "endpoint")) {
                 "session/list" -> Json.of(mapOf("items" to listOf(mapOf("sessionId" to "same:原生/session", "title" to "会话", "updatedAt" to 1))))
-                "session/page" -> { pageReads++; Json.of(sessionPage()) }
-                "session/models" -> { modelReads++; models() }
+                "session/page" -> { pageReadCount.incrementAndGet(); Json.of(sessionPage()) }
+                "session/models" -> { modelReadCount.incrementAndGet(); models() }
                 "commands/list" -> Json.of(mapOf("items" to emptyList<Any>()))
                 else -> Json.of(emptyMap<String, Any>())
             }

@@ -117,8 +117,10 @@ data class WorkbenchUiState(
     val inFlightAttachmentIds: Set<String> = emptySet(),
 ) {
     /** 在持久化目录分配请求尚未落盘前，保持已确认新建会话在对应文件夹下可见。 */
-    val browserOrganization: ConversationOrganization get() = organization.copy(assignments=organization.assignments +
-        pendingFolderAssignments.filter { (id, folderId) -> id !in organization.assignments && organization.folders.any { it.folderId == folderId } })
+    val browserOrganization: ConversationOrganization get() =
+        if (pendingFolderAssignments.isEmpty()) organization
+        else organization.copy(assignments=organization.assignments +
+            pendingFolderAssignments.filter { (id, folderId) -> id !in organization.assignments && organization.folders.any { it.folderId == folderId } })
     val canSend: Boolean get() = isOnline && sendSupported && historyHydrated &&
         (draft.isNotBlank() || attachments.any { it.id.value !in inFlightAttachmentIds }) &&
         !managingThreads && !activeThreadArchived &&

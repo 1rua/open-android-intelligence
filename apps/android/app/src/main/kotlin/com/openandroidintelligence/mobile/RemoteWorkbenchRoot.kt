@@ -38,6 +38,8 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
 import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** 保留现有工作台与系统附件选择器，只把连接入口接到 Remote。 */
@@ -50,7 +52,6 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     val appearance by app.appearancePreferences.settings.collectAsState()
     val dark = when (appearance.theme) { ThemePreference.LIGHT -> false; ThemePreference.DARK -> true; ThemePreference.SYSTEM -> isSystemInDarkTheme() }
     val controller by runtime.controller.collectAsState()
-    val controllerState = controller?.state?.collectAsState()?.value
     val clientConnection by runtime.accountRuntime.state.collectAsState()
     val connection by runtime.state.collectAsState()
     val agentConn by runtime.agentConnection.collectAsState()
@@ -270,9 +271,10 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                     ) { onWorkbench ->
                         val current = controller
                         if (!onWorkbench || current == null) {
+                            val loginControllerState = current?.state?.collectAsState()?.value
                             RemoteLoginSettingsHost(
                                 busy = agentConn.busy || loginEntryState.busy,
-                                connected = remoteWorkbenchConnected(controllerState, clientConnection,
+                                connected = remoteWorkbenchConnected(loginControllerState, clientConnection,
                                     agentConn.busy || loginEntryState.busy),
                                 signedIn = agentConn.account != null && agentConn.phase != AgentConnectionPhase.AUTH_REVOKED,
                                 initialOrigin = runtime.loginOrigin(),
@@ -289,14 +291,19 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 endpointContent = { RemoteLoginAgentSelector(runtime) },
                             )
                         } else WorkbenchSettingsHost { presentation ->
-                            val workbenchState by current.state.collectAsState()
+                            val workbenchThreads by remember(current) {
+                                current.state.map { it.threads }.distinctUntilChanged()
+                            }.collectAsState(initial = current.state.value.threads)
+                            val workbenchOnline by remember(current) {
+                                current.state.map { it.isOnline }.distinctUntilChanged()
+                            }.collectAsState(initial = current.state.value.isOnline)
                             val workspacesByMenuKey = remember(workspaceCtx.workspaces) {
                                 workspaceCtx.workspaces.associateBy { runtime.endpointId(it.endpoint.key) }
                             }
                             val workspaceMenu = remember(
                                 agentConn.activeAgentName,
                                 workspaceCtx,
-                                workbenchState.threads,
+                                workbenchThreads,
                                 workspacesByMenuKey,
                             ) {
                                 WorkspaceMenuState(
@@ -306,8 +313,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                         val isActive = ws.endpoint.key == workspaceCtx.activeWorkspace
                                         val shortTitle = ws.endpoint.displayName.substringAfterLast(" · ")
                                             .ifBlank { ws.endpoint.displayName }
-                                        val threads = if (isActive && workbenchState.threads != Loadable.Idle) {
-                                            workbenchState.threads
+                                        val threads = if (isActive && workbenchThreads != Loadable.Idle) {
+                                            workbenchThreads
                                         } else {
                                             workspaceCtx.sessionsByWorkspace[ws.endpoint.key] ?: Loadable.Idle
                                         }
@@ -336,8 +343,8 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                 AgentConnectionPhase.CONNECTING -> StreamHealth.CONNECTING
                                 AgentConnectionPhase.RECONNECTING -> StreamHealth.RECONNECTING
                                 AgentConnectionPhase.OFFLINE, AgentConnectionPhase.AUTH_REVOKED -> StreamHealth.FAILED
-                                AgentConnectionPhase.CONNECTED -> if (workbenchState.isOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
-                                AgentConnectionPhase.DISCONNECTED -> if (!workbenchState.isOnline) StreamHealth.FAILED else null
+                                AgentConnectionPhase.CONNECTED -> if (workbenchOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
+                                AgentConnectionPhase.DISCONNECTED -> if (!workbenchOnline) StreamHealth.FAILED else null
                             }
                             val offlineBannerVisible = agentConn.offlineConfirmed &&
                                 (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
