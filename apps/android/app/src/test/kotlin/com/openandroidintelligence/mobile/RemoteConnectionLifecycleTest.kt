@@ -201,6 +201,7 @@ class RemoteConnectionLifecycleTest {
 
         runtime.selectWorkspace(firstWorkspace).join()
         val firstController = runtime.controller.value!!
+        eventually { firstController.state.value.activeThreadId != null }
         firstController.editDraft("工作区一草稿")
 
         runtime.selectWorkspace(secondWorkspace).join()
@@ -689,9 +690,9 @@ class RemoteConnectionLifecycleTest {
 
     @Test
     fun `同Agent切工作区初始化目标工作区失败时保留旧控制器存活不破坏在线态`() = runBlocking {
-        var failKeyInit = false
+        val failKeyInit = java.util.concurrent.atomic.AtomicBoolean(false)
         val flakyKeyProvider = object : AesGcmKeyProvider {
-            override fun getOrCreate() = if (failKeyInit) error("KEYSTORE_UNAVAILABLE") else key.getOrCreate()
+            override fun getOrCreate() = if (failKeyInit.get()) error("KEYSTORE_UNAVAILABLE") else key.getOrCreate()
             override fun delete() = key.delete()
         }
         val testRoot = SupervisorJob()
@@ -709,9 +710,10 @@ class RemoteConnectionLifecycleTest {
             val wsTwo = testRuntime.workspaceContext.value.workspaces.first { it.endpoint.key.workspaceId == "two" }
             testRuntime.selectWorkspace(wsOne).join()
             val firstController = testRuntime.controller.value!!
+            eventually { firstController.state.value.activeThreadId != null }
             firstController.editDraft("切工作区失败应保活旧草稿")
 
-            failKeyInit = true
+            failKeyInit.set(true)
             testRuntime.selectWorkspace(wsTwo).join()
 
             assertSame("目标工作区构造失败时必须保留原控制器引用", firstController, testRuntime.controller.value)
@@ -721,7 +723,7 @@ class RemoteConnectionLifecycleTest {
             assertEquals(AgentConnectionPhase.CONNECTED, testRuntime.agentConnection.value.phase)
             assertEquals("KEYSTORE_UNAVAILABLE", testRuntime.agentConnection.value.errorCode)
         } finally {
-            failKeyInit = false
+            failKeyInit.set(false)
             testRuntime.logout().join()
             testRoot.cancelAndJoin()
         }
@@ -858,6 +860,82 @@ class RemoteConnectionLifecycleTest {
     }
 
     @Test
+    fun `旧水合挂起期间被权威空工作区发现取代时不得复活已删除工作区或卡在LOADING`() = runBlocking {
+        val testRoot = SupervisorJob()
+        val testScope = CoroutineScope(testRoot + Dispatchers.Default)
+        val testAccount = FakeAccountConnection()
+        val firstRuntime = buildRuntime(customScope = testScope, customAccount = testAccount)
+        try {
+            firstRuntime.restoreSessionIfAvailable().join()
+            val agent = AgentKey(RemoteServiceOrigin.fromCanonicalOrigin(origin), accountId, "host-1", BackendId("harness"))
+            firstRuntime.selectAgent(agent).join()
+            eventually {
+                firstRuntime.workspaceContext.value.catalogPhase == WorkspaceCatalogPhase.READY &&
+                    firstRuntime.workspaceContext.value.workspaces.size == 2
+            }
+
+            // 拦截旧水合的 workspace/follow，使其停在远端读取前，此时权威 discover 返回空列表。
+            val enteredStaleHydration = CompletableDeferred<Unit>()
+            val releaseStaleHydration = CompletableDeferred<Unit>()
+            val intercepted = java.util.concurrent.atomic.AtomicBoolean(false)
+            testAccount.workspaceFollowHook = {
+                if (intercepted.compareAndSet(false, true)) {
+                    enteredStaleHydration.complete(Unit)
+                    releaseStaleHydration.await()
+                }
+            }
+            val staleHydration = firstRuntime.hydrateWorkspaces(force = true)
+            withTimeout(5_000) { enteredStaleHydration.await() }
+
+            // 权威 discover 返回空工作区列表并取消旧水合。
+            testAccount.harnessWorkspacesOverride = emptyList()
+            firstRuntime.discover(testAccount.availableHosts.first()).join()
+            releaseStaleHydration.complete(Unit)
+            staleHydration.join()
+
+            assertEquals(WorkspaceCatalogPhase.READY, firstRuntime.workspaceContext.value.catalogPhase)
+            assertTrue(
+                "旧水合不得复活已被权威清空的工作区 (workspaces=${firstRuntime.workspaceContext.value.workspaces}, failures=${firstRuntime.agentConnection.value.backendFailures}, err=${firstRuntime.agentConnection.value.errorCode})",
+                firstRuntime.workspaceContext.value.workspaces.isEmpty(),
+            )
+            assertTrue(
+                "兼容投影 endpoints 不得残留已删除 Harness 工作区",
+                firstRuntime.state.value.endpoints.none { it.endpoint.key.backendId.value == "harness" },
+            )
+            firstRuntime.closeRuntimeWithoutClearingCacheForTest()
+        } finally {
+            testRoot.cancelAndJoin()
+        }
+
+        // 重建冷启动确认持久化缓存未被旧水合回写复活。
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val offlineAccount = FakeAccountConnection().apply {
+            nextConnectError = RemoteRpcException("NETWORK_UNREACHABLE")
+        }
+        val coldRuntime = buildRuntime(
+            policy = ConnectionRecoveryPolicy(
+                offlineGracePeriodMillis = 80L,
+                graceRetryAttempts = 0,
+                graceRetryDelayMillis = 10L,
+                backgroundReconnectInitialDelayMillis = 60_000L,
+                backgroundReconnectMaxDelayMillis = 60_000L,
+            ),
+            customScope = coldScope,
+            customAccount = offlineAccount,
+        )
+        try {
+            coldRuntime.restoreSessionIfAvailable().join()
+            coldRuntime.hydrateWorkspaces().join()
+            assertTrue(coldRuntime.workspaceContext.value.workspaces.isEmpty())
+            assertTrue(coldRuntime.state.value.endpoints.none { it.endpoint.key.backendId.value == "harness" })
+        } finally {
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
     fun `离线订阅HotSwappableAttachmentCoordinator后热升级自动接收VERIFIED`() = runBlocking {
         val hotCoordinator = HotSwappableAttachmentCoordinator()
         val observedStates = CopyOnWriteArrayList<AttachmentState>()
@@ -918,7 +996,8 @@ class RemoteConnectionLifecycleTest {
             RemoteHostDevice("host-2", "工作站", "linux", "membership", true),
         )
         val extraWorkspaceTwoSessions = CopyOnWriteArrayList<Map<String, Any>>()
-        var harnessWorkspacesOverride: List<Map<String, Any>>? = null
+        @Volatile var harnessWorkspacesOverride: List<Map<String, Any>>? = null
+        @Volatile var workspaceFollowHook: (suspend () -> Unit)? = null
         val codexThreadPages = linkedMapOf<String?, Pair<List<Map<String, Any>>, String?>>()
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
 
@@ -1011,6 +1090,7 @@ class RemoteConnectionLifecycleTest {
                     val endpoint = JsonFields.string(params, "endpoint")
                     val streamId = JsonFields.string(params, "streamId")
                     if (endpoint == "workspace/follow") {
+                        owner.workspaceFollowHook?.invoke()
                         val extraIds = owner.extraWorkspaceTwoSessions.map { it["sessionId"] as String }
                         val items = owner.harnessWorkspacesOverride ?: listOf(
                             mapOf("workspaceId" to "one", "title" to "工作区一", "path" to "/one", "sessionIds" to listOf("s1")),

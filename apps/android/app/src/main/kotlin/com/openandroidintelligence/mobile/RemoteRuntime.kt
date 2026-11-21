@@ -78,10 +78,13 @@ class RemoteRuntime(
 
     private val selection = Mutex()
     private val switchGeneration = AtomicLong(0L)
+    private val hydrationGeneration = AtomicLong(0L)
+    private val hydrationControlLock = Any()
+    private val workspaceCachePersistenceLock = Any()
     private var activeOperationJob: Job? = null
     private var startupRecoveryJob: Job? = null
     private var reconnectLoopJob: Job? = null
-    private var hydrationJob: Job? = null
+    private val hydrationJob = AtomicReference<Job?>(null)
     private var coldStartBootstrapped = false
 
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
@@ -118,7 +121,7 @@ class RemoteRuntime(
     @Volatile private var lastHydratedAtMs: Long = 0L
 
     // 第二层：Workspace 上下文层句柄
-    private var repository: RemoteConversationRepository? = null
+    @Volatile private var repository: RemoteConversationRepository? = null
     private var hotRepository: HotSwappableConversationRepository? = null
     private var hotAttachments: HotSwappableAttachmentCoordinator? = null
     private var hotMediaSource: HotSwappableHistoricalMediaSource? = null
@@ -148,6 +151,8 @@ class RemoteRuntime(
     private val backgroundOwnership = Any()
     private var ownerActive = false
     @Volatile private var networkConnected = true
+    private val networkLossEpoch = AtomicLong(0L)
+    private val handledNetworkLossEpoch = AtomicLong(0L)
     private var workObserver: Job? = null
     private var reconcileObserver: Job? = null
     @Volatile private var foreground = false
@@ -208,6 +213,54 @@ class RemoteRuntime(
         }
     }
 
+    /** 原子推进水合代际并摘除旧水合引用，阻止旧水合继续覆写磁盘或内存工作区缓存。 */
+    private fun invalidateHydration(): Job? = synchronized(hydrationControlLock) {
+        hydrationGeneration.incrementAndGet()
+        hydrationJob.getAndSet(null)
+    }
+
+    /** 在独立持久化锁下串行落盘工作区列表，并在 stateLock 内复检代际后更新内存缓存，避免磁盘 commit 阻塞状态锁。 */
+    private fun persistAgentWorkspacesIfCurrent(
+        agentKey: AgentKey,
+        workspaces: List<RemoteWorkspace>,
+        expectedGeneration: Long? = null,
+    ): Boolean = synchronized(workspaceCachePersistenceLock) {
+        if (expectedGeneration != null &&
+            (hydrationGeneration.get() != expectedGeneration || agentConnection.value.activeAgent != agentKey)
+        ) {
+            return@synchronized false
+        }
+        saveAgentWorkspaces(agentKey, workspaces)
+        synchronized(stateLock) {
+            if (expectedGeneration != null &&
+                (hydrationGeneration.get() != expectedGeneration || agentConnection.value.activeAgent != agentKey)
+            ) {
+                return@synchronized false
+            }
+            cachedWorkspacesByAgent[agentKey] = workspaces
+        }
+        true
+    }
+
+    /** 是否存在尚未在 selection 锁内完成拆线的断网代际。 */
+    private fun hasPendingNetworkLoss(): Boolean = networkLossEpoch.get() > handledNetworkLossEpoch.get()
+
+    /** 在 selection 锁内原子消费截至 targetEpoch 的断网清理，避免被取消时半拆线却提前吞掉断网代际。 */
+    private suspend fun consumePendingNetworkLossLocked(targetEpoch: Long = networkLossEpoch.get()): Boolean {
+        if (targetEpoch <= handledNetworkLossEpoch.get()) return false
+        withContext(NonCancellable) {
+            try {
+                if (hotRepository?.isOnline == true) {
+                    detachOnlineWorkspaceInPlace(StreamHealth.RECONNECTING)
+                }
+                closeChannelOnly()
+            } finally {
+                handledNetworkLossEpoch.updateAndGet { current -> maxOf(current, targetEpoch) }
+            }
+        }
+        return true
+    }
+
     private fun Throwable.isTrueCancellation(): Boolean =
         this is CancellationException && this !is TimeoutCancellationException
 
@@ -216,10 +269,15 @@ class RemoteRuntime(
         workspaceTransform: (WorkspaceContextState) -> WorkspaceContextState = { it },
     ) {
         synchronized(stateLock) {
+            val prevWorkspace = mutableWorkspaceContext.value
             val nextAgent = agentTransform(mutableAgentConnection.value)
-            val nextWorkspace = workspaceTransform(mutableWorkspaceContext.value)
+            val nextWorkspace = workspaceTransform(prevWorkspace)
             val agentKey = nextWorkspace.agentKey
-            if (agentKey != null &&
+            val workspaceCatalogChanged = nextWorkspace.agentKey != prevWorkspace.agentKey ||
+                nextWorkspace.workspaces != prevWorkspace.workspaces ||
+                nextWorkspace.catalogPhase != prevWorkspace.catalogPhase
+            if (workspaceCatalogChanged &&
+                agentKey != null &&
                 agentKey == nextAgent.activeAgent &&
                 (nextWorkspace.workspaces.isNotEmpty() || nextWorkspace.catalogPhase == WorkspaceCatalogPhase.READY)
             ) {
@@ -423,9 +481,11 @@ class RemoteRuntime(
         for (attempt in 0 until maxAttempts) {
             currentCoroutineContext().ensureActive()
             if (switchGeneration.get() != ticket) return
+            val lossEpochAtAttempt = networkLossEpoch.get()
             val result = selection.withLock {
                 if (switchGeneration.get() != ticket) return@withLock AttemptResult.CANCELLED
                 if (workspaceContext.value.activeWorkspace != targetWorkspace.endpoint.key) return@withLock AttemptResult.CANCELLED
+                consumePendingNetworkLossLocked(lossEpochAtAttempt)
                 try {
                     val restored = accountRuntime.restore() ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
                     if (restored != expectedAccount && accountRuntime.account.value != restored) {
@@ -858,6 +918,7 @@ class RemoteRuntime(
     /** 发现目标 Host 上的所有可用 Agent 与工作区；跨 Host 时不影响既有控制器停留会话页。 */
     fun discover(host: RemoteHostDevice): Job {
         val ticket = switchGeneration.incrementAndGet()
+        val lossEpochAtStart = networkLossEpoch.get()
         reconnectLoopJob?.cancel()
         val previousJob = activeOperationJob
         return scope.launch {
@@ -880,6 +941,7 @@ class RemoteRuntime(
                         workspaceContext.value.workspaces.firstOrNull { it.endpoint.key == activeKey }
                             ?: activeAccount?.let { loadSavedSelectionIfMatches(it, activeKey) }
                     }
+                    consumePendingNetworkLossLocked(lossEpochAtStart)
                     var borrowed = channel?.takeIf { it.scope.hostDeviceId == host.deviceId }
                     var discovery: RemoteRpcChannel? = null
                     var ownDiscoveryError: String? = null
@@ -910,6 +972,7 @@ class RemoteRuntime(
                         val origin = RemoteServiceOrigin.fromCanonicalOrigin(discovery.scope.origin)
                         val accountId = discovery.scope.accountId
                         val discoveredAgents = mutableListOf<DiscoveredAgent>()
+                        val discoveredWorkspacesByAgent = linkedMapOf<AgentKey, List<RemoteWorkspace>>()
 
                         discoveredCarriers.forEach { carrier ->
                             val agentKey = AgentKey(origin, accountId, host.deviceId, BackendId(carrier.backend))
@@ -938,8 +1001,9 @@ class RemoteRuntime(
                                 )
                             }
                             if (failures[carrier.backend] == null) {
-                                saveAgentWorkspaces(agentKey, workspaces)
-                                putCachedWorkspaces(agentKey, workspaces)
+                                discoveredWorkspacesByAgent[agentKey] = workspaces
+                                invalidateHydration()?.cancel()
+                                persistAgentWorkspacesIfCurrent(agentKey, workspaces)
                             }
                         }
 
@@ -954,12 +1018,16 @@ class RemoteRuntime(
                                 )
                             },
                             workspaceTransform = { current ->
+                                discoveredWorkspacesByAgent.forEach { (agentKey, list) ->
+                                    cachedWorkspacesByAgent[agentKey] = list
+                                }
                                 val activeAgent = current.agentKey
                                 if (activeAgent != null &&
                                     activeAgent.hostId == host.deviceId &&
                                     failures[activeAgent.backendId.value] == null
                                 ) {
-                                    val updated = cachedWorkspacesByAgent[activeAgent].orEmpty()
+                                    val updated = discoveredWorkspacesByAgent[activeAgent]
+                                        ?: cachedWorkspacesByAgent[activeAgent].orEmpty()
                                     current.copy(
                                         workspaces = updated,
                                         catalogPhase = WorkspaceCatalogPhase.READY,
@@ -1046,6 +1114,7 @@ class RemoteRuntime(
         initialThreadId: String? = null,
     ): Job {
         val ticket = switchGeneration.incrementAndGet()
+        val lossEpochAtStart = networkLossEpoch.get()
         reconnectLoopJob?.cancel()
         val previousOp = activeOperationJob
         return scope.launch {
@@ -1053,6 +1122,7 @@ class RemoteRuntime(
                 previousOp?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
+                    consumePendingNetworkLossLocked(lossEpochAtStart)
                     selectAgentLocked(agent, preferredWorkspace, initialThreadId, ticket)
                 }
             } finally {
@@ -1128,8 +1198,8 @@ class RemoteRuntime(
                     ),
                 )
             }
-            saveAgentWorkspaces(agent, formattedWorkspaces)
-            putCachedWorkspaces(agent, formattedWorkspaces)
+            invalidateHydration()?.cancel()
+            persistAgentWorkspacesIfCurrent(agent, formattedWorkspaces)
 
             val targetWorkspace = chooseTargetWorkspace(agent, formattedWorkspaces, preferredWorkspace)
                 ?: throw RemoteSessionException("REMOTE_WORKSPACE_NOT_FOUND")
@@ -1256,6 +1326,7 @@ class RemoteRuntime(
     fun selectWorkspace(workspace: RemoteWorkspace, initialThreadId: String? = null): Job {
         val targetAgent = AgentKey.fromEndpointKey(workspace.endpoint.key)
         val ticket = switchGeneration.incrementAndGet()
+        val lossEpochAtStart = networkLossEpoch.get()
         reconnectLoopJob?.cancel()
         val previousOp = activeOperationJob
         return scope.launch {
@@ -1263,6 +1334,7 @@ class RemoteRuntime(
                 previousOp?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
+                    consumePendingNetworkLossLocked(lossEpochAtStart)
                     val currentAgent = agentConnection.value.activeAgent
                     if (currentAgent != targetAgent) {
                         selectAgentLocked(targetAgent, preferredWorkspace = workspace, initialThreadId = initialThreadId, ticket = ticket)
@@ -1284,7 +1356,7 @@ class RemoteRuntime(
                             return@withLock
                         }
                         if (activeCtrl != null) {
-                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket)
+                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart)
                             return@withLock
                         }
                     }
@@ -1345,7 +1417,7 @@ class RemoteRuntime(
                         } else {
                             // 同 Agent 处于离线状态时切换工作区：先就地切换本地镜像视图，再后台静默建链
                             switchOfflineWorkspaceOnlyLocked(workspace, initialThreadId)
-                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket)
+                            launchInPlaceReconnectUnderLock(activeAccount, workspace, ticket, lossEpochAtStart)
                         }
                     } catch (failure: Exception) {
                         if (failure.isTrueCancellation()) throw failure
@@ -1383,112 +1455,128 @@ class RemoteRuntime(
         if (!force && alreadyHydrated && freshWindow && workspaceContext.value.catalogPhase == WorkspaceCatalogPhase.READY) {
             return CompletableDeferred(Unit)
         }
-        if (hydrationJob?.isActive == true && !force) {
-            return hydrationJob!!
-        }
-        hydrationJob?.cancel()
-        return scope.launch {
-            val cached = loadCachedAgentWorkspaces(currentAgent)
-            val effective = if (workspaceContext.value.workspaces.isNotEmpty()) workspaceContext.value.workspaces else cached
-            val missing = effective.filterNot { it.endpoint.key in workspaceContext.value.sessionsByWorkspace }
-            if (missing.isNotEmpty() || (cached.isNotEmpty() && workspaceContext.value.workspaces.isEmpty())) {
-                val cachedSessions = if (missing.isNotEmpty()) {
-                    withContext(Dispatchers.IO) { loadCachedWorkspaceSessionsSnapshot(missing) }
-                } else emptyMap()
-                updateLayerStates(
-                    workspaceTransform = { current ->
-                        if (current.agentKey == currentAgent) {
-                            val mergedWorkspaces = if (current.workspaces.isEmpty()) cached else current.workspaces
-                            current.copy(
-                                workspaces = mergedWorkspaces,
-                                catalogPhase = if (mergedWorkspaces.isNotEmpty() && current.catalogPhase == WorkspaceCatalogPhase.IDLE) {
-                                    WorkspaceCatalogPhase.READY
-                                } else current.catalogPhase,
-                                sessionsByWorkspace = cachedSessions + current.sessionsByWorkspace,
-                            )
-                        } else current
-                    },
-                )
+        val (previousHydrationToCancel, nextJob) = synchronized(hydrationControlLock) {
+            val activeHydration = hydrationJob.get()
+            if (activeHydration?.isActive == true && !force) {
+                return activeHydration
             }
-            if (currentChannel == null || currentCarrier == null || currentChannel.scope.hostDeviceId != currentAgent.hostId) {
-                if (effective.isNotEmpty() && workspaceContext.value.catalogPhase != WorkspaceCatalogPhase.READY) {
+            val generation = hydrationGeneration.incrementAndGet()
+            val previousHydration = activeHydration
+            val created = scope.launch(start = CoroutineStart.LAZY) {
+                previousHydration?.cancelAndJoin()
+                currentCoroutineContext().ensureActive()
+                if (hydrationGeneration.get() != generation || agentConnection.value.activeAgent != currentAgent) return@launch
+                val cached = loadCachedAgentWorkspaces(currentAgent)
+                val effective = if (workspaceContext.value.workspaces.isNotEmpty()) workspaceContext.value.workspaces else cached
+                val missing = effective.filterNot { it.endpoint.key in workspaceContext.value.sessionsByWorkspace }
+                if (missing.isNotEmpty() || (cached.isNotEmpty() && workspaceContext.value.workspaces.isEmpty())) {
+                    val cachedSessions = if (missing.isNotEmpty()) {
+                        withContext(Dispatchers.IO) { loadCachedWorkspaceSessionsSnapshot(missing) }
+                    } else emptyMap()
+                    currentCoroutineContext().ensureActive()
+                    if (hydrationGeneration.get() != generation || agentConnection.value.activeAgent != currentAgent) return@launch
                     updateLayerStates(
                         workspaceTransform = { current ->
-                            if (current.agentKey == currentAgent && current.catalogPhase != WorkspaceCatalogPhase.READY) {
-                                current.copy(catalogPhase = WorkspaceCatalogPhase.READY)
+                            if (hydrationGeneration.get() == generation && current.agentKey == currentAgent) {
+                                val mergedWorkspaces = if (current.workspaces.isEmpty()) cached else current.workspaces
+                                current.copy(
+                                    workspaces = mergedWorkspaces,
+                                    catalogPhase = if (mergedWorkspaces.isNotEmpty() && current.catalogPhase == WorkspaceCatalogPhase.IDLE) {
+                                        WorkspaceCatalogPhase.READY
+                                    } else current.catalogPhase,
+                                    sessionsByWorkspace = cachedSessions + current.sessionsByWorkspace,
+                                )
                             } else current
                         },
                     )
                 }
-                return@launch
-            }
-            if (workspaceContext.value.workspaces.isEmpty() || workspaceContext.value.catalogPhase != WorkspaceCatalogPhase.READY) {
-                updateLayerStates(
-                    workspaceTransform = { current ->
-                        if (current.agentKey == currentAgent) {
-                            current.copy(catalogPhase = WorkspaceCatalogPhase.LOADING, catalogErrorCode = null)
-                        } else current
-                    },
-                )
-            }
-            try {
-                val hostName = agentConnection.value.activeHostName
-                    ?: agentConnection.value.hosts.firstOrNull { it.deviceId == currentAgent.hostId }?.name
-                val workspaces = currentCarrier.workspaces().map { ws ->
-                    ws.copy(
-                        endpoint = ws.endpoint.copy(
-                            displayName = if (hostName != null) {
-                                "$hostName · ${currentCarrier.backend} · ${ws.endpoint.displayName}"
-                            } else {
-                                ws.endpoint.displayName
+                if (currentChannel == null || currentCarrier == null || currentChannel.scope.hostDeviceId != currentAgent.hostId) {
+                    if (effective.isNotEmpty() && workspaceContext.value.catalogPhase != WorkspaceCatalogPhase.READY) {
+                        updateLayerStates(
+                            workspaceTransform = { current ->
+                                if (hydrationGeneration.get() == generation && current.agentKey == currentAgent &&
+                                    current.catalogPhase != WorkspaceCatalogPhase.READY
+                                ) {
+                                    current.copy(catalogPhase = WorkspaceCatalogPhase.READY)
+                                } else current
                             },
-                        ),
+                        )
+                    }
+                    return@launch
+                }
+                if (workspaceContext.value.workspaces.isEmpty() || workspaceContext.value.catalogPhase != WorkspaceCatalogPhase.READY) {
+                    updateLayerStates(
+                        workspaceTransform = { current ->
+                            if (hydrationGeneration.get() == generation && current.agentKey == currentAgent) {
+                                current.copy(catalogPhase = WorkspaceCatalogPhase.LOADING, catalogErrorCode = null)
+                            } else current
+                        },
                     )
                 }
-                saveAgentWorkspaces(currentAgent, workspaces)
-                putCachedWorkspaces(currentAgent, workspaces)
-                val sessionsMap = linkedMapOf<EndpointKey, Loadable<List<ConversationSummary>>>()
-                workspaces.forEach { ws ->
-                    sessionsMap[ws.endpoint.key] = try {
-                        Loadable.Ready(fetchAllWorkspaceSessions(currentCarrier, ws))
-                    } catch (failure: Exception) {
-                        if (failure.isTrueCancellation()) throw failure
-                        val fallback = workspaceContext.value.sessionsByWorkspace[ws.endpoint.key]
-                        (fallback as? Loadable.Ready) ?: Loadable.Failed(errorCodeOf(failure))
+                try {
+                    val hostName = agentConnection.value.activeHostName
+                        ?: agentConnection.value.hosts.firstOrNull { it.deviceId == currentAgent.hostId }?.name
+                    val workspaces = currentCarrier.workspaces().map { ws ->
+                        ws.copy(
+                            endpoint = ws.endpoint.copy(
+                                displayName = if (hostName != null) {
+                                    "$hostName · ${currentCarrier.backend} · ${ws.endpoint.displayName}"
+                                } else {
+                                    ws.endpoint.displayName
+                                },
+                            ),
+                        )
+                    }
+                    currentCoroutineContext().ensureActive()
+                    if (!persistAgentWorkspacesIfCurrent(currentAgent, workspaces, expectedGeneration = generation)) return@launch
+                    val sessionsMap = linkedMapOf<EndpointKey, Loadable<List<ConversationSummary>>>()
+                    workspaces.forEach { ws ->
+                        sessionsMap[ws.endpoint.key] = try {
+                            Loadable.Ready(fetchAllWorkspaceSessions(currentCarrier, ws))
+                        } catch (failure: Exception) {
+                            if (failure.isTrueCancellation()) throw failure
+                            val fallback = workspaceContext.value.sessionsByWorkspace[ws.endpoint.key]
+                            (fallback as? Loadable.Ready) ?: Loadable.Failed(errorCodeOf(failure))
+                        }
+                    }
+                    if (hydrationGeneration.get() == generation && agentConnection.value.activeAgent == currentAgent) {
+                        updateLayerStates(
+                            workspaceTransform = { current ->
+                                if (hydrationGeneration.get() == generation && current.agentKey == currentAgent) {
+                                    hydratedAgentForChannel = currentChannel.scope to currentAgent
+                                    lastHydratedAtMs = clock()
+                                    current.copy(
+                                        workspaces = workspaces,
+                                        catalogPhase = WorkspaceCatalogPhase.READY,
+                                        catalogErrorCode = null,
+                                        sessionsByWorkspace = sessionsMap,
+                                    )
+                                } else current
+                            },
+                        )
+                    }
+                } catch (failure: Exception) {
+                    if (failure.isTrueCancellation()) throw failure
+                    if (hydrationGeneration.get() == generation && agentConnection.value.activeAgent == currentAgent) {
+                        updateLayerStates(
+                            workspaceTransform = { current ->
+                                if (hydrationGeneration.get() == generation && current.agentKey == currentAgent) {
+                                    current.copy(
+                                        catalogPhase = WorkspaceCatalogPhase.FAILED,
+                                        catalogErrorCode = errorCodeOf(failure),
+                                    )
+                                } else current
+                            },
+                        )
                     }
                 }
-                if (agentConnection.value.activeAgent == currentAgent) {
-                    hydratedAgentForChannel = currentChannel.scope to currentAgent
-                    lastHydratedAtMs = clock()
-                    updateLayerStates(
-                        workspaceTransform = { current ->
-                            if (current.agentKey == currentAgent) {
-                                current.copy(
-                                    workspaces = workspaces,
-                                    catalogPhase = WorkspaceCatalogPhase.READY,
-                                    catalogErrorCode = null,
-                                    sessionsByWorkspace = sessionsMap,
-                                )
-                            } else current
-                        },
-                    )
-                }
-            } catch (failure: Exception) {
-                if (failure.isTrueCancellation()) throw failure
-                if (agentConnection.value.activeAgent == currentAgent) {
-                    updateLayerStates(
-                        workspaceTransform = { current ->
-                            if (current.agentKey == currentAgent) {
-                                current.copy(
-                                    catalogPhase = WorkspaceCatalogPhase.FAILED,
-                                    catalogErrorCode = errorCodeOf(failure),
-                                )
-                            } else current
-                        },
-                    )
-                }
             }
-        }.also { hydrationJob = it }
+            hydrationJob.set(created)
+            previousHydration to created
+        }
+        previousHydrationToCancel?.cancel()
+        nextJob.start()
+        return nextJob
     }
 
     /** 在指定工作区下创建新会话（跨工作区时先轻量切换再新建）。 */
@@ -1522,6 +1610,7 @@ class RemoteRuntime(
         }
 
         val ticket = switchGeneration.incrementAndGet()
+        val lossEpochAtStart = networkLossEpoch.get()
         reconnectLoopJob?.cancel()
         val previousOp = activeOperationJob
         hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
@@ -1540,7 +1629,7 @@ class RemoteRuntime(
                 previousOp?.cancel()
                 selection.withLock {
                     if (switchGeneration.get() != ticket) return@withLock
-                    launchInPlaceReconnectUnderLock(expectedAccount, targetWorkspace, ticket)
+                    launchInPlaceReconnectUnderLock(expectedAccount, targetWorkspace, ticket, lossEpochAtStart)
                 }
             } finally {
                 withContext(NonCancellable) {
@@ -1549,7 +1638,7 @@ class RemoteRuntime(
                             agentTransform = {
                                 it.copy(
                                     reconnectingInPlace = false,
-                                    phase = if (it.phase == AgentConnectionPhase.RECONNECTING && it.activeAgent != null) {
+                                    phase = if (it.reconnectingInPlace && it.phase == AgentConnectionPhase.RECONNECTING && it.activeAgent != null) {
                                         AgentConnectionPhase.OFFLINE
                                     } else {
                                         it.phase
@@ -1567,7 +1656,9 @@ class RemoteRuntime(
         expectedAccount: RemoteActiveAccount,
         targetWorkspace: RemoteWorkspace,
         ticket: Long,
+        lossEpochAtStart: Long,
     ) {
+        consumePendingNetworkLossLocked(lossEpochAtStart)
         hotRepository?.setConnectionStreamHealth(StreamHealth.RECONNECTING)
         updateLayerStates(
             agentTransform = {
@@ -1629,10 +1720,12 @@ class RemoteRuntime(
                     workspaceContext.value.activeWorkspace != targetWorkspace.endpoint.key
                 ) break
 
+                val lossEpochAtAttempt = networkLossEpoch.get()
                 val outcome = selection.withLock {
                     if (switchGeneration.get() != ticket ||
                         workspaceContext.value.activeWorkspace != targetWorkspace.endpoint.key
                     ) return@withLock AttemptResult.CANCELLED
+                    consumePendingNetworkLossLocked(lossEpochAtAttempt)
                     try {
                         val acc = accountRuntime.restore() ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
                         runCatching { refreshHostsInternal() }.onFailure { if (it.isTrueCancellation()) throw it }
@@ -1748,8 +1841,8 @@ class RemoteRuntime(
                         nativeConversationNotifications.accept(it)
                     }
                 },
-                onTimelineSnapshot = { key, conversationId, snapshot ->
-                    reconcileTimelineSnapshot(local, key, conversationId, snapshot)
+                prepareTimelineSnapshot = { key, conversationId ->
+                    prepareTimelineSnapshotReconciliation(local, key, conversationId)
                 },
             )
         }
@@ -1891,7 +1984,7 @@ class RemoteRuntime(
             surfaceRepository = binding.surfaceRepo
             currentHotCat.attach(binding.repo.commandCatalog)
 
-            networkConnected = true
+            if (!hasPendingNetworkLoss()) networkConnected = true
             val mirroredOnline = MirroredConversationRepository(binding.repo, currentMirror, currentMedia)
             currentHotRepo.attachOnline(mirroredOnline)
 
@@ -1989,7 +2082,7 @@ class RemoteRuntime(
                 retireWorkspaceContextKeepingChannel()
             }
 
-            networkConnected = true
+            if (!hasPendingNetworkLoss()) networkConnected = true
             workspaceOwnerJob = owner
             ownerMediaSource = binding.mediaSource
             ownerAttachments = binding.attachments
@@ -2190,10 +2283,11 @@ class RemoteRuntime(
 
     fun logout() = scope.launch {
         switchGeneration.incrementAndGet()
+        handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
         startupRecoveryJob?.cancel()
         reconnectLoopJob?.cancel()
         activeOperationJob?.cancel()
-        hydrationJob?.cancel()
+        invalidateHydration()?.cancel()
         loginEntryBridge.cancelLocal()
         var failure: Exception? = null
         try {
@@ -2235,9 +2329,10 @@ class RemoteRuntime(
     @androidx.annotation.VisibleForTesting
     internal suspend fun closeRuntimeWithoutClearingCacheForTest() {
         switchGeneration.incrementAndGet()
+        handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
         startupRecoveryJob?.cancelAndJoin()
         reconnectLoopJob?.cancelAndJoin()
-        hydrationJob?.cancelAndJoin()
+        invalidateHydration()?.cancelAndJoin()
         activeOperationJob?.cancelAndJoin()
         selection.withLock {
             retireAllAndClearController()
@@ -2252,8 +2347,9 @@ class RemoteRuntime(
 
     private suspend fun handleAuthRevoked(code: String) {
         switchGeneration.incrementAndGet()
+        handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
         reconnectLoopJob?.cancel()
-        hydrationJob?.cancel()
+        invalidateHydration()?.cancel()
         lastHydratedAtMs = 0L
         runCatching { retireAllAndClearController() }
         updateLayerStates(
@@ -2339,8 +2435,9 @@ class RemoteRuntime(
         activeCarriers = emptyList()
         hydratedAgentForChannel = null
         lastHydratedAtMs = 0L
-        channel?.close()
+        val oldChannel = channel
         channel = null
+        oldChannel?.close()
     }
 
     /** 仅在退出登录、认证失败或重登替换时清空工作台控制器与全部通道。 */
@@ -2348,6 +2445,7 @@ class RemoteRuntime(
         retireWorkspaceContextKeepingChannel()
         mutableController.value = null
         closeChannelOnly()
+        handledNetworkLossEpoch.updateAndGet { maxOf(it, networkLossEpoch.get()) }
     }
 
     private fun chooseTargetWorkspace(
@@ -2792,21 +2890,22 @@ class RemoteRuntime(
         controller.value?.updateDebouncePolicy(policy)
         assistantControllers.values.forEach { it.updateDebouncePolicy(policy) }
     }
-    /** 快照加载或重连后核对同端点待决会话，由通知终态屏障决定是否结束已失联的 Live Update。 */
-    private fun reconcileTimelineSnapshot(
+    /** 发起时间线远端快照读取前捕获通知围栏，防止旧在途快照晚于新事件或主动对账请求返回时误消费配额。 */
+    private fun prepareTimelineSnapshotReconciliation(
         local: ConversationScope,
         key: EndpointKey,
         conversationId: String,
-        snapshot: RemoteReconciliationSnapshot,
-    ) {
+    ): ((RemoteReconciliationSnapshot) -> Unit)? {
         val target = ReplyNotificationTarget(local.profileId, local.accountId, conversationId, endpointId(key))
-        val request = nativeConversationNotifications.reconciliationRequestFor(target) ?: return
-        nativeConversationNotifications.reconcile(
-            request,
-            snapshot.activeGenerationId?.let { it to "running" },
-            snapshot.messages,
-            activityKnown = snapshot.activityKnown,
-        )
+        val fence = nativeConversationNotifications.captureTimelineReconciliationFence(target) ?: return null
+        return { snapshot ->
+            nativeConversationNotifications.reconcileWithFence(
+                fence,
+                snapshot.activeGenerationId?.let { it to "running" },
+                snapshot.messages,
+                activityKnown = snapshot.activityKnown,
+            )
+        }
     }
 
     fun onNetworkAvailable(@Suppress("UNUSED_PARAMETER") routeChanged: Boolean = false) {
@@ -2814,7 +2913,8 @@ class RemoteRuntime(
         accountRuntime.refreshControlConnection()
         val activeKey = workspaceContext.value.activeWorkspace ?: return
         val phase = agentConnection.value.phase
-        val needReconnect = phase == AgentConnectionPhase.OFFLINE ||
+        val needReconnect = hasPendingNetworkLoss() ||
+            phase == AgentConnectionPhase.OFFLINE ||
             (phase == AgentConnectionPhase.RECONNECTING && !agentConnection.value.reconnectingInPlace) ||
             controller.value?.state?.value?.isOnline == false
         if (needReconnect) {
@@ -2832,35 +2932,57 @@ class RemoteRuntime(
         reconcileObserver?.cancel()
         ownerConversationScope?.let { nativeConversationNotifications.disconnectEndpoint(it.profileId, it.accountId, it.gatewayId) }
         refreshBackgroundWork()
-        val currentPhase = agentConnection.value.phase
-        if (currentPhase == AgentConnectionPhase.DISCONNECTED || currentPhase == AgentConnectionPhase.AUTH_REVOKED) return
+        // 仅在 AUTH_REVOKED 态跳过；DISCONNECTED 态可能正处于首次 selectAgent/selectWorkspace 建链中途，必须纳入断网代际追踪。
+        if (agentConnection.value.phase == AgentConnectionPhase.AUTH_REVOKED) return
+        // 先推进断网代际再读取 switchGeneration，保证更晚发起的切工作区/重连操作必在锁内看到并消费本代际断网。
+        val myLossEpoch = networkLossEpoch.incrementAndGet()
+        val lostTicket = switchGeneration.get()
         scope.launch {
+            var handled = false
             var graceTarget: Pair<Long, RemoteWorkspace>? = null
             selection.withLock {
-                if (hotRepository?.isOnline == true) {
-                    detachOnlineWorkspaceInPlace(StreamHealth.RECONNECTING)
-                    closeChannelOnly()
-                    updateLayerStates(
-                        agentTransform = {
-                            it.copy(
-                                phase = AgentConnectionPhase.RECONNECTING,
-                                offlineConfirmed = false,
-                                reconnectingInPlace = false,
-                            )
-                        },
-                    )
-                    val lostTicket = switchGeneration.get()
-                    val activeKey = workspaceContext.value.activeWorkspace
-                    val ws = activeKey?.let { key -> workspaceContext.value.workspaces.firstOrNull { it.endpoint.key == key } }
-                    if (ws != null) graceTarget = lostTicket to ws
+                // 若本代际断网已被更新操作消费，或已有更高代际断网事件入队，则本协程退出交由最新事件接管。
+                if (myLossEpoch <= handledNetworkLossEpoch.get() || myLossEpoch < networkLossEpoch.get()) return@withLock
+                handled = true
+                val wasOnline = hotRepository?.isOnline == true
+                consumePendingNetworkLossLocked(myLossEpoch)
+                if (wasOnline) {
+                    if (switchGeneration.get() == lostTicket) {
+                        updateLayerStates(
+                            agentTransform = {
+                                it.copy(
+                                    phase = AgentConnectionPhase.RECONNECTING,
+                                    offlineConfirmed = false,
+                                    reconnectingInPlace = false,
+                                )
+                            },
+                        )
+                        val activeKey = workspaceContext.value.activeWorkspace
+                        val activeAccount = agentConnection.value.account ?: accountRuntime.account.value
+                        val ws = activeKey?.let { key ->
+                            workspaceContext.value.workspaces.firstOrNull { it.endpoint.key == key }
+                                ?: activeAccount?.let { loadSavedSelectionIfMatches(it, key) }
+                        }
+                        if (ws != null) graceTarget = lostTicket to ws
+                    }
                 } else {
                     controller.value?.setRemoteConversationOnline(false)
                 }
             }
+            if (!handled) return@launch
+            // 断开处理排队或关闭句柄期间若网络已恢复，立即补发就地重连，避免空等宽限期或停在离线退避。
+            if (networkConnected) {
+                if (switchGeneration.get() == lostTicket &&
+                    (graceTarget != null || agentConnection.value.phase == AgentConnectionPhase.OFFLINE)
+                ) {
+                    reconnectInPlace()
+                }
+                return@launch
+            }
             // 宽限期倒计时必须在释放 selection 锁后进行，避免阻塞用户就地重试或切换工作区。
-            val (lostTicket, ws) = graceTarget ?: return@launch
+            val (ticket, ws) = graceTarget ?: return@launch
             delayFn(recoveryPolicy.offlineGracePeriodMillis)
-            if (switchGeneration.get() == lostTicket &&
+            if (switchGeneration.get() == ticket &&
                 agentConnection.value.phase == AgentConnectionPhase.RECONNECTING &&
                 hotRepository?.isOnline != true
             ) {
@@ -2873,7 +2995,7 @@ class RemoteRuntime(
                         )
                     },
                 )
-                startBackgroundReconnectLoop(ws, lostTicket)
+                startBackgroundReconnectLoop(ws, ticket)
             }
         }
     }

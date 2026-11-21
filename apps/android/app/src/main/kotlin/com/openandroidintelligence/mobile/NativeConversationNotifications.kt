@@ -39,6 +39,14 @@ internal data class NotificationReconciliationRequest(
     val revision: Long,
 )
 
+/** 在发起时间线远端快照读取前捕获的非消耗性围栏，防止旧在途快照误消费后续主动对账配额。 */
+internal data class TimelineReconciliationFence(
+    val target: ReplyNotificationTarget,
+    val revision: Long,
+    val requestEpoch: Long,
+    val attemptSequence: Long,
+)
+
 internal data class NotificationPresenceReconciliationRequest(
     val profileId: String,
     val accountId: String,
@@ -77,6 +85,7 @@ internal class NativeConversationNotifications(
     private val reconciliationDeadlines = mutableMapOf<ReplyNotificationTarget, Long>()
     private val reconciliationAttempts = mutableMapOf<ReplyNotificationTarget, Long>()
     private val reconciliationAttemptCounts = mutableMapOf<ReplyNotificationTarget, Int>()
+    private val reconciliationAttemptSequences = mutableMapOf<ReplyNotificationTarget, Long>()
     private val reconciliationDueAt = mutableMapOf<ReplyNotificationTarget, Long>()
     private val lastObservedAt = mutableMapOf<ReplyNotificationTarget, Long>()
     private val forcedReconciliation = mutableSetOf<ReplyNotificationTarget>()
@@ -84,6 +93,7 @@ internal class NativeConversationNotifications(
     private val pendingRevisions = mutableMapOf<ReplyNotificationTarget, Long>()
     private val deletedTargets = mutableSetOf<ReplyNotificationTarget>()
     private var revisionSequence = 0L
+    private var reconciliationRequestEpoch = 0L
     private class MetadataBatch(val preferences: SharedPreferences) {
         val changes = linkedMapOf<String, Long>()
         var flushJob: Job? = null
@@ -134,10 +144,12 @@ internal class NativeConversationNotifications(
             reconciliationDueAt[it.target] = now()
             publishNow(it.copy(status = NativeConversationStatus.DISCONNECTED), false)
         }
+        reconciliationRequestEpoch++
     }
 
     /** Logout/account switch cannot leave another account's ongoing bubble behind. */
     @Synchronized fun leave() {
+        reconciliationRequestEpoch++
         pending.values.forEach(Job::cancel)
         pending.clear()
         pendingRevisions.clear()
@@ -157,6 +169,7 @@ internal class NativeConversationNotifications(
         reconciliationDeadlines.clear()
         reconciliationAttempts.clear()
         reconciliationAttemptCounts.clear()
+        reconciliationAttemptSequences.clear()
         reconciliationDueAt.clear()
         lastObservedAt.clear()
         forcedReconciliation.clear()
@@ -167,6 +180,7 @@ internal class NativeConversationNotifications(
     }
 
     @Synchronized fun eraseAccount(profileId: String, accountId: String) {
+        reconciliationRequestEpoch++
         _sessions.value.filter { it.target.profileId == profileId && it.target.accountId == accountId }.forEach {
             pending.remove(it.target)?.cancel()
             cancel(it.target)
@@ -184,6 +198,7 @@ internal class NativeConversationNotifications(
         reconciliationDeadlines.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
         reconciliationAttempts.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
         reconciliationAttemptCounts.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
+        reconciliationAttemptSequences.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
         reconciliationDueAt.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
         lastObservedAt.keys.removeAll { it.profileId == profileId && it.accountId == accountId }
         forcedReconciliation.removeAll { it.profileId == profileId && it.accountId == accountId }
@@ -209,6 +224,7 @@ internal class NativeConversationNotifications(
     @Synchronized fun hasPendingReconciliation(): Boolean = _sessions.value.any { eligibleForReconciliation(it, now()) }
 
     @Synchronized fun requestReconciliation() {
+        reconciliationRequestEpoch++
         _sessions.value.filter { it.isRunning || now() <= (reconciliationDeadlines[it.target] ?: 0L) }.forEach {
             forcedReconciliation += it.target
             reconciliationDueAt[it.target] = now()
@@ -254,6 +270,7 @@ internal class NativeConversationNotifications(
         reconciliationDeadlines.remove(target)
         reconciliationAttempts.remove(target)
         reconciliationAttemptCounts.remove(target)
+        reconciliationAttemptSequences.remove(target)
         reconciliationDueAt.remove(target)
         lastObservedAt.remove(target)
         forcedReconciliation.remove(target)
@@ -286,8 +303,37 @@ internal class NativeConversationNotifications(
         return createReconciliationRequest(session, currentTime)
     }
 
+    /** 在发起时间线远端快照读取前捕获当前会话围栏，不提前消耗重试配额。 */
+    @Synchronized fun captureTimelineReconciliationFence(target: ReplyNotificationTarget): TimelineReconciliationFence? {
+        val currentTime = now()
+        val session = _sessions.value.firstOrNull { it.target == target } ?: return null
+        if (!eligibleForReconciliation(session, currentTime)) return null
+        return TimelineReconciliationFence(
+            target = target,
+            revision = sessionRevisions[target] ?: 0L,
+            requestEpoch = reconciliationRequestEpoch,
+            attemptSequence = reconciliationAttemptSequences[target] ?: 0L,
+        )
+    }
+
+    /** 仅当远端读取期间会话修订、主动对账代际与该会话对账尝试序号均未推进时，才消费对账配额并应用快照。 */
+    @Synchronized fun reconcileWithFence(
+        fence: TimelineReconciliationFence,
+        currentGeneration: Pair<String, String>?,
+        messages: List<TimelineMessage>,
+        activityKnown: Boolean = true,
+    ): Boolean {
+        if (reconciliationRequestEpoch != fence.requestEpoch) return false
+        if ((sessionRevisions[fence.target] ?: 0L) != fence.revision) return false
+        if ((reconciliationAttemptSequences[fence.target] ?: 0L) != fence.attemptSequence) return false
+        val request = reconciliationRequestFor(fence.target) ?: return false
+        if (request.revision != fence.revision) return false
+        return reconcile(request, currentGeneration, messages, activityKnown = activityKnown)
+    }
+
     private fun createReconciliationRequest(session: NativeConversationSession, currentTime: Long): NotificationReconciliationRequest {
         reconciliationAttempts[session.target] = currentTime
+        reconciliationAttemptSequences[session.target] = (reconciliationAttemptSequences[session.target] ?: 0L) + 1L
         val attempt = reconciliationAttemptCounts[session.target] ?: 0
         reconciliationAttemptCounts[session.target] = (attempt + 1).coerceAtMost(4)
         reconciliationDueAt[session.target] = currentTime + if (session.isRunning) ACTIVE_RECONCILIATION_INTERVAL
@@ -970,6 +1016,7 @@ internal class NativeConversationNotifications(
         reconciliationDeadlines.keys.retainAll(retainedTargets)
         reconciliationAttempts.keys.retainAll(retainedTargets)
         reconciliationAttemptCounts.keys.retainAll(retainedTargets)
+        reconciliationAttemptSequences.keys.retainAll(retainedTargets)
         reconciliationDueAt.keys.retainAll(retainedTargets)
         lastObservedAt.keys.retainAll(retainedTargets)
         forcedReconciliation.retainAll(retainedTargets)
