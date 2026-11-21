@@ -129,6 +129,7 @@ fun WorkbenchScreen(
      * 退出回调区分设置根页返回和抽屉的手势关闭。
      */
     settingsPanel: (@Composable (onClose: () -> Unit) -> Unit)? = null,
+    workspaceMenu: WorkspaceMenuState? = null,
 ) {
     val state by controller.state.collectAsState()
     val displayStreamHealth = workbenchDisplayStreamHealth(connectionHealth, state.streamHealth)
@@ -321,6 +322,14 @@ fun WorkbenchScreen(
     BoxWithConstraints(modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
 
+        val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
+        val workspaceMenuVisible = expanded || drawer.isOpen || drawer.targetValue == DrawerValue.Open
+        LaunchedEffect(workspaceMenuVisible, workspaceMenu != null, workspaceMenu?.agentTitle, state.isOnline) {
+            if (workspaceMenu != null && workspaceMenuVisible) {
+                latestWorkspaceHydrate?.invoke()
+            }
+        }
+
         // 手机设置覆盖会话抽屉；设置显示状态本身直接随宿主输入更新。
         LaunchedEffect(settingsOpen, expanded, settingsPanel != null) {
             if (settingsPanel == null) return@LaunchedEffect
@@ -387,6 +396,7 @@ fun WorkbenchScreen(
                     scope.launch { drawer.close() }
                     onLogout()
                 },
+                workspaceMenu = workspaceMenu,
             )
         }
 

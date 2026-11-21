@@ -19,6 +19,14 @@
     <string name="remote_hosts">Host 主机</string>
     <string name="remote_refresh_hosts">刷新主机列表</string>
     <string name="remote_workspaces">Agent 与工作区</string>
+    <string name="remote_available_agents">可用 Agent</string>
+    <string name="remote_current_agent_workspaces">当前 Agent 工作区</string>
+    <string name="remote_agent_select_hint">请选择要连接的 Agent，进入后再切换工作区</string>
+    <string name="remote_agent_none_discovered">尚未发现可用 Agent</string>
+    <string name="remote_agent_select_host_hint">请先选择上方在线 Host 主机以发现 Agent</string>
+    <string name="remote_agent_switching">正在切换…</string>
+    <string name="remote_agent_active">当前已连接</string>
+    <string name="remote_workspace_active">当前工作区</string>
     <string name="remote_select_model">选择模型</string>
     <string name="remote_select_effort">思考强度</string>
     <string name="remote_local_settings">本机设置</string>

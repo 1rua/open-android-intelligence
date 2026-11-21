@@ -60,6 +60,8 @@
     <string name="conn_status_connecting">正在连接…</string>
     <string name="conn_status_disconnected">未连接</string>
     <string name="conn_status_reconnecting">正在重连</string>
+    <string name="conn_status_reconnecting_in_place">正在重新连接…</string>
+    <string name="conn_status_cold_start_connecting">正在恢复连接…</string>
     <string name="conn_status_failed">连接失败</string>
     <string name="conn_status_connecting_server">正在连接服务器…</string>
     <string name="conn_status_reconnecting_server">正在重新连接服务器…</string>

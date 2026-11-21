@@ -77,6 +77,7 @@ fun ThreadDrawer(
     avatar: ImageBitmap? = null,
     onChangeAvatar: (() -> Unit)? = null,
     streamHealth: StreamHealth = StreamHealth.IDLE,
+    workspaceMenu: WorkspaceMenuState? = null,
 ) {
 
     Surface(
@@ -102,26 +103,56 @@ fun ThreadDrawer(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            ConversationBrowser(
-                threads = threads,
-                organization = organization,
-                selectedFolderId = selectedFolderId,
-                activeThreadId = activeThreadId,
-                managementSupported = managementSupported,
-                deleteSupported = deleteSupported,
-                archiveSupported = archiveSupported,
-                unarchiveSupported = unarchiveSupported,
-                renameSupported = renameSupported,
-                organizationStoredLocally = organizationStoredLocally,
-                managing = managing,
-                online = online,
-                busyThreadIds = busyThreadIds,
-                onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
-                onCreateThread = { onCreateThread(); onCloseDrawer() },
-                onRefresh = onRefresh,
-                actions = actions,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-            )
+            if (workspaceMenu != null) {
+                WorkspaceConversationBrowser(
+                    workspaceMenu = workspaceMenu.copy(
+                        onOpenWorkspaceThread = { workspaceKey, threadId ->
+                            workspaceMenu.onOpenWorkspaceThread(workspaceKey, threadId)
+                            onCloseDrawer()
+                        },
+                        onCreateWorkspaceThread = { workspaceKey ->
+                            workspaceMenu.onCreateWorkspaceThread(workspaceKey)
+                            onCloseDrawer()
+                        },
+                    ),
+                    activeThreadId = activeThreadId,
+                    onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
+                    onCreateThread = { onCreateThread(); onCloseDrawer() },
+                    onRefresh = onRefresh,
+                    organization = organization,
+                    managementSupported = managementSupported,
+                    deleteSupported = deleteSupported,
+                    archiveSupported = archiveSupported,
+                    unarchiveSupported = unarchiveSupported,
+                    renameSupported = renameSupported,
+                    managing = managing,
+                    online = online,
+                    busyThreadIds = busyThreadIds,
+                    actions = actions,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            } else {
+                ConversationBrowser(
+                    threads = threads,
+                    organization = organization,
+                    selectedFolderId = selectedFolderId,
+                    activeThreadId = activeThreadId,
+                    managementSupported = managementSupported,
+                    deleteSupported = deleteSupported,
+                    archiveSupported = archiveSupported,
+                    unarchiveSupported = unarchiveSupported,
+                    renameSupported = renameSupported,
+                    organizationStoredLocally = organizationStoredLocally,
+                    managing = managing,
+                    online = online,
+                    busyThreadIds = busyThreadIds,
+                    onOpenThread = { id -> onOpenThread(id); onCloseDrawer() },
+                    onCreateThread = { onCreateThread(); onCloseDrawer() },
+                    onRefresh = onRefresh,
+                    actions = actions,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+            }
             DrawerNavItem(
                 icon = Icons.Default.AttachFile,
                 label = "附件库",

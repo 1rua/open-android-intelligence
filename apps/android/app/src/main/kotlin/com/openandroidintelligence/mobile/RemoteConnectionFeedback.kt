@@ -22,8 +22,10 @@ import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 复用原有中文错误指引，仅替换已退役产品名；异常原文和服务地址不直接展示。 */
 @Composable
-internal fun remoteConnectionFailureText(code: String): String =
-    readableFailure(code, CONNECTION_FAILURE_FALLBACK).replace("Gateway", "Remote")
+internal fun remoteConnectionFailureText(code: String): String {
+    if (isAuthRevokedError(code)) return stringResource(UiR.string.conn_toast_session_revoked)
+    return readableFailure(code, CONNECTION_FAILURE_FALLBACK).replace("Gateway", "Remote")
+}
 
 /** 登录阶段继续使用原来的淡化、错误色面与可重试入口。 */
 @Composable
