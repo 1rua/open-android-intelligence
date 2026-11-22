@@ -6,7 +6,19 @@ import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.identity.RemoteRoleCredential
 import com.openandroidintelligence.gateway.remote.identity.RemoteStaticIdentity
 import com.openandroidintelligence.gateway.remote.identity.RemoteTokenPair
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import kotlinx.coroutines.CancellationException
+
+/** 注册、续期和控制面只公开已知语义，服务端扩展字段及原始异常正文留在边界内。 */
+private val roleErrorCodes = setOf(
+    "ACCOUNT_AUTH_REQUIRED", "AUTH_INVALID", "AUTH_REQUIRED", "TOKEN_EXPIRED", "DEVICE_REVOKED", "DEVICE_NOT_FOUND",
+    "DEVICE_OWNERSHIP_REQUIRED", "MEMBERSHIP_REQUIRED", "PEER_IDENTITY_MISMATCH", "PERMISSION_DENIED", "RATE_LIMITED",
+    "INVALID_MESSAGE", "UNSUPPORTED_VERSION", "HARNESS_VERSION_INCOMPATIBLE", "SECURE_CHANNEL_FAILED", "RTC_NEGOTIATION_FAILED", "INTERNAL_ERROR", "CONNECTION_REPLACED",
+    "CONNECTION_FAILED", "TRANSPORT_CLOSED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT", "SERVER_SHUTDOWN", "REMOTE_REFRESH_FAILED",
+    "REMOTE_REFRESH_CONFLICT", "REMOTE_REFRESH_PERSISTENCE_FAILED", "REMOTE_CREDENTIAL_MISSING", "REMOTE_IDENTITY_LOCKED",
+    "REMOTE_IDENTITY_CORRUPTED",
+)
+internal fun safeRoleErrorCode(code: String, fallback: String): String = code.takeIf { it in roleErrorCodes } ?: fallback
 
 enum class RemoteRoleRegistrationState { REGISTERED, FAILED }
 
@@ -87,6 +99,8 @@ class RemoteLoginCoordinator(
             failed(role, "REMOTE_PEER_PIN_MISMATCH")
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failure: RemoteRpcException) {
+            failed(role, safeRoleErrorCode(failure.code, "REMOTE_ROLE_REGISTRATION_FAILED"))
         } catch (_: Exception) {
             failed(role, "REMOTE_ROLE_REGISTRATION_FAILED")
         }
@@ -117,6 +131,8 @@ class RemoteTokenRotator(
             refresher.refresh(scope, current.identity.deviceId.value, current.tokens.refreshToken)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (failure: RemoteRpcException) {
+            return RemoteTokenRotationResult.Failed(safeRoleErrorCode(failure.code, "REMOTE_REFRESH_FAILED"))
         } catch (_: Exception) {
             return RemoteTokenRotationResult.Failed("REMOTE_REFRESH_FAILED")
         }

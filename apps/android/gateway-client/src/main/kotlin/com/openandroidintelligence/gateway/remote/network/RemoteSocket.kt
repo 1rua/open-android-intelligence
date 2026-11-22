@@ -31,10 +31,11 @@ internal class RemoteSocket(
         }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) { fail("INVALID_MESSAGE") }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) { fail("TRANSPORT_CLOSED") }
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason); fail("TRANSPORT_CLOSED") }
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { fail(when (code) {
-            4002 -> "AUTH_INVALID"; 4003 -> "CONNECTION_REPLACED"; 4004 -> "DEVICE_REVOKED"; else -> "TRANSPORT_CLOSED"
-        }) }
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+            webSocket.close(code, null)
+            fail(remoteSocketCloseCode(code, reason))
+        }
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) { fail(remoteSocketCloseCode(code, reason)) }
     })
     suspend fun awaitOpen() = opened.await()
     fun send(frame: RemoteControlFrame) {
@@ -47,4 +48,15 @@ internal class RemoteSocket(
         if (closed) return
         closed = true; opened.completeExceptionally(RemoteRpcException(code)); frames.close(RemoteRpcException(code)); socket.cancel(); onFailure(code)
     }
+}
+
+/** 固定上游 close-semantics.ts 同时检查关闭码和原因，未知原因文本不进入日志。 */
+internal fun remoteSocketCloseCode(code: Int, reason: String): String = when {
+    code == 4003 -> "CONNECTION_REPLACED"
+    code == 4004 -> "DEVICE_REVOKED"
+    code == 4002 -> "AUTH_INVALID"
+    code in setOf(4009, 4001, 1013) && reason.trim() == "server shutdown" -> "SERVER_SHUTDOWN"
+    code == 4009 && reason.trim() == "heartbeat timeout" || code == 4001 && reason.trim() == "CONNECTION_FAILED" -> "HEARTBEAT_TIMEOUT"
+    code == 4001 -> com.openandroidintelligence.gateway.remote.auth.safeRoleErrorCode(reason.trim(), "TRANSPORT_CLOSED")
+    else -> "TRANSPORT_CLOSED"
 }
