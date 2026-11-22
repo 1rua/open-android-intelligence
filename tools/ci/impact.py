@@ -173,7 +173,7 @@ def should_run_app_regressions(
     """判断当前触发上下文是否允许执行耗时的 Android App / Play 回归通道。
 
     仅在以下场景放行：
-    1. 合并/推送到 main 分支；
+    1. 合并/推送到发布分支（main 稳定分支、dev 金丝雀预览发布分支）或 Git Tag；
     2. 发版 PR（目标为 main 分支，或源分支以 release/ / release- 开头）；
     3. PR 带有显式全量或发版标签（run-full-ci / full-regression / full-ci / release）；
     4. 手动触发（workflow_dispatch）。
@@ -189,27 +189,24 @@ def should_run_app_regressions(
         if isinstance(label, str) and label.strip()
     }
 
+    is_release_push_ref = (
+        ref_name in {"refs/heads/main", "main", "refs/heads/dev", "dev"}
+        or ref_name.startswith("refs/tags/")
+    )
+    is_release_or_labeled_pr = (
+        base in {"main", "refs/heads/main"}
+        or head.startswith(RELEASE_BRANCH_PREFIXES)
+        or bool(normalized_labels & FULL_CI_LABELS)
+    )
+
     if event == "workflow_dispatch":
         return True
     if event == "push":
-        return ref_name in {"refs/heads/main", "main"} or ref_name.startswith("refs/tags/")
+        return is_release_push_ref
     if event == "pull_request":
-        if base in {"main", "refs/heads/main"}:
-            return True
-        if head.startswith(RELEASE_BRANCH_PREFIXES):
-            return True
-        if normalized_labels & FULL_CI_LABELS:
-            return True
-        return False
+        return is_release_or_labeled_pr
     if not event:
-        if ref_name in {"refs/heads/main", "main"} or ref_name.startswith("refs/tags/"):
-            return True
-        if base in {"main", "refs/heads/main"}:
-            return True
-        if head.startswith(RELEASE_BRANCH_PREFIXES):
-            return True
-        if normalized_labels & FULL_CI_LABELS:
-            return True
+        return is_release_push_ref or is_release_or_labeled_pr
     return False
 
 
@@ -344,33 +341,25 @@ def classify(
         # No diff information at all: never claim "nothing to test".
         result["unknown"] = True
         result["full_required"] = True
-        for lane in LANES:
-            lanes[lane] = True
-        result["app_sections"] = set(ALL_APP_SECTIONS)
-        return _apply_app_regression_gate(result, allow_app_regressions)
+    else:
+        for _, path in pairs:
+            if path in SECURITY_OR_CONTRACT_PATHS or path.startswith(SECURITY_OR_CONTRACT_PREFIXES):
+                result["full_required"] = True
 
-    for _, path in pairs:
-        if path in SECURITY_OR_CONTRACT_PATHS or path.startswith(SECURITY_OR_CONTRACT_PREFIXES):
-            result["full_required"] = True
+        if not result["full_required"]:
+            unclassified: list[str] = []
+            for status, path in pairs:
+                if not classify_path(status, path, lanes, sections):
+                    unclassified.append(path)
+            if unclassified:
+                # A single path we cannot place widens the matrix, even when a sibling
+                # path (docs, a known module) was classified: otherwise one recognised
+                # file would mask an unrecognised executable change.
+                result["unknown"] = True
+                result["full_required"] = True
+                result["unclassified_paths"] = unclassified
 
     if result["full_required"]:
-        for lane in LANES:
-            lanes[lane] = True
-        result["app_sections"] = set(ALL_APP_SECTIONS)
-        return _apply_app_regression_gate(result, allow_app_regressions)
-
-    unclassified: list[str] = []
-    for status, path in pairs:
-        if not classify_path(status, path, lanes, sections):
-            unclassified.append(path)
-
-    if unclassified:
-        # A single path we cannot place widens the matrix, even when a sibling
-        # path (docs, a known module) was classified: otherwise one recognised
-        # file would mask an unrecognised executable change.
-        result["unknown"] = True
-        result["full_required"] = True
-        result["unclassified_paths"] = unclassified
         for lane in LANES:
             lanes[lane] = True
         result["app_sections"] = set(ALL_APP_SECTIONS)

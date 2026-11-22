@@ -116,7 +116,7 @@ jobs:
               "## CI plan",
               "",
               f"changed paths: {len(data.get('paths', []))}",
-              f"app/play regressions allowed: {'yes' if data.get('app_regressions_allowed') else 'no (deferred to main / release PR / explicit label)'}",
+              f"app/play regressions allowed: {'yes' if data.get('app_regressions_allowed') else 'no (deferred to main/dev push, release PR, explicit label, or workflow_dispatch)'}",
               "",
           ]
           for lane, enabled in sorted(data.get("lanes", {}).items()):

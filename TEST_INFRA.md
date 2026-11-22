@@ -27,7 +27,7 @@
 
 核心调度规则：
 1. **反向依赖自动扩散（`MODULE_DEPENDENTS`）**：修改底层库模块时（如 `:gateway-client`、`:platform-kernel`、`:control-ports`、`:ui-resources`），自动同时激活所有消费方模块所属的测试 lane、安全预检（`runs_android_preflight`）与 `fast` 门禁。
-2. **重型 App/Play 回归分层触发（`should_run_app_regressions`）**：耗时的 `android-app`（`Android App Regressions`）与 `android-play`（`Android Play Variant`）仅在推送/合并到 `main` 分支、发版 PR（目标 `main` 或源分支 `release/*` / `release-*`）、PR 显式打上全量/发版标签（`run-full-ci` / `full-regression` / `full-ci` / `release`）或手动 `workflow_dispatch` 时放行；日常普通 `feature/*` / `fix/*` PR 仅运行受影响模块的定向单测、安全预检与 `Fast Gate`，将关键路径控制在 5 分钟以内。
+2. **重型 App/Play 回归分层触发（`should_run_app_regressions`）**：耗时的 `android-app`（`Android App Regressions`）与 `android-play`（`Android Play Variant`）仅在推送/合并到 `main` 分支或 `dev` 金丝雀预览发布分支（保障 `dev-release.yml` 发布前验证）、Git Tag、发版 PR（目标 `main` 或源分支 `release/*` / `release-*`）、PR 显式打上全量/发版标签（`run-full-ci` / `full-regression` / `full-ci` / `release`）或手动 `workflow_dispatch` 时放行；日常普通 `feature/*` / `fix/*` PR 仅运行受影响模块的定向单测、安全预检与 `Fast Gate`，将关键路径控制在 5 分钟以内。
 3. **安全与契约路径强制全量（`SECURITY_OR_CONTRACT_PATHS` / `PREFIXES`）**：改动 Gradle 构建脚本、`libs.versions.toml`、`package.json`、`package-lock.json`、安全包路径、禁用表面或 i18n 门禁脚本、CI 工作流或影响分析自身时，设置 `full_required=true` 并拉起当前触发作用域下全部允许的 lane（在 `main`/发版/显式打标签场景下含全量 App/Play 回归）。
 4. **保守兜底原则**：出现未归类路径或空 diff（如浅克隆缺失基线）时，自动设置 `unknown=true` 与 `full_required=true`，宁可全量也不漏测。
 5. **纯文档豁免**：`docs/`、`tmp/` 与非测试/非特定许可资产的 `*.md` / `*.txt` 变更不触发代码编译与测试 lane。

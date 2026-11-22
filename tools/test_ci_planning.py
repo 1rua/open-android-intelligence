@@ -965,8 +965,10 @@ def test_remote_client_enables_app_performance_only_on_workflow_dispatch():
         # 日常 feature/fix PR：关闭耗时 App/Play 大回归
         ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/ui-fix", "labels": []}, False),
         ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "fix/crash", "labels": ["bug"]}, False),
-        # dev 分支 push：保持轻量快速，避免阻塞 dev 预览发布验证
-        ({"event_name": "push", "ref": "refs/heads/dev"}, False),
+        # dev 分支 push（合并后触发 dev-release.yml 金丝雀预览发布）：保留 App/Play 回归验证能力
+        ({"event_name": "push", "ref": "refs/heads/dev"}, True),
+        # 非发布分支 push（如临时分支）：关闭耗时大回归
+        ({"event_name": "push", "ref": "refs/heads/feature/demo"}, False),
         # 无上下文默认调用（命令行模拟日常 PR）：默认关闭
         ({}, False),
         # 合并/推送到 main 分支或 Git Tag：放行全量 App/Play 回归
