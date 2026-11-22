@@ -2165,12 +2165,7 @@ class WorkbenchController(
                 onSuccess = { page ->
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
-                    page.messages.sortedWith(
-                    compareBy<TimelineMessage>(
-                        { if (it.timestamp > 0L) it.timestamp else Long.MAX_VALUE },
-                        { it.orderSequence ?: Long.MAX_VALUE },
-                    ),
-                ).forEach { rawMessage ->
+                    page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
                         val message = withLatestMessageStatus(rawMessage)
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
@@ -5298,12 +5293,7 @@ class WorkbenchController(
                         value.clientMessageId?.value?.let { atomsFor(threadId)[it]?.isDeleted } == true)) historicalAttachments.remove(key)
                 }
                 var receivedConfirmedAssistantForCurrentTurn = false
-                page.messages.sortedWith(
-                    compareBy<TimelineMessage>(
-                        { if (it.timestamp > 0L) it.timestamp else Long.MAX_VALUE },
-                        { it.orderSequence ?: Long.MAX_VALUE },
-                    ),
-                ).forEach { rawMessage ->
+                page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
                     val withStatus = withLatestMessageStatus(rawMessage)
                     val message = ContextInjectionFilter.projectMessage(withStatus) ?: run {
@@ -5990,22 +5980,42 @@ class WorkbenchController(
                 } else emptyList()
             }.toSet()
             val missing = facts.steps.filterNot { it.stepId in existingSources }
-            // 有宿主来源的步骤按其真实消息位置插入；状态增量只更新内容，不移动调用。
+            // 有宿主来源的步骤按其真实消息位置插入；缺源行时限定在当前回合窗口内，防止跨轮插队。
             val bySource = missing.filter { !it.sourceMessageId.isNullOrBlank() }.groupBy { requireNotNull(it.sourceMessageId) }
             bySource.forEach { (sourceId, steps) ->
                 val sourceIndex = result.indexOfFirst { it.key == sourceId && it.generationId == generationId && !it.isUser }
                 val occurredAt = steps.mapNotNull { it.occurredAt }.firstOrNull()
                 val orderSeq = steps.mapNotNull { it.orderSequence }.minOrNull()
                 if (sourceIndex < 0 && occurredAt == null && orderSeq == null) return@forEach
+                val sourceAnchors = result.withIndex().filter { (_, entry) ->
+                    entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
+                        facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
+                }
+                val sourceSingleAnchor = sourceAnchors.singleOrNull()
+                val sourceFirstAssistant = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
+                val searchStart = sourceSingleAnchor?.index?.plus(1) ?: sourceFirstAssistant.takeIf { it >= 0 } ?: 0
+                val searchEnd = if (sourceSingleAnchor != null || sourceFirstAssistant >= 0) {
+                    ((searchStart until result.size).firstOrNull { idx ->
+                        result[idx].isUser && result[idx].generationId != generationId
+                    }) ?: result.size
+                } else {
+                    result.size
+                }
                 val index = when {
                     sourceIndex >= 0 -> sourceIndex
                     orderSeq != null -> {
-                        result.indexOfFirst { existing ->
+                        (searchStart until searchEnd).firstOrNull { idx ->
+                            val existing = result[idx]
                             existing.orderSequence?.let { it > orderSeq } == true ||
                                 (existing.orderSequence == null && occurredAt != null && existing.timestamp > occurredAt)
-                        }.takeIf { it >= 0 } ?: result.size
+                        } ?: searchEnd
                     }
-                    else -> result.indexOfFirst { it.timestamp > requireNotNull(occurredAt) }.takeIf { it >= 0 } ?: result.size
+                    else -> {
+                        val targetTime = requireNotNull(occurredAt)
+                        (searchStart until searchEnd).firstOrNull { idx ->
+                            result[idx].timestamp > targetTime
+                        } ?: searchEnd
+                    }
                 }
                 result.add(
                     index,
@@ -6022,12 +6032,12 @@ class WorkbenchController(
             // 按步骤自身的协议 orderSequence、到达序或发生时间精确穿插在同回合思考与正文之间，禁止整包插队到思考上方。
             val legacy = missing.filter { it.sourceMessageId.isNullOrBlank() }
             if (legacy.isEmpty()) return@forEach
-            val anchors = result.withIndex().filter { (_, entry) ->
+            val refreshedAnchors = result.withIndex().filter { (_, entry) ->
                 entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
                     facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
             }
-            if (anchors.size > 1) return@forEach
-            val anchor = anchors.singleOrNull()
+            if (refreshedAnchors.size > 1) return@forEach
+            val anchor = refreshedAnchors.singleOrNull()
             val messageIndex = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
             val minIndex = anchor?.index?.plus(1) ?: messageIndex.takeIf { it >= 0 } ?: return@forEach
             val maxIndex = ((minIndex until result.size).firstOrNull { idx ->
@@ -6073,20 +6083,21 @@ class WorkbenchController(
                 var slot = maxIndex
                 for (idx in minIndex until maxIndex) {
                     val existing = result[idx]
+                    val existingSeq = existing.orderSequence
+                    val existingArrival = mirroredArrivalOrder[existing.key]
                     val existingIsAfter = if (existing.isUser) {
                         when {
-                            stepSeq != null && existing.orderSequence != null -> existing.orderSequence > stepSeq
-                            stepTime != null && existing.timestamp > 0L -> existing.timestamp > stepTime
-                            stepArrival != null -> mirroredArrivalOrder[existing.key]?.let { it > stepArrival } == true
+                            stepSeq != null && existingSeq != null && existingSeq != stepSeq -> existingSeq > stepSeq
+                            stepTime != null && existing.timestamp > 0L && existing.timestamp != stepTime -> existing.timestamp > stepTime
+                            stepArrival != null && existingArrival != null -> existingArrival > stepArrival
                             else -> false
                         }
                     } else {
-                        val existingSeq = existing.orderSequence
-                        val existingArrival = mirroredArrivalOrder[existing.key]
                         when {
-                            stepSeq != null && existingSeq != null -> existingSeq > stepSeq
-                            stepSeq == null && stepArrival != null && existingArrival != null -> existingArrival > stepArrival
-                            stepTime != null && existing.timestamp > 0L -> existing.timestamp > stepTime
+                            stepSeq != null && existingSeq != null && existingSeq != stepSeq -> existingSeq > stepSeq
+                            stepSeq == null && stepArrival != null && existingArrival != null && existingArrival != stepArrival ->
+                                existingArrival > stepArrival
+                            stepTime != null && existing.timestamp > 0L && existing.timestamp != stepTime -> existing.timestamp > stepTime
                             stepArrival != null && existingArrival != null -> existingArrival > stepArrival
                             else -> false
                         }
@@ -6659,3 +6670,8 @@ class WorkbenchController(
 /** 账号拒绝与设备连接撤销都停止当前订阅；不会在界面层清空账号或凭据。 */
 private fun remoteObservationExpired(failure: Throwable): Boolean = failure is RemoteRpcException &&
     failure.code in setOf("ACCOUNT_AUTH_REQUIRED", "TOKEN_EXPIRED", "AUTH_INVALID", "DEVICE_REVOKED", "CONNECTION_REPLACED")
+
+private val timelineMessageOrderComparator = compareBy<TimelineMessage>(
+    { if (it.timestamp > 0L) it.timestamp else Long.MAX_VALUE },
+    { it.orderSequence ?: Long.MAX_VALUE },
+)

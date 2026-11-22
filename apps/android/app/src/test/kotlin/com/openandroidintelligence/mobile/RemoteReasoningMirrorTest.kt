@@ -114,4 +114,69 @@ class RemoteReasoningMirrorTest {
         assertEquals(original.executionSteps, restored.executionSteps)
         assertEquals(original.reasoning, restored.reasoning)
     }
+
+    @Test fun `加密镜像同时间戳更新工具消息后仍按orderSequence保序不后移到后续思考之后`() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val scope = ConversationScope("same-ts-order-profile", "endpoint", "account", "install")
+        val key = object : AesGcmKeyProvider {
+            override fun getOrCreate() = SecretKeySpec(ByteArray(32) { 31 }, "AES")
+            override fun delete() = Unit
+        }
+        val mirror = EncryptedConversationMirror(context, scope, key, Dispatchers.Unconfined)
+        val thought1 = TimelineMessage(
+            id = "m-t1",
+            sender = "assistant",
+            parts = emptyList(),
+            timestamp = 500L,
+            conversationId = ConversationId("session"),
+            contentRevision = 1L,
+            generationId = "turn-1",
+            timelineSteps = listOf(ExecutionTimelineStep.ThinkingStep("r1", "思考一", 0, true, 0)),
+            orderSequence = 1L,
+        )
+        val toolRunning = NativeExecutionStep("c1", "e1", "read_file", "{}", null, NativeExecutionStatus.RUNNING, 1L, orderSequence = 2L)
+        val toolMsg = TimelineMessage(
+            id = "m-tool",
+            sender = "assistant",
+            parts = emptyList(),
+            timestamp = 500L,
+            conversationId = ConversationId("session"),
+            contentRevision = 1L,
+            generationId = "turn-1",
+            executionSteps = listOf(toolRunning),
+            timelineSteps = listOf(ExecutionTimelineStep.ToolCallStep(toolRunning, 0, 0)),
+            orderSequence = 2L,
+        )
+        val thought2 = TimelineMessage(
+            id = "m-t2",
+            sender = "assistant",
+            parts = listOf(MessagePart.Text("结论")),
+            timestamp = 500L,
+            conversationId = ConversationId("session"),
+            contentRevision = 1L,
+            generationId = "turn-1",
+            timelineSteps = listOf(ExecutionTimelineStep.ThinkingStep("r2", "思考二", 0, true, 0)),
+            orderSequence = 3L,
+        )
+        mirror.saveTimeline("session", TimelinePage(listOf(thought1, toolMsg, thought2), null))
+
+        // 模拟同时间戳工具行更新结果，验证不会因“先删后尾插”跑到 thought2 之后
+        val toolDone = toolRunning.copy(output = "done", status = NativeExecutionStatus.COMPLETED, revision = 2L)
+        mirror.apply(
+            VerifiedConversationEvent.TimelineUpsert(
+                eventId = "update-tool",
+                occurredAt = 600L,
+                revision = 2L,
+                message = toolMsg.copy(
+                    executionSteps = listOf(toolDone),
+                    timelineSteps = listOf(ExecutionTimelineStep.ToolCallStep(toolDone, 0, 0)),
+                ),
+            ),
+        )
+
+        val reopened = EncryptedConversationMirror(context, scope, key, Dispatchers.Unconfined)
+        val restored = reopened.timeline("session")!!.messages
+        assertEquals(listOf("m-t1", "m-tool", "m-t2"), restored.map { it.id })
+        assertEquals(NativeExecutionStatus.COMPLETED, (restored[1].timelineSteps.single() as ExecutionTimelineStep.ToolCallStep).step.status)
+    }
 }

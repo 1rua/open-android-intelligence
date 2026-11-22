@@ -21,7 +21,11 @@ import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
 import com.openandroidintelligence.conversation.model.ApprovalRequest
 import com.openandroidintelligence.conversation.model.AttachmentLocalState
+import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.GenerationState
+import com.openandroidintelligence.conversation.model.MessageReasoning
+import com.openandroidintelligence.conversation.model.NativeExecutionStatus
+import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.TimelineAttachment
 import com.openandroidintelligence.conversation.state.ApprovalCardState
 import com.openandroidintelligence.conversation.state.TimelineEntry
@@ -372,5 +376,45 @@ class AssistantTimelineViewTest {
 
         compose.onNodeWithText("追加的回复").assertIsDisplayed()
         compose.onNodeWithText("回到最新").assertDoesNotExist()
+    }
+
+    @Test
+    fun assistantFloatingSheetPreservesInterleavedThinkingAndToolOrder() {
+        val toolA = NativeExecutionStep("ta", "ea", "check_net", "{}", "net ok", NativeExecutionStatus.COMPLETED)
+        val toolB = NativeExecutionStep("tb", "eb", "check_disk", "{}", "disk ok", NativeExecutionStatus.COMPLETED)
+        val turn = TimelineEntry(
+            key = "assistant-interleaved",
+            sender = "assistant",
+            text = "浮窗最终回复。",
+            isUser = false,
+            timestamp = 2L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-sheet",
+            executionGenerationState = GenerationState.COMPLETED,
+            executionSteps = listOf(toolA, toolB),
+            reasoning = listOf(
+                MessageReasoning("r1", "浮窗思考一", 0, true),
+                MessageReasoning("r2", "浮窗思考二", 0, true),
+            ),
+            timelineSteps = listOf(
+                ExecutionTimelineStep.ThinkingStep("r1", "浮窗思考一", 0, true, 0),
+                ExecutionTimelineStep.ToolCallStep(toolA, 0, 1),
+                ExecutionTimelineStep.ThinkingStep("r2", "浮窗思考二", 0, true, 2),
+                ExecutionTimelineStep.ToolCallStep(toolB, 0, 3),
+            ),
+        )
+
+        setTimeline(entries = listOf(userEntry("u1", "查一下状态"), turn), generation = GenerationState.COMPLETED)
+
+        val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
+        assertEquals(2, thoughts.size)
+        val t1Top = thoughts[0].positionInRoot.y
+        val toolATop = compose.onNodeWithText("[check_net]").fetchSemanticsNode().positionInRoot.y
+        val t2Top = thoughts[1].positionInRoot.y
+        val toolBTop = compose.onNodeWithText("[check_disk]").fetchSemanticsNode().positionInRoot.y
+        val finalTop = compose.onNodeWithText("浮窗最终回复。").fetchSemanticsNode().positionInRoot.y
+        assertTrue("浮窗思考1($t1Top) < 工具A($toolATop) < 思考2($t2Top) < 工具B($toolBTop) < 最终回复($finalTop)",
+            t1Top < toolATop && toolATop < t2Top && t2Top < toolBTop && toolBTop < finalTop)
     }
 }

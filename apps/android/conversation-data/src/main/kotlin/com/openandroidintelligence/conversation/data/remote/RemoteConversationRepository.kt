@@ -224,6 +224,9 @@ class RemoteConversationRepository(
                         .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
                         .forEach { acceptedPageIds += it.message.id }
                 }
+                target.finishHistoricalReplay(historyRead = mediaRead)
+                    .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+                    .forEach { acceptedPageIds += it.message.id }
             }
             activeConversationChanged()
         }

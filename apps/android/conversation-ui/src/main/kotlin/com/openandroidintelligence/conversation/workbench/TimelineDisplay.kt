@@ -84,8 +84,10 @@ sealed interface ExecutionStep {
         val blockIndex: Int,
         val entryIsStreaming: Boolean,
         val thoughtKey: String = "$entryKey:thought:$blockIndex",
+        val stepId: String? = null,
     ) : ExecutionStep {
-        override val stepKey: String get() = "$entryKey#$blockIndex"
+        override val stepKey: String
+            get() = stepId?.takeIf { it.isNotBlank() }?.let { "$entryKey:thought:$it" } ?: "$entryKey#$blockIndex"
     }
 
     data class ToolCall(
@@ -478,6 +480,7 @@ class TimelineDisplayModel(
                         blockIndex = index,
                         entryIsStreaming = entry.isStreaming && streamActive,
                         thoughtKey = "${entry.key}:thought:${thoughtOrdinal++}",
+                        stepId = ordered.stepId,
                     )
 
                     is OrderedTimelineBlock.ToolCall -> {

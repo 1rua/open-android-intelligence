@@ -461,6 +461,170 @@ class CrossBackendExecutionOrderTest {
         assertEquals(listOf(4, 4), projected.timelineSteps.map { it.bodyOffset })
     }
 
+    @Test
+    fun `Harness block-start与tool-call-delta共用块索引且tool_result后流式续传不覆盖已完成结果`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-dedup", "turn" to 1)))
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-dedup",
+                    "chunk" to obj("type" to "block-start", "index" to 0, "blockType" to "tool_use", "id" to "tc-dedup", "name" to "read_file"),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-dedup",
+                    "chunk" to obj("type" to "tool-call-delta", "index" to 0, "id" to "tc-dedup", "delta" to "{\"path\":\"Main.kt\"}"),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-dedup",
+                    "chunk" to obj("type" to "block-end", "index" to 0),
+                ),
+            ),
+        )
+        // 工具结果返回完成后，同一流继续推送第二段思考与最终正文
+        projection.accept(durable(1, "tool/result", obj("callId" to "tc-dedup", "output" to "read ok")))
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-dedup",
+                    "chunk" to obj("type" to "reasoning-delta", "index" to 1, "text" to "结合文件继续推理"),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-dedup",
+                    "chunk" to obj("type" to "text-delta", "index" to 2, "text" to "结论已确认"),
+                ),
+            ),
+        )
+
+        val row = projection.rows.values.single()
+        assertEquals("同一 index 与 id 绝不能生成重复工具块", 2, row.timelineSteps.size)
+        val tool = row.timelineSteps[0] as ExecutionTimelineStep.ToolCallStep
+        val thought = row.timelineSteps[1] as ExecutionTimelineStep.ThinkingStep
+        assertEquals("tc-dedup", tool.step.stepId)
+        assertEquals("read_file", tool.step.toolName)
+        assertEquals("""{"path":"Main.kt"}""", tool.step.arguments)
+        assertEquals("后续流式分片不得把已完成工具覆盖回 RUNNING", NativeExecutionStatus.COMPLETED, tool.step.status)
+        assertEquals("read ok", tool.step.output)
+        assertEquals("结合文件继续推理", thought.text)
+    }
+
+    @Test
+    fun `Codex历史回放绑定同一turnId不拆段并严格保持思考与工具顺序`() = runTest {
+        val historyRecords = listOf(
+            codex("turn/started", "turn" to obj("id" to "T-hist-1")),
+            codex("item/completed", "item" to obj("id" to "r1", "type" to "reasoning", "content" to "历史思考1")),
+            codex("item/completed", "item" to obj("id" to "cmd1", "type" to "commandExecution", "command" to "ls", "output" to "ok", "status" to "completed")),
+            codex("item/completed", "item" to obj("id" to "r2", "type" to "reasoning", "content" to "历史思考2")),
+            codex("item/completed", "item" to obj("id" to "a1", "type" to "agentMessage", "text" to "历史回复")),
+            codex("turn/completed", "turn" to obj("id" to "T-hist-1", "status" to "completed")),
+        )
+        val repo = historyRepository("codex", historyRecords)
+        try {
+            val page = repo.timeline(local, PageRequest())
+            assertEquals(listOf("r1", "history-tool:cmd1", "r2", "a1"), page.messages.map { it.id })
+            assertEquals(
+                "同回合全部历史条目必须绑定相同 generationId",
+                listOf("T-hist-1", "T-hist-1", "T-hist-1", "T-hist-1"),
+                page.messages.map { it.generationId },
+            )
+            val seqs = page.messages.mapNotNull { it.orderSequence }
+            assertTrue("Codex 历史顺序号必须严格单调递增: $seqs", seqs.zipWithNext().all { (a, b) -> a < b })
+        } finally {
+            repo.close()
+        }
+    }
+
+    @Test
+    fun `ACP历史回放结束后收口未完工具且不污染后续实时流与catchUp补帧`() = runTest {
+        val historyRecords = listOf(
+            acp("user_message_chunk", "旧问题", listOf("messageId" to "u-old")),
+            acp("agent_thought_chunk", "旧思考"),
+            acp("tool_call", extra = listOf("toolCallId" to "old-call", "title" to "stale_tool")),
+        )
+        val projection = RemoteTimelineProjection(local)
+        historyRecords.forEach { projection.accept(it, history = true) }
+        projection.finishHistoricalReplay()
+
+        val histAssistant = projection.rows.values.single { it.sender == "assistant" }
+        val histTool = histAssistant.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().single()
+        assertEquals("历史回放结束后末轮未完成工具应收敛为 UNKNOWN", NativeExecutionStatus.UNKNOWN, histTool.step.status)
+
+        // 历史后新来一轮仅靠 catchUp 补帧的实时结束事件：绝不能被旧历史标记跳过，也不能拼入历史行
+        projection.accept(
+            acp(
+                "prompt_completed",
+                extra = listOf(
+                    "stopReason" to "end_turn",
+                    "catchUp" to listOf(
+                        acp("agent_thought_chunk", "实时补帧思考"),
+                        acp("tool_call", extra = listOf("toolCallId" to "live-c1", "title" to "live_tool")),
+                        acp("tool_call_update", extra = listOf("toolCallId" to "live-c1", "status" to "completed", "rawOutput" to "live-ok")),
+                        acp("agent_message_chunk", "实时补帧答复"),
+                    ),
+                ),
+            ),
+        )
+
+        val assistants = projection.rows.values.filter { it.sender == "assistant" }
+        assertEquals("历史助手消息与实时补帧助手消息必须隔离为两行", 2, assistants.size)
+        val liveAssistant = assistants.last()
+        assertEquals("实时补帧答复", liveAssistant.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+        assertEquals(2, liveAssistant.timelineSteps.size)
+        assertEquals("实时补帧思考", (liveAssistant.timelineSteps[0] as ExecutionTimelineStep.ThinkingStep).text)
+        assertEquals("live-c1", (liveAssistant.timelineSteps[1] as ExecutionTimelineStep.ToolCallStep).stepId)
+    }
+
+    @Test
+    fun `实时流工具与后续持久化assistant_message单调顺序号不倒挂`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-ord", "turn" to 1)))
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-ord",
+                    "chunk" to obj("type" to "reasoning-delta", "index" to 0, "text" to "思考一"),
+                ),
+            ),
+        )
+        val toolCall = projection.accept(durable(1, "tool/call", obj("id" to "c-ord", "name" to "bash")))
+            .filterIsInstance<VerifiedConversationEvent.ExecutionStepsUpdated>().single().steps.single()
+        projection.accept(durable(2, "tool/result", obj("callId" to "c-ord", "output" to "ok")))
+        projection.accept(
+            durable(
+                3,
+                "assistant/message",
+                obj("message" to obj("id" to "a-after-tool", "content" to listOf(obj("type" to "text", "text" to "最终回复")))),
+            ),
+        )
+        val toolSeq = requireNotNull(toolCall.orderSequence)
+        val answerSeq = requireNotNull(projection.rows.getValue("a-after-tool").orderSequence)
+        assertTrue("后续持久化助手回复的顺序号($answerSeq)必须严格大于先前实时工具($toolSeq)", answerSeq > toolSeq)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.historyRepository(
         backend: String,
         records: List<JsonValue>,

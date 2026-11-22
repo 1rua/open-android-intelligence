@@ -78,6 +78,8 @@ fun AssistantMessageContent(
                     val timingKey = when (item) {
                         is OrderedTimelineBlock.ToolCall ->
                             item.nativeStepId?.let { "${entry.key}:$it" } ?: "${entry.key}#${group.blockIndex}"
+                        is OrderedTimelineBlock.Thought ->
+                            item.stepId?.takeIf { it.isNotBlank() }?.let { "${entry.key}:thought:$it" } ?: "${entry.key}#${group.blockIndex}"
                         else -> "${entry.key}#${group.blockIndex}"
                     }
                     when (item) {

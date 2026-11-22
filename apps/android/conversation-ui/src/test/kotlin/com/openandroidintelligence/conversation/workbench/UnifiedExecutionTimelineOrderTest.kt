@@ -14,6 +14,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import com.openandroidintelligence.conversation.assistant.AssistantStateDto
 import com.openandroidintelligence.conversation.assistant.decodeState
 import com.openandroidintelligence.conversation.assistant.decodeTimeline
@@ -492,6 +493,175 @@ class UnifiedExecutionTimelineOrderTest {
         assertEquals(0, restoredTool.bodyOffset)
         assertEquals(1, restoredTool.orderIndex)
         assertEquals(original.timelineSteps[2], restored.timelineSteps[2])
+    }
+
+    @Test
+    fun `旧XML思考与工具标记交错按原序渲染且卡片展开与稳定stepKey互不干扰`() {
+        val text = """
+            <think>第一段旧标记思考</think>
+            <tool_call name="xml_tool_a">
+              <command>cmd_a</command>
+              <result status="success">res_a</result>
+            </tool_call>
+            <think>第二段旧标记思考</think>
+            <tool_call name="xml_tool_b">
+              <command>cmd_b</command>
+              <result status="success">res_b</result>
+            </tool_call>
+            旧格式最终答案。
+        """.trimIndent()
+        val entry = TimelineEntry(
+            key = "legacy-xml-turn",
+            sender = "assistant",
+            text = text,
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-xml",
+        )
+
+        compose.setContent {
+            MaterialTheme {
+                Box(Modifier.verticalScroll(rememberScrollState())) {
+                    MessageTimeline(entries = listOf(entry), generation = GenerationState.COMPLETED)
+                }
+            }
+        }
+
+        val thoughts = compose.onAllNodesWithText("已思考", substring = true).fetchSemanticsNodes()
+        assertEquals(2, thoughts.size)
+        val t1Top = thoughts[0].positionInRoot.y
+        val toolATop = compose.onNodeWithText("[xml_tool_a]").fetchSemanticsNode().positionInRoot.y
+        val t2Top = thoughts[1].positionInRoot.y
+        val toolBTop = compose.onNodeWithText("[xml_tool_b]").fetchSemanticsNode().positionInRoot.y
+        val finalTop = compose.onNodeWithText("旧格式最终答案。").fetchSemanticsNode().positionInRoot.y
+        assertTrue(t1Top < toolATop && toolATop < t2Top && t2Top < toolBTop && toolBTop < finalTop)
+
+        // 点击展开第一张思考卡，第二张思考卡保持折叠互不干扰
+        compose.onAllNodesWithText("已思考", substring = true)[0].performClick()
+        compose.onNodeWithText("第一段旧标记思考").assertIsDisplayed()
+
+        // 验证原生 ThinkingStep 的 stepKey 基于 stepId 保持稳定（前置块增加不导致 key 漂移）
+        val toolBefore = NativeExecutionStep("s-pre", "ev-pre", "read_file", "{}", "ok", NativeExecutionStatus.COMPLETED)
+        val withoutPrefix = TimelineEntry(
+            key = "stable-key-entry",
+            sender = "assistant",
+            text = "",
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-key",
+            timelineSteps = listOf(ExecutionTimelineStep.ThinkingStep("r-stable", "稳定思考", 0, true, 0)),
+        )
+        val withPrefixTool = withoutPrefix.copy(
+            executionSteps = listOf(toolBefore),
+            timelineSteps = listOf(
+                ExecutionTimelineStep.ToolCallStep(toolBefore, 0, 0),
+                ExecutionTimelineStep.ThinkingStep("r-stable", "稳定思考", 0, true, 1),
+            ),
+        )
+        val model = TimelineDisplayModel()
+        val keyBefore = (model.build(listOf(withoutPrefix), GenerationState.COMPLETED).single() as TimelineDisplayItem.Execution)
+            .run.steps.filterIsInstance<ExecutionStep.Thought>().single().stepKey
+        val keyAfter = (model.build(listOf(withPrefixTool), GenerationState.COMPLETED).single() as TimelineDisplayItem.Execution)
+            .run.steps.filterIsInstance<ExecutionStep.Thought>().single().stepKey
+        assertEquals(keyBefore, keyAfter, "前置块变化不得导致原生思考卡 stepKey 漂移")
+        val clock = longArrayOf(1_000L)
+        val timing = ExecutionTimingStore { clock[0] }
+        timing.observe(keyBefore, running = true)
+        clock[0] = 2_500L
+        timing.observe(keyAfter, running = false)
+        assertEquals(1_500L, timing.durationOf(keyAfter))
+    }
+
+    @Test
+    fun `同时间戳无orderSequence时按到达序将工具穿插在两次思考之间`() = runTest {
+        val host = FakeHost()
+        val controller = WorkbenchController(
+            scope = this,
+            repository = host,
+            catalogRepository = object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) =
+                    AgentCommandCatalog(CatalogVersion("test"), emptyList())
+            },
+            scopeFactory = { ConversationScope("profile", "gateway", "account", "install") },
+            persistenceDispatcher = UnconfinedTestDispatcher(testScheduler),
+            authoritativeMessageIds = true,
+            replyTimeouts = WorkbenchController.ReplyTimeouts(enabled = false),
+        )
+        try {
+            runCurrent()
+            controller.openThread("a")
+            runCurrent()
+
+            // 所有事件时间戳完全相同且故意不传 orderSequence，验证仅凭真实到达顺序不跳过比较
+            host.events.emit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    eventId = "arr-t1",
+                    occurredAt = 500L,
+                    revision = 1L,
+                    message = TimelineMessage(
+                        id = "arr-thought-1",
+                        sender = "assistant",
+                        parts = emptyList(),
+                        timestamp = 500L,
+                        conversationId = ConversationId("a"),
+                        generationId = "g1",
+                        reasoning = listOf(MessageReasoning("r1", "到达一", 0, true)),
+                    ),
+                ),
+            )
+            host.events.emit(
+                VerifiedConversationEvent.ExecutionStepsUpdated(
+                    eventId = "arr-tool",
+                    occurredAt = 500L,
+                    conversationId = ConversationId("a"),
+                    generationId = "g1",
+                    executionRevision = 1L,
+                    steps = listOf(
+                        NativeExecutionStep("arr-s1", "ev1", "grep_tool", "{}", "ok", NativeExecutionStatus.COMPLETED, 1L, occurredAt = 500L),
+                    ),
+                    clientMessageId = "client-a",
+                    userMessageId = "user-a",
+                ),
+            )
+            host.events.emit(
+                VerifiedConversationEvent.TimelineUpsert(
+                    eventId = "arr-t2",
+                    occurredAt = 500L,
+                    revision = 2L,
+                    message = TimelineMessage(
+                        id = "arr-thought-2",
+                        sender = "assistant",
+                        parts = listOf(MessagePart.Text("到达收尾")),
+                        timestamp = 500L,
+                        conversationId = ConversationId("a"),
+                        generationId = "g1",
+                        reasoning = listOf(MessageReasoning("r2", "到达二", 0, true)),
+                    ),
+                ),
+            )
+            host.generationState.value = GenerationState.COMPLETED
+            runCurrent()
+
+            val entries = (controller.state.value.timeline as Loadable.Ready).value
+            val run = TimelineDisplayModel().build(entries, GenerationState.COMPLETED)
+                .filterIsInstance<TimelineDisplayItem.Execution>().single().run
+            assertEquals(
+                listOf("到达一", "grep_tool", "到达二"),
+                run.steps.mapNotNull { step ->
+                    when (step) {
+                        is ExecutionStep.Thought -> step.block.thought
+                        is ExecutionStep.ToolCall -> step.block.toolName
+                        else -> null
+                    }
+                },
+            )
+        } finally {
+            controller.close()
+        }
     }
 
     private class FakeHost : ConversationRepository, GenerationTracker {

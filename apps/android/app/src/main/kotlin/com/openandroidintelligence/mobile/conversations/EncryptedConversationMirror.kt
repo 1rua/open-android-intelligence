@@ -200,6 +200,21 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "command" -> MessagePart.Command(str(p,"text"),JsonFields.string(p,"catalogVersion")?.let(::CatalogVersion))
         else -> error("MIRROR_CORRUPTED")
     } }
+    private fun encodeExecutionStep(step: com.openandroidintelligence.conversation.model.NativeExecutionStep): Map<String, Any?> = mapOf(
+        "stepId" to step.stepId, "eventId" to step.eventId, "toolName" to step.toolName,
+        "arguments" to step.arguments, "output" to step.output, "status" to step.status.name,
+        "revision" to step.revision, "sourceMessageId" to step.sourceMessageId,
+        "occurredAt" to step.occurredAt, "orderSequence" to step.orderSequence,
+    )
+    private fun decodeExecutionStep(step: JsonValue.JObject) = com.openandroidintelligence.conversation.model.NativeExecutionStep(
+        str(step, "stepId"), str(step, "eventId"), str(step, "toolName"), str(step, "arguments"),
+        JsonFields.string(step, "output"),
+        com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step, "status")),
+        JsonFields.long(step, "revision") ?: 0L,
+        JsonFields.string(step, "sourceMessageId"),
+        JsonFields.long(step, "occurredAt"),
+        JsonFields.long(step, "orderSequence"),
+    )
     private fun message(m: TimelineMessage): Map<String,Any?> = mapOf("id" to m.id,"sender" to m.sender,"parts" to parts(m.parts),
         "timestamp" to m.timestamp,"state" to m.state,"conversationId" to m.conversationId?.value,"errorCode" to m.errorCode,
         "batchId" to m.batchId,"clientMessageId" to m.clientMessageId?.value,"localSubmissionFailure" to m.localSubmissionFailure,
@@ -207,9 +222,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "isMeta" to m.isMeta,"visibility" to m.visibility,"messageType" to m.messageType,
         "rawParts" to m.rawParts?.let(::parts),
         "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
-        "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
-            "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
-            "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt,"orderSequence" to step.orderSequence) },
+        "executionSteps" to m.executionSteps.map(::encodeExecutionStep),
         "timelineSteps" to m.timelineSteps.map { step -> when (step) {
             is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep -> mapOf(
                 "kind" to "thinking", "stepId" to step.stepId, "text" to step.text,
@@ -217,11 +230,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             )
             is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep -> mapOf(
                 "kind" to "tool_call", "bodyOffset" to step.bodyOffset, "orderIndex" to step.orderIndex,
-                "step" to mapOf("stepId" to step.step.stepId,"eventId" to step.step.eventId,
-                    "toolName" to step.step.toolName,"arguments" to step.step.arguments,"output" to step.step.output,
-                    "status" to step.step.status.name,"revision" to step.step.revision,
-                    "sourceMessageId" to step.step.sourceMessageId,"occurredAt" to step.step.occurredAt,
-                    "orderSequence" to step.step.orderSequence),
+                "step" to encodeExecutionStep(step.step),
             )
         } },
         "orderSequence" to m.orderSequence)
@@ -236,10 +245,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         visibility=JsonFields.string(o,"visibility"),
         messageType=JsonFields.string(o,"messageType"),
         rawParts=(JsonFields.field(o, "rawParts") as? JsonValue.JArray)?.let { decodeParts(o, "rawParts") },
-        executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
-            str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
-            com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
-            JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt"),JsonFields.long(step,"orderSequence")) },
+        executionSteps=JsonFields.objects(o,"executionSteps").map(::decodeExecutionStep),
         timelineSteps=JsonFields.objects(o,"timelineSteps").mapNotNull { item -> when (JsonFields.string(item,"kind")) {
             "thinking" -> com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep(
                 stepId = str(item,"stepId"),
@@ -250,10 +256,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
             )
             "tool_call" -> (JsonFields.field(item,"step") as? JsonValue.JObject)?.let { step ->
                 com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep(
-                    step = com.openandroidintelligence.conversation.model.NativeExecutionStep(
-                        str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
-                        com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
-                        JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt"),JsonFields.long(step,"orderSequence")),
+                    step = decodeExecutionStep(step),
                     bodyOffset = JsonFields.int(item,"bodyOffset") ?: 0,
                     orderIndex = JsonFields.int(item,"orderIndex") ?: 0,
                 )
@@ -908,7 +911,7 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         rememberSnapshotDeletions(id,canonical)
         val rows = previous?.messages.orEmpty().associateByTo(linkedMapOf()) { it.id }
         canonical.messages.forEach { rows[it.id] = it }
-        writeTimeline(id,canonical.copy(messages=rows.values.filterNot { it.isDeleted || isTombstoned(id,it.id) }.sortedBy { it.timestamp },
+        writeTimeline(id,canonical.copy(messages=rows.values.filterNot { it.isDeleted || isTombstoned(id,it.id) }.sortedWith(timelineOrderComparator),
             deletedMessageIds=canonical.deletedMessageIds + previous?.deletedMessageIds.orEmpty() + canonical.messages.filter { it.isDeleted }.map { it.id }))
     }
     @Synchronized fun timeline(id: String): TimelinePage? = if (isConversationDeleted(id)) null else read("timeline:$id")?.let { TimelinePage(JsonFields.objects(it,"messages").map(::decodeMessage),null,
@@ -955,8 +958,9 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 val currentMedia = if (event.message.isDeleted) emptyList() else attachmentIds(event.message.parts)
                 enqueueMediaTransition(id,event.message.id,event.revision,previousMedia - currentMedia.toSet(),true)
                 enqueueMediaTransition(id,event.message.id,event.revision,currentMedia,false)
-                writeTimeline(id,old.copy(messages = (old.messages.filterNot { it.id == event.message.id } +
-                    withDurableStatus(id,event.message.copy(contentRevision=event.revision))).sortedBy { it.timestamp }))
+                val updatedRows = old.messages.associateByTo(linkedMapOf()) { it.id }
+                updatedRows[event.message.id] = withDurableStatus(id, event.message.copy(contentRevision = event.revision))
+                writeTimeline(id, old.copy(messages = updatedRows.values.sortedWith(timelineOrderComparator)))
                 saveContentRevision(id,event.message.id,event.revision,false)
             }
             is VerifiedConversationEvent.TimelineTombstoned -> event.conversationId?.value?.let { id ->
@@ -1171,3 +1175,8 @@ class MirroredConversationRepository(private val delegate: ConversationRepositor
         }
     }
 }
+
+private val timelineOrderComparator = compareBy<TimelineMessage>(
+    { it.timestamp },
+    { it.orderSequence ?: Long.MAX_VALUE },
+)
