@@ -9,6 +9,7 @@ import com.openandroidintelligence.gateway.schema.JsonValue
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.SocketPolicy
 import okhttp3.mockwebserver.RecordedRequest
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
@@ -109,6 +110,22 @@ class RemoteServerApiTest {
         assertEquals("http://[::1]", normalizeRemoteOrigin("http://[::1]"))
         assertThrows(IllegalArgumentException::class.java) { normalizeRemoteOrigin("http://10.attacker.example") }
         assertThrows(IllegalArgumentException::class.java) { normalizeRemoteOrigin("http://192.168.attacker.example") }
+    }
+    @Test fun 复用已关闭的HTTP连接时只读查询恢复而写入保持单次提交() = runBlocking {
+        for (readOnly in listOf(true, false)) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody("{}"))
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("""{"online":true}"""))
+            val api = RemoteServerApi(server.url("/").toString().removeSuffix("/"))
+            api.loginProviders()
+            if (readOnly) {
+                assertTrue(api.presence("a".repeat(16), "phone"))
+                assertEquals(3, server.requestCount)
+            } else {
+                assertEquals("CONNECTION_FAILED", failureCode { api.login("owner", "password") })
+                assertEquals(2, server.requestCount)
+            }
+        }
     }
     @Test fun 错误响应只保留固定代码且不自动重发写入() = runBlocking {
         Server().use { fixture ->

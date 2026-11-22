@@ -49,6 +49,8 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
     private val deviceNameProvider: () -> String = { "OAI Android" },
 ) : RemoteRoleRegistrar, RemoteTokenRefresher {
     val origin: String = normalizeRemoteOrigin(origin)
+    // 只读查询允许 OkHttp 在复用的闲置连接被服务端关闭时重新建连。写请求仍使用单次传输。
+    private val reads = http.newBuilder().retryOnConnectionFailure(true).build()
     suspend fun loginProviders(): JsonValue.JObject = request("GET", "/api/v1/auth/oauth/providers").objectValue()
     suspend fun accountFromToken(token: String): RemoteAccountLogin {
         require(token.length >= 16) { "REMOTE_AUTHORIZATION_TOKEN_INVALID" }
@@ -136,7 +138,8 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
             if (proof != null) header("X-DSH-Pairing-Proof", proof)
             method(method, (rawBody ?: body?.let(Json::canonical))?.toRequestBody("application/json".toMediaType()))
         }.build()
-        val response = http.newCall(request).await()
+        val transport = if (method == "GET") reads else http
+        val response = transport.newCall(request).await()
         return response.use {
             if (it.code == 204 && method == "DELETE") return@use JsonValue.JNull
             if (!it.isSuccessful) {
