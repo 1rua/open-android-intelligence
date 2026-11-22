@@ -26,10 +26,11 @@
 - `android-device`、`android-platform`、`android-notifications`、`android-conversation`、`android-gateway`、`android-plugins`、`android-app`、`android-play`
 
 核心调度规则：
-1. **反向依赖自动扩散（`MODULE_DEPENDENTS`）**：修改底层库模块时（如 `:gateway-client`、`:platform-kernel`、`:control-ports`、`:ui-resources`），自动同时激活所有消费方模块所属的测试 lane 与 `:app`、`play` 变体回归。
-2. **安全与契约路径强制全量（`SECURITY_OR_CONTRACT_PATHS` / `PREFIXES`）**：改动 Gradle 构建脚本、`libs.versions.toml`、`package.json`、`package-lock.json`、安全包路径、禁用表面或 i18n 门禁脚本、CI 工作流或影响分析自身时，设置 `full_required=true` 并拉起全量矩阵。
-3. **保守兜底原则**：出现未归类路径或空 diff（如浅克隆缺失基线）时，自动设置 `unknown=true` 与 `full_required=true`，宁可全量也不漏测。
-4. **纯文档豁免**：`docs/`、`tmp/` 与非测试/非特定许可资产的 `*.md` / `*.txt` 变更不触发代码编译与测试 lane。
+1. **反向依赖自动扩散（`MODULE_DEPENDENTS`）**：修改底层库模块时（如 `:gateway-client`、`:platform-kernel`、`:control-ports`、`:ui-resources`），自动同时激活所有消费方模块所属的测试 lane、安全预检（`runs_android_preflight`）与 `fast` 门禁。
+2. **重型 App/Play 回归分层触发（`should_run_app_regressions`）**：耗时的 `android-app`（`Android App Regressions`）与 `android-play`（`Android Play Variant`）仅在推送/合并到 `main` 分支、发版 PR（目标 `main` 或源分支 `release/*` / `release-*`）、PR 显式打上全量/发版标签（`run-full-ci` / `full-regression` / `full-ci` / `release`）或手动 `workflow_dispatch` 时放行；日常普通 `feature/*` / `fix/*` PR 仅运行受影响模块的定向单测、安全预检与 `Fast Gate`，将关键路径控制在 5 分钟以内。
+3. **安全与契约路径强制全量（`SECURITY_OR_CONTRACT_PATHS` / `PREFIXES`）**：改动 Gradle 构建脚本、`libs.versions.toml`、`package.json`、`package-lock.json`、安全包路径、禁用表面或 i18n 门禁脚本、CI 工作流或影响分析自身时，设置 `full_required=true` 并拉起当前触发作用域下全部允许的 lane（在 `main`/发版/显式打标签场景下含全量 App/Play 回归）。
+4. **保守兜底原则**：出现未归类路径或空 diff（如浅克隆缺失基线）时，自动设置 `unknown=true` 与 `full_required=true`，宁可全量也不漏测。
+5. **纯文档豁免**：`docs/`、`tmp/` 与非测试/非特定许可资产的 `*.md` / `*.txt` 变更不触发代码编译与测试 lane。
 
 ### 2.2 Gradle 任务翻译器：`tools/ci/android_tasks.py`
 将 `impact.py` 的分类结果翻译为精确的 `./gradlew` 参数组：
@@ -81,5 +82,6 @@
 
 | 工作流文件 | 触发时机 | 职责分工与核心步骤 |
 | --- | --- | --- |
-| [.github/workflows/remote-client.yml](.github/workflows/remote-client.yml) | 针对 `dev`/`main` 的 PR 与推送、`workflow_dispatch` | **增量并发门禁**：`changes` 作业调用 `tools/ci/impact.py` 计算受影响 lane 与 `app_sections`；按需并行拉起 `fast`、`remote-sources`、`remote`（含 Remote Server 回归、MCP 单元与原工具互通）、`android-setup`（集中一次编译 6 个 Rust 1.90.0 WASM 夹具供 app/play 复用）及各 `android-*` 测试 lane，并控制 `concurrency` 自动取消过时分支提交的冗余运行 |
+| [.github/workflows/remote-client.yml](.github/workflows/remote-client.yml) | 针对 `dev`/`main` 的 PR（含 `labeled`）与推送、`workflow_dispatch` | **增量并发门禁**：`changes` 作业调用 `tools/ci/impact.py` 结合触发上下文计算受影响 lane、`app_regressions_allowed` 与 `app_sections`；日常 PR 仅并行拉起 `fast`、`remote-sources`、`android-preflight` 与受影响模块/remote lane（关闭 `android-app` / `android-play`），发版 PR、`main` 分支推送、显式打标签或手动触发时再放行完整 App/Play 回归；`concurrency` 按 PR 号即时取消过时 PR 运行，同时保留 `dev`/`main` 推送排队 |
+| [.github/workflows/android-apk.yml](.github/workflows/android-apk.yml) | 仅 `push` → `main` 与 `workflow_dispatch` | **调试 APK 产物构建**：日常 `feature/*`/`fix/*` PR 分支推送不再自动触发整包 APK 编译，消除与 `remote-client.yml` 的重复编译与并发竞争；`dev` 推送由 `dev-release.yml` 承担预览发布，`main` 推送继续产出 `app-full-debug` 供 `tools/download-latest-apk` 下载 |
 | [.github/workflows/ci.yml](.github/workflows/ci.yml) | 针对 `main` 的 PR 与推送、`workflow_dispatch` | **Level 3 发布级完整回归**：不做路径过滤。固定包含两个必需状态检查项——`Node.js & Gateway Conformance`（`lock:check`、根工具/插件签名测试、发布元数据工具单测、Remote Server 与 MCP 测试）与 `Android Build & Check`（编译 6 个真实 Rust WASM 插件并用隔离测试 seed 签名打包为 `.alp`、执行 `./gradlew check :app:assembleFullDebug -Poai.requireBundledPlugins=true`、执行 `npm run test:phone-mcp:interop`，最后由 `apps/android/tools/verify_bundled_plugins.py` 逐字节核对 6 个 `.alp` 资产已准确打入 APK） |

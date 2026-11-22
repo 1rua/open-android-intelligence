@@ -131,18 +131,38 @@ def test_docs_only_change_runs_nothing(impact):
     assert active_lanes(result) == set()
 
 
+def non_app_lanes(impact):
+    return set(impact.LANES) - set(impact.APP_REGRESSION_LANES)
+
+
 def test_unclassifiable_path_forces_full_matrix(impact):
-    result = impact.classify([("M", "some-new-top-level-dir/thing.bin")])
-    assert result["unknown"] is True
-    assert result["full_required"] is True
-    assert active_lanes(result) == set(impact.LANES)
+    pr_result = impact.classify([("M", "some-new-top-level-dir/thing.bin")])
+    assert pr_result["unknown"] is True
+    assert pr_result["full_required"] is True
+    assert pr_result["app_regressions_allowed"] is False
+    assert pr_result["android_preflight"] is True
+    assert active_lanes(pr_result) == non_app_lanes(impact)
+
+    full_result = impact.classify(
+        [("M", "some-new-top-level-dir/thing.bin")],
+        allow_app_regressions=True,
+    )
+    assert full_result["unknown"] is True
+    assert full_result["full_required"] is True
+    assert full_result["app_regressions_allowed"] is True
+    assert active_lanes(full_result) == set(impact.LANES)
 
 
 def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
-    result = impact.classify([])
-    assert result["full_required"] is True
-    assert result["unknown"] is True
-    assert active_lanes(result) == set(impact.LANES)
+    pr_result = impact.classify([])
+    assert pr_result["full_required"] is True
+    assert pr_result["unknown"] is True
+    assert active_lanes(pr_result) == non_app_lanes(impact)
+
+    full_result = impact.classify([], allow_app_regressions=True)
+    assert full_result["full_required"] is True
+    assert full_result["unknown"] is True
+    assert active_lanes(full_result) == set(impact.LANES)
 
 
 @pytest.mark.parametrize("path", [
@@ -154,11 +174,16 @@ def test_empty_diff_is_treated_as_full_not_as_no_op(impact):
     "apps/android/gradle/i18n-quality-gates.gradle.kts",
     "package-lock.json",
     "tools/smart-test.py",
+    ".github/workflows/android-apk.yml",
 ])
 def test_security_and_build_config_paths_run_everything(impact, path):
-    result = impact.classify([("M", path)])
-    assert result["full_required"] is True
-    assert active_lanes(result) == set(impact.LANES)
+    pr_result = impact.classify([("M", path)])
+    assert pr_result["full_required"] is True
+    assert active_lanes(pr_result) == non_app_lanes(impact)
+
+    full_result = impact.classify([("M", path)], allow_app_regressions=True)
+    assert full_result["full_required"] is True
+    assert active_lanes(full_result) == set(impact.LANES)
 
 
 def test_core_security_paths_widen_the_matrix(impact):
@@ -166,20 +191,37 @@ def test_core_security_paths_widen_the_matrix(impact):
     assert result["full_required"] is True
 
 
-def test_single_android_module_pulls_in_app_and_play_lanes(impact):
-    result = impact.classify([("M", "apps/android/platform-kernel/src/main/PairingGrant.kt")])
-    lanes = active_lanes(result)
-    assert "android-platform" in lanes
-    # A module is compiled into the app, so its tests alone are not sufficient.
-    assert {"android-app", "android-play"} <= lanes
-    assert "android-gateway" not in lanes
+def test_single_android_module_defers_app_and_play_on_daily_pr_and_enables_on_full_gate(impact):
+    path = ("M", "apps/android/platform-kernel/src/main/PairingGrant.kt")
+
+    pr_result = impact.classify([path])
+    pr_lanes = active_lanes(pr_result)
+    assert "android-platform" in pr_lanes
+    assert "fast" in pr_lanes
+    assert pr_result["android_preflight"] is True
+    assert pr_result["app_impacted"] is True
+    assert "android-app" not in pr_lanes
+    assert "android-play" not in pr_lanes
+    assert "android-gateway" not in pr_lanes
+
+    full_result = impact.classify([path], allow_app_regressions=True)
+    full_lanes = active_lanes(full_result)
+    assert "android-platform" in full_lanes
+    # 发版/主干场景保留完整 App 与 Play 变体回归，确保模块编入 APK 的集成行为仍被覆盖。
+    assert {"android-app", "android-play"} <= full_lanes
+    assert "android-gateway" not in full_lanes
 
 
 def test_deleted_test_file_still_runs_its_lane(impact):
-    result = impact.classify([
-        ("D", "apps/android/app/src/test/kotlin/com/x/GatewaySessionRefreshTest.kt"),
-    ])
-    assert {"android-app", "android-play"} <= active_lanes(result)
+    pair = ("D", "apps/android/app/src/test/kotlin/com/x/GatewaySessionRefreshTest.kt")
+    pr_result = impact.classify([pair])
+    assert "fast" in active_lanes(pr_result)
+    assert pr_result["android_preflight"] is True
+    assert "android-app" not in active_lanes(pr_result)
+    assert "android-play" not in active_lanes(pr_result)
+
+    full_result = impact.classify([pair], allow_app_regressions=True)
+    assert {"android-app", "android-play"} <= active_lanes(full_result)
 
 
 def test_rename_counts_both_sides(impact):
@@ -187,7 +229,11 @@ def test_rename_counts_both_sides(impact):
         ("D", "plugins/sms/src/lib.rs"),
         ("A", "plugins/sms-v2/src/lib.rs"),
     ])
-    assert "fast" in active_lanes(result)
+    lanes = active_lanes(result)
+    assert "fast" in lanes
+    assert "android-plugins" in lanes
+    assert "android-app" not in lanes
+    assert "android-play" not in lanes
 
 
 def test_app_sections_narrow_to_the_touched_domain(impact):
@@ -291,12 +337,18 @@ def test_production_source_selects_its_real_app_regressions(
     path = f"apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/{source}"
     assert (REPO_ROOT / path).is_file(), path
 
-    result = impact.classify([("M", path)])
-    arguments = tasks.pr_args_for_sections(sorted(result["app_sections"]))
+    pr_result = impact.classify([("M", path)])
+    arguments = tasks.pr_args_for_sections(sorted(pr_result["app_sections"]))
 
-    assert result["full_required"] is False
-    assert result["app_sections"] == sections
-    assert {"android-app", "android-play"} | module_lanes <= active_lanes(result)
+    assert pr_result["full_required"] is False
+    assert pr_result["app_sections"] == sections
+    assert pr_result["android_preflight"] is True
+    assert {"fast"} | module_lanes <= active_lanes(pr_result)
+    assert "android-app" not in active_lanes(pr_result)
+    assert "android-play" not in active_lanes(pr_result)
+
+    full_result = impact.classify([("M", path)], allow_app_regressions=True)
+    assert {"android-app", "android-play"} | module_lanes <= active_lanes(full_result)
     for name in regression_names:
         assert f"--tests={name}" in arguments, (path, name)
 
@@ -359,11 +411,17 @@ def test_missing_app_test_source_does_not_guess_its_only_class(impact, tmp_path,
     "apps/android/app/src/test/resources/fixture.txt",
 ])
 def test_unknown_app_tests_require_all_sections_and_manifest_check(impact, path):
-    result = impact.classify([("A", path)])
+    pr_result = impact.classify([("A", path)])
 
-    assert result["lanes"]["fast"] is True
-    assert {"android-app", "android-play"} <= active_lanes(result)
-    assert result["app_sections"] == set(impact.APP_SECTIONS)
+    assert pr_result["lanes"]["fast"] is True
+    assert pr_result["android_preflight"] is True
+    assert pr_result["lanes"]["android-app"] is False
+    assert pr_result["lanes"]["android-play"] is False
+    assert pr_result["app_sections"] == set(impact.APP_SECTIONS)
+
+    full_result = impact.classify([("A", path)], allow_app_regressions=True)
+    assert {"android-app", "android-play"} <= active_lanes(full_result)
+    assert full_result["app_sections"] == set(impact.APP_SECTIONS)
 
 
 def test_unknown_scope_widens_app_sections(impact):
@@ -410,21 +468,26 @@ def test_push_paths_win_over_broad_settings_hint(impact):
 
 
 def test_ui_resources_change_runs_consumer_lanes_and_all_app_sections(impact):
-    """ui-resources changes must run platform, conversation, device, and the full app regression."""
-    result = impact.classify([
-        ("M", "apps/android/ui-resources/src/main/res/values/strings_common.xml"),
-    ])
-    lanes = result["lanes"]
-    assert lanes["android-platform"] is True
-    assert lanes["android-conversation"] is True
-    assert lanes["android-device"] is True
-    assert lanes["android-app"] is True
-    assert lanes["android-play"] is True
-    assert lanes["android-gateway"] is False
-    assert result["full_required"] is False
-    assert result["unknown"] is False
+    """ui-resources changes must run platform, conversation, device, and app regressions when allowed."""
+    pair = ("M", "apps/android/ui-resources/src/main/res/values/strings_common.xml")
+    pr_result = impact.classify([pair])
+    pr_lanes = pr_result["lanes"]
+    assert pr_lanes["fast"] is True
+    assert pr_lanes["android-platform"] is True
+    assert pr_lanes["android-conversation"] is True
+    assert pr_lanes["android-device"] is True
+    assert pr_lanes["android-app"] is False
+    assert pr_lanes["android-play"] is False
+    assert pr_lanes["android-gateway"] is False
+    assert pr_result["android_preflight"] is True
+    assert pr_result["full_required"] is False
+    assert pr_result["unknown"] is False
     # ui-resources 对应用套件是横切的，必须覆盖所有 app sections
-    assert result["app_sections"] == set(impact.APP_SECTIONS)
+    assert pr_result["app_sections"] == set(impact.APP_SECTIONS)
+
+    full_result = impact.classify([pair], allow_app_regressions=True)
+    assert full_result["lanes"]["android-app"] is True
+    assert full_result["lanes"]["android-play"] is True
 
 
 def test_every_module_with_tests_has_a_lane(tasks):
@@ -725,10 +788,17 @@ def test_remote_android_fixture_routes_to_gateway_without_legacy_dsh(impact):
 
 
 def test_control_ports_remote_types_reach_gateway_and_ui_consumers(impact):
-    result = impact.classify([("M", "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt")])
-    expected = {"android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications", "android-app", "android-play"}
-    assert expected <= active_lanes(result)
-    assert not result["unknown"]
+    pair = ("M", "apps/android/control-ports/src/main/kotlin/com/openandroidintelligence/control/remote/TaskScope.kt")
+    pr_result = impact.classify([pair])
+    pr_expected = {"fast", "remote", "android-device", "android-gateway", "android-conversation", "android-plugins", "android-notifications"}
+    assert pr_expected <= active_lanes(pr_result)
+    assert "android-app" not in active_lanes(pr_result)
+    assert "android-play" not in active_lanes(pr_result)
+    assert not pr_result["unknown"]
+
+    full_result = impact.classify([pair], allow_app_regressions=True)
+    assert pr_expected | {"android-app", "android-play"} <= active_lanes(full_result)
+    assert not full_result["unknown"]
 
 
 def test_phone_mcp_routes_to_remote_without_legacy_adapters(impact):
@@ -887,3 +957,150 @@ def test_remote_client_enables_app_performance_only_on_workflow_dispatch():
     assert app_pr_step["with"]["app-performance"] == (
         "${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}"
     )
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        # 日常 feature/fix PR：关闭耗时 App/Play 大回归
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/ui-fix", "labels": []}, False),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "fix/crash", "labels": ["bug"]}, False),
+        # dev 分支 push：保持轻量快速，避免阻塞 dev 预览发布验证
+        ({"event_name": "push", "ref": "refs/heads/dev"}, False),
+        # 无上下文默认调用（命令行模拟日常 PR）：默认关闭
+        ({}, False),
+        # 合并/推送到 main 分支或 Git Tag：放行全量 App/Play 回归
+        ({"event_name": "push", "ref": "refs/heads/main"}, True),
+        ({"event_name": "push", "ref": "refs/tags/v1.0.0"}, True),
+        # 发版 PR（目标 main 或 release/* 分支）：放行
+        ({"event_name": "pull_request", "base_ref": "main", "head_ref": "dev", "labels": []}, True),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "release/1.2.0", "labels": []}, True),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "release-hotfix", "labels": []}, True),
+        # PR 显式打标签：放行（大小写不敏感）
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/x", "labels": ["run-full-ci"]}, True),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/x", "labels": ["Full-Regression"]}, True),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/x", "labels": ["full-ci"]}, True),
+        ({"event_name": "pull_request", "base_ref": "dev", "head_ref": "feature/x", "labels": ["release"]}, True),
+        # 手动 workflow_dispatch：放行（供性能对照与手动全量验证）
+        ({"event_name": "workflow_dispatch", "ref": "refs/heads/dev"}, True),
+    ],
+)
+def test_app_regression_trigger_policy(impact, kwargs, expected):
+    assert impact.should_run_app_regressions(**kwargs) is expected
+
+
+def test_impact_cli_emits_false_for_daily_pr_and_true_for_main_or_label(
+    impact, git_repository, capsys
+):
+    root, git = git_repository
+    target = root / "apps/android/gateway-client/src/main/kotlin/Client.kt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("class Client\n", encoding="utf-8")
+    git("add", "--", "apps/android/gateway-client/src/main/kotlin/Client.kt")
+    git("commit", "--quiet", "-m", "测试: 模拟常规模块改动")
+
+    # 1. 日常 feature PR：runs_android_app 与 runs_android_play 必须为 false
+    assert impact.main([
+        "--base", "HEAD^",
+        "--head", "HEAD",
+        "--event", "pull_request",
+        "--base-ref", "dev",
+        "--head-ref", "feature/gateway-tweak",
+        "--labels-json", "[]",
+        "--github-output",
+    ]) == 0
+    daily_out = capsys.readouterr().out
+    assert "runs_fast=true" in daily_out
+    assert "runs_android_gateway=true" in daily_out
+    assert "runs_android_preflight=true" in daily_out
+    assert "runs_android_app=false" in daily_out
+    assert "runs_android_play=false" in daily_out
+    assert "app_regressions_allowed=false" in daily_out
+
+    # 2. 显式打标签：放行 android-app 与 android-play
+    assert impact.main([
+        "--base", "HEAD^",
+        "--head", "HEAD",
+        "--event", "pull_request",
+        "--base-ref", "dev",
+        "--head-ref", "feature/gateway-tweak",
+        "--labels-json", '["run-full-ci"]',
+        "--github-output",
+    ]) == 0
+    labeled_out = capsys.readouterr().out
+    assert "runs_android_app=true" in labeled_out
+    assert "runs_android_play=true" in labeled_out
+    assert "app_regressions_allowed=true" in labeled_out
+
+    # 3. 合并到 main 分支：放行 android-app 与 android-play
+    assert impact.main([
+        "--base", "HEAD^",
+        "--head", "HEAD",
+        "--event", "push",
+        "--ref", "refs/heads/main",
+        "--labels-json", "null",
+        "--github-output",
+    ]) == 0
+    main_out = capsys.readouterr().out
+    assert "runs_android_app=true" in main_out
+    assert "runs_android_play=true" in main_out
+    assert "app_regressions_allowed=true" in main_out
+
+
+def test_app_only_daily_pr_still_runs_fast_and_android_preflight(impact):
+    """只改 app/ 源码的日常 PR 关闭 App 大回归时，仍须运行 Fast Gate 与安全预检。"""
+    result = impact.classify([
+        ("M", "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteRuntime.kt"),
+    ])
+    assert result["lanes"]["fast"] is True
+    assert result["lanes"]["android-app"] is False
+    assert result["lanes"]["android-play"] is False
+    assert result["android_preflight"] is True
+    output = impact.to_github_output(result)
+    assert "runs_android_preflight=true" in output
+    assert "any_lane=true" in output
+
+
+def test_remote_client_concurrency_and_app_gate_wiring():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/remote-client.yml").read_text(encoding="utf-8")
+    )
+    # 1. 并发策略：PR 立即取消旧运行，push/workflow_dispatch 不取消进行中的发布门禁
+    concurrency = workflow["concurrency"]
+    assert "github.event.pull_request.number" in concurrency["group"]
+    assert "github.run_id" in concurrency["group"]
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+
+    # 2. PR 事件需监听 labeled，保证打标签后立即补跑全量 App/Play 回归
+    pr_trigger = workflow[True]["pull_request"] if True in workflow else workflow["on"]["pull_request"]
+    assert "labeled" in pr_trigger["types"]
+
+    # 3. android-app / android-play 须双重受控于 runs_android_* 与 app_regressions_allowed
+    jobs = workflow["jobs"]
+    assert "app_regressions_allowed" in jobs["changes"]["outputs"]
+    assert "runs_android_preflight" in jobs["changes"]["outputs"]
+    assert "runs_android_preflight" in jobs["android-preflight"]["if"]
+    for job_id, run_flag in (("android-app", "runs_android_app"), ("android-play", "runs_android_play")):
+        cond = jobs[job_id]["if"]
+        assert f"needs.changes.outputs.{run_flag} == 'true'" in cond
+        assert "needs.changes.outputs.app_regressions_allowed == 'true'" in cond
+
+    # 4. 汇总状态检查名保持不变，避免破坏分支保护规则
+    assert jobs["gate"]["name"] == "CI Gate"
+    assert jobs["gate"]["if"] == "always()"
+
+
+def test_android_apk_workflow_does_not_duplicate_pr_branch_compilations():
+    """日常 PR 分支推送不得再触发 android-apk.yml 整包 APK 编译，仅保留 main 与手动触发。"""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/android-apk.yml").read_text(encoding="utf-8")
+    )
+    triggers = workflow[True] if True in workflow else workflow["on"]
+    assert "pull_request" not in triggers
+    assert triggers["push"] == {"branches": ["main"]}
+    assert "workflow_dispatch" in triggers
+    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"

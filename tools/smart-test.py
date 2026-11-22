@@ -62,7 +62,10 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
     classifier = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(classifier)
-    plan = classifier.classify([("M", path) for path in changed_files])
+    plan = classifier.classify(
+        [("M", path) for path in changed_files],
+        allow_app_regressions=True,
+    )
     lanes = plan["lanes"]
     full = bool(plan["full_required"])
     return {

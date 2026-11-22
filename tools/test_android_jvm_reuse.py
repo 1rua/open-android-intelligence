@@ -73,9 +73,20 @@ def test_reuse_configuration_changes_run_full_safety_matrix():
         "tools/ci/android_app_performance.py",
         "tools/test_android_jvm_reuse.py",
     ]:
-        result = impact.classify([("M", name)])
-        assert result["full_required"] is True, name
-        assert all(result["lanes"].values()), name
+        pr_result = impact.classify([("M", name)])
+        assert pr_result["full_required"] is True, name
+        assert pr_result["lanes"]["android-app"] is False, name
+        assert pr_result["lanes"]["android-play"] is False, name
+        non_app = {
+            lane: enabled
+            for lane, enabled in pr_result["lanes"].items()
+            if lane not in impact.APP_REGRESSION_LANES
+        }
+        assert all(non_app.values()), name
+
+        full_result = impact.classify([("M", name)], allow_app_regressions=True)
+        assert full_result["full_required"] is True, name
+        assert all(full_result["lanes"].values()), name
 
 
 def test_default_ci_uses_only_measured_optimization():

@@ -6,6 +6,8 @@ name: Remote Client and Android
 on:
   pull_request:
     branches: [dev, main]
+    # 支持在 PR 上显式打标签（如 run-full-ci / full-regression / release）后立即重跑全量 App/Play 回归。
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [dev, main]
   workflow_dispatch:
@@ -39,9 +41,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: remote-client-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'gate' }}
-  # 新提交取代旧提交时取消旧 CI；dev/main 上的发布前验证必须完整跑完。
-  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' && github.ref != 'refs/heads/main' }}
+  group: >-
+    remote-client-${{
+      github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) ||
+      github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) ||
+      format('branch-{0}', github.ref)
+    }}
+  # PR 新提交或标签变更立即取消同一 PR 的旧 CI 以释放 runner 并缩短等待；
+  # dev/main 分支 push 承担发布前门禁验证，禁止取消进行中的构建。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -51,6 +59,7 @@ jobs:
     outputs:
       runs_fast: ${{ steps.impact.outputs.runs_fast }}
       runs_remote: ${{ steps.impact.outputs.runs_remote }}
+      runs_android_preflight: ${{ steps.impact.outputs.runs_android_preflight }}
       runs_android_device: ${{ steps.impact.outputs.runs_android_device }}
       runs_android_platform: ${{ steps.impact.outputs.runs_android_platform }}
       runs_android_notifications: ${{ steps.impact.outputs.runs_android_notifications }}
@@ -59,6 +68,7 @@ jobs:
       runs_android_plugins: ${{ steps.impact.outputs.runs_android_plugins }}
       runs_android_app: ${{ steps.impact.outputs.runs_android_app }}
       runs_android_play: ${{ steps.impact.outputs.runs_android_play }}
+      app_regressions_allowed: ${{ steps.impact.outputs.app_regressions_allowed }}
       app_sections: ${{ steps.impact.outputs.app_sections }}
       full_required: ${{ steps.impact.outputs.full_required }}
     steps:
@@ -73,36 +83,48 @@ jobs:
         env:
           # PR 用三点 diff（合并基 → head）；push 用两点 diff（上一个提交 → HEAD）。
           BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          GIT_REF: ${{ github.ref }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PR_HEAD_REF: ${{ github.head_ref }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           set -o pipefail
           base="$BASE_REF"
+          extra_args=()
           case "$base" in
             ""|0000000000000000000000000000000000000000)
-              echo "::warning::No usable base commit; running every lane."
-              python3 - <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          lanes = ["fast","remote","android_device","android_platform",
-                   "android_notifications","android_conversation","android_gateway",
-                   "android_plugins","android_app","android_play"]
-          print("\n".join(f"runs_{lane}=true" for lane in lanes))
-          print("full_required=true")
-          print("app_sections=core,settings,conversations,plugins,push-notifications")
-          PY
-              exit 0
+              echo "::warning::No usable base commit; expanding to full lane matrix for current trigger context."
+              extra_args+=(--unknown-diff)
+              ;;
+            *)
+              extra_args+=(--base "$base" --head "$GITHUB_SHA")
               ;;
           esac
-          python3 tools/ci/impact.py --base "$base" --head "$GITHUB_SHA" \
-            --json-out "$RUNNER_TEMP/impact.json" --github-output | tee -a "$GITHUB_OUTPUT"
+          python3 tools/ci/impact.py "${extra_args[@]}" \
+            --event "$EVENT_NAME" \
+            --ref "$GIT_REF" \
+            --base-ref "$PR_BASE_REF" \
+            --head-ref "$PR_HEAD_REF" \
+            --labels-json "$PR_LABELS_JSON" \
+            --json-out "$RUNNER_TEMP/impact.json" \
+            --github-output | tee -a "$GITHUB_OUTPUT"
           python3 - "$RUNNER_TEMP/impact.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
           import json, sys
           data = json.load(open(sys.argv[1], encoding="utf-8"))
-          lines = ["## CI plan", "", f"changed paths: {len(data.get('paths', []))}", ""]
+          lines = [
+              "## CI plan",
+              "",
+              f"changed paths: {len(data.get('paths', []))}",
+              f"app/play regressions allowed: {'yes' if data.get('app_regressions_allowed') else 'no (deferred to main / release PR / explicit label)'}",
+              "",
+          ]
           for lane, enabled in sorted(data.get("lanes", {}).items()):
               lines.append(f"- {'run ' if enabled else 'skip'} `{lane}`")
           if data.get("full_required"):
-              lines.append("\nFull matrix forced (security/contract/config change).")
+              lines.append("\nFull matrix forced for current trigger scope (security/contract/config change).")
           if data.get("unknown"):
-              lines.append("\nDiff could not be classified; ran everything.")
+              lines.append("\nDiff could not be classified; expanded all eligible lanes.")
           print("\n".join(lines))
           PY
 
@@ -202,11 +224,12 @@ jobs:
   android-setup:
     name: Android Fixtures
     needs: changes
-    # 只有 app / play lane 会读取编译好的插件 WASM 载荷；模块 lane 不需要。
+    # 只有 plugins / app / play lane 会读取编译好的插件 WASM 载荷；其他模块 lane 不需要。
     if: |
-      needs.changes.outputs.runs_android_app == 'true' ||
-      needs.changes.outputs.runs_android_play == 'true' ||
-      needs.changes.outputs.runs_android_plugins == 'true'
+      needs.changes.outputs.runs_android_plugins == 'true' ||
+      (needs.changes.outputs.app_regressions_allowed == 'true' &&
+       (needs.changes.outputs.runs_android_app == 'true' ||
+        needs.changes.outputs.runs_android_play == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -268,11 +291,13 @@ jobs:
     # 由 gate 汇总时卡住——违规时仍然必红，但不拖慢正常路径。
     needs: changes
     if: |
+      needs.changes.outputs.runs_android_preflight == 'true' ||
       needs.changes.outputs.runs_android_device == 'true' ||
       needs.changes.outputs.runs_android_platform == 'true' ||
       needs.changes.outputs.runs_android_notifications == 'true' ||
       needs.changes.outputs.runs_android_conversation == 'true' ||
       needs.changes.outputs.runs_android_gateway == 'true' ||
+      needs.changes.outputs.runs_android_plugins == 'true' ||
       needs.changes.outputs.runs_android_app == 'true' ||
       needs.changes.outputs.runs_android_play == 'true'
     runs-on: ubuntu-latest
@@ -410,7 +435,9 @@ jobs:
   android-app:
     name: Android App Regressions
     needs: [changes, android-setup]
-    if: needs.changes.outputs.runs_android_app == 'true'
+    if: >-
+      needs.changes.outputs.runs_android_app == 'true' &&
+      needs.changes.outputs.app_regressions_allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -437,7 +464,9 @@ jobs:
   android-play:
     name: Android Play Variant
     needs: [changes, android-setup]
-    if: needs.changes.outputs.runs_android_play == 'true'
+    if: >-
+      needs.changes.outputs.runs_android_play == 'true' &&
+      needs.changes.outputs.app_regressions_allowed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

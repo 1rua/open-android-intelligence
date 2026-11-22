@@ -69,10 +69,21 @@ SECURITY_OR_CONTRACT_PATHS = {
     "tools/test_smart_test.py",
     ".github/workflows/remote-client.yml",
     ".github/workflows/ci.yml",
+    ".github/workflows/android-apk.yml",
     ".github/workflows/release-gate.yml",
     "apps/android/ci/app-regression.txt",
     "apps/android/ci/app-jvm-reuse.txt",
 }
+
+# 耗时的 App 全量回归与 Play 变体通道，仅在合并到 main、发版 PR、显式打标签或手动调度时放行。
+APP_REGRESSION_LANES = ("android-app", "android-play")
+FULL_CI_LABELS = frozenset({
+    "run-full-ci",
+    "full-regression",
+    "full-ci",
+    "release",
+})
+RELEASE_BRANCH_PREFIXES = ("release/", "release-")
 
 # Module lane -> app-test section. Modules without an entry are cross-cutting and
 # widen the app suite to every section (they are compiled into every screen).
@@ -151,8 +162,108 @@ def _run_git(args: list[str]) -> str:
     return os.fsdecode(result.stdout)
 
 
+def should_run_app_regressions(
+    *,
+    event_name: str | None = None,
+    ref: str | None = None,
+    base_ref: str | None = None,
+    head_ref: str | None = None,
+    labels: list[str] | tuple[str, ...] | set[str] | None = None,
+) -> bool:
+    """判断当前触发上下文是否允许执行耗时的 Android App / Play 回归通道。
+
+    仅在以下场景放行：
+    1. 合并/推送到 main 分支；
+    2. 发版 PR（目标为 main 分支，或源分支以 release/ / release- 开头）；
+    3. PR 带有显式全量或发版标签（run-full-ci / full-regression / full-ci / release）；
+    4. 手动触发（workflow_dispatch）。
+    其余日常普通 feature/fix PR（含无上下文的默认调用）返回 False，仅跑受影响模块单测与 Fast Gate。
+    """
+    event = (event_name or "").strip().lower()
+    ref_name = (ref or "").strip()
+    base = (base_ref or "").strip()
+    head = (head_ref or "").strip()
+    normalized_labels = {
+        label.strip().lower()
+        for label in (labels or ())
+        if isinstance(label, str) and label.strip()
+    }
+
+    if event == "workflow_dispatch":
+        return True
+    if event == "push":
+        return ref_name in {"refs/heads/main", "main"} or ref_name.startswith("refs/tags/")
+    if event == "pull_request":
+        if base in {"main", "refs/heads/main"}:
+            return True
+        if head.startswith(RELEASE_BRANCH_PREFIXES):
+            return True
+        if normalized_labels & FULL_CI_LABELS:
+            return True
+        return False
+    if not event:
+        if ref_name in {"refs/heads/main", "main"} or ref_name.startswith("refs/tags/"):
+            return True
+        if base in {"main", "refs/heads/main"}:
+            return True
+        if head.startswith(RELEASE_BRANCH_PREFIXES):
+            return True
+        if normalized_labels & FULL_CI_LABELS:
+            return True
+    return False
+
+
+def _parse_labels_json(raw: str | None) -> list[str]:
+    text = (raw or "").strip()
+    if not text or text == "null":
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid --labels-json payload: {exc}") from exc
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise SystemExit(
+            f"invalid --labels-json payload: expected JSON array, got {type(data).__name__}"
+        )
+    parsed: list[str] = []
+    for item in data:
+        if isinstance(item, str) and item.strip():
+            parsed.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str) and name.strip():
+                parsed.append(name.strip())
+    return parsed
+
+
+def _apply_app_regression_gate(
+    result: dict[str, object], allow_app_regressions: bool
+) -> dict[str, object]:
+    lanes = result["lanes"]
+    assert isinstance(lanes, dict)
+    app_impacted = bool(lanes["android-app"] or lanes["android-play"])
+    result["app_impacted"] = app_impacted
+    result["app_regressions_allowed"] = bool(allow_app_regressions)
+    if not allow_app_regressions:
+        for lane in APP_REGRESSION_LANES:
+            lanes[lane] = False
+    android_lane_active = any(
+        enabled for name, enabled in lanes.items() if name.startswith("android-")
+    )
+    # 只要涉及任意 Android 模块或 app 改动（即使日常 PR 关闭了 App 大回归），
+    # 安全预检（硬编码中文、资源完整性、禁用表面）仍必须执行。
+    result["android_preflight"] = bool(
+        result.get("android_preflight") or android_lane_active or app_impacted
+    )
+    return result
+
+
 def changed_paths(base: str | None, head: str | None, staged: bool = False) -> list[tuple[str, str]]:
     """Return (status, path) pairs, expanding renames to both sides."""
+    if base == "0" * 40:
+        return []
     args = ["diff", "--name-status", "-z", "-M", "--find-renames"]
     if staged:
         args.append("--cached")
@@ -209,7 +320,11 @@ def empty_lanes() -> dict[str, bool]:
     return {lane: False for lane in LANES}
 
 
-def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
+def classify(
+    pairs: list[tuple[str, str]],
+    *,
+    allow_app_regressions: bool = False,
+) -> dict[str, object]:
     lanes = empty_lanes()
     # App-test sections this diff touches. "core" is always included; the CI app
     # job runs [core] plus these sections so a UI copy change does not drag the
@@ -219,6 +334,9 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         "lanes": lanes,
         "unknown": False,
         "full_required": False,
+        "app_impacted": False,
+        "app_regressions_allowed": bool(allow_app_regressions),
+        "android_preflight": False,
         "app_sections": sections,
         "paths": sorted({path for _, path in pairs}),
     }
@@ -228,8 +346,8 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         result["full_required"] = True
         for lane in LANES:
             lanes[lane] = True
-        result["app_sections"] = ALL_APP_SECTIONS
-        return result
+        result["app_sections"] = set(ALL_APP_SECTIONS)
+        return _apply_app_regression_gate(result, allow_app_regressions)
 
     for _, path in pairs:
         if path in SECURITY_OR_CONTRACT_PATHS or path.startswith(SECURITY_OR_CONTRACT_PREFIXES):
@@ -238,8 +356,8 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
     if result["full_required"]:
         for lane in LANES:
             lanes[lane] = True
-        result["app_sections"] = ALL_APP_SECTIONS
-        return result
+        result["app_sections"] = set(ALL_APP_SECTIONS)
+        return _apply_app_regression_gate(result, allow_app_regressions)
 
     unclassified: list[str] = []
     for status, path in pairs:
@@ -255,8 +373,8 @@ def classify(pairs: list[tuple[str, str]]) -> dict[str, object]:
         result["unclassified_paths"] = unclassified
         for lane in LANES:
             lanes[lane] = True
-        result["app_sections"] = ALL_APP_SECTIONS
-    return result
+        result["app_sections"] = set(ALL_APP_SECTIONS)
+    return _apply_app_regression_gate(result, allow_app_regressions)
 
 
 # Sections of apps/android/ci/app-regression.txt. "core" is always run.
@@ -280,6 +398,8 @@ def classify_path(
 
     if path.startswith(("plugins/", "plugin-tooling/")):
         lanes["fast"] = True
+        # 插件运行时模块单测直接验证真实编译后的 WASM 载荷，日常 PR 无需等整套 App 回归。
+        lanes["android-plugins"] = True
         # Plugin payloads are installed and executed by the app tests.
         lanes["android-app"] = True
         lanes["android-play"] = True
@@ -337,13 +457,14 @@ def classify_android(
     # Gradle wiring itself is already full-scope via SECURITY_OR_CONTRACT_PATHS.
     lane = ANDROID_MODULE_LANES.get(module)
     if lane:
+        # 日常 Android 模块 PR 并行运行快速门禁（~20s）与受影响模块单测，不拉长关键路径。
+        lanes["fast"] = True
         lanes[f"android-{lane}"] = True
         # Consumers' tests do not run in the producer's module task.
         for dependent in MODULE_DEPENDENTS.get(module, ()):
             lanes[f"android-{dependent}"] = True
-        # Modules are compiled into the app; the app lane must follow them, and
-        # the module lane name doubles as the app-test section for the domains we
-        # model (settings/conversations/plugins/push-notifications).
+        # Modules are compiled into the app; the app/play lanes are activated only
+        # when the trigger context allows full app regressions (main / release PR / label).
         lanes["android-app"] = True
         lanes["android-play"] = True
         section = MODULE_LANE_TO_APP_SECTION.get(lane)
@@ -355,9 +476,10 @@ def classify_android(
         return True
 
     if rest.startswith("app/"):
-        # The app module always needs its own unit tests, but the *feature* lane
-        # is chosen from the touched package so a copy tweak does not drag in
-        # gateway/notification suites.
+        # The app module always needs Fast Gate + Android Safety Gate, and its
+        # feature module lane when matched; full app/play regressions are gated by
+        # allow_app_regressions so daily feature/fix PRs stay within 5 minutes.
+        lanes["fast"] = True
         lanes["android-app"] = True
         lanes["android-play"] = True
         if rest.startswith("app/src/test/"):
@@ -479,10 +601,17 @@ def to_github_output(result: dict[str, object]) -> str:
     sections = result.get("app_sections") or set()
     assert isinstance(sections, set)
     lines.append("app_sections=" + ",".join(sorted(sections)))
+    lines.append(
+        f"runs_android_preflight={'true' if result.get('android_preflight') else 'false'}"
+    )
+    lines.append(
+        f"app_regressions_allowed={'true' if result.get('app_regressions_allowed') else 'false'}"
+    )
     lines.append(f"full_required={'true' if result['full_required'] else 'false'}")
     lines.append(f"unknown_diff={'true' if result['unknown'] else 'false'}")
-    # Any lane running means the aggregate gate has real work to wait for.
-    lines.append(f"any_lane={'true' if any(lanes.values()) else 'false'}")
+    # Any lane or preflight running means the aggregate gate has real work to wait for.
+    any_lane = any(lanes.values()) or bool(result.get("android_preflight"))
+    lines.append(f"any_lane={'true' if any_lane else 'false'}")
     return "\n".join(lines)
 
 
@@ -490,13 +619,49 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Classify a diff into CI test lanes.")
     parser.add_argument("--base", default=None, help="Base ref/SHA (merge base used)")
     parser.add_argument("--head", default="HEAD", help="Head ref/SHA")
+    parser.add_argument(
+        "--unknown-diff",
+        action="store_true",
+        help="Treat diff as unavailable and expand to full lane matrix for current trigger context",
+    )
+    parser.add_argument(
+        "--event",
+        default=None,
+        help="CI trigger event name (e.g. pull_request, push, workflow_dispatch)",
+    )
+    parser.add_argument("--ref", default=None, help="Git ref (e.g. refs/heads/main)")
+    parser.add_argument("--base-ref", default=None, help="PR base branch name (e.g. dev, main)")
+    parser.add_argument(
+        "--head-ref",
+        default=None,
+        help="PR head branch name (e.g. feature/foo, release/1.0)",
+    )
+    parser.add_argument(
+        "--label",
+        action="append",
+        default=[],
+        help="PR label name (repeatable)",
+    )
+    parser.add_argument(
+        "--labels-json",
+        default=None,
+        help="JSON array of PR label names (or GitHub label objects)",
+    )
     parser.add_argument("--github-output", action="store_true", help="Emit GITHUB_OUTPUT lines")
     parser.add_argument("--json", action="store_true", help="Emit the raw classification")
     parser.add_argument("--json-out", default=None, help="Also write the classification to this path")
     args = parser.parse_args(argv)
 
-    pairs = changed_paths(args.base, args.head)
-    result = classify(pairs)
+    labels = list(args.label) + _parse_labels_json(args.labels_json)
+    allow_app_regressions = should_run_app_regressions(
+        event_name=args.event,
+        ref=args.ref,
+        base_ref=args.base_ref,
+        head_ref=args.head_ref,
+        labels=labels,
+    )
+    pairs = [] if args.unknown_diff else changed_paths(args.base, args.head)
+    result = classify(pairs, allow_app_regressions=allow_app_regressions)
 
     if args.json_out:
         Path(args.json_out).write_text(
@@ -516,6 +681,9 @@ def main(argv: list[str] | None = None) -> int:
         print("lanes:")
         for lane, value in lanes.items():
             print(f"  {lane}: {'yes' if value else 'no'}")
+        print(
+            f"app/play regressions allowed: {'yes' if result['app_regressions_allowed'] else 'no'}"
+        )
         if result["full_required"]:
             print("full matrix required: yes")
         if result["unknown"]:
