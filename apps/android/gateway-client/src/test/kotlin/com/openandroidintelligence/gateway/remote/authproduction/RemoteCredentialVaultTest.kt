@@ -168,6 +168,11 @@ class RemoteCredentialVaultTest {
         val nextEpoch = restarted.revokeActive()
         val next = restarted.activate(client.origin, client.accountId, nextEpoch)
         assertNull("新登录 epoch 不能被旧角色终态覆盖", restarted.roleFailures(next).clientStop)
+        val storageError = RemoteHostFailure(RemoteHostFailureStage.CREDENTIAL, "REMOTE_CREDENTIAL_PERSISTENCE_FAILED")
+        restarted.stopHostUntilLogin(next, storageError)
+        val afterStorageFailure = RemoteCredentialVault(directory, protector).roleFailures(next)
+        assertEquals(storageError, afterStorageFailure.hostStop)
+        assertNull(afterStorageFailure.clientStop)
         mainBefore.fill(0)
     }
     @Test fun 角色围栏和主凭据同时不可写时账号级失败关闭且进程重建不能恢复() {

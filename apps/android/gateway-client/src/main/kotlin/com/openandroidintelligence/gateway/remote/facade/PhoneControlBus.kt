@@ -210,7 +210,13 @@ class PhoneControlBus(
                     finish(access, task, request.requestId)
                 }
             }
-        } finally { synchronized(lock) { task.jobs.remove(request.requestId); task.access.remove(request.requestId) } }
+        } finally { synchronized(lock) {
+            task.jobs.remove(request.requestId)
+            // 连接失权时保留最小归属，直到 connectionClosed 补齐历史闭合；正常、取消和急停仍即时释放。
+            if (stopped || task.frozen || runCatching { executor.requireCurrentAccess(access) }.isSuccess) {
+                task.access.remove(request.requestId)
+            }
+        } }
     }
 
     private fun cancelRequest(access: ControlAccessBinding, task: Task, request: ParsedControlRequest): JsonValue {
@@ -293,18 +299,17 @@ class PhoneControlBus(
         changed()
     }
 
-    /** 断开只结束该连接代际自己的在途请求，不影响重连后新连接提交的动作。 */
+    /** 断开只结束该连接代际自己的在途请求，并为后继同授权代次留下可读的完整轮次历史。 */
     fun connectionClosed(access: ControlAccessBinding) = synchronized(lock) {
         val cleanup = tasks.values.flatMap { task ->
-            task.access.filterValues { it == access }.keys.toList().map { id ->
+            val ids = task.access.filterValues { it == access }.keys.toList().sortedBy { it != task.activeRequestId }
+            ids.map { id ->
                 {
+                    var completed = false
                     closeRemoteConnectionResources(
-                        { update(access, task.scope.taskSessionId, id) { old -> old.copy(
-                            state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
-                            execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
-                            errorCode = "REMOTE_CONNECTION_CLOSED") } },
-                        { executor.cancel(ControlRequestScope(task.scope, id)) },
-                        { task.jobs.remove(id)?.cancel(); Unit },
+                        { completed = closeRequestForConnection(access, task, id) },
+                        { if (!completed) executor.cancel(ControlRequestScope(task.scope, id)) },
+                        { task.jobs.remove(id)?.let { if (!completed) it.cancel() }; Unit },
                         { task.access.remove(id); if (task.activeRequestId == id) task.activeRequestId = null },
                     )
                 }
@@ -312,6 +317,57 @@ class PhoneControlBus(
         }
         closeRemoteConnectionResources(*cleanup.toTypedArray(), { changed() })
     }
+
+    /** 补齐断线请求的最小终态记录；已有正文和终态绝不因连接关闭被重写或重复发布。 */
+    private fun closeRequestForConnection(access: ControlAccessBinding, task: Task, requestId: String): Boolean {
+        val row = ledger.transaction { rows ->
+            val key = "${access.principal.storageKey}:$requestId"
+            val old = rows[key] ?: return@transaction null
+            if (old.taskSessionId != task.scope.taskSessionId) fail("CONTROL_REQUEST_NOT_FOUND")
+            if (old.state.terminal) return@transaction old
+            old.copy(
+                state = if (old.executionFence) ControlRequestState.OUTCOME_UNKNOWN else ControlRequestState.CANCELLED,
+                execution = if (old.executionFence) ControlExecutionStatus.UNKNOWN else ControlExecutionStatus.NOT_STARTED,
+                errorCode = "REMOTE_CONNECTION_CLOSED",
+            ).also { rows[key] = it }
+        } ?: return false
+        if (row.state == ControlRequestState.COMPLETED && row.execution == ControlExecutionStatus.SUCCEEDED) return true
+        if (task.records.any { requestEventId(it) == requestId && requestEventType(it) == "assistant/message" }) return false
+        task.results.remove(requestId)
+        task.contentChecks.remove(requestId)
+        task.artifacts.entries.filter { it.value.first == requestId }.forEach { (artifactId, artifact) ->
+            artifact.second.bytes.fill(0); task.artifacts.remove(artifactId)
+        }
+        publishClosedTurn(task, row)
+        return false
+    }
+
+    private fun publishClosedTurn(task: Task, row: ControlRequestMetadata) {
+        val id = row.requestId
+        val related = task.records.filter { requestEventId(it) == id }
+        val start = related.lastOrNull { requestEventType(it) == "turn/start" }
+        val turn = start?.let(::requestEventTurn) ?: run {
+            val next = ++task.turn
+            event(task, "turn/start", mapOf("turn" to next, "request_id" to id))
+            next
+        }
+        if (related.none { requestEventType(it) == "assistant/message" }) {
+            val receipt = Json.canonical(Json.of(minimal(row, false)))
+            publishAssistantMessage(task, id, turn, receipt)
+        }
+        if (related.none { requestEventType(it) == "turn/end" }) {
+            event(task, "turn/end", mapOf("turn" to turn, "request_id" to id))
+        }
+        if (task.activeRequestId == id) task.activeRequestId = null
+    }
+
+    private fun requestEvent(record: JsonValue): JsonValue.JObject? =
+        JsonFields.obj(JsonFields.field(record as? JsonValue.JObject, "event"))
+    private fun requestEventType(record: JsonValue): String? = JsonFields.string(requestEvent(record), "type")
+    private fun requestEventId(record: JsonValue): String? =
+        JsonFields.string(JsonFields.obj(JsonFields.field(requestEvent(record), "data")), "request_id")
+    private fun requestEventTurn(record: JsonValue): Int? =
+        JsonFields.int(JsonFields.obj(JsonFields.field(requestEvent(record), "data")), "turn")
 
     fun receipt(access: ControlAccessBinding, taskId: String, requestId: String): JsonValue = synchronized(lock) {
         executor.requireCurrentAccess(access)
@@ -449,17 +505,22 @@ class PhoneControlBus(
             Json.canonical(Json.of(minimal(find(access, task.scope.taskSessionId, id), true) + mapOf("resultArtifact" to mapOf(
                 "artifactId" to artifactId, "path" to "artifacts/$artifactId", "mimeType" to "application/json", "bytes" to bytes.size, "version" to version))))
         }
-        val stream = listOf(mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
-            mapOf("type" to "text-delta", "index" to 0, "text" to text),
-            mapOf("type" to "block-end", "index" to 0, "block" to mapOf("type" to "text", "text" to text)),
-            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop"))).map { mapOf("type" to "chunk", "time" to currentTimeMillis(), "chunk" to it) }
-        event(task, "assistant/message", mapOf("turn" to task.turn, "step" to 1,
-            "message" to mapOf("id" to id, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to text)),
-                "source" to mapOf("kind" to "tool", "callId" to id)), "stream" to stream, "request_id" to id))
+        publishAssistantMessage(task, id, task.turn, text)
         if (task.activeRequestId == id) {
             event(task, "turn/end", mapOf("turn" to task.turn, "request_id" to id))
             task.activeRequestId = null
         }
+    }
+    private fun publishAssistantMessage(task: Task, id: String, turn: Int, text: String) {
+        val stream = listOf(mapOf("type" to "block-start", "index" to 0, "blockType" to "text"),
+            mapOf("type" to "text-delta", "index" to 0, "text" to text),
+            mapOf("type" to "block-end", "index" to 0, "block" to mapOf("type" to "text", "text" to text)),
+            mapOf("type" to "finish", "reason" to mapOf("kind" to "stop"))).map {
+            mapOf("type" to "chunk", "time" to currentTimeMillis(), "chunk" to it)
+        }
+        event(task, "assistant/message", mapOf("turn" to turn, "step" to 1,
+            "message" to mapOf("id" to id, "role" to "assistant", "content" to listOf(mapOf("type" to "text", "text" to text)),
+                "source" to mapOf("kind" to "tool", "callId" to id)), "stream" to stream, "request_id" to id))
     }
     private fun event(task: Task, type: String, data: Map<String, Any?>) {
         task.records += Json.of(mapOf("type" to "event", "event" to mapOf("seq" to task.records.size, "time" to currentTimeMillis(), "type" to type, "data" to data)))

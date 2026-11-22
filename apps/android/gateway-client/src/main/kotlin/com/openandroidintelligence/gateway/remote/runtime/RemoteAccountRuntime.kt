@@ -455,7 +455,7 @@ class RemoteAccountRuntime(
         try { listHosts() }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) {
-            android.util.Log.w("RemoteAccountRuntime", "PRESENCE_REFRESH_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
+            android.util.Log.w("RemoteAccountRuntime", "PRESENCE_REFRESH_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
             synchronized(selectionLock) {
                 if (mutableAccount.value == active) mutableHosts.value = mutableHosts.value.map { it.copy(online = false) }
             }

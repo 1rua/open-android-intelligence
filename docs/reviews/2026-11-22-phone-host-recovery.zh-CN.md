@@ -19,6 +19,8 @@
 
 电脑客户端带同账号 Client 凭据读取 `/api/v1/devices` 与 `/presence`，从在线的 Android Host 进入 `harness/phone-capabilities`。`control-bus` 提供能力目录与回执，`remote_create_session` 为多步操作创建独立任务。`remote_send_message` 将请求送入手机的会话门面和 `PhoneControlBus`。通知读取经本机授权、签名 WASM 插件与系统通知提供者，读屏与触控经原生屏幕内核。执行结果按原请求 ID 从会话记录读取。
 
+固定桌面客户端 `0.6.5` 的 `withToolRemote` 在桌面已选中目标手机时复用当前加密连接。需要本机确认的多步控制应先在电脑 Remote 选中这台手机，再发起任务。未选中时，工具在单次调用返回后关闭临时连接。在隔离模拟器上，桌面发出的读屏请求先返回 `accepted`，关闭连接后用 `control-bus` 查询原 `request_id` 得到 `cancelled`、`not_started` 和 `REMOTE_CONNECTION_CLOSED`。过去 `remote_read_session` 仍显示运行中。修复后手机以账本的最小回执关闭原轮次，桌面可以查询取消或结果未知的原因。同一请求 ID 仍受原有防重规则约束。
+
 ## 设备验收记录
 
 2026-11-22，独立 Linux Client 通过固定 `ds-harness-remote 0.6.5` 从自部署服务发现 `sdk_gphone64_x86_64`，取到 `backend=harness` 的 `phone-capabilities` 与 `control-bus`，并通过 `remote_create_session` 创建独立任务。覆盖安装后 Host ID 保持一致。

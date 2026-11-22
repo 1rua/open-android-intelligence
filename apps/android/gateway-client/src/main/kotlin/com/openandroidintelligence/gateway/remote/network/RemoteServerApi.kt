@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.network
 import com.openandroidintelligence.gateway.remote.api.RemoteAuthCodec
 import com.openandroidintelligence.gateway.remote.api.RemoteAuthRequest
 import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrar
+import com.openandroidintelligence.gateway.remote.auth.safeRoleErrorCode
 import com.openandroidintelligence.gateway.remote.auth.RemoteTokenRefresher
 import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
@@ -92,7 +93,7 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
                     catch (failure: Exception) {
                         // 目录和 presence 同用 Client 票据。票据被拒时交给账号层续期，单台离线只影响该行。
                         if (failure is RemoteRpcException && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID", "TOKEN_REUSED", "DEVICE_REVOKED")) throw failure
-                        java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
+                        java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
                         false
                     }
                     device.copy(online = online)
@@ -178,7 +179,22 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
 internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) { if (continuation.isActive) continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED")) }
+        override fun onFailure(call: Call, e: IOException) {
+            if (!continuation.isActive) return
+            // 只记录固定故障类别，不带 URL、票据或系统返回的异常正文。
+            val failure = when (e) {
+                is java.net.SocketTimeoutException -> "SOCKET_TIMEOUT"
+                is java.io.InterruptedIOException -> "CALL_TIMEOUT"
+                is javax.net.ssl.SSLException -> "TLS_FAILED"
+                is java.net.ConnectException -> "CONNECT_FAILED"
+                is java.net.UnknownHostException -> "DNS_FAILED"
+                is java.net.SocketException -> "SOCKET_FAILED"
+                is java.io.EOFException -> "PEER_CLOSED"
+                else -> "IO_FAILED"
+            }
+            java.util.logging.Logger.getLogger("RemoteServerApi").warning("HTTP_${call.request().method} $failure")
+            continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED"))
+        }
         override fun onResponse(call: Call, response: Response) {
             if (continuation.isActive) continuation.resume(response, onCancellation = { _, value, _ -> value.close() }) else response.close()
         }
