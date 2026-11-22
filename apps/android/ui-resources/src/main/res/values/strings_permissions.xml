@@ -74,6 +74,7 @@
     <string name="perm_req_call_log_purpose">读取本机通话记录供助手查询。不授权时通话记录能力不可用。</string>
     <string name="perm_req_notification_access_title">通知使用权</string>
     <string name="perm_req_notification_access_purpose">读取新到通知的内容供助手处理。需要先在系统「通知使用权」里允许本应用。</string>
+    <string name="perm_notification_listener_disconnected">通知使用权已开启但监听服务尚未连接，请回到通知使用权设置确认已开启</string>
     <string name="perm_req_accessibility_title">无障碍服务</string>
     <string name="perm_req_accessibility_capture_purpose">读取屏幕内容、执行点按等操作，并在开启后按需截取屏幕画面。必须在系统无障碍设置里开启本应用的服务。</string>
     <string name="perm_req_accessibility_control_purpose">读取屏幕内容并执行点按等操作。必须在系统无障碍设置里开启本应用的服务。</string>

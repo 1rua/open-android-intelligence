@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.annotation.StringRes
+import androidx.core.app.NotificationManagerCompat
+import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /**
@@ -283,6 +285,26 @@ fun AndroidPermissionRequirement.opensMediaProjectionDialog(): Boolean =
 /** 是否为需要跳系统「通知使用权」页的授权。 */
 fun AndroidPermissionRequirement.opensNotificationAccessSettings(): Boolean =
     grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS
+
+/**
+ * 统一查询 Android 系统是否已授予本应用「通知使用权」。
+ *
+ * 宿主已装配通知绑定端口时，走 `ComponentName(context, OpenAndroidIntelligenceNotificationListenerService::class.java)`
+ * 的精确组件校验；未装配的轻量测试环境才退回包级查询。
+ */
+internal fun hasSystemNotificationListenerAccess(context: Context): Boolean = runCatching {
+    if (NotificationControlRegistry.policyPort().snapshot().installed) {
+        NotificationControlRegistry.bindingPort().isListenerBound()
+    } else {
+        NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+    }
+}.getOrDefault(false)
+
+/** 系统「通知使用权」已授予且 `NotificationListenerService` 当前已连接。 */
+internal fun isNotificationListenerReady(): Boolean = runCatching {
+    val binding = NotificationControlRegistry.bindingPort()
+    binding.isListenerBound() && binding.isListenerConnected()
+}.getOrDefault(false)
 
 internal fun currentApplicationContext(): Context? {
     return runCatching {

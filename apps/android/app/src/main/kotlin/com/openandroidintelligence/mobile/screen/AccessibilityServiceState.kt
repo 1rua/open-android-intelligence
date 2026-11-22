@@ -21,16 +21,36 @@ internal fun accessibilityServiceConnected(): Boolean {
 }
 
 /**
- * 无障碍服务是否**真的可用**：服务当前确实已连接，或在测试/兼容环境中设置已启用且宿主就绪。
+ * 无障碍服务是否**真的可用**：系统设置里已开启，且服务当前确实已连接。
  *
- * 只查设置里的启用标记是不够的：用户开启过、但系统解绑之后，界面会把该项显示成
- * 「已授权」并隐藏恢复入口，恰好堵死唯一的修复路径。反之，若系统已通过
- * `BIND_ACCESSIBILITY_SERVICE` 真实绑定本进程服务实例（`accessibilityConnected == true`），
- * 即使部分 ROM 限制了 `ENABLED_ACCESSIBILITY_SERVICES` 设置串读取，也应如实判定已就绪。
+ * 两个条件必须同时成立：
+ * - 仅设置里已开启但服务未连接（断连）→ 必须返回 false，让界面保留恢复引导；
+ * - 用户刚在系统设置里关闭服务、而 `onUnbind()` 延迟送达 → 必须随系统设置立即返回 false。
  */
 internal fun accessibilityServiceReady(context: Context): Boolean = runCatching {
-    ScreenHostRegistry.accessibilityConnected.value ||
-        (accessibilityServiceEnabledInSettings(context) && accessibilityServiceConnected())
+    accessibilityServiceEnabledInSettings(context) && accessibilityServiceConnected()
+}.getOrDefault(false)
+
+/**
+ * 在返回前台（`ON_RESUME`）时主动探测系统无障碍设置与内存绑定态，双向校准滞后的连接态：
+ * - 若系统设置已关闭但 `onUnbind()` 尚未回调，立即将内存连接态校准为 false；
+ * - 若系统设置已开启且宿主报告无障碍后端无错，补齐内存连接态为 true。
+ */
+internal fun probeAccessibilityBinding(context: Context): Boolean = runCatching {
+    val enabledInSettings = accessibilityServiceEnabledInSettings(context)
+    if (!enabledInSettings) {
+        if (ScreenHostRegistry.accessibilityConnected.value) {
+            ScreenHostRegistry.setAccessibilityConnected(false)
+        }
+        return@runCatching false
+    }
+    if (!ScreenHostRegistry.accessibilityConnected.value) {
+        val status = runCatching { ScreenHostRegistry.current?.status() }.getOrNull()
+        if (status != null && status.accessibilityError == null) {
+            ScreenHostRegistry.setAccessibilityConnected(true)
+        }
+    }
+    accessibilityServiceConnected()
 }.getOrDefault(false)
 
 /**

@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.Lifecycle
@@ -58,6 +59,7 @@ import com.openandroidintelligence.mobile.plugins.DeviceCapabilityIdentity
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
 import com.openandroidintelligence.mobile.plugins.androidPermissionRequirements
 import com.openandroidintelligence.mobile.plugins.capabilityStatusLabel
+import com.openandroidintelligence.mobile.plugins.isNotificationListenerReady
 import com.openandroidintelligence.mobile.plugins.manualGrantGuidance
 import com.openandroidintelligence.mobile.plugins.needsFallbackConsent
 import com.openandroidintelligence.mobile.plugins.openNotificationAccessSettings
@@ -65,10 +67,12 @@ import com.openandroidintelligence.mobile.screen.accessibilityServiceClassName
 import com.openandroidintelligence.mobile.screen.accessibilityServiceDisconnected
 import com.openandroidintelligence.mobile.screen.accessibilityServiceEnabledInSettings
 import com.openandroidintelligence.mobile.screen.accessibilityServiceReady
+import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -176,6 +180,7 @@ private fun CapabilityDetailContent(
         }
     }
     var refreshTick by remember { mutableIntStateOf(0) }
+    var pollTick by remember { mutableIntStateOf(0) }
     var requestedPermission by remember { mutableStateOf<String?>(null) }
     var deniedPermissions by remember { mutableStateOf(emptySet<String>()) }
     var notice by remember { mutableStateOf<String?>(null) }
@@ -186,6 +191,7 @@ private fun CapabilityDetailContent(
         .collectAsState(initial = runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false))
     val lifecycle = LocalLifecycleOwner.current
     fun refresh() {
+        probeAccessibilityBinding(context)
         refreshTick++
         runCatching { runtime?.refreshCapabilities?.invoke() }
     }
@@ -206,7 +212,7 @@ private fun CapabilityDetailContent(
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 delay(1_000L)
-                refreshTick++
+                pollTick++
             }
         }
     }
@@ -226,15 +232,10 @@ private fun CapabilityDetailContent(
             if (reconciled) refresh()
         }
     }
-    val inspector = remember(context, refreshTick, hostRevision, accessibilityConnected, notificationListenerConnected, deniedPermissions) {
+    val inspector = remember(context, refreshTick, pollTick, hostRevision, accessibilityConnected, notificationListenerConnected, deniedPermissions) {
         DeviceCapabilityGrantInspector(
             context = context,
-            notificationAccessGranted = {
-                runCatching {
-                    val binding = NotificationControlRegistry.bindingPort()
-                    binding.isListenerBound() && binding.isListenerConnected()
-                }.getOrDefault(false)
-            },
+            notificationAccessGranted = ::isNotificationListenerReady,
             accessibilityEnabled = { accessibilityServiceReady(context) },
             captureAuthorized = { runCatching { RemoteScreenCaptureRegistry.source?.isAvailable == true }.getOrDefault(false) },
             deniedRuntimePermissions = { it in deniedPermissions },
@@ -274,6 +275,7 @@ private fun CapabilityDetailContent(
         accessibilityConnected,
         notificationListenerConnected,
         refreshTick,
+        pollTick,
     ) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { host.capabilitySnapshot() }.getOrNull() }
     }
@@ -475,12 +477,7 @@ private fun CapabilityDetailContent(
                 presentation = presentation,
                 embedded = true,
                 onGrantChanged = { granted ->
-                    entries.filter { "kernel.notifications.read" in it.primitives }.forEach { entry ->
-                        val current = runCatching { host.capabilityPolicy(pluginId, entry.key) }.getOrNull()
-                        if (current != null && current.enabled != granted) {
-                            runCatching { host.setCapabilityPolicy(pluginId, entry.key, current.copy(enabled = granted)) }
-                        }
-                    }
+                    runCatching { host.syncNotificationCapabilitiesWithPolicyGrant(granted, targetPluginId = pluginId) }
                     refresh()
                 },
             )
@@ -592,7 +589,7 @@ private fun GrantRequirementRow(
             requirement.grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS &&
                 state != DeviceCapabilityGrantState.GRANTED &&
                 runCatching { NotificationControlRegistry.bindingPort().isListenerBound() }.getOrDefault(false) ->
-                "通知使用权已开启但监听服务尚未连接，请回到通知使用权设置确认已开启"
+                stringResource(UiR.string.perm_notification_listener_disconnected)
             state == DeviceCapabilityGrantState.GRANTED -> "系统权限或服务已就绪"
             state == DeviceCapabilityGrantState.NOT_REQUESTED -> "权限尚未授予"
             state == DeviceCapabilityGrantState.DENIED -> "权限被拒绝"

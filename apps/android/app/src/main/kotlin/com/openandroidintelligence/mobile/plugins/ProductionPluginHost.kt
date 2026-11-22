@@ -20,6 +20,7 @@ import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 
 data class VerifiedCapability(val identity: PluginIdentity, val id: String, val version: String, val schema: JsonValue,
     val risk: String, val primitives: Set<String>) {
@@ -51,6 +52,12 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     private val defaults = ConcurrentHashMap<String,PluginIdentity>()
     val selector = CapabilityProviderSelector(defaults)
     val revision = MutableStateFlow(0L)
+    private val notificationPolicySyncLock = Any()
+
+    /** 原子推进宿主状态修订号，供跨线程系统服务连接态变化通知 UI 刷新。 */
+    fun notifyCapabilityStateChanged() {
+        revision.update { it + 1L }
+    }
     /** Local installation diagnostics only; unverified manifests never declare Agent capabilities. */
     @Volatile var loadFailures: Map<String,String> = emptyMap(); private set
 
@@ -106,7 +113,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         reload()
         trustMode.onChange { enabled ->
-            if (!enabled) { capabilities.keys.filter { kernel.registrationFor(it)?.runtimeType == "developer-native" }.forEach { kernel.disable(it) }; revision.value++ }
+            if (!enabled) { capabilities.keys.filter { kernel.registrationFor(it)?.runtimeType == "developer-native" }.forEach { kernel.disable(it) }; notifyCapabilityStateChanged() }
         }
     }
 
@@ -234,7 +241,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         providers.filterValues { it.size == 1 }.forEach { (key, values) -> defaults[key] = values.single() }
         selector.refreshOverrides(providers)
         loadFailures = failures.toMap()
-        revision.value++
+        notifyCapabilityStateChanged()
     }
 
     fun contributions(pluginId: String): List<UiContribution> {
@@ -261,7 +268,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             check((nativeLoader.plugin(pluginId) as? NativeUiProvider)?.uiApiVersion == 1) { "NATIVE_UI_API_UNSUPPORTED" }
         }
         check(crashPreferences.edit().apply { if (pluginId == null) remove("ui-provider") else putString("ui-provider",pluginId) }.commit())
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     fun nativeUiProvider(): Pair<String,NativeUiProvider>? {
         if (!trustMode.isEnabled()) return null
@@ -315,14 +322,24 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
     fun recoverNative(pluginId: String) { preferences.edit().remove(pluginId).commit(); crashPreferences.edit().remove("quarantined:$pluginId").remove("loading:$pluginId").commit(); reload() }
     fun enable(pluginId: String, enabled: Boolean) {
-        if (!enabled) { preferences.edit().remove(pluginId).commit(); kernel.disable(pluginId); nativeLoader.unload(pluginId) }
-        else {
+        if (!enabled) {
+            synchronized(notificationPolicySyncLock) {
+                preferences.edit().remove(pluginId).commit()
+                kernel.disable(pluginId)
+                nativeLoader.unload(pluginId)
+                if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
+                    updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
+                        !hasEnabledNotificationCapability()
+                    }
+                }
+            }
+        } else {
             check(!isQuarantined(pluginId)) { "NATIVE_PLUGIN_SAFE_MODE" }
             val verified = installStore.openVerified(pluginId)
             try { enableVerified(verified); check(preferences.edit().putString(pluginId,verified.identity.authorKeyFingerprint).commit()) }
             finally { verified.stagedDirectory.deleteRecursively() }
         }
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     private fun enableVerified(verified: VerifiedPluginPackage) {
         if (verified.runtime.type == "developer-native") nativeBoundary(verified.identity.pluginId) {
@@ -393,59 +410,98 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
 
     fun setCapabilityPolicy(pluginId: String, capability: String, policy: com.openandroidintelligence.kernel.CapabilityPolicy) {
         val entry = capabilityEntry(pluginId, capability)
-        if (policy.enabled && !capabilityPolicy(pluginId, capability).enabled) {
-            // Convert the old group denial to independent choices before reopening this capability.
-            val siblings = entries(pluginId).filter { it.key != entry.key && !capabilityPolicy(pluginId, it.key).enabled }
-                .associate { policyKey(it) to grants.capabilityPolicy(policyKey(it)).copy(enabled = false) }
-            if (siblings.isNotEmpty()) grants.updateCapabilityPolicies(siblings)
-            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
-            grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, true)
-            val target = entry.primitives.filterNot { it == "kernel.background.run" }.toSet() + entry.key
-            grants.updatePrimitives(target + target.map { identityGrantKey(entry.identity, it) }, true)
-        }
-        grants.updateCapabilityPolicy(policyKey(entry), policy)
-        if (policy.enabled) selector.setOverride(entry.key, grants.state.value?.pairingId ?: error("LOCAL_POLICY_UNAVAILABLE"), entry.identity)
-        if ("kernel.notifications.read" in entry.primitives) {
-            val policyPort = NotificationControlRegistry.policyPort()
-            val bindingPort = NotificationControlRegistry.bindingPort()
-            if (!policy.enabled) {
-                if (!hasEnabledNotificationCapability()) {
-                    updateNotificationPolicyGranted(policyPort, granted = false)
-                }
-            } else if (runCatching { bindingPort.isListenerBound() }.getOrDefault(false)) {
-                if (!runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
-                    runCatching { bindingPort.requestListenerRebind() }
-                }
-                updateNotificationPolicyGranted(policyPort, granted = true)
+        fun applyLocalPolicy() {
+            if (policy.enabled && !capabilityPolicy(pluginId, capability).enabled) {
+                // Convert the old group denial to independent choices before reopening this capability.
+                val siblings = entries(pluginId).filter { it.key != entry.key && !capabilityPolicy(pluginId, it.key).enabled }
+                    .associate { policyKey(it) to grants.capabilityPolicy(policyKey(it)).copy(enabled = false) }
+                if (siblings.isNotEmpty()) grants.updateCapabilityPolicies(siblings)
+                val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+                grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, true)
+                val target = entry.primitives.filterNot { it == "kernel.background.run" }.toSet() + entry.key
+                grants.updatePrimitives(target + target.map { identityGrantKey(entry.identity, it) }, true)
             }
+            grants.updateCapabilityPolicy(policyKey(entry), policy)
+            if (policy.enabled) selector.setOverride(entry.key, grants.state.value?.pairingId ?: error("LOCAL_POLICY_UNAVAILABLE"), entry.identity)
         }
-        revision.value++
+        if ("kernel.notifications.read" in entry.primitives) {
+            synchronized(notificationPolicySyncLock) {
+                applyLocalPolicy()
+                val policyPort = NotificationControlRegistry.policyPort()
+                val bindingPort = NotificationControlRegistry.bindingPort()
+                if (!policy.enabled) {
+                    if (!hasEnabledNotificationCapability()) {
+                        updateNotificationPolicyGranted(policyPort, granted = false) { !hasEnabledNotificationCapability() }
+                    }
+                } else if (runCatching { bindingPort.isListenerBound() }.getOrDefault(false)) {
+                    if (runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
+                        updateNotificationPolicyGranted(policyPort, granted = true) {
+                            hasEnabledNotificationCapability() &&
+                                runCatching { bindingPort.isListenerBound() && bindingPort.isListenerConnected() }.getOrDefault(false)
+                        }
+                    } else {
+                        runCatching { bindingPort.requestListenerRebind() }
+                    }
+                }
+            }
+        } else {
+            applyLocalPolicy()
+        }
+        notifyCapabilityStateChanged()
+    }
+
+    /**
+     * 底部「通知采集范围 → 允许读取通知」变更后双向同步通知能力总开关：
+     * - 显式关闭共享的通知采集授权时，同步关闭所有已启用的 `kernel.notifications.read` 能力开关，
+     *   避免多提供者场景下由另一插件在下一次恢复时将其反向重开；
+     * - 显式开启时，同步开启目标插件（或已启用的通知提供者）对应的通知读取总开关。
+     */
+    fun syncNotificationCapabilitiesWithPolicyGrant(granted: Boolean, targetPluginId: String? = null) {
+        synchronized(notificationPolicySyncLock) {
+            val targets = verifiedCapabilities().filter { entry ->
+                "kernel.notifications.read" in entry.primitives &&
+                    isEnabled(entry.identity.pluginId) &&
+                    (!granted || targetPluginId == null || entry.identity.pluginId == targetPluginId)
+            }
+            var changed = false
+            targets.forEach { entry ->
+                val current = runCatching { capabilityPolicy(entry.identity.pluginId, entry.key) }.getOrNull() ?: return@forEach
+                if (current.enabled != granted) {
+                    setCapabilityPolicy(entry.identity.pluginId, entry.key, current.copy(enabled = granted))
+                    changed = true
+                }
+            }
+            if (changed) notifyCapabilityStateChanged()
+        }
     }
 
     /**
      * 将「Android 系统通知使用权 + 监听服务就绪态 + 本机能力总开关」与 policy-engine 对齐：
-     * - 系统已授予通知使用权但服务尚未连接时，主动请求系统重新绑定；
-     * - 当本机通知能力处于开启态、存储正常，且系统通知使用权已授予时，
-     *   同步将 policy-engine 的 granted 置为 true，解除 LOCAL_GRANT_REQUIRED
-     *   （服务若仍未连上则由原语如实暴露 NOTIFICATION_LISTENER_UNAVAILABLE，待连接到达即转 READY）；
+     * - 系统已授予通知使用权但服务尚未连接时，主动请求系统重新绑定，但不提前授予本地策略；
+     * - 仅当本机通知能力处于开启态、存储正常、且系统通知使用权已授予且监听服务已就绪时，
+     *   在互斥锁内同步将 policy-engine 的 granted 置为 true，解除 LOCAL_GRANT_REQUIRED；
      * - 若用户已显式关闭通知能力总开关，绝不反向改回已授予。
      */
     fun reconcileNotificationPolicyGrant(
         policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
         bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
-    ): Boolean {
+    ): Boolean = synchronized(notificationPolicySyncLock) {
         val snapshot = policyPort.snapshot()
-        if (!snapshot.installed) return false
+        if (!snapshot.installed) return@synchronized false
         val systemGranted = runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
-        if (!systemGranted) return false
+        if (!systemGranted) return@synchronized false
         val connected = runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)
         if (!connected) {
             runCatching { bindingPort.requestListenerRebind() }
+            return@synchronized false
         }
-        if (snapshot.granted || !hasEnabledNotificationCapability()) return false
-        val updated = updateNotificationPolicyGranted(policyPort, granted = true)
-        if (updated) revision.value++
-        return updated
+        if (snapshot.granted || !hasEnabledNotificationCapability()) return@synchronized false
+        val updated = updateNotificationPolicyGranted(policyPort, granted = true) {
+            hasEnabledNotificationCapability() &&
+                runCatching { bindingPort.isListenerBound() && bindingPort.isListenerConnected() }.getOrDefault(false)
+        }
+        if (updated) notifyCapabilityStateChanged()
+        updated
     }
 
     private fun hasEnabledNotificationCapability(): Boolean {
@@ -458,8 +514,13 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
     }
 
-    private fun updateNotificationPolicyGranted(policyPort: NotificationPolicyPort, granted: Boolean): Boolean {
+    private fun updateNotificationPolicyGranted(
+        policyPort: NotificationPolicyPort,
+        granted: Boolean,
+        shouldApply: () -> Boolean,
+    ): Boolean {
         repeat(3) {
+            if (!shouldApply()) return false
             val current = policyPort.snapshot()
             if (!current.installed || current.granted == granted) return false
             when (val outcome = policyPort.update(NotificationPolicyUpdate(expectedRevision = current.revision, granted = granted))) {
@@ -563,7 +624,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         runCatching { authorizationRequestKey(requestId, binding) }.getOrNull()?.let(grants.authorization::finish)
     }
     val authorizationChanges get() = grants.authorization.changes
-    fun revokeTemporaryApprovals() { grants.revokeTemporaryApprovals(); revision.value++ }
+    fun revokeTemporaryApprovals() { grants.revokeTemporaryApprovals(); notifyCapabilityStateChanged() }
 
     fun authorizeKernelInvocation(identity: PluginIdentity, capability: String, input: ByteArray, session: SessionConstraints) {
         val entry = capabilityEntry(identity.pluginId, capability)
@@ -706,14 +767,18 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
 
     /** Local ability switch; enabling it never grants background, system or screen permissions. */
     fun setCapabilityEnabled(pluginId: String, enabled: Boolean) {
-        val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
-        grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
-        if (enabled) entries(pluginId).forEach {
-            selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
-        } else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
-            updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false)
+        synchronized(notificationPolicySyncLock) {
+            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
+            if (enabled) entries(pluginId).forEach {
+                selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
+            } else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
+                updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
+                    !hasEnabledNotificationCapability()
+                }
+            }
         }
-        revision.value++
+        notifyCapabilityStateChanged()
     }
 
     fun isCapabilityEnabled(pluginId: String): Boolean {
@@ -739,21 +804,25 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         check(supportsBackground(pluginId)) { "BACKGROUND_NOT_DECLARED" }
         val identity = kernel.registrationFor(pluginId)?.identity ?: error("PLUGIN_NOT_REGISTERED")
         grants.updatePluginBackground(identity, enabled)
-        revision.value++
+        notifyCapabilityStateChanged()
     }
 
     /** Compatibility for explicit Android consent, including its separate background choice. */
     fun grant(pluginId: String, enabled: Boolean) {
-        val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
-        val ids = registration.declaredPrimitives
-        val scoped = ids.map { identityGrantKey(registration.identity,it) }.toSet()
-        grants.updatePluginCapabilities(registration.identity, ids, enabled)
-        grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
-        if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
-        else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
-            updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false)
+        synchronized(notificationPolicySyncLock) {
+            val registration = kernel.registrationFor(pluginId) ?: error("PLUGIN_NOT_REGISTERED")
+            val ids = registration.declaredPrimitives
+            val scoped = ids.map { identityGrantKey(registration.identity,it) }.toSet()
+            grants.updatePluginCapabilities(registration.identity, ids, enabled)
+            grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
+            if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
+            else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
+                updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
+                    !hasEnabledNotificationCapability()
+                }
+            }
         }
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     fun authorizedBindings(): List<Map<String,Any?>> = capabilitySnapshot().bindings
 
@@ -991,7 +1060,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             PluginPrivateStore(installationId, EncryptedPluginStateBackend(context), securitySurfaceFor(pluginId).maxStorageBytes)
         }
         store.write(store.open(identity,accountId,pairingId),accountId,"ui:$componentId",Json.canonical(Json.of(value)).toByteArray())
-        revision.value++
+        notifyCapabilityStateChanged()
     }
     fun uninstall(pluginId: String) {
         // 内建能力由 APK 提供，不存在“卸载”：调用方只能改能力开关。

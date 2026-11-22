@@ -46,6 +46,7 @@ import com.openandroidintelligence.mobile.plugins.TestAlpPackages
 import com.openandroidintelligence.mobile.screen.accessibilityServiceClassName
 import com.openandroidintelligence.mobile.screen.accessibilityServiceDisconnected
 import com.openandroidintelligence.mobile.screen.accessibilityServiceReady
+import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.notification.control.NotificationBindingPort
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
 import com.openandroidintelligence.notification.control.NotificationPolicyPort
@@ -124,7 +125,20 @@ class CapabilityGrantStatusChainTest {
         assertTrue(accessibilityServiceReady(context))
         assertFalse(accessibilityServiceDisconnected(context))
 
-        // 服务解绑后立即回落为断连。
+        // 系统设置刚关闭但 onUnbind 尚未回调：必须立即不再报就绪，且回前台探测应将滞后连接态校准回 false。
+        Settings.Secure.putString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, "")
+        assertFalse(accessibilityServiceReady(context))
+        assertFalse(probeAccessibilityBinding(context))
+        assertFalse(ScreenHostRegistry.accessibilityConnected.value)
+
+        // 重新开启设置并连上后再解绑：立即回落为断连。
+        Settings.Secure.putString(
+            context.contentResolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+            component.flattenToShortString(),
+        )
+        ScreenHostRegistry.setAccessibilityConnected(true)
+        assertTrue(accessibilityServiceReady(context))
         ScreenHostRegistry.setAccessibilityConnected(false)
         assertFalse(accessibilityServiceReady(context))
         assertTrue(accessibilityServiceDisconnected(context))
@@ -182,17 +196,18 @@ class CapabilityGrantStatusChainTest {
         assertEquals("ANDROID_PERMISSION_REQUIRED", notificationInventory()["status"])
         assertEquals("NOTIFICATION_ACCESS_REQUIRED", notificationInventory()["reason"])
 
-        // 2. 开启系统通知使用权但监听服务尚未连接：主动发起 rebind，并解除 LOCAL_GRANT_REQUIRED，
-        //    如实呈现服务未连接（NOTIFICATION_LISTENER_UNAVAILABLE）。
+        // 2. 开启系统通知使用权但监听服务尚未连接：仅主动发起 rebind，不提前授予 policy-engine 本地策略。
         bindingPort.systemGranted = true
-        assertTrue(host.reconcileNotificationPolicyGrant())
+        assertFalse(host.reconcileNotificationPolicyGrant())
         assertEquals(1, bindingPort.rebindCalls)
-        assertTrue(policyPort.snapshot().granted)
-        assertEquals("PROVIDER_UNAVAILABLE", notificationInventory()["status"])
-        assertEquals("NOTIFICATION_LISTENER_UNAVAILABLE", notificationInventory()["reason"])
+        assertFalse(policyPort.snapshot().granted)
+        assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["status"])
+        assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["reason"])
 
-        // 3. 监听服务连接就绪后：状态立即转为 READY。
+        // 3. 监听服务连接就绪后：reconcile 自动对齐 policy-engine 授权并立即转为 READY。
         bindingPort.setConnected(true)
+        assertTrue(host.reconcileNotificationPolicyGrant())
+        assertTrue(policyPort.snapshot().granted)
         assertEquals("READY", notificationInventory()["status"])
         assertEquals("", notificationInventory()["reason"])
 
@@ -204,10 +219,82 @@ class CapabilityGrantStatusChainTest {
         assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["status"])
         assertEquals("LOCAL_CAPABILITY_DISABLED", notificationInventory()["reason"])
 
-        // 5. 用户重新打开顶部开关：系统权限已就绪时同步恢复 policy-engine 授权并直接回到 READY。
+        // 5. 监听服务未连时重新打开顶部开关：只触发 rebind，不提前写入 granted = true。
+        bindingPort.setConnected(false)
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = true))
+        assertEquals(2, bindingPort.rebindCalls)
+        assertFalse(policyPort.snapshot().granted)
+
+        // 6. 先关闭再在「系统授权 + 服务已连」前提下重新打开顶部开关：同步恢复 policy-engine 授权并直接回到 READY。
+        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = false))
+        bindingPort.setConnected(true)
         host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = true))
         assertTrue(policyPort.snapshot().granted)
         assertEquals("READY", notificationInventory()["status"])
+    }
+
+    @Test
+    fun notificationPolicyDisableSyncHandlesMultiProviderAndPluginDisable() {
+        assumeTrue(BuildConfig.ALLOW_RUNTIME_PLUGINS)
+        val policyPort = InMemoryPolicyPort(granted = false)
+        val bindingPort = FakeNotificationBindingPort(systemGranted = true, connected = true)
+        NotificationControlRegistry.install(policyPort, bindingPort)
+
+        val audit = AndroidAuditStore(InMemoryAuditSink())
+        val grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
+        val trust = DeveloperTrustMode()
+        val host = ProductionPluginHost(
+            context = context,
+            grants = grants,
+            trustMode = trust,
+            nativeLoader = NativePluginLoader(trust),
+            installationId = "install-notify-multi",
+            builtInPackages = BuiltInPackageReader { TestAlpPackages.compiledBundledPackage(it) },
+        )
+        val kernel = PluginKernel(
+            hostEnvelope = HostEnvelope(host.hostCapabilities),
+            phoneLimits = PhoneLimits(host.phoneCapabilities),
+            runtimes = host.runtimes,
+            audit = audit,
+            trustMode = trust,
+            nativeLoader = host.nativeLoader,
+            providerSelector = host.selector,
+            grants = { grants.currentKernelGrant(it) },
+            mediate = host::mediate,
+            authorizeInvocation = host::authorizeKernelInvocation,
+        )
+        host.attach(kernel)
+
+        val thirdParty = "org.example.notify.multi"
+        host.installStore.installRoot.deleteRecursively()
+        try {
+            host.installStore.install(TestAlpPackages.compiledNotificationsPackage(pluginId = thirdParty))
+            host.reload()
+            host.enable(thirdParty, true)
+            val builtInEntry = host.entries(NOTIFICATION_PLUGIN_ID).single()
+            val thirdPartyEntry = host.entries(thirdParty).single()
+
+            assertTrue(host.reconcileNotificationPolicyGrant())
+            assertTrue(policyPort.snapshot().granted)
+
+            // 底部显式关闭共享通知采集授权：同步关闭全部通知提供者的顶部总开关，避免另一插件在下次恢复时反向重开。
+            host.syncNotificationCapabilitiesWithPolicyGrant(granted = false, targetPluginId = thirdParty)
+            assertFalse(host.capabilityPolicy(thirdParty, thirdPartyEntry.key).enabled)
+            assertFalse(host.capabilityPolicy(NOTIFICATION_PLUGIN_ID, builtInEntry.key).enabled)
+            assertFalse(policyPort.snapshot().granted)
+            assertFalse(host.reconcileNotificationPolicyGrant())
+            assertFalse(policyPort.snapshot().granted)
+
+            // 仅重新开启第三方通知插件能力，再停用该插件本身：最后一个启用通知提供者停用后必须同步撤销 policy-engine 授权。
+            host.setCapabilityPolicy(thirdParty, thirdPartyEntry.key, CapabilityPolicy(enabled = true))
+            assertTrue(policyPort.snapshot().granted)
+            host.enable(thirdParty, false)
+            assertFalse(policyPort.snapshot().granted)
+            assertFalse(host.reconcileNotificationPolicyGrant())
+        } finally {
+            host.installStore.installRoot.deleteRecursively()
+            runCatching { host.reload() }
+        }
     }
 
     @Test
@@ -266,7 +353,7 @@ class CapabilityGrantStatusChainTest {
             // 模拟用户在系统设置里开启通知使用权并连上服务，随后回到 App（ON_RESUME）。
             bindingPort.systemGranted = true
             bindingPort.setConnected(true)
-            compose.runOnIdle { owner.handleEvent(Lifecycle.Event.ON_RESUME) }
+            compose.runOnIdle { owner.resumeFromBackground() }
 
             compose.waitUntil(timeoutMillis = 5_000) { policyPort.snapshot().granted }
             compose.onNodeWithText("已就绪").performScrollTo().assertIsDisplayed()
@@ -277,7 +364,7 @@ class CapabilityGrantStatusChainTest {
             assertFalse(policyPort.snapshot().granted)
             assertFalse(app.pluginHost.capabilityPolicy(thirdParty, entry.key).enabled)
 
-            compose.runOnIdle { owner.handleEvent(Lifecycle.Event.ON_RESUME) }
+            compose.runOnIdle { owner.resumeFromBackground() }
             compose.waitForIdle()
             assertFalse(policyPort.snapshot().granted)
             assertFalse(app.pluginHost.capabilityPolicy(thirdParty, entry.key).enabled)
@@ -357,8 +444,13 @@ class CapabilityGrantStatusChainTest {
             compose.onNodeWithText("系统权限或服务未就绪", substring = true).performScrollTo().assertIsDisplayed()
 
             // 模拟无障碍服务在系统设置开启后完成绑定并返回 App（ON_RESUME）。
+            Settings.Secure.putString(
+                app.contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+                ComponentName(app, accessibilityServiceClassName()).flattenToString(),
+            )
             ScreenHostRegistry.setAccessibilityConnected(true)
-            compose.runOnIdle { owner.handleEvent(Lifecycle.Event.ON_RESUME) }
+            compose.runOnIdle { owner.resumeFromBackground() }
 
             compose.waitUntil(timeoutMillis = 5_000) {
                 runCatching {
@@ -367,6 +459,12 @@ class CapabilityGrantStatusChainTest {
             }
             compose.onNodeWithText("系统权限或服务已就绪").performScrollTo().assertIsDisplayed()
             compose.onNodeWithText("SCREEN_CONNECTION_REQUIRED", substring = true).assertDoesNotExist()
+
+            // 模拟用户在系统无障碍设置关闭服务后直接切回 App（此时 onUnbind 尚未送达）：ON_RESUME 应自动校准连接态为 false。
+            Settings.Secure.putString(app.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, "")
+            compose.runOnIdle { owner.resumeFromBackground() }
+            compose.waitUntil(timeoutMillis = 5_000) { !ScreenHostRegistry.accessibilityConnected.value }
+            compose.onNodeWithText("系统权限或服务未就绪", substring = true).performScrollTo().assertIsDisplayed()
         } finally {
             app.pluginHost.installStore.installRoot.deleteRecursively()
             runCatching { app.pluginHost.reload() }
@@ -379,8 +477,9 @@ class CapabilityGrantStatusChainTest {
             currentState = Lifecycle.State.RESUMED
         }
         override val lifecycle: Lifecycle get() = registry
-        fun handleEvent(event: Lifecycle.Event) {
-            registry.handleLifecycleEvent(event)
+        fun resumeFromBackground() {
+            registry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+            registry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
         }
     }
 

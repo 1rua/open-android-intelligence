@@ -172,7 +172,7 @@ class OpenAndroidIntelligenceApplication : Application() {
         }
         remoteScope.launch {
             com.openandroidintelligence.control.ScreenHostRegistry.accessibilityConnected.drop(1).collect {
-                pluginHost.revision.value++
+                pluginHost.notifyCapabilityStateChanged()
             }
         }
         remoteScope.launch(Dispatchers.IO) {
@@ -182,7 +182,7 @@ class OpenAndroidIntelligenceApplication : Application() {
                 .drop(1)
                 .collect {
                     val reconciled = runCatching { pluginHost.reconcileNotificationPolicyGrant() }.getOrDefault(false)
-                    if (!reconciled) pluginHost.revision.value++
+                    if (!reconciled) pluginHost.notifyCapabilityStateChanged()
                 }
         }
 

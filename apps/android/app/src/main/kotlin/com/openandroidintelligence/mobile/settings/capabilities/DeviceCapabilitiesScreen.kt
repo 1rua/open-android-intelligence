@@ -42,7 +42,9 @@ import com.openandroidintelligence.mobile.plugins.DeviceCapabilityGrantInspector
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilityGrantState
 import com.openandroidintelligence.mobile.plugins.ProductionPluginHost
 import com.openandroidintelligence.mobile.plugins.androidPermissionRequirements
+import com.openandroidintelligence.mobile.plugins.isNotificationListenerReady
 import com.openandroidintelligence.mobile.screen.accessibilityServiceReady
+import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
@@ -79,11 +81,17 @@ internal fun DeviceCapabilitiesScreen(
     val notificationBinding = NotificationControlRegistry.bindingPort()
     val notificationListenerConnected by notificationBinding.observeListenerConnected()
         .collectAsState(initial = runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false))
+    val appContext = context.applicationContext
     var refreshTick by remember { mutableIntStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current
-    // 从系统权限设置返回后必须重新读真实状态，不能沿用离开前的缓存。
-    DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) refreshTick++ }
+    // 从系统权限设置返回后必须主动探测绑定态并重新读真实状态，不能沿用离开前的缓存。
+    DisposableEffect(lifecycle, appContext) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                probeAccessibilityBinding(appContext)
+                refreshTick++
+            }
+        }
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
@@ -100,16 +108,10 @@ internal fun DeviceCapabilitiesScreen(
     }
     val entries = remember(observedHost, hostRevision, refreshTick) { observedHost?.verifiedCapabilities().orEmpty() }
     val catalog = remember(entries) { capabilityCatalog(entries) }
-    val appContext = context.applicationContext
     val inspector = remember(appContext, observedHost, hostRevision, accessibilityConnected, notificationListenerConnected, refreshTick) {
         DeviceCapabilityGrantInspector(
             context = appContext,
-            notificationAccessGranted = {
-                runCatching {
-                    val binding = NotificationControlRegistry.bindingPort()
-                    binding.isListenerBound() && binding.isListenerConnected()
-                }.getOrDefault(false)
-            },
+            notificationAccessGranted = ::isNotificationListenerReady,
             accessibilityEnabled = { accessibilityServiceReady(appContext) },
             captureAuthorized = { runCatching { com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true }.getOrDefault(false) },
         )

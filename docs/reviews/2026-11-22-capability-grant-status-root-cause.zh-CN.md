@@ -40,3 +40,10 @@
   - 当顶部通知读取能力处于启用态、且系统通知使用权已授予且监听服务就绪（或用户开启顶部开关且系统已就绪）时，同步将 `policy-engine` 的 `granted` 对齐为 `true`，正确解除 `LOCAL_GRANT_REQUIRED`；
   - 当用户显式关闭顶部通知读取开关时，同步将 `policy-engine` 的 `granted` 置为 `false`；反之在底部「通知采集范围」显式关闭「允许读取通知」时，同步关闭顶部通知读取开关，避免两套开关冲突。
 - 在 `DeviceCapabilitiesScreen` 与 `CapabilitySettingsScreen` 的 `ON_RESUME` 及连接态/策略流变化时自动探测重连、对齐授权并即时刷新 UI。
+
+## 提交前独立评审加固记录
+
+1. **通知策略对齐门禁与并发保护**：在 `ProductionPluginHost` 中引入 `notificationPolicySyncLock` 串行化 `enable(..., false)`、`setCapabilityPolicy`、`setCapabilityEnabled`、`grant`、`syncNotificationCapabilitiesWithPolicyGrant` 与 `reconcileNotificationPolicyGrant`，并在重试循环内每次重检前置条件；系统已授予通知使用权但监听服务尚未连接时，仅触发 `requestListenerRebind()`，待服务连接就绪后再同步写入 `policy-engine` 的 `granted = true`。
+2. **多通知提供者关闭联动与插件停用撤销**：底部关闭共享通知采集授权时通过 `syncNotificationCapabilitiesWithPolicyGrant(false)` 同步关闭全部已启用的 `kernel.notifications.read` 能力开关；停用最后一个通知提供者插件时同步撤销 `policy-engine` 授权。
+3. **无障碍就绪判据与回前台双向校准**：`accessibilityServiceReady()` 严格要求「系统设置已启用且服务已连接」同时成立，避免系统刚关闭服务而 `onUnbind()` 尚未送达时误报就绪；`ON_RESUME` 调用 `probeAccessibilityBinding()` 双向校准滞后连接态。
+4. **跨线程修订号与文案资源化**：统一通过 `notifyCapabilityStateChanged()`（`revision.update { it + 1L }`）原子递增修订号；去重抽取通知使用权校验工具至 `DeviceCapabilityPermissions.kt`；将断连引导文案迁入 `apps/android/ui-resources/src/main/res/values/strings_permissions.xml`（`perm_notification_listener_disconnected`）；拆分详情页 1 秒轮询与 `ON_RESUME` 刷新，避免高频触发通知策略 IO 对齐。
