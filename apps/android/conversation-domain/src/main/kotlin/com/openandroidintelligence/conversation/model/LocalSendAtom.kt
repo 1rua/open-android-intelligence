@@ -147,6 +147,7 @@ fun mergeLocalSendAtoms(remote: List<TimelineMessage>, atoms: List<LocalSendAtom
             generationId = matching?.generationId,
             localSubmissionFailure = atom.submissionErrorCode.takeIf { atom.submissionState == LocalSubmissionState.FAILED },
             contentRevision = atom.contentRevision.takeIf { it >= 0L } ?: matching?.contentRevision,
+            orderSequence = matching?.orderSequence,
         )
     }
     return rows.values.filterNot { it.isDeleted }

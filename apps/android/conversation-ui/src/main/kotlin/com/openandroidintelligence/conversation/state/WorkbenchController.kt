@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.retryWhen
 import com.openandroidintelligence.conversation.model.ConversationId
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
+import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.model.NativeExecutionStep
 import com.openandroidintelligence.conversation.model.toOutcome
@@ -313,10 +314,29 @@ class WorkbenchController(
     // Native tool observations are view facts, not Assistant messages. They must
     // never enter mirrored history or its message/content revision domain.
     private val executionFacts = LinkedHashMap<Pair<String, String>, NativeExecutionFacts>()
+    private val executionStepArrivalOrder = LinkedHashMap<Triple<String, String, String>, Long>()
+    private val mirroredArrivalOrder = LinkedHashMap<Pair<String, String>, Long>()
+    private var nextArrivalOrder = 0L
     private val sendAtomsByThread = LinkedHashMap<String, LinkedHashMap<String, LocalSendAtom>>()
     private val sendAtomsMutex=Mutex()
     private var sendAtomsEpoch=0L
     private val snapshotDeletedIdsByThread = LinkedHashMap<String, MutableSet<String>>()
+
+    private fun recordMessageArrival(threadId: String, messageId: String) {
+        val key = threadId to messageId
+        if (key !in mirroredArrivalOrder) {
+            mirroredArrivalOrder[key] = ++nextArrivalOrder
+        }
+    }
+
+    private fun preserveOrderSequence(incoming: TimelineMessage): TimelineMessage {
+        val existingOrder = mirrored[incoming.id]?.orderSequence
+        return if (incoming.orderSequence == null && existingOrder != null) {
+            incoming.copy(orderSequence = existingOrder)
+        } else {
+            incoming
+        }
+    }
 
     /** 同步界面路径只读投影；未装载状态由 historyHydrated 明确表示。 */
     private fun atomsFor(threadId: String): Map<String,LocalSendAtom> = sendAtomsByThread[threadId].orEmpty()
@@ -336,15 +356,12 @@ class WorkbenchController(
         val steps = linkedMapOf<String, NativeExecutionStep>()
         previous?.steps?.forEach { steps[it.stepId] = it }
         event.steps.forEach { incoming ->
-            val old = steps[incoming.stepId]
-            val completed = old?.status in setOf(NativeExecutionStatus.COMPLETED, NativeExecutionStatus.FAILED)
-            if (old == null || incoming.revision > old.revision &&
-                !(completed && incoming.status in setOf(NativeExecutionStatus.RUNNING, NativeExecutionStatus.UNKNOWN))) {
-                steps[incoming.stepId] = incoming.copy(
-                    sourceMessageId = old?.sourceMessageId ?: incoming.sourceMessageId,
-                    occurredAt = old?.occurredAt ?: incoming.occurredAt,
-                )
+            val arrivalKey = Triple(event.conversationId.value, event.generationId, incoming.stepId)
+            if (arrivalKey !in executionStepArrivalOrder) {
+                executionStepArrivalOrder[arrivalKey] = ++nextArrivalOrder
             }
+            val old = steps[incoming.stepId]
+            steps[incoming.stepId] = old?.applyNewerSnapshot(incoming) ?: incoming
         }
         executionFacts[key] = NativeExecutionFacts(event.executionRevision, previous?.occurredAt ?: event.occurredAt,
             steps.values.toList(), previous?.clientMessageId ?: clientId, previous?.userMessageId ?: userId)
@@ -726,6 +743,7 @@ class WorkbenchController(
         val statusesById: Map<String, MessageStatusReceipt>,
         val statusesByClient: Map<String, MessageStatusReceipt>,
         val hydrated: Boolean,
+        val arrivalOrders: Map<String, Long> = emptyMap(),
     ) {
         val weight: Long get() = 256L + messages.sumOf { row ->
             256L + row.executionSteps.sumOf { step -> step.arguments.length * 2L + (step.output?.length ?: 0) * 2L + 128L } + row.parts.sumOf { part -> when (part) {
@@ -741,9 +759,12 @@ class WorkbenchController(
     private fun rememberActiveTimeline() {
         val id = activeThreadId ?: return
         if (_state.value.timeline !is Loadable.Ready && _state.value.timeline !is Loadable.Empty) return
+        val threadArrivals = mirroredArrivalOrder.entries
+            .mapNotNull { (k, v) -> if (k.first == id) k.second to v else null }
+            .toMap()
         timelineSnapshots[scopeFactory() to id] = CachedTimeline(mirrored.values.toList(), mirroredRevisions.toMap(),
             messageStatusRevisions.toMap(), messageStatusesById.toMap(), messageStatusesByClientId.toMap(),
-            _state.value.historyHydrated)
+            _state.value.historyHydrated, threadArrivals)
         var weight = timelineSnapshots.values.sumOf { it.weight }
         val iterator = timelineSnapshots.entries.iterator()
         while (weight > timelineSnapshotBudget && iterator.hasNext()) {
@@ -1363,6 +1384,8 @@ class WorkbenchController(
         userRenamedThreads.remove(threadId)
         creationReceipts.remove(threadId)
         executionFacts.keys.removeAll { it.first == threadId }
+        executionStepArrivalOrder.keys.removeAll { it.first == threadId }
+        mirroredArrivalOrder.keys.removeAll { it.first == threadId }
         synchronized(approvalLock) {
             approvalCards.entries.removeAll { it.value.request.conversationId?.value == threadId }
         }
@@ -1514,6 +1537,9 @@ class WorkbenchController(
         attachmentJobs.clear()
         attachmentPreviews.clear()
         timelineSnapshots.clear()
+        executionFacts.clear()
+        executionStepArrivalOrder.clear()
+        mirroredArrivalOrder.clear()
         waitingAttachmentSubmissions.clear()
         composerDrafts.clear()
         historicalAttachments.evictAll()
@@ -2061,9 +2087,13 @@ class WorkbenchController(
         // already settled must not come back as a question.
         // (mirrored/mirroredRevisions are message state and are cleared above.)
         memory?.let { saved ->
+            saved.arrivalOrders.forEach { (msgId, order) ->
+                mirroredArrivalOrder.putIfAbsent(threadId to msgId, order)
+            }
             mirrored.putAll(
                 saved.messages
                     .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .onEach { recordMessageArrival(threadId, it.id) }
                     .associateBy { it.id }
             )
             mirroredRevisions.putAll(saved.revisions)
@@ -2077,6 +2107,7 @@ class WorkbenchController(
                 saved.messages
                     .map(::withLatestMessageStatus)
                     .mapNotNull { msg -> if (msg.isDeleted) null else ContextInjectionFilter.projectMessage(msg) }
+                    .onEach { recordMessageArrival(threadId, it.id) }
                     .associateBy { it.id }
             )
             mirroredRevisions.putAll(saved.revisions)
@@ -2149,7 +2180,7 @@ class WorkbenchController(
                 onSuccess = { page ->
                     if (!isActive || activeThreadId != threadId) return@launch
                     scheduleHistoricalMedia(threadId,page.messages)
-                    page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
+                    page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
                         val message = withLatestMessageStatus(rawMessage)
                         val currentRevision = mirroredRevisions[message.id] ?: 0L
                         if (!mirrored.containsKey(message.id) || (message.contentRevision?.let { it > currentRevision } == true) || (message.state == "CONFIRMED" && currentRevision == 0L)) {
@@ -2157,7 +2188,8 @@ class WorkbenchController(
                                 pruneConfirmedAssistantDuplicates(message)
                             }
                             rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
-                            mirrored[message.id] = message
+                            recordMessageArrival(threadId, message.id)
+                            mirrored[message.id] = preserveOrderSequence(message)
                             mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
                         }
                     }
@@ -4829,6 +4861,8 @@ class WorkbenchController(
                 waitingAttachmentSubmissions.entries.removeAll { it.value.submission.conversationId == id }
                 sendAtomsByThread.remove(id)
                 executionFacts.keys.removeAll { it.first == id }
+                executionStepArrivalOrder.keys.removeAll { it.first == id }
+                mirroredArrivalOrder.keys.removeAll { it.first == id }
                 if (activeThreadId == id) leaveManagedThread(id)
             }
             refreshThreads()
@@ -5075,7 +5109,8 @@ class WorkbenchController(
                         }
                     }
                     rememberPresentation(message, event.revision, event.presentationOrigin)
-                    mirrored[message.id] = message
+                    recordMessageArrival(currentActiveId, message.id)
+                    mirrored[message.id] = preserveOrderSequence(message)
                     mirroredRevisions[message.id] = event.revision
                 }
                 if (isAssistantRole &&
@@ -5275,7 +5310,7 @@ class WorkbenchController(
                         value.clientMessageId?.value?.let { atomsFor(threadId)[it]?.isDeleted } == true)) historicalAttachments.remove(key)
                 }
                 var receivedConfirmedAssistantForCurrentTurn = false
-                page.messages.sortedBy { it.timestamp }.forEach { rawMessage ->
+                page.messages.sortedWith(timelineMessageOrderComparator).forEach { rawMessage ->
                     if (rawMessage.isDeleted || snapshotDeletedIdsByThread[threadId]?.contains(rawMessage.id) == true) return@forEach
                     val withStatus = withLatestMessageStatus(rawMessage)
                     val message = ContextInjectionFilter.projectMessage(withStatus) ?: run {
@@ -5303,7 +5338,8 @@ class WorkbenchController(
                             )
                         }
                         rememberPresentation(message, message.contentRevision ?: 0L, StreamPresentationOrigin.SNAPSHOT)
-                        mirrored[message.id] = message
+                        recordMessageArrival(threadId, message.id)
+                        mirrored[message.id] = preserveOrderSequence(message)
                         mirroredRevisions[message.id] = maxOf(currentRevision,message.contentRevision ?: 0L)
                     } else if (isAssistantRole && message.state == "CONFIRMED") {
                         val matched = pruneConfirmedAssistantDuplicates(message)
@@ -5374,7 +5410,8 @@ class WorkbenchController(
                 val revision = message.contentRevision ?: 0L
                 if (message.id !in mirrored || revision > (mirroredRevisions[message.id] ?: 0L)) {
                     rememberPresentation(message, revision, StreamPresentationOrigin.SNAPSHOT)
-                    mirrored[message.id] = message
+                    recordMessageArrival(threadId, message.id)
+                    mirrored[message.id] = preserveOrderSequence(message)
                     mirroredRevisions[message.id] = revision
                 }
             }
@@ -5690,6 +5727,12 @@ class WorkbenchController(
             role = ContextInjectionFilter.contentSanitizationRole(message.sender),
             streaming = message.state == "STREAMING",
         )
+        val rebasedTimelineSteps = ContextInjectionFilter.rebaseTimelineStepsOnProjection(
+            message = message,
+            targetParts = sanitizedParts.parts,
+            role = ContextInjectionFilter.contentSanitizationRole(message.sender),
+            streaming = message.state == "STREAMING",
+        )
         val entry = TimelineEntry(
             key = message.id,
             sender = ContextInjectionFilter.canonicalSender(message.sender),
@@ -5717,6 +5760,8 @@ class WorkbenchController(
             localPlaceholder = message.localPlaceholder,
             presentation = presentationOf(message),
             reasoning = rebasedReasoning,
+            timelineSteps = rebasedTimelineSteps,
+            orderSequence = message.orderSequence,
             isMeta = isInternalOrHidden,
         )
         if (cacheable) {
@@ -5743,8 +5788,10 @@ class WorkbenchController(
             ContextInjectionFilter.shouldDropMessage(
                 text = entry.text,
                 hasAttachments = entry.attachments.isNotEmpty(),
-                hasSteps = entry.executionSteps.isNotEmpty(),
-                hasReasoning = entry.reasoning.isNotEmpty(),
+                hasSteps = entry.executionSteps.isNotEmpty() ||
+                    entry.timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep },
+                hasReasoning = entry.reasoning.isNotEmpty() ||
+                    entry.timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep },
                 isMeta = entry.isMeta,
                 sender = entry.sender,
                 isLocalSyntheticHint = isLocalSynthetic,
@@ -5774,10 +5821,13 @@ class WorkbenchController(
                 rawClientId in settledAndDeletedClientIds
         }
 
-        val rawList = (mirroredEntries + unconfirmedPending).sortedWith(
-            compareBy<TimelineEntry> { entry ->
-                if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE
-            },
+        val rawList = stabilizeTurnOrder(
+            (mirroredEntries + unconfirmedPending).sortedWith(
+                compareBy<TimelineEntry>(
+                    { entry -> if (entry.timestamp > 0L) entry.timestamp else Long.MAX_VALUE },
+                    { entry -> entry.orderSequence ?: Long.MAX_VALUE },
+                ),
+            ),
         )
         val rendered = deduplicateTimelineEntries(rawList)
         // Inserted after the message rules: an approval is a request, not
@@ -5788,6 +5838,38 @@ class WorkbenchController(
         // A receipt is navigation, not content, for the same reason.
         val receiptRow = activeThreadId?.let(::creationReceiptRow) ?: return ensureUniqueKeys(withCards)
         return ensureUniqueKeys(withCards + receiptRow)
+    }
+
+    /**
+     * 同一回合（相同 generationId）内相邻的非用户条目若全部携带协议/投影单调顺序号 [TimelineEntry.orderSequence]，
+     * 严格按顺序号重排，防止服务端秒级时间戳或时钟抖动打乱思考与工具的真实先后顺序。
+     */
+    private fun stabilizeTurnOrder(entries: List<TimelineEntry>): List<TimelineEntry> {
+        if (entries.size <= 1) return entries
+        val out = entries.toMutableList()
+        var i = 0
+        while (i < out.size) {
+            val first = out[i]
+            val gen = first.generationId?.takeIf { it.isNotBlank() }
+            if (first.isUser || gen == null || first.orderSequence == null) {
+                i++
+                continue
+            }
+            var j = i + 1
+            while (j < out.size) {
+                val next = out[j]
+                if (next.isUser || next.generationId != gen || next.orderSequence == null) break
+                j++
+            }
+            if (j - i > 1) {
+                val sortedSlice = out.subList(i, j).sortedBy { requireNotNull(it.orderSequence) }
+                for (k in sortedSlice.indices) {
+                    out[i + k] = sortedSlice[k]
+                }
+            }
+            i = j
+        }
+        return out
     }
 
     private fun insertNativeExecutionRows(entries: List<TimelineEntry>): List<TimelineEntry> {
@@ -5812,29 +5894,44 @@ class WorkbenchController(
             tracker?.generationId?.value == generationId -> tracker.generationState?.value
             else -> null
         }
+        fun isTerminalState(state: GenerationState?): Boolean =
+            state == GenerationState.COMPLETED || state == GenerationState.FAILED || state == GenerationState.CANCELLED
         fun visibleSteps(generationId: String, steps: List<NativeExecutionStep>): List<NativeExecutionStep> =
-            if (taskState(generationId) in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)) steps.map { step ->
+            if (isTerminalState(taskState(generationId))) steps.map { step ->
                 if (step.status == NativeExecutionStatus.RUNNING) step.copy(status = NativeExecutionStatus.UNKNOWN) else step
             } else steps
+        fun mergeStepUpdate(old: NativeExecutionStep, incoming: NativeExecutionStep?): NativeExecutionStep =
+            old.applyNewerSnapshot(incoming)
         val result = entries.map { entry ->
             val generationId = entry.generationId
-            if (generationId != null && entry.executionSteps.isNotEmpty()) {
+            val hasEmbeddedTools = entry.hasExecutionSteps
+            if (generationId != null && hasEmbeddedTools) {
                 val updates = executionFacts[threadId to generationId]?.steps.orEmpty().associateBy { it.stepId }
-                val merged = entry.executionSteps.map { old ->
-                    val incoming = updates[old.stepId]
-                    if (incoming != null && incoming.revision > old.revision &&
-                        !(old.status in setOf(NativeExecutionStatus.COMPLETED, NativeExecutionStatus.FAILED) &&
-                            incoming.status in setOf(NativeExecutionStatus.RUNNING, NativeExecutionStatus.UNKNOWN)))
-                        incoming.copy(sourceMessageId = old.sourceMessageId ?: incoming.sourceMessageId,
-                            occurredAt = old.occurredAt ?: incoming.occurredAt)
-                    else old
+                val terminal = isTerminalState(taskState(generationId))
+                val mergedExec = visibleSteps(
+                    generationId,
+                    entry.executionSteps.map { old -> mergeStepUpdate(old, updates[old.stepId]) },
+                )
+                val mergedTimeline = entry.timelineSteps.map { step ->
+                    when (step) {
+                        is ExecutionTimelineStep.ThinkingStep -> step
+                        is ExecutionTimelineStep.ToolCallStep -> {
+                            val updated = mergeStepUpdate(step.step, updates[step.stepId])
+                            val settled = if (terminal && updated.status == NativeExecutionStatus.RUNNING) {
+                                updated.copy(status = NativeExecutionStatus.UNKNOWN)
+                            } else updated
+                            step.copy(step = settled)
+                        }
+                    }
                 }
-                entry.copy(executionSteps = visibleSteps(generationId, merged), executionGenerationState = taskState(generationId))
+                entry.copy(
+                    executionSteps = mergedExec,
+                    timelineSteps = mergedTimeline,
+                    executionGenerationState = taskState(generationId),
+                )
             } else if (generationId != null && !entry.isUser) {
                 // 普通正文仅补明确终态；稳定投影继续复用同一实例，不能让每帧追加重建历史。
-                val terminal = taskState(generationId)?.takeIf {
-                    it == GenerationState.COMPLETED || it == GenerationState.FAILED || it == GenerationState.CANCELLED
-                }
+                val terminal = taskState(generationId)?.takeIf(::isTerminalState)
                 if (entry.executionGenerationState == terminal) entry else {
                     val projected = entry.copy(executionGenerationState = terminal)
                     renderedEntryCache[entry.key]?.takeIf { it.entry === entry }?.let { cached ->
@@ -5844,52 +5941,200 @@ class WorkbenchController(
                 }
             } else entry
         }.toMutableList()
+
+        fun buildFactEntry(
+            key: String,
+            generationId: String,
+            steps: List<NativeExecutionStep>,
+            timestamp: Long,
+            terminal: Boolean,
+            clientId: ClientMessageId? = null,
+        ): TimelineEntry {
+            val visible = visibleSteps(generationId, steps)
+            return TimelineEntry(
+                key = key,
+                sender = "system",
+                text = "",
+                isUser = false,
+                timestamp = timestamp,
+                pendingAcceptance = false,
+                batchGroupId = null,
+                generationId = generationId,
+                clientMessageId = clientId,
+                executionSteps = visible,
+                executionFact = true,
+                isStreaming = !terminal && visible.any { it.status == NativeExecutionStatus.RUNNING },
+                executionGenerationState = taskState(generationId),
+                timelineSteps = visible.mapIndexed { idx, step ->
+                    ExecutionTimelineStep.ToolCallStep(step = step, bodyOffset = 0, orderIndex = idx)
+                },
+                orderSequence = visible.firstOrNull()?.orderSequence,
+            )
+        }
+
+        fun entryHasThought(entry: TimelineEntry): Boolean =
+            entry.hasReasoningSteps || entry.text.contains("<think", ignoreCase = true)
+
         executionFacts.forEach { (identity, facts) ->
             val (conversationId, generationId) = identity
             if (conversationId != threadId || facts.steps.isEmpty()) return@forEach
-            val terminal = taskState(generationId) in setOf(GenerationState.COMPLETED, GenerationState.FAILED, GenerationState.CANCELLED)
+            val terminal = isTerminalState(taskState(generationId))
             val existingSources = result.flatMap { entry ->
-                if (entry.generationId == generationId) entry.executionSteps.map { it.stepId } else emptyList()
+                if (entry.generationId == generationId) {
+                    entry.executionSteps.map { it.stepId } +
+                        entry.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().map { it.stepId }
+                } else emptyList()
             }.toSet()
             val missing = facts.steps.filterNot { it.stepId in existingSources }
-            // 有宿主来源的步骤按其真实消息位置插入；状态增量只更新内容，不移动调用。
+            // 有宿主来源的步骤按其真实消息位置插入；缺源行时限定在当前回合窗口内，防止跨轮插队。
             val bySource = missing.filter { !it.sourceMessageId.isNullOrBlank() }.groupBy { requireNotNull(it.sourceMessageId) }
             bySource.forEach { (sourceId, steps) ->
                 val sourceIndex = result.indexOfFirst { it.key == sourceId && it.generationId == generationId && !it.isUser }
                 val occurredAt = steps.mapNotNull { it.occurredAt }.firstOrNull()
-                if (sourceIndex < 0 && occurredAt == null) return@forEach
-                val index = if (sourceIndex >= 0) sourceIndex else
-                    result.indexOfFirst { it.timestamp > requireNotNull(occurredAt) }.takeIf { it >= 0 } ?: result.size
-                result.add(index, TimelineEntry(
-                    key = "execution-fact:$generationId:$sourceId", sender = "system", text = "", isUser = false,
-                    timestamp = occurredAt ?: result[sourceIndex].timestamp, pendingAcceptance = false,
-                    batchGroupId = null, generationId = generationId,
-                    executionSteps = visibleSteps(generationId, steps), executionFact = true,
-                    isStreaming = !terminal && steps.any { it.status == NativeExecutionStatus.RUNNING },
-                    executionGenerationState = taskState(generationId),
-                ))
+                val orderSeq = steps.mapNotNull { it.orderSequence }.minOrNull()
+                if (sourceIndex < 0 && occurredAt == null && orderSeq == null) return@forEach
+                val sourceAnchors = result.withIndex().filter { (_, entry) ->
+                    entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
+                        facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
+                }
+                val sourceSingleAnchor = sourceAnchors.singleOrNull()
+                val sourceFirstAssistant = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
+                val searchStart = sourceSingleAnchor?.index?.plus(1) ?: sourceFirstAssistant.takeIf { it >= 0 } ?: 0
+                val searchEnd = if (sourceSingleAnchor != null || sourceFirstAssistant >= 0) {
+                    ((searchStart until result.size).firstOrNull { idx ->
+                        result[idx].isUser && result[idx].generationId != generationId
+                    }) ?: result.size
+                } else {
+                    result.size
+                }
+                val index = when {
+                    sourceIndex >= 0 -> sourceIndex
+                    orderSeq != null -> {
+                        (searchStart until searchEnd).firstOrNull { idx ->
+                            val existing = result[idx]
+                            existing.orderSequence?.let { it > orderSeq } == true ||
+                                (existing.orderSequence == null && occurredAt != null && existing.timestamp > occurredAt)
+                        } ?: searchEnd
+                    }
+                    else -> {
+                        val targetTime = requireNotNull(occurredAt)
+                        (searchStart until searchEnd).firstOrNull { idx ->
+                            result[idx].timestamp > targetTime
+                        } ?: searchEnd
+                    }
+                }
+                result.add(
+                    index,
+                    buildFactEntry(
+                        key = "execution-fact:$generationId:$sourceId",
+                        generationId = generationId,
+                        steps = steps,
+                        timestamp = occurredAt ?: result.getOrNull(sourceIndex)?.timestamp ?: facts.occurredAt,
+                        terminal = terminal,
+                    ),
+                )
             }
-            // 旧协议没有步骤来源时只沿用明确的原问题/同代消息锚点，不凭相似时间猜任务。
+            // 无 sourceMessageId 的步骤（含 Codex/Harness 实时工具事件）：
+            // 按步骤自身的协议 orderSequence、到达序或发生时间精确穿插在同回合思考与正文之间，禁止整包插队到思考上方。
             val legacy = missing.filter { it.sourceMessageId.isNullOrBlank() }
             if (legacy.isEmpty()) return@forEach
-            val anchors = result.withIndex().filter { (_, entry) ->
+            val refreshedAnchors = result.withIndex().filter { (_, entry) ->
                 entry.isUser && (facts.userMessageId != null && entry.key == facts.userMessageId ||
                     facts.clientMessageId != null && entry.clientMessageId?.value == facts.clientMessageId)
             }
-            if (anchors.size > 1) return@forEach
-            val anchor = anchors.singleOrNull()
+            if (refreshedAnchors.size > 1) return@forEach
+            val anchor = refreshedAnchors.singleOrNull()
             val messageIndex = result.indexOfFirst { !it.executionFact && !it.isUser && it.generationId == generationId }
-            var index = anchor?.index?.plus(1) ?: messageIndex.takeIf { it >= 0 } ?: return@forEach
-            while (index < result.size && result[index].executionFact) index++
-            result.add(index, TimelineEntry(
-                key = "execution-fact:$generationId", sender = "system", text = "", isUser = false,
-                timestamp = anchor?.value?.timestamp ?: result.getOrNull(messageIndex)?.timestamp ?: facts.occurredAt,
-                pendingAcceptance = false, batchGroupId = null, generationId = generationId,
-                clientMessageId = facts.clientMessageId?.let { runCatching { ClientMessageId(it) }.getOrNull() },
-                executionSteps = visibleSteps(generationId, legacy), executionFact = true,
-                isStreaming = !terminal && legacy.any { it.status == NativeExecutionStatus.RUNNING },
-                executionGenerationState = taskState(generationId),
-            ))
+            val minIndex = anchor?.index?.plus(1) ?: messageIndex.takeIf { it >= 0 } ?: return@forEach
+            val maxIndex = ((minIndex until result.size).firstOrNull { idx ->
+                result[idx].isUser && result[idx].generationId != generationId
+            }) ?: result.size
+            val hasThoughtsInWindow = (minIndex until maxIndex).any { idx ->
+                val e = result[idx]
+                !e.isUser && entryHasThought(e)
+            }
+            val hasExplicitOrdering = legacy.any { it.orderSequence != null || (it.occurredAt ?: 0L) > 0L }
+            val clientId = facts.clientMessageId?.let { runCatching { ClientMessageId(it) }.getOrNull() }
+
+            if (!hasExplicitOrdering && !hasThoughtsInWindow) {
+                var index = minIndex
+                while (index < maxIndex && result[index].executionFact) index++
+                result.add(
+                    index,
+                    buildFactEntry(
+                        key = "execution-fact:$generationId",
+                        generationId = generationId,
+                        steps = legacy,
+                        timestamp = anchor?.value?.timestamp ?: result.getOrNull(messageIndex)?.timestamp ?: facts.occurredAt,
+                        terminal = terminal,
+                        clientId = clientId,
+                    ),
+                )
+                return@forEach
+            }
+
+            val orderedLegacy = legacy.sortedWith(
+                compareBy<NativeExecutionStep>(
+                    { it.orderSequence ?: Long.MAX_VALUE },
+                    { executionStepArrivalOrder[Triple(threadId, generationId, it.stepId)] ?: Long.MAX_VALUE },
+                    { it.occurredAt ?: Long.MAX_VALUE },
+                ),
+            )
+            // 按步骤精确计算每个步骤落在当前窗口内的槽位，相邻同槽位合并为一个执行事实条目。
+            val groupedBySlot = linkedMapOf<Int, MutableList<NativeExecutionStep>>()
+            orderedLegacy.forEach { step ->
+                val stepSeq = step.orderSequence
+                val stepArrival = executionStepArrivalOrder[Triple(threadId, generationId, step.stepId)]
+                val stepTime = step.occurredAt?.takeIf { it > 0L }
+                var slot = maxIndex
+                for (idx in minIndex until maxIndex) {
+                    val existing = result[idx]
+                    val existingSeq = existing.orderSequence
+                    val existingArrival = mirroredArrivalOrder[threadId to existing.key]
+                    val existingIsAfter = if (existing.isUser) {
+                        when {
+                            stepSeq != null && existingSeq != null && existingSeq != stepSeq -> existingSeq > stepSeq
+                            stepTime != null && existing.timestamp > 0L && existing.timestamp != stepTime -> existing.timestamp > stepTime
+                            stepArrival != null && existingArrival != null -> existingArrival > stepArrival
+                            else -> false
+                        }
+                    } else {
+                        when {
+                            stepSeq != null && existingSeq != null && existingSeq != stepSeq -> existingSeq > stepSeq
+                            stepSeq == null && stepArrival != null && existingArrival != null && existingArrival != stepArrival ->
+                                existingArrival > stepArrival
+                            stepTime != null && existing.timestamp > 0L && existing.timestamp != stepTime -> existing.timestamp > stepTime
+                            stepArrival != null && existingArrival != null -> existingArrival > stepArrival
+                            else -> false
+                        }
+                    }
+                    if (existingIsAfter) {
+                        slot = idx
+                        break
+                    }
+                }
+                groupedBySlot.getOrPut(slot) { mutableListOf() }.add(step)
+            }
+            // 从大槽位往小槽位插入，保证前面计算的下标不受后续插入偏移影响；固定以首步 stepId 作为稳定 factKey。
+            groupedBySlot.entries.sortedByDescending { it.key }.forEach { (slot, groupSteps) ->
+                val first = groupSteps.first()
+                val factKey = "execution-fact:$generationId:${first.stepId}"
+                val factTimestamp = first.occurredAt?.takeIf { it > 0L }
+                    ?: anchor?.value?.timestamp
+                    ?: result.getOrNull(messageIndex)?.timestamp
+                    ?: facts.occurredAt
+                result.add(
+                    slot,
+                    buildFactEntry(
+                        key = factKey,
+                        generationId = generationId,
+                        steps = groupSteps,
+                        timestamp = factTimestamp,
+                        terminal = terminal,
+                        clientId = clientId,
+                    ),
+                )
+            }
         }
         return result
     }
@@ -6253,7 +6498,7 @@ class WorkbenchController(
     fun onMirrorRebuilt() {
         sendAtomsEpoch++
         timelineSnapshots.clear()
-        handledEventIds.clear(); mirrored.clear(); streamPresentations.clear(); executionFacts.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
+        handledEventIds.clear(); mirrored.clear(); mirroredArrivalOrder.clear(); streamPresentations.clear(); executionFacts.clear(); executionStepArrivalOrder.clear(); renderedEntryCache.clear(); mirroredRevisions.clear(); sendAtomsByThread.clear()
         update { it.copy(historyHydrated=activeThreadId==null,timeline=if(activeThreadId==null) it.timeline else Loadable.Loading) }
         refreshThreads(); activeThreadId?.let(::reloadTimeline)
     }
@@ -6426,3 +6671,8 @@ class WorkbenchController(
 /** 账号拒绝与设备连接撤销都停止当前订阅；不会在界面层清空账号或凭据。 */
 private fun remoteObservationExpired(failure: Throwable): Boolean = failure is RemoteRpcException &&
     failure.code in setOf("ACCOUNT_AUTH_REQUIRED", "TOKEN_EXPIRED", "AUTH_INVALID", "DEVICE_REVOKED", "CONNECTION_REPLACED")
+
+private val timelineMessageOrderComparator = compareBy<TimelineMessage>(
+    { if (it.timestamp > 0L) it.timestamp else Long.MAX_VALUE },
+    { it.orderSequence ?: Long.MAX_VALUE },
+)

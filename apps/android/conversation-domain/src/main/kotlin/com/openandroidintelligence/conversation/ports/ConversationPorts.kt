@@ -58,9 +58,21 @@ data class TimelineMessage(
     val messageType: String? = null,
     /** 保留未经上下文净化前的原始分段，供持久化只读镜像在投影层按最新规则重新计算。 */
     val rawParts: List<MessagePart>? = null,
+    /** 统一有序异构执行步骤（思考与工具调用严格按到达顺序/内容块原始索引排列）。 */
+    val timelineSteps: List<ExecutionTimelineStep> = emptyList(),
+    /** 该消息首次出现在会话时间线中的单调顺序号（协议 seq 或实时到达序），结果更新不改写。 */
+    val orderSequence: Long? = null,
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
+
+    /** 是否包含原生或统一时间线中的工具调用步骤。 */
+    val hasExecutionSteps: Boolean
+        get() = executionSteps.isNotEmpty() || timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep }
+
+    /** 是否包含思考块或统一时间线中的思考步骤。 */
+    val hasReasoningSteps: Boolean
+        get() = reasoning.isNotEmpty() || timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
 }
 
 data class MessageBatch(

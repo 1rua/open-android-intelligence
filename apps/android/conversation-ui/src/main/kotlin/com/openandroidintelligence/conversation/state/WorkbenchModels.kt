@@ -52,8 +52,22 @@ data class TimelineEntry(
     /** UI 临时来源；历史装载重新建立快照基线，不进入 checkpoint。 */
     val presentation: StreamPresentationMetadata? = null,
     val reasoning: List<com.openandroidintelligence.conversation.model.MessageReasoning> = emptyList(),
+    /** 统一有序异构执行步骤（思考与工具调用按到达顺序/内容块原始索引交错排列）。 */
+    val timelineSteps: List<com.openandroidintelligence.conversation.model.ExecutionTimelineStep> = emptyList(),
+    /** 该条目首次出现在时间线中的单调顺序号（协议 seq 或本地到达序）。 */
+    val orderSequence: Long? = null,
     val isMeta: Boolean = false,
-)
+) {
+    /** 是否包含原生或统一时间线中的工具调用步骤。 */
+    val hasExecutionSteps: Boolean
+        get() = executionSteps.isNotEmpty() ||
+            timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep }
+
+    /** 是否包含思考块或统一时间线中的思考步骤。 */
+    val hasReasoningSteps: Boolean
+        get() = reasoning.isNotEmpty() ||
+            timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep }
+}
 
 data class WorkbenchUiState(
     val threads: Loadable<List<ConversationSummary>> = Loadable.Idle,

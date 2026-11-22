@@ -117,9 +117,21 @@ data class AssistantTimelineEntryDto(
     val presentationOrigin: String? = null,
     val presentationRevision: Long = 0L,
     val reasoning: List<AssistantReasoningDto> = emptyList(),
+    val timelineSteps: List<AssistantTimelineStepDto> = emptyList(),
+    val orderSequence: Long? = null,
 )
 
 data class AssistantReasoningDto(val id: String, val text: String, val bodyOffset: Int, val complete: Boolean)
+
+data class AssistantTimelineStepDto(
+    val kind: String,
+    val stepId: String,
+    val bodyOffset: Int = 0,
+    val orderIndex: Int = 0,
+    val text: String = "",
+    val complete: Boolean = true,
+    val tool: AssistantExecutionStepDto? = null,
+)
 
 /**
  * 附件元数据。
@@ -155,6 +167,8 @@ data class AssistantExecutionStepDto(
     val sourceMessageId: String? = null,
     /** 原调用事件时间（毫秒）；结果更新不得改写调用位置。 */
     val occurredAt: Long? = null,
+    /** 同一会话/回合内的单调到达顺序号。 */
+    val orderSequence: Long? = null,
 )
 
 /** 一个审批选项；意图（[choice]）与样式分开，样式只是展示提示。 */
@@ -340,8 +354,8 @@ fun decodeTimeline(dto: AssistantStateDto): List<TimelineEntry> =
         ContextInjectionFilter.shouldDropMessage(
             text = entry.text,
             hasAttachments = entry.attachments.isNotEmpty(),
-            hasSteps = entry.executionSteps.isNotEmpty(),
-            hasReasoning = entry.reasoning.isNotEmpty(),
+            hasSteps = entry.hasExecutionSteps,
+            hasReasoning = entry.hasReasoningSteps,
             isMeta = false,
             sender = entry.sender,
             isLocalSyntheticHint = isLocalSynthetic,
@@ -372,6 +386,28 @@ fun TimelineEntry.toDto(): AssistantTimelineEntryDto = AssistantTimelineEntryDto
     presentationOrigin = presentation?.origin?.name,
     presentationRevision = presentation?.revision ?: 0L,
     reasoning = reasoning.map { AssistantReasoningDto(it.id, it.text, it.bodyOffset, it.complete) },
+    timelineSteps = timelineSteps.map { step ->
+        when (step) {
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep ->
+                AssistantTimelineStepDto(
+                    kind = "thinking",
+                    stepId = step.stepId,
+                    bodyOffset = step.bodyOffset,
+                    orderIndex = step.orderIndex,
+                    text = step.text,
+                    complete = step.complete,
+                )
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep ->
+                AssistantTimelineStepDto(
+                    kind = "tool_call",
+                    stepId = step.stepId,
+                    bodyOffset = step.bodyOffset,
+                    orderIndex = step.orderIndex,
+                    tool = step.step.toAssistantExecutionStepDto(),
+                )
+        }
+    },
+    orderSequence = orderSequence,
 )
 
 /** 把一条线上投影还原为界面条目。 */
@@ -380,18 +416,40 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
     val mappedReasoning = reasoning.map {
         com.openandroidintelligence.conversation.model.MessageReasoning(it.id, it.text, it.bodyOffset, it.complete)
     }
-    val (sanitizedText, rebasedReasoning) = if (approval != null || executionFact) {
-        text to mappedReasoning
+    val mappedTimelineSteps = timelineSteps.mapNotNull { item ->
+        when (item.kind) {
+            "thinking" -> if (item.stepId.isNotEmpty() && item.bodyOffset >= 0) {
+                com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep(
+                    stepId = item.stepId,
+                    text = item.text,
+                    bodyOffset = item.bodyOffset,
+                    complete = item.complete,
+                    orderIndex = item.orderIndex,
+                )
+            } else null
+            "tool_call" -> item.tool?.takeIf { it.stepId.isNotEmpty() && item.bodyOffset >= 0 }?.let { toolDto ->
+                com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep(
+                    step = toolDto.toNativeExecutionStep(),
+                    bodyOffset = item.bodyOffset,
+                    orderIndex = item.orderIndex,
+                )
+            }
+            else -> null
+        }
+    }
+    val (sanitizedText, rebasedReasoning, rebasedTimelineSteps) = if (approval != null || executionFact) {
+        Triple(text, mappedReasoning, mappedTimelineSteps)
     } else {
         val result = ContextInjectionFilter.sanitizeParts(
             parts = listOf(com.openandroidintelligence.conversation.model.MessagePart.Text(text)),
             role = ContextInjectionFilter.contentSanitizationRole(sender),
             streaming = streaming,
             reasoning = mappedReasoning,
+            timelineSteps = mappedTimelineSteps,
         )
         val cleaned = result.parts.filterIsInstance<com.openandroidintelligence.conversation.model.MessagePart.Text>()
             .joinToString("") { it.value }
-        cleaned to result.reasoning
+        Triple(cleaned, result.reasoning, result.timelineSteps)
     }
     return TimelineEntry(
         key = id,
@@ -416,6 +474,8 @@ fun AssistantTimelineEntryDto.toTimelineEntry(): TimelineEntry {
         presentation = StreamPresentationOrigin.entries.firstOrNull { it.name == presentationOrigin }
             ?.let { StreamPresentationMetadata(it, presentationRevision) },
         reasoning = rebasedReasoning,
+        timelineSteps = rebasedTimelineSteps,
+        orderSequence = orderSequence,
     )
 }
 
@@ -450,6 +510,7 @@ private fun NativeExecutionStep.toAssistantExecutionStepDto(): AssistantExecutio
         revision = revision,
         sourceMessageId = sourceMessageId,
         occurredAt = occurredAt,
+        orderSequence = orderSequence,
     )
 
 private fun AssistantExecutionStepDto.toNativeExecutionStep(): NativeExecutionStep = NativeExecutionStep(
@@ -464,6 +525,7 @@ private fun AssistantExecutionStepDto.toNativeExecutionStep(): NativeExecutionSt
     revision = revision,
     sourceMessageId = sourceMessageId,
     occurredAt = occurredAt,
+    orderSequence = orderSequence,
 )
 
 private fun ApprovalCardState.toAssistantApprovalDto(): AssistantApprovalDto = AssistantApprovalDto(
@@ -545,9 +607,27 @@ object AssistantWireBudget {
         val adjusted = entries.mapIndexed { index, entry ->
             // 流式尾条是仍在增长的增量，截掉中段会隐藏最新内容；尾条正文必须完整送达。
             val streamingTail = (index == lastIndex && entry.isStreaming) || entry.key == protectedMessageId
-            if (streamingTail) entry else entry.copy(text = truncateText(entry.text), reasoning = entry.reasoning.map {
-                it.copy(text = truncateText(it.text))
-            })
+            if (streamingTail) entry else {
+                val originalText = entry.text
+                entry.copy(
+                    text = truncateText(originalText),
+                    reasoning = entry.reasoning.map {
+                        it.copy(
+                            text = truncateText(it.text),
+                            bodyOffset = rebaseTruncatedOffset(it.bodyOffset, originalText),
+                        )
+                    },
+                    timelineSteps = entry.timelineSteps.map { step ->
+                        val rebasedOffset = rebaseTruncatedOffset(step.bodyOffset, originalText)
+                        when (step) {
+                            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep ->
+                                step.copy(text = truncateText(step.text), bodyOffset = rebasedOffset)
+                            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep ->
+                                step.withBodyOffset(rebasedOffset)
+                        }
+                    },
+                )
+            }
         }
 
         // 先按条数封顶；保留最新条目，因此流式尾条必然留下。
@@ -582,13 +662,10 @@ object AssistantWireBudget {
     fun timelinePayloadBytes(entries: List<TimelineEntry>): Int =
         encodeTimelineArray(entries.map { it.toDto() }).toByteArray(Charsets.UTF_8).size
 
-    /**
-     * 首尾保留截断。
-     *
-     * 结果长度不超过 [MAX_TEXT_CHARS]；切点避开代理对，避免把 emoji 劈成半个字符。
-     */
-    private fun truncateText(text: String): String {
-        if (text.length <= MAX_TEXT_CHARS) return text
+    private data class TruncationCuts(val headEnd: Int, val tailStart: Int, val keep: Int)
+
+    private fun computeTruncationCuts(text: String): TruncationCuts? {
+        if (text.length <= MAX_TEXT_CHARS) return null
         val keep = (MAX_TEXT_CHARS - TEXT_TRUNCATION_MARKER.length).coerceAtLeast(1)
         val headLength = (keep * HEAD_SHARE).toInt()
         val tailLength = keep - headLength
@@ -605,9 +682,34 @@ object AssistantWireBudget {
         ) {
             tailStart += 1
         }
-        if (tailStart <= headEnd) return text.take(keep)
+        return TruncationCuts(headEnd = headEnd, tailStart = tailStart, keep = keep)
+    }
 
-        return text.substring(0, headEnd) + TEXT_TRUNCATION_MARKER + text.substring(tailStart)
+    /**
+     * 首尾保留截断。
+     *
+     * 结果长度不超过 [MAX_TEXT_CHARS]；切点避开代理对，避免把 emoji 劈成半个字符。
+     */
+    private fun truncateText(text: String): String {
+        val cuts = computeTruncationCuts(text) ?: return text
+        if (cuts.tailStart <= cuts.headEnd) return text.take(cuts.keep)
+        return text.substring(0, cuts.headEnd) + TEXT_TRUNCATION_MARKER + text.substring(cuts.tailStart)
+    }
+
+    /**
+     * 将原始正文坐标系下的 `bodyOffset` 重映射到 [truncateText] 截断后的文本坐标系，
+     * 防止落在被截除中段或尾部的步骤切入 [TEXT_TRUNCATION_MARKER] 内部。
+     */
+    private fun rebaseTruncatedOffset(offset: Int, originalText: String): Int {
+        if (offset <= 0) return 0
+        val cuts = computeTruncationCuts(originalText) ?: return offset.coerceIn(0, originalText.length)
+        if (cuts.tailStart <= cuts.headEnd) return offset.coerceIn(0, cuts.keep)
+        val clamped = offset.coerceIn(0, originalText.length)
+        return when {
+            clamped <= cuts.headEnd -> clamped
+            clamped < cuts.tailStart -> cuts.headEnd + TEXT_TRUNCATION_MARKER.length
+            else -> cuts.headEnd + TEXT_TRUNCATION_MARKER.length + (clamped - cuts.tailStart)
+        }
     }
 }
 
@@ -679,6 +781,7 @@ private fun AssistantExecutionStepDto.toJson(): JSONObject = JSONObject().apply 
     put("revision", revision)
     sourceMessageId?.let { put("sourceMessageId", it) }
     occurredAt?.let { put("occurredAt", it) }
+    orderSequence?.let { put("orderSequence", it) }
 }
 
 private fun AssistantApprovalOptionDto.toJson(): JSONObject = JSONObject().apply {
@@ -716,6 +819,20 @@ private fun AssistantTimelineEntryDto.toJson(): JSONObject = JSONObject().apply 
     put("reasoning", reasoning.toJsonArray { block -> JSONObject().apply {
         put("id", block.id); put("text", block.text); put("bodyOffset", block.bodyOffset); put("complete", block.complete)
     } })
+    if (timelineSteps.isNotEmpty()) {
+        put("timelineSteps", timelineSteps.toJsonArray { step -> JSONObject().apply {
+            put("kind", step.kind)
+            put("stepId", step.stepId)
+            put("bodyOffset", step.bodyOffset)
+            put("orderIndex", step.orderIndex)
+            if (step.kind == "thinking") {
+                put("text", step.text)
+                put("complete", step.complete)
+            }
+            step.tool?.let { put("tool", it.toJson()) }
+        } })
+    }
+    orderSequence?.let { put("orderSequence", it) }
 }
 
 /** 测量与编码共用同一份序列化，预算不会和实际 payload 走偏。 */
@@ -765,6 +882,7 @@ private fun JSONObject.toExecutionStepDto(): AssistantExecutionStepDto = Assista
     revision = optLong("revision", 0L),
     sourceMessageId = stringOrNull("sourceMessageId"),
     occurredAt = if (has("occurredAt") && !isNull("occurredAt")) optLong("occurredAt") else null,
+    orderSequence = if (has("orderSequence") && !isNull("orderSequence")) optLong("orderSequence") else null,
 )
 
 private fun JSONObject.toApprovalOptionDto(): AssistantApprovalOptionDto = AssistantApprovalOptionDto(
@@ -805,6 +923,33 @@ private fun JSONObject.toTimelineEntryDto(): AssistantTimelineEntryDto = Assista
         val offset = block.optInt("bodyOffset", -1).takeIf { it >= 0 } ?: return@mapNotNull null
         AssistantReasoningDto(id, block.stringOrEmpty("text"), offset, block.optBoolean("complete", false))
     },
+    timelineSteps = optJSONArray("timelineSteps").objects().mapNotNull { item ->
+        val kind = item.stringOrNull("kind") ?: return@mapNotNull null
+        val stepId = item.stringOrNull("stepId")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+        val offset = item.optInt("bodyOffset", 0).coerceAtLeast(0)
+        val orderIndex = item.optInt("orderIndex", 0)
+        when (kind) {
+            "thinking" -> AssistantTimelineStepDto(
+                kind = kind,
+                stepId = stepId,
+                bodyOffset = offset,
+                orderIndex = orderIndex,
+                text = item.stringOrEmpty("text"),
+                complete = item.optBoolean("complete", true),
+            )
+            "tool_call" -> item.optJSONObject("tool")?.toExecutionStepDto()?.let { toolDto ->
+                AssistantTimelineStepDto(
+                    kind = kind,
+                    stepId = stepId,
+                    bodyOffset = offset,
+                    orderIndex = orderIndex,
+                    tool = toolDto,
+                )
+            }
+            else -> null
+        }
+    },
+    orderSequence = if (has("orderSequence") && !isNull("orderSequence")) optLong("orderSequence") else null,
 )
 
 /**

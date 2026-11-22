@@ -732,6 +732,7 @@ private fun AssistantMessageRow(
         val hasVisibleContent = entry.text.isNotBlank() ||
             entry.reasoning.isNotEmpty() ||
             entry.executionSteps.isNotEmpty() ||
+            entry.timelineSteps.isNotEmpty() ||
             streamingBubbleActive
 
         if (hasVisibleContent) {

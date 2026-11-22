@@ -1,5 +1,6 @@
 package com.openandroidintelligence.conversation.sanitizer
 
+import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.MessagePart
 import com.openandroidintelligence.conversation.model.MessageReasoning
 import com.openandroidintelligence.conversation.ports.TimelineMessage
@@ -28,13 +29,14 @@ object ContextInjectionFilter {
         UNKNOWN,
     }
 
-    /** 分段净化结果，携带是否包含原始文本、空白编辑语义及重映射后的思考偏移供保留与展示判断使用。 */
+    /** 分段净化结果，携带是否包含原始文本、空白编辑语义及重映射后的思考/步骤偏移供保留与展示判断使用。 */
     data class SanitizedPartsResult(
         val parts: List<MessagePart>,
         val rawParts: List<MessagePart>?,
         val hadOriginalText: Boolean,
         val hadExplicitEmptyTextPart: Boolean,
         val reasoning: List<MessageReasoning> = emptyList(),
+        val timelineSteps: List<ExecutionTimelineStep> = emptyList(),
     )
 
     private class IndexedText(
@@ -890,13 +892,14 @@ object ContextInjectionFilter {
 
     /**
      * 对消息分段列表执行合并文本清洗，无损保留附件与原始未清洗分段（仅在发生变化时记录 [rawParts]），
-     * 并同步按移除区间重映射思考块 [MessageReasoning.bodyOffset] 至净化后的展示文本坐标系。
+     * 并同步按移除区间重映射思考块 [MessageReasoning.bodyOffset] 与统一有序步骤 [ExecutionTimelineStep.bodyOffset] 至净化后的展示文本坐标系。
      */
     fun sanitizeParts(
         parts: List<MessagePart>,
         role: SenderRole = SenderRole.ASSISTANT,
         streaming: Boolean = false,
         reasoning: List<MessageReasoning> = emptyList(),
+        timelineSteps: List<ExecutionTimelineStep> = emptyList(),
     ): SanitizedPartsResult {
         if (parts.isEmpty()) {
             return SanitizedPartsResult(
@@ -905,6 +908,7 @@ object ContextInjectionFilter {
                 hadOriginalText = false,
                 hadExplicitEmptyTextPart = false,
                 reasoning = if (reasoning.isEmpty()) emptyList() else reasoning.map { it.copy(bodyOffset = 0) },
+                timelineSteps = if (timelineSteps.isEmpty()) emptyList() else timelineSteps.map { it.withBodyOffset(0) },
             )
         }
 
@@ -967,6 +971,14 @@ object ContextInjectionFilter {
                 if (mapped == item.bodyOffset) item else item.copy(bodyOffset = mapped)
             }
         }
+        val rebasedTimelineSteps = if (timelineSteps.isEmpty()) {
+            emptyList()
+        } else {
+            timelineSteps.map { step ->
+                val mapped = rebaseOffset(step.bodyOffset)
+                step.withBodyOffset(mapped)
+            }
+        }
 
         val rawPartsIfChanged = if (output != parts) parts else null
         return SanitizedPartsResult(
@@ -975,8 +987,61 @@ object ContextInjectionFilter {
             hadOriginalText = hadOriginalText,
             hadExplicitEmptyTextPart = hadExplicitEmptyTextPart,
             reasoning = rebasedReasoning,
+            timelineSteps = rebasedTimelineSteps,
         )
     }
+
+    private fun rebaseProjectedExecution(
+        message: TimelineMessage,
+        targetParts: List<MessagePart>,
+        role: SenderRole,
+        streaming: Boolean,
+    ): Pair<List<MessageReasoning>, List<ExecutionTimelineStep>> {
+        if (message.reasoning.isEmpty() && message.timelineSteps.isEmpty()) {
+            return emptyList<MessageReasoning>() to emptyList()
+        }
+        val currentCleanLen = message.parts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
+        val targetCleanLen = targetParts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
+        if (message.rawParts != null && targetParts == message.parts) {
+            val clampedReasoning = message.reasoning.map { r ->
+                if (r.bodyOffset <= targetCleanLen) r else r.copy(bodyOffset = targetCleanLen)
+            }
+            val clampedSteps = message.timelineSteps.map { step ->
+                if (step.bodyOffset <= targetCleanLen) step else step.withBodyOffset(targetCleanLen)
+            }
+            return clampedReasoning to clampedSteps
+        }
+        val repass = sanitizeParts(
+            parts = message.parts,
+            role = role,
+            streaming = streaming,
+            reasoning = message.reasoning,
+            timelineSteps = message.timelineSteps,
+        )
+        if (repass.parts == targetParts) {
+            return repass.reasoning to repass.timelineSteps
+        }
+        fun proportional(offset: Int): Int = if (currentCleanLen > 0) {
+            ((offset.toLong() * targetCleanLen) / currentCleanLen).toInt().coerceIn(0, targetCleanLen)
+        } else {
+            0
+        }
+        return message.reasoning.map { r -> r.copy(bodyOffset = proportional(r.bodyOffset)) } to
+            message.timelineSteps.map { step -> step.withBodyOffset(proportional(step.bodyOffset)) }
+    }
+
+    /**
+     * 以消息当前已落盘的 `timelineSteps`（处于 `message.parts` 坐标系）为基准，
+     * 在展示导出路径按需重映射偏移，防止对已被 [sanitizeParts] 映射过的步骤重复偏移。
+     */
+    fun rebaseTimelineStepsOnProjection(
+        message: TimelineMessage,
+        targetParts: List<MessagePart>,
+        role: SenderRole = contentSanitizationRole(message.sender),
+        streaming: Boolean = message.state.equals("STREAMING", ignoreCase = true),
+    ): List<ExecutionTimelineStep> =
+        if (message.timelineSteps.isEmpty()) emptyList()
+        else rebaseProjectedExecution(message, targetParts, role, streaming).second
 
     /**
      * 以消息当前已落盘的 `reasoning`（处于 `message.parts` 坐标系）为基准，
@@ -987,34 +1052,9 @@ object ContextInjectionFilter {
         targetParts: List<MessagePart>,
         role: SenderRole = contentSanitizationRole(message.sender),
         streaming: Boolean = message.state.equals("STREAMING", ignoreCase = true),
-    ): List<MessageReasoning> {
-        if (message.reasoning.isEmpty()) return emptyList()
-        val currentCleanLen = message.parts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
-        val targetCleanLen = targetParts.filterIsInstance<MessagePart.Text>().sumOf { it.value.length }
-        if (message.rawParts != null && targetParts == message.parts) {
-            return message.reasoning.map { r ->
-                if (r.bodyOffset <= targetCleanLen) r else r.copy(bodyOffset = targetCleanLen)
-            }
-        }
-        val repass = sanitizeParts(
-            parts = message.parts,
-            role = role,
-            streaming = streaming,
-            reasoning = message.reasoning,
-        )
-        return if (repass.parts == targetParts) {
-            repass.reasoning
-        } else {
-            message.reasoning.map { r ->
-                val proportional = if (currentCleanLen > 0) {
-                    ((r.bodyOffset.toLong() * targetCleanLen) / currentCleanLen).toInt().coerceIn(0, targetCleanLen)
-                } else {
-                    0
-                }
-                r.copy(bodyOffset = proportional)
-            }
-        }
-    }
+    ): List<MessageReasoning> =
+        if (message.reasoning.isEmpty()) emptyList()
+        else rebaseProjectedExecution(message, targetParts, role, streaming).first
 
     /**
      * 将 [TimelineMessage] 投影为可展示的干净消息；若应隐藏则返回 null。
@@ -1050,8 +1090,8 @@ object ContextInjectionFilter {
 
         val cleanedText = sanitized.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
         val hasNonTextContent = sanitized.parts.any { it is MessagePart.Attachment || it is MessagePart.Command }
-        val hasSteps = message.executionSteps.isNotEmpty()
-        val hasReasoning = message.reasoning.isNotEmpty()
+        val hasSteps = message.hasExecutionSteps
+        val hasReasoning = message.hasReasoningSteps
 
         // 保留显式用户空编辑（原文即空且含 contentRevision 或空 Text 分段），防止回滚被旧本地副本复活
         val explicitEmptyUserEdit = role == SenderRole.USER &&
@@ -1072,12 +1112,13 @@ object ContextInjectionFilter {
         }
 
         val preservedRaw = message.rawParts ?: sanitized.rawParts
-        val projectedReasoning = rebaseReasoningOnProjection(message, effectiveParts, sanitizationRole, streaming)
+        val (projectedReasoning, projectedTimelineSteps) = rebaseProjectedExecution(message, effectiveParts, sanitizationRole, streaming)
         return if (
             canonicalSenderValue == message.sender &&
             effectiveParts == message.parts &&
             preservedRaw == message.rawParts &&
-            projectedReasoning == message.reasoning
+            projectedReasoning == message.reasoning &&
+            projectedTimelineSteps == message.timelineSteps
         ) {
             message
         } else {
@@ -1086,6 +1127,7 @@ object ContextInjectionFilter {
                 parts = effectiveParts,
                 rawParts = preservedRaw,
                 reasoning = projectedReasoning,
+                timelineSteps = projectedTimelineSteps,
             )
         }
     }
