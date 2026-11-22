@@ -279,3 +279,17 @@ def test_unknown_path_expands_local_and_ci_scope():
     assert impact["affects_remote"]
     assert impact["affects_android_gateway"]
     assert impact["affects_android_control"]
+
+
+@pytest.mark.parametrize("path", [
+    "apps/android/gateway-client/src/main/kotlin/x/Client.kt",
+    "apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteRuntime.kt",
+])
+def test_pure_android_kotlin_edit_does_not_trigger_python_ci_planning_tests_locally(path):
+    runner = load_runner()
+    commands = []
+    runner.run_command = lambda command, **kwargs: commands.append(command) or 0
+    impact = runner.analyze_impact([path])
+    assert impact["affects_configuration"] is False
+    assert runner.execute_strategy("fast", impact) == 0
+    assert not any("pytest" in command for command in commands)

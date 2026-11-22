@@ -246,6 +246,11 @@ def app_variant_tasks() -> list[str]:
     return [":app:testFullDebugUnitTest", ":app:testPlayDebugUnitTest"]
 
 
+def app_compile_args() -> list[str]:
+    """日常 PR 跳过重型 App Robolectric 单测时的轻量编译兜底，校验主代码与测试源码均可编译。"""
+    return [":app:compileFullDebugKotlin", ":app:compileFullDebugUnitTestKotlin"]
+
+
 def play_args() -> list[str]:
     return list(PLAY_TESTS)
 
@@ -263,7 +268,7 @@ def emit(arguments: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Emit Gradle arguments for one CI lane.")
     parser.add_argument("--group", required=True,
-                        choices=["modules", "app-shard", "app-pr", "play", "lint", "full"])
+                        choices=["modules", "app-shard", "app-pr", "app-compile", "play", "lint", "full"])
     parser.add_argument("--shard", default=None, help="shard name for --group app-shard")
     parser.add_argument("--jvm-reuse", action="store_true", help="仅让显式审计清单中的 App 测试复用 JVM")
     parser.add_argument("--seed", type=int, default=0, help="JVM 复用组内测试乱序的固定种子")
@@ -301,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.sections:
             sections = [part.strip() for part in args.sections.split(",") if part.strip()]
         arguments = pr_args_for_sections(sections, jvm_reuse=args.jvm_reuse, seed=args.seed)
+    elif args.group == "app-compile":
+        arguments = app_compile_args()
     elif args.group == "play":
         arguments = play_args()
     elif args.group == "lint":

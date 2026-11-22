@@ -130,7 +130,10 @@ def android_app_sections(changed_files: list[str]) -> list[str] | None:
     spec = importlib.util.spec_from_file_location("ci_impact", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    result = module.classify([("M", changed) for changed in changed_files])
+    result = module.classify(
+        [("M", changed) for changed in changed_files],
+        allow_app_regressions=True,
+    )
     if result["full_required"]:
         return None
     sections = result.get("app_sections") or set()
