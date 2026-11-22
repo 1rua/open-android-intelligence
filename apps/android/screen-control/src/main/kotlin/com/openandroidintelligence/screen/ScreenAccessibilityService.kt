@@ -74,6 +74,12 @@ object ScreenAccessibilityConnection {
     private val windowStateLock = Any()
     private var snapshotTargets: List<ScreenWindowState>? = null
     private var observedAuxiliary: Set<ScreenWindowState>? = emptySet()
+    private var detachedOverlayId: Int? = null
+
+    /** 窗口移除事件可能在窗口已离开系统列表后才送达。仅保留本机刚卸下的那个窗口的 ID。 */
+    internal fun overlayDetached(windowId: Int) = synchronized(windowStateLock) {
+        detachedOverlayId = windowId.takeIf { it >= 0 }
+    }
     internal val generation: Long get() = sequence.get()
     internal val service: ScreenAccessibilityService?
         get() = reference.get()?.takeIf { ScreenHostRegistry.accessibilityConnected.value }
@@ -145,7 +151,10 @@ object ScreenAccessibilityConnection {
                 observedAuxiliary = null
                 return@synchronized true
             }
-            val ownedOverlayEvent = eventPackage == currentServicePackage && windowId in observed.ownOverlayIds
+            val structural = eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+            val targetEvent = observed.targets.any { it.id == windowId }
+            val ownId = windowId in observed.ownOverlayIds || detachedOverlayId == windowId
+            val ownedOverlayEvent = !targetEvent && ownId && (structural || eventPackage == currentServicePackage)
             val previousAuxiliary = observedAuxiliary
             val targetUnchanged = snapshotTargets?.let { it == observed.targets } == true
             val auxiliaryChanged = previousAuxiliary != null && previousAuxiliary != observed.auxiliary
@@ -203,6 +212,7 @@ object ScreenAccessibilityConnection {
         synchronized(windowStateLock) {
             snapshotTargets = null
             observedAuxiliary = emptySet()
+            detachedOverlayId = null
         }
     }
 }

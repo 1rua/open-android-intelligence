@@ -77,6 +77,24 @@ class ScreenSnapshotInvalidationTest {
     }
 
     @Test
+    fun 本机浮层的延迟状态事件和重复无包名事件不使同一个目标失效() {
+        installTargetWindow()
+        GenerationBackend().read()
+        installTargetAndOverlayWindows()
+        val shown = ScreenAccessibilityConnection.observeWindows(service)!!
+        fun invalid(type: Int, id: Int, windows: ObservedWindows) =
+            ScreenAccessibilityConnection.requiresInvalidation(type, null, id, windows)
+        assertTrue(!invalid(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, OVERLAY_WINDOW_ID, shown))
+        assertTrue(!invalid(AccessibilityEvent.TYPE_WINDOWS_CHANGED, OVERLAY_WINDOW_ID, shown))
+        ScreenAccessibilityConnection.overlayDetached(OVERLAY_WINDOW_ID)
+        installTargetWindow()
+        val removed = ScreenAccessibilityConnection.observeWindows(service)!!
+        assertTrue(!invalid(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, OVERLAY_WINDOW_ID, removed))
+        assertTrue(invalid(AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, FOREIGN_WINDOW_ID, removed))
+        assertTrue(invalid(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, TARGET_WINDOW_ID, removed))
+    }
+
+    @Test
     fun overlayRemovalWindowEventDoesNotTurnFreshDumpIntoStaleSomCapture() = runTest {
         installTargetWindow()
         var eventSent = false

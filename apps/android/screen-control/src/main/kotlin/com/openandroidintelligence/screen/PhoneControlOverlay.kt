@@ -207,7 +207,15 @@ class PhoneControlOverlay(
         bounds = null
         val old = view; view = null
         changedProtection()
-        old?.let { if (it.isAttachedToWindow) manager.removeViewImmediate(it) }
+        old?.takeIf { it.isAttachedToWindow }?.let { attached ->
+            // 只向无障碍事件判定器交付本机实际窗口 ID，视图与节点正文不会离开这里。
+            val id = runCatching {
+                val node = attached.createAccessibilityNodeInfo()
+                try { node.windowId } finally { @Suppress("DEPRECATION") node.recycle() }
+            }.getOrDefault(-1)
+            ScreenAccessibilityConnection.overlayDetached(id)
+            manager.removeViewImmediate(attached)
+        }
     }
     override fun close() {
         stopped = true; decision?.complete(false); stopNative(); hide()
