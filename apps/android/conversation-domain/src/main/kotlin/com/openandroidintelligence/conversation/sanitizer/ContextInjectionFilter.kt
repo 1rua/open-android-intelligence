@@ -1090,10 +1090,8 @@ object ContextInjectionFilter {
 
         val cleanedText = sanitized.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value }
         val hasNonTextContent = sanitized.parts.any { it is MessagePart.Attachment || it is MessagePart.Command }
-        val hasSteps = message.executionSteps.isNotEmpty() ||
-            message.timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep }
-        val hasReasoning = message.reasoning.isNotEmpty() ||
-            message.timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
+        val hasSteps = message.hasExecutionSteps
+        val hasReasoning = message.hasReasoningSteps
 
         // 保留显式用户空编辑（原文即空且含 contentRevision 或空 Text 分段），防止回滚被旧本地副本复活
         val explicitEmptyUserEdit = role == SenderRole.USER &&

@@ -959,7 +959,13 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
                 enqueueMediaTransition(id,event.message.id,event.revision,previousMedia - currentMedia.toSet(),true)
                 enqueueMediaTransition(id,event.message.id,event.revision,currentMedia,false)
                 val updatedRows = old.messages.associateByTo(linkedMapOf()) { it.id }
-                updatedRows[event.message.id] = withDurableStatus(id, event.message.copy(contentRevision = event.revision))
+                val previousRow = updatedRows[event.message.id]
+                val incomingMessage = if (event.message.orderSequence == null && previousRow?.orderSequence != null) {
+                    event.message.copy(contentRevision = event.revision, orderSequence = previousRow.orderSequence)
+                } else {
+                    event.message.copy(contentRevision = event.revision)
+                }
+                updatedRows[event.message.id] = withDurableStatus(id, incomingMessage)
                 writeTimeline(id, old.copy(messages = updatedRows.values.sortedWith(timelineOrderComparator)))
                 saveContentRevision(id,event.message.id,event.revision,false)
             }

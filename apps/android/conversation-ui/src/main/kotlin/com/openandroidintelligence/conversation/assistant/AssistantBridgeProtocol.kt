@@ -354,10 +354,8 @@ fun decodeTimeline(dto: AssistantStateDto): List<TimelineEntry> =
         ContextInjectionFilter.shouldDropMessage(
             text = entry.text,
             hasAttachments = entry.attachments.isNotEmpty(),
-            hasSteps = entry.executionSteps.isNotEmpty() ||
-                entry.timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep },
-            hasReasoning = entry.reasoning.isNotEmpty() ||
-                entry.timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep },
+            hasSteps = entry.hasExecutionSteps,
+            hasReasoning = entry.hasReasoningSteps,
             isMeta = false,
             sender = entry.sender,
             isLocalSyntheticHint = isLocalSynthetic,
@@ -609,17 +607,27 @@ object AssistantWireBudget {
         val adjusted = entries.mapIndexed { index, entry ->
             // 流式尾条是仍在增长的增量，截掉中段会隐藏最新内容；尾条正文必须完整送达。
             val streamingTail = (index == lastIndex && entry.isStreaming) || entry.key == protectedMessageId
-            if (streamingTail) entry else entry.copy(
-                text = truncateText(entry.text),
-                reasoning = entry.reasoning.map { it.copy(text = truncateText(it.text)) },
-                timelineSteps = entry.timelineSteps.map { step ->
-                    when (step) {
-                        is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep ->
-                            step.copy(text = truncateText(step.text))
-                        is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep -> step
-                    }
-                },
-            )
+            if (streamingTail) entry else {
+                val originalText = entry.text
+                entry.copy(
+                    text = truncateText(originalText),
+                    reasoning = entry.reasoning.map {
+                        it.copy(
+                            text = truncateText(it.text),
+                            bodyOffset = rebaseTruncatedOffset(it.bodyOffset, originalText),
+                        )
+                    },
+                    timelineSteps = entry.timelineSteps.map { step ->
+                        val rebasedOffset = rebaseTruncatedOffset(step.bodyOffset, originalText)
+                        when (step) {
+                            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep ->
+                                step.copy(text = truncateText(step.text), bodyOffset = rebasedOffset)
+                            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep ->
+                                step.withBodyOffset(rebasedOffset)
+                        }
+                    },
+                )
+            }
         }
 
         // 先按条数封顶；保留最新条目，因此流式尾条必然留下。
@@ -654,13 +662,10 @@ object AssistantWireBudget {
     fun timelinePayloadBytes(entries: List<TimelineEntry>): Int =
         encodeTimelineArray(entries.map { it.toDto() }).toByteArray(Charsets.UTF_8).size
 
-    /**
-     * 首尾保留截断。
-     *
-     * 结果长度不超过 [MAX_TEXT_CHARS]；切点避开代理对，避免把 emoji 劈成半个字符。
-     */
-    private fun truncateText(text: String): String {
-        if (text.length <= MAX_TEXT_CHARS) return text
+    private data class TruncationCuts(val headEnd: Int, val tailStart: Int, val keep: Int)
+
+    private fun computeTruncationCuts(text: String): TruncationCuts? {
+        if (text.length <= MAX_TEXT_CHARS) return null
         val keep = (MAX_TEXT_CHARS - TEXT_TRUNCATION_MARKER.length).coerceAtLeast(1)
         val headLength = (keep * HEAD_SHARE).toInt()
         val tailLength = keep - headLength
@@ -677,9 +682,34 @@ object AssistantWireBudget {
         ) {
             tailStart += 1
         }
-        if (tailStart <= headEnd) return text.take(keep)
+        return TruncationCuts(headEnd = headEnd, tailStart = tailStart, keep = keep)
+    }
 
-        return text.substring(0, headEnd) + TEXT_TRUNCATION_MARKER + text.substring(tailStart)
+    /**
+     * 首尾保留截断。
+     *
+     * 结果长度不超过 [MAX_TEXT_CHARS]；切点避开代理对，避免把 emoji 劈成半个字符。
+     */
+    private fun truncateText(text: String): String {
+        val cuts = computeTruncationCuts(text) ?: return text
+        if (cuts.tailStart <= cuts.headEnd) return text.take(cuts.keep)
+        return text.substring(0, cuts.headEnd) + TEXT_TRUNCATION_MARKER + text.substring(cuts.tailStart)
+    }
+
+    /**
+     * 将原始正文坐标系下的 `bodyOffset` 重映射到 [truncateText] 截断后的文本坐标系，
+     * 防止落在被截除中段或尾部的步骤切入 [TEXT_TRUNCATION_MARKER] 内部。
+     */
+    private fun rebaseTruncatedOffset(offset: Int, originalText: String): Int {
+        if (offset <= 0) return 0
+        val cuts = computeTruncationCuts(originalText) ?: return offset.coerceIn(0, originalText.length)
+        if (cuts.tailStart <= cuts.headEnd) return offset.coerceIn(0, cuts.keep)
+        val clamped = offset.coerceIn(0, originalText.length)
+        return when {
+            clamped <= cuts.headEnd -> clamped
+            clamped < cuts.tailStart -> cuts.headEnd + TEXT_TRUNCATION_MARKER.length
+            else -> cuts.headEnd + TEXT_TRUNCATION_MARKER.length + (clamped - cuts.tailStart)
+        }
     }
 }
 

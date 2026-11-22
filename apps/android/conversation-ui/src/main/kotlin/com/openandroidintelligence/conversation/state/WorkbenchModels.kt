@@ -57,7 +57,17 @@ data class TimelineEntry(
     /** 该条目首次出现在时间线中的单调顺序号（协议 seq 或本地到达序）。 */
     val orderSequence: Long? = null,
     val isMeta: Boolean = false,
-)
+) {
+    /** 是否包含原生或统一时间线中的工具调用步骤。 */
+    val hasExecutionSteps: Boolean
+        get() = executionSteps.isNotEmpty() ||
+            timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep }
+
+    /** 是否包含思考块或统一时间线中的思考步骤。 */
+    val hasReasoningSteps: Boolean
+        get() = reasoning.isNotEmpty() ||
+            timelineSteps.any { it is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep }
+}
 
 data class WorkbenchUiState(
     val threads: Loadable<List<ConversationSummary>> = Loadable.Idle,

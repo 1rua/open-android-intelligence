@@ -625,6 +625,140 @@ class CrossBackendExecutionOrderTest {
         assertTrue("后续持久化助手回复的顺序号($answerSeq)必须严格大于先前实时工具($toolSeq)", answerSeq > toolSeq)
     }
 
+    @Test
+    fun `独立历史tool_call先于含内嵌tool_use的assistant_message到达时回收临时history_tool行并升级真实sourceMessageId`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(durable(1, "turn/start", obj("turn" to 1)), history = true)
+        projection.accept(durable(2, "tool/call", obj("id" to "tu-claim", "name" to "read_file", "input" to obj("path" to "a.kt"))), history = true)
+        projection.accept(durable(3, "tool/result", obj("callId" to "tu-claim", "output" to "ok-claim")), history = true)
+        assertTrue("先到的独立历史工具应暂存临时行", "history-tool:tu-claim" in projection.rows)
+
+        val claimEvents = projection.accept(
+            durable(
+                4,
+                "assistant/message",
+                obj(
+                    "message" to obj(
+                        "id" to "a-real",
+                        "content" to listOf(
+                            obj("type" to "thinking", "thinking" to "先看文件"),
+                            obj("type" to "tool_use", "id" to "tu-claim", "name" to "read_file", "input" to obj("path" to "a.kt")),
+                            obj("type" to "text", "text" to "已核对完毕"),
+                        ),
+                    ),
+                ),
+            ),
+            history = true,
+        )
+
+        assertFalse("正式消息认领内嵌工具后必须移除临时 history-tool 行", "history-tool:tu-claim" in projection.rows)
+        assertTrue(
+            "认领时应发出临时行 Tombstone 事件",
+            claimEvents.any { it is VerifiedConversationEvent.TimelineTombstoned && it.messageId == "history-tool:tu-claim" },
+        )
+        val realRow = projection.rows.getValue("a-real")
+        val claimedTool = realRow.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().single().step
+        assertEquals("a-real", claimedTool.sourceMessageId)
+        assertEquals(NativeExecutionStatus.COMPLETED, claimedTool.status)
+        assertEquals("ok-claim", claimedTool.output)
+    }
+
+    @Test
+    fun `AssistantContent默认块索引碰撞时不同callId与正文分片互不串写且空对象占位不拼出非法JSON`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(obj("type" to "assistant-stream", "frame" to obj("type" to "start", "attemptId" to "att-collision", "turn" to 1)))
+        // block-start 带默认空对象 input: {}，随后分片不带 callId 连续增量
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-collision",
+                    "chunk" to obj("type" to "block-start", "blockType" to "tool_use", "id" to "c-first", "name" to "read_file", "input" to obj()),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-collision",
+                    "chunk" to obj("type" to "tool-call-delta", "delta" to "{\"path\":\""),
+                ),
+            ),
+        )
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-collision",
+                    "chunk" to obj("type" to "tool-call-delta", "delta" to "a.kt\"}"),
+                ),
+            ),
+        )
+        // 第二个不同 callId 的工具同样未携带 index（回退为 "0"），不得覆盖第一个工具
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-collision",
+                    "chunk" to obj("type" to "tool-call-delta", "id" to "c-second", "name" to "bash", "delta" to "{\"cmd\":\"ls\"}"),
+                ),
+            ),
+        )
+        // 同默认 index "0" 的正文分片不得拼入工具 arguments
+        projection.accept(
+            obj(
+                "type" to "assistant-stream",
+                "frame" to obj(
+                    "type" to "chunk",
+                    "attemptId" to "att-collision",
+                    "chunk" to obj("type" to "text-delta", "text" to "独立正文内容"),
+                ),
+            ),
+        )
+
+        val row = projection.rows.values.single()
+        val tools = row.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>().map { it.step }
+        assertEquals(listOf("c-first", "c-second"), tools.map { it.stepId })
+        assertEquals("""{"path":"a.kt"}""", tools[0].arguments)
+        assertEquals("""{"cmd":"ls"}""", tools[1].arguments)
+        assertEquals("独立正文内容", row.parts.filterIsInstance<MessagePart.Text>().joinToString("") { it.value })
+    }
+
+    @Test
+    fun `Codex流式思考在item_completed重建快照时保留原stepId不突变`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(codex("turn/started", "turn" to obj("id" to "T-key")))
+        projection.accept(codex("item/started", "item" to obj("id" to "r-key", "type" to "reasoning")))
+        projection.accept(codex("item/reasoning/summaryTextDelta", "itemId" to "r-key", "summaryIndex" to 0, "delta" to "流式摘要"))
+        val streamingStepId = (projection.rows.getValue("r-key").timelineSteps.single() as ExecutionTimelineStep.ThinkingStep).stepId
+        assertEquals("summary:0", streamingStepId)
+
+        projection.accept(codex("item/completed", "item" to obj("id" to "r-key", "type" to "reasoning", "summary" to listOf("流式摘要完整版"))))
+        val completedStep = projection.rows.getValue("r-key").timelineSteps.single() as ExecutionTimelineStep.ThinkingStep
+        assertEquals("完成快照必须继承流式阶段的首个思考块 key", streamingStepId, completedStep.stepId)
+        assertEquals("流式摘要完整版", completedStep.text)
+        assertTrue(completedStep.complete)
+    }
+
+    @Test
+    fun `历史turn_end收敛遗留RUNNING工具时同步返回TimelineUpsert事件`() {
+        val projection = RemoteTimelineProjection(local)
+        projection.accept(durable(1, "turn/start", obj("turn" to 9)), history = true)
+        projection.accept(durable(2, "tool/call", obj("id" to "h-unsettled", "name" to "bash")), history = true)
+        val endEvents = projection.accept(
+            durable(3, "turn/end", obj("turn" to 9, "reason" to obj("kind" to "completed"))),
+            history = true,
+        )
+        val upserted = endEvents.filterIsInstance<VerifiedConversationEvent.TimelineUpsert>().single().message
+        assertEquals("history-tool:h-unsettled", upserted.id)
+        assertEquals(NativeExecutionStatus.UNKNOWN, upserted.executionSteps.single().status)
+    }
+
     private fun kotlinx.coroutines.test.TestScope.historyRepository(
         backend: String,
         records: List<JsonValue>,

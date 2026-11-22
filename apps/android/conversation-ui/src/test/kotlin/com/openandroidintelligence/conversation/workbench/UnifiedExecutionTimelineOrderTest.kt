@@ -659,9 +659,150 @@ class UnifiedExecutionTimelineOrderTest {
                     }
                 },
             )
+
+            // 切换到会话 b 再切回会话 a，验证同时间戳到达序与已有 orderSequence 均不丢失
+            controller.openThread("b")
+            runCurrent()
+            controller.openThread("a")
+            runCurrent()
+            val afterSwitchEntries = (controller.state.value.timeline as Loadable.Ready).value
+            val afterSwitchRun = TimelineDisplayModel().build(afterSwitchEntries, GenerationState.COMPLETED)
+                .filterIsInstance<TimelineDisplayItem.Execution>().single().run
+            assertEquals(
+                listOf("到达一", "grep_tool", "到达二"),
+                afterSwitchRun.steps.mapNotNull { step ->
+                    when (step) {
+                        is ExecutionStep.Thought -> step.block.thought
+                        is ExecutionStep.ToolCall -> step.block.toolName
+                        else -> null
+                    }
+                },
+            )
         } finally {
             controller.close()
         }
+    }
+
+    @Test
+    fun `单条消息先创建后追加同回合工具且在同条消息完成最终回答时工具不跳到回答下方`() {
+        val tool = NativeExecutionStep("t-after", "ev-after", "verify_build", "{}", "build ok", NativeExecutionStatus.COMPLETED, orderSequence = 2L)
+        val msgCompleted = TimelineEntry(
+            key = "msg-early",
+            sender = "assistant",
+            text = "构建校验已全部通过。",
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            isStreaming = false,
+            generationId = "g-early",
+            executionGenerationState = GenerationState.COMPLETED,
+            reasoning = listOf(MessageReasoning("r1", "先构思校验方案", 0, true)),
+            timelineSteps = listOf(ExecutionTimelineStep.ThinkingStep("r1", "先构思校验方案", 0, true, 0)),
+            orderSequence = 1L,
+        )
+        val trailingToolFact = TimelineEntry(
+            key = "execution-fact:g-early:t-after",
+            sender = "system",
+            text = "",
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            isStreaming = false,
+            generationId = "g-early",
+            executionFact = true,
+            executionGenerationState = GenerationState.COMPLETED,
+            executionSteps = listOf(tool),
+            timelineSteps = listOf(ExecutionTimelineStep.ToolCallStep(tool, 0, 0)),
+            orderSequence = 2L,
+        )
+
+        val items = TimelineDisplayModel().build(listOf(msgCompleted, trailingToolFact), GenerationState.COMPLETED)
+        assertEquals(1, items.size, "同回合后置工具事实必须归并入同一执行段而非拆到最终回答下方")
+        val run = (items.single() as TimelineDisplayItem.Execution).run
+        assertTrue(run.hasFinalAnswer)
+        assertEquals(
+            listOf("thought", "verify_build"),
+            run.steps.map {
+                when (it) {
+                    is ExecutionStep.Thought -> "thought"
+                    is ExecutionStep.ToolCall -> it.block.toolName
+                    else -> "other"
+                }
+            },
+        )
+    }
+
+    @Test
+    fun `buildOrderedEntryBlocks补齐extraNative工具与遗漏reasoning时继承最大bodyOffset不插队到前置叙述上方`() {
+        val prefix = "前置过渡说明。\n"
+        val extraTool = NativeExecutionStep("t-extra", "ev-e", "extra_tool", "{}", "ok", NativeExecutionStatus.COMPLETED)
+        val entry = TimelineEntry(
+            key = "extra-offset-entry",
+            sender = "assistant",
+            text = "${prefix}最终总结。",
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            generationId = "g-extra",
+            executionSteps = listOf(extraTool),
+            reasoning = listOf(MessageReasoning("r1", "前置思考", prefix.length, true)),
+        )
+
+        val blocks = buildOrderedEntryBlocks(entry = entry)
+        assertEquals(4, blocks.size)
+        assertTrue(blocks[0] is OrderedTimelineBlock.Other, "第 0 块必须是前置过渡说明")
+        assertTrue(blocks[1] is OrderedTimelineBlock.Thought, "第 1 块必须是思考卡")
+        assertTrue(blocks[2] is OrderedTimelineBlock.ToolCall, "第 2 块必须是补齐的工具卡")
+        assertTrue(blocks[3] is OrderedTimelineBlock.Other, "第 3 块必须是最终总结")
+    }
+
+    @Test
+    fun `AssistantWireBudget截断超长正文时同步重映射bodyOffset不劈开截断标记`() {
+        val hugePrefix = "前".repeat(25_000)
+        val hugeSuffix = "后".repeat(20_000)
+        val fullText = hugePrefix + hugeSuffix
+        val tool = NativeExecutionStep("t-budget", "ev-b", "read_file", "{}", "ok", NativeExecutionStatus.COMPLETED)
+        val entry = TimelineEntry(
+            key = "budget-entry",
+            sender = "assistant",
+            text = fullText,
+            isUser = false,
+            timestamp = 1_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+            isStreaming = false,
+            generationId = "g-budget",
+            reasoning = listOf(MessageReasoning("r-mid", "中段思考", hugePrefix.length, true)),
+            timelineSteps = listOf(
+                ExecutionTimelineStep.ThinkingStep("r-mid", "中段思考", hugePrefix.length, true, 0),
+                ExecutionTimelineStep.ToolCallStep(tool, fullText.length, 1),
+            ),
+        )
+        val trailingLatest = TimelineEntry(
+            key = "latest-entry",
+            sender = "assistant",
+            text = "最新一条",
+            isUser = false,
+            timestamp = 2_000L,
+            pendingAcceptance = false,
+            batchGroupId = null,
+        )
+
+        val (budgeted, _) = com.openandroidintelligence.conversation.assistant.AssistantWireBudget.applyBudget(
+            listOf(entry, trailingLatest),
+        )
+        val truncatedEntry = budgeted.first()
+        val markerIndex = truncatedEntry.text.indexOf(com.openandroidintelligence.conversation.assistant.TEXT_TRUNCATION_MARKER)
+        assertTrue(markerIndex > 0)
+        val markerEnd = markerIndex + com.openandroidintelligence.conversation.assistant.TEXT_TRUNCATION_MARKER.length
+
+        val midThoughtOffset = truncatedEntry.timelineSteps[0].bodyOffset
+        val endToolOffset = truncatedEntry.timelineSteps[1].bodyOffset
+        assertEquals(markerEnd, midThoughtOffset, "落在被截除中段的步骤应吸附到截断标记末尾，不得落入标记内部")
+        assertEquals(truncatedEntry.text.length, endToolOffset, "落在原正文末尾的步骤应映射到截断后正文末尾")
     }
 
     private class FakeHost : ConversationRepository, GenerationTracker {
@@ -669,7 +810,7 @@ class UnifiedExecutionTimelineOrderTest {
         override val generationId = MutableStateFlow<String?>("g1")
         override val generationState = MutableStateFlow(GenerationState.RUNNING)
         override suspend fun listConversations(scope: ConversationScope, page: PageRequest) =
-            ConversationPage(listOf(ConversationSummary(ConversationId("a"), "a", 0)), null)
+            ConversationPage(listOf("a", "b").map { ConversationSummary(ConversationId(it), it, 0) }, null)
         override suspend fun createConversation(scope: ConversationScope, clientConversationId: String) = error("unused")
         override suspend fun timeline(conversationId: String, page: PageRequest) = TimelinePage(
             listOf(

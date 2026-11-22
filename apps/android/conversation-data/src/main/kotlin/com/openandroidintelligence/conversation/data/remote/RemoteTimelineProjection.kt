@@ -70,11 +70,31 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "thinking", "thought" -> "reasoning"
             else -> kind
         }
-        private fun findToolBlock(key: String, callId: String?): ContentBlock.Tool? {
-            (blocks[key] as? ContentBlock.Tool)?.let { return it }
-            val normalizedId = callId?.takeIf { it.isNotBlank() } ?: return null
-            return blocks.values.firstOrNull { it is ContentBlock.Tool && it.step.stepId == normalizedId } as? ContentBlock.Tool
+        private fun matchesKind(block: ContentBlock, normalizedKind: String): Boolean = when (block) {
+            is ContentBlock.Text -> normalizedKind == "text"
+            is ContentBlock.Reasoning -> normalizedKind == "reasoning"
+            is ContentBlock.Tool -> normalizedKind in TOOL_USE_BLOCK_TYPES
         }
+        private fun findToolBlock(key: String, callId: String?): ContentBlock.Tool? {
+            val normalizedId = callId?.takeIf { it.isNotBlank() }
+            if (normalizedId != null) {
+                (blocks.values.firstOrNull { it is ContentBlock.Tool && it.step.stepId == normalizedId } as? ContentBlock.Tool)
+                    ?.let { return it }
+            }
+            val byKey = blocks[key] as? ContentBlock.Tool ?: return null
+            if (normalizedId == null || byKey.step.stepId == normalizedId || byKey.step.stepId == key) {
+                return byKey
+            }
+            return null
+        }
+        private fun allocateInsertKey(preferredKey: String, prefix: String): String {
+            if (preferredKey !in blocks) return preferredKey
+            val candidate = "$prefix:$preferredKey"
+            if (candidate !in blocks) return candidate
+            return "$prefix:$preferredKey:${blocks.size}"
+        }
+        fun firstReasoningKey(): String? =
+            blocks.entries.firstOrNull { it.value is ContentBlock.Reasoning }?.key
         fun finishTrailingReasoning() {
             val last = blocks.values.lastOrNull()
             if (last is ContentBlock.Reasoning) last.complete = true
@@ -82,17 +102,44 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         fun start(key: String, kind: String) {
             finishTrailingReasoning()
             val normalized = normalizeKind(kind)
-            blocks.putIfAbsent(key, when {
+            val existing = blocks[key]
+            val targetKey = if (existing == null || matchesKind(existing, normalized)) {
+                key
+            } else {
+                allocateInsertKey(key, normalized)
+            }
+            blocks.putIfAbsent(targetKey, when {
                 normalized == "reasoning" -> ContentBlock.Reasoning()
                 normalized in TOOL_USE_BLOCK_TYPES ->
-                    ContentBlock.Tool(NativeExecutionStep(key, key, "tool", "", status = NativeExecutionStatus.RUNNING))
+                    ContentBlock.Tool(NativeExecutionStep(targetKey, targetKey, "tool", "", status = NativeExecutionStatus.RUNNING))
                 else -> ContentBlock.Text()
             })
         }
         fun append(key: String, kind: String, text: String) {
             val normalizedKind = normalizeKind(kind)
-            if (key !in blocks) start(key, normalizedKind)
-            when (val block = blocks.getValue(key)) {
+            val existing = blocks[key]
+            val targetKey = when {
+                existing == null -> {
+                    start(key, normalizedKind)
+                    key
+                }
+                matchesKind(existing, normalizedKind) -> key
+                else -> {
+                    val scopedKey = "$normalizedKind:$key"
+                    val scopedExisting = blocks[scopedKey]
+                    if (scopedExisting == null) {
+                        start(scopedKey, normalizedKind)
+                        scopedKey
+                    } else if (matchesKind(scopedExisting, normalizedKind)) {
+                        scopedKey
+                    } else {
+                        val freshKey = allocateInsertKey(key, normalizedKind)
+                        start(freshKey, normalizedKind)
+                        freshKey
+                    }
+                }
+            }
+            when (val block = blocks.getValue(targetKey)) {
                 is ContentBlock.Text -> block.text.append(text)
                 is ContentBlock.Reasoning -> block.text.append(text)
                 is ContentBlock.Tool -> block.step = block.step.copy(arguments = block.step.arguments + text)
@@ -120,7 +167,8 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 return merged
             }
             finishTrailingReasoning()
-            blocks[key] = ContentBlock.Tool(
+            val insertKey = allocateInsertKey(key, "tool:${step.stepId}")
+            blocks[insertKey] = ContentBlock.Tool(
                 step = step,
                 complete = step.status == NativeExecutionStatus.COMPLETED || step.status == NativeExecutionStatus.FAILED,
             )
@@ -133,15 +181,20 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             argumentsDelta: String,
             revision: Long,
             occurredAt: Long,
-            orderSeq: Long,
+            allocateOrderSeq: () -> Long,
             sourceMessageId: String?,
         ): NativeExecutionStep {
             val existing = findToolBlock(key, callId)
             if (existing != null) {
+                val mergedArguments = if (existing.step.arguments == "{}" && argumentsDelta.isNotEmpty()) {
+                    argumentsDelta
+                } else {
+                    existing.step.arguments + argumentsDelta
+                }
                 val updated = existing.step.copy(
                     stepId = callId?.takeIf { it.isNotBlank() } ?: existing.step.stepId,
                     toolName = name?.takeIf { it.isNotBlank() } ?: existing.step.toolName,
-                    arguments = existing.step.arguments + argumentsDelta,
+                    arguments = mergedArguments,
                     revision = maxOf(existing.step.revision, revision),
                 )
                 existing.step = updated
@@ -158,16 +211,20 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 revision = revision,
                 sourceMessageId = sourceMessageId,
                 occurredAt = occurredAt,
-                orderSequence = orderSeq,
+                orderSequence = allocateOrderSeq(),
             )
-            blocks[key] = ContentBlock.Tool(created, complete = false)
+            val insertKey = allocateInsertKey(key, "tool:$stepId")
+            blocks[insertKey] = ContentBlock.Tool(created, complete = false)
             return created
         }
         fun finish(key: String) {
-            when (val block = blocks[key]) {
-                is ContentBlock.Text -> block.complete = true
-                is ContentBlock.Reasoning -> block.complete = true
-                is ContentBlock.Tool -> block.complete = true
+            val target = blocks[key]
+                ?: blocks["tool:$key"]
+                ?: key.toIntOrNull()?.let { idx -> blocks.values.elementAtOrNull(idx) }
+            when (target) {
+                is ContentBlock.Text -> target.complete = true
+                is ContentBlock.Reasoning -> target.complete = true
+                is ContentBlock.Tool -> target.complete = true
                 null -> Unit
             }
         }
@@ -299,10 +356,10 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
     fun finishHistoricalReplay(historyRead: Long? = null): List<VerifiedConversationEvent> {
         val source = Source(historical = true, time = lastHistoricalTimestamp, historyRead = historyRead)
         val flushed = flushTrailingHistoricalAcpTurn(source)
-        historicalTurnId?.let { settleHistoricalRunningTools(it) }
+        val settled = historicalTurnId?.let { settleHistoricalRunningTools(it, source) }.orEmpty()
         historicalTurnId = null
         lastAcpHistoricalUserId = null
-        return flushed
+        return flushed + settled
     }
 
     private fun ensureAcpAssistantMessage(source: Source): String {
@@ -413,9 +470,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "turn/end" -> {
                 if (source.historical) {
                     val endedTurn = turn ?: historicalTurnId
-                    if (endedTurn != null) settleHistoricalRunningTools(endedTurn)
+                    val settled = if (endedTurn != null) settleHistoricalRunningTools(endedTurn, source) else emptyList()
                     if (turn == null || turn == historicalTurnId) historicalTurnId = null
-                    return emptyList()
+                    return settled
                 }
                 val terminal = when (data.at("reason")?.text("kind")) {
                     "error" -> GenerationState.FAILED
@@ -469,9 +526,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                         completed = isToolBlockCompleted(block),
                         sourceTime = source.time,
                         sourceMessageId = rowId,
-                        orderSeq = allocateOrder(null),
+                        orderSeq = allocateOrder(null, historical = source.historical),
                     )
-                    val merged = content.upsertTool(step, key = "tool:${step.stepId}")
+                    val merged = content.upsertTool(step, key = index.toString())
                     knownTools[merged.stepId] = merged
                     toolOwnerMessageId[merged.stepId] = rowId
                 }
@@ -537,7 +594,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                             argumentsDelta = delta,
                             revision = ++revision,
                             occurredAt = source.time,
-                            orderSeq = callId?.let { knownTools[it]?.orderSequence } ?: allocateOrder(null, historical = source.historical),
+                            allocateOrderSeq = {
+                                callId?.let { knownTools[it]?.orderSequence } ?: allocateOrder(null, historical = source.historical)
+                            },
                             sourceMessageId = rowId,
                         )
                         knownTools[updated.stepId] = updated
@@ -574,9 +633,9 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             "turn/completed" -> {
                 val terminalId = params.at("turn")?.text("id") ?: params.text("turnId") ?: if (source.historical) historicalTurnId else generationId
                 if (source.historical) {
-                    if (terminalId != null) settleHistoricalRunningTools(terminalId)
+                    val settled = if (terminalId != null) settleHistoricalRunningTools(terminalId, source) else emptyList()
                     if (terminalId == null || terminalId == historicalTurnId) historicalTurnId = null
-                    return emptyList()
+                    return settled
                 }
                 val terminal = when (params.at("turn")?.text("status")) {
                     "failed" -> GenerationState.FAILED
@@ -618,10 +677,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     "reasoning", "plan" -> {
                         val id = item.requiredText("id")
                         val completeText = codexItemText(item)
+                        val existingKey = codexContent[id]?.firstReasoningKey() ?: "content:0"
                         val content = if (completeText != null) {
-                            // 完整条目是该 item 的权威快照，替换增量内容，不能重复拼接。
+                            // 完整条目是该 item 的权威快照，替换增量内容并继承原思考块 key，避免 UI stepKey 突变。
                             AssistantContent().also { snapshot ->
-                                snapshot.append("reasoning", completeText)
+                                snapshot.append(existingKey, "reasoning", completeText)
                                 codexContent[id] = snapshot
                             }
                         } else codexContent.getOrPut(id) { AssistantContent() }
@@ -794,8 +854,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             val rawCandidateParts = content?.toRawParts() ?: (message.rawParts ?: message.parts)
             val role = ContextInjectionFilter.contentSanitizationRole(message.sender)
             val rawTimelineSteps = content?.toTimelineSteps(streaming = !completed)
-            val rawReasoning = rawTimelineSteps?.filterIsInstance<ExecutionTimelineStep.ThinkingStep>()
-                ?.map { MessageReasoning(it.stepId, it.text, it.bodyOffset, it.complete) }
+            val rawReasoning = rawTimelineSteps?.toMessageReasonings()
             val sanitized = ContextInjectionFilter.sanitizeParts(
                 parts = rawCandidateParts,
                 role = role,
@@ -893,8 +952,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         val effectiveTimestamp = previous?.timestamp?.takeIf { it > 0L } ?: messageTimestamp
         val rawCandidateParts = content.toRawParts()
         val rawTimelineSteps = content.toTimelineSteps(streaming = streaming)
-        val rawReasoning = rawTimelineSteps.filterIsInstance<ExecutionTimelineStep.ThinkingStep>()
-            .map { MessageReasoning(it.stepId, it.text, it.bodyOffset, it.complete) }
+        val rawReasoning = rawTimelineSteps.toMessageReasonings()
         val sanitizedResult = ContextInjectionFilter.sanitizeParts(
             parts = rawCandidateParts,
             role = ContextInjectionFilter.SenderRole.ASSISTANT,
@@ -1025,6 +1083,20 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                     val merged = knownTools[parsed.stepId]?.let { mergeExecutionStep(it, parsed) } ?: parsed
                     knownTools[merged.stepId] = merged
                     toolOwnerMessageId[merged.stepId] = rowId
+                    if (!rowId.startsWith("history-tool:")) {
+                        val tempToolRowId = "history-tool:${merged.stepId}"
+                        if (rows.remove(tempToolRowId) != null) {
+                            rowHistorical.remove(tempToolRowId)
+                            rowOrderSequences.remove(tempToolRowId)
+                            ownerUpdates += VerifiedConversationEvent.TimelineTombstoned(
+                                eventId = source.id("claim-tool-tombstone:$tempToolRowId:${++revision}"),
+                                occurredAt = source.time,
+                                messageId = tempToolRowId,
+                                revision = revision,
+                                conversationId = ConversationId(sessionId),
+                            )
+                        }
+                    }
                     val existingIdx = steps.indexOfFirst { it is ExecutionTimelineStep.ToolCallStep && it.stepId == merged.stepId }
                     if (existingIdx >= 0) {
                         val old = steps[existingIdx] as ExecutionTimelineStep.ToolCallStep
@@ -1157,8 +1229,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
                 message.text("text")?.let { raw -> listOf(MessagePart.Text(raw)) }.orEmpty()
             }
         val rawTimelineSteps = extracted.timelineSteps
-        val rawReasoning = rawTimelineSteps.filterIsInstance<ExecutionTimelineStep.ThinkingStep>()
-            .map { MessageReasoning(it.stepId, it.text, it.bodyOffset, it.complete) }
+        val rawReasoning = rawTimelineSteps.toMessageReasonings()
         val sanitizedResult = ContextInjectionFilter.sanitizeParts(
             parts = rawCandidateParts,
             role = ContextInjectionFilter.contentSanitizationRole(role),
@@ -1274,9 +1345,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         return null
     }
 
-    private fun extractToolCallId(value: JsonValue): String? =
-        value.text("callId") ?: value.text("toolCallId") ?: value.text("tool_call_id")
-            ?: value.text("tool_use_id") ?: value.text("toolUseId") ?: value.text("stepId") ?: value.text("id")
+    // extractToolCallId 已提升为同包顶层 internal 辅助函数，供 RemoteConversationRepository 复用。
 
     private fun extractToolName(value: JsonValue, allowGenericFallback: Boolean = true): String {
         val primary = extractToolString(value, "toolName", "name", "tool", "title", "function.name")
@@ -1347,7 +1416,7 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             output = output,
             status = status,
             revision = ++revision,
-            sourceMessageId = previous?.sourceMessageId ?: sourceMessageId,
+            sourceMessageId = NativeExecutionStep.resolveSourceMessageId(previous?.sourceMessageId, sourceMessageId),
             occurredAt = previous?.occurredAt?.takeIf { it > 0L } ?: sourceTime,
             orderSequence = previous?.orderSequence ?: orderSeq,
         )
@@ -1403,7 +1472,11 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
         )
     }
 
-    private fun settleHistoricalRunningTools(turnId: String) {
+    private fun settleHistoricalRunningTools(
+        turnId: String,
+        source: Source,
+    ): List<VerifiedConversationEvent.TimelineUpsert> {
+        val settledEvents = mutableListOf<VerifiedConversationEvent.TimelineUpsert>()
         rows.entries.toList().forEach { (id, row) ->
             if (row.generationId != turnId) return@forEach
             val hasRunning = row.executionSteps.any { it.status == NativeExecutionStatus.RUNNING } ||
@@ -1411,18 +1484,33 @@ internal class RemoteTimelineProjection(private val sessionId: String, private v
             if (!hasRunning) return@forEach
             val settledTimeline = row.timelineSteps.map { item ->
                 if (item is ExecutionTimelineStep.ToolCallStep && item.step.status == NativeExecutionStatus.RUNNING) {
-                    item.copy(step = item.step.copy(status = NativeExecutionStatus.UNKNOWN))
+                    val settledStep = item.step.copy(status = NativeExecutionStatus.UNKNOWN, revision = ++revision)
+                    knownTools[settledStep.stepId] = settledStep
+                    item.copy(step = settledStep)
                 } else item
             }
             val settledExec = row.executionSteps.map { step ->
-                if (step.status == NativeExecutionStatus.RUNNING) step.copy(status = NativeExecutionStatus.UNKNOWN) else step
+                if (step.status == NativeExecutionStatus.RUNNING) {
+                    val settledStep = knownTools[step.stepId]?.takeIf { it.status == NativeExecutionStatus.UNKNOWN }
+                        ?: step.copy(status = NativeExecutionStatus.UNKNOWN, revision = ++revision).also { knownTools[it.stepId] = it }
+                    settledStep
+                } else step
             }
-            rows[id] = row.copy(
+            val updatedRow = row.copy(
                 contentRevision = ++revision,
                 timelineSteps = settledTimeline,
                 executionSteps = settledExec,
             )
+            rows[id] = updatedRow
+            settledEvents += VerifiedConversationEvent.TimelineUpsert(
+                eventId = source.id("settle-history-tools:$id:$revision"),
+                occurredAt = source.time,
+                revision = revision,
+                message = updatedRow,
+                presentationOrigin = StreamPresentationOrigin.SNAPSHOT,
+            )
         }
+        return settledEvents
     }
 
     private fun execution(
@@ -1572,26 +1660,12 @@ private val GENERIC_TOOL_WRAPPER_TYPES = setOf(
     "functionResponse",
 )
 
-private fun mergeExecutionStep(existing: NativeExecutionStep, incoming: NativeExecutionStep): NativeExecutionStep {
-    val existingTerminal = existing.status == NativeExecutionStatus.COMPLETED || existing.status == NativeExecutionStatus.FAILED
-    val incomingNonTerminal = incoming.status == NativeExecutionStatus.RUNNING || incoming.status == NativeExecutionStatus.UNKNOWN
-    val mergedStatus = if (existingTerminal && incomingNonTerminal) existing.status else incoming.status
-    val mergedName = when {
-        incoming.toolName.isNotBlank() && incoming.toolName != "tool" -> incoming.toolName
-        existing.toolName.isNotBlank() -> existing.toolName
-        else -> incoming.toolName.ifBlank { "tool" }
-    }
-    return incoming.copy(
-        toolName = mergedName,
-        arguments = incoming.arguments.ifEmpty { existing.arguments },
-        output = incoming.output ?: existing.output,
-        status = mergedStatus,
-        revision = maxOf(existing.revision, incoming.revision),
-        sourceMessageId = existing.sourceMessageId?.takeIf { it.isNotBlank() } ?: incoming.sourceMessageId,
-        occurredAt = existing.occurredAt?.takeIf { it > 0L } ?: incoming.occurredAt,
-        orderSequence = existing.orderSequence ?: incoming.orderSequence,
-    )
-}
+internal fun extractToolCallId(value: JsonValue): String? =
+    value.text("callId") ?: value.text("toolCallId") ?: value.text("tool_call_id")
+        ?: value.text("tool_use_id") ?: value.text("toolUseId") ?: value.text("stepId") ?: value.text("id")
+
+private fun mergeExecutionStep(existing: NativeExecutionStep, incoming: NativeExecutionStep): NativeExecutionStep =
+    existing.mergeWith(incoming)
 
 private fun mergeDerivedExecutionSteps(
     timelineSteps: List<ExecutionTimelineStep>,

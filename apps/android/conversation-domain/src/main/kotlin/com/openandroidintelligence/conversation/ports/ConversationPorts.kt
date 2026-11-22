@@ -65,6 +65,14 @@ data class TimelineMessage(
 ) {
     /** 明确删除的消息身份不能因缺少正文而被本地发送副本补回。 */
     val isDeleted: Boolean get() = state.equals("DELETED", ignoreCase = true) || state.equals("TOMBSTONED", ignoreCase = true)
+
+    /** 是否包含原生或统一时间线中的工具调用步骤。 */
+    val hasExecutionSteps: Boolean
+        get() = executionSteps.isNotEmpty() || timelineSteps.any { it is ExecutionTimelineStep.ToolCallStep }
+
+    /** 是否包含思考块或统一时间线中的思考步骤。 */
+    val hasReasoningSteps: Boolean
+        get() = reasoning.isNotEmpty() || timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
 }
 
 data class MessageBatch(

@@ -235,9 +235,7 @@ class RemoteConversationRepository(
             val eventType = event.text("type")
             val data = event.at("data") ?: return@mapNotNull null
             if (eventType == "tool/call" || eventType == "tool/result") {
-                val callId = data.text("callId") ?: data.text("toolCallId") ?: data.text("tool_call_id")
-                    ?: data.text("stepId") ?: data.text("id")
-                callId?.let { "history-tool:$it" }
+                extractToolCallId(data)?.let { "history-tool:$it" }
             } else {
                 (data.at("message") ?: data).text("id")
             }

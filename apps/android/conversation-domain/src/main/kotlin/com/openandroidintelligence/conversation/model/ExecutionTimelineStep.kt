@@ -47,3 +47,8 @@ sealed interface ExecutionTimelineStep {
             if (offset == bodyOffset) this else copy(bodyOffset = offset)
     }
 }
+
+/** 从统一异构时间线步骤提取兼容的思考列表。 */
+fun List<ExecutionTimelineStep>.toMessageReasonings(): List<MessageReasoning> =
+    filterIsInstance<ExecutionTimelineStep.ThinkingStep>()
+        .map { MessageReasoning(it.stepId, it.text, it.bodyOffset, it.complete) }

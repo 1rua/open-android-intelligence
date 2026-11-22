@@ -197,12 +197,8 @@ class TimelineDisplayModel(
                 if (previous == null) {
                     nativeStepSources[identity] = index
                     latestNativeSteps[identity] = step
-                } else if (step.revision > previous.revision) {
-                    latestNativeSteps[identity] = step.copy(
-                        sourceMessageId = previous.sourceMessageId?.takeIf { it.isNotBlank() } ?: step.sourceMessageId,
-                        occurredAt = previous.occurredAt ?: step.occurredAt,
-                        orderSequence = previous.orderSequence ?: step.orderSequence,
-                    )
+                } else {
+                    latestNativeSteps[identity] = previous.applyNewerSnapshot(step)
                 }
             }
         }
@@ -214,6 +210,20 @@ class TimelineDisplayModel(
             if (turnSegment.isEmpty()) return
             items += buildTurnSegment(turnSegment.toList(), generation)
             turnSegment.clear()
+        }
+
+        fun hasTrailingExecutionInSameGeneration(fromIndex: Int, generationId: String?): Boolean {
+            if (generationId.isNullOrBlank()) return false
+            for (nextIdx in (fromIndex + 1) until entries.size) {
+                val next = entries[nextIdx]
+                if (!isExecutionEligible(next) || next.generationId != generationId) return false
+                val nextIsPureExecutionWithoutText = next.executionFact ||
+                    ((next.allNativeSteps().isNotEmpty() || next.hasReasoningSteps) &&
+                        next.text.isBlank() &&
+                        next.attachments.isEmpty())
+                return nextIsPureExecutionWithoutText
+            }
+            return false
         }
 
         entries.forEachIndexed { index, entry ->
@@ -238,8 +248,7 @@ class TimelineDisplayModel(
                 emptyList()
             }
             val sourceStepById = sourceSteps.associateBy { it.stepId }
-            val hasOwnThinking = entry.reasoning.isNotEmpty() ||
-                entry.timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
+            val hasOwnThinking = entry.hasReasoningSteps
             val hasMarkup = mayContainExecutionMarkup(entry.text)
             val hasTimelineSteps = entry.timelineSteps.isNotEmpty()
             val hasInterleavedToolOffset = entry.timelineSteps.any { it.bodyOffset > 0 }
@@ -267,7 +276,9 @@ class TimelineDisplayModel(
                 }
                 if (entry.text.isNotBlank() || entry.attachments.isNotEmpty()) {
                     val stripped = entry.copy(executionSteps = emptyList(), timelineSteps = emptyList())
-                    if (turnSegment.isNotEmpty() && turnSegment.all { it.nativeOnly }) {
+                    if (turnSegment.isNotEmpty() && turnSegment.all { it.nativeOnly } &&
+                        !hasTrailingExecutionInSameGeneration(index, generationId)
+                    ) {
                         // 纯原生工具段后的独立正文保持单条气泡（兼容既有一体化源消息与原生步骤契约）。
                         flushTurnSegment()
                         items += TimelineDisplayItem.Single(stripped)
@@ -275,7 +286,8 @@ class TimelineDisplayModel(
                         val analysis = analyse(stripped, emptyList(), generation)
                         turnSegment += TurnSegmentItem(stripped, emptyList(), nativeOnly = false, analysis = analysis)
                         if ((!stripped.isStreaming || generation?.isTerminal() == true || stripped.executionGenerationState?.isTerminal() == true) &&
-                            analysis.finalVisible
+                            analysis.finalVisible &&
+                            !hasTrailingExecutionInSameGeneration(index, generationId)
                         ) {
                             flushTurnSegment()
                         }
@@ -319,12 +331,12 @@ class TimelineDisplayModel(
                 nativeOnly = false,
                 analysis = analysis,
             )
-            // 已完成且有正常正文的消息就是一个回答边界。后续助手消息即使
-            // 没有用户分隔，也不能把这条回答降级为下一段工具过程的叙述。
+            // 已完成且有正常正文的消息在其后不存在同回合纯执行事实时才作为回答边界收口，
+            // 防止排在后方的同回合 execution-fact 工具行在流结束瞬间掉到最终回答下方。
             val entryTerminal = !cleanedEntry.isStreaming ||
                 generation?.isTerminal() == true ||
                 cleanedEntry.executionGenerationState?.isTerminal() == true
-            if (entryTerminal && analysis.finalVisible) {
+            if (entryTerminal && analysis.finalVisible && !hasTrailingExecutionInSameGeneration(index, generationId)) {
                 flushTurnSegment()
             }
         }
@@ -718,15 +730,36 @@ internal fun buildOrderedEntryBlocks(
     val nativeById = nativeSteps.associateBy { it.stepId }
     val unifiedSteps: List<ExecutionTimelineStep> = when {
         entry.timelineSteps.isNotEmpty() -> {
-            val existingToolIds = entry.timelineSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>()
+            val baseSteps = if (entry.timelineSteps.none { it is ExecutionTimelineStep.ThinkingStep } && entry.reasoning.isNotEmpty()) {
+                val fromReasoning = entry.reasoning.mapIndexed { idx, r ->
+                    ExecutionTimelineStep.ThinkingStep(
+                        stepId = r.id,
+                        text = r.text,
+                        bodyOffset = r.bodyOffset,
+                        complete = r.complete,
+                        orderIndex = idx,
+                    )
+                }
+                val shift = fromReasoning.size
+                fromReasoning + entry.timelineSteps.map { step ->
+                    when (step) {
+                        is ExecutionTimelineStep.ThinkingStep -> step.copy(orderIndex = step.orderIndex + shift)
+                        is ExecutionTimelineStep.ToolCallStep -> step.copy(orderIndex = step.orderIndex + shift)
+                    }
+                }
+            } else {
+                entry.timelineSteps
+            }
+            val existingToolIds = baseSteps.filterIsInstance<ExecutionTimelineStep.ToolCallStep>()
                 .mapTo(hashSetOf()) { it.stepId }
             val extraNative = nativeSteps.filterNot { it.stepId in existingToolIds }
             if (extraNative.isEmpty()) {
-                entry.timelineSteps
+                baseSteps
             } else {
-                val baseOrder = (entry.timelineSteps.maxOfOrNull { it.orderIndex } ?: -1) + 1
-                entry.timelineSteps + extraNative.mapIndexed { idx, step ->
-                    ExecutionTimelineStep.ToolCallStep(step = step, bodyOffset = 0, orderIndex = baseOrder + idx)
+                val baseOrder = (baseSteps.maxOfOrNull { it.orderIndex } ?: -1) + 1
+                val defaultOffset = baseSteps.maxOfOrNull { it.bodyOffset } ?: 0
+                baseSteps + extraNative.mapIndexed { idx, step ->
+                    ExecutionTimelineStep.ToolCallStep(step = step, bodyOffset = defaultOffset, orderIndex = baseOrder + idx)
                 }
             }
         }
@@ -741,10 +774,11 @@ internal fun buildOrderedEntryBlocks(
                 )
             }
             val baseOrder = fromReasoning.size
+            val defaultOffset = fromReasoning.maxOfOrNull { it.bodyOffset } ?: 0
             val fromTools = nativeSteps.mapIndexed { idx, step ->
                 ExecutionTimelineStep.ToolCallStep(
                     step = step,
-                    bodyOffset = 0,
+                    bodyOffset = defaultOffset,
                     orderIndex = baseOrder + idx,
                 )
             }

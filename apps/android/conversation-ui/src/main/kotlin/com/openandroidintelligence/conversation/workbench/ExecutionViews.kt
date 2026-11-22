@@ -27,7 +27,7 @@ fun AssistantMessageContent(
     presentations: StreamingPresentationRegistry? = null,
 ) {
     val text = entry.text
-    val hasStructuredSteps = entry.timelineSteps.isNotEmpty() || entry.reasoning.isNotEmpty() || entry.executionSteps.isNotEmpty()
+    val hasStructuredSteps = entry.hasExecutionSteps || entry.hasReasoningSteps
     if (text.isBlank() && !hasStructuredSteps) {
         if (entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true)) {
             StreamingCursor(
@@ -58,14 +58,27 @@ fun AssistantMessageContent(
         }
     }
 
-    if (orderedBlocks.none { isExecutionBlock(it.block) }) {
+    val lastExecutionIndex = orderedBlocks.indexOfLast { isExecutionBlock(it.block) }
+    if (lastExecutionIndex < 0) {
         StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
             MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
         }
         return
     }
 
-    val groups = remember(orderedBlocks) { groupRealtimeOrderedBlocks(orderedBlocks) }
+    val stepBlocks = remember(orderedBlocks, lastExecutionIndex) {
+        orderedBlocks.subList(0, lastExecutionIndex + 1)
+    }
+    val finalBlocks = remember(orderedBlocks, lastExecutionIndex) {
+        if (lastExecutionIndex + 1 < orderedBlocks.size) {
+            orderedBlocks.subList(lastExecutionIndex + 1, orderedBlocks.size)
+                .map { it.block }
+                .filter { it !is TimelineBlock.Paragraph || it.text.isNotBlank() }
+        } else {
+            emptyList()
+        }
+    }
+    val groups = remember(stepBlocks) { groupRealtimeOrderedBlocks(stepBlocks) }
     var thoughtOrdinal = 0
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -82,46 +95,71 @@ fun AssistantMessageContent(
                             item.stepId?.takeIf { it.isNotBlank() }?.let { "${entry.key}:thought:$it" } ?: "${entry.key}#${group.blockIndex}"
                         else -> "${entry.key}#${group.blockIndex}"
                     }
-                    when (item) {
-                        is OrderedTimelineBlock.Thought -> MarkdownThoughtBlockView(
-                            block = item.block,
-                            isStreaming = entry.isStreaming && !terminalGeneration,
-                            timingKey = timingKey,
-                            thoughtKey = "${entry.key}:thought:${thoughtOrdinal++}",
-                            presentations = presentations,
-                        )
+                    val currentThoughtKey = if (item is OrderedTimelineBlock.Thought) {
+                        "${entry.key}:thought:${thoughtOrdinal++}"
+                    } else null
+                    key(timingKey) {
+                        when (item) {
+                            is OrderedTimelineBlock.Thought -> MarkdownThoughtBlockView(
+                                block = item.block,
+                                isStreaming = entry.isStreaming && !terminalGeneration,
+                                timingKey = timingKey,
+                                thoughtKey = currentThoughtKey,
+                                presentations = presentations,
+                            )
 
-                        is OrderedTimelineBlock.ToolCall -> MarkdownToolCallView(
-                            block = item.block,
-                            isStreaming = item.entryStreamingOverride ?: (entry.isStreaming && !terminalGeneration),
-                            timingKey = timingKey,
-                        )
+                            is OrderedTimelineBlock.ToolCall -> MarkdownToolCallView(
+                                block = item.block,
+                                isStreaming = item.entryStreamingOverride ?: (entry.isStreaming && !terminalGeneration),
+                                timingKey = timingKey,
+                            )
 
-                        is OrderedTimelineBlock.Other -> Unit
+                            is OrderedTimelineBlock.Other -> Unit
+                        }
                     }
                 }
 
-                is RealtimeGroup.Narrative -> CompositionLocalProvider(
-                    LocalMarkdownCompact provides true,
-                ) {
-                    MarkdownDocumentView(
-                        blocks = group.blocks,
-                        isStreaming = entry.isStreaming && !terminalGeneration && groupIndex == groups.lastIndex,
-                    )
+                is RealtimeGroup.Narrative -> key("${entry.key}:narrative:$groupIndex") {
+                    CompositionLocalProvider(
+                        LocalMarkdownCompact provides true,
+                    ) {
+                        MarkdownDocumentView(
+                            blocks = group.blocks,
+                            isStreaming = false,
+                        )
+                    }
                 }
             }
         }
 
-        // 卡片自身没有实时指示时（例如思考已闭合、消息仍在流式），末尾补一个光标，
+        // 卡片自身没有实时指示且尚无尾部最终正文时，末尾补一个光标，
         // 让「还在输出」这件事始终看得见。
-        val lastBlock = orderedBlocks.lastOrNull()?.block
-        val shouldShowTrailingCursor = entry.isStreaming &&
+        val lastBlock = stepBlocks.lastOrNull()?.block
+        val shouldShowTrailingCursor = finalBlocks.isEmpty() &&
+            entry.isStreaming &&
             !terminalGeneration &&
             lastBlock != null &&
             isExecutionBlock(lastBlock) &&
             !cardShowsOwnLiveIndicator(lastBlock, entry.isStreaming)
         if (shouldShowTrailingCursor) {
             StreamingCursor(modifier = Modifier.padding(top = Dimensions.SpaceTiny))
+        }
+
+        if (finalBlocks.isNotEmpty()) {
+            // 尾部最终回答保持非紧凑正文样式，并接入 StreamingReplyBody 流式逐字渐显与触觉反馈。
+            if (presentations != null) {
+                StreamingReplyBody(entry, presentations, finalOnly = true) { shownBlocks, presenting ->
+                    MarkdownDocumentView(
+                        blocks = if (shownBlocks.isNotEmpty() || presenting) shownBlocks else finalBlocks,
+                        isStreaming = presenting,
+                    )
+                }
+            } else {
+                MarkdownDocumentView(
+                    blocks = finalBlocks,
+                    isStreaming = entry.isStreaming && !terminalGeneration,
+                )
+            }
         }
     }
 }
