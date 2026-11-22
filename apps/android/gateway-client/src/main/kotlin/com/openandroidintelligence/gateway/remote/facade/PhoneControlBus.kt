@@ -331,15 +331,16 @@ class PhoneControlBus(
                 errorCode = "REMOTE_CONNECTION_CLOSED",
             ).also { rows[key] = it }
         } ?: return false
-        if (row.state == ControlRequestState.COMPLETED && row.execution == ControlExecutionStatus.SUCCEEDED) return true
-        if (task.records.any { requestEventId(it) == requestId && requestEventType(it) == "assistant/message" }) return false
+        val succeeded = row.state == ControlRequestState.COMPLETED && row.execution == ControlExecutionStatus.SUCCEEDED
+        if (task.records.any { requestEventId(it) == requestId && requestEventType(it) == "assistant/message" }) return succeeded
+        // 成功已落账但正文交付前连接失权时，同一拥有者仍能读到成功回执，正文沿原交付边界丢弃。
         task.results.remove(requestId)
         task.contentChecks.remove(requestId)
         task.artifacts.entries.filter { it.value.first == requestId }.forEach { (artifactId, artifact) ->
             artifact.second.bytes.fill(0); task.artifacts.remove(artifactId)
         }
         publishClosedTurn(task, row)
-        return false
+        return succeeded
     }
 
     private fun publishClosedTurn(task: Task, row: ControlRequestMetadata) {

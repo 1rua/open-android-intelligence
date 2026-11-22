@@ -137,6 +137,31 @@ class PhoneControlBusTest {
         assertEquals(ControlRequestState.OUTCOME_UNKNOWN, ledger.rows.values.single { it.requestId == request.requestId }.state)
     }
 
+    @Test fun 成功已提交但发布时连接失权仍能在重连后读到终态() = runTest {
+        val ledger = Ledger()
+        val original = access()
+        val request = request("success-before-disconnect")
+        val executor = object : Executor() {
+            override fun requireCurrentAccess(access: ControlAccessBinding) {
+                if (access == original && ledger.rows.values.any {
+                    it.requestId == request.requestId && it.state == ControlRequestState.COMPLETED
+                }) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
+            }
+        }
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
+        val task = bus.create(original)
+        bus.submit(original, task, request)
+        runCurrent()
+        bus.connectionClosed(original)
+        val successor = original.copy(connectionId = "successor", connectionGeneration = 2)
+        val events = records(bus.history(successor, task)).filter { eventRequestId(it) == request.requestId }
+        assertEquals(listOf("turn/start", "assistant/message", "turn/end"), events.map(::eventType))
+        val result = Json.canonical(bus.receipt(successor, task, request.requestId))
+        assertTrue(result.contains("\"status\":\"succeeded\""))
+        assertFalse(result.contains("结果正文"))
+        assertEquals(1, executor.calls.size)
+    }
+
     @Test fun connectionClosedKeepsSuccessfulResultAndItsSingleTerminalTurn() = runTest {
         val executor = Executor(); val original = access()
         val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(original)
