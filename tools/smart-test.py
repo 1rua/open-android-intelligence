@@ -62,7 +62,10 @@ def analyze_impact(changed_files: list[str]) -> dict[str, bool]:
     classifier = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(classifier)
-    plan = classifier.classify([("M", path) for path in changed_files])
+    plan = classifier.classify(
+        [("M", path) for path in changed_files],
+        allow_app_regressions=True,
+    )
     lanes = plan["lanes"]
     full = bool(plan["full_required"])
     return {
@@ -127,7 +130,10 @@ def android_app_sections(changed_files: list[str]) -> list[str] | None:
     spec = importlib.util.spec_from_file_location("ci_impact", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    result = module.classify([("M", changed) for changed in changed_files])
+    result = module.classify(
+        [("M", changed) for changed in changed_files],
+        allow_app_regressions=True,
+    )
     if result["full_required"]:
         return None
     sections = result.get("app_sections") or set()
