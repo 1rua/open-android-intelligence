@@ -68,7 +68,7 @@ fun PushSettingsScreen(
     onBack: (() -> Unit)? = null,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
 ) {
-    var snapshot by remember(runtime) { mutableStateOf<PushSnapshot?>(null) }
+    var snapshot by remember(runtime) { mutableStateOf(runCatching { runtime.snapshot() }.getOrNull()) }
     var error by remember(runtime) { mutableStateOf<String?>(null) }
     var saving by remember(runtime) { mutableStateOf(false) }
     var saveCompletion by remember(runtime) { mutableStateOf(0L) }
@@ -84,45 +84,45 @@ fun PushSettingsScreen(
             onBack?.let { TextButton(onClick = it) { Text("返回") } }
             Text(error ?: "正在读取推送设置")
         }
-        return
-    }
-    PushSettingsContent(
-        snapshot = state,
-        endpoints = endpoints,
-        saving = saving,
-        error = error,
-        saveCompletion = saveCompletion,
-        onRefreshEndpoints = onRefreshEndpoints,
-        onConfigurationChange = { configuration ->
-            if (!saving) scope.launch {
-                saving = true
-                error = null
-                try {
-                    snapshot = withContext(Dispatchers.IO) {
-                        runtime.configure(configuration, expectedConfiguration = state.configuration)
+    } else {
+        PushSettingsContent(
+            snapshot = state,
+            endpoints = endpoints,
+            saving = saving,
+            error = error,
+            saveCompletion = saveCompletion,
+            onRefreshEndpoints = onRefreshEndpoints,
+            onConfigurationChange = { configuration ->
+                if (!saving) scope.launch {
+                    saving = true
+                    error = null
+                    try {
+                        snapshot = withContext(Dispatchers.IO) {
+                            runtime.configure(configuration, expectedConfiguration = state.configuration)
+                        }
                     }
+                    catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: IllegalStateException) {
+                        error = if (failure.message == "PUSH_CONFIGURATION_CHANGED") {
+                            snapshot = withContext(Dispatchers.IO) { runtime.snapshot() }
+                            "推送配置已在其他位置修改，请重新载入已保存选择后再保存。"
+                        } else "推送配置保存失败，尚未应用本次修改。"
+                    }
+                    catch (_: IllegalArgumentException) { error = "无法保存：范围或容量无效，容量不能小于当前队列用量。" }
+                    catch (_: Exception) { error = "推送配置保存失败，尚未应用本次修改。" }
+                    finally { saving = false; saveCompletion += 1 }
                 }
+            },
+            onRefreshState = { scope.launch {
+                try { snapshot = withContext(Dispatchers.IO) { runtime.maintain() } }
                 catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: IllegalStateException) {
-                    error = if (failure.message == "PUSH_CONFIGURATION_CHANGED") {
-                        snapshot = withContext(Dispatchers.IO) { runtime.snapshot() }
-                        "推送配置已在其他位置修改，请重新载入已保存选择后再保存。"
-                    } else "推送配置保存失败，尚未应用本次修改。"
-                }
-                catch (_: IllegalArgumentException) { error = "无法保存：范围或容量无效，容量不能小于当前队列用量。" }
-                catch (_: Exception) { error = "推送配置保存失败，尚未应用本次修改。" }
-                finally { saving = false; saveCompletion += 1 }
-            }
-        },
-        onRefreshState = { scope.launch {
-            try { snapshot = withContext(Dispatchers.IO) { runtime.maintain() } }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { error = "无法读取当前队列状态。" }
-        } },
-        modifier = modifier,
-        onBack = onBack,
-        presentation = presentation,
-    )
+                catch (_: Exception) { error = "无法读取当前队列状态。" }
+            } },
+            modifier = modifier,
+            onBack = onBack,
+            presentation = presentation,
+        )
+    }
 }
 
 /** 恢复时配置已变化则丢弃旧草稿；保存状态中只保留基线摘要。 */
