@@ -19,6 +19,28 @@ import org.junit.Test
 class RemoteScreenRuntimeTest {
     private val controlInput = """{"action":"global","globalAction":"back","expectedRevision":"revision"}"""
 
+    @Test fun screenReadCaptureControlAvailabilityDoesNotRequireLegacyConnectionRegistration() {
+        val backend = FakeBackend()
+        val source = FakeCapture()
+        val runtime = RemoteScreenRuntime(backend, source)
+        val byPermission = mapOf(
+            ScreenPermission.READ to runtime.providers.single { it.primitiveId == "kernel.screen.read" },
+            ScreenPermission.CAPTURE to runtime.providers.single { it.primitiveId == "kernel.screen.capture" },
+            ScreenPermission.CONTROL to runtime.providers.single { it.primitiveId == "kernel.screen.control" },
+        )
+        // 未调用旧架构 registerConnection / connect 时，只要本机无障碍与截图源就绪，三项均不再报 SCREEN_CONNECTION_REQUIRED。
+        assertNull(byPermission.getValue(ScreenPermission.READ).availability())
+        assertNull(byPermission.getValue(ScreenPermission.CAPTURE).availability())
+        assertNull(byPermission.getValue(ScreenPermission.CONTROL).availability())
+
+        // 无障碍断连与截图未授权时，如实暴露具体系统就绪阻塞码。
+        backend.denial = "ACCESSIBILITY_SERVICE_UNAVAILABLE"
+        source.active = false
+        assertEquals("ACCESSIBILITY_SERVICE_UNAVAILABLE", byPermission.getValue(ScreenPermission.READ).availability())
+        assertEquals("SCREEN_CAPTURE_AUTHORIZATION_REQUIRED", byPermission.getValue(ScreenPermission.CAPTURE).availability())
+        assertEquals("ACCESSIBILITY_SERVICE_UNAVAILABLE", byPermission.getValue(ScreenPermission.CONTROL).availability())
+    }
+
     @Test fun readyProvidersAreDiscoverableWithoutLegacySessionButInvocationRequiresDriverDecision() = runTest {
         val fixture = Fixture()
         assertNull(fixture.provider(ScreenPermission.READ).availability())
@@ -136,7 +158,9 @@ class RemoteScreenRuntimeTest {
         assertNull("A stream outage does not erase the authenticated relationship", fixture.provider(ScreenPermission.CONTROL).availability())
         assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput, "expired") })
         fixture.runtime.disconnectConnection(fixture.runtime.binding()!!)
-        assertEquals("SCREEN_CONNECTION_REQUIRED", fixture.provider(ScreenPermission.CONTROL).availability())
+        // 断开旧连接登记不影响本机无障碍服务就绪态，但旧 binding 绝不能再安装或执行任何请求。
+        assertNull(fixture.provider(ScreenPermission.CONTROL).availability())
+        assertEquals("SCREEN_REQUEST_AUTHORIZATION_REQUIRED", code { fixture.invoke(ScreenPermission.CONTROL, controlInput, "expired") })
         assertEquals(0, fixture.backend.actions)
     }
 
@@ -466,7 +490,8 @@ class RemoteScreenRuntimeTest {
         fixture.grant("fresh", ScreenPermission.READ, binding = registered)
         assertEquals("revision", JsonFields.string(fixture.invoke(ScreenPermission.READ, id = "fresh"), "revision"))
         fixture.runtime.disconnectConnection(registered)
-        assertEquals("SCREEN_CONNECTION_REQUIRED", fixture.provider(ScreenPermission.READ).availability())
+        assertNull(fixture.provider(ScreenPermission.READ).availability())
+        assertEquals("SCREEN_SESSION_BINDING_CHANGED", code { fixture.grant("after-disconnect", ScreenPermission.READ, binding = registered) })
     }
 
     @Test fun globalEmergencyStopAndDisconnectAllInvalidateEveryRegisteredConnectionRequest() = runTest {
@@ -485,7 +510,10 @@ class RemoteScreenRuntimeTest {
             val expected = if (logout) "SCREEN_CONNECTION_TIMED_OUT" else "SCREEN_CONTROL_REVOKED"
             assertEquals(expected, first.await()); assertEquals(expected, second.await())
             assertEquals(0, fixture.backend.actions)
-            if (logout) assertEquals("SCREEN_CONNECTION_REQUIRED", fixture.provider(ScreenPermission.READ).availability())
+            if (logout) {
+                assertNull(fixture.provider(ScreenPermission.READ).availability())
+                assertEquals("SCREEN_SESSION_BINDING_CHANGED", code { fixture.grant("after-logout", ScreenPermission.READ, binding = foreground) })
+            }
         }
     }
 

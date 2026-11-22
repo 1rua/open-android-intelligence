@@ -91,6 +91,7 @@ AppearanceSettingsScreenTest
 AssistantRoleTest
 ButtonRevealGeometryTest
 CapabilityCatalogTest
+CapabilityGrantStatusChainTest
 CapabilitySettingsTest
 CapabilityStateTest
 CapabilityTemporaryApprovalsTest

@@ -68,4 +68,55 @@ object ScreenHostRegistry {
     /** Shared by every connection/Agent in this App process, independent of read/capture. */
     val controlLeases = ScreenControlLeaseManager()
     @Volatile var current: ScreenHostLifecycle? = null
+    private val _accessibilityConnected = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** 无障碍服务真实连接态：由无障碍服务生命周期回调即时驱动，不受锁屏状态混淆。 */
+    val accessibilityConnected: kotlinx.coroutines.flow.StateFlow<Boolean> get() = _accessibilityConnected
+
+    fun setAccessibilityConnected(connected: Boolean) {
+        _accessibilityConnected.value = connected
+    }
+
+    /**
+     * 检查给定组件名是否存在于系统设置（如 `enabled_accessibility_services`）的冒号分隔列表中，
+     * 兼容完整类名、简写类名及不同大小写格式。
+     */
+    fun isComponentInColonSeparatedSetting(
+        rawList: String,
+        target: android.content.ComponentName,
+    ): Boolean {
+        if (rawList.isBlank()) return false
+        val full = target.flattenToString()
+        val short = target.flattenToShortString()
+        return rawList.split(':').any { raw ->
+            val entry = raw.trim()
+            if (entry.isEmpty()) return@any false
+            android.content.ComponentName.unflattenFromString(entry) == target ||
+                entry.equals(full, ignoreCase = true) ||
+                entry.equals(short, ignoreCase = true)
+        }
+    }
+
+    /**
+     * 交叉核验系统 `Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES` 与
+     * `AccessibilityManager.getEnabledAccessibilityServiceList`，判断指定无障碍服务是否已在系统设置中开启。
+     */
+    fun isAccessibilityServiceEnabledInSettings(
+        context: android.content.Context,
+        serviceComponent: android.content.ComponentName,
+    ): Boolean = runCatching {
+        val enabled = android.provider.Settings.Secure.getString(
+            context.contentResolver,
+            android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
+        ).orEmpty()
+        if (isComponentInColonSeparatedSetting(enabled, serviceComponent)) return@runCatching true
+        val manager = context.getSystemService(android.view.accessibility.AccessibilityManager::class.java)
+            ?: return@runCatching false
+        manager.getEnabledAccessibilityServiceList(
+            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK,
+        ).any { info ->
+            val serviceInfo = info.resolveInfo?.serviceInfo ?: return@any false
+            serviceInfo.packageName == serviceComponent.packageName && serviceInfo.name == serviceComponent.className
+        }
+    }.getOrDefault(false)
 }

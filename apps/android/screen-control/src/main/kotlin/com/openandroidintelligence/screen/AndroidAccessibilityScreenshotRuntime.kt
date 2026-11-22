@@ -92,21 +92,11 @@ class AndroidAccessibilityScreenshotRuntime(
         }
     }
 
-    override fun isServiceEnabledInSettings(): Boolean = try {
-        val enabled = Settings.Secure.getString(
-            context.contentResolver,
-            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-        ).orEmpty()
-        val own = ComponentName(context, ScreenAccessibilityService::class.java)
-        val full = own.flattenToString()
-        val short = own.flattenToShortString()
-        enabled.split(':').any { entry ->
-            entry.equals(full, ignoreCase = true) || entry.equals(short, ignoreCase = true)
-        }
-    } catch (_: RuntimeException) {
-        // 读不到系统设置时不能乐观地说「已开启」，否则界面会错误地引导用户「重新开启」。
-        false
-    }
+    override fun isServiceEnabledInSettings(): Boolean =
+        ScreenHostRegistry.isAccessibilityServiceEnabledInSettings(
+            context,
+            ComponentName(context, ScreenAccessibilityService::class.java),
+        )
 
     override fun isServiceConnected(): Boolean = ScreenAccessibilityConnection.service != null
 

@@ -17,6 +17,9 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
 
 /**
  * 极简 Android 宿主组合根。
@@ -164,6 +167,25 @@ class OpenAndroidIntelligenceApplication : Application() {
 
         devicePush = DevicePushComposition(this,installId).also { it.start() }
 
+        remoteScope.launch(Dispatchers.IO) {
+            runCatching { pluginHost.reconcileNotificationPolicyGrant() }
+        }
+        remoteScope.launch {
+            com.openandroidintelligence.control.ScreenHostRegistry.accessibilityConnected.drop(1).collect {
+                pluginHost.notifyCapabilityStateChanged()
+            }
+        }
+        remoteScope.launch(Dispatchers.IO) {
+            com.openandroidintelligence.notification.control.NotificationControlRegistry
+                .bindingPort()
+                .observeListenerConnected()
+                .drop(1)
+                .collect {
+                    val reconciled = runCatching { pluginHost.reconcileNotificationPolicyGrant() }.getOrDefault(false)
+                    if (!reconciled) pluginHost.notifyCapabilityStateChanged()
+                }
+        }
+
 
         // Visibility is a process fact, not an Activity one: a background gap
         // can leave the event stream nominally alive while the Gateway dropped
@@ -176,6 +198,9 @@ class OpenAndroidIntelligenceApplication : Application() {
                     gatewayNetworkMonitor.start()
                     remoteRuntime.onAppForegrounded()
                     devicePush?.onVisibilityChanged(true)
+                    remoteScope.launch(Dispatchers.IO) {
+                        runCatching { pluginHost.reconcileNotificationPolicyGrant() }
+                    }
                 }
                 override fun onStop(owner: LifecycleOwner) {
                     remoteRuntime.onAppBackgrounded()

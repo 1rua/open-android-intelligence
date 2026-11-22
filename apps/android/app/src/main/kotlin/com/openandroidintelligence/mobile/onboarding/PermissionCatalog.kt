@@ -309,15 +309,8 @@ val PERMISSION_NOTICE_BODY_RES = UiR.string.perm_notice_body
  * 返回系统设置里已勾选的监听器包名集合。用它而不是维护自己的布尔标记，
  * 才能保证用户去系统设置改过之后，回到引导页看到的是**真实**状态。
  */
-private fun hasNotificationListenerAccess(context: Context): Boolean = try {
-    android.app.NotificationManager::class.java
-    androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context)
-        .contains(context.packageName)
-} catch (_: Exception) {
-    // 极少数 ROM 上该 API 可能抛异常；此时保守返回 false（显示「未开启」），
-    // 用户仍可通过「前往设置」手动确认，不伪造已授权。
-    false
-}
+private fun hasNotificationListenerAccess(context: Context): Boolean =
+    com.openandroidintelligence.mobile.plugins.hasSystemNotificationListenerAccess(context)
 
 /**
  * 查询系统的「本应用通知」总开关是否允许（与运行时权限无关）。

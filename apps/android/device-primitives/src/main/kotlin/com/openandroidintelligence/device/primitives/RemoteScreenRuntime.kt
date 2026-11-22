@@ -304,13 +304,12 @@ internal class RemoteScreenRuntime(
 
     private fun provider(id: String, permission: ScreenPermission) = object : KernelPrimitiveProvider {
         override val primitiveId = id
-        // Publication describes connection/system readiness. Each call still needs its
-        // own trusted policy decision; pending/manual policy must be able to reach driver.
-        override fun availability(): String? = when {
-            connections.values.none { connectionBinding(it) != null } -> "SCREEN_CONNECTION_REQUIRED"
-            permission == ScreenPermission.CAPTURE -> captureReadiness()
+        // 就绪态仅反映本机系统服务（无障碍/截屏源/锁屏）是否就绪，不再受已退役旧架构的
+        // connections 集合阻塞；真实调用仍由 invoke()/NativePhoneControlKernel 独立鉴权。
+        override fun availability(): String? = when (permission) {
+            ScreenPermission.CAPTURE -> captureReadiness()
                 ?: if (capture.isAvailable) null else "SCREEN_CAPTURE_AUTHORIZATION_REQUIRED"
-            else -> backend.availability()
+            ScreenPermission.READ, ScreenPermission.CONTROL -> backend.availability()
         }
 
         override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {

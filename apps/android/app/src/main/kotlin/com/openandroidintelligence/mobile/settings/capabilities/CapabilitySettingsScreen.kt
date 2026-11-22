@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.Lifecycle
@@ -58,6 +59,7 @@ import com.openandroidintelligence.mobile.plugins.DeviceCapabilityIdentity
 import com.openandroidintelligence.mobile.plugins.DeviceCapabilitySyncState
 import com.openandroidintelligence.mobile.plugins.androidPermissionRequirements
 import com.openandroidintelligence.mobile.plugins.capabilityStatusLabel
+import com.openandroidintelligence.mobile.plugins.isNotificationListenerReady
 import com.openandroidintelligence.mobile.plugins.manualGrantGuidance
 import com.openandroidintelligence.mobile.plugins.needsFallbackConsent
 import com.openandroidintelligence.mobile.plugins.openNotificationAccessSettings
@@ -65,10 +67,12 @@ import com.openandroidintelligence.mobile.screen.accessibilityServiceClassName
 import com.openandroidintelligence.mobile.screen.accessibilityServiceDisconnected
 import com.openandroidintelligence.mobile.screen.accessibilityServiceEnabledInSettings
 import com.openandroidintelligence.mobile.screen.accessibilityServiceReady
+import com.openandroidintelligence.mobile.screen.probeAccessibilityBinding
 import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -176,12 +180,18 @@ private fun CapabilityDetailContent(
         }
     }
     var refreshTick by remember { mutableIntStateOf(0) }
+    var pollTick by remember { mutableIntStateOf(0) }
     var requestedPermission by remember { mutableStateOf<String?>(null) }
     var deniedPermissions by remember { mutableStateOf(emptySet<String>()) }
     var notice by remember { mutableStateOf<String?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
+    val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
+    val notificationBinding = NotificationControlRegistry.bindingPort()
+    val notificationListenerConnected by notificationBinding.observeListenerConnected()
+        .collectAsState(initial = runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false))
     val lifecycle = LocalLifecycleOwner.current
     fun refresh() {
+        probeAccessibilityBinding(context)
         refreshTick++
         runCatching { runtime?.refreshCapabilities?.invoke() }
     }
@@ -202,22 +212,30 @@ private fun CapabilityDetailContent(
         lifecycle.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 delay(1_000L)
-                refreshTick++
+                pollTick++
             }
         }
     }
     // 与下方「通知采集范围」同一判据：该策略对任何声明了 notifications 原语的提供者都生效，
     // 因此它的变化都要触发本页刷新，而不只对官方插件。
-    if (entries.any { "kernel.notifications.read" in it.primitives }) {
+    val usesNotificationPrimitive = entries.any { "kernel.notifications.read" in it.primitives }
+    if (usesNotificationPrimitive) {
         val notificationPolicy = NotificationControlRegistry.policyPort()
         LaunchedEffect(notificationPolicy, runtime) {
             notificationPolicy.observe().drop(1).collect { refresh() }
         }
+        LaunchedEffect(host, hostRevision, notificationListenerConnected, refreshTick) {
+            val activeHost = host ?: return@LaunchedEffect
+            val reconciled = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { activeHost.reconcileNotificationPolicyGrant() }.getOrDefault(false)
+            }
+            if (reconciled) refresh()
+        }
     }
-    val inspector = remember(context, refreshTick, hostRevision, deniedPermissions) {
+    val inspector = remember(context, refreshTick, pollTick, hostRevision, accessibilityConnected, notificationListenerConnected, deniedPermissions) {
         DeviceCapabilityGrantInspector(
             context = context,
-            notificationAccessGranted = { runCatching { NotificationControlRegistry.bindingPort().isListenerBound() }.getOrDefault(false) },
+            notificationAccessGranted = ::isNotificationListenerReady,
             accessibilityEnabled = { accessibilityServiceReady(context) },
             captureAuthorized = { runCatching { RemoteScreenCaptureRegistry.source?.isAvailable == true }.getOrDefault(false) },
             deniedRuntimePermissions = { it in deniedPermissions },
@@ -250,7 +268,15 @@ private fun CapabilityDetailContent(
         return
     }
 
-    val snapshot by produceState<com.openandroidintelligence.mobile.plugins.CapabilitySnapshot?>(null, hostRevision, localState?.revision, refreshTick) {
+    val snapshot by produceState<com.openandroidintelligence.mobile.plugins.CapabilitySnapshot?>(
+        null,
+        hostRevision,
+        localState?.revision,
+        accessibilityConnected,
+        notificationListenerConnected,
+        refreshTick,
+        pollTick,
+    ) {
         value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { host.capabilitySnapshot() }.getOrNull() }
     }
     val accessibilityScreenshotSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -441,7 +467,7 @@ private fun CapabilityDetailContent(
     // `NotificationsReadPrimitive` 实际执行的是这一份全安装共享的采集策略，任何声明了
     // `kernel.notifications.read` 的提供者都受它约束。只按官方插件 ID 判定会让第三方通知
     // 提供者的详情页失去这个编辑入口，用户将无法配置真正生效的范围。
-    if (entries.any { "kernel.notifications.read" in it.primitives }) {
+    if (usesNotificationPrimitive) {
         SectionLabel("通知采集范围")
         SettingsSectionCard {
             NotificationCollectionScreen(
@@ -450,6 +476,10 @@ private fun CapabilityDetailContent(
                 onBack = {},
                 presentation = presentation,
                 embedded = true,
+                onGrantChanged = { granted ->
+                    runCatching { host.syncNotificationCapabilitiesWithPolicyGrant(granted, targetPluginId = pluginId) }
+                    refresh()
+                },
             )
         }
     }
@@ -556,6 +586,10 @@ private fun GrantRequirementRow(
             requirement.grantKind == DeviceCapabilityGrantKind.ACCESSIBILITY_SERVICE &&
                 state != DeviceCapabilityGrantState.GRANTED && accessibilityServiceDisconnected(context) ->
                 "服务已开启但当前未连接，请回到无障碍设置确认服务显示「已连接」"
+            requirement.grantKind == DeviceCapabilityGrantKind.NOTIFICATION_ACCESS &&
+                state != DeviceCapabilityGrantState.GRANTED &&
+                runCatching { NotificationControlRegistry.bindingPort().isListenerBound() }.getOrDefault(false) ->
+                stringResource(UiR.string.perm_notification_listener_disconnected)
             state == DeviceCapabilityGrantState.GRANTED -> "系统权限或服务已就绪"
             state == DeviceCapabilityGrantState.NOT_REQUESTED -> "权限尚未授予"
             state == DeviceCapabilityGrantState.DENIED -> "权限被拒绝"

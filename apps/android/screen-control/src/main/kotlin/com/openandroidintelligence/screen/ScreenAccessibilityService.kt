@@ -8,17 +8,21 @@ import android.view.accessibility.AccessibilityEvent
 import java.lang.ref.WeakReference
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicLong
+import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry
 
 /** The system binds this service only after the user enables it in Android Settings. */
 class ScreenAccessibilityService : AccessibilityService() {
     private var overlay: PhoneControlOverlay? = null
+    private var nativeScreen: NativePhoneScreen? = null
     override fun onServiceConnected() {
         super.onServiceConnected()
         ScreenAccessibilityConnection.connect(this)
         overlay?.close()
         overlay = PhoneControlOverlay(this).also { PhoneLocalControlUiRegistry.current = it }
-        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = NativePhoneScreen(this)
+        val screen = NativePhoneScreen(this)
+        nativeScreen = screen
+        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = screen
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -34,19 +38,26 @@ class ScreenAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() { ScreenAccessibilityConnection.interrupt(this) }
     override fun onUnbind(intent: Intent?): Boolean {
-        overlay?.close(); overlay = null
-        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop()
-        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = null
+        releaseOwnedResources()
         ScreenAccessibilityConnection.disconnect(this)
         return super.onUnbind(intent)
     }
     override fun onDestroy() {
-        overlay?.close()
-        overlay = null
-        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current?.stop()
-        com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = null
+        releaseOwnedResources()
         ScreenAccessibilityConnection.disconnect(this)
         super.onDestroy()
+    }
+
+    private fun releaseOwnedResources() {
+        overlay?.close()
+        overlay = null
+        nativeScreen?.let { own ->
+            own.stop()
+            if (com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current === own) {
+                com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = null
+            }
+        }
+        nativeScreen = null
     }
 }
 
@@ -58,7 +69,8 @@ object ScreenAccessibilityConnection {
     val layoutEvents: kotlinx.coroutines.flow.StateFlow<Long> get() = layoutChanges
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     internal val generation: Long get() = sequence.get()
-    internal val service: ScreenAccessibilityService? get() = reference.get()
+    internal val service: ScreenAccessibilityService?
+        get() = reference.get()?.takeIf { ScreenHostRegistry.accessibilityConnected.value }
     internal fun changed(eventType: Int? = null) {
         sequence.incrementAndGet()
         if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED || eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
@@ -66,6 +78,7 @@ object ScreenAccessibilityConnection {
     }
     internal fun connect(service: ScreenAccessibilityService) {
         reference = WeakReference(service)
+        ScreenHostRegistry.setAccessibilityConnected(true)
         changed()
     }
     internal fun interrupt(service: ScreenAccessibilityService) {
@@ -77,8 +90,10 @@ object ScreenAccessibilityConnection {
         listeners.forEach { runCatching { it() } }
     }
     internal fun disconnect(service: ScreenAccessibilityService) {
-        if (reference.get() !== service) return
+        val current = reference.get()
+        if (current != null && current !== service) return
         reference.clear()
+        ScreenHostRegistry.setAccessibilityConnected(false)
         changed()
         listeners.forEach { runCatching { it() } }
     }
