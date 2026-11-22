@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { stripTypeScriptTypes } from 'node:module';
 import { SourceTextModule, SyntheticModule } from 'node:vm';
 import { posix } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import * as ws from 'ws';
 import { z } from 'zod';
 import { Context } from '@deepseek-ai/cordis';
@@ -57,7 +58,8 @@ async function link(specifier, referencing) {
   return externals.get(specifier);
 }
 for (const id of ['packages/plugin/src/client-secure-transport.ts', 'packages/plugin/src/client-capabilities.ts',
-  'packages/plugin/src/remote-session-tools.ts', 'packages/client-core/src/index.ts', 'packages/webrtc/src/index.ts', 'packages/crypto/src/index.ts']) {
+  'packages/plugin/src/remote-session-tools.ts', 'packages/plugin/src/client-workspace-queries.ts',
+  'packages/plugin/src/remote-tools.ts', 'packages/client-core/src/index.ts', 'packages/webrtc/src/index.ts', 'packages/crypto/src/index.ts']) {
   const module = modules.get(id);
   if (module.status === 'unlinked') await module.link(link);
   if (module.status === 'linked') await module.evaluate();
@@ -68,6 +70,21 @@ const { HarnessAlphaClient, RemoteClientCore } = modules.get('packages/client-co
 const { AdaptiveTransport } = modules.get('packages/webrtc/src/index.ts').namespace;
 const { generateKeyPair } = modules.get('packages/crypto/src/index.ts').namespace;
 const { RemoteSessionTools } = modules.get('packages/plugin/src/remote-session-tools.ts').namespace;
+const { readRemoteWorkspaceBaseline } = modules.get('packages/plugin/src/client-workspace-queries.ts').namespace;
+const { remoteDiscoveryTools } = modules.get('packages/plugin/src/remote-tools.ts').namespace;
+const installedRuntimeEntry = process.env.OAI_DSH_REMOTE_ENTRY;
+const requireInstalledDiscovery = process.env.OAI_REQUIRE_INSTALLED_DISCOVERY === '1';
+const installedRuntime = installedRuntimeEntry === undefined ? undefined : await (async () => {
+  const entryUrl = pathToFileURL(installedRuntimeEntry);
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', entryUrl), 'utf8'));
+  assert.equal(packageJson.name, 'ds-harness-remote');
+  assert.equal(packageJson.version, '0.6.5', '仅允许复用已安装的 0.6.5 官方运行时');
+  const runtime = await import(entryUrl.href);
+  assert.equal(typeof runtime.ClientModeRuntime, 'function', '已安装包缺少原生 ClientModeRuntime');
+  assert.equal(typeof runtime.ClientServerApi, 'function', '已安装包缺少原生 ClientServerApi');
+  return runtime;
+})();
+if (requireInstalledDiscovery) assert.ok(installedRuntime, '本次验收要求运行已安装的 0.6.5 官方发现函数');
 const harnessRoot = new URL('./harness-fixtures/', import.meta.url);
 const harnessSource = JSON.parse(await readFile(new URL('source.json', harnessRoot), 'utf8'));
 for (const entry of harnessSource.files) {
@@ -79,42 +96,83 @@ const { default: sessionContract } = await import('./harness-fixtures/dsh-api-se
 const { RemoteTypertGateway } = modules.get('packages/plugin/src/remote-typert-gateway.ts').namespace;
 const [origin, hostId] = process.argv.slice(2);
 assert.ok(origin?.startsWith('http://127.0.0.1:') && hostId, '互通探针仅连接隔离本地服务');
-async function api(path, body, bearer) {
-  const response = await fetch(origin + path, { method: body ? 'POST' : 'GET',
+async function api(path, body, bearer, signal) {
+  const response = await fetch(origin + path, { method: body ? 'POST' : 'GET', signal,
     headers: { ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}) });
   assert.equal(response.status, 200, `固定服务请求失败：${path}`);
   return response.json();
 }
-async function discoverHost(accessToken, wantedHostId) {
-  const seen = new Set();
+function hostDeviceView(value) {
+  assert.ok(value !== null && typeof value === 'object' && !Array.isArray(value), '设备目录项类型错误');
+  assert.equal(value.role, 'host', '设备目录混入非 Host');
+  for (const field of ['deviceId', 'name', 'platform', 'membershipId']) {
+    assert.equal(typeof value[field], 'string', `设备目录字段类型错误：${field}`);
+    assert.ok(value[field].length > 0, `设备目录字段为空：${field}`);
+  }
+  return {
+    deviceId: value.deviceId, name: value.name, platform: value.platform, membershipId: value.membershipId,
+    ...(typeof value.online === 'boolean' ? { online: value.online } : {}),
+    ...(Number.isSafeInteger(value.lastSeenAt) ? { lastSeenAt: value.lastSeenAt } : {}),
+    ...(typeof value.clientVersion === 'string' ? { clientVersion: value.clientVersion } : {}),
+    ...(typeof value.harnessVersion === 'string' ? { harnessVersion: value.harnessVersion } : {}),
+  };
+}
+// 与固定上游 ClientServerApi.devicePages()+ClientModeRuntime.devices() 相同的分页、游标、deviceId
+// 去重和逐项 presence 规则；安装包可用时由真实原生函数替代这一段。
+async function listHostDevices(accessToken, signal) {
+  const devices = [];
+  const ids = new Set();
+  const cursors = new Set();
   let cursor;
   for (;;) {
-    const query = cursor === undefined ? '?limit=50' : `?limit=50&cursor=${encodeURIComponent(cursor)}`;
-    const page = await api(`/api/v1/devices${query}`, undefined, accessToken);
+    signal?.throwIfAborted();
+    const query = new URLSearchParams({ limit: '50' });
+    if (cursor !== undefined) query.set('cursor', cursor);
+    const page = await api(`/api/v1/devices?${query}`, undefined, accessToken, signal);
     assert.ok(Array.isArray(page.items), '设备目录缺少 items');
-    const found = page.items.find(item => item?.deviceId === wantedHostId);
-    if (found !== undefined) return found;
     const next = page.nextCursor;
-    if (next === null || next === undefined) break;
-    assert.equal(typeof next, 'string', '设备目录游标类型错误');
-    assert.ok(!seen.has(next), '设备目录游标重复');
-    seen.add(next);
+    if (next !== undefined && next !== null) {
+      assert.equal(typeof next, 'string', '设备目录游标类型错误');
+      assert.ok(next.length > 0 && next.length <= 512, '设备目录游标长度错误');
+      assert.ok(page.items.length > 0, '设备目录空页不能继续分页');
+      assert.ok(!cursors.has(next), '设备目录游标重复');
+    }
+    for (const item of page.items) {
+      const device = hostDeviceView(item);
+      assert.ok(!ids.has(device.deviceId), `设备目录返回重复 deviceId：${device.deviceId}`);
+      ids.add(device.deviceId);
+      devices.push(device);
+    }
+    if (typeof next !== 'string') break;
     cursor = next;
+    cursors.add(cursor);
   }
-  assert.fail(`设备目录未发现指定 Android Host：${wantedHostId}`);
+  const presence = await Promise.all(devices.map(async device => {
+    signal?.throwIfAborted();
+    const value = await api(`/api/v1/devices/${encodeURIComponent(device.deviceId)}/presence`, undefined, accessToken, signal);
+    assert.equal(value.deviceId, device.deviceId, 'presence 返回了错误 deviceId');
+    assert.equal(typeof value.online, 'boolean', 'presence online 类型错误');
+    assert.ok(value.lastSeenAt === null || value.lastSeenAt === undefined || Number.isSafeInteger(value.lastSeenAt), 'presence lastSeenAt 类型错误');
+    return { online: value.online, ...(Number.isSafeInteger(value.lastSeenAt) ? { lastSeenAt: value.lastSeenAt } : {}) };
+  }));
+  return devices.map((device, index) => ({ ...device, ...presence[index] }));
+}
+async function discoverHost(accessToken, wantedHostId, signal) {
+  const devices = await listHostDevices(accessToken, signal);
+  const found = devices.find(item => item.deviceId === wantedHostId);
+  assert.ok(found, `设备目录未发现指定 Android Host：${wantedHostId}`);
+  return found;
 }
 let stage = '账号登录与设备目录发现';
 const login = await api('/api/v1/auth/login', { email: 'fixture@example.test', password: 'fixture-local-password' });
 const identity = { deviceId: crypto.randomUUID(), name: '上游原客户端互通探针', ...generateKeyPair() };
 const tokens = await api('/api/v1/devices/register', { v: 1, device: { deviceId: identity.deviceId, name: identity.name,
   platform: 'linux', role: 'client', identityKey: identity.publicKey, clientVersion: '0.6.5' } }, login.token);
-const discovered = await discoverHost(tokens.accessToken, hostId);
+const discovered = await discoverHost(tokens.accessToken, hostId, AbortSignal.timeout(10_000));
 assert.equal(discovered.deviceId, hostId);
-assert.equal(discovered.role, 'host');
 assert.equal(discovered.platform, 'android');
-const presence = await api(`/api/v1/devices/${encodeURIComponent(hostId)}/presence`, undefined, tokens.accessToken);
-assert.equal(presence.deviceId, hostId);
+const presence = { online: discovered.online };
 assert.equal(presence.online, true, '设备目录发现的 Android Host 未在线');
 const descriptor = await api(`/api/v1/devices/${hostId}`, undefined, tokens.accessToken);
 const target = { deviceId: hostId, name: descriptor.name, publicKey: descriptor.identityKey, membershipId: descriptor.membershipId };
@@ -123,12 +181,25 @@ const transport = new AdaptiveTransport(origin.replace('http:', 'ws:') + '/ws/v1
   targetDeviceId: hostId, forceRelay: true, preferredTransports: ['relay'],
 });
 const client = new RemoteClientCore(new ClientSecureTransport(transport, identity, target), 5_000);
+const rpcTrace = [];
+const directRpc = client.rpc.bind(client);
+client.rpc = async (route, payload, signal, options) => {
+  const endpoint = payload && typeof payload === 'object' && typeof payload.endpoint === 'string' ? payload.endpoint : route;
+  rpcTrace.push({ route, endpoint });
+  return directRpc(route, payload, signal, options);
+};
+const forbiddenFileWorkspaceRpc = new Set(['directory.list', 'directoryPicker/list', 'workspace.open']);
+function assertNoFileWorkspaceRpc(trace, label) {
+  const forbidden = trace.filter(item => forbiddenFileWorkspaceRpc.has(item.endpoint));
+  assert.deepEqual(forbidden, [], `${label}不应依赖普通文件目录/workspace.open：${JSON.stringify(forbidden)}`);
+}
 stage = '控制连接与Noise握手';
 let lifecycle;
 let events;
 let eventsClientId;
 let eventGenerationEnded;
 let connection;
+let discoveryServerApi;
 const owner = new Context();
 const deliveries = [];
 const waiting = new Set();
@@ -202,6 +273,92 @@ try {
     assert.ok(parsed.value.projections['control-bus']);
   } finally { await controlIterator.return?.(); }
   const remote = { client, features };
+  let discoveryClient;
+  if (installedRuntime !== undefined) {
+    discoveryServerApi = new installedRuntime.ClientServerApi(origin, {
+      save: async value => value,
+      load: async () => undefined,
+      withRefreshLock: async operation => operation(),
+      pairingHostOnly: async () => false,
+    }, fetch, [origin]);
+    discoveryServerApi.bindIdentity(identity);
+    discoveryServerApi.credentials = tokens;
+    const deviceRuntime = {
+      remoteLifetime: new AbortController(),
+      closed: false,
+      host: undefined,
+      server: discoveryServerApi,
+      connection: {
+        async authorizeHostPeer(device, signal) {
+          signal?.throwIfAborted();
+          const authorized = await api(`/api/v1/devices/${encodeURIComponent(device.deviceId)}`, undefined, tokens.accessToken, signal);
+          assert.equal(authorized.role, 'host', '已安装原生发现路径授权了非 Host');
+          assert.equal(authorized.deviceId, device.deviceId, '已安装原生发现路径授权了错误设备');
+          assert.equal(authorized.membershipId, device.membershipId, '已安装原生发现路径的 membership 不一致');
+          return authorized;
+        },
+      },
+      assertHostAuthorizationForDeviceDiscovery() { },
+      requireIdentity() { return identity; },
+    };
+    discoveryClient = {
+      devices: signal => installedRuntime.ClientModeRuntime.prototype.devices.call(deviceRuntime, signal),
+      discoverToolWorkspaces: (targetDeviceId, signal) => {
+        assert.equal(targetDeviceId, hostId, '已安装原生工作区发现收到错误 Host');
+        return installedRuntime.ClientModeRuntime.prototype.discoverToolWorkspaces.call({
+          withToolRemote: async (_target, activeSignal, query) => query({ client, target, features, progressRunId: 0 }, activeSignal),
+        }, targetDeviceId, signal);
+      },
+    };
+  } else {
+    discoveryClient = {
+      devices: signal => listHostDevices(tokens.accessToken, signal),
+      discoverToolWorkspaces: async (targetDeviceId, signal) => {
+        assert.equal(targetDeviceId, hostId, '固定源码工作区发现收到错误 Host');
+        const workspaces = [], unavailable = [];
+        if (features.remoteGateway) {
+          try {
+            for (const row of await readRemoteWorkspaceBaseline(new RemoteTypertGateway(client), signal)) {
+              workspaces.push({ backend: 'harness', ...row });
+            }
+          } catch {
+            signal.throwIfAborted();
+            unavailable.push({ backend: 'harness', code: 'BACKEND_UNAVAILABLE' });
+          }
+        }
+        return { workspaces, unavailable };
+      },
+    };
+  }
+  const discoveryTools = remoteDiscoveryTools(() => discoveryClient);
+  const listHostsTool = discoveryTools.find(tool => tool.name === 'remote_list_hosts');
+  const listWorkspacesTool = discoveryTools.find(tool => tool.name === 'remote_list_workspaces');
+  assert.ok(listHostsTool && listWorkspacesTool, '固定上游未注册桌面发现工具');
+  const discoveryTraceStart = rpcTrace.length;
+  stage = '官方桌面remote_list_hosts入口';
+  const discoveredHosts = await listHostsTool.execute({}, { signal: AbortSignal.timeout(10_000) });
+  assert.deepEqual(Object.keys(discoveredHosts), ['hosts']);
+  assert.equal(discoveredHosts.hosts.length, 1, '固定服务应只返回一个在线 Host');
+  assert.equal(new Set(discoveredHosts.hosts.map(item => item.hostId)).size, discoveredHosts.hosts.length, '官方 Host 发现返回重复 hostId');
+  const officialHost = discoveredHosts.hosts[0];
+  assert.deepEqual(officialHost, { hostId, name: descriptor.name, platform: descriptor.platform });
+  stage = '官方桌面remote_list_workspaces入口';
+  const discoveredWorkspaces = await listWorkspacesTool.execute({ hostId }, { signal: AbortSignal.timeout(10_000) });
+  assert.deepEqual(Object.keys(discoveredWorkspaces), ['hostId', 'workspaces', 'unavailable']);
+  assert.equal(discoveredWorkspaces.hostId, hostId);
+  assert.deepEqual(discoveredWorkspaces.unavailable, []);
+  assert.equal(new Set(discoveredWorkspaces.workspaces.map(item => `${item.backend}:${item.workspaceId}`)).size,
+    discoveredWorkspaces.workspaces.length, '官方工作区发现返回重复 backend/workspaceId');
+  const officialWorkspace = discoveredWorkspaces.workspaces.find(item => item.backend === 'harness' && item.workspaceId === 'phone-capabilities');
+  assert.ok(officialWorkspace, '官方工作区发现未返回 phone-capabilities');
+  assert.equal(officialWorkspace.path, 'phone-capabilities');
+  assert.ok(officialWorkspace.title.length > 0, '官方工作区标题为空');
+  assert.equal(discoveredWorkspaces.workspaces.length, 1, '固定手机 Host 应只返回一个工作区');
+  const discoveryTrace = rpcTrace.slice(discoveryTraceStart);
+  assert.ok(discoveryTrace.some(item => item.endpoint === 'workspace/follow'), 'remote_list_workspaces 必须读取 workspace/follow 基线');
+  assertNoFileWorkspaceRpc(discoveryTrace, 'remote_list_workspaces');
+  assert.equal(connection.state.getSnapshot(), 'connected');
+  assert.equal(client.getStats().connected, true, '发现期间不得替换控制握手');
   const tools = new RemoteSessionTools(async (_host, signal, query) => query(remote, signal));
   const signal = AbortSignal.timeout(10_000);
   const workspace = { hostId, backend: 'harness', workspaceId: 'phone-capabilities' };
@@ -209,7 +366,12 @@ try {
   const listing = await tools.run('remote_list_sessions', workspace, signal);
   assert.ok(listing.sessions.some(item => item.sessionId === 'control-bus'));
   stage = 'Typert创建任务与能力请求';
+  const createTraceStart = rpcTrace.length;
   const created = await tools.run('remote_create_session', { ...workspace, operationId: 'interop-create-00000001' }, signal);
+  const createTrace = rpcTrace.slice(createTraceStart);
+  assert.ok(createTrace.some(item => item.endpoint === 'workspace/follow'), 'remote_create_session 应先验证 workspace/follow 基线');
+  assert.ok(createTrace.some(item => item.endpoint === 'session/create'), 'remote_create_session 必须调用 session/create');
+  assertNoFileWorkspaceRpc(createTrace, 'remote_create_session');
   assert.equal(created.status, 'accepted');
   await waitEvent(item => item.name === 'api-session/added' && item.args[0]?.sessionId === created.sessionId);
   const requestId = 'interop-capabilities-00000001';
@@ -266,8 +428,11 @@ try {
   console.log(JSON.stringify({ status: 'PASS', upstream: 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', release: 'eef232d2c43b0c9d04998a18db98cbc9e673e488',
     transport: client.getStats().mode, sessionFormat: features.sessionFormat, workspace: workspace.workspaceId,
     capabilities: features.capabilities, harnessVersion: descriptor.harnessVersion ?? null,
+    discoveryRuntime: installedRuntime === undefined ? 'fixed-source-adapter' : 'installed-0.6.5',
+    desktopHosts: discoveredHosts.hosts.length, desktopWorkspaces: discoveredWorkspaces.workspaces.length,
+    workspaceDiscoveryRpc: 'workspace/follow', createSessionRpc: 'session/create', forbiddenFileWorkspaceRpcs: [],
     directoryDiscovered: true, presenceOnline: presence.online, clientTimeZone: expectedClientTimeZone }));
 } catch (error) {
   console.error(JSON.stringify({ status: 'FAIL', stage, code: error.code ?? error.name, message: error.message }));
   process.exitCode = 1;
-} finally { lifecycle?.stop(); await events?.dispose(); await client.close(); }
+} finally { discoveryServerApi?.close(); lifecycle?.stop(); await events?.dispose(); await client.close(); }

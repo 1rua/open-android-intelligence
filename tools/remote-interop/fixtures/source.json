@@ -126,6 +126,16 @@
       "path": "packages/plugin/src/workspace-transfer-limits.ts",
       "sha256": "35bd834d8c23e5890b9a026199d731cf885b43d068c816bacba57b5c3e17bd7e",
       "gitBlob": "943370a150c01b49f2528a9c3a9a95265b06bd56"
+    },
+    {
+      "path": "packages/plugin/src/remote-tools.ts",
+      "sha256": "e478ae25d41ef78f9aaccfe49095bc4fe66ee59b81a8efff28e25a833c3a8a35",
+      "gitBlob": "c68746cea7df72aa98882b4e4bd2fd1b6b836459"
+    },
+    {
+      "path": "packages/plugin/src/client-workspace-queries.ts",
+      "sha256": "d46341c9d8f7574760b37d02f56a528e5c2d0ee71f940910ca87116717eeeeeb",
+      "gitBlob": "f9728bdc68ea488b233081c1918eb2d4044e771f"
     }
   ]
 }
