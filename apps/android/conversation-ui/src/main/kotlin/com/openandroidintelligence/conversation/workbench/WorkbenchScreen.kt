@@ -3,10 +3,9 @@ package com.openandroidintelligence.conversation.workbench
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.horizontalScroll
@@ -42,13 +41,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.components.LoadableRegion
+import com.openandroidintelligence.conversation.components.M3ExpressiveCard
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
+import com.openandroidintelligence.conversation.components.M3MorphingIconButton
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.components.connectionLabel
 import com.openandroidintelligence.conversation.components.noticeText
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.motion.AppTransitions
+import com.openandroidintelligence.conversation.motion.EnsureSharedTransitionHost
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
+import com.openandroidintelligence.conversation.motion.predictiveBackSlideTransform
+import com.openandroidintelligence.conversation.motion.rememberPredictiveBackProgress
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.state.Loadable
@@ -58,6 +64,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -94,7 +101,7 @@ private class TimelineReadingPosition {
  * 这一层只负责「框架」：顶栏、时间线的滚动编排、底部输入坞的位置与安全区，
  * 单条消息的视觉在 [MessageTimeline] 里。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun WorkbenchScreen(
     controller: WorkbenchController,
@@ -219,7 +226,7 @@ fun WorkbenchScreen(
     // The "no approval cards here" hint explains a Gateway without the feature;
     // once read, it would only be noise on every screen for the whole session.
     var approvalHintDismissed by remember { mutableStateOf(false) }
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
 
     // 顶栏与输入坞都量过了才知道 Snackbar/命令浮层要抬多高；dock 高度包含它自己的安全区。
     // 以 MutableIntState 对象透传，避免在顶层组合期读取导致 IME 动画逐帧触发整屏重组。
@@ -414,8 +421,9 @@ fun WorkbenchScreen(
         state.browserOrganization
     }
 
-    BoxWithConstraints(modifier.fillMaxSize()) {
-        val expanded = maxWidth >= Dimensions.ExpandedWindow
+    EnsureSharedTransitionHost {
+        BoxWithConstraints(modifier.fillMaxSize()) {
+            val expanded = maxWidth >= Dimensions.ExpandedWindow
 
         val latestWorkspaceHydrate by rememberUpdatedState(workspaceMenu?.onHydrate)
         val hasWorkspaceMenu = workspaceMenu != null
@@ -489,7 +497,7 @@ fun WorkbenchScreen(
             }
             val dividerAlpha by animateFloatAsState(
                 targetValue = if (timelineScrolled) 1f else 0f,
-                animationSpec = if (reduceMotion) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.StandardEasing),
+                animationSpec = MotionSpecs.effectsFast(reduceMotion),
                 label = "topbar-divider",
             )
 
@@ -859,9 +867,11 @@ fun WorkbenchScreen(
                     modifier = Modifier.fillMaxSize(),
                     label = "tablet-sidebar-content",
                 ) { panel ->
-                    when (panel) {
-                        SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
-                        SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                    ProvideSharedVisibilityScope {
+                        when (panel) {
+                            SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                            SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                        }
                     }
                 }
             }
@@ -907,23 +917,33 @@ fun WorkbenchScreen(
                     exit = AppTransitions.modalExit(reduceMotion),
                     modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
                 ) {
-                    BackHandler(enabled = settingsOpen) {
-                        if (settingsFromConversations) {
-                            scope.launch {
-                                drawer.open()
+                    ProvideSharedVisibilityScope {
+                        val backProgress by rememberPredictiveBackProgress(
+                            enabled = settingsOpen,
+                            onBack = {
+                                if (settingsFromConversations) {
+                                    scope.launch {
+                                        drawer.open()
+                                    }
+                                }
+                                onSettingsOpenChange(false)
+                            },
+                        )
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .predictiveBackSlideTransform(
+                                    progress = backProgress,
+                                    reduced = reduceMotion,
+                                ),
+                            color = MaterialTheme.colorScheme.surface,
+                        ) {
+                            movableSettings {
+                                if (settingsFromConversations) {
+                                    scope.launch { drawer.open() }
+                                }
+                                onSettingsOpenChange(false)
                             }
-                        }
-                        onSettingsOpenChange(false)
-                    }
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.surface,
-                    ) {
-                        movableSettings {
-                            if (settingsFromConversations) {
-                                scope.launch { drawer.open() }
-                            }
-                            onSettingsOpenChange(false)
                         }
                     }
                 }
@@ -983,6 +1003,7 @@ fun WorkbenchScreen(
                     }
                 }
             )
+        }
         }
     }
 }
@@ -1045,17 +1066,17 @@ private fun WorkbenchTopBar(
             }
         },
         actions = {
-            FilledIconButton(
+            M3MorphingIconButton(
                 onClick = onCreateThread,
+                icon = Icons.Default.Add,
+                contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
+                morphed = creatingThread,
                 enabled = !creatingThread,
-                modifier = Modifier.size(Dimensions.MinimumTouchTarget),
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
-                    modifier = Modifier.size(Dimensions.Icon),
-                )
-            }
+                restingWidth = Dimensions.MinimumTouchTarget,
+                morphedWidth = Dimensions.MinimumTouchTarget,
+                height = Dimensions.MinimumTouchTarget,
+                colors = M3MorphingButtonDefaults.primaryColors(),
+            )
             Spacer(Modifier.width(Dimensions.SpaceSmall))
             Box {
                 IconButton(onClick = { onOverflowExpandedChange(true) }) {
@@ -1216,17 +1237,16 @@ private fun CreatedThreadJumpRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
+    M3ExpressiveCard(
         onClick = onClick,
-        shape = RoundedCornerShape(AppRadius.Medium),
-        color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = modifier.fillMaxWidth(),
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        restingCornerRadius = AppRadius.Medium,
+        pressedCornerRadius = AppRadius.Large,
+        contentPadding = PaddingValues(Dimensions.SpaceMedium),
     ) {
         Row(
-            modifier = Modifier.padding(
-                horizontal = Dimensions.SpaceMedium,
-                vertical = Dimensions.SpaceMedium,
-            ),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
         ) {

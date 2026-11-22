@@ -13,13 +13,9 @@ import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -61,11 +57,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
+import com.openandroidintelligence.conversation.components.M3MorphingIconButton
 import com.openandroidintelligence.conversation.components.bouncyClickable
 import com.openandroidintelligence.conversation.model.AttachmentDraft
 import com.openandroidintelligence.conversation.model.AttachmentState
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
+import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
+import com.openandroidintelligence.conversation.motion.m3SharedBounds
 import com.openandroidintelligence.conversation.ports.PendingDelivery
 import com.openandroidintelligence.conversation.ports.PendingDeliveryState
 import com.openandroidintelligence.conversation.ports.MessageDeliveryMode
@@ -75,8 +76,8 @@ import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.voice.ActiveVoiceRecording
 import com.openandroidintelligence.conversation.voice.VoiceRecordingRow
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.flow.collect
-import kotlin.math.roundToInt
 
 /** Keep the IME's URI permission token alive until the host has staged the selected images. */
 data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? = null)
@@ -93,7 +94,7 @@ data class PastedImageContent(val uris: List<Uri>, val permissionOwner: Bundle? 
  * 水平/垂直边距。导航栏 inset 随后被消费，`imePadding()` 只补键盘超出导航栏的高度，
  * 键盘弹出时不会出现「导航栏高度加键盘高度」的双重留白。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
 @Composable
 fun ComposerBar(
     draft: String,
@@ -135,7 +136,7 @@ fun ComposerBar(
     onDraftEdit: ((String, Long) -> Unit)? = null,
     onSubmitDraft: ((String, Long, MessageDeliveryMode) -> Long?)? = null,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val editor = key(editorKey) { rememberTextFieldState(draft) }
     var editorEpoch by remember(editorKey) { mutableLongStateOf(draftEpoch) }
     var reportedValue by remember(editorKey) { mutableStateOf(draft) }
@@ -269,68 +270,76 @@ fun ComposerBar(
             },
             label = "composer-recording-mode",
         ) { activeRecording ->
-            if (activeRecording != null) {
-                // 录音态与输入态并列保留「添加附件」：录音是独立的附件型消息，但录制期间
-                // 仍然要能继续挑选附件，不能因为换了主行就把附件操作锁死。
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = Dimensions.SpaceTiny),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                ) {
-                    ComposerIconAction(
-                        icon = Icons.Default.Add,
-                        contentDescription = "添加附件",
-                        onClick = { showAttachmentsSheet = true },
-                    )
-                    VoiceRecordingRow(
-                        elapsedMs = activeRecording.elapsedMs,
-                        level = activeRecording.level,
-                        onCancel = onCancelRecording,
-                        onSend = onFinishRecording,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = Dimensions.SpaceTiny),
-                    verticalAlignment = Alignment.Bottom,
-                    horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                ) {
-                    ComposerIconAction(
-                        icon = Icons.Default.Add,
-                        contentDescription = "添加附件",
-                        onClick = { showAttachmentsSheet = true },
-                    )
-
-                    key(editorKey) {
-                        ComposerInputField(
-                            editor = editor,
-                            inputTransformation = reportUserEdits,
-                            isFocused = focused,
-                            onFocusChange = { focused = it },
-                            onPasteImages = onPasteImages,
+            ProvideSharedVisibilityScope {
+                val containerBounds = Modifier.m3SharedBounds(
+                    key = SharedTransitionKeys.composerContainer(),
+                    clipShape = RoundedCornerShape(AppRadius.Bubble),
+                )
+                if (activeRecording != null) {
+                    // 录音态与输入态并列保留「添加附件」：录音是独立的附件型消息，但录制期间
+                    // 仍然要能继续挑选附件，不能因为换了主行就把附件操作锁死。
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(containerBounds)
+                            .padding(vertical = Dimensions.SpaceTiny),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    ) {
+                        ComposerIconAction(
+                            icon = Icons.Default.Add,
+                            contentDescription = "添加附件",
+                            onClick = { showAttachmentsSheet = true },
+                        )
+                        VoiceRecordingRow(
+                            elapsedMs = activeRecording.elapsedMs,
+                            level = activeRecording.level,
+                            onCancel = onCancelRecording,
+                            onSend = onFinishRecording,
                             modifier = Modifier.weight(1f),
                         )
                     }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .then(containerBounds)
+                            .padding(vertical = Dimensions.SpaceTiny),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
+                    ) {
+                        ComposerIconAction(
+                            icon = Icons.Default.Add,
+                            contentDescription = "添加附件",
+                            onClick = { showAttachmentsSheet = true },
+                        )
 
-                    ComposerIconAction(
-                        icon = Icons.Default.Mic,
-                        contentDescription = "语音输入",
-                        enabled = voiceInputEnabled,
-                        onClick = onVoiceInput,
-                    )
+                        key(editorKey) {
+                            ComposerInputField(
+                                editor = editor,
+                                inputTransformation = reportUserEdits,
+                                isFocused = focused,
+                                onFocusChange = { focused = it },
+                                onPasteImages = onPasteImages,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
 
-                    ComposerSendStopAction(
-                        showStop = showStop,
-                        waitingCancel = waitingCancel,
-                        enabled = actionEnabled,
-                        onSend = submitDraft,
-                        onStop = onStop,
-                    )
+                        ComposerIconAction(
+                            icon = Icons.Default.Mic,
+                            contentDescription = "语音输入",
+                            enabled = voiceInputEnabled,
+                            onClick = onVoiceInput,
+                        )
+
+                        ComposerSendStopAction(
+                            showStop = showStop,
+                            waitingCancel = waitingCancel,
+                            enabled = actionEnabled,
+                            onSend = submitDraft,
+                            onStop = onStop,
+                        )
+                    }
                 }
             }
         }
@@ -411,7 +420,7 @@ private fun ComposerInputField(
     modifier: Modifier = Modifier,
 ) {
     LocalWorkbenchCompositionObserver.current?.invoke("composer_input")
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val shape = RoundedCornerShape(AppRadius.Bubble)
     // The state-based editor supports Android's image paste/IME content contract.
     // The caller keys this editor by controller/thread so editing state cannot cross conversations.
@@ -442,7 +451,7 @@ private fun ComposerInputField(
         } else {
             MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0f)
         },
-        animationSpec = if (reduced) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.StandardEasing),
+        animationSpec = MotionSpecs.effectsFast(reduced),
         label = "composer-field-border",
     )
     Surface(
@@ -501,9 +510,10 @@ private fun ComposerInputField(
 
 /**
  * 发送 / 停止主操作（M07）：
- * 容器宽度、圆角、底色与图标在同一时间窗内一起变化，而不是只换一个图标；
- * 减少动态时宽度与圆角直接落位，只保留极短颜色过渡。
+ * 基于 [M3MorphingIconButton] 实现容器宽度、圆角百分比、底色与图标在同一物理弹簧下
+ * 同步形变（48dp -> 56dp、50% -> 36%），并挂载共享边界；减少动态时自动降级。
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 private fun ComposerSendStopAction(
     showStop: Boolean,
@@ -513,71 +523,24 @@ private fun ComposerSendStopAction(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
-    val targetWidth = if (showStop) StopActionWidth else Dimensions.ComposerPrimaryAction
-    val width by animateDpAsState(
-        targetValue = targetWidth,
-        animationSpec = MotionSpecs.snappy(reduced),
-        label = "composer-action-width",
+    M3MorphingIconButton(
+        onClick = if (showStop) onStop else onSend,
+        icon = Icons.Default.ArrowUpward,
+        contentDescription = "发送",
+        modifier = modifier,
+        morphed = showStop,
+        morphedIcon = Icons.Default.Stop,
+        morphedContentDescription = if (waitingCancel) "等待取消确认" else "停止生成",
+        enabled = enabled,
+        restingWidth = Dimensions.ComposerPrimaryAction,
+        morphedWidth = StopActionWidth,
+        height = Dimensions.ComposerPrimaryAction,
+        restingCornerPercent = 50f,
+        morphedCornerPercent = StopActionCornerPercent,
+        colors = M3MorphingButtonDefaults.sendStopColors(),
+        iconSize = Dimensions.Icon,
+        sharedBoundsKey = SharedTransitionKeys.composerAction("send-stop"),
     )
-    val cornerPercent by animateFloatAsState(
-        targetValue = if (showStop) StopActionCornerPercent else 50f,
-        animationSpec = MotionSpecs.snappy(reduced),
-        label = "composer-action-corner",
-    )
-    val colorSpec = if (reduced) snap<Color>() else tween(MotionSpecs.Fast, easing = MotionSpecs.StandardEasing)
-    val containerColor by animateColorAsState(
-        targetValue = when {
-            !enabled -> MaterialTheme.colorScheme.surfaceContainer
-            showStop -> MaterialTheme.colorScheme.surfaceContainerHighest
-            else -> MaterialTheme.colorScheme.primary
-        },
-        animationSpec = colorSpec,
-        label = "composer-action-container",
-    )
-    val contentColor by animateColorAsState(
-        targetValue = when {
-            !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-            showStop -> MaterialTheme.colorScheme.onSurface
-            else -> MaterialTheme.colorScheme.onPrimary
-        },
-        animationSpec = colorSpec,
-        label = "composer-action-content",
-    )
-    val shape = RoundedCornerShape(percent = cornerPercent.roundToInt())
-
-    Box(
-        modifier = modifier
-            .width(width)
-            .height(Dimensions.ComposerPrimaryAction)
-            .clip(shape)
-            .bouncyClickable(
-                enabled = enabled,
-                role = Role.Button,
-                onClick = if (showStop) onStop else onSend,
-            )
-            .background(containerColor),
-        contentAlignment = Alignment.Center,
-    ) {
-        Crossfade(
-            targetState = showStop,
-            animationSpec = if (reduced) snap() else tween(MotionSpecs.Fast, easing = MotionSpecs.LinearOutSlowInEasing),
-            label = "send-stop",
-        ) { stop ->
-            Icon(
-                imageVector = if (stop) Icons.Default.Stop else Icons.Default.ArrowUpward,
-                contentDescription = if (waitingCancel) {
-                    "等待取消确认"
-                } else if (stop) {
-                    "停止生成"
-                } else {
-                    "发送"
-                },
-                tint = contentColor,
-                modifier = Modifier.size(Dimensions.Icon),
-            )
-        }
-    }
 }
 
 /** 生成状态行：文案来自真实 [GenerationState]，颜色只是第二通道。 */
@@ -664,7 +627,7 @@ fun AttachmentDraftChip(
     modifier: Modifier = Modifier,
     removeEnabled: Boolean = true,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
     val state = draft.state
     val failed = state == AttachmentState.RETRYABLE_FAILURE || state == AttachmentState.TERMINAL_FAILURE
@@ -1000,10 +963,6 @@ private val StopActionWidth = 56.dp
 
 /** 停止态的圆角百分比（相对短边），由圆形渐变到胶囊。 */
 private const val StopActionCornerPercent = 36f
-
-/** 底部弹层选项的最小高度。 */
-
-/** 底部弹层选项前置 tonal 圆形图标的直径。 */
 
 /** 附件卡片文件名区域的最大宽度，避免长文件名把操作按钮挤出屏幕。 */
 private val AttachmentNameWidth = 150.dp

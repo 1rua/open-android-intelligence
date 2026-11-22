@@ -1,11 +1,11 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -38,6 +38,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /** Only commands actually reported by the selected Agent are suggested. */
 fun resolveCommands(catalogState: Loadable<AgentCommandCatalog>): List<AgentCommand> =
@@ -108,7 +109,7 @@ fun CommandAutocompletePopup(
     onRetry: (() -> Unit)? = null,
     retryAvailable: Boolean = false,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     var dismissedLocally by remember { mutableStateOf(false) }
     var lastQuery by remember { mutableStateOf(query) }
 
@@ -126,22 +127,22 @@ fun CommandAutocompletePopup(
         visible = isVisible,
         enter = if (reduced) {
             // 减少动态也要有一次淡化：直接出现比 150ms 渐变更生硬，也更难察觉上下文变化。
-            fadeIn(animationSpec = tween(MotionSpecs.ReducedMotionCrossfadeDuration))
+            fadeIn(animationSpec = MotionSpecs.reducedFade())
         } else {
             fadeIn(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                animationSpec = MotionSpecs.effectsFast(false),
             ) + slideInVertically(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                animationSpec = MotionSpecs.spatialFast(false),
                 initialOffsetY = { risePx },
             )
         },
         exit = if (reduced) {
-            fadeOut(animationSpec = tween(MotionSpecs.ReducedMotionCrossfadeDuration))
+            fadeOut(animationSpec = MotionSpecs.reducedFade())
         } else {
             fadeOut(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                animationSpec = MotionSpecs.effectsFast(false),
             ) + slideOutVertically(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                animationSpec = MotionSpecs.spatialFast(false),
                 targetOffsetY = { risePx },
             )
         },
@@ -225,16 +226,22 @@ fun CommandItemRow(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val reduced = LocalMotionPolicy.current.isReduced
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered by interactionSource.collectIsHoveredAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
     // 浮层本身已经是 surfaceContainerHigh；列表项默认透明，只在悬停/按压时提亮，
     // 避免卡片内部再铺一层几乎同色的色块。
-    val backgroundColor = if (isHovered || isPressed) {
+    val targetBackgroundColor = if (isHovered || isPressed) {
         MaterialTheme.colorScheme.surfaceContainerHighest
     } else {
         Color.Transparent
     }
+    val backgroundColor by animateColorAsState(
+        targetValue = targetBackgroundColor,
+        animationSpec = MotionSpecs.effectsFast(reduced),
+        label = "command-item-background",
+    )
 
     Surface(
         onClick = { onSelect(command.command) },

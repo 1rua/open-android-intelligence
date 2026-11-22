@@ -46,6 +46,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * 附件来源的三个入口。
@@ -175,16 +176,20 @@ fun ComposerAttachmentOverlay(
     modifier: Modifier = Modifier,
 ) {
     if (!visible) return
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val density = LocalDensity.current
-    // 进场：遮罩淡入 + 卡片从下往上落位；减少动态时直接落位。
+    // 进场：遮罩与卡片临界阻尼淡入 + 卡片从下往上弹簧落位；减少动态时不做位移，只做短淡化。
     var entered by remember { mutableStateOf(false) }
     androidx.compose.runtime.LaunchedEffect(Unit) { entered = true }
-    val spec = if (reduceMotion) androidx.compose.animation.core.tween(MotionSpecs.Fast) else MotionSpecs.MomentumSpring
-    val progress by animateFloatAsState(
+    val alpha by animateFloatAsState(
         targetValue = if (entered) 1f else 0f,
-        animationSpec = spec,
-        label = "composer-attachment-sheet",
+        animationSpec = if (reduceMotion) MotionSpecs.reducedFade() else MotionSpecs.effectsFast(false),
+        label = "composer-attachment-sheet-alpha",
+    )
+    val slideProgress by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = MotionSpecs.spatialDefault(reduceMotion),
+        label = "composer-attachment-sheet-slide",
     )
     val shiftPx = with(density) { (SheetTravel).toPx() }
 
@@ -193,7 +198,7 @@ fun ComposerAttachmentOverlay(
         Box(
             Modifier
                 .fillMaxSize()
-                .graphicsLayer { alpha = progress }
+                .graphicsLayer { this.alpha = alpha.coerceIn(0f, 1f) }
                 .background(MaterialTheme.colorScheme.scrim.copy(alpha = ScrimAlpha))
                 .pointerInput(Unit) { detectTapGestures { onDismiss() } },
         )
@@ -207,8 +212,8 @@ fun ComposerAttachmentOverlay(
                 .graphicsLayer {
                     // 进场：卡片从下方 48dp 落位并淡入。位移只作用于绘制层，不参与测量，
                     // 因此不会改变宿主的窗口高度。
-                    translationY = shiftPx * (1f - progress)
-                    alpha = progress
+                    translationY = if (reduceMotion) 0f else shiftPx * (1f - slideProgress)
+                    this.alpha = alpha.coerceIn(0f, 1f)
                 }
                 .testTag(ComposerAttachmentSheetTags.SHEET),
         ) {

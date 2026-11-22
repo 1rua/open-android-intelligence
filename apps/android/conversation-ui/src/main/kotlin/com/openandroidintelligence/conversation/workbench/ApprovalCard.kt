@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import com.openandroidintelligence.conversation.components.M3ExpressiveCard
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
@@ -58,6 +60,7 @@ import com.openandroidintelligence.conversation.state.isSettled
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 
 /** Test hooks: a card is asserted through these tags, never by its text alone. */
@@ -129,23 +132,26 @@ fun ApprovalCard(
             delay(APPROVAL_COUNTDOWN_TICK_MILLIS)
         }
     }
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     // A card that already carried its answer when it was first drawn (re-entering
     // a thread past the fact) is shown as it is; only a card watched until the
     // Gateway answered earns the conclusion's fade.
     val settledWhenFirstDrawn = remember(request) { state.isSettled }
 
-    Surface(
+    M3ExpressiveCard(
+        onClick = null,
         modifier = modifier
             .fillMaxWidth()
             .testTag(ApprovalCardTags.ROOT),
-        shape = RoundedCornerShape(AppRadius.Medium),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
+        restingCornerRadius = AppRadius.Medium,
+        pressedCornerRadius = AppRadius.Medium,
+        activeCornerRadius = AppRadius.Medium,
+        contentPadding = PaddingValues(Dimensions.SpaceMedium),
     ) {
         Column(
-            modifier = Modifier.padding(Dimensions.SpaceMedium),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
         ) {
             CardHeader(
