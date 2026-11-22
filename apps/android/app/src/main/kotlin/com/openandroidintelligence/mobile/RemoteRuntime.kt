@@ -10,6 +10,8 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.encrypted.store.*
+import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrationState
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.facade.PhoneRemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
@@ -334,6 +336,9 @@ class RemoteRuntime(
                     )
                 },
             )
+            // 无上次工作区时，复用账号恢复入口；生产账号会启动已授权的控制角色并读取目录。
+            startupRecoveryJob = restoreSessionIfAvailable()
+            coldStartBootstrapped = true
             return
         }
         val agentKey = AgentKey.fromEndpointKey(savedWorkspace.endpoint.key)
@@ -782,7 +787,7 @@ class RemoteRuntime(
         loginEntryBridge.cancelLocal()
         try {
             beginAccountReset(refreshHosts = true) {
-                accountRuntime.login(origin, email, password)
+                requireAnyRegisteredRole(accountRuntime.login(origin, email, password))
             }
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
@@ -792,7 +797,16 @@ class RemoteRuntime(
 
     suspend fun completeExternalLogin(token: String, loginAttemptId: String) {
         beginAccountReset(refreshHosts = true) {
-            accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId)
+            requireAnyRegisteredRole(accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId))
+        }
+    }
+
+    /** Client 与 Host 均未取得凭据时账号不会激活，必须把固定登录错误返回给登录页。 */
+    private fun requireAnyRegisteredRole(result: RemoteLoginResult) {
+        if (result.client.state == RemoteRoleRegistrationState.FAILED &&
+            result.host.state == RemoteRoleRegistrationState.FAILED
+        ) {
+            throw RemoteRpcException("REMOTE_ROLE_REGISTRATION_FAILED")
         }
     }
 

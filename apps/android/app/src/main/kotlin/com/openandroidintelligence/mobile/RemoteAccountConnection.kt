@@ -9,16 +9,22 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcChannel
 import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountRuntime
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
+import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailure
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+
+private val NO_REMOTE_HOST_FAILURE = MutableStateFlow<RemoteHostFailure?>(null)
 
 /** App 只需要账号生命周期和真实连接，不了解凭据、Noise 或信令的实现细节。 */
 interface RemoteAccountConnection {
     val account: StateFlow<RemoteActiveAccount?>
     val state: StateFlow<RemoteAccountConnectionState>
     val hostState: StateFlow<RemoteHostConnectionState>
+    /** 测试替身默认无 Host 故障；生产运行时手机会话覆盖为真实诊断流。 */
+    val hostFailure: StateFlow<RemoteHostFailure?> get() = NO_REMOTE_HOST_FAILURE
     val hosts: Flow<List<RemoteHostDevice>> get() = kotlinx.coroutines.flow.emptyFlow()
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult
     suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String): RemoteLoginResult = error("REMOTE_LOGIN_UNAVAILABLE")
@@ -38,6 +44,7 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override val account = runtime.account
     override val state = runtime.state
     override val hostState = runtime.hostState
+    override val hostFailure = runtime.hostFailure
     override val hosts = runtime.hosts
     override suspend fun login(origin: String, email: String, password: String) = runtime.login(origin, email, password)
     override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String) = runtime.loginAccountToken(origin, token, loginAttemptId)

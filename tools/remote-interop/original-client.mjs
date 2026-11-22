@@ -9,6 +9,8 @@ import * as ws from 'ws';
 import { z } from 'zod';
 import { Context } from '@deepseek-ai/cordis';
 
+const expectedClientTimeZone = 'Asia/Shanghai';
+process.env.TZ = expectedClientTimeZone;
 globalThis.WebSocket = ws.WebSocket;
 const modules = new Map();
 const fixtureRoot = new URL('./fixtures/', import.meta.url);
@@ -62,7 +64,7 @@ for (const id of ['packages/plugin/src/client-secure-transport.ts', 'packages/pl
 }
 const { ClientSecureTransport } = modules.get('packages/plugin/src/client-secure-transport.ts').namespace;
 const { probeRemoteHostFeatures } = modules.get('packages/plugin/src/client-capabilities.ts').namespace;
-const { RemoteClientCore } = modules.get('packages/client-core/src/index.ts').namespace;
+const { HarnessAlphaClient, RemoteClientCore } = modules.get('packages/client-core/src/index.ts').namespace;
 const { AdaptiveTransport } = modules.get('packages/webrtc/src/index.ts').namespace;
 const { generateKeyPair } = modules.get('packages/crypto/src/index.ts').namespace;
 const { RemoteSessionTools } = modules.get('packages/plugin/src/remote-session-tools.ts').namespace;
@@ -84,10 +86,36 @@ async function api(path, body, bearer) {
   assert.equal(response.status, 200, `固定服务请求失败：${path}`);
   return response.json();
 }
+async function discoverHost(accessToken, wantedHostId) {
+  const seen = new Set();
+  let cursor;
+  for (;;) {
+    const query = cursor === undefined ? '?limit=50' : `?limit=50&cursor=${encodeURIComponent(cursor)}`;
+    const page = await api(`/api/v1/devices${query}`, undefined, accessToken);
+    assert.ok(Array.isArray(page.items), '设备目录缺少 items');
+    const found = page.items.find(item => item?.deviceId === wantedHostId);
+    if (found !== undefined) return found;
+    const next = page.nextCursor;
+    if (next === null || next === undefined) break;
+    assert.equal(typeof next, 'string', '设备目录游标类型错误');
+    assert.ok(!seen.has(next), '设备目录游标重复');
+    seen.add(next);
+    cursor = next;
+  }
+  assert.fail(`设备目录未发现指定 Android Host：${wantedHostId}`);
+}
+let stage = '账号登录与设备目录发现';
 const login = await api('/api/v1/auth/login', { email: 'fixture@example.test', password: 'fixture-local-password' });
 const identity = { deviceId: crypto.randomUUID(), name: '上游原客户端互通探针', ...generateKeyPair() };
 const tokens = await api('/api/v1/devices/register', { v: 1, device: { deviceId: identity.deviceId, name: identity.name,
   platform: 'linux', role: 'client', identityKey: identity.publicKey, clientVersion: '0.6.5' } }, login.token);
+const discovered = await discoverHost(tokens.accessToken, hostId);
+assert.equal(discovered.deviceId, hostId);
+assert.equal(discovered.role, 'host');
+assert.equal(discovered.platform, 'android');
+const presence = await api(`/api/v1/devices/${encodeURIComponent(hostId)}/presence`, undefined, tokens.accessToken);
+assert.equal(presence.deviceId, hostId);
+assert.equal(presence.online, true, '设备目录发现的 Android Host 未在线');
 const descriptor = await api(`/api/v1/devices/${hostId}`, undefined, tokens.accessToken);
 const target = { deviceId: hostId, name: descriptor.name, publicKey: descriptor.identityKey, membershipId: descriptor.membershipId };
 const transport = new AdaptiveTransport(origin.replace('http:', 'ws:') + '/ws/v1/connect', {
@@ -95,7 +123,7 @@ const transport = new AdaptiveTransport(origin.replace('http:', 'ws:') + '/ws/v1
   targetDeviceId: hostId, forceRelay: true, preferredTransports: ['relay'],
 });
 const client = new RemoteClientCore(new ClientSecureTransport(transport, identity, target), 5_000);
-let stage = '控制连接与Noise握手';
+stage = '控制连接与Noise握手';
 let lifecycle;
 let events;
 let eventsClientId;
@@ -112,6 +140,21 @@ function waitEvent(predicate) {
     const observer = value => { if (predicate(value)) { clearTimeout(timer); waiting.delete(observer); resolve(value); } };
     waiting.add(observer);
   });
+}
+function businessTerminal(records, requestId) {
+  for (const item of records) {
+    if (item.type !== 'assistant/message') continue;
+    let content;
+    try { content = JSON.parse(item.json)?.event?.data?.message?.content; } catch { continue; }
+    if (!Array.isArray(content)) continue;
+    const text = content.find(part => part?.type === 'text')?.text;
+    if (typeof text !== 'string') continue;
+    try {
+      const value = JSON.parse(text);
+      if (value?.request_id === requestId) return value;
+    } catch { /* 非终态正文不是业务回执。 */ }
+  }
+  return undefined;
 }
 try {
   await client.connect();
@@ -175,7 +218,29 @@ try {
   assert.equal(sent.status, 'accepted');
   stage = 'Typert读取请求回执';
   const history = await tools.run('remote_read_session', { ...workspace, sessionId: created.sessionId }, signal);
-  assert.ok(history.records.some(item => item.type === 'assistant/message' && item.json.includes(requestId)));
+  assert.equal(history.status, 'idle');
+  const capabilityTerminal = businessTerminal(history.records, requestId);
+  assert.equal(capabilityTerminal?.state, 'completed');
+  assert.equal(capabilityTerminal?.execution?.status, 'succeeded');
+  stage = '官方桌面Prompt携带时区元数据';
+  assert.equal(Intl.DateTimeFormat().resolvedOptions().timeZone, expectedClientTimeZone);
+  const desktop = new HarnessAlphaClient(client, {
+    clientVersion: descriptor.clientVersion,
+    ...(descriptor.harnessVersion === undefined ? {} : { harnessVersion: descriptor.harnessVersion }),
+    sessionFormat: features.sessionFormat,
+    capabilities: features.capabilities,
+  });
+  const timeZoneRequest = 'interop-timezone-0000001';
+  await desktop.sessionPrompt(created.sessionId, JSON.stringify({ request_id: timeZoneRequest,
+    op: 'phone.capabilities', args: {} }), timeZoneRequest);
+  const timeZoneWait = await tools.run('remote_wait_sessions', {
+    targets: [{ ...workspace, sessionId: created.sessionId }], timeoutMs: 2_000,
+  }, signal);
+  assert.equal(timeZoneWait.sessions[0].status, 'idle');
+  const timeZoneHistory = await tools.run('remote_read_session', { ...workspace, sessionId: created.sessionId }, signal);
+  const timeZoneTerminal = businessTerminal(timeZoneHistory.records, timeZoneRequest);
+  assert.equal(timeZoneTerminal?.state, 'completed');
+  assert.equal(timeZoneTerminal?.execution?.status, 'succeeded');
   stage = '官方事件消费者持续观察真实执行状态';
   const runningRequest = 'interop-execute-00000001';
   const running = await tools.run('remote_send_message', { ...workspace, sessionId: created.sessionId, operationId: runningRequest,
@@ -184,6 +249,11 @@ try {
   await waitEvent(item => item.name === 'api-session/status' && item.args[0] === created.sessionId && item.args[1] === true);
   await client.rpc('probe.release', {});
   await waitEvent(item => item.name === 'api-session/status' && item.args[0] === created.sessionId && item.args[1] === false);
+  stage = 'Typert读取真实执行终态';
+  const runningHistory = await tools.run('remote_read_session', { ...workspace, sessionId: created.sessionId }, signal);
+  const runningTerminal = businessTerminal(runningHistory.records, runningRequest);
+  assert.equal(runningTerminal?.state, 'completed');
+  assert.equal(runningTerminal?.execution?.status, 'succeeded');
   assert.equal(connection.state.getSnapshot(), 'connected');
   stage = '真实事件回答与订阅关闭';
   const answered = await gateway.dispatch('$events/result', { args: { clientId: eventsClientId, eventId: 'unknown',
@@ -195,7 +265,8 @@ try {
   assert.equal(stale.ok, false);
   console.log(JSON.stringify({ status: 'PASS', upstream: 'ea1c0925f8be825a5f5afac32ad2d0b2c699f7f7', release: 'eef232d2c43b0c9d04998a18db98cbc9e673e488',
     transport: client.getStats().mode, sessionFormat: features.sessionFormat, workspace: workspace.workspaceId,
-    capabilities: features.capabilities, harnessVersion: descriptor.harnessVersion ?? null }));
+    capabilities: features.capabilities, harnessVersion: descriptor.harnessVersion ?? null,
+    directoryDiscovered: true, presenceOnline: presence.online, clientTimeZone: expectedClientTimeZone }));
 } catch (error) {
   console.error(JSON.stringify({ status: 'FAIL', stage, code: error.code ?? error.name, message: error.message }));
   process.exitCode = 1;

@@ -44,7 +44,12 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
             }
             "session/prompt" -> {
                 val request = request(args)
-                request.only(setOf("sessionId", "requestId", "mode", "content"))
+                request.only(setOf("sessionId", "requestId", "mode", "content", "clientTimeZone"))
+                // 时区只校验官方允许的 Prompt 元数据形态；不进入授权，也不进入业务 request_id 的参数摘要。
+                request["clientTimeZone"]?.let { value ->
+                    val zone = (value as? JsonValue.JString)?.value ?: fail("CONTROL_PARAMETERS_INVALID")
+                    if (zone != "UTC" && !CLIENT_TIME_ZONE.matches(zone)) fail("CONTROL_PARAMETERS_INVALID")
+                }
                 if (request.text("mode") != "queue") fail("CONTROL_PROMPT_MODE_UNSUPPORTED")
                 val content = request["content"] as? JsonValue.JArray ?: fail("CONTROL_PROMPT_INVALID")
                 if (content.items.size != 1) fail("CONTROL_PROMPT_INVALID")
@@ -187,5 +192,8 @@ class PhoneVirtualHostRouter(private val bus: PhoneControlBus) {
     private fun Map<String, JsonValue>.number(name: String): Long? = get(name)?.let { (it as? JsonValue.JNumber)?.raw?.toLongOrNull() ?: fail("CONTROL_PARAMETERS_INVALID") }
     private fun Map<String, JsonValue>.only(allowed: Set<String>) { if (!keys.all { it in allowed }) fail("CONTROL_PARAMETERS_INVALID") }
     private fun fail(code: String): Nothing = throw ControlRequestException(code)
-    companion object { const val WORKSPACE = "phone-capabilities" }
+    companion object {
+        const val WORKSPACE = "phone-capabilities"
+        private val CLIENT_TIME_ZONE = Regex("[A-Za-z_]+/[A-Za-z0-9_+-]+(?:/[A-Za-z0-9_+-]+)?")
+    }
 }
