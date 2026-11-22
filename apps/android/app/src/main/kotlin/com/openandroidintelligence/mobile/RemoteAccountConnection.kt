@@ -12,12 +12,16 @@ import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectio
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.Flow
+
+private val NO_HOST_STANDBY = MutableStateFlow(false)
 
 /** App 只需要账号生命周期和真实连接，不了解凭据、Noise 或信令的实现细节。 */
 interface RemoteAccountConnection {
     val account: StateFlow<RemoteActiveAccount?>
     val state: StateFlow<RemoteAccountConnectionState>
+    val hostStandby: StateFlow<Boolean> get() = NO_HOST_STANDBY
     val hostState: StateFlow<RemoteHostConnectionState>
     val hosts: Flow<List<RemoteHostDevice>> get() = kotlinx.coroutines.flow.emptyFlow()
     suspend fun login(origin: String, email: String, password: String): RemoteLoginResult
@@ -37,6 +41,7 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     private val runtime = RemoteAccountRuntime(context, scope, host)
     override val account = runtime.account
     override val state = runtime.state
+    override val hostStandby = runtime.hostStandby
     override val hostState = runtime.hostState
     override val hosts = runtime.hosts
     override suspend fun login(origin: String, email: String, password: String) = runtime.login(origin, email, password)

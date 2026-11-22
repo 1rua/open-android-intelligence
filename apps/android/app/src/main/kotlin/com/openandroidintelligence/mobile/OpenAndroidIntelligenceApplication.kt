@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
@@ -29,7 +31,7 @@ import kotlinx.coroutines.launch
  * 2. 零插件状态下仍具备完整的 Gateway v2 连接、多账号与对话附件支持；
  * 3. 平台内核（PluginKernel）独立初始化并管理受保护插件与审计。
  */
-class OpenAndroidIntelligenceApplication : Application() {
+class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
 
     /** User controlled shell appearance, kept outside all Gateway secrets. */
     val appearancePreferences: AppearancePreferences by lazy {
@@ -91,6 +93,13 @@ class OpenAndroidIntelligenceApplication : Application() {
             onLost = { remoteRuntime.onNetworkLost() },
             onRouteChanged = { remoteRuntime.onNetworkAvailable(routeChanged = true) },
         )
+    }
+
+    override suspend fun restoreHostStandby(): kotlinx.coroutines.flow.StateFlow<Boolean> {
+        val account = remoteRuntime.accountRuntime
+        account.restore()
+        if (account.hostStandby.value) gatewayNetworkMonitor.start()
+        return account.hostStandby
     }
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */
@@ -166,6 +175,14 @@ class OpenAndroidIntelligenceApplication : Application() {
         }
 
         devicePush = DevicePushComposition(this,installId).also { it.start() }
+        val visibility = ProcessLifecycleOwner.get().lifecycle.currentStateFlow
+        remoteScope.launch {
+            combine(remoteRuntime.accountRuntime.hostStandby, visibility) { eligible, state ->
+                eligible && state.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+            }.distinctUntilChanged().collect { canStart ->
+                if (canStart) RemoteHostStandbyService.requestStart(this@OpenAndroidIntelligenceApplication)
+            }
+        }
 
         remoteScope.launch(Dispatchers.IO) {
             runCatching { pluginHost.reconcileNotificationPolicyGrant() }

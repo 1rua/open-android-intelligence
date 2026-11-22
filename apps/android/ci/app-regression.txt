@@ -26,6 +26,7 @@ RemoteNewSessionNavigationTest
 RemoteSessionDeliveryIntegrationTest
 AccountAvatarTest
 AgentSessionForegroundServiceTest
+RemoteHostStandbyServiceTest
 AgentSessionKeepAliveTest
 AndroidApiCompatibilityTest
 AndroidAttachmentDownloadsTest

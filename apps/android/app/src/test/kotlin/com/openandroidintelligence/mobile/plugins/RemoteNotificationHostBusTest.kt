@@ -20,6 +20,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assume.assumeTrue
@@ -39,6 +40,7 @@ class RemoteNotificationHostBusTest {
     )
     private val systemQueries = CopyOnWriteArrayList<Pair<String, JsonValue>>()
     private var confirmations = 0
+    private var providerFailure: String? = null
 
     @Test
     fun approvedNotificationReturnsItsRecordOnceAndANewRequestStillNeedsConsent() = runBlocking {
@@ -50,6 +52,7 @@ class RemoteNotificationHostBusTest {
             val provider = object : KernelPrimitiveProvider {
                 override val primitiveId = "kernel.notifications.read"
                 override suspend fun invoke(context: LocalGrantContext, input: ByteArray): ByteArray {
+                    providerFailure?.let { throw com.openandroidintelligence.kernel.CapabilityDenied(it) }
                     systemQueries.add(context.accountId to Json.parse(input.decodeToString()))
                     return """{"records":[{"id":"notification-42","text":"仅由通知提供者返回的标记"}]}""".encodeToByteArray()
                 }
@@ -73,7 +76,7 @@ class RemoteNotificationHostBusTest {
                     RemotePhoneControlComposition(app, this, host, grants, metadataKeyProvider = TestDocumentKeys,
                         confirmLocally = { _, _, _ ->
                             confirmations++
-                            confirmations == 1
+                            confirmations != 2
                         }).use { phone ->
                         phone.register(access) { true }.use { verifyReceipts(phone.bus) }
                     }
@@ -125,5 +128,16 @@ class RemoteNotificationHostBusTest {
         assertNull(JsonFields.field(denied, "result"))
         assertEquals(2, confirmations)
         assertEquals(1, systemQueries.size)
+
+        // 系统权限在授权后变化时，让桌面收到可诊断的固定错误，且不泄露未知异常的正文。
+        for ((reason, code) in listOf("NOTIFICATION_LISTENER_UNAVAILABLE" to "NOTIFICATION_LISTENER_UNAVAILABLE",
+            "私有通知标记" to "CAPABILITY_DENIED")) {
+            providerFailure = reason
+            val operation = query("notification-failure-${confirmations}")
+            bus.submit(access, task, operation)
+            val failed = receiptAfterWorkersFinish(operation.requestId)
+            assertEquals(code, JsonFields.string(JsonFields.obj(JsonFields.field(failed, "error")), "code"))
+            assertFalse(Json.canonical(failed).contains("私有通知标记"))
+        }
     }
 }

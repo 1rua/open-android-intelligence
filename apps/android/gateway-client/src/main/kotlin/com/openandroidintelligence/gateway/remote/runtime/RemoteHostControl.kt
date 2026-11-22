@@ -10,7 +10,7 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 
-/** 设置页仅接收发生故障的阶段和已知错误码。 */
+/** 诊断仅记录故障阶段和固定错误码。 */
 enum class RemoteHostFailureStage { REGISTRATION, CREDENTIAL, CONTROL }
 data class RemoteHostFailure(val stage: RemoteHostFailureStage, val code: String)
 
@@ -19,7 +19,7 @@ internal class RemoteHostControl(
     scope: CoroutineScope,
     private val credential: suspend (rejectedToken: String?) -> RemoteRoleCredential,
     private val connect: (RemoteRoleCredential, (String) -> Unit) -> RemoteSignalService,
-    private val stopUntilLogin: (String) -> Unit,
+    private val onTerminal: (RemoteHostFailure, Boolean) -> Unit,
     private val publish: (RemoteHostConnectionState, RemoteHostFailure?) -> Unit,
 ) {
     private val retryNow = Channel<Unit>(Channel.CONFLATED)
@@ -86,10 +86,8 @@ internal class RemoteHostControl(
             if (stage == RemoteHostFailureStage.CONTROL && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID") && !refreshedAfterRejection) {
                 rejectedToken = usedToken
             } else if (failure.code !in retryableCodes) {
-                if (failure.code in authorizationStops) {
-                    try { stopUntilLogin(failure.code) } catch (_: Exception) {
-                        Log.w(TAG, "HOST_STOP_PERSISTENCE_FAILED")
-                    }
+                try { onTerminal(failure, failure.code in authorizationStops) } catch (_: Exception) {
+                    Log.w(TAG, "HOST_STOP_PERSISTENCE_FAILED")
                 }
                 publish(RemoteHostConnectionState.FAILED, failure)
                 return

@@ -39,6 +39,8 @@ class RemoteAccountRuntime(
     val hosts: StateFlow<List<RemoteHostDevice>> = mutableHosts.asStateFlow()
     private val store = RemoteIdentityStore(vault, protector)
     private val lifecycle = Mutex()
+    private val mutableHostStandby = MutableStateFlow(false)
+    val hostStandby = mutableHostStandby.asStateFlow()
     private val mutableHostState = MutableStateFlow(RemoteHostConnectionState.STOPPED)
     val hostState: StateFlow<RemoteHostConnectionState> = mutableHostState
     private val mutableHostFailure = MutableStateFlow<RemoteHostFailure?>(null)
@@ -174,8 +176,7 @@ class RemoteAccountRuntime(
         api = server; mutableAccount.value = active
         startClientRole(active, if (client.first != null) null else client.second ?: failures.clientRegistration ?: "REMOTE_CREDENTIAL_MISSING")
         when {
-            failures.hostStop != null -> publishHost(RemoteHostConnectionState.FAILED, RemoteHostFailure(
-                if (failures.hostStop == "TOKEN_REUSED") RemoteHostFailureStage.CREDENTIAL else RemoteHostFailureStage.CONTROL, failures.hostStop))
+            failures.hostStop != null -> publishHost(RemoteHostConnectionState.FAILED, failures.hostStop)
             hostCredential != null || hostReceipt.second == "REMOTE_IDENTITY_LOCKED" -> startHost(active, server)
             hostReceipt.second != null -> publishHost(RemoteHostConnectionState.FAILED,
                 RemoteHostFailure(RemoteHostFailureStage.CREDENTIAL, requireNotNull(hostReceipt.second)))
@@ -263,6 +264,7 @@ class RemoteAccountRuntime(
         var old = mutableAccount.value
         val closingHost = synchronized(selectionLock) {
             selectionGeneration.incrementAndGet(); pendingConnect?.cancel(); pendingConnect = null
+            mutableHostStandby.value = false
             mutableAccount.value = null
             mutableClientFailure.value = null
             mutableState.value = RemoteAccountConnectionState.DISCONNECTED
@@ -392,12 +394,18 @@ class RemoteAccountRuntime(
                     peers[peer.scope.connectionId] = peer
                 } }, onPeerClosed = ::peerClosed, onClosed = closed,
                 iceServers = { id -> withReadCredential(active, RemoteRole.HOST) { api, token -> api.iceServers(token, id) } })
-        }, { code -> vault.stopHostUntilLogin(active, code) }) { state, failure -> synchronized(selectionLock) {
+        }, { failure, requiresLogin ->
+            synchronized(selectionLock) {
+                if (mutableAccount.value == active) mutableHostStandby.value = false
+            }
+            if (requiresLogin) vault.stopHostUntilLogin(active, failure)
+        }) { state, failure -> synchronized(selectionLock) {
             if (mutableAccount.value == active) publishHost(state, failure)
         } }
         synchronized(selectionLock) {
             requireActive(active)
             host = owner
+            mutableHostStandby.value = true
             owner.start()
         }
     }
