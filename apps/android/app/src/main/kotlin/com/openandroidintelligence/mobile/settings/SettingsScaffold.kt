@@ -1,5 +1,7 @@
 package com.openandroidintelligence.mobile.settings
 
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,13 +30,20 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
+import com.openandroidintelligence.conversation.motion.m3SharedBounds
+import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.SettingsPresentation
 
+/** 仅由一级设置分类子页注入，供 [SettingsPageScaffold] 对齐总览页对应分类卡片的共享边界。 */
+internal val LocalSettingsSharedCategoryKey = compositionLocalOf<String?> { null }
+
 /** Shared settings surface. The sidebar host has already consumed the system bars. */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun SettingsPageScaffold(
     title: String,
@@ -41,13 +51,23 @@ internal fun SettingsPageScaffold(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     closeSemantics: Boolean = false,
+    sharedCategoryKey: String? = LocalSettingsSharedCategoryKey.current,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     val color = if (presentation == SettingsPresentation.SIDEBAR) {
         MaterialTheme.colorScheme.surfaceContainerLow
     } else MaterialTheme.colorScheme.surface
+    val sharedModifier = if (sharedCategoryKey != null) {
+        modifier.m3SharedBounds(
+            key = SharedTransitionKeys.settingsCategoryCard(sharedCategoryKey),
+            resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
+            clipShape = RoundedCornerShape(AppRadius.Large),
+        )
+    } else {
+        modifier
+    }
     Scaffold(
-        modifier = modifier.imePadding(),
+        modifier = sharedModifier.imePadding(),
         containerColor = color,
         contentWindowInsets = if (presentation == SettingsPresentation.SIDEBAR) WindowInsets(0, 0, 0, 0) else WindowInsets.systemBars,
         topBar = {
