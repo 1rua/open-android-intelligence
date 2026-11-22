@@ -125,8 +125,10 @@ class ScreenSnapshotInvalidationTest {
         val request = request("target-change-tap")
         val snapshotId = snapshotId(port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true }))
 
+        val layoutBefore = ScreenAccessibilityConnection.layoutEvents.value
         installTargetWindow(bounds = Rect(0, 0, 90, 200))
         dispatchWindowsChanged()
+        assertTrue(ScreenAccessibilityConnection.layoutEvents.value > layoutBefore)
         installTargetWindow(bounds = Rect(0, 0, 90, 200))
         assertTapStale(port, request, snapshotId)
     }

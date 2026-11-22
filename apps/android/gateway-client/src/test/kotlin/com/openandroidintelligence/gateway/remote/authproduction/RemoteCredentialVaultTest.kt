@@ -2,7 +2,10 @@ package com.openandroidintelligence.gateway.remote.authproduction
 
 import com.openandroidintelligence.gateway.remote.auth.*
 import com.openandroidintelligence.gateway.remote.identity.*
+import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailure
+import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailureStage
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.security.SecureRandom
 import javax.crypto.Cipher
@@ -129,5 +132,92 @@ class RemoteCredentialVaultTest {
         vault.activate("https://remote.example", "owner", epoch); protector.keys.clear()
         assertThrows(RemoteIdentityLockedException::class.java) { RemoteCredentialVault(directory, protector).activeAccount() }
         assertTrue(protector.keys.isEmpty())
+    }
+    @Test fun 角色终态围栏在主凭据写失败时按epoch保留且不泄露凭据() {
+        val directory = Files.createTempDirectory("remote-vault-role-terminal").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val store = RemoteIdentityStore(vault, protector)
+        val client = RemoteIdentityScope("https://remote.example", "owner", RemoteRole.CLIENT)
+        val host = client.copy(role = RemoteRole.HOST)
+        val clientCredential = RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("client")),
+            RemoteTokenPair("client-access-secret", 1000000, "client-refresh-secret", 2000000))
+        val hostCredential = RemoteRoleCredential(RemoteStaticIdentityFactory.generate(RemoteDeviceId("host")),
+            RemoteTokenPair("host-access-secret", 1000000, "host-refresh-secret", 2000000))
+        store.save(client, clientCredential); store.save(host, hostCredential)
+        val epoch = vault.revokeActive(); val active = vault.activate(client.origin, client.accountId, epoch)
+        val mainBefore = File(directory, "remote-credentials.bin").readBytes()
+
+        val failing = RemoteCredentialVault(directory, protector,
+            { atomic, stream -> atomic.finishWrite(stream) },
+            { _, _ -> throw IOException("模拟加密主信封提交失败") })
+        failing.stopClientUntilLogin(active, "CONNECTION_REPLACED")
+
+        assertArrayEquals("角色围栏失败路径不能改写原加密信封", mainBefore, File(directory, "remote-credentials.bin").readBytes())
+        val fence = File(directory, "remote-role-terminal.bin").readText()
+        assertFalse(fence.contains("owner")); assertFalse(fence.contains("client-access-secret"))
+        assertFalse(fence.contains("client-refresh-secret")); assertFalse(fence.contains("host-access-secret"))
+
+        val restarted = RemoteCredentialVault(directory, protector)
+        val failures = restarted.roleFailures(active)
+        assertEquals("CONNECTION_REPLACED", failures.clientStop)
+        assertNull(failures.hostStop)
+        val restartedStore = RemoteIdentityStore(restarted, protector)
+        assertEquals("client", restartedStore.load(client)!!.identity.deviceId.value)
+        assertEquals("host", restartedStore.load(host)!!.identity.deviceId.value)
+
+        val nextEpoch = restarted.revokeActive()
+        val next = restarted.activate(client.origin, client.accountId, nextEpoch)
+        assertNull("新登录 epoch 不能被旧角色终态覆盖", restarted.roleFailures(next).clientStop)
+        mainBefore.fill(0)
+    }
+    @Test fun 角色围栏和主凭据同时不可写时账号级失败关闭且进程重建不能恢复() {
+        val directory = Files.createTempDirectory("remote-vault-role-terminal-fail-closed").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val epoch = vault.revokeActive()
+        val active = vault.activate("https://remote.example", "owner", epoch)
+        val failing = RemoteCredentialVault(directory, protector,
+            { _, _ -> throw IOException("模拟角色围栏不可写") },
+            { _, _ -> throw IOException("模拟主凭据不可写") })
+
+        val failure = assertThrows(com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException::class.java) {
+            failing.stopHostUntilLogin(active, RemoteHostFailure(RemoteHostFailureStage.CONTROL, "DEVICE_REVOKED"))
+        }
+        assertEquals("REMOTE_LOGOUT_INCOMPLETE", failure.code)
+        assertNull(failing.activeAccount())
+        val restarted = RemoteCredentialVault(directory, protector)
+        assertNull(restarted.activeAccount())
+
+        // 即使全局撤销位意外丢失，同进程失败关闭集合仍拒绝旧 epoch 恢复。
+        File(directory, "remote-revocation.bin").writeBytes(byteArrayOf(0))
+        assertNull(RemoteCredentialVault(directory, protector).activeAccount())
+        assertThrows(IllegalStateException::class.java) { restarted.requireCurrent(active) }
+    }
+    @Test fun 旧连接迟到的失败关闭保留显式重登后的账号() {
+        val directory = Files.createTempDirectory("remote-vault-stale-stop").toFile()
+        val protector = Protector()
+        val vault = RemoteCredentialVault(directory, protector)
+        val old = vault.activate("https://remote.example", "owner", vault.revokeActive())
+        val current = vault.activate(old.origin, old.accountId, vault.revokeActive())
+        vault.failClosed(old)
+        assertEquals(current, RemoteCredentialVault(directory, protector).activeAccount())
+        vault.requireCurrent(current)
+    }
+    @Test fun 角色围栏单独写失败时回退加密主信封且只停止目标角色() {
+        val directory = Files.createTempDirectory("remote-vault-role-terminal-main-fallback").toFile()
+        val protector = Protector(); val vault = RemoteCredentialVault(directory, protector)
+        val epoch = vault.revokeActive()
+        val active = vault.activate("https://remote.example", "owner", epoch)
+        val expected = RemoteHostFailure(RemoteHostFailureStage.CONTROL, "DEVICE_REVOKED")
+        val fenceFailing = RemoteCredentialVault(directory, protector,
+            { _, _ -> throw IOException("模拟角色围栏不可写") },
+            { atomic, stream -> atomic.finishWrite(stream) })
+
+        fenceFailing.stopHostUntilLogin(active, expected)
+
+        val restarted = RemoteCredentialVault(directory, protector)
+        assertEquals(active, restarted.activeAccount())
+        val failures = restarted.roleFailures(active)
+        assertEquals(expected, failures.hostStop)
+        assertNull("Host 终态不能扩大到 Client", failures.clientStop)
     }
 }

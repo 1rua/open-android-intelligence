@@ -15,6 +15,7 @@ import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.runtime.*
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonValue
+import java.io.IOException
 import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -35,8 +36,17 @@ import org.robolectric.annotation.Config
 class RemoteClientControlLifecycleTest {
     private class Protector : RemoteIdentityProtector {
         private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        private val failSealOnce = AtomicBoolean(false)
+        val failedSeals = AtomicInteger()
         override fun hasKey(scopeKey: String) = scopeKey in keys
-        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray) = plaintext.copyOf().also { keys += scopeKey }
+        fun failNextSeal() { failSealOnce.set(true) }
+        override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
+            if (failSealOnce.compareAndSet(true, false)) {
+                failedSeals.incrementAndGet()
+                throw IOException("模拟主凭据密封失败")
+            }
+            return plaintext.copyOf().also { keys += scopeKey }
+        }
         override fun open(scopeKey: String, ciphertext: ByteArray, associatedData: ByteArray) = ciphertext.copyOf()
     }
     private class EmptyHostHandler : RemoteRpcHostHandler {
@@ -70,6 +80,8 @@ class RemoteClientControlLifecycleTest {
         val rejectNextHostHelloWithTokenExpired = AtomicBoolean(false)
         @Volatile var rejectHostRegistration = false
         @Volatile var rejectClientRegistration = false
+        @Volatile var registrationRejectionCode = "RATE_LIMITED"
+        @Volatile var registrationRejectionStatus = 429
         @Volatile var expirePeerToken = false
         @Volatile var rejectRefreshAsReused = false
         @Volatile var peerKey = ""
@@ -80,6 +92,8 @@ class RemoteClientControlLifecycleTest {
         private val pingsBySocket = java.util.concurrent.ConcurrentHashMap<WebSocket, AtomicInteger>()
         private val pongsByRole = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
         private val protector = Protector()
+        private val failRoleTerminalOnce = AtomicBoolean(false)
+        private val failedRoleTerminals = AtomicInteger()
         val vault: RemoteCredentialVault
         val origin: String
         val deviceName: String
@@ -111,7 +125,7 @@ class RemoteClientControlLifecycleTest {
                         registrationAuthorizations += request.getHeader("Authorization").orEmpty()
                         if (role == "host" && rejectHostRegistration || role == "client" && rejectClientRegistration) {
                             rejectedRegistrationRoles += role
-                            json(obj("error" to obj("code" to "DEVICE_LIMIT_REACHED"))).setResponseCode(409)
+                            json(obj("error" to obj("code" to registrationRejectionCode))).setResponseCode(registrationRejectionStatus)
                         } else {
                             val accessToken = registrationAccessToken(role)
                             registrationTokens += role to accessToken
@@ -189,7 +203,15 @@ class RemoteClientControlLifecycleTest {
             server.start()
             origin = server.url("/").toString().removeSuffix("/")
             deviceName = RemoteInstallationIdentityStore.defaultDeviceName(RuntimeEnvironment.getApplication())
-            vault = RemoteCredentialVault(Files.createTempDirectory("remote-control-lifecycle").toFile(), protector)
+            vault = RemoteCredentialVault(Files.createTempDirectory("remote-control-lifecycle").toFile(), protector,
+                { atomic, stream ->
+                    if (failRoleTerminalOnce.compareAndSet(true, false)) {
+                        failedRoleTerminals.incrementAndGet()
+                        throw IOException("模拟角色终态围栏写入失败")
+                    }
+                    atomic.finishWrite(stream)
+                },
+                { atomic, stream -> atomic.finishWrite(stream) })
             runtime = newRuntime()
         }
         private fun newRuntime() = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), accountScope,
@@ -231,6 +253,18 @@ class RemoteClientControlLifecycleTest {
             val aged = current.copy(tokens = current.tokens.copy(accessTokenExpiresAt = System.currentTimeMillis() + 1_000))
             assertNotNull("HOST 凭据过期时间更新失败", store.rotateTokens(scope, current, aged))
         }
+        fun expireClientAccessToken() {
+            val active = requireNotNull(runtime.account.value)
+            val store = RemoteIdentityStore(vault, protector)
+            val scope = RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT)
+            val current = requireNotNull(store.load(scope))
+            val aged = current.copy(tokens = current.tokens.copy(accessTokenExpiresAt = System.currentTimeMillis() + 1_000))
+            assertNotNull("CLIENT 凭据过期时间更新失败", store.rotateTokens(scope, current, aged))
+        }
+        fun failNextCredentialSeal() = protector.failNextSeal()
+        fun failedCredentialSeals(): Int = protector.failedSeals.get()
+        fun failNextRoleTerminal() { failRoleTerminalOnce.set(true) }
+        fun failedRoleTerminalWrites(): Int = failedRoleTerminals.get()
         override fun close() { runBlocking { runtime.logout() }; parent.cancel(); server.shutdown() }
         private fun json(value: JsonValue) = MockResponse().setHeader("Content-Type", "application/json").setBody(Json.canonical(value))
 
@@ -348,6 +382,24 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
+    @Test fun 服务端撤销后并发发送心跳沿用首次关闭原因(): Unit = runBlocking {
+        MockWebServer().use { server ->
+            val peer = CompletableDeferred<WebSocket>()
+            server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) { peer.complete(webSocket) }
+            }))
+            val terminal = CompletableDeferred<String>()
+            val socket = RemoteSocket(OkHttpClient(), server.url("/").toString(), onFailure = { terminal.complete(it) })
+            try {
+                withTimeout(5_000) { socket.awaitOpen(); peer.await().close(4004, "revoked"); terminal.await() }
+                assertEquals("DEVICE_REVOKED", terminal.await())
+                val ping = RemoteControlCodec.create("ping", obj("nonce" to "last-ping"), "last-ping", 1)
+                val failure = runCatching { socket.send(ping) }.exceptionOrNull()
+                assertEquals("DEVICE_REVOKED", (failure as? com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException)?.code)
+            } finally { socket.close() }
+        }
+    }
+
     @Test fun Host收到DEVICE_REVOKED终态后不重连且前台刷新不能复活(): Unit = runBlocking {
         Fixture(EmptyHostHandler()).use { fixture ->
             fixture.login()
@@ -373,6 +425,182 @@ class RemoteClientControlLifecycleTest {
             assertEquals(helloCount, fixture.hellosFor("host").size)
             assertEquals(RemoteHostConnectionState.FAILED, fixture.runtime.hostState.value)
             assertEquals("DEVICE_REVOKED", fixture.runtime.hostFailure.value?.code)
+        }
+    }
+
+    @Test fun Client被同设备替代或撤销后停止重连且Host保持在线并可显式登录恢复(): Unit = runBlocking {
+        for ((closeCode, expectedCode) in listOf(4003 to "CONNECTION_REPLACED", 4004 to "DEVICE_REVOKED")) {
+            Fixture(EmptyHostHandler()).use { fixture ->
+                fixture.login()
+                await {
+                    fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                        fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
+                }
+                val clientHello = fixture.hellosFor("client").single()
+                val hostSocket = fixture.hellosFor("host").single().socket
+                val hostPingsBefore = fixture.pingCount(hostSocket)
+
+                clientHello.socket.close(closeCode, "单角色终态")
+                await("CLIENT 未进入 $expectedCode 终态", {
+                    "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailure.value}, " +
+                        "clientHellos=${fixture.hellosFor("client").size}"
+                }) {
+                    fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED &&
+                        fixture.runtime.clientFailure.value == expectedCode
+                }
+                fixture.runtime.refreshControlConnection()
+                delay(1_200)
+
+                assertEquals("Client 终态后不能无界重连", 1, fixture.hellosFor("client").size)
+                assertEquals(RemoteHostConnectionState.ONLINE, fixture.runtime.hostState.value)
+                assertTrue("Client 终态不能影响仍在线 Host 的心跳", fixture.pingCount(hostSocket) > hostPingsBefore)
+
+                fixture.restartAccountProcess()
+                await("进程恢复后 Host 未独立上线", {
+                    "state=${fixture.runtime.state.value}, hostState=${fixture.runtime.hostState.value}, " +
+                        "clientHellos=${fixture.hellosFor("client").size}, hostHellos=${fixture.hellosFor("host").size}"
+                }) {
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                        fixture.hellosFor("host").size == 2
+                }
+                assertEquals(RemoteAccountConnectionState.DISCONNECTED, fixture.runtime.state.value)
+                assertEquals(expectedCode, fixture.runtime.clientFailure.value)
+                assertEquals("重启不能绕过 Client 单角色终态", 1, fixture.hellosFor("client").size)
+
+                fixture.login()
+                await("显式重新登录未恢复 Client 与 Host", {
+                    "state=${fixture.runtime.state.value}, hostState=${fixture.runtime.hostState.value}, " +
+                        "clientHellos=${fixture.hellosFor("client").size}, hostHellos=${fixture.hellosFor("host").size}"
+                }) {
+                    fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                        fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                        fixture.hellosFor("client").size == 2 && fixture.hellosFor("host").size == 3
+                }
+                assertNull(fixture.runtime.clientFailure.value)
+            }
+        }
+    }
+
+    @Test fun Client刷新票被判定重用后停止且重启不重试(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
+            }
+            fixture.expireClientAccessToken()
+            fixture.rejectRefreshAsReused = true
+            fixture.hellosFor("client").single().socket.close(1012, "刷新票终态")
+
+            await("刷新 TOKEN_REUSED 未停止 Client", {
+                "state=${fixture.runtime.state.value}, failure=${fixture.runtime.clientFailure.value}, " +
+                    "refreshCount=${fixture.refreshRequests.size}, clientHellos=${fixture.hellosFor("client").size}"
+            }) {
+                fixture.runtime.state.value == RemoteAccountConnectionState.DISCONNECTED &&
+                    fixture.runtime.clientFailure.value == "TOKEN_REUSED"
+            }
+            assertEquals(1, fixture.refreshRequests.size)
+            assertEquals(RemoteHostConnectionState.ONLINE, fixture.runtime.hostState.value)
+            fixture.runtime.refreshControlConnection()
+            delay(1_200)
+            assertEquals(1, fixture.refreshRequests.size)
+            assertEquals(1, fixture.hellosFor("client").size)
+
+            fixture.restartAccountProcess()
+            await {
+                fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("host").size == 2
+            }
+            assertEquals(RemoteAccountConnectionState.DISCONNECTED, fixture.runtime.state.value)
+            assertEquals("TOKEN_REUSED", fixture.runtime.clientFailure.value)
+            assertEquals(1, fixture.refreshRequests.size)
+            assertEquals(1, fixture.hellosFor("client").size)
+
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 2 && fixture.hellosFor("host").size == 3
+            }
+            assertNull(fixture.runtime.clientFailure.value)
+        }
+    }
+
+    @Test fun Host终态主凭据写失败时由角色围栏阻止重启且不影响Client(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
+            }
+            fixture.failNextCredentialSeal()
+            fixture.hellosFor("host").single().socket.close(4004, "撤销终态")
+            await {
+                fixture.runtime.hostState.value == RemoteHostConnectionState.FAILED &&
+                    fixture.runtime.hostFailure.value?.code == "DEVICE_REVOKED"
+            }
+            assertEquals("确定性故障注入必须命中一次主凭据写入", 1, fixture.failedCredentialSeals())
+            assertEquals(RemoteAccountConnectionState.CONNECTED, fixture.runtime.state.value)
+
+            fixture.restartAccountProcess()
+            await("主凭据写失败后 Client 未恢复在线", {
+                "state=${fixture.runtime.state.value}, hostState=${fixture.runtime.hostState.value}, " +
+                    "clientHellos=${fixture.hellosFor("client").size}, hostHellos=${fixture.hellosFor("host").size}"
+            }) { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
+            delay(1_200)
+            assertEquals("Host 终态围栏必须阻止重启后重连", 1, fixture.hellosFor("host").size)
+            assertEquals(RemoteHostConnectionState.FAILED, fixture.runtime.hostState.value)
+            assertEquals("DEVICE_REVOKED", fixture.runtime.hostFailure.value?.code)
+
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 3 && fixture.hellosFor("host").size == 2
+            }
+            assertNull(fixture.runtime.clientFailure.value)
+        }
+    }
+
+    @Test fun Host终态角色围栏和主凭据均不可写时两角色失败关闭且重新登录可恢复(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
+            }
+            fixture.failNextRoleTerminal()
+            fixture.failNextCredentialSeal()
+            fixture.hellosFor("host").single().socket.close(4004, "撤销终态")
+            await("存储全不可用后未失败关闭账号", {
+                "account=${fixture.runtime.account.value}, state=${fixture.runtime.state.value}, " +
+                    "hostState=${fixture.runtime.hostState.value}, hostFailure=${fixture.runtime.hostFailure.value}"
+            }) {
+                fixture.runtime.account.value == null &&
+                    fixture.runtime.state.value == RemoteAccountConnectionState.SIGNED_OUT &&
+                    fixture.runtime.hostFailure.value?.code == "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
+            }
+            assertEquals(1, fixture.failedRoleTerminalWrites())
+            assertEquals(1, fixture.failedCredentialSeals())
+            delay(1_200)
+            assertEquals(1, fixture.hellosFor("client").size)
+            assertEquals(1, fixture.hellosFor("host").size)
+
+            fixture.restartAccountProcess()
+            delay(500)
+            assertNull("全存储失败关闭不能靠重启恢复", fixture.runtime.account.value)
+            assertEquals(1, fixture.hellosFor("client").size)
+            assertEquals(1, fixture.hellosFor("host").size)
+
+            fixture.login()
+            await("存储恢复后显式登录未重建两个角色", {
+                "account=${fixture.runtime.account.value}, state=${fixture.runtime.state.value}, hostState=${fixture.runtime.hostState.value}, " +
+                    "clientHellos=${fixture.hellosFor("client").size}, hostHellos=${fixture.hellosFor("host").size}"
+            }) {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 2 && fixture.hellosFor("host").size == 2
+            }
         }
     }
 
@@ -484,19 +712,35 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
-    @Test fun Host注册失败发布REGISTRATION阶段错误且不建立Host控制连接(): Unit = runBlocking {
+    @Test fun Host注册限额按固定上游返回RATE_LIMITED且不建立Host控制连接(): Unit = runBlocking {
         Fixture(EmptyHostHandler()).use { fixture ->
             fixture.rejectHostRegistration = true
             val result = fixture.login()
             assertEquals(RemoteRoleRegistrationState.REGISTERED, result.client.state)
             assertEquals(RemoteRoleRegistrationState.FAILED, result.host.state)
-            assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", result.host.errorCode)
+            assertEquals("RATE_LIMITED", result.host.errorCode)
             await { fixture.runtime.hostState.value == RemoteHostConnectionState.FAILED && fixture.runtime.hostFailure.value != null }
             val failure = requireNotNull(fixture.runtime.hostFailure.value)
             assertEquals(RemoteHostFailureStage.REGISTRATION, failure.stage)
-            assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", failure.code)
+            assertEquals("RATE_LIMITED", failure.code)
             assertEquals(listOf("host"), fixture.rejectedRegistrationRoles)
             await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.hellosFor("client").size == 1 }
+            assertTrue(fixture.hellosFor("host").isEmpty())
+        }
+    }
+
+    @Test fun Host注册遇到契约外错误码只发布安全回退(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.rejectHostRegistration = true
+            fixture.registrationRejectionCode = "DEVICE_LIMIT_REACHED"
+            fixture.registrationRejectionStatus = 409
+            val result = fixture.login()
+            assertEquals(RemoteRoleRegistrationState.REGISTERED, result.client.state)
+            assertEquals(RemoteRoleRegistrationState.FAILED, result.host.state)
+            assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", result.host.errorCode)
+            val failure = requireNotNull(fixture.runtime.hostFailure.value)
+            assertEquals(RemoteHostFailureStage.REGISTRATION, failure.stage)
+            assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", failure.code)
             assertTrue(fixture.hellosFor("host").isEmpty())
         }
     }

@@ -5,6 +5,7 @@ package com.openandroidintelligence.screen
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Rect
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -78,8 +79,10 @@ object ScreenAccessibilityConnection {
         get() = reference.get()?.takeIf { ScreenHostRegistry.accessibilityConnected.value }
     internal fun changed(eventType: Int? = null) {
         sequence.incrementAndGet()
-        if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED || eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
-            layoutChanges.value += 1
+        when (eventType) {
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED, AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> layoutChanges.value += 1
+        }
     }
     internal fun connect(service: ScreenAccessibilityService) {
         reference = WeakReference(service)
@@ -146,8 +149,13 @@ object ScreenAccessibilityConnection {
             val targetUnchanged = snapshotTargets?.let { it == observed.targets } == true
             val auxiliaryChanged = previousAuxiliary != null && previousAuxiliary != observed.auxiliary
             observedAuxiliary = observed.auxiliary
-            !(ownedOverlayEvent && targetUnchanged) && !(eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            val invalidate = !(ownedOverlayEvent && targetUnchanged) && !(eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
                 targetUnchanged && auxiliaryChanged)
+            if (snapshotTargets != null && Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) {
+                Log.d(SCREEN_TRACE, "WINDOW_EVENT type=$eventType window=$windowId sameTargets=$targetUnchanged " +
+                    "ownedOverlay=$ownedOverlayEvent auxiliaryChanged=$auxiliaryChanged invalidate=$invalidate")
+            }
+            invalidate
         }
     }
 
@@ -197,6 +205,9 @@ object ScreenAccessibilityConnection {
         }
     }
 }
+
+/** 显式启用的本机诊断只记事件分类和代次，不记录界面正文、包名或坐标。 */
+internal const val SCREEN_TRACE = "OAI-Screen-Trace"
 
 internal data class ScreenWindowState(
     val id: Int,

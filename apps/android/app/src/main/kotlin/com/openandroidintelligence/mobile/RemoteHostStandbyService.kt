@@ -15,11 +15,26 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import com.openandroidintelligence.ui.resources.R as UiR
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 
 internal interface RemoteStandbyOwner {
     suspend fun restoreHostStandby(): StateFlow<Boolean>
+}
+
+internal enum class StandbyStart { REQUESTED, RESTRICTED, PERMISSION_DENIED }
+
+/** 可见窗口刚恢复时系统可能仍拒绝启动。只在同一可见授权内再次请求，后台与退出会取消等待。 */
+internal suspend fun Flow<Boolean>.startVisibleHostStandby(request: () -> StandbyStart) {
+    distinctUntilChanged().collectLatest { eligible ->
+        if (eligible && request() == StandbyStart.RESTRICTED) {
+            delay(1_000)
+            request()
+        }
+    }
 }
 
 /** 服务只承载已登记 Host 的信令。每个控机请求仍由手机内核单独授权。 */
@@ -74,10 +89,17 @@ class RemoteHostStandbyService : Service() {
         internal const val CHANNEL = "remote-host-standby"
         internal const val NOTIFICATION_ID = 2402
         private const val TAG = "OAI-Virtual-Host"
-        internal fun requestStart(context: Context) {
-            try { ContextCompat.startForegroundService(context, Intent(context, RemoteHostStandbyService::class.java)) }
-            catch (_: IllegalStateException) { Log.w(TAG, "STANDBY_START_RESTRICTED") }
-            catch (_: SecurityException) { Log.w(TAG, "STANDBY_PERMISSION_DENIED") }
+        internal fun requestStart(context: Context): StandbyStart {
+            return try {
+                ContextCompat.startForegroundService(context, Intent(context, RemoteHostStandbyService::class.java))
+                StandbyStart.REQUESTED
+            } catch (_: IllegalStateException) {
+                Log.w(TAG, "STANDBY_START_RESTRICTED")
+                StandbyStart.RESTRICTED
+            } catch (_: SecurityException) {
+                Log.w(TAG, "STANDBY_PERMISSION_DENIED")
+                StandbyStart.PERMISSION_DENIED
+            }
         }
     }
 }

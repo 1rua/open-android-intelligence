@@ -18,6 +18,13 @@ import kotlinx.coroutines.sync.withLock
 enum class RemoteAccountConnectionState { SIGNED_OUT, READY, CONNECTING, CONNECTED, DISCONNECTED }
 enum class RemoteHostConnectionState { STOPPED, CONNECTING, ONLINE, FAILED }
 
+private val clientReauthorizationCodes = setOf("TOKEN_EXPIRED", "AUTH_INVALID")
+private val clientRetryableCodes = setOf("TRANSPORT_CLOSED", "CONNECTION_FAILED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT",
+    "SERVER_SHUTDOWN", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT",
+    "REMOTE_REFRESH_PERSISTENCE_FAILED", "REMOTE_CREDENTIAL_PERSISTENCE_FAILED", "REMOTE_IDENTITY_LOCKED", "CLIENT_CLOSED")
+private fun safeClientErrorCode(code: String, fallback: String) =
+    if (code == "CLIENT_CLOSED") code else safeRoleErrorCode(code, fallback)
+
 /** 单活动账号的生产入口；界面选择与聊天状态留给各自领域，不从旧 Core 凭据恢复。 */
 class RemoteAccountRuntime(
     private val context: Context,
@@ -174,7 +181,8 @@ class RemoteAccountRuntime(
         currentCoroutineContext().ensureActive()
         vault.requireCurrent(active)
         api = server; mutableAccount.value = active
-        startClientRole(active, if (client.first != null) null else client.second ?: failures.clientRegistration ?: "REMOTE_CREDENTIAL_MISSING")
+        startClientRole(active, failures.clientStop
+            ?: if (client.first != null) null else client.second ?: failures.clientRegistration ?: "REMOTE_CREDENTIAL_MISSING")
         when {
             failures.hostStop != null -> publishHost(RemoteHostConnectionState.FAILED, failures.hostStop)
             hostCredential != null || hostReceipt.second == "REMOTE_IDENTITY_LOCKED" -> startHost(active, server)
@@ -310,57 +318,137 @@ class RemoteAccountRuntime(
     }
     /** 账号控制面与 Host 业务隧道分别拥有生命周期；登录后不等待选工作区才上线。 */
     private fun startClient(active: RemoteActiveAccount) = synchronized(selectionLock) {
-        if (clientJob?.isActive == true) return@synchronized
+        if (clientJob?.isActive == true || mutableClientFailure.value != null) return@synchronized
         requireActive(active)
         clientJob = scope.launch(start = CoroutineStart.LAZY) {
             var retry = 1_000L
-            while (isActive && mutableAccount.value == active) {
-                var service: RemoteSignalService? = null
-                try {
-                    val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
-                    val credential = credential(active, RemoteRole.CLIENT)
-                    val ended = CompletableDeferred<Unit>()
-                    val current = RemoteSignalService(context, scope, server,
-                        RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT), credential,
-                        { requireActive(active) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
-                        onAuthenticatedPeer = { authenticated -> synchronized(selectionLock) {
-                            requireActive(active); peers[authenticated.scope.connectionId] = authenticated
-                        } }, onPeerClosed = ::peerClosed,
-                        onClosed = { ended.complete(Unit) },
-                        onHeartbeat = { scope.launch { refreshPresence(active) } },
-                        iceServers = { id -> withReadCredential(active, RemoteRole.CLIENT) { api, token -> api.iceServers(token, id) } })
-                    service = current
-                    synchronized(selectionLock) {
-                        requireActive(active); client = current
-                        mutableState.value = RemoteAccountConnectionState.CONNECTING
-                    }
-                    current.startClient()
-                    synchronized(selectionLock) {
-                        requireActive(active)
-                        if (!current.connected) throw RemoteRpcException("TRANSPORT_CLOSED")
-                        mutableState.value = RemoteAccountConnectionState.CONNECTED
-                        clientAvailable.complete(current)
-                    }
-                    retry = 1_000L
-                    scope.launch { refreshPresence(active) }
-                    ended.await()
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) {
-                    // 只重建认证与传输，绝不重放旧隧道上的业务写入。
-                } finally {
-                    service?.close()
-                    synchronized(selectionLock) {
-                        if (mutableAccount.value == active) {
-                            if (client === service) client = null
-                            if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
-                            mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+            var rejectedToken: String? = null
+            var refreshedAfterRejection = false
+            val runningJob = currentCoroutineContext()[Job]
+            try {
+                while (isActive && mutableAccount.value == active) {
+                    var service: RemoteSignalService? = null
+                    var usedToken: String? = null
+                    val failure = try {
+                        val server = api ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
+                        val credential = credential(active, RemoteRole.CLIENT, rejectedToken)
+                        usedToken = credential.tokens.accessToken
+                        if (rejectedToken != null) refreshedAfterRejection = true
+                        rejectedToken = null
+                        val ended = CompletableDeferred<String>()
+                        val current = RemoteSignalService(context, scope, server,
+                            RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT), credential,
+                            { requireActive(active) }, { id, role -> authorize(active, RemoteRole.CLIENT, id, role) },
+                            onAuthenticatedPeer = { authenticated -> synchronized(selectionLock) {
+                                requireActive(active); peers[authenticated.scope.connectionId] = authenticated
+                            } }, onPeerClosed = ::peerClosed,
+                            onClosed = { ended.complete(it) },
+                            onHeartbeat = { scope.launch { refreshPresence(active) } },
+                            iceServers = { id -> withReadCredential(active, RemoteRole.CLIENT) { api, token -> api.iceServers(token, id) } })
+                        service = current
+                        synchronized(selectionLock) {
+                            requireActive(active); client = current
+                            mutableState.value = RemoteAccountConnectionState.CONNECTING
+                        }
+                        current.startClient()
+                        synchronized(selectionLock) {
+                            requireActive(active)
+                            if (!current.connected) throw RemoteRpcException("TRANSPORT_CLOSED")
+                            mutableState.value = RemoteAccountConnectionState.CONNECTED
+                            clientAvailable.complete(current)
+                        }
+                        retry = 1_000L
+                        refreshedAfterRejection = false
+                        scope.launch { refreshPresence(active) }
+                        RemoteRpcException(safeClientErrorCode(ended.await(), "TRANSPORT_CLOSED"))
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (error: Exception) {
+                        // 只重建认证与传输，绝不重放旧隧道上的业务写入。
+                        if (mutableAccount.value != active) return@launch
+                        when (error) {
+                            is RemoteIdentityLockedException -> RemoteRpcException("REMOTE_IDENTITY_LOCKED")
+                            is RemoteIdentityCorruptedException -> RemoteRpcException("REMOTE_IDENTITY_CORRUPTED")
+                            is RemoteRpcException -> RemoteRpcException(safeClientErrorCode(error.code, "CONTROL_CONNECTION_FAILED"))
+                            else -> RemoteRpcException("CONTROL_CONNECTION_FAILED")
+                        }
+                    } finally {
+                        service?.close()
+                        synchronized(selectionLock) {
+                            if (mutableAccount.value == active) {
+                                if (client === service) client = null
+                                if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+                                mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+                            }
                         }
                     }
+                    if (mutableAccount.value != active) return@launch
+                    val refreshRejected = failure.code in clientReauthorizationCodes && !refreshedAfterRejection && usedToken != null
+                    if (refreshRejected) rejectedToken = usedToken
+                    else if (failure.code in clientReauthorizationCodes || failure.code !in clientRetryableCodes) {
+                        persistClientTerminal(active, failure.code)
+                        return@launch
+                    }
+                    delay(retry)
+                    retry = (retry * 2).coerceAtMost(30_000L)
                 }
-                delay(retry)
-                retry = (retry * 2).coerceAtMost(30_000L)
+            } finally {
+                synchronized(selectionLock) {
+                    if (clientJob === runningJob) clientJob = null
+                }
             }
         }.also { it.start() }
+    }
+    private fun persistClientTerminal(active: RemoteActiveAccount, code: String) {
+        if (mutableAccount.value != active) return
+        try {
+            vault.stopClientUntilLogin(active, code)
+            synchronized(selectionLock) {
+                if (mutableAccount.value == active) {
+                    mutableClientFailure.value = code
+                    mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+                    if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+                    clientAvailable.completeExceptionally(RemoteRpcException(code))
+                }
+            }
+        } catch (_: Exception) {
+            failClosedActive(active)
+        }
+    }
+    /** 角色围栏与账号级撤销都不可写时，只能立即关闭两个角色，避免内存状态放开未持久化终态。 */
+    private fun failClosedActive(active: RemoteActiveAccount) {
+        runCatching { vault.failClosed(active) }
+        var closingHost: RemoteHostControl? = null
+        var closingClient: RemoteSignalService? = null
+        var closingJob: Job? = null
+        var closingPeers: List<AuthenticatedRemotePeer> = emptyList()
+        synchronized(selectionLock) {
+            if (mutableAccount.value == active) {
+                selectionGeneration.incrementAndGet()
+                pendingConnect?.cancel(); pendingConnect = null
+                mutableAccount.value = null
+                mutableClientFailure.value = "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"
+                mutableState.value = RemoteAccountConnectionState.SIGNED_OUT
+                mutableHosts.value = emptyList()
+                mutableHostStandby.value = false
+                publishHost(RemoteHostConnectionState.FAILED,
+                    RemoteHostFailure(RemoteHostFailureStage.CONTROL, "REMOTE_CREDENTIAL_PERSISTENCE_FAILED"))
+                closingHost = host.also { host = null }
+                closingClient = client.also { client = null }
+                closingJob = clientJob.also { clientJob = null }
+                if (clientAvailable.isCompleted) clientAvailable = CompletableDeferred()
+                clientAvailable.completeExceptionally(RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED"))
+                closingPeers = peers.values.toList()
+                api = null
+            }
+        }
+        runCatching {
+            closeRemoteConnectionResources(
+                { closingJob?.cancel(); Unit },
+                { closingHost?.stop(); Unit },
+                { closingClient?.close(); Unit },
+                *closingPeers.map { peer -> { peerClosed(peer.scope) } }.toTypedArray(),
+            )
+        }
     }
     private suspend fun refreshPresence(active: RemoteActiveAccount) {
         if (mutableAccount.value != active || presenceRefresh.isLocked) return
@@ -375,14 +463,18 @@ class RemoteAccountRuntime(
     }
     fun refreshControlConnection() {
         val active = mutableAccount.value ?: return
+        var refreshClient = false
         synchronized(selectionLock) {
             if (mutableAccount.value != active) return
             if (mutableHostState.value == RemoteHostConnectionState.FAILED) host?.wake()
             // 只有已经由授权登录或恢复启动过的 Client 才能重启，避免仅 Host 获授权时创建空转任务。
-            val job = clientJob ?: return
-            if (!job.isActive) startClient(active)
+            if (mutableClientFailure.value == null) {
+                val job = clientJob
+                if (job == null || !job.isActive) startClient(active)
+                refreshClient = true
+            }
         }
-        scope.launch { refreshPresence(active) }
+        if (refreshClient) scope.launch { refreshPresence(active) }
     }
     private fun startHost(active: RemoteActiveAccount, server: RemoteServerApi) {
         val handler = hostHandler ?: return
@@ -398,7 +490,13 @@ class RemoteAccountRuntime(
             synchronized(selectionLock) {
                 if (mutableAccount.value == active) mutableHostStandby.value = false
             }
-            if (requiresLogin) vault.stopHostUntilLogin(active, failure)
+            if (!requiresLogin) RemoteTerminalPersistence.PERSISTED else try {
+                vault.stopHostUntilLogin(active, failure)
+                RemoteTerminalPersistence.PERSISTED
+            } catch (_: Exception) {
+                failClosedActive(active)
+                RemoteTerminalPersistence.FAILED_CLOSED
+            }
         }) { state, failure -> synchronized(selectionLock) {
             if (mutableAccount.value == active) publishHost(state, failure)
         } }

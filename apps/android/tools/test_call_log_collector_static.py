@@ -642,8 +642,14 @@ class CallLogCollectorStaticTest(unittest.TestCase):
 
     def test_call_log_scheduling_has_no_reboot_persistence_surface(self):
         root = ET.parse(APP_MANIFEST).getroot()
-        self.assertNotIn("android.permission.RECEIVE_BOOT_COMPLETED", manifest_permissions(root))
-        self.assertEqual([], root.findall(".//receiver"))
+        # 只允许私有的 Remote Host 解锁引导，通话记录与短信都不能注册开机任务。
+        boot_receivers = [receiver for receiver in root.findall(".//receiver") if any(
+            action.get(f"{ANDROID_NS}name") in {"android.intent.action.BOOT_COMPLETED", "android.intent.action.LOCKED_BOOT_COMPLETED"}
+            for action in receiver.findall("intent-filter/action")
+        )]
+        self.assertEqual([(".RemoteHostBootReceiver", "false")], [
+            (receiver.get(f"{ANDROID_NS}name"), receiver.get(f"{ANDROID_NS}exported")) for receiver in boot_receivers
+        ])
 
         scheduler = CALL_LOG_SCHEDULER.read_text(encoding="utf-8")
         self.assertIn(".setPersisted(false)", scheduler)

@@ -7,6 +7,12 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Looper
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
@@ -26,6 +32,46 @@ class RemoteHostStandbyServiceTest {
         val standby = MutableStateFlow(true)
         @Volatile var restores = 0
         override suspend fun restoreHostStandby() = standby.also { restores++ }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun 登录仍可见时请求待命而服务须等注册定案再使用持久授权() = runTest {
+        val gate = CompletableDeferred<Boolean>()
+        var starts = 0
+        val reservation = HostRegistrationStandby { starts++ }
+        val result = async { reservation.duringRegistration { gate.await() } }
+        runCurrent()
+        assertEquals(1, starts)
+        val service = async { reservation.awaitRegistration() }
+        runCurrent()
+        assertFalse(service.isCompleted)
+        gate.complete(false)
+        assertFalse(result.await())
+        service.await()
+        assertEquals(1, starts)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun 系统短暂拒绝后可见状态重试而退到后台时立即取消() = runTest {
+        val visible = MutableStateFlow(true)
+        var attempts = 0
+        var decision = StandbyStart.RESTRICTED
+        backgroundScope.launch { visible.startVisibleHostStandby { attempts++; decision } }
+        runCurrent()
+        assertEquals(1, attempts)
+        decision = StandbyStart.REQUESTED
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(2, attempts)
+        visible.value = false; runCurrent()
+        decision = StandbyStart.RESTRICTED
+        visible.value = true; runCurrent()
+        visible.value = false; runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(3, attempts)
+        decision = StandbyStart.PERMISSION_DENIED
+        visible.value = true; runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        assertEquals(4, attempts)
     }
 
     @Test fun 系统重建时优先展示受控通知且只在授权有效时维持服务() = runBlocking {

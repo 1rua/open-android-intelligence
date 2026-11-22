@@ -11,7 +11,8 @@
 - `RemoteHostControl` 按当前账号与 Host 角色维护控制连接，以 `hello.ack` 作为上线依据。服务重启、网络中断或心跳超时后，保持任务重新取 Host 设备票据并建立新的控制连接。设备撤销、凭据重复使用或连接被替代时，手机把终态按本次登录代次保存在加密凭据仓库，直到显式重新登录。账号错误沿原登录通道返回，角色错误进入脱敏日志。
 - 账号注册携带安装级 Host ID、已保存设备名、`role=host`、`platform=android`，以及 Remote `0.6.5`、Harness `0.2.2-rc.1` 兼容声明。新安装默认读取系统设备名，缺省时取厂商与型号。
 - 手机门面在固定上游桌面客户端发送带 `clientTimeZone` 的 `session/prompt` 时曾返回 `CONTROL_PARAMETERS_INVALID`。现按上游格式接收时区，业务授权与请求去重继续使用原来的账号、会话与 `request_id`。
-- 已获 Host 凭据且 App 可见时，启动带系统常驻通知的 `specialUse` 前台服务。正常退后台继续持有出站信令，系统恢复服务或开机解锁后重新核对本机加密授权。退出及授权终态会结束服务。
+- 用户在可见 App 发起账号登录时，手机可以提前启动带系统常驻通知的待命服务。注册完成后，服务核对当前账号与 Host 票据，再保持出站信令。普通退后台继续待命，系统重建服务或开机解锁时重新核对加密授权。登录失败、退出或 Host 授权终止时，服务结束。
+- 在受控回归中，服务端撤销 Host 并关闭连接的同时发送心跳，原实现将撤销报成普通断线并尝试重连。现在同一连接的读取、发送和心跳共用首次关闭原因。两个角色各自保存授权终态，显式重登后开始新代次。
 - 日志可按 `OAI-Virtual-Host` 过滤。`REGISTERED` 表示已取得 Host 票据，`ONLINE` 表示服务器已确认控制连接，`HEARTBEAT_OBSERVED` 表示本次连接已交换心跳，`PEER_AUTHENTICATED` 表示来访设备已完成加密握手。故障记录阶段和固定错误码。
 
 ## 控机验证入口
@@ -23,3 +24,5 @@
 2026-11-22，独立 Linux Client 通过固定 `ds-harness-remote 0.6.5` 从自部署服务发现 `sdk_gphone64_x86_64`，取到 `backend=harness` 的 `phone-capabilities` 与 `control-bus`，并通过 `remote_create_session` 创建独立任务。覆盖安装后 Host ID 保持一致。
 
 在 API 35 模拟器上，Android 报告服务为前台，通知渠道 `remote-host-standby`。熄屏 141 秒，桌面每约 20 秒查询一次，8 次均为在线。正常重启模拟器后，在桌面启动器保持前台的情况下，系统以新进程恢复了同一 Host 和前台服务，桌面重新创建控机会话并收到 Android 的读屏结果。实际离线时长不以设备目录的缓存时间推算。
+
+2026-11-23，独立 Linux Client 用 `plugin.invoke` 读取通知。桌面得到 `completed/succeeded`，其中包含测试应用 `local.oai222.notifier` 的来源和标题「OAI222 验收通知」。正文为 Android 返回的 `Sensitive notification content hidden`。未允许通知来源时，手机在同一条链路返回 `PACKAGE_NOT_ALLOWED`。

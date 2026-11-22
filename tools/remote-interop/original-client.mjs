@@ -379,6 +379,7 @@ try {
     message: JSON.stringify({ request_id: requestId, op: 'phone.capabilities', args: {} }) }, signal);
   assert.equal(sent.status, 'accepted');
   stage = 'Typert读取请求回执';
+  await tools.run('remote_wait_sessions', { targets: [{ ...workspace, sessionId: created.sessionId }], timeoutMs: 2_000 }, signal);
   const history = await tools.run('remote_read_session', { ...workspace, sessionId: created.sessionId }, signal);
   assert.equal(history.status, 'idle');
   const capabilityTerminal = businessTerminal(history.records, requestId);

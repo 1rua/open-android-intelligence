@@ -86,6 +86,15 @@ class RemoteServerApiTest {
             assertTrue(fixture.requests.all { it.second == "Bearer ${"a".repeat(16)}" })
         }
     }
+    @Test fun presence拒绝账号票时目录返回可续期的错误() = runBlocking {
+        Server().use { fixture ->
+            fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "name" to "Host 0",
+                "platform" to "linux", "membershipId" to "member-0"))) }
+            fixture.route("/api/v1/devices/host-0/presence", 401) { obj("error" to obj("code" to "TOKEN_EXPIRED")) }
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts("a".repeat(16)) }.exceptionOrNull()
+            assertEquals("TOKEN_EXPIRED", (failure as? RemoteRpcException)?.code)
+        }
+    }
     @Test fun presence失败不得回退到目录中已经过期的在线值() = runBlocking {
         Server().use { fixture ->
             fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "name" to "Host 0",

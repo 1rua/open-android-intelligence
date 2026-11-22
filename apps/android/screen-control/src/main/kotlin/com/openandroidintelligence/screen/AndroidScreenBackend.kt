@@ -3,6 +3,7 @@
 package com.openandroidintelligence.screen
 
 import android.content.Context
+import android.util.Log
 import com.openandroidintelligence.control.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,7 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
             ready()
             ScreenAccessibilityConnection.noteSnapshotWindows(windows)
             if (runtime.generation() != generation) throw ScreenOperationException("SCREEN_CHANGED")
+            if (Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) Log.d(SCREEN_TRACE, "SNAPSHOT generation=$generation windows=${windows.size}")
             return snapshot to generation
         } catch (failure: ScreenOperationException) { throw failure }
         catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }

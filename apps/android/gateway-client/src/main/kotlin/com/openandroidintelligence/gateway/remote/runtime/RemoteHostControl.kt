@@ -13,13 +13,14 @@ import kotlinx.coroutines.channels.Channel
 /** 诊断仅记录故障阶段和固定错误码。 */
 enum class RemoteHostFailureStage { REGISTRATION, CREDENTIAL, CONTROL }
 data class RemoteHostFailure(val stage: RemoteHostFailureStage, val code: String)
+internal enum class RemoteTerminalPersistence { PERSISTED, FAILED_CLOSED }
 
 /** 一个已获授权的 Host 角色拥有一个保持任务。每轮从凭据仓库重新取票，旧隧道随旧连接关闭。 */
 internal class RemoteHostControl(
     scope: CoroutineScope,
     private val credential: suspend (rejectedToken: String?) -> RemoteRoleCredential,
     private val connect: (RemoteRoleCredential, (String) -> Unit) -> RemoteSignalService,
-    private val onTerminal: (RemoteHostFailure, Boolean) -> Unit,
+    private val onTerminal: (RemoteHostFailure, Boolean) -> RemoteTerminalPersistence,
     private val publish: (RemoteHostConnectionState, RemoteHostFailure?) -> Unit,
 ) {
     private val retryNow = Channel<Unit>(Channel.CONFLATED)
@@ -86,10 +87,13 @@ internal class RemoteHostControl(
             if (stage == RemoteHostFailureStage.CONTROL && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID") && !refreshedAfterRejection) {
                 rejectedToken = usedToken
             } else if (failure.code !in retryableCodes) {
-                try { onTerminal(failure, failure.code in authorizationStops) } catch (_: Exception) {
-                    Log.w(TAG, "HOST_STOP_PERSISTENCE_FAILED")
+                val persistence = try { onTerminal(failure, failure.code in authorizationStops) } catch (_: Exception) {
+                    RemoteTerminalPersistence.FAILED_CLOSED
                 }
-                publish(RemoteHostConnectionState.FAILED, failure)
+                // 围栏和账号级失败关闭都不可用时不能把未持久化终态当作可恢复失败继续尝试。
+                val published = if (persistence == RemoteTerminalPersistence.FAILED_CLOSED)
+                    failure.copy(code = "REMOTE_CREDENTIAL_PERSISTENCE_FAILED") else failure
+                publish(RemoteHostConnectionState.FAILED, published)
                 return
             }
             publish(RemoteHostConnectionState.FAILED, failure)
@@ -100,7 +104,8 @@ internal class RemoteHostControl(
 
     companion object {
         const val TAG = "OAI-Virtual-Host"
-        private val authorizationStops = setOf("CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID")
+        private val authorizationStops = setOf("CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID",
+            "REMOTE_CREDENTIAL_PERSISTENCE_FAILED", "REMOTE_REFRESH_PERSISTENCE_FAILED")
         private val retryableCodes = setOf("TRANSPORT_CLOSED", "CONNECTION_FAILED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT",
             "SERVER_SHUTDOWN", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED")
     }

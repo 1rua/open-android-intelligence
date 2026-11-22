@@ -90,6 +90,8 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
                     val online = try { presence(accessToken, device.deviceId) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) {
+                        // 目录和 presence 同用 Client 票据。票据被拒时交给账号层续期，单台离线只影响该行。
+                        if (failure is RemoteRpcException && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID", "TOKEN_REUSED", "DEVICE_REVOKED")) throw failure
                         java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
                         false
                     }

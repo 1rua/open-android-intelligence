@@ -19,7 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
@@ -97,7 +96,7 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
 
     override suspend fun restoreHostStandby(): kotlinx.coroutines.flow.StateFlow<Boolean> {
         val account = remoteRuntime.accountRuntime
-        account.restore()
+        account.restoreForStandby()
         if (account.hostStandby.value) gatewayNetworkMonitor.start()
         return account.hostStandby
     }
@@ -179,8 +178,8 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
         remoteScope.launch {
             combine(remoteRuntime.accountRuntime.hostStandby, visibility) { eligible, state ->
                 eligible && state.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
-            }.distinctUntilChanged().collect { canStart ->
-                if (canStart) RemoteHostStandbyService.requestStart(this@OpenAndroidIntelligenceApplication)
+            }.startVisibleHostStandby {
+                RemoteHostStandbyService.requestStart(this@OpenAndroidIntelligenceApplication)
             }
         }
 
