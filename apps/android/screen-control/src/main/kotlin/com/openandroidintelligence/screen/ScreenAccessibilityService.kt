@@ -117,6 +117,7 @@ object ScreenAccessibilityConnection {
     /** 快照成功后记录其目标窗口集合，供后续 TYPE_WINDOWS_CHANGED 只做差量判定。 */
     internal fun noteSnapshotWindows(windows: List<ScreenTreeWindow>) {
         val activeService = service ?: return
+        if (Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) Log.d(SCREEN_TRACE, "SNAPSHOT generation=$generation windows=${windows.size}")
         val ownPackage = activeService.packageName
         val targets = windows.filterNot { it.isOwnedAuxiliary(ownPackage) }
             .map { it.toWindowState() }
