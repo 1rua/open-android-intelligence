@@ -13,6 +13,8 @@ data class NativeExecutionStep(
     val sourceMessageId: String? = null,
     /** 原调用事件时间（毫秒）；结果更新不能改写调用位置。 */
     val occurredAt: Long? = null,
+    /** 同一会话/回合内单调递增的事件到达序或协议 seq；结果更新保留首次调用时的顺序。 */
+    val orderSequence: Long? = null,
 )
 
 /** COMPLETED 表示宿主返回了结果，不从结果正文推断执行成功。 */

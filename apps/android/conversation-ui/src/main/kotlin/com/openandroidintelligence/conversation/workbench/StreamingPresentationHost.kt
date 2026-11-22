@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.findViewTreeLifecycleOwner
+import com.openandroidintelligence.conversation.model.ExecutionTimelineStep
 import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.state.TimelineEntry
@@ -57,8 +58,11 @@ private class StreamingReplySource {
         return start
     }
 
-    fun start(entry: TimelineEntry): Int = maxOf(start(entry.text), entry.reasoning.lastOrNull()?.bodyOffset
-        ?.coerceIn(0, entry.text.length) ?: 0)
+    fun start(entry: TimelineEntry): Int {
+        val reasoningEnd = entry.reasoning.lastOrNull()?.bodyOffset?.coerceIn(0, entry.text.length) ?: 0
+        val stepEnd = entry.timelineSteps.maxOfOrNull { it.bodyOffset }?.coerceIn(0, entry.text.length) ?: 0
+        return maxOf(start(entry.text), reasoningEnd, stepEnd)
+    }
 }
 
 /** 宿主向时间线子组件透传共享流式呈现注册表，供思考卡接入同一帧时钟与生命周期。 */
@@ -284,7 +288,9 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         val result = mutableListOf<Triple<String, String, Boolean>>()
         entries.forEach { entry ->
             if (!eligible(entry)) return@forEach
-            if (entry.reasoning.isEmpty() && !entry.text.contains("<think", ignoreCase = true)) return@forEach
+            val hasStructuredThought = entry.reasoning.isNotEmpty() ||
+                entry.timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
+            if (!hasStructuredThought && !entry.text.contains("<think", ignoreCase = true)) return@forEach
             var ordinal = 0
             structuredTimelineBlocks(entry).forEach { block ->
                 if (block is TimelineBlock.ThoughtBlock) {
@@ -316,7 +322,9 @@ class StreamingPresentationRegistry internal constructor(initial: List<TimelineE
         var structureChanged = false
         entries.forEach { entry ->
             if (!eligible(entry)) return@forEach
-            if (entry.reasoning.isEmpty() && !entry.text.contains("<think", ignoreCase = true)) return@forEach
+            val hasStructuredThought = entry.reasoning.isNotEmpty() ||
+                entry.timelineSteps.any { it is ExecutionTimelineStep.ThinkingStep }
+            if (!hasStructuredThought && !entry.text.contains("<think", ignoreCase = true)) return@forEach
             val scopedTerminal = entry.executionGenerationState?.isTerminal() == true ||
                 entry.generationId?.let { id ->
                     entries.any { it.generationId == id && it.executionGenerationState?.isTerminal() == true }

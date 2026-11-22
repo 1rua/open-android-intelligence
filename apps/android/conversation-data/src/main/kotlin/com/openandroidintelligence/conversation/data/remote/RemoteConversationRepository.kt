@@ -216,14 +216,28 @@ class RemoteConversationRepository(
         val result = carrier.history(RemoteLocalIds.decode(conversationId), page)
         current()
         val target = projection(conversationId)
+        val acceptedPageIds = linkedSetOf<String>()
         withSessionLock(conversationId) {
-            synchronized(target) { result.records.forEach { target.accept(it, history = true, historyRead = mediaRead) } }
+            synchronized(target) {
+                result.records.forEach { record ->
+                    target.accept(record, history = true, historyRead = mediaRead)
+                        .filterIsInstance<VerifiedConversationEvent.TimelineUpsert>()
+                        .forEach { acceptedPageIds += it.message.id }
+                }
+            }
             activeConversationChanged()
         }
-        val pageIds = result.records.mapNotNull { record ->
+        val pageIds = acceptedPageIds + result.records.mapNotNull { record ->
             val event = record.at("event") ?: record
+            val eventType = event.text("type")
             val data = event.at("data") ?: return@mapNotNull null
-            (data.at("message") ?: data).text("id")
+            if (eventType == "tool/call" || eventType == "tool/result") {
+                val callId = data.text("callId") ?: data.text("toolCallId") ?: data.text("tool_call_id")
+                    ?: data.text("stepId") ?: data.text("id")
+                callId?.let { "history-tool:$it" }
+            } else {
+                (data.at("message") ?: data).text("id")
+            }
         }.toSet()
         val (snapshotRows, snapshotMessages) = synchronized(target) {
             target.rows.values.filter { it.id in pageIds } to target.rows.values.toList()

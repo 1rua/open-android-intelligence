@@ -9,7 +9,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.Dimensions
 
@@ -19,7 +18,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
  * - 正文为空且仍在流式：只显示流式光标；
  * - 正文为空、已结束且无步骤：不渲染占位空气泡；
  * - 没有执行块：保持既有 [MarkdownDocumentView] 的普通正文渲染；
- * - 有执行块（思考 / 原生工具步骤 / 标记工具）：按发生顺序直接平铺渲染，末尾保留流式光标。
+ * - 有执行块（思考 / 原生工具步骤 / 标记工具）：统一构建有序异构步骤列表并单循环平铺渲染，末尾保留流式光标。
  */
 @Composable
 fun AssistantMessageContent(
@@ -28,83 +27,45 @@ fun AssistantMessageContent(
     presentations: StreamingPresentationRegistry? = null,
 ) {
     val text = entry.text
-    if (text.isBlank() && entry.reasoning.isEmpty()) {
-        when {
-            // 如果存在执行步骤，直接渲染执行步骤卡片，绝不渲染“此消息没有可显示的文本”
-            entry.executionSteps.isNotEmpty() -> {
-                Column(
-                    modifier = modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
-                ) {
-                    entry.executionSteps.forEachIndexed { index, step ->
-                        val isLastRunning = entry.isStreaming && step.status == NativeExecutionStatus.RUNNING
-                        MarkdownToolCallView(
-                            block = TimelineBlock.ToolCallBlock(
-                                toolName = step.toolName,
-                                command = step.arguments,
-                                output = step.output,
-                                isSuccess = step.status != NativeExecutionStatus.FAILED,
-                                isRunning = isLastRunning,
-                                executionStatus = step.status,
-                            ),
-                            isStreaming = isLastRunning,
-                            timingKey = "${entry.key}#$index",
-                        )
-                    }
-                }
-            }
-
-            entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true) -> {
-                StreamingCursor(
-                    modifier = modifier.padding(vertical = Dimensions.SpaceTiny),
-                )
-            }
-
-            else -> Unit
+    val hasStructuredSteps = entry.timelineSteps.isNotEmpty() || entry.reasoning.isNotEmpty() || entry.executionSteps.isNotEmpty()
+    if (text.isBlank() && !hasStructuredSteps) {
+        if (entry.isStreaming && (presentations == null || presentations.frameFor(entry)?.active == true)) {
+            StreamingCursor(
+                modifier = modifier.padding(vertical = Dimensions.SpaceTiny),
+            )
         }
         return
     }
 
-    if (entry.reasoning.isEmpty() && entry.executionSteps.isEmpty() && !mayContainExecutionMarkup(text)) {
+    if (!hasStructuredSteps && !mayContainExecutionMarkup(text)) {
         StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
             MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
         }
         return
     }
 
-    val blocks = remember(text, entry.reasoning, entry.executionSteps) {
-        val parsed = runCatching { structuredTimelineBlocks(entry) }
-            .getOrElse {
-                if (text.isBlank()) emptyList() else listOf(TimelineBlock.Paragraph(text))
-            }
-        if (entry.executionSteps.isEmpty()) {
-            parsed
-        } else {
-            val nativeToolBlocks = entry.executionSteps.map { step ->
-                val isLastRunning = entry.isStreaming && step.status == NativeExecutionStatus.RUNNING
-                TimelineBlock.ToolCallBlock(
-                    toolName = step.toolName,
-                    command = step.arguments,
-                    output = step.output,
-                    isSuccess = step.status != NativeExecutionStatus.FAILED,
-                    isRunning = isLastRunning,
-                    executionStatus = step.status,
-                )
-            }
-            val leadingThoughts = parsed.takeWhile { it is TimelineBlock.ThoughtBlock }
-            val trailing = parsed.drop(leadingThoughts.size)
-            leadingThoughts + nativeToolBlocks + trailing
+    val terminalGeneration = entry.executionGenerationState?.isTerminal() == true
+    val orderedBlocks = remember(text, entry.reasoning, entry.executionSteps, entry.timelineSteps, entry.isStreaming, terminalGeneration) {
+        runCatching {
+            buildOrderedEntryBlocks(
+                entry = entry,
+                nativeSteps = entry.executionSteps,
+                terminalGeneration = terminalGeneration,
+                streamActive = entry.isStreaming && !terminalGeneration,
+            )
+        }.getOrElse {
+            if (text.isBlank()) emptyList() else listOf(OrderedTimelineBlock.Other(TimelineBlock.Paragraph(text)))
         }
     }
 
-    if (blocks.none { isExecutionBlock(it) }) {
+    if (orderedBlocks.none { isExecutionBlock(it.block) }) {
         StreamingReplyBody(entry, presentations, modifier = modifier) { shownBlocks, presenting ->
             MarkdownDocumentView(blocks = shownBlocks, isStreaming = presenting)
         }
         return
     }
 
-    val groups = remember(blocks) { groupRealtimeBlocks(blocks) }
+    val groups = remember(orderedBlocks) { groupRealtimeOrderedBlocks(orderedBlocks) }
     var thoughtOrdinal = 0
     Column(
         modifier = modifier.fillMaxWidth(),
@@ -113,23 +74,28 @@ fun AssistantMessageContent(
         groups.forEachIndexed { groupIndex, group ->
             when (group) {
                 is RealtimeGroup.Card -> {
-                    val timingKey = "${entry.key}#${group.blockIndex}"
-                    when (val block = group.block) {
-                        is TimelineBlock.ThoughtBlock -> MarkdownThoughtBlockView(
-                            block = block,
-                            isStreaming = entry.isStreaming,
+                    val item = group.item
+                    val timingKey = when (item) {
+                        is OrderedTimelineBlock.ToolCall ->
+                            item.nativeStepId?.let { "${entry.key}:$it" } ?: "${entry.key}#${group.blockIndex}"
+                        else -> "${entry.key}#${group.blockIndex}"
+                    }
+                    when (item) {
+                        is OrderedTimelineBlock.Thought -> MarkdownThoughtBlockView(
+                            block = item.block,
+                            isStreaming = entry.isStreaming && !terminalGeneration,
                             timingKey = timingKey,
                             thoughtKey = "${entry.key}:thought:${thoughtOrdinal++}",
                             presentations = presentations,
                         )
 
-                        is TimelineBlock.ToolCallBlock -> MarkdownToolCallView(
-                            block = block,
-                            isStreaming = entry.isStreaming,
+                        is OrderedTimelineBlock.ToolCall -> MarkdownToolCallView(
+                            block = item.block,
+                            isStreaming = item.entryStreamingOverride ?: (entry.isStreaming && !terminalGeneration),
                             timingKey = timingKey,
                         )
 
-                        else -> Unit
+                        is OrderedTimelineBlock.Other -> Unit
                     }
                 }
 
@@ -138,7 +104,7 @@ fun AssistantMessageContent(
                 ) {
                     MarkdownDocumentView(
                         blocks = group.blocks,
-                        isStreaming = entry.isStreaming && groupIndex == groups.lastIndex,
+                        isStreaming = entry.isStreaming && !terminalGeneration && groupIndex == groups.lastIndex,
                     )
                 }
             }
@@ -146,8 +112,9 @@ fun AssistantMessageContent(
 
         // 卡片自身没有实时指示时（例如思考已闭合、消息仍在流式），末尾补一个光标，
         // 让「还在输出」这件事始终看得见。
-        val lastBlock = blocks.lastOrNull()
+        val lastBlock = orderedBlocks.lastOrNull()?.block
         val shouldShowTrailingCursor = entry.isStreaming &&
+            !terminalGeneration &&
             lastBlock != null &&
             isExecutionBlock(lastBlock) &&
             !cardShowsOwnLiveIndicator(lastBlock, entry.isStreaming)
@@ -230,11 +197,11 @@ fun AssistantExecutionTurnBody(
 
 /** 实时渲染的分组：思维链/工具卡各占一组，连续的非执行块合并成一段紧凑叙述。 */
 private sealed interface RealtimeGroup {
-    data class Card(val block: TimelineBlock, val blockIndex: Int) : RealtimeGroup
+    data class Card(val item: OrderedTimelineBlock, val blockIndex: Int) : RealtimeGroup
     data class Narrative(val blocks: List<TimelineBlock>) : RealtimeGroup
 }
 
-private fun groupRealtimeBlocks(blocks: List<TimelineBlock>): List<RealtimeGroup> {
+private fun groupRealtimeOrderedBlocks(blocks: List<OrderedTimelineBlock>): List<RealtimeGroup> {
     val groups = mutableListOf<RealtimeGroup>()
     val narrative = mutableListOf<TimelineBlock>()
 
@@ -252,11 +219,12 @@ private fun groupRealtimeBlocks(blocks: List<TimelineBlock>): List<RealtimeGroup
         narrative.clear()
     }
 
-    blocks.forEachIndexed { index, block ->
-        if (isExecutionBlock(block)) {
+    blocks.forEachIndexed { index, item ->
+        if (isExecutionBlock(item.block)) {
             flushNarrative()
-            groups += RealtimeGroup.Card(block = block, blockIndex = index)
+            groups += RealtimeGroup.Card(item = item, blockIndex = index)
         } else {
+            val block = item.block
             if (block !is TimelineBlock.Paragraph || block.text.isNotBlank()) {
                 narrative += block
             }

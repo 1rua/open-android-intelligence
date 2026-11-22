@@ -209,7 +209,22 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         "reasoning" to m.reasoning.map { mapOf("id" to it.id, "text" to it.text, "bodyOffset" to it.bodyOffset, "complete" to it.complete) },
         "executionSteps" to m.executionSteps.map { step -> mapOf("stepId" to step.stepId,"eventId" to step.eventId,
             "toolName" to step.toolName,"arguments" to step.arguments,"output" to step.output,"status" to step.status.name,"revision" to step.revision,
-            "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt) })
+            "sourceMessageId" to step.sourceMessageId,"occurredAt" to step.occurredAt,"orderSequence" to step.orderSequence) },
+        "timelineSteps" to m.timelineSteps.map { step -> when (step) {
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep -> mapOf(
+                "kind" to "thinking", "stepId" to step.stepId, "text" to step.text,
+                "bodyOffset" to step.bodyOffset, "complete" to step.complete, "orderIndex" to step.orderIndex,
+            )
+            is com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep -> mapOf(
+                "kind" to "tool_call", "bodyOffset" to step.bodyOffset, "orderIndex" to step.orderIndex,
+                "step" to mapOf("stepId" to step.step.stepId,"eventId" to step.step.eventId,
+                    "toolName" to step.step.toolName,"arguments" to step.step.arguments,"output" to step.step.output,
+                    "status" to step.step.status.name,"revision" to step.step.revision,
+                    "sourceMessageId" to step.step.sourceMessageId,"occurredAt" to step.step.occurredAt,
+                    "orderSequence" to step.step.orderSequence),
+            )
+        } },
+        "orderSequence" to m.orderSequence)
     private fun decodeMessage(o: JsonValue.JObject) = TimelineMessage(str(o,"id"),str(o,"sender"),decodeParts(o),
         JsonFields.long(o,"timestamp") ?: 0L,str(o,"state"),JsonFields.string(o,"conversationId")?.let(::ConversationId),
         JsonFields.string(o,"errorCode"),JsonFields.string(o,"batchId"),JsonFields.string(o,"clientMessageId")?.let(::ClientMessageId),
@@ -224,7 +239,28 @@ class EncryptedConversationMirror(context: Context, private val scope: Conversat
         executionSteps=JsonFields.objects(o,"executionSteps").map { step -> com.openandroidintelligence.conversation.model.NativeExecutionStep(
             str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
             com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
-            JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt")) })
+            JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt"),JsonFields.long(step,"orderSequence")) },
+        timelineSteps=JsonFields.objects(o,"timelineSteps").mapNotNull { item -> when (JsonFields.string(item,"kind")) {
+            "thinking" -> com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ThinkingStep(
+                stepId = str(item,"stepId"),
+                text = str(item,"text"),
+                bodyOffset = JsonFields.int(item,"bodyOffset") ?: 0,
+                complete = JsonFields.bool(item,"complete") ?: true,
+                orderIndex = JsonFields.int(item,"orderIndex") ?: 0,
+            )
+            "tool_call" -> (JsonFields.field(item,"step") as? JsonValue.JObject)?.let { step ->
+                com.openandroidintelligence.conversation.model.ExecutionTimelineStep.ToolCallStep(
+                    step = com.openandroidintelligence.conversation.model.NativeExecutionStep(
+                        str(step,"stepId"),str(step,"eventId"),str(step,"toolName"),str(step,"arguments"),JsonFields.string(step,"output"),
+                        com.openandroidintelligence.conversation.model.NativeExecutionStatus.valueOf(str(step,"status")),JsonFields.long(step,"revision") ?: 0,
+                        JsonFields.string(step,"sourceMessageId"),JsonFields.long(step,"occurredAt"),JsonFields.long(step,"orderSequence")),
+                    bodyOffset = JsonFields.int(item,"bodyOffset") ?: 0,
+                    orderIndex = JsonFields.int(item,"orderIndex") ?: 0,
+                )
+            }
+            else -> null
+        } },
+        orderSequence=JsonFields.long(o,"orderSequence"))
     private fun attachment(a: AttachmentDraft) = mapOf("id" to a.id.value,"name" to a.filename,"mediaType" to a.mediaType,
         "size" to a.sizeBytes,"sha256" to a.sha256,"state" to a.state.name)
     private fun decodeAttachment(o: JsonValue.JObject) = AttachmentDraft(AttachmentDraftId(str(o,"id")),str(o,"name"),str(o,"mediaType"),
