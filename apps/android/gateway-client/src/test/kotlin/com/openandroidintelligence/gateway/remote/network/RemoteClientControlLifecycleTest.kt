@@ -69,6 +69,12 @@ class RemoteClientControlLifecycleTest {
         val includeRegisteredHost = AtomicBoolean(false)
         val rejectNextHostHelloWithTokenExpired = AtomicBoolean(false)
         @Volatile var rejectHostRegistration = false
+        @Volatile var rejectClientRegistration = false
+        @Volatile var expirePeerToken = false
+        @Volatile var rejectRefreshAsReused = false
+        @Volatile var peerKey = ""
+        val peerAuthorizations = CopyOnWriteArrayList<String>()
+        val peerReplies = CopyOnWriteArrayList<Pair<String, String?>>()
         private val socketRoles = java.util.concurrent.ConcurrentHashMap<WebSocket, String>()
         private val pingsByRole = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
         private val pingsBySocket = java.util.concurrent.ConcurrentHashMap<WebSocket, AtomicInteger>()
@@ -77,7 +83,9 @@ class RemoteClientControlLifecycleTest {
         val vault: RemoteCredentialVault
         val origin: String
         val deviceName: String
-        val runtime: RemoteAccountRuntime
+        var runtime: RemoteAccountRuntime
+            private set
+        private var accountScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
         init {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse = when {
@@ -92,7 +100,8 @@ class RemoteClientControlLifecycleTest {
                     request.path == "/api/v1/auth/refresh" -> {
                         val body = com.openandroidintelligence.gateway.remote.protocol.RemoteWireJson.parse(request.body.readUtf8()).objectValue()
                         refreshRequests += body
-                        json(obj("accessToken" to refreshedHostAccessToken, "accessTokenExpiresAt" to System.currentTimeMillis() + 600_000,
+                        if (rejectRefreshAsReused) json(obj("error" to obj("code" to "TOKEN_REUSED"))).setResponseCode(401)
+                        else json(obj("accessToken" to refreshedHostAccessToken, "accessTokenExpiresAt" to System.currentTimeMillis() + 600_000,
                             "refreshToken" to "refreshed-host-refresh-token", "refreshTokenExpiresAt" to System.currentTimeMillis() + 1_200_000))
                     }
                     request.path == "/api/v1/devices/register" -> {
@@ -100,7 +109,7 @@ class RemoteClientControlLifecycleTest {
                         val role = device.requiredText("role")
                         registrations += device
                         registrationAuthorizations += request.getHeader("Authorization").orEmpty()
-                        if (role == "host" && rejectHostRegistration) {
+                        if (role == "host" && rejectHostRegistration || role == "client" && rejectClientRegistration) {
                             rejectedRegistrationRoles += role
                             json(obj("error" to obj("code" to "DEVICE_LIMIT_REACHED"))).setResponseCode(409)
                         } else {
@@ -128,6 +137,14 @@ class RemoteClientControlLifecycleTest {
                         if (presenceDenied.get()) json(obj("error" to obj("code" to "MEMBERSHIP_REQUIRED"))).setResponseCode(403)
                         else json(obj("deviceId" to request.path.orEmpty().substringAfter("/api/v1/devices/").substringBefore("/presence"),
                             "online" to online.get()))
+                    }
+                    request.path == "/api/v1/devices/desktop-client" -> {
+                        val token = requireNotNull(request.getHeader("Authorization"))
+                        peerAuthorizations += token
+                        if (expirePeerToken && token == "Bearer $hostAccessToken") {
+                            json(obj("error" to obj("code" to "TOKEN_EXPIRED"))).setResponseCode(401)
+                        } else json(obj("deviceId" to "desktop-client", "role" to "client", "name" to "电脑",
+                            "platform" to "linux", "membershipId" to "membership-client", "identityKey" to peerKey))
                     }
                     request.path == "/ws/v1/connect" -> MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
                         override fun onMessage(socket: WebSocket, text: String) {
@@ -161,6 +178,7 @@ class RemoteClientControlLifecycleTest {
                                     pongs.incrementAndGet()
                                 }
                                 "connect.request" -> connectRequests.incrementAndGet()
+                                "connect.accepted", "connect.rejected" -> peerReplies += frame.type to frame.payload.optionalText("code")
                             }
                         }
                         override fun onClosing(socket: WebSocket, code: Int, reason: String) { socket.close(code, reason) }
@@ -172,9 +190,27 @@ class RemoteClientControlLifecycleTest {
             origin = server.url("/").toString().removeSuffix("/")
             deviceName = RemoteInstallationIdentityStore.defaultDeviceName(RuntimeEnvironment.getApplication())
             vault = RemoteCredentialVault(Files.createTempDirectory("remote-control-lifecycle").toFile(), protector)
-            runtime = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), parent,
-                hostHandler, vault = vault, protector = protector)
+            runtime = newRuntime()
         }
+        private fun newRuntime() = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), accountScope,
+            hostHandler, vault = vault, protector = protector)
+        suspend fun restartAccountProcess() {
+            accountScope.coroutineContext.job.cancelAndJoin()
+            accountScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
+            runtime = newRuntime()
+            runtime.restore()
+        }
+        fun corrupt(role: RemoteRole) {
+            val active = requireNotNull(runtime.account.value)
+            vault.writeAtomic(RemoteIdentityScope(active.origin, active.accountId, role).storageKey, byteArrayOf(0))
+        }
+        fun incoming(id: String) {
+            val host = hellosFor("host").single().socket
+            check(host.send(Json.canonical(obj("v" to 1, "type" to "connect.incoming", "id" to id, "timestamp" to 1,
+                "payload" to obj("connectionId" to id, "clientDeviceId" to "desktop-client", "clientIdentityKey" to peerKey,
+                    "authorization" to "account", "preferredTransports" to listOf("relay"))))))
+        }
+        val accountJobs get() = accountScope.coroutineContext.job.children
         suspend fun login(): RemoteLoginResult = runtime.login(origin, "owner", "password")
         suspend fun loginWithAccountToken(token: String): RemoteLoginResult = runtime.loginAccountToken(origin, token, vault.beginLoginAttempt())
         fun registrationAccessToken(role: String): String = when (role) {
@@ -229,6 +265,7 @@ class RemoteClientControlLifecycleTest {
                 fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
                     fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
                     fixture.hellosFor("host").size == 1 && fixture.pongCount("host") > 0 &&
+                    fixture.pingCount("client") > 0 && fixture.pingCount("host") > 0 &&
                     fixture.runtime.hosts.value.map { it.deviceId }.toSet() == setOf("android-peer-host", "linux-peer-host")
             }
 
@@ -303,7 +340,7 @@ class RemoteClientControlLifecycleTest {
 
             val helloCountBeforeLogout = fixture.hellosFor("host").size
             fixture.runtime.logout()
-            await { fixture.parent.coroutineContext[Job]!!.children.none() }
+            await { fixture.accountJobs.none() }
             assertEquals(RemoteAccountConnectionState.SIGNED_OUT, fixture.runtime.state.value)
             assertEquals(RemoteHostConnectionState.STOPPED, fixture.runtime.hostState.value)
             assertEquals(helloCountBeforeLogout, fixture.hellosFor("host").size)
@@ -336,6 +373,88 @@ class RemoteClientControlLifecycleTest {
             assertEquals(helloCount, fixture.hellosFor("host").size)
             assertEquals(RemoteHostConnectionState.FAILED, fixture.runtime.hostState.value)
             assertEquals("DEVICE_REVOKED", fixture.runtime.hostFailure.value?.code)
+        }
+    }
+
+    @Test fun Host被其他连接替代后进程重建仍停止直到显式登录(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { f ->
+            f.login()
+            await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+            f.hellosFor("host").single().socket.close(4003, "replaced")
+            await { f.runtime.hostFailure.value?.code == "CONNECTION_REPLACED" }
+            f.restartAccountProcess()
+            await { f.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
+            assertEquals("CONNECTION_REPLACED", f.runtime.hostFailure.value?.code)
+            assertEquals(1, f.hellosFor("host").size)
+            f.login()
+            await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE && f.hellosFor("host").size == 2 }
+        }
+    }
+
+    @Test fun 刷新票被判定重用后重启仍不提交旧票(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { f ->
+            f.rejectNextHostHelloWithTokenExpired.set(true)
+            f.rejectRefreshAsReused = true
+            f.login()
+            await { f.runtime.hostFailure.value?.code == "TOKEN_REUSED" }
+            f.restartAccountProcess()
+            assertEquals(RemoteHostFailureStage.CREDENTIAL, f.runtime.hostFailure.value?.stage)
+            assertEquals(1, f.refreshRequests.size)
+            assertEquals(1, f.hellosFor("host").size)
+        }
+    }
+
+    @Test fun 仅Host注册成功时前后台及进程恢复均不使用Client目录(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { f ->
+            f.rejectClientRegistration = true
+            assertEquals(RemoteRoleRegistrationState.REGISTERED, f.login().host.state)
+            repeat(2) { round ->
+                if (round == 1) f.restartAccountProcess()
+                await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+                assertNotNull(f.runtime.account.value)
+                assertEquals(RemoteAccountConnectionState.DISCONNECTED, f.runtime.state.value)
+                assertNotNull(f.runtime.clientFailure.value)
+                f.runtime.refreshControlConnection()
+                assertTrue(f.runtime.listHosts().isEmpty())
+                assertEquals(0, f.presenceCalls.get())
+                assertTrue(f.hellosFor("client").isEmpty())
+            }
+        }
+    }
+
+    @Test fun 单角色密文损坏时仍恢复另一侧的已登记身份(): Unit = runBlocking {
+        for (bad in RemoteRole.entries) Fixture(EmptyHostHandler()).use { f ->
+            f.login()
+            await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE && f.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
+            f.corrupt(bad)
+            f.restartAccountProcess()
+            if (bad == RemoteRole.CLIENT) {
+                await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+                assertEquals("REMOTE_IDENTITY_CORRUPTED", f.runtime.clientFailure.value)
+            } else {
+                await { f.runtime.state.value == RemoteAccountConnectionState.CONNECTED }
+                assertTrue(f.runtime.listHosts().isNotEmpty())
+                assertEquals("REMOTE_IDENTITY_CORRUPTED", f.runtime.hostFailure.value?.code)
+            }
+        }
+    }
+
+    @Test fun 在线Host核验来访设备时按被拒旧票续期且公钥变更单独拒绝(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { f ->
+            f.login()
+            await { f.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+            f.peerKey = f.registrationFor("client").requiredText("identityKey")
+            f.expirePeerToken = true
+            f.incoming("connection-1")
+            await { f.peerReplies.isNotEmpty() }
+            assertEquals("connect.accepted" to null, f.peerReplies.single())
+            assertEquals(listOf("Bearer ${Fixture.hostAccessToken}", "Bearer ${Fixture.refreshedHostAccessToken}"), f.peerAuthorizations)
+            f.peerKey = f.registrationFor("host").requiredText("identityKey")
+            f.incoming("connection-2")
+            await { f.peerReplies.size == 2 }
+            assertEquals("connect.rejected" to "PEER_IDENTITY_MISMATCH", f.peerReplies.last())
+            assertEquals(1, f.refreshRequests.size)
+            assertEquals(1, f.hellosFor("host").size)
         }
     }
 
@@ -404,7 +523,7 @@ class RemoteClientControlLifecycleTest {
             fixture.runtime.logout()
             assertNull(fixture.runtime.account.value)
             assertEquals(RemoteAccountConnectionState.SIGNED_OUT, fixture.runtime.state.value)
-            await { fixture.parent.coroutineContext[Job]!!.children.none() }
+            await { fixture.accountJobs.none() }
             assertEquals(2, fixture.sockets.size)
         }
     }

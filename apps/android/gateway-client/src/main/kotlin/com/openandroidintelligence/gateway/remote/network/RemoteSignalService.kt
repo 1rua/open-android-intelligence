@@ -39,6 +39,7 @@ internal class RemoteSignalService(
     private val onPeerClosed: (RemoteRpcConnectionScope) -> Unit = {},
     private val onClosed: (String) -> Unit = {},
     private val onHeartbeat: () -> Unit = {},
+    private val iceServers: suspend (String) -> List<RemoteIceServer> = { id -> api.iceServers(credential.tokens.accessToken, id) },
 ) {
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
     private val worker = CoroutineScope(parentScope.coroutineContext + lifetime)
@@ -173,8 +174,12 @@ internal class RemoteSignalService(
                     val code = (failure as? RemoteRpcException)?.let { safeRoleErrorCode(it.code, "PEER_AUTHORIZATION_FAILED") }
                         ?: "PEER_AUTHORIZATION_FAILED"
                     Log.w(RemoteHostControl.TAG, "PEER_AUTHORIZATION $code")
-                    // 仅身份绑定不匹配可回报给来访 Client，本机凭据或账号目录错误仅在本机诊断。
-                    val rejection = if (code == "PEER_IDENTITY_MISMATCH") code else "MEMBERSHIP_REQUIRED"
+                    // 对端只接收可采取行动的固定分类，手机的凭据错误不离开本机。
+                    val rejection = when (code) {
+                        "PEER_IDENTITY_MISMATCH", "MEMBERSHIP_REQUIRED" -> code
+                        "DEVICE_NOT_FOUND", "PERMISSION_DENIED", "DEVICE_OWNERSHIP_REQUIRED" -> "MEMBERSHIP_REQUIRED"
+                        else -> "CONNECTION_FAILED"
+                    }
                     sendControl("connect.rejected", obj("connectionId" to connectionId, "code" to rejection))
                 }
             }
@@ -294,7 +299,8 @@ internal class RemoteSignalService(
         }
         private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = try {
             RemoteRtcPeer(context, binding, connectionScope.generation, worker,
-                try { api.iceServers(credential.tokens.accessToken, id) } catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
+                try { iceServers(id) } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
                 sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
             }
         } catch (_: LinkageError) {

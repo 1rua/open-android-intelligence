@@ -49,6 +49,8 @@ class RemoteInstallationIdentityStore(
     constructor(context: Context, protector: RemoteIdentityProtector = AndroidRemoteIdentityProtector()) : this(File(context.noBackupFilesDir, "remote"), protector,
         { defaultDeviceName(context) })
 
+    internal fun existingIdentities(): RemoteInstallationIdentities? = locked { load()?.identities }
+
     /** 升级时只迁入当前已验证角色的密钥，不迁入其 token、账号或对端授权。 */
     fun loadOrCreate(client: RemoteStaticIdentity? = null, host: RemoteStaticIdentity? = null): RemoteInstallationIdentities = locked {
         val existing = load()

@@ -136,23 +136,34 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         val response = http.newCall(request).await()
         return response.use {
             if (it.code == 204 && method == "DELETE") return@use JsonValue.JNull
-            val bytes = it.body?.byteStream()?.use { input ->
-                val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
-                while (true) {
-                    val count = input.read(buffer); if (count < 0) break
-                    if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
-            } ?: throw RemoteRpcException("INVALID_MESSAGE")
-            val parsed = try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
             if (!it.isSuccessful) {
-                val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
-                    ?.let { row -> (row as? JsonValue.JObject)?.optionalText("code") }
-                throw RemoteRpcException(code?.takeIf { codeValue -> Regex("[A-Z0-9_]{1,128}").matches(codeValue) } ?: "CONNECTION_FAILED")
+                val code = when {
+                    it.code == 429 -> "RATE_LIMITED"
+                    it.code in 500..599 -> "INTERNAL_ERROR"
+                    it.code in 400..499 -> safeErrorCode(it) ?: "CONNECTION_FAILED"
+                    else -> "CONNECTION_FAILED"
+                }
+                throw RemoteRpcException(code)
             }
-            parsed
+            val bytes = readBody(it) ?: throw RemoteRpcException("INVALID_MESSAGE")
+            try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
         }
+    }
+    private fun safeErrorCode(response: Response): String? {
+        val bytes = readBody(response) ?: return null
+        val parsed = runCatching { RemoteWireJson.decode(bytes) }.getOrNull() ?: return null
+        val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
+            ?.let { row -> (row as? JsonValue.JObject)?.optionalText("code") }
+        return code?.takeIf { value -> Regex("[A-Z0-9_]{1,128}").matches(value) }
+    }
+    private fun readBody(response: Response): ByteArray? = response.body?.byteStream()?.use { input ->
+        val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer); if (count < 0) break
+            if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
+            output.write(buffer, 0, count)
+        }
+        output.toByteArray()
     }
     companion object {
         const val DEFAULT_ORIGIN = "https://dsh.r2049.cn"

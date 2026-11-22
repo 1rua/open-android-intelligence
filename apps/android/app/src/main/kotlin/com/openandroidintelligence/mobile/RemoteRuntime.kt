@@ -757,13 +757,21 @@ class RemoteRuntime(
     }
 
     private suspend fun beginAccountReset(
-        refreshHosts: Boolean = false,
-        authenticate: suspend () -> Unit,
+        authenticate: suspend () -> Boolean,
     ) {
         updateLayerStates(agentTransform = { it.copy(busy = true, errorCode = null) })
         try {
             retireAllAndClearController()
-            authenticate()
+            val canRefreshHosts = try {
+                authenticate()
+            } catch (failure: Exception) {
+                // 登录失败且原授权已撤销时，登录页不能继续展示先前缓存的账号。
+                if (!failure.isTrueCancellation() && accountRuntime.account.value == null) {
+                    updateLayerStates(agentTransform = { AgentConnectionState(busy = true) },
+                        workspaceTransform = { WorkspaceContextState() })
+                }
+                throw failure
+            }
             val acc = accountRuntime.account.value
             updateLayerStates(
                 agentTransform = {
@@ -775,7 +783,7 @@ class RemoteRuntime(
                 },
                 workspaceTransform = { WorkspaceContextState() },
             )
-            if (refreshHosts) {
+            if (canRefreshHosts) {
                 refreshHostsInternal()
             }
         } finally {
@@ -786,8 +794,8 @@ class RemoteRuntime(
     fun login(origin: String, email: String, password: String) = scope.launch {
         loginEntryBridge.cancelLocal()
         try {
-            beginAccountReset(refreshHosts = true) {
-                requireAnyRegisteredRole(accountRuntime.login(origin, email, password))
+            beginAccountReset {
+                canBrowseRegisteredHosts(accountRuntime.login(origin, email, password))
             }
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
@@ -796,23 +804,27 @@ class RemoteRuntime(
     }
 
     suspend fun completeExternalLogin(token: String, loginAttemptId: String) {
-        beginAccountReset(refreshHosts = true) {
-            requireAnyRegisteredRole(accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId))
+        beginAccountReset {
+            canBrowseRegisteredHosts(accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId))
         }
     }
 
     /** Client 与 Host 均未取得凭据时账号不会激活，必须把固定登录错误返回给登录页。 */
-    private fun requireAnyRegisteredRole(result: RemoteLoginResult) {
+    private fun canBrowseRegisteredHosts(result: RemoteLoginResult): Boolean {
         if (result.client.state == RemoteRoleRegistrationState.FAILED &&
             result.host.state == RemoteRoleRegistrationState.FAILED
         ) {
-            throw RemoteRpcException("REMOTE_ROLE_REGISTRATION_FAILED")
+            val reason = listOfNotNull(result.client.errorCode, result.host.errorCode)
+                .firstOrNull { it != "REMOTE_ROLE_REGISTRATION_FAILED" }
+            throw RemoteRpcException(reason ?: "REMOTE_ROLE_REGISTRATION_FAILED")
         }
+        return result.client.state == RemoteRoleRegistrationState.REGISTERED
     }
 
     suspend fun completePairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport, hostId: String) {
-        beginAccountReset(refreshHosts = false) {
+        beginAccountReset {
             accountRuntime.importPairing(value)
+            false
         }
     }
 

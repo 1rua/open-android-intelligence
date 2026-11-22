@@ -19,6 +19,7 @@ internal class RemoteHostControl(
     scope: CoroutineScope,
     private val credential: suspend (rejectedToken: String?) -> RemoteRoleCredential,
     private val connect: (RemoteRoleCredential, (String) -> Unit) -> RemoteSignalService,
+    private val stopUntilLogin: (String) -> Unit,
     private val publish: (RemoteHostConnectionState, RemoteHostFailure?) -> Unit,
 ) {
     private val retryNow = Channel<Unit>(Channel.CONFLATED)
@@ -81,11 +82,19 @@ internal class RemoteHostControl(
                 synchronized(lock) { if (socket === service) socket = null }
                 try { service?.close() } catch (_: RemoteRpcException) { Log.w(TAG, "CONNECTION_CLEANUP_FAILED") }
             }
-            publish(RemoteHostConnectionState.FAILED, failure)
             // 服务端可先于本机时钟判票失效。只轮换本轮使用过的票一次，连续拒绝交回本机登录处理。
             if (stage == RemoteHostFailureStage.CONTROL && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID") && !refreshedAfterRejection) {
                 rejectedToken = usedToken
-            } else if (failure.code !in retryableCodes) return
+            } else if (failure.code !in retryableCodes) {
+                if (failure.code in authorizationStops) {
+                    try { stopUntilLogin(failure.code) } catch (_: Exception) {
+                        Log.w(TAG, "HOST_STOP_PERSISTENCE_FAILED")
+                    }
+                }
+                publish(RemoteHostConnectionState.FAILED, failure)
+                return
+            }
+            publish(RemoteHostConnectionState.FAILED, failure)
             withTimeoutOrNull(retryMs) { retryNow.receive() }
             retryMs = (retryMs * 2).coerceAtMost(30_000L)
         }
@@ -93,6 +102,7 @@ internal class RemoteHostControl(
 
     companion object {
         const val TAG = "OAI-Virtual-Host"
+        private val authorizationStops = setOf("CONNECTION_REPLACED", "DEVICE_REVOKED", "TOKEN_REUSED", "TOKEN_EXPIRED", "AUTH_INVALID")
         private val retryableCodes = setOf("TRANSPORT_CLOSED", "CONNECTION_FAILED", "HEARTBEAT_TIMEOUT", "HELLO_TIMEOUT",
             "SERVER_SHUTDOWN", "RATE_LIMITED", "INTERNAL_ERROR", "REMOTE_REFRESH_FAILED", "REMOTE_REFRESH_CONFLICT", "REMOTE_IDENTITY_LOCKED")
     }

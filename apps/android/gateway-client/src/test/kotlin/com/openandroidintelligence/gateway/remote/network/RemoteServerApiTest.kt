@@ -20,7 +20,7 @@ import org.junit.Test
 class RemoteServerApiTest {
     private class Server : AutoCloseable {
         val requests = CopyOnWriteArrayList<Triple<String, String, JsonValue>>()
-        private val routes = mutableMapOf<String, Pair<Int, (JsonValue) -> JsonValue>>()
+        private val routes = mutableMapOf<String, (JsonValue) -> MockResponse>()
         val server = MockWebServer()
         val origin get() = server.url("/").toString().removeSuffix("/")
         init {
@@ -29,13 +29,20 @@ class RemoteServerApiTest {
                     val input = request.body.readUtf8().let { if (it.isEmpty()) JsonValue.JNull else RemoteWireJson.parse(it) }
                     requests += Triple(request.path!!, request.getHeader("Authorization").orEmpty(), input)
                     val route = routes[request.requestUrl!!.encodedPath] ?: return MockResponse().setResponseCode(404)
-                    return MockResponse().setResponseCode(route.first).setHeader("Content-Type", "application/json")
-                        .apply { if (route.first != 204) setBody(Json.canonical(route.second(input))) }
+                    return route(input)
                 }
             }
             server.start()
         }
-        fun route(path: String, status: Int = 200, block: (JsonValue) -> JsonValue) { routes[path] = status to block }
+        fun route(path: String, status: Int = 200, block: (JsonValue) -> JsonValue) {
+            routes[path] = { input ->
+                MockResponse().setResponseCode(status).setHeader("Content-Type", "application/json")
+                    .apply { if (status != 204) setBody(Json.canonical(block(input))) }
+            }
+        }
+        fun rawRoute(path: String, status: Int, body: String, contentType: String = "text/html") {
+            routes[path] = { MockResponse().setResponseCode(status).setHeader("Content-Type", contentType).setBody(body) }
+        }
         override fun close() { server.shutdown() }
     }
     @Test fun 真实HTTP登录双角色注册刷新目录和撤销使用固定线格式() = runBlocking {
@@ -101,4 +108,47 @@ class RemoteServerApiTest {
             assertEquals("AUTH_INVALID", failure.code); assertFalse(failure.toString().contains("secret")); assertEquals(1, fixture.requests.size)
         }
     }
+    @Test fun 反代HTML和空5xx分类为可重试内部错误() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("<html>bad gateway</html>" to "text/html", "" to "application/json").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 502, body, contentType)
+                assertEquals("INTERNAL_ERROR", failureCode { api.loginProviders() })
+            }
+            assertEquals(2, fixture.requests.size)
+        }
+    }
+    @Test fun 反代HTML和空429分类为限流错误() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("<html>too many requests</html>" to "text/html", "" to "application/json").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 429, body, contentType)
+                assertEquals("RATE_LIMITED", failureCode { api.loginProviders() })
+            }
+            assertEquals(2, fixture.requests.size)
+        }
+    }
+    @Test fun 四xx只保留安全JSON错误码() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            fixture.route("/api/v1/auth/login", 409) { obj("error" to obj("code" to "TOKEN_REUSED", "message" to "上游秘密")) }
+            val reused = runCatching { api.login("owner", "password") }.exceptionOrNull() as RemoteRpcException
+            assertEquals("TOKEN_REUSED", reused.code)
+            assertFalse(reused.toString().contains("上游秘密"))
+
+            fixture.rawRoute("/api/v1/auth/login", 400, "<html>bad request</html>")
+            assertEquals("CONNECTION_FAILED", failureCode { api.login("owner", "password") })
+        }
+    }
+    @Test fun 成功响应仍严格拒绝空正文和非JSON() = runBlocking {
+        Server().use { fixture ->
+            val api = RemoteServerApi(fixture.origin)
+            listOf("" to "application/json", "<html>ok</html>" to "text/html").forEach { (body, contentType) ->
+                fixture.rawRoute("/api/v1/auth/oauth/providers", 200, body, contentType)
+                assertEquals("INVALID_MESSAGE", failureCode { api.loginProviders() })
+            }
+        }
+    }
+    private suspend fun failureCode(block: suspend () -> Unit): String =
+        (runCatching { block() }.exceptionOrNull() as RemoteRpcException).code
 }

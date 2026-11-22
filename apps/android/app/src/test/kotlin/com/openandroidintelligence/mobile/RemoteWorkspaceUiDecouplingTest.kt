@@ -16,16 +16,12 @@ import com.openandroidintelligence.conversation.remote.RemoteServiceOrigin
 import com.openandroidintelligence.conversation.theme.OpenAndroidIntelligenceTheme
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
-import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistration
-import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrationState
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
 import com.openandroidintelligence.gateway.remote.network.AuthenticatedRemotePeer
 import com.openandroidintelligence.gateway.remote.network.RemoteHostDevice
 import com.openandroidintelligence.gateway.remote.rpc.*
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
-import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailure
-import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailureStage
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
@@ -267,104 +263,12 @@ class RemoteWorkspaceUiDecouplingTest {
         compose.onNodeWithText(context.getString(UiR.string.conn_status_offline_mode_hint)).assertDoesNotExist()
     }
 
-    @Test
-    fun `诊断页仅在Host故障时展示注册凭据与控制阶段固定错误码`() {
-        compose.setContent {
-            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
-                RemoteConnectionDiagnosticsScreen(runtime, SettingsPresentation.SCREEN, {})
-            }
-        }
-
-        compose.onNodeWithTag("remote-host-failure").assertDoesNotExist()
-
-        val failures = listOf(
-            RemoteHostFailureStage.REGISTRATION to "REMOTE_ROLE_REGISTRATION_FAILED",
-            RemoteHostFailureStage.CREDENTIAL to "REMOTE_CREDENTIAL_MISSING",
-            RemoteHostFailureStage.CONTROL to "CONTROL_CONNECTION_FAILED",
-        )
-        failures.forEach { (stage, code) ->
-            compose.runOnIdle { account.hostFailure.value = RemoteHostFailure(stage = stage, code = code) }
-            compose.onNodeWithTag("remote-host-failure").assertIsDisplayed()
-            compose.onNodeWithText(context.getString(when (stage) {
-                RemoteHostFailureStage.REGISTRATION -> UiR.string.remote_host_failure_stage_registration
-                RemoteHostFailureStage.CREDENTIAL -> UiR.string.remote_host_failure_stage_credential
-                RemoteHostFailureStage.CONTROL -> UiR.string.remote_host_failure_stage_control
-            })).assertIsDisplayed()
-            compose.onNodeWithText(context.getString(UiR.string.remote_host_failure_code, code)).assertIsDisplayed()
-        }
-
-        compose.runOnIdle { account.hostFailure.value = null }
-        compose.onNodeWithTag("remote-host-failure").assertDoesNotExist()
-    }
-
-    @Test
-    fun `自部署双角色注册均失败时登录页显示固定错误`() {
-        account.loginResult = failedBothRegistration()
-
-        runBlocking { runtime.login(origin, "user@example.com", "secret").join() }
-
-        assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", runtime.agentConnection.value.errorCode)
-        assertNull(runtime.agentConnection.value.account)
-        compose.setContent {
-            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    RemoteLoginScreen(
-                        busy = false,
-                        connected = false,
-                        signedIn = false,
-                        initialOrigin = origin,
-                        error = runtime.agentConnection.value.errorCode,
-                        onOpenSettings = {},
-                        onLogin = { _, _, _ -> },
-                        onScanPairing = {},
-                        onOAuthLogin = {},
-                    )
-                }
-            }
-        }
-        compose.onNodeWithTag("remote-login-card").assertIsDisplayed()
-        compose.onNodeWithText("无法连接 Remote", substring = true).assertIsDisplayed()
-    }
-
-    @Test
-    fun `官方双角色注册均失败时错误码回到登录页`() {
-        account.tokenLoginResult = failedBothRegistration()
-
-        val failure = runBlocking {
-            runCatching { runtime.completeExternalLogin("external-token", "login-attempt") }.exceptionOrNull()
-        }
-        assertEquals("REMOTE_ROLE_REGISTRATION_FAILED", (failure as? RemoteRpcException)?.code)
-        assertNull(runtime.agentConnection.value.account)
-        compose.setContent {
-            OpenAndroidIntelligenceTheme(darkTheme = false, dynamicColor = false) {
-                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-                    RemoteLoginScreen(
-                        busy = false,
-                        connected = false,
-                        signedIn = false,
-                        initialOrigin = origin,
-                        error = (failure as RemoteRpcException).code,
-                        onOpenSettings = {},
-                        onLogin = { _, _, _ -> },
-                        onScanPairing = {},
-                        onOAuthLogin = {},
-                    )
-                }
-            }
-        }
-        compose.onNodeWithTag("remote-login-card").assertIsDisplayed()
-        compose.onNodeWithText("无法连接 Remote", substring = true).assertIsDisplayed()
-    }
-
     private inner class FakeUiAccountConnection : RemoteAccountConnection {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.CONNECTED)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
-        override val hostFailure = MutableStateFlow<RemoteHostFailure?>(null)
         val channels = CopyOnWriteArrayList<FakeUiChannel>()
         private val peers = mutableMapOf<String, AuthenticatedRemotePeer>()
-        var loginResult: RemoteLoginResult? = null
-        var tokenLoginResult: RemoteLoginResult? = null
         var restorable: RemoteActiveAccount? = RemoteActiveAccount(origin, accountId, 1)
         val availableHosts = listOf(
             RemoteHostDevice("host-1", "主力电脑", "linux", "membership", true),
@@ -372,10 +276,7 @@ class RemoteWorkspaceUiDecouplingTest {
         )
 
         override fun peekRestorableAccount(): RemoteActiveAccount? = account.value ?: restorable
-        override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
-            checkNotNull(loginResult) { "unused" }
-        override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String): RemoteLoginResult =
-            checkNotNull(tokenLoginResult) { "unused" }
+        override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult = error("unused")
         override suspend fun restore(): RemoteActiveAccount? = restorable?.also { account.value = it }
         override suspend fun listHosts(): List<RemoteHostDevice> = availableHosts
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel =
@@ -400,20 +301,6 @@ class RemoteWorkspaceUiDecouplingTest {
         fun releasePeer(id: String) {
             peers.remove(id)
         }
-
-        private fun failedBothRegistration() = RemoteLoginResult(
-            accountId = accountId,
-            client = RemoteRoleRegistration(
-                role = RemoteRole.CLIENT,
-                state = RemoteRoleRegistrationState.FAILED,
-                errorCode = "REMOTE_ROLE_REGISTRATION_FAILED",
-            ),
-            host = RemoteRoleRegistration(
-                role = RemoteRole.HOST,
-                state = RemoteRoleRegistrationState.FAILED,
-                errorCode = "REMOTE_ROLE_REGISTRATION_FAILED",
-            ),
-        )
     }
 
     private inner class FakeUiChannel(gen: Int, hostId: String) : RemoteRpcChannel {

@@ -9,6 +9,8 @@ import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistration
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrationState
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
@@ -182,6 +184,31 @@ class RemoteConnectionLifecycleTest {
             firstRestore.complete(Unit)
             coldRuntime.logout().join()
             coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `两种登录入口均按实际注册角色决定目录访问和错误码`() = runBlocking {
+        runtime.restoreSessionIfAvailable().join()
+        for (external in listOf(false, true)) {
+            val before = account.listCalls
+            account.registration = RemoteLoginResult(accountId,
+                RemoteRoleRegistration(RemoteRole.CLIENT, RemoteRoleRegistrationState.FAILED, errorCode = "RATE_LIMITED"),
+                RemoteRoleRegistration(RemoteRole.HOST, RemoteRoleRegistrationState.REGISTERED))
+            if (external) runtime.completeExternalLogin("account-token", "attempt") else runtime.login(origin, "test", "password").join()
+            assertNotNull(runtime.agentConnection.value.account)
+            assertNull(runtime.agentConnection.value.errorCode)
+            assertEquals(before, account.listCalls)
+            account.registration = account.registration!!.copy(host = RemoteRoleRegistration(RemoteRole.HOST,
+                RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_ROLE_REGISTRATION_FAILED"))
+            if (external) {
+                val failure = runCatching { runtime.completeExternalLogin("account-token", "attempt") }.exceptionOrNull()
+                assertEquals("RATE_LIMITED", (failure as? RemoteRpcException)?.code)
+            } else {
+                runtime.login(origin, "test", "password").join()
+                assertEquals("RATE_LIMITED", runtime.agentConnection.value.errorCode)
+            }
+            assertNull(runtime.agentConnection.value.account)
         }
     }
 
@@ -1024,6 +1051,8 @@ class RemoteConnectionLifecycleTest {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
+        var listCalls = 0
+        var registration: RemoteLoginResult? = null
         var restorableAccount: RemoteActiveAccount? = RemoteActiveAccount(origin, accountId, 1)
         val channels = CopyOnWriteArrayList<FakeRpcChannel>()
         var connectCalls = 0
@@ -1049,8 +1078,12 @@ class RemoteConnectionLifecycleTest {
 
         override fun peekRestorableAccount(): RemoteActiveAccount? = account.value ?: restorableAccount
 
-        override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
-            error("测试不走密码登录")
+        private fun finishLogin(): RemoteLoginResult = requireNotNull(registration).also { result ->
+            account.value = if (listOf(result.client, result.host).any { it.state == RemoteRoleRegistrationState.REGISTERED })
+                RemoteActiveAccount(origin, accountId, 2) else null
+        }
+        override suspend fun login(origin: String, email: String, password: String) = finishLogin()
+        override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String) = finishLogin()
 
         override suspend fun restore(): RemoteActiveAccount? {
             restoreCalls++
@@ -1064,7 +1097,7 @@ class RemoteConnectionLifecycleTest {
             return restored
         }
 
-        override suspend fun listHosts(): List<RemoteHostDevice> = availableHosts
+        override suspend fun listHosts(): List<RemoteHostDevice> { listCalls++; return availableHosts }
 
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
             connectCalls++

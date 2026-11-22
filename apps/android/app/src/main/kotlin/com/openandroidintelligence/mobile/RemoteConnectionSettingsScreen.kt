@@ -19,7 +19,6 @@ import com.openandroidintelligence.conversation.components.SettingsNavigationIte
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsTone
 import com.openandroidintelligence.gateway.remote.runtime.RemoteAccountConnectionState
-import com.openandroidintelligence.gateway.remote.runtime.RemoteHostFailureStage
 import com.openandroidintelligence.gateway.remote.runtime.RemoteHostConnectionState
 import com.openandroidintelligence.gateway.remote.authproduction.AndroidRemoteIdentityProtector
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteCredentialVault
@@ -256,21 +255,12 @@ internal fun RemoteConnectionDiagnosticsScreen(runtime: RemoteRuntime, presentat
     val state by runtime.state.collectAsState()
     val client by runtime.accountRuntime.state.collectAsState()
     val host by runtime.accountRuntime.hostState.collectAsState()
-    val hostFailure by runtime.accountRuntime.hostFailure.collectAsState()
     SettingsPageScaffold(stringResource(UiR.string.conn_item_diagnostics), presentation, onBack) { padding ->
         SettingsPageColumn(padding) {
             SectionLabel(stringResource(UiR.string.conn_section_status_diagnostics))
             SettingsSectionCard {
                 SettingsListItem(stringResource(UiR.string.remote_client_role), supporting = remoteClientLabel(client))
                 SettingsListItem(stringResource(UiR.string.remote_host_role), supporting = remoteHostLabel(host))
-                hostFailure?.let { failure ->
-                    SettingsListItem(
-                        headline = remoteHostFailureStageLabel(failure.stage),
-                        supporting = stringResource(UiR.string.remote_host_failure_code, failure.code),
-                        tone = SettingsTone.DANGER,
-                        modifier = Modifier.testTag("remote-host-failure"),
-                    )
-                }
                 SettingsListItem(stringResource(UiR.string.conn_item_current_agent), supporting = runtime.connectedAgentName
                     ?: stringResource(UiR.string.conn_agent_not_fetched))
                 state.errorCode?.let { SettingsListItem(stringResource(UiR.string.conn_status_failed), supporting = remoteConnectionFailureText(it), tone = SettingsTone.DANGER) }
@@ -295,11 +285,4 @@ private fun remoteHostLabel(state: RemoteHostConnectionState): String = stringRe
     RemoteHostConnectionState.CONNECTING -> UiR.string.remote_role_connecting
     RemoteHostConnectionState.ONLINE -> UiR.string.remote_role_online
     RemoteHostConnectionState.FAILED -> UiR.string.remote_role_failed
-})
-
-@Composable
-private fun remoteHostFailureStageLabel(stage: RemoteHostFailureStage): String = stringResource(when (stage) {
-    RemoteHostFailureStage.REGISTRATION -> UiR.string.remote_host_failure_stage_registration
-    RemoteHostFailureStage.CREDENTIAL -> UiR.string.remote_host_failure_stage_credential
-    RemoteHostFailureStage.CONTROL -> UiR.string.remote_host_failure_stage_control
 })

@@ -114,20 +114,32 @@ class RemoteCredentialVault internal constructor(
     fun activeAccount(): RemoteActiveAccount? = locked {
         if (revocationPending()) null else load().active?.takeIf { it.loginAttemptId == null || loginFence.authorized(it.loginAttemptId) }
     }
+    internal data class RoleFailures(val clientRegistration: String? = null, val hostRegistration: String? = null, val hostStop: String? = null)
+
+    internal fun roleFailures(account: RemoteActiveAccount): RoleFailures = locked {
+        val state = load()
+        check(state.active == account) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
+        state.failures
+    }
+    internal fun stopHostUntilLogin(account: RemoteActiveAccount, code: String) = locked {
+        val state = load()
+        if (state.active == account) save(state.copy(failures = state.failures.copy(hostStop = code)))
+    }
     fun revokeActive(): Long = locked {
         saveRevocation(true)
         val state = load(); val next = Math.addExact(state.epoch, 1)
-        save(state.copy(epoch = next, active = null))
+        save(state.copy(epoch = next, active = null, failures = RoleFailures()))
         saveRevocation(false)
         next
     }
-    fun activate(origin: String, accountId: String, expectedEpoch: Long, loginAttemptId: String? = null): RemoteActiveAccount = locked {
+    fun activate(origin: String, accountId: String, expectedEpoch: Long, loginAttemptId: String? = null,
+        clientRegistrationError: String? = null, hostRegistrationError: String? = null): RemoteActiveAccount = locked {
         check(!revocationPending()) { "REMOTE_LOGOUT_INCOMPLETE" }
         val state = load()
         check(state.epoch == expectedEpoch) { "REMOTE_AUTHORIZATION_SUPERSEDED" }
         loginAttemptId?.let(loginFence::requirePending)
         val account = RemoteActiveAccount(origin, accountId, expectedEpoch, loginAttemptId)
-        save(state.copy(active = account))
+        save(state.copy(active = account, failures = RoleFailures(clientRegistrationError, hostRegistrationError)))
         try { loginAttemptId?.let(loginFence::complete) }
         catch (failure: Exception) {
             // 本临界区内没有其他账号提交；失败时只清除此尝试，撤销终态仍独立阻止重启恢复。
@@ -152,7 +164,8 @@ class RemoteCredentialVault internal constructor(
         }
         catch (failure: Exception) { revocation.failWrite(stream); throw failure }
     }
-    private data class State(val epoch: Long = 0, val active: RemoteActiveAccount? = null, val records: Map<String, String> = emptyMap())
+    private data class State(val epoch: Long = 0, val active: RemoteActiveAccount? = null, val records: Map<String, String> = emptyMap(),
+        val failures: RoleFailures = RoleFailures())
     private fun load(): State {
         val ciphertext = try { atomic.openRead().use { it.readBytes() } } catch (_: FileNotFoundException) { return State() }
         if (!protector.hasKey(master)) throw RemoteIdentityLockedException()
@@ -165,12 +178,14 @@ class RemoteCredentialVault internal constructor(
                 RemoteActiveAccount(it.requiredText("origin"), it.requiredText("accountId"), epoch, it.optionalText("loginAttemptId"))
             } }
             val records = value.value("records").objectValue().fields.associate { (key, v) -> key to (v as JsonValue.JString).value }
-            State(epoch, active, records)
+            State(epoch, active, records, RoleFailures(value.optionalText("clientRegistrationError"),
+                value.optionalText("hostRegistrationError"), value.optionalText("hostStop")))
         } catch (_: Exception) { throw RemoteIdentityCorruptedException() } finally { plain.fill(0) }
     }
     private fun save(state: State) {
         val plain = Json.canonical(obj("v" to 1, "epoch" to state.epoch,
-            "active" to state.active?.let { obj("origin" to it.origin, "accountId" to it.accountId, "loginAttemptId" to it.loginAttemptId) }, "records" to state.records)).encodeToByteArray()
+            "clientRegistrationError" to state.failures.clientRegistration, "hostRegistrationError" to state.failures.hostRegistration,
+            "hostStop" to state.failures.hostStop, "active" to state.active?.let { obj("origin" to it.origin, "accountId" to it.accountId, "loginAttemptId" to it.loginAttemptId) }, "records" to state.records)).encodeToByteArray()
         val cipher = try { protector.seal(master, plain, aad) }
         catch (_: Exception) { throw RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED") }
         finally { plain.fill(0) }

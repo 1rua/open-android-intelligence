@@ -19,6 +19,7 @@ RemoteDeviceNameSettingTest
 RemoteRootInteractionTest
 RemoteRuntimeTest
 RemoteConnectionLifecycleTest
+RemoteNotificationHostBusTest
 RemoteWorkspaceUiDecouplingTest
 RemoteHarnessCatalogTest
 RemoteNewSessionNavigationTest
