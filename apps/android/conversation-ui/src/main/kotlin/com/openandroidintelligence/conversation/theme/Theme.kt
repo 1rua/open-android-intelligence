@@ -4,7 +4,6 @@ import android.os.Build
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
@@ -18,6 +17,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.design.rememberSystemMotionPolicy
 
 /** 系统动态取色（Monet）自 Android 12（API 31）起提供。 */
@@ -53,10 +53,10 @@ fun OpenAndroidIntelligenceTheme(
     }
     val policy = rememberSystemMotionPolicy(reduceMotion)
     val colorSpec: AnimationSpec<Color> =
-        if (policy.reduceMotion || policy.durationScale == 0f) {
+        if (policy.isReduced) {
             snap()
         } else {
-            tween(durationMillis = MotionSpecs.Standard, easing = MotionSpecs.StandardEasing)
+            MotionSpecs.effectsDefault(false)
         }
     val scheme = animatedColorScheme(target, colorSpec)
     val stateColors = if (darkTheme) DarkAppStateColors else LightAppStateColors

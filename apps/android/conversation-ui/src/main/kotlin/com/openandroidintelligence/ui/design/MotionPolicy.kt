@@ -13,6 +13,9 @@ import kotlinx.coroutines.flow.asStateFlow
 @Immutable
 data class MotionPolicy(val reduceMotion: Boolean = false, val durationScale: Float = 1f)
 
+/** 是否处于减少动态状态（应用内开关开启，或系统动画时长缩放已关闭）。 */
+val MotionPolicy.isReduced: Boolean get() = reduceMotion || durationScale <= 0f
+
 val LocalMotionPolicy = staticCompositionLocalOf { MotionPolicy() }
 
 /** 不写系统设置；观察真实动画缩放，Compose 自身负责时间缩放，避免重复计算。 */
