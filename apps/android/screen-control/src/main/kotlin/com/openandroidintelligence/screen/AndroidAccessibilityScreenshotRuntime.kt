@@ -93,20 +93,34 @@ class AndroidAccessibilityScreenshotRuntime(
     }
 
     override fun isServiceEnabledInSettings(): Boolean = try {
+        val own = ComponentName(context, ScreenAccessibilityService::class.java)
         val enabled = Settings.Secure.getString(
             context.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
         ).orEmpty()
-        val own = ComponentName(context, ScreenAccessibilityService::class.java)
         val full = own.flattenToString()
         val short = own.flattenToShortString()
-        enabled.split(':').any { entry ->
-            entry.equals(full, ignoreCase = true) || entry.equals(short, ignoreCase = true)
+        val inSettings = enabled.split(':').any { raw ->
+            val entry = raw.trim()
+            if (entry.isEmpty()) return@any false
+            ComponentName.unflattenFromString(entry) == own ||
+                entry.equals(full, ignoreCase = true) ||
+                entry.equals(short, ignoreCase = true)
         }
+        inSettings || isEnabledInAccessibilityManager(own)
     } catch (_: RuntimeException) {
         // 读不到系统设置时不能乐观地说「已开启」，否则界面会错误地引导用户「重新开启」。
         false
     }
+
+    private fun isEnabledInAccessibilityManager(own: ComponentName): Boolean = runCatching {
+        val manager = context.getSystemService(android.view.accessibility.AccessibilityManager::class.java)
+            ?: return@runCatching false
+        manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any { info ->
+            val serviceInfo = info.resolveInfo?.serviceInfo ?: return@any false
+            serviceInfo.packageName == own.packageName && serviceInfo.name == own.className
+        }
+    }.getOrDefault(false)
 
     override fun isServiceConnected(): Boolean = ScreenAccessibilityConnection.service != null
 

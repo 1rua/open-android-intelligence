@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -26,6 +27,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.openandroidintelligence.control.ScreenHostRegistry
 import com.openandroidintelligence.conversation.components.SettingsNavigationItem
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SettingsTone
@@ -45,6 +47,10 @@ import com.openandroidintelligence.mobile.settings.SectionLabel
 import com.openandroidintelligence.mobile.settings.SettingsPageColumn
 import com.openandroidintelligence.mobile.settings.SettingsPageScaffold
 import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.withContext
 
 internal fun capabilityHost(context: android.content.Context, environment: PlatformSettingsEnvironment): ProductionPluginHost? =
     (context.applicationContext as? OpenAndroidIntelligenceApplication)?.pluginHost
@@ -69,6 +75,10 @@ internal fun DeviceCapabilitiesScreen(
     val observedHost = (context.applicationContext as? OpenAndroidIntelligenceApplication)?.pluginHost
     val hostRevision = observedHost?.revision?.collectAsState()?.value
     val localState by environment.pairingGrants.state.collectAsState()
+    val accessibilityConnected by ScreenHostRegistry.accessibilityConnected.collectAsState()
+    val notificationBinding = NotificationControlRegistry.bindingPort()
+    val notificationListenerConnected by notificationBinding.observeListenerConnected()
+        .collectAsState(initial = runCatching { notificationBinding.isListenerConnected() }.getOrDefault(false))
     var refreshTick by remember { mutableIntStateOf(0) }
     val lifecycle = LocalLifecycleOwner.current
     // 从系统权限设置返回后必须重新读真实状态，不能沿用离开前的缓存。
@@ -77,19 +87,35 @@ internal fun DeviceCapabilitiesScreen(
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer) }
     }
+    val notificationPolicy = NotificationControlRegistry.policyPort()
+    LaunchedEffect(notificationPolicy) {
+        notificationPolicy.observe().drop(1).collect { refreshTick++ }
+    }
+    LaunchedEffect(observedHost, hostRevision, notificationListenerConnected, refreshTick) {
+        val host = observedHost ?: return@LaunchedEffect
+        val reconciled = withContext(Dispatchers.IO) {
+            runCatching { host.reconcileNotificationPolicyGrant() }.getOrDefault(false)
+        }
+        if (reconciled) refreshTick++
+    }
     val entries = remember(observedHost, hostRevision, refreshTick) { observedHost?.verifiedCapabilities().orEmpty() }
     val catalog = remember(entries) { capabilityCatalog(entries) }
     val appContext = context.applicationContext
-    val inspector = remember(appContext, observedHost, hostRevision, refreshTick) {
+    val inspector = remember(appContext, observedHost, hostRevision, accessibilityConnected, notificationListenerConnected, refreshTick) {
         DeviceCapabilityGrantInspector(
             context = appContext,
-            notificationAccessGranted = { runCatching { NotificationControlRegistry.bindingPort().isListenerBound() }.getOrDefault(false) },
+            notificationAccessGranted = {
+                runCatching {
+                    val binding = NotificationControlRegistry.bindingPort()
+                    binding.isListenerBound() && binding.isListenerConnected()
+                }.getOrDefault(false)
+            },
             accessibilityEnabled = { accessibilityServiceReady(appContext) },
             captureAuthorized = { runCatching { com.openandroidintelligence.capability.RemoteScreenCaptureRegistry.source?.isAvailable == true }.getOrDefault(false) },
         )
     }
     // 运行状态来自宿主的内存快照：同步读取，避免首帧先显示「需授权」再跳成「已开启」的闪烁。
-    val providerReady = remember(observedHost, hostRevision, refreshTick) {
+    val providerReady = remember(observedHost, hostRevision, accessibilityConnected, notificationListenerConnected, refreshTick) {
         runCatching {
             observedHost?.capabilitySnapshot()?.inventory.orEmpty()
                 .mapNotNull { entry ->

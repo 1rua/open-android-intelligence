@@ -6,30 +6,55 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.service.notification.NotificationListenerService
 import com.openandroidintelligence.notification.control.NotificationBindingPort
+import com.openandroidintelligence.notifications.NotificationRuntimeFactoryRegistry
 import com.openandroidintelligence.notifications.OpenAndroidIntelligenceNotificationListenerService
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 系统通知监听绑定端口的真实实现。
  *
- * - 绑定状态来自系统 NotificationManager 的通知使用权查询——只有用户在
- *   系统「通知使用权」设置页显式授予后它才为 true；
- * - 「打开系统监听设置」精确指向 Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS，
- *   端口没有任何代替用户授予的捷径。
+ * - 使用 `ComponentName(appContext, OpenAndroidIntelligenceNotificationListenerService::class.java)`
+ *   动态核验系统 `NotificationManager` 授权与 `Settings.Secure` 中的
+ *   `enabled_notification_listeners`，排除包名后缀（如 debug）或重构改名导致的误判；
+ * - 同时暴露 `NotificationListenerService` 真实连接态与 `requestRebind` 主动重连探测，
+ *   并在跳转系统设置页时精确指向 `Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS`。
  */
 class HostNotificationBindingPort(
     context: Context,
     private val listenerComponent: ComponentName = ComponentName(
-        context,
+        context.applicationContext,
         OpenAndroidIntelligenceNotificationListenerService::class.java,
     ),
+    private val listenerConnected: () -> Boolean = { NotificationRuntimeFactoryRegistry.isListenerConnected() },
+    private val listenerConnectedFlow: StateFlow<Boolean> = NotificationRuntimeFactoryRegistry.listenerConnectedFlow,
+    private val rebindRequester: (ComponentName) -> Unit = { component ->
+        NotificationListenerService.requestRebind(component)
+    },
 ) : NotificationBindingPort {
 
     private val appContext: Context = context.applicationContext
 
     override fun isListenerBound(): Boolean {
-        val manager = appContext.getSystemService(NotificationManager::class.java) ?: return false
-        return manager.isNotificationListenerAccessGranted(listenerComponent)
+        val manager = appContext.getSystemService(NotificationManager::class.java)
+        if (manager != null && runCatching { manager.isNotificationListenerAccessGranted(listenerComponent) }.getOrDefault(false)) {
+            return true
+        }
+        return isEnabledInSecureSettings()
+    }
+
+    override fun isListenerConnected(): Boolean = listenerConnected()
+
+    override fun observeListenerConnected(): Flow<Boolean> = listenerConnectedFlow
+
+    override fun requestListenerRebind(): Boolean {
+        if (!isListenerBound() || isListenerConnected()) return false
+        return runCatching {
+            rebindRequester(listenerComponent)
+            true
+        }.getOrDefault(false)
     }
 
     override fun openSystemListenerSettings(context: Context): Boolean {
@@ -42,5 +67,26 @@ class HostNotificationBindingPort(
             // 系统没有该设置页（罕见定制 ROM）：如实报告未发起，而不是假成功。
             false
         }
+    }
+
+    private fun isEnabledInSecureSettings(): Boolean = runCatching {
+        val enabled = Settings.Secure.getString(
+            appContext.contentResolver,
+            ENABLED_NOTIFICATION_LISTENERS,
+        ).orEmpty()
+        if (enabled.isBlank()) return@runCatching false
+        val full = listenerComponent.flattenToString()
+        val short = listenerComponent.flattenToShortString()
+        enabled.split(':').any { raw ->
+            val entry = raw.trim()
+            if (entry.isEmpty()) return@any false
+            ComponentName.unflattenFromString(entry) == listenerComponent ||
+                entry.equals(full, ignoreCase = true) ||
+                entry.equals(short, ignoreCase = true)
+        }
+    }.getOrDefault(false)
+
+    private companion object {
+        const val ENABLED_NOTIFICATION_LISTENERS = "enabled_notification_listeners"
     }
 }

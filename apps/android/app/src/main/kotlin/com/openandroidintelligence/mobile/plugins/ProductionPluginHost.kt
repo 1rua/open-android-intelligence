@@ -6,6 +6,11 @@ import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.network.HttpsResourceClient
 import com.openandroidintelligence.gateway.schema.*
 import com.openandroidintelligence.kernel.*
+import com.openandroidintelligence.notification.control.NotificationBindingPort
+import com.openandroidintelligence.notification.control.NotificationControlRegistry
+import com.openandroidintelligence.notification.control.NotificationPolicyPort
+import com.openandroidintelligence.notification.control.NotificationPolicyUpdate
+import com.openandroidintelligence.notification.control.NotificationPolicyUpdateOutcome
 import com.openandroidintelligence.plugin.pkg.*
 import com.openandroidintelligence.plugin.wasm.ChicoryPluginRuntime
 import com.openandroidintelligence.plugin.wasm.InvocationBudget
@@ -400,7 +405,69 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         }
         grants.updateCapabilityPolicy(policyKey(entry), policy)
         if (policy.enabled) selector.setOverride(entry.key, grants.state.value?.pairingId ?: error("LOCAL_POLICY_UNAVAILABLE"), entry.identity)
+        if ("kernel.notifications.read" in entry.primitives) {
+            val policyPort = NotificationControlRegistry.policyPort()
+            val bindingPort = NotificationControlRegistry.bindingPort()
+            if (!policy.enabled) {
+                if (!hasEnabledNotificationCapability()) {
+                    updateNotificationPolicyGranted(policyPort, granted = false)
+                }
+            } else if (runCatching { bindingPort.isListenerBound() }.getOrDefault(false)) {
+                if (!runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
+                    runCatching { bindingPort.requestListenerRebind() }
+                }
+                updateNotificationPolicyGranted(policyPort, granted = true)
+            }
+        }
         revision.value++
+    }
+
+    /**
+     * 将「Android 系统通知使用权 + 监听服务就绪态 + 本机能力总开关」与 policy-engine 对齐：
+     * - 系统已授予通知使用权但服务尚未连接时，主动请求系统重新绑定；
+     * - 当本机通知能力处于开启态、存储正常，且系统通知使用权已授予时，
+     *   同步将 policy-engine 的 granted 置为 true，解除 LOCAL_GRANT_REQUIRED
+     *   （服务若仍未连上则由原语如实暴露 NOTIFICATION_LISTENER_UNAVAILABLE，待连接到达即转 READY）；
+     * - 若用户已显式关闭通知能力总开关，绝不反向改回已授予。
+     */
+    fun reconcileNotificationPolicyGrant(
+        policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
+        bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    ): Boolean {
+        val snapshot = policyPort.snapshot()
+        if (!snapshot.installed) return false
+        val systemGranted = runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
+        if (!systemGranted) return false
+        val connected = runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)
+        if (!connected) {
+            runCatching { bindingPort.requestListenerRebind() }
+        }
+        if (snapshot.granted || !hasEnabledNotificationCapability()) return false
+        val updated = updateNotificationPolicyGranted(policyPort, granted = true)
+        if (updated) revision.value++
+        return updated
+    }
+
+    private fun hasEnabledNotificationCapability(): Boolean {
+        val state = grants.state.value ?: return false
+        if (state.localError != null) return false
+        return verifiedCapabilities().any { entry ->
+            "kernel.notifications.read" in entry.primitives &&
+                isEnabled(entry.identity.pluginId) &&
+                capabilityPolicy(entry.identity.pluginId, entry.key).enabled
+        }
+    }
+
+    private fun updateNotificationPolicyGranted(policyPort: NotificationPolicyPort, granted: Boolean): Boolean {
+        repeat(3) {
+            val current = policyPort.snapshot()
+            if (!current.installed || current.granted == granted) return false
+            when (val outcome = policyPort.update(NotificationPolicyUpdate(expectedRevision = current.revision, granted = granted))) {
+                is NotificationPolicyUpdateOutcome.Accepted -> return true
+                is NotificationPolicyUpdateOutcome.Rejected -> if (outcome.reason != "REVISION_STALE") return false
+            }
+        }
+        return false
     }
 
     fun authorizationScope(entry: VerifiedCapability, parameters: JsonValue): com.openandroidintelligence.kernel.CapabilityRequestScope =
@@ -643,6 +710,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
         if (enabled) entries(pluginId).forEach {
             selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
+        } else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
+            updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false)
         }
         revision.value++
     }
@@ -681,6 +750,9 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         grants.updatePluginCapabilities(registration.identity, ids, enabled)
         grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
         if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
+        else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
+            updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false)
+        }
         revision.value++
     }
     fun authorizedBindings(): List<Map<String,Any?>> = capabilitySnapshot().bindings

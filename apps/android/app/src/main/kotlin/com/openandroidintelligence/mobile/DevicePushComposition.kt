@@ -46,7 +46,12 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         DevicePushRuntime(EncryptedPushStateStore.fromContext(app, installationId), PushSystemAccess { kind ->
             !app.kernel.isEmergencyStopped() && when (kind) {
                 PushKind.SMS -> app.pluginHost.isEnabled("org.openandroidintelligence.sms") && ContextCompat.checkSelfPermission(app, Manifest.permission.READ_SMS) == PackageManager.PERMISSION_GRANTED
-                PushKind.NOTIFICATION -> app.pluginHost.isEnabled("org.openandroidintelligence.notifications") && app.packageName in NotificationManagerCompat.getEnabledListenerPackages(app)
+                PushKind.NOTIFICATION -> app.pluginHost.isEnabled("org.openandroidintelligence.notifications") &&
+                    (if (com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort().snapshot().installed) {
+                        com.openandroidintelligence.notification.control.NotificationControlRegistry.bindingPort().isListenerBound()
+                    } else {
+                        app.packageName in NotificationManagerCompat.getEnabledListenerPackages(app)
+                    })
             }
         })
     }.getOrElse { issue.value = "PUSH_ENCRYPTED_STATE_UNAVAILABLE"; null }

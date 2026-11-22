@@ -77,7 +77,20 @@ interface NotificationPolicyPort {
  * 本端口只查询绑定状态、并跳转到系统设置页，绝不代替用户授予。
  */
 interface NotificationBindingPort {
+    /** 系统「通知使用权」是否已授予本应用对应的通知监听服务组件。 */
     fun isListenerBound(): Boolean
+
+    /** 通知监听服务当前是否已与系统建立真实连接（收到 onListenerConnected 且未断开）。 */
+    fun isListenerConnected(): Boolean = isListenerBound()
+
+    /** 通知监听服务连接态的响应式流，便于 UI 在异步绑定到达时即时刷新。 */
+    fun observeListenerConnected(): Flow<Boolean> = flowOf(isListenerConnected())
+
+    /**
+     * 系统已授予通知使用权、但监听服务当前尚未连接时，主动请求系统重新绑定监听服务。
+     * 未授权、已连接或未装配时不发起请求并返回 false。
+     */
+    fun requestListenerRebind(): Boolean = false
 
     /**
      * 打开系统「通知使用权」设置页。返回是否真正发起了跳转；
@@ -125,6 +138,12 @@ object NotificationControlRegistry {
     /** 未装配时的绑定端口：没有监听器可绑定，也没有可授权的系统页。 */
     internal object UninstalledNotificationBindingPort : NotificationBindingPort {
         override fun isListenerBound(): Boolean = false
+
+        override fun isListenerConnected(): Boolean = false
+
+        override fun observeListenerConnected(): Flow<Boolean> = flowOf(false)
+
+        override fun requestListenerRebind(): Boolean = false
 
         override fun openSystemListenerSettings(context: Context): Boolean = false
     }

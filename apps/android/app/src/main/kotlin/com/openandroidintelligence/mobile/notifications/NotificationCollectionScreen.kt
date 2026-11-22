@@ -70,6 +70,7 @@ internal fun NotificationCollectionScreen(
     loadInstalledApps: (() -> List<InstalledNotificationApp>)? = null,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     embedded: Boolean = false,
+    onGrantChanged: ((Boolean) -> Unit)? = null,
 ) {
     var snapshot by remember(policy) { mutableStateOf(policy.snapshot()) }
     var listenerBound by remember(binding) { mutableStateOf(binding.isListenerBound()) }
@@ -106,11 +107,19 @@ internal fun NotificationCollectionScreen(
         policy.observe().collect { latest -> snapshot = latest }
     }
 
-    // 从系统「通知使用权」设置页返回前台时刷新真实绑定状态。
+    // 通知监听服务异步连接/断开时同步刷新系统通知使用权展示。
+    LaunchedEffect(binding) {
+        binding.observeListenerConnected().collect {
+            listenerBound = binding.isListenerBound()
+        }
+    }
+
+    // 从系统「通知使用权」设置页返回前台时刷新真实绑定状态，并在已授权未连接时主动请求重绑。
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(binding, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                binding.requestListenerRebind()
                 listenerBound = binding.isListenerBound()
                 appRefresh += 1
             }
@@ -125,6 +134,7 @@ internal fun NotificationCollectionScreen(
             is NotificationPolicyUpdateOutcome.Accepted -> {
                 snapshot = outcome.snapshot
                 rejection = null
+                if (request.granted != null) onGrantChanged?.invoke(outcome.snapshot.granted)
             }
             is NotificationPolicyUpdateOutcome.Rejected -> rejection = outcome.reason
         }

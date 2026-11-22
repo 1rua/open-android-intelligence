@@ -68,4 +68,12 @@ object ScreenHostRegistry {
     /** Shared by every connection/Agent in this App process, independent of read/capture. */
     val controlLeases = ScreenControlLeaseManager()
     @Volatile var current: ScreenHostLifecycle? = null
+    private val _accessibilityConnected = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** 无障碍服务真实连接态：由无障碍服务生命周期回调即时驱动，不受锁屏状态混淆。 */
+    val accessibilityConnected: kotlinx.coroutines.flow.StateFlow<Boolean> get() = _accessibilityConnected
+
+    fun setAccessibilityConnected(connected: Boolean) {
+        _accessibilityConnected.value = connected
+    }
 }

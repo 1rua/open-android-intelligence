@@ -310,9 +310,12 @@ val PERMISSION_NOTICE_BODY_RES = UiR.string.perm_notice_body
  * 才能保证用户去系统设置改过之后，回到引导页看到的是**真实**状态。
  */
 private fun hasNotificationListenerAccess(context: Context): Boolean = try {
-    android.app.NotificationManager::class.java
-    androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context)
-        .contains(context.packageName)
+    if (com.openandroidintelligence.notification.control.NotificationControlRegistry.policyPort().snapshot().installed) {
+        com.openandroidintelligence.notification.control.NotificationControlRegistry.bindingPort().isListenerBound()
+    } else {
+        androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context)
+            .contains(context.packageName)
+    }
 } catch (_: Exception) {
     // 极少数 ROM 上该 API 可能抛异常；此时保守返回 false（显示「未开启」），
     // 用户仍可通过「前往设置」手动确认，不伪造已授权。

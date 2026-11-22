@@ -9,6 +9,9 @@ import com.openandroidintelligence.policy.PersistentNotificationPolicyAuthority
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
@@ -149,7 +152,14 @@ fun interface NotificationRuntimeFactory {
  * has no outbox, so an unconfigured install cannot emit notification data.
  */
 object NotificationRuntimeFactoryRegistry {
+    private val _listenerConnected = MutableStateFlow(false)
+    val listenerConnectedFlow: StateFlow<Boolean> = _listenerConnected.asStateFlow()
+
     @Volatile internal var activeSession: NotificationListenerSession? = null
+        set(value) {
+            field = value
+            _listenerConnected.value = value?.isConnected() == true
+        }
 
     /** Refresh from the connected OS listener; a created or disconnected service is unavailable. */
     fun connectedCollector(): AndroidNotificationCollector? = activeSession?.refresh()
