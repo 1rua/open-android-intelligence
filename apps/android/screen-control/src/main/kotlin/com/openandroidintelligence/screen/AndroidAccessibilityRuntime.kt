@@ -63,7 +63,8 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                         val rect = Rect()
                         window.getBoundsInScreen(rect)
                         result += ScreenTreeWindow(ScreenWindow(window.id, window.type, window.layer,
-                            window.isActive, window.isFocused, rect.toScreenBounds()), AndroidTreeNode(root))
+                            window.isActive, window.isFocused, rect.toScreenBounds()), AndroidTreeNode(root),
+                            root.packageName?.toString())
                     } catch (failure: Exception) { recycle(root); throw failure }
                 }
             } finally {
@@ -74,7 +75,8 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                 val root = service.rootInActiveWindow
                 if (root != null) {
                     val rect = Rect(); root.getBoundsInScreen(rect)
-                    result += ScreenTreeWindow(ScreenWindow(root.windowId, 1, 0, true, true, rect.toScreenBounds()), AndroidTreeNode(root))
+                    result += ScreenTreeWindow(ScreenWindow(root.windowId, 1, 0, true, true, rect.toScreenBounds()),
+                        AndroidTreeNode(root), root.packageName?.toString())
                 }
             }
             return result

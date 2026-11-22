@@ -50,6 +50,8 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
             val snapshot = reader.capture(windows, display, generation, runtime.foregroundPackage(), runtime.activeWindowId())
             if (runtime.generation() != generation || runtime.display() != display) throw ScreenOperationException("SCREEN_CHANGED")
             ready()
+            ScreenAccessibilityConnection.noteSnapshotWindows(windows)
+            if (runtime.generation() != generation) throw ScreenOperationException("SCREEN_CHANGED")
             return snapshot to generation
         } catch (failure: ScreenOperationException) { throw failure }
         catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }

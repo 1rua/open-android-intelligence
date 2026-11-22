@@ -28,7 +28,11 @@ internal interface ScreenTreeNode : AutoCloseable {
     fun child(index: Int): ScreenTreeNode?
 }
 
-internal data class ScreenTreeWindow(val window: ScreenWindow, val root: ScreenTreeNode)
+internal data class ScreenTreeWindow(
+    val window: ScreenWindow,
+    val root: ScreenTreeNode,
+    val packageName: String? = null,
+)
 
 /**
  * Relay's flat multi-window representation and per-child finally ownership are retained.
