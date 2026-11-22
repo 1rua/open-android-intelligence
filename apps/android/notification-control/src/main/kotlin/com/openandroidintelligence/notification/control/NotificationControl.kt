@@ -125,6 +125,26 @@ object NotificationControlRegistry {
         bindingPort = UninstalledNotificationBindingPort
     }
 
+    /**
+     * 检查给定组件名是否存在于系统设置（如 `enabled_notification_listeners`）的冒号分隔列表中，
+     * 兼容完整类名、简写类名及不同大小写格式。
+     */
+    fun isComponentInColonSeparatedSetting(
+        rawList: String,
+        target: android.content.ComponentName,
+    ): Boolean {
+        if (rawList.isBlank()) return false
+        val full = target.flattenToString()
+        val short = target.flattenToShortString()
+        return rawList.split(':').any { raw ->
+            val entry = raw.trim()
+            if (entry.isEmpty()) return@any false
+            android.content.ComponentName.unflattenFromString(entry) == target ||
+                entry.equals(full, ignoreCase = true) ||
+                entry.equals(short, ignoreCase = true)
+        }
+    }
+
     /** 未装配时的策略端口：诚实快照 + 显式拒绝。 */
     internal object UninstalledNotificationPolicyPort : NotificationPolicyPort {
         override fun snapshot(): NotificationPolicySnapshot = NotificationPolicySnapshot.uninstalled()

@@ -53,4 +53,22 @@ class ScreenAccessibilityConnectionStateTest {
         ScreenAccessibilityConnection.disconnect(newService)
         assertFalse(ScreenHostRegistry.accessibilityConnected.value)
     }
+
+    @Test
+    fun clearingAccessibilityConnectedImmediatelyDisconnectsUnderlyingRuntimeBeforeOnUnbind() {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        val runtime = AndroidAccessibilityRuntime(service)
+        val screenshotRuntime = AndroidAccessibilityScreenshotRuntime(service)
+
+        ScreenAccessibilityConnection.connect(service)
+        assertTrue(screenshotRuntime.isServiceConnected())
+        org.junit.Assert.assertNull(runtime.availability())
+
+        // 模拟用户在系统设置关闭无障碍后切回 App（ON_RESUME 校准连接态为 false，此时系统 onUnbind 尚未送达）。
+        ScreenHostRegistry.setAccessibilityConnected(false)
+        assertFalse(screenshotRuntime.isServiceConnected())
+        org.junit.Assert.assertEquals("ACCESSIBILITY_SERVICE_UNAVAILABLE", runtime.availability())
+
+        ScreenAccessibilityConnection.disconnect(service)
+    }
 }

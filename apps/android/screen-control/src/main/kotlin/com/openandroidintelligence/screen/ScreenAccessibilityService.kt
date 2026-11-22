@@ -69,7 +69,8 @@ object ScreenAccessibilityConnection {
     val layoutEvents: kotlinx.coroutines.flow.StateFlow<Long> get() = layoutChanges
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
     internal val generation: Long get() = sequence.get()
-    internal val service: ScreenAccessibilityService? get() = reference.get()
+    internal val service: ScreenAccessibilityService?
+        get() = reference.get()?.takeIf { ScreenHostRegistry.accessibilityConnected.value }
     internal fun changed(eventType: Int? = null) {
         sequence.incrementAndGet()
         if (eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED || eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)

@@ -74,16 +74,8 @@ class HostNotificationBindingPort(
             appContext.contentResolver,
             ENABLED_NOTIFICATION_LISTENERS,
         ).orEmpty()
-        if (enabled.isBlank()) return@runCatching false
-        val full = listenerComponent.flattenToString()
-        val short = listenerComponent.flattenToShortString()
-        enabled.split(':').any { raw ->
-            val entry = raw.trim()
-            if (entry.isEmpty()) return@any false
-            ComponentName.unflattenFromString(entry) == listenerComponent ||
-                entry.equals(full, ignoreCase = true) ||
-                entry.equals(short, ignoreCase = true)
-        }
+        com.openandroidintelligence.notification.control.NotificationControlRegistry
+            .isComponentInColonSeparatedSetting(enabled, listenerComponent)
     }.getOrDefault(false)
 
     private companion object {

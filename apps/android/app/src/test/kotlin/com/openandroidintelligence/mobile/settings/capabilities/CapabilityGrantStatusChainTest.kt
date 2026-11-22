@@ -196,18 +196,17 @@ class CapabilityGrantStatusChainTest {
         assertEquals("ANDROID_PERMISSION_REQUIRED", notificationInventory()["status"])
         assertEquals("NOTIFICATION_ACCESS_REQUIRED", notificationInventory()["reason"])
 
-        // 2. 开启系统通知使用权但监听服务尚未连接：仅主动发起 rebind，不提前授予 policy-engine 本地策略。
+        // 2. 开启系统通知使用权但监听服务尚未连接：主动发起 rebind，同时对齐本地授权位解除 LOCAL_GRANT_REQUIRED，
+        //    如实呈现服务未连接（NOTIFICATION_LISTENER_UNAVAILABLE）。
         bindingPort.systemGranted = true
-        assertFalse(host.reconcileNotificationPolicyGrant())
-        assertEquals(1, bindingPort.rebindCalls)
-        assertFalse(policyPort.snapshot().granted)
-        assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["status"])
-        assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["reason"])
-
-        // 3. 监听服务连接就绪后：reconcile 自动对齐 policy-engine 授权并立即转为 READY。
-        bindingPort.setConnected(true)
         assertTrue(host.reconcileNotificationPolicyGrant())
+        assertEquals(1, bindingPort.rebindCalls)
         assertTrue(policyPort.snapshot().granted)
+        assertEquals("PROVIDER_UNAVAILABLE", notificationInventory()["status"])
+        assertEquals("NOTIFICATION_LISTENER_UNAVAILABLE", notificationInventory()["reason"])
+
+        // 3. 监听服务连接就绪后：状态立即转为 READY。
+        bindingPort.setConnected(true)
         assertEquals("READY", notificationInventory()["status"])
         assertEquals("", notificationInventory()["reason"])
 
@@ -219,17 +218,16 @@ class CapabilityGrantStatusChainTest {
         assertEquals("LOCAL_GRANT_REQUIRED", notificationInventory()["status"])
         assertEquals("LOCAL_CAPABILITY_DISABLED", notificationInventory()["reason"])
 
-        // 5. 监听服务未连时重新打开顶部开关：只触发 rebind，不提前写入 granted = true。
+        // 5. 监听服务未连时重新打开顶部开关：既触发 rebind，也恢复本地授权位（展示 NOTIFICATION_LISTENER_UNAVAILABLE）。
         bindingPort.setConnected(false)
         host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = true))
         assertEquals(2, bindingPort.rebindCalls)
-        assertFalse(policyPort.snapshot().granted)
-
-        // 6. 先关闭再在「系统授权 + 服务已连」前提下重新打开顶部开关：同步恢复 policy-engine 授权并直接回到 READY。
-        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = false))
-        bindingPort.setConnected(true)
-        host.setCapabilityPolicy(NOTIFICATION_PLUGIN_ID, entry.key, CapabilityPolicy(enabled = true))
         assertTrue(policyPort.snapshot().granted)
+        assertEquals("PROVIDER_UNAVAILABLE", notificationInventory()["status"])
+        assertEquals("NOTIFICATION_LISTENER_UNAVAILABLE", notificationInventory()["reason"])
+
+        // 6. 服务恢复连接后立即回到 READY。
+        bindingPort.setConnected(true)
         assertEquals("READY", notificationInventory()["status"])
     }
 
@@ -274,7 +272,6 @@ class CapabilityGrantStatusChainTest {
             val builtInEntry = host.entries(NOTIFICATION_PLUGIN_ID).single()
             val thirdPartyEntry = host.entries(thirdParty).single()
 
-            assertTrue(host.reconcileNotificationPolicyGrant())
             assertTrue(policyPort.snapshot().granted)
 
             // 底部显式关闭共享通知采集授权：同步关闭全部通知提供者的顶部总开关，避免另一插件在下次恢复时反向重开。
@@ -285,12 +282,23 @@ class CapabilityGrantStatusChainTest {
             assertFalse(host.reconcileNotificationPolicyGrant())
             assertFalse(policyPort.snapshot().granted)
 
-            // 仅重新开启第三方通知插件能力，再停用该插件本身：最后一个启用通知提供者停用后必须同步撤销 policy-engine 授权。
-            host.setCapabilityPolicy(thirdParty, thirdPartyEntry.key, CapabilityPolicy(enabled = true))
+            // 未授系统通知使用权时若底部开关先行将 policyPort 置为 true，宿主同步门禁会立即将其回退为 false。
+            bindingPort.systemGranted = false
+            policyPort.update(NotificationPolicyUpdate(expectedRevision = policyPort.snapshot().revision, granted = true))
+            assertTrue(policyPort.snapshot().granted)
+            host.syncNotificationCapabilitiesWithPolicyGrant(granted = true, targetPluginId = thirdParty)
+            assertTrue(host.capabilityPolicy(thirdParty, thirdPartyEntry.key).enabled)
+            assertFalse(policyPort.snapshot().granted)
+
+            // 系统授权恢复后，停用并重新启用该插件本身：对称撤销并恢复 policy-engine 授权。
+            bindingPort.systemGranted = true
+            assertTrue(host.reconcileNotificationPolicyGrant())
             assertTrue(policyPort.snapshot().granted)
             host.enable(thirdParty, false)
             assertFalse(policyPort.snapshot().granted)
             assertFalse(host.reconcileNotificationPolicyGrant())
+            host.enable(thirdParty, true)
+            assertTrue(policyPort.snapshot().granted)
         } finally {
             host.installStore.installRoot.deleteRecursively()
             runCatching { host.reload() }

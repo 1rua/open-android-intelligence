@@ -327,17 +327,24 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                 preferences.edit().remove(pluginId).commit()
                 kernel.disable(pluginId)
                 nativeLoader.unload(pluginId)
-                if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
-                    updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
-                        !hasEnabledNotificationCapability()
-                    }
+                if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                    syncNotificationPolicyGrantLocked()
                 }
             }
         } else {
             check(!isQuarantined(pluginId)) { "NATIVE_PLUGIN_SAFE_MODE" }
             val verified = installStore.openVerified(pluginId)
-            try { enableVerified(verified); check(preferences.edit().putString(pluginId,verified.identity.authorKeyFingerprint).commit()) }
-            finally { verified.stagedDirectory.deleteRecursively() }
+            try {
+                synchronized(notificationPolicySyncLock) {
+                    enableVerified(verified)
+                    check(preferences.edit().putString(pluginId, verified.identity.authorKeyFingerprint).commit())
+                    if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                        syncNotificationPolicyGrantLocked()
+                    }
+                }
+            } finally {
+                verified.stagedDirectory.deleteRecursively()
+            }
         }
         notifyCapabilityStateChanged()
     }
@@ -427,22 +434,7 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
         if ("kernel.notifications.read" in entry.primitives) {
             synchronized(notificationPolicySyncLock) {
                 applyLocalPolicy()
-                val policyPort = NotificationControlRegistry.policyPort()
-                val bindingPort = NotificationControlRegistry.bindingPort()
-                if (!policy.enabled) {
-                    if (!hasEnabledNotificationCapability()) {
-                        updateNotificationPolicyGranted(policyPort, granted = false) { !hasEnabledNotificationCapability() }
-                    }
-                } else if (runCatching { bindingPort.isListenerBound() }.getOrDefault(false)) {
-                    if (runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
-                        updateNotificationPolicyGranted(policyPort, granted = true) {
-                            hasEnabledNotificationCapability() &&
-                                runCatching { bindingPort.isListenerBound() && bindingPort.isListenerConnected() }.getOrDefault(false)
-                        }
-                    } else {
-                        runCatching { bindingPort.requestListenerRebind() }
-                    }
-                }
+                syncNotificationPolicyGrantLocked()
             }
         } else {
             applyLocalPolicy()
@@ -451,10 +443,12 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
     }
 
     /**
-     * 底部「通知采集范围 → 允许读取通知」变更后双向同步通知能力总开关：
+     * 底部「通知采集范围 → 允许读取通知」变更后双向同步通知能力总开关与 policy-engine 授权：
      * - 显式关闭共享的通知采集授权时，同步关闭所有已启用的 `kernel.notifications.read` 能力开关，
      *   避免多提供者场景下由另一插件在下一次恢复时将其反向重开；
-     * - 显式开启时，同步开启目标插件（或已启用的通知提供者）对应的通知读取总开关。
+     * - 显式开启时，同步开启目标插件（或已启用的通知提供者）对应的通知读取总开关，并统一经
+     *   [syncNotificationPolicyGrantLocked] 核验系统通知使用权门禁（未授系统权限时不会将
+     *   `policy-engine.granted` 留在 `true`）。
      */
     fun syncNotificationCapabilitiesWithPolicyGrant(granted: Boolean, targetPluginId: String? = null) {
         synchronized(notificationPolicySyncLock) {
@@ -471,37 +465,45 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
                     changed = true
                 }
             }
-            if (changed) notifyCapabilityStateChanged()
+            val policySynced = syncNotificationPolicyGrantLocked()
+            if (changed || policySynced) notifyCapabilityStateChanged()
         }
     }
 
     /**
-     * 将「Android 系统通知使用权 + 监听服务就绪态 + 本机能力总开关」与 policy-engine 对齐：
-     * - 系统已授予通知使用权但服务尚未连接时，主动请求系统重新绑定，但不提前授予本地策略；
-     * - 仅当本机通知能力处于开启态、存储正常、且系统通知使用权已授予且监听服务已就绪时，
-     *   在互斥锁内同步将 policy-engine 的 granted 置为 true，解除 LOCAL_GRANT_REQUIRED；
-     * - 若用户已显式关闭通知能力总开关，绝不反向改回已授予。
+     * 将「Android 系统通知使用权 + 本机能力总开关」与 policy-engine 对齐：
+     * - 系统已授予通知使用权但监听服务尚未连接时，主动请求系统重新绑定，同时对齐本机授权位以解除
+     *   `LOCAL_GRANT_REQUIRED`，让原语如实报告服务未连接（`NOTIFICATION_LISTENER_UNAVAILABLE`）；
+     * - 当本机通知能力开启且系统通知使用权已授予时，在互斥锁内将 policy-engine 的 granted 置为 true；
+     * - 当用户显式关闭通知能力总开关或撤销系统通知使用权时，将 policy-engine 的 granted 置为 false。
      */
     fun reconcileNotificationPolicyGrant(
         policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
         bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
     ): Boolean = synchronized(notificationPolicySyncLock) {
-        val snapshot = policyPort.snapshot()
-        if (!snapshot.installed) return@synchronized false
-        val systemGranted = runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
-        if (!systemGranted) return@synchronized false
-        val connected = runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)
-        if (!connected) {
-            runCatching { bindingPort.requestListenerRebind() }
-            return@synchronized false
-        }
-        if (snapshot.granted || !hasEnabledNotificationCapability()) return@synchronized false
-        val updated = updateNotificationPolicyGranted(policyPort, granted = true) {
-            hasEnabledNotificationCapability() &&
-                runCatching { bindingPort.isListenerBound() && bindingPort.isListenerConnected() }.getOrDefault(false)
-        }
+        val updated = syncNotificationPolicyGrantLocked(policyPort, bindingPort)
         if (updated) notifyCapabilityStateChanged()
         updated
+    }
+
+    private fun syncNotificationPolicyGrantLocked(
+        policyPort: NotificationPolicyPort = NotificationControlRegistry.policyPort(),
+        bindingPort: NotificationBindingPort = NotificationControlRegistry.bindingPort(),
+    ): Boolean {
+        val snapshot = policyPort.snapshot()
+        if (!snapshot.installed) return false
+        val hasEnabledCapability = hasEnabledNotificationCapability()
+        val systemGranted = runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
+        if (hasEnabledCapability && systemGranted && !runCatching { bindingPort.isListenerConnected() }.getOrDefault(false)) {
+            runCatching { bindingPort.requestListenerRebind() }
+        }
+        val targetGranted = hasEnabledCapability && systemGranted
+        if (snapshot.granted == targetGranted) return false
+        return updateNotificationPolicyGranted(policyPort, granted = targetGranted) {
+            val currentTarget = hasEnabledNotificationCapability() &&
+                runCatching { bindingPort.isListenerBound() }.getOrDefault(false)
+            currentTarget == targetGranted
+        }
     }
 
     private fun hasEnabledNotificationCapability(): Boolean {
@@ -772,10 +774,9 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             grants.updatePluginCapabilities(registration.identity, registration.declaredPrimitives, enabled)
             if (enabled) entries(pluginId).forEach {
                 selector.setOverride(it.key, grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"), it.identity)
-            } else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
-                updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
-                    !hasEnabledNotificationCapability()
-                }
+            }
+            if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                syncNotificationPolicyGrantLocked()
             }
         }
         notifyCapabilityStateChanged()
@@ -816,10 +817,8 @@ class ProductionPluginHost(private val context: Context, private val grants: Pai
             grants.updatePluginCapabilities(registration.identity, ids, enabled)
             grants.updatePrimitives(if (enabled) ids + scoped else scoped, enabled)
             if (enabled) entries(pluginId).forEach { selector.setOverride(it.key,grants.state.value?.pairingId ?: error("PAIRING_REQUIRED"),it.identity) }
-            else if (entries(pluginId).any { "kernel.notifications.read" in it.primitives } && !hasEnabledNotificationCapability()) {
-                updateNotificationPolicyGranted(NotificationControlRegistry.policyPort(), granted = false) {
-                    !hasEnabledNotificationCapability()
-                }
+            if (entries(pluginId).any { "kernel.notifications.read" in it.primitives }) {
+                syncNotificationPolicyGrantLocked()
             }
         }
         notifyCapabilityStateChanged()
