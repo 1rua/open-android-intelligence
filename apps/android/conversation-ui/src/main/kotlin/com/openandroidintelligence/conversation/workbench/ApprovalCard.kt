@@ -58,6 +58,7 @@ import com.openandroidintelligence.conversation.state.isSettled
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 
 /** Test hooks: a card is asserted through these tags, never by its text alone. */
@@ -129,20 +130,20 @@ fun ApprovalCard(
             delay(APPROVAL_COUNTDOWN_TICK_MILLIS)
         }
     }
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     // A card that already carried its answer when it was first drawn (re-entering
     // a thread past the fact) is shown as it is; only a card watched until the
     // Gateway answered earns the conclusion's fade.
     val settledWhenFirstDrawn = remember(request) { state.isSettled }
 
     Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag(ApprovalCardTags.ROOT),
         shape = RoundedCornerShape(AppRadius.Medium),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(ApprovalCardTags.ROOT),
     ) {
         Column(
             modifier = Modifier.padding(Dimensions.SpaceMedium),

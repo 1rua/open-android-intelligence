@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.workbench
 
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.runtime.CompositionLocalProvider
@@ -271,7 +272,10 @@ class ThoughtCardTest {
             }
         }
 
-        compose.onNodeWithText("无思考内容", substring = true).assertIsDisplayed()
+        compose.onNodeWithText("无思考内容", substring = true)
+            .assertIsDisplayed()
+            .assertHasNoClickAction()
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Role))
         compose.onNodeWithText("已思考", substring = true).assertDoesNotExist()
     }
 

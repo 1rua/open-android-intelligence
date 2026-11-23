@@ -18,6 +18,7 @@ import com.openandroidintelligence.conversation.components.readableFailure
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 复用原有中文错误指引，仅替换已退役产品名；异常原文和服务地址不直接展示。 */
@@ -30,7 +31,7 @@ internal fun remoteConnectionFailureText(code: String): String {
 /** 登录阶段继续使用原来的淡化、错误色面与可重试入口。 */
 @Composable
 internal fun RemoteLoginPhase(busy: Boolean, error: String?, onRetry: (() -> Unit)?) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     AnimatedContent(targetState = busy to error, transitionSpec = {
         fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))
     }, label = "remote-login-phase") { (running, failure) ->

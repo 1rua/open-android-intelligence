@@ -54,6 +54,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.onboarding.components.OnboardingStepHeader
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import androidx.compose.foundation.clickable
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.ui.resources.R as UiR
@@ -200,7 +201,7 @@ private fun ChoiceCard(
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
 
     // 采集卡片在**根窗口中的真实几何**：转场以它为圆心与起始形状。
     // 采集时机是布局完成与滚动之后，因此长页面滚动过的位置也是准的。

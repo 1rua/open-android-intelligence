@@ -30,14 +30,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.openandroidintelligence.ui.resources.R as UiR
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.mobile.onboarding.components.OrbitalDiagram
 import com.openandroidintelligence.mobile.onboarding.components.TelemetryRow
 import com.openandroidintelligence.mobile.onboarding.components.halftone
-import com.openandroidintelligence.ui.design.LocalMotionPolicy
 
 /**
  * 欢迎与应用介绍页。
@@ -57,7 +55,6 @@ fun WelcomeScreen(
     onStart: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
     val accent = MaterialTheme.colorScheme.tertiary
     val surface = MaterialTheme.colorScheme.surface
 

@@ -21,14 +21,15 @@ import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * 带按压形变的可点击修饰符。
  *
  * Material 3 的 ripple 只告诉用户"我收到了这一下"，但对自绘的圆形按钮、列表项、
- * 附件卡片来说，**按下时轻微内收**（0.97，90ms）才是"这个东西按得动"的物理暗示。
- * 用 [composed] 包一层，让组件继续用 `.bouncyClickable { }` 的写法，不必各自维护
- * 交互源与动画状态。
+ * 附件卡片来说，**按下时轻微内收**（默认 [MotionSpecs.PressScaleDefault]，物理弹簧反馈）
+ * 才是"这个东西按得动"的物理暗示。用 [composed] 包一层，让组件继续用 `.bouncyClickable { }`
+ * 的写法，不必各自维护交互源与动画状态。
  *
  * - 只在按下时缩放，松手立即回收（[MotionSpecs.press]）；
  * - 减少动态时不做缩放，ripple 与点击语义不变；
@@ -38,14 +39,14 @@ fun Modifier.bouncyClickable(
     enabled: Boolean = true,
     role: Role? = null,
     onClickLabel: String? = null,
-    pressedScale: Float = 0.97f,
+    pressedScale: Float = MotionSpecs.PressScaleDefault,
     onClick: () -> Unit,
 ): Modifier = composed {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val scale by animateFloatAsState(
-        // 减少动态时不做缩放：snap 只是把 90ms 变成瞬时，视觉上仍是"按下就缩"。
+        // 减少动态时不做缩放，保持物理位置静止并保留 Ripple 点击反馈。
         targetValue = if (pressed && enabled && !reduced) pressedScale else 1f,
         animationSpec = MotionSpecs.press(reduced),
         label = "bouncy-press",

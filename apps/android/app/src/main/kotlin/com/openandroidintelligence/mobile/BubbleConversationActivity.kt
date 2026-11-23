@@ -39,6 +39,7 @@ import com.openandroidintelligence.conversation.workbench.rememberStreamingPrese
 import com.openandroidintelligence.conversation.workbench.ComposerBar
 import com.openandroidintelligence.conversation.workbench.ConversationBrowser
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -223,7 +224,7 @@ private fun BubbleChat(
     val displayItems = rememberTimelineDisplayItems(entries, state.activeThreadId, state.generation)
     val presentations = rememberStreamingPresentations(entries, controller to state.activeThreadId, generation = state.generation)
     val executionTiming = rememberExecutionTimingStore(state.activeThreadId)
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val downloadAction: ((String) -> Unit)? =
         if (controller.downloadsSupported) controller::downloadAttachment else null
     val list = rememberLazyListState()

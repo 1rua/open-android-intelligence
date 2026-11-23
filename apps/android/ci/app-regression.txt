@@ -81,6 +81,7 @@ TrustModePersistenceTest
 WorkbenchNavigationTest
 MediaCompressionTest
 FullTurnInteractionE2ETest
+ExpressiveMotionNavigationTest
 
 [settings]
 RemoteTutorialsTest

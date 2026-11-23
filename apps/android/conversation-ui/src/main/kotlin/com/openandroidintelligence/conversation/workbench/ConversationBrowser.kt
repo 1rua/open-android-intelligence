@@ -52,6 +52,7 @@ import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -146,7 +147,7 @@ fun ConversationBrowser(
     actions: ConversationBrowserActions = ConversationBrowserActions(),
     selectedFolderId: String? = null,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     var query by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf(selectedFolderId?.let { FOLDER_PREFIX + it } ?: ALL_THREADS) }
     var showFilter by remember { mutableStateOf(false) }
@@ -552,7 +553,7 @@ private fun ConversationBrowserRow(
     relativeTime: String = "",
 ) {
     var menu by remember { mutableStateOf(false) }
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val entranceSpec = MotionSpecs.staggerEnter<Float>(entranceIndex, reduced)
     val alpha by animateFloatAsState(
         targetValue = if (entranceVisible) 1f else 0f,

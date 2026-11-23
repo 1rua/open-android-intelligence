@@ -1,6 +1,8 @@
 package com.openandroidintelligence.mobile
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -29,12 +31,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import com.openandroidintelligence.conversation.components.M3MorphingButton
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
 import com.openandroidintelligence.conversation.components.SettingsSectionCard
 import com.openandroidintelligence.conversation.components.SignalStitch
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
+import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
+import com.openandroidintelligence.conversation.motion.m3SharedBounds
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.motion.LocalSharedTransitionScope
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 登录入口沿用原品牌、卡片与设置抽屉；认证动作由 Remote 接线层提供。 */
@@ -66,6 +75,7 @@ internal fun RemoteLoginSettingsHost(
     }
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun RemoteLoginScreen(
     busy: Boolean,
@@ -93,7 +103,13 @@ internal fun RemoteLoginScreen(
     var account by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    var activeOAuthProvider by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(busy) {
+        if (!busy) {
+            activeOAuthProvider = null
+        }
+    }
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val normalizedOrigin = normalizeRemoteLoginOrigin(origin)
     val address = ServiceAddress.parse(normalizedOrigin)
     val canLogin = !busy && address != null && account.isNotBlank() && password.isNotEmpty()
@@ -143,76 +159,98 @@ internal fun RemoteLoginScreen(
                     }) {
                         Text(stringResource(if (selfHosted) UiR.string.remote_login_use_official else UiR.string.remote_login_use_self_hosted))
                     }
+                    val hasSharedScope = LocalSharedTransitionScope.current != null && !reduceMotion
                     AnimatedContent(
                         targetState = selfHosted,
                         transitionSpec = {
-                            (fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion)))
-                                .using(SizeTransform { _, _ -> MotionSpecs.spatial(reduceMotion) })
+                            val baseTransition = fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
+                                fadeOut(MotionSpecs.fade(reduceMotion))
+                            if (hasSharedScope) {
+                                // 共享边界活跃时显式关闭默认 SizeTransform，避免与 m3SharedBounds(RemeasureToBounds) 尺寸竞争。
+                                baseTransition.using(null)
+                            } else {
+                                baseTransition.using(SizeTransform { _, _ -> MotionSpecs.spatial(reduceMotion) })
+                            }
                         },
                         label = "remote-login-card",
                     ) { showSelfHosted ->
-                        Column(Modifier.fillMaxWidth().testTag(if (showSelfHosted) "remote-self-hosted-login" else "remote-official-login"),
-                            verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium)) {
-                            if (showSelfHosted) {
-                                RemoteLoginInput(stringResource(UiR.string.remote_service_address), origin, { input ->
-                                    var cleaned = input
-                                    while (cleaned.startsWith("https://http://", true) || cleaned.startsWith("http://http://", true) ||
-                                        cleaned.startsWith("https://https://", true) || cleaned.startsWith("http://https://", true)) {
-                                        cleaned = cleaned.substring(cleaned.indexOf("://") + 3)
+                        ProvideSharedVisibilityScope {
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .m3SharedBounds(
+                                        key = SharedTransitionKeys.loginCard(),
+                                        resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
+                                        clipShape = MaterialTheme.shapes.medium,
+                                    )
+                                    .testTag(if (showSelfHosted) "remote-self-hosted-login" else "remote-official-login"),
+                                verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceMedium),
+                            ) {
+                                if (showSelfHosted) {
+                                    RemoteLoginInput(stringResource(UiR.string.remote_service_address), origin, { input ->
+                                        var cleaned = input
+                                        while (cleaned.startsWith("https://http://", true) || cleaned.startsWith("http://http://", true) ||
+                                            cleaned.startsWith("https://https://", true) || cleaned.startsWith("http://https://", true)) {
+                                            cleaned = cleaned.substring(cleaned.indexOf("://") + 3)
+                                        }
+                                        origin = cleaned
+                                    }, busy,
+                                        isError = origin.isNotBlank() && address == null,
+                                        supportingText = if (origin.isNotBlank() && address == null) stringResource(UiR.string.conn_server_address_validation_error) else null,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
+                                        onClear = { origin = "" })
+                                    if (address?.scheme.equals("http", ignoreCase = true)) RemotePlaintextConnectionNotice()
+                                    RemoteLoginInput(stringResource(UiR.string.remote_login_account), account, { account = it }, busy,
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), onClear = { account = "" })
+                                    RemoteLoginInput(stringResource(UiR.string.remote_login_credential), password, { password = it }, busy,
+                                        passwordVisible = passwordVisible, onTogglePassword = { passwordVisible = !passwordVisible },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                                        keyboardActions = KeyboardActions(onDone = { login() }))
+                                    RemoteLoginPhase(busy, error, onRetry)
+                                    RemoteLoginPrimaryButton(
+                                        onClick = { login() },
+                                        morphed = busy,
+                                        enabled = canLogin,
+                                        showSpinner = busy,
+                                        label = stringResource(if (busy) UiR.string.conn_status_connecting else UiR.string.remote_login_server),
+                                    )
+                                } else {
+                                    FilledTonalButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            contentColor = MaterialTheme.colorScheme.onSurface),
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
+                                        Text(stringResource(UiR.string.remote_login_scan_pairing))
                                     }
-                                    origin = cleaned
-                                }, busy,
-                                    isError = origin.isNotBlank() && address == null,
-                                    supportingText = if (origin.isNotBlank() && address == null) stringResource(UiR.string.conn_server_address_validation_error) else null,
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
-                                    onClear = { origin = "" })
-                                if (address?.scheme.equals("http", ignoreCase = true)) RemotePlaintextConnectionNotice()
-                                RemoteLoginInput(stringResource(UiR.string.remote_login_account), account, { account = it }, busy,
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next), onClear = { account = "" })
-                                RemoteLoginInput(stringResource(UiR.string.remote_login_credential), password, { password = it }, busy,
-                                    passwordVisible = passwordVisible, onTogglePassword = { passwordVisible = !passwordVisible },
-                                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                                    keyboardActions = KeyboardActions(onDone = { login() }))
-                                RemoteLoginPhase(busy, error, onRetry)
-                                Button(onClick = { login() }, enabled = canLogin, shape = MaterialTheme.shapes.medium,
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
-                                    if (busy) {
-                                        CircularProgressIndicator(Modifier.size(Dimensions.SmallIcon), strokeWidth = Dimensions.StrokeStitch,
-                                            color = MaterialTheme.colorScheme.onPrimary)
-                                        Spacer(Modifier.width(Dimensions.SpaceSmall))
+                                    Text(stringResource(UiR.string.remote_login_scan_hint), style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    val githubBusy = busy && activeOAuthProvider == "github"
+                                    RemoteLoginPrimaryButton(
+                                        onClick = {
+                                            activeOAuthProvider = "github"
+                                            onOAuthLogin("github")
+                                        },
+                                        morphed = githubBusy,
+                                        enabled = !busy,
+                                        showSpinner = githubBusy,
+                                        label = stringResource(UiR.string.remote_login_github),
+                                    )
+                                    FilledTonalButton(onClick = { onOAuthLogin("zhihu") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            contentColor = MaterialTheme.colorScheme.onSurface),
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
+                                        Text(stringResource(UiR.string.remote_login_zhihu))
                                     }
-                                    Text(stringResource(if (busy) UiR.string.conn_status_connecting else UiR.string.remote_login_server),
-                                        style = MaterialTheme.typography.labelLarge)
+                                    FilledTonalButton(onClick = { onOAuthLogin("google") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
+                                        colors = ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                            contentColor = MaterialTheme.colorScheme.onSurface),
+                                        modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
+                                        Text(stringResource(UiR.string.remote_login_google))
+                                    }
+                                    RemoteLoginPhase(busy, error, onRetry)
                                 }
-                            } else {
-                                FilledTonalButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        contentColor = MaterialTheme.colorScheme.onSurface),
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
-                                    Text(stringResource(UiR.string.remote_login_scan_pairing))
-                                }
-                                Text(stringResource(UiR.string.remote_login_scan_hint), style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Button(onClick = { onOAuthLogin("github") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
-                                    Text(stringResource(UiR.string.remote_login_github))
-                                }
-                                FilledTonalButton(onClick = { onOAuthLogin("zhihu") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        contentColor = MaterialTheme.colorScheme.onSurface),
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
-                                    Text(stringResource(UiR.string.remote_login_zhihu))
-                                }
-                                FilledTonalButton(onClick = { onOAuthLogin("google") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
-                                    colors = ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                                        contentColor = MaterialTheme.colorScheme.onSurface),
-                                    modifier = Modifier.fillMaxWidth().heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall)) {
-                                    Text(stringResource(UiR.string.remote_login_google))
-                                }
-                                RemoteLoginPhase(busy, error, onRetry)
                             }
                         }
                     }
@@ -267,6 +305,45 @@ private fun RemoteLoginInput(
         },
         shape = MaterialTheme.shapes.medium, keyboardOptions = keyboardOptions, keyboardActions = keyboardActions,
         modifier = Modifier.fillMaxWidth())
+}
+
+/** 登录页官方/自建共用主操作形变按钮，统一圆角比例、覆盖层层级与加载指示。 */
+@Composable
+private fun RemoteLoginPrimaryButton(
+    onClick: () -> Unit,
+    morphed: Boolean,
+    enabled: Boolean,
+    label: String,
+    showSpinner: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    M3MorphingButton(
+        onClick = onClick,
+        morphed = morphed,
+        enabled = enabled,
+        restingCornerPercent = 28f,
+        morphedCornerPercent = 50f,
+        pressedCornerPercent = 20f,
+        colors = M3MorphingButtonDefaults.primaryColors(),
+        sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
+        sharedBoundsZIndex = 1f,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall),
+    ) {
+        if (showSpinner) {
+            CircularProgressIndicator(
+                Modifier.size(Dimensions.SmallIcon),
+                strokeWidth = Dimensions.StrokeStitch,
+                color = LocalContentColor.current,
+            )
+            Spacer(Modifier.width(Dimensions.SpaceSmall))
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
 }
 
 /** 延续原登录入口：省略协议时默认 HTTPS，不改变显式 HTTP 地址。 */

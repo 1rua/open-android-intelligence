@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * 录音波形的固定参数。
@@ -102,7 +103,7 @@ class RecordingWaveformWindow(
 fun RecordingWaveform(
     level: Float,
     modifier: Modifier = Modifier,
-    reduceMotion: Boolean = LocalMotionPolicy.current.reduceMotion,
+    reduceMotion: Boolean = LocalMotionPolicy.current.isReduced,
     barCount: Int = RecordingWaveformDefaults.BarCount,
     sampleKey: Any? = null,
 ) {

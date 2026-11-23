@@ -15,7 +15,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +29,7 @@ import androidx.compose.ui.platform.testTag
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.launch
 
 /**
@@ -56,6 +56,7 @@ internal fun PlatformSettingsDrawer(
                 onBack = onBack,
                 presentation = presentation,
                 onRequestScreenCaptureAuthorization = onRequestScreenCaptureAuthorization,
+                hostOpen = open,
             )
         },
         content = content,
@@ -71,7 +72,7 @@ internal fun PlatformSettingsDrawer(
     settingsContent: @Composable (presentation: SettingsPresentation, onBack: () -> Unit) -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val currentSettingsContent by rememberUpdatedState(settingsContent)
     val movableSettings = remember {
         movableContentOf<SettingsPresentation, () -> Unit> { presentation, onBack ->
@@ -137,10 +138,7 @@ internal fun PlatformSettingsDrawer(
                     exit = AppTransitions.modalExit(reduceMotion),
                     modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
                 ) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = androidx.compose.material3.MaterialTheme.colorScheme.surface,
-                    ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
                         movableSettings(SettingsPresentation.SCREEN, onDismiss)
                     }
                 }

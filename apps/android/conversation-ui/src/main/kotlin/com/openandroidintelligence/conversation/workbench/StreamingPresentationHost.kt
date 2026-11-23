@@ -23,6 +23,8 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.state.TimelineEntry
 import com.openandroidintelligence.conversation.theme.LocalStreamingHapticFeedbackEnabled
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /** 一次已经提交给正文的推进；不会把临时文本写回会话事实。 */
 internal data class StreamingPresentationFrame(
@@ -550,7 +552,7 @@ internal fun StreamingReplyBody(
         sourceRevealStart = ((if (newBatch) renderFrame.start else renderFrame?.end ?: 0) - sourceStart).coerceAtLeast(0),
         sourceRevealEnd = ((renderFrame?.end ?: 0) - sourceStart).coerceAtLeast(0),
         active = active,
-        reduceMotion = com.openandroidintelligence.ui.design.LocalMotionPolicy.current.reduceMotion,
+        reduceMotion = LocalMotionPolicy.current.isReduced,
         onVisibleAdvance = { id -> if (newBatch) haptic?.invoke(id) },
         hapticSourceRanges = if (newBatch) renderFrame.liveSourceRanges.mapNotNull { range ->
             val start = maxOf(range.first, sourceStart)

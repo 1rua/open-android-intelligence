@@ -60,6 +60,7 @@ import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.conversation.voice.formatVoiceDuration
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.gateway.diagnostics.GatewayLog
 import kotlinx.coroutines.delay
 import java.time.Instant
@@ -1032,7 +1033,7 @@ private fun MessageMetadata(
 /** 流式输出的状态点：极缓的 1.2s alpha 呼吸；减少动态时完全静止。 */
 @Composable
 private fun StreamingStatusDot() {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val alpha = if (reduced) {
         0.75f
     } else {
@@ -1060,7 +1061,7 @@ private fun StreamingStatusDot() {
  */
 @Composable
 fun StreamingCursor(modifier: Modifier = Modifier) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val alpha = if (reduced) {
         1f
     } else {
@@ -1105,7 +1106,7 @@ fun ThinkingIndicator(
     modifier: Modifier = Modifier,
     text: String = "正在思考",
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     Box(
         modifier = modifier
             .fillMaxWidth(),

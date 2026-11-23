@@ -74,6 +74,7 @@ import com.openandroidintelligence.mobile.onboarding.data.RemoteTutorials
 import com.openandroidintelligence.mobile.onboarding.data.TutorialStep
 import com.openandroidintelligence.mobile.onboarding.motion.RevealOrigin
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * Remote 连接指引页。
@@ -96,7 +97,7 @@ fun RemoteGuideScreen(
 ) {
     val tutorial = RemoteTutorials.byId(androidx.compose.ui.platform.LocalContext.current, selectedGatewayId)
     val uriHandler = LocalUriHandler.current
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
 
     Column(
         modifier = modifier

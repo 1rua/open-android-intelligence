@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -20,9 +21,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.openandroidintelligence.conversation.data.remote.RemoteModelSelection
+import com.openandroidintelligence.conversation.motion.AppSharedTransitionHost
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
@@ -43,6 +47,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** 保留现有工作台与系统附件选择器，只把连接入口接到 Remote。 */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, sharedAttachments: SharedConversationAttachments,
     pendingReply: MutableState<ReplyNotificationTarget?>, pendingHandoff: MutableState<String?>) {
@@ -232,160 +237,179 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
     )
     OpenAndroidIntelligenceTheme(darkTheme = dark, dynamicColor = appearance.dynamicColor, palette = appearance.palette,
         reduceMotion = appearance.reduceMotion, streamingHapticFeedback = appearance.streamingHapticFeedback) {
-        val reduceMotion = LocalMotionPolicy.current.reduceMotion
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-            Box(Modifier.fillMaxSize()) {
-                if (onboarding.shouldShow) {
-                    com.openandroidintelligence.mobile.onboarding.OnboardingFlow(onboarding, appearance, app.appearancePreferences,
-                        app.onboardingPreferences::setStage, app.onboardingPreferences::setLastGateway,
-                        onFinished = app.onboardingPreferences::markCompleted,
-                        onExit = {
-                            if (onboarding.replay) app.onboardingPreferences.endReplay()
-                            else { app.onboardingPreferences.dismissForCurrentSession(); activity.finish() }
-                        }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
-                } else AnimatedContent(
-                    targetState = displayedNativeUi,
-                    transitionSpec = {
-                        fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))
-                    },
-                    label = "native-plugin-surface",
-                ) { activeNative ->
-                    if (activeNative != null) {
-                        PlatformSettingsDrawer(
-                            open = settings && displayedNativeUi == activeNative,
-                            onDismiss = { settings = false },
-                            settingsContent = { presentation, close ->
-                                RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
-                            },
-                        ) {
-                            RemoteNativePluginSurface(app.pluginHost, activeNative, controller,
-                                connection.selected?.origin?.value.orEmpty()) { settings = true }
-                        }
+        val reduceMotion = LocalMotionPolicy.current.isReduced
+        AppSharedTransitionHost(Modifier.fillMaxSize()) {
+            Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
+                Box(Modifier.fillMaxSize()) {
+                    if (onboarding.shouldShow) {
+                        com.openandroidintelligence.mobile.onboarding.OnboardingFlow(onboarding, appearance, app.appearancePreferences,
+                            app.onboardingPreferences::setStage, app.onboardingPreferences::setLastGateway,
+                            onFinished = app.onboardingPreferences::markCompleted,
+                            onExit = {
+                                if (onboarding.replay) app.onboardingPreferences.endReplay()
+                                else { app.onboardingPreferences.dismissForCurrentSession(); activity.finish() }
+                            }, pluginPrimitives = app.pluginHost.verifiedCapabilities().flatMap { it.primitives }.toSet(), modifier = Modifier.fillMaxSize())
                     } else AnimatedContent(
-                        targetState = controller != null,
+                        targetState = displayedNativeUi,
                         transitionSpec = {
-                            AppTransitions.enter(reduceMotion, forward = targetState) togetherWith
-                                AppTransitions.exit(reduceMotion, forward = targetState)
+                            fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))
                         },
-                        label = "root-surface",
-                    ) { onWorkbench ->
-                        val current = controller
-                        if (!onWorkbench || current == null) {
-                            val loginControllerState = current?.state?.collectAsState()?.value
-                            RemoteLoginSettingsHost(
-                                busy = agentConn.busy || loginEntryState.busy,
-                                connected = remoteWorkbenchConnected(loginControllerState, clientConnection,
-                                    agentConn.busy || loginEntryState.busy),
-                                signedIn = agentConn.account != null && agentConn.phase != AgentConnectionPhase.AUTH_REVOKED,
-                                initialOrigin = runtime.loginOrigin(),
-                                error = loginEntryState.errorCode ?: agentConn.errorCode,
-                                settingsOpen = settings && controller == null && displayedNativeUi == null,
-                                onSettingsOpenChange = { settings = it },
-                                onLogin = { origin, account, secret -> runtime.login(origin, account, secret) },
-                                onScanPairing = loginEntry::scanPairing,
-                                onRetry = { runtime.dismissConnectionError(); loginEntry.dismissError() },
-                                onOAuthLogin = { loginEntry.startOAuth(activity, RemoteOAuthProvider.valueOf(it.uppercase())) },
-                                settingsContent = { presentation, close ->
-                                    RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
-                                },
-                                endpointContent = { RemoteLoginAgentSelector(runtime) },
-                            )
-                        } else WorkbenchSettingsHost { presentation ->
-                            val workbenchThreads by remember(current) {
-                                current.state.map { it.threads }.distinctUntilChanged()
-                            }.collectAsState(initial = current.state.value.threads)
-                            val workbenchOnline by remember(current) {
-                                current.state.map { it.isOnline }.distinctUntilChanged()
-                            }.collectAsState(initial = current.state.value.isOnline)
-                            val workspacesByMenuKey = remember(workspaceCtx.workspaces) {
-                                workspaceCtx.workspaces.associateBy { runtime.endpointId(it.endpoint.key) }
-                            }
-                            val workspaceMenu = remember(
-                                agentConn.activeAgentName,
-                                workspaceCtx,
-                                workbenchThreads,
-                                workspacesByMenuKey,
-                            ) {
-                                WorkspaceMenuState(
-                                    agentTitle = agentConn.activeAgentName,
-                                    groups = workspaceCtx.workspaces.map { ws ->
-                                        val menuKey = runtime.endpointId(ws.endpoint.key)
-                                        val isActive = ws.endpoint.key == workspaceCtx.activeWorkspace
-                                        val shortTitle = ws.endpoint.displayName.substringAfterLast(" · ")
-                                            .ifBlank { ws.endpoint.displayName }
-                                        val threads = if (isActive && workbenchThreads != Loadable.Idle) {
-                                            workbenchThreads
-                                        } else {
-                                            workspaceCtx.sessionsByWorkspace[ws.endpoint.key] ?: Loadable.Idle
-                                        }
-                                        WorkspaceConversationGroup(
-                                            workspaceKey = menuKey,
-                                            title = shortTitle,
-                                            subtitle = ws.path.takeIf { it.isNotBlank() },
-                                            isActive = isActive,
-                                            threads = threads,
+                        label = "native-plugin-surface",
+                    ) { activeNative ->
+                        ProvideSharedVisibilityScope {
+                            if (activeNative != null) {
+                                PlatformSettingsDrawer(
+                                    open = settings && displayedNativeUi == activeNative,
+                                    onDismiss = { settings = false },
+                                    settingsContent = { presentation, close ->
+                                        RemoteSettings(
+                                            app,
+                                            requestScreenCaptureAuthorization,
+                                            presentation,
+                                            close,
+                                            hostOpen = settings && displayedNativeUi == activeNative,
                                         )
                                     },
-                                    catalogLoading = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.LOADING,
-                                    catalogError = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.FAILED,
-                                    onHydrate = { runtime.hydrateWorkspaces(force = false) },
-                                    onRefreshCatalog = { runtime.hydrateWorkspaces(force = true) },
-                                    onOpenWorkspaceThread = { wsKey, threadId ->
-                                        workspacesByMenuKey[wsKey]?.let { runtime.selectWorkspace(it, initialThreadId = threadId) }
-                                    },
-                                    onCreateWorkspaceThread = { wsKey ->
-                                        workspacesByMenuKey[wsKey]?.let { runtime.createSessionInWorkspace(it) }
-                                    },
-                                )
+                                ) {
+                                    RemoteNativePluginSurface(app.pluginHost, activeNative, controller,
+                                        connection.selected?.origin?.value.orEmpty()) { settings = true }
+                                }
+                            } else AnimatedContent(
+                                targetState = controller != null,
+                                transitionSpec = {
+                                    AppTransitions.enter(reduceMotion, forward = targetState) togetherWith
+                                        AppTransitions.exit(reduceMotion, forward = targetState)
+                                },
+                                label = "root-surface",
+                            ) { onWorkbench ->
+                                ProvideSharedVisibilityScope {
+                                    val current = controller
+                                    if (!onWorkbench || current == null) {
+                                        val loginControllerState = current?.state?.collectAsState()?.value
+                                        RemoteLoginSettingsHost(
+                                            busy = agentConn.busy || loginEntryState.busy,
+                                            connected = remoteWorkbenchConnected(loginControllerState, clientConnection,
+                                                agentConn.busy || loginEntryState.busy),
+                                            signedIn = agentConn.account != null && agentConn.phase != AgentConnectionPhase.AUTH_REVOKED,
+                                            initialOrigin = runtime.loginOrigin(),
+                                            error = loginEntryState.errorCode ?: agentConn.errorCode,
+                                            settingsOpen = settings && controller == null && displayedNativeUi == null,
+                                            onSettingsOpenChange = { settings = it },
+                                            onLogin = { origin, account, secret -> runtime.login(origin, account, secret) },
+                                            onScanPairing = loginEntry::scanPairing,
+                                            onRetry = { runtime.dismissConnectionError(); loginEntry.dismissError() },
+                                            onOAuthLogin = { loginEntry.startOAuth(activity, RemoteOAuthProvider.valueOf(it.uppercase())) },
+                                            settingsContent = { presentation, close ->
+                                                RemoteSettings(
+                                                    app,
+                                                    requestScreenCaptureAuthorization,
+                                                    presentation,
+                                                    close,
+                                                    hostOpen = settings && controller == null && displayedNativeUi == null,
+                                                )
+                                            },
+                                            endpointContent = { RemoteLoginAgentSelector(runtime) },
+                                        )
+                                    } else WorkbenchSettingsHost { presentation ->
+                                        val workbenchThreads by remember(current) {
+                                            current.state.map { it.threads }.distinctUntilChanged()
+                                        }.collectAsState(initial = current.state.value.threads)
+                                        val workbenchOnline by remember(current) {
+                                            current.state.map { it.isOnline }.distinctUntilChanged()
+                                        }.collectAsState(initial = current.state.value.isOnline)
+                                        val workspacesByMenuKey = remember(workspaceCtx.workspaces) {
+                                            workspaceCtx.workspaces.associateBy { runtime.endpointId(it.endpoint.key) }
+                                        }
+                                        val workspaceMenu = remember(
+                                            agentConn.activeAgentName,
+                                            workspaceCtx,
+                                            workbenchThreads,
+                                            workspacesByMenuKey,
+                                        ) {
+                                            WorkspaceMenuState(
+                                                agentTitle = agentConn.activeAgentName,
+                                                groups = workspaceCtx.workspaces.map { ws ->
+                                                    val menuKey = runtime.endpointId(ws.endpoint.key)
+                                                    val isActive = ws.endpoint.key == workspaceCtx.activeWorkspace
+                                                    val shortTitle = ws.endpoint.displayName.substringAfterLast(" · ")
+                                                        .ifBlank { ws.endpoint.displayName }
+                                                    val threads = if (isActive && workbenchThreads != Loadable.Idle) {
+                                                        workbenchThreads
+                                                    } else {
+                                                        workspaceCtx.sessionsByWorkspace[ws.endpoint.key] ?: Loadable.Idle
+                                                    }
+                                                    WorkspaceConversationGroup(
+                                                        workspaceKey = menuKey,
+                                                        title = shortTitle,
+                                                        subtitle = ws.path.takeIf { it.isNotBlank() },
+                                                        isActive = isActive,
+                                                        threads = threads,
+                                                    )
+                                                },
+                                                catalogLoading = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.LOADING,
+                                                catalogError = workspaceCtx.catalogPhase == WorkspaceCatalogPhase.FAILED,
+                                                onHydrate = { runtime.hydrateWorkspaces(force = false) },
+                                                onRefreshCatalog = { runtime.hydrateWorkspaces(force = true) },
+                                                onOpenWorkspaceThread = { wsKey, threadId ->
+                                                    workspacesByMenuKey[wsKey]?.let { runtime.selectWorkspace(it, initialThreadId = threadId) }
+                                                },
+                                                onCreateWorkspaceThread = { wsKey ->
+                                                    workspacesByMenuKey[wsKey]?.let { runtime.createSessionInWorkspace(it) }
+                                                },
+                                            )
+                                        }
+                                        var dismissedError by remember(agentConn.errorCode) { mutableStateOf(false) }
+                                        val mappedHealth = when (agentConn.phase) {
+                                            AgentConnectionPhase.CONNECTING -> StreamHealth.CONNECTING
+                                            AgentConnectionPhase.RECONNECTING -> StreamHealth.RECONNECTING
+                                            AgentConnectionPhase.OFFLINE, AgentConnectionPhase.AUTH_REVOKED -> StreamHealth.FAILED
+                                            AgentConnectionPhase.CONNECTED -> if (workbenchOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
+                                            AgentConnectionPhase.DISCONNECTED -> if (!workbenchOnline) StreamHealth.FAILED else null
+                                        }
+                                        val offlineBannerVisible = agentConn.offlineConfirmed &&
+                                            (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
+                                        val bannerError = agentConn.errorCode.takeUnless { dismissedError || offlineBannerVisible }
+                                        val workbenchSettingsOpen = settings && controller != null && displayedNativeUi == null
+                                        WorkbenchScreen(current, (workspaceCtx.activeWorkspace ?: connection.selected)?.origin?.value.orEmpty(),
+                                            onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
+                                            onPickDocument = picks.document,
+                                            onVoiceInput = startVoiceInput, recording = activeRecording,
+                                            onCancelRecording = cancelRecording, onFinishRecording = finishRecording,
+                                            isDarkTheme = dark,
+                                            onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
+                                            onLogout = { runtime.logout() }, onPasteImages = picks.paste,
+                                            accountName = (agentConn.account ?: connection.account)?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
+                                            accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
+                                            connectionHealth = mappedHealth,
+                                            pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
+                                                runtime.connectedAccountId) { settings = true } },
+                                            settingsOpen = workbenchSettingsOpen,
+                                            onSettingsOpenChange = { settings = it },
+                                            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close, hostOpen = workbenchSettingsOpen) },
+                                            workspaceMenu = workspaceMenu,
+                                            header = {
+                                                RemoteWorkbenchNotices(
+                                                    offline = offlineBannerVisible,
+                                                    error = bannerError,
+                                                    onRetry = { runtime.reconnectInPlace() },
+                                                    onDismiss = {
+                                                        dismissedError = true
+                                                        runtime.dismissConnectionError()
+                                                    },
+                                                    reconnecting = agentConn.reconnectingInPlace,
+                                                )
+                                                RemoteModelSelector(runtime)
+                                            })
+                                    }
+                                }
                             }
-                            var dismissedError by remember(agentConn.errorCode) { mutableStateOf(false) }
-                            val mappedHealth = when (agentConn.phase) {
-                                AgentConnectionPhase.CONNECTING -> StreamHealth.CONNECTING
-                                AgentConnectionPhase.RECONNECTING -> StreamHealth.RECONNECTING
-                                AgentConnectionPhase.OFFLINE, AgentConnectionPhase.AUTH_REVOKED -> StreamHealth.FAILED
-                                AgentConnectionPhase.CONNECTED -> if (workbenchOnline) StreamHealth.LIVE else StreamHealth.RECONNECTING
-                                AgentConnectionPhase.DISCONNECTED -> if (!workbenchOnline) StreamHealth.FAILED else null
-                            }
-                            val offlineBannerVisible = agentConn.offlineConfirmed &&
-                                (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
-                            val bannerError = agentConn.errorCode.takeUnless { dismissedError || offlineBannerVisible }
-                            WorkbenchScreen(current, (workspaceCtx.activeWorkspace ?: connection.selected)?.origin?.value.orEmpty(),
-                                onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
-                                onPickDocument = picks.document,
-                                onVoiceInput = startVoiceInput, recording = activeRecording,
-                                onCancelRecording = cancelRecording, onFinishRecording = finishRecording,
-                                isDarkTheme = dark,
-                                onToggleTheme = { app.appearancePreferences.setTheme(if (dark) ThemePreference.LIGHT else ThemePreference.DARK) },
-                                onLogout = { runtime.logout() }, onPasteImages = picks.paste,
-                                accountName = (agentConn.account ?: connection.account)?.accountId.orEmpty(), agentName = runtime.connectedAgentName,
-                                accountAvatar = avatar.image, onChangeAvatar = avatar.pick,
-                                connectionHealth = mappedHealth,
-                                pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
-                                    runtime.connectedAccountId) { settings = true } },
-                                settingsOpen = settings && controller != null && displayedNativeUi == null,
-                                onSettingsOpenChange = { settings = it },
-                                settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) },
-                                workspaceMenu = workspaceMenu,
-                                header = {
-                                    RemoteWorkbenchNotices(
-                                        offline = offlineBannerVisible,
-                                        error = bannerError,
-                                        onRetry = { runtime.reconnectInPlace() },
-                                        onDismiss = {
-                                            dismissedError = true
-                                            runtime.dismissConnectionError()
-                                        },
-                                        reconnecting = agentConn.reconnectingInPlace,
-                                    )
-                                    RemoteModelSelector(runtime)
-                                })
                         }
                     }
+                    RemotePairingDialog(loginEntry)
+                    SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).navigationBarsPadding()
+                        .padding(start = Dimensions.ScreenHorizontal, end = Dimensions.ScreenHorizontal,
+                            bottom = if (controller != null) Dimensions.ComposerPrimaryAction + Dimensions.SpaceMedium else Dimensions.SpaceMedium))
                 }
-                RemotePairingDialog(loginEntry)
-                SnackbarHost(snackbar, Modifier.align(androidx.compose.ui.Alignment.BottomCenter).navigationBarsPadding()
-                    .padding(start = Dimensions.ScreenHorizontal, end = Dimensions.ScreenHorizontal,
-                        bottom = if (controller != null) Dimensions.ComposerPrimaryAction + Dimensions.SpaceMedium else Dimensions.SpaceMedium))
             }
         }
     }
@@ -423,9 +447,15 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
 }
 
 @Composable
-private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, presentation: SettingsPresentation = SettingsPresentation.SIDEBAR, onBack: () -> Unit) {
+private fun RemoteSettings(
+    app: OpenAndroidIntelligenceApplication,
+    requestScreenCaptureAuthorization: () -> Unit,
+    presentation: SettingsPresentation = SettingsPresentation.SIDEBAR,
+    onBack: () -> Unit,
+    hostOpen: Boolean = true,
+) {
     SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = app.remoteRuntime.localSettings, remoteRuntime = app.remoteRuntime,
-        presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
+        presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization, hostOpen = hostOpen)
 }
 
 /** 本机选中的原生全屏界面继续使用原宿主外壳与当前工作台操作。 */

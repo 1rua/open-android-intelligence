@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlin.math.hypot
 import kotlin.math.abs
 import kotlin.math.min
@@ -118,7 +119,7 @@ fun ButtonRevealTransition(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val surface = MaterialTheme.colorScheme.surface
     val outlineVariant = MaterialTheme.colorScheme.outlineVariant
     val outline = MaterialTheme.colorScheme.outline

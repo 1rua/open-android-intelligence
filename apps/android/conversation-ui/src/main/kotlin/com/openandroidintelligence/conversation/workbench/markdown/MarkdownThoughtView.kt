@@ -1,23 +1,18 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -32,14 +27,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
-import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.components.M3ExpandableExpressiveCard
 import com.openandroidintelligence.conversation.model.StreamPresentationOrigin
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
@@ -47,6 +39,7 @@ import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * 独立调用时的思维链流式呈现驱动器：复用与正文完全一致的 [StreamingPresentationState]
@@ -190,7 +183,7 @@ fun MarkdownThoughtBlockView(
     thoughtKey: String? = timingKey,
     presentations: StreamingPresentationRegistry? = LocalStreamingPresentationRegistry.current,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
 
     val live = isStreaming && !block.isComplete
@@ -266,44 +259,40 @@ fun MarkdownThoughtBlockView(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    val chevronRotation = if (reduceMotion) {
-        if (expanded) 180f else 0f
-    } else {
-        animateFloatAsState(
-            targetValue = if (expanded) 180f else 0f,
-            animationSpec = MotionSpecs.spatial(reduceMotion),
-            label = "thought-chevron",
-        ).value
-    }
+    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+        expanded = expanded,
+        reduced = reduceMotion,
+        label = "thought-chevron",
+    )
 
-    Surface(
+    M3ExpandableExpressiveCard(
+        expanded = expandable && expanded,
+        onExpandedChange = if (expandable) {
+            { next -> userExpanded = next }
+        } else {
+            null
+        },
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(AppRadius.Compact),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        enabled = expandable,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        collapsedCornerRadius = AppRadius.Compact,
+        expandedCornerRadius = AppRadius.Medium,
+        pressedCornerRadius = AppRadius.Medium,
+        toggleClickLabel = if (expandable) {
+            if (expanded) "收起思考过程" else "展开思考过程"
+        } else {
+            null
+        },
+        toggleStateDescription = if (expandable) {
+            if (expanded) "已展开" else "已收起"
+        } else {
+            null
+        },
+        header = {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = Dimensions.MinimumTouchTarget)
-                    .clip(RoundedCornerShape(AppRadius.Small))
-                    .then(
-                        if (expandable) {
-                            Modifier
-                                .clickable(
-                                    role = Role.Button,
-                                    onClickLabel = if (expanded) "收起思考过程" else "展开思考过程",
-                                ) {
-                                    userExpanded = !expanded
-                                }
-                                .semantics {
-                                    stateDescription = if (expanded) "已展开" else "已收起"
-                                }
-                        } else {
-                            Modifier
-                        },
-                    )
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
@@ -336,55 +325,54 @@ fun MarkdownThoughtBlockView(
                     )
                 }
             }
-
-            ExpandableRegion(expanded = expandable && expanded) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            start = Dimensions.SpaceCompact,
-                            end = Dimensions.SpaceCompact,
-                            bottom = Dimensions.SpaceCompact,
-                        ),
-                ) {
-                    Spacer(Modifier.height(Dimensions.SpaceSmall))
-                    if (!hasContent && live) {
-                        // 流式中还没有任何思考文本：只保留一个光标表达「还在想」。
-                        StreamingCursor()
-                    } else if (hasContent) {
-                        CompositionLocalProvider(LocalMarkdownCompact provides true) {
-                            val bodyModifier = if (live) {
-                                Modifier
-                                    .fillMaxWidth()
-                                    .semantics { liveRegion = LiveRegionMode.Polite }
-                            } else {
-                                Modifier.fillMaxWidth()
-                            }
-                            if (useStreamingContainer) {
-                                StreamingThoughtBody(
-                                    thoughtText = block.thought,
-                                    frame = activeFrame,
-                                    live = live,
-                                    reduceMotion = reduceMotion,
-                                    identityKey = thoughtKey ?: localDriver ?: Unit,
-                                    modifier = bodyModifier,
-                                ) { blocks, active ->
-                                    MarkdownDocumentView(
-                                        blocks = blocks,
-                                        isStreaming = active,
-                                    )
-                                }
-                            } else {
+        },
+        expandedContent = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = Dimensions.SpaceCompact,
+                        end = Dimensions.SpaceCompact,
+                        bottom = Dimensions.SpaceCompact,
+                    ),
+            ) {
+                Spacer(Modifier.height(Dimensions.SpaceSmall))
+                if (!hasContent && live) {
+                    // 流式中还没有任何思考文本：只保留一个光标表达「还在想」。
+                    StreamingCursor()
+                } else if (hasContent) {
+                    CompositionLocalProvider(LocalMarkdownCompact provides true) {
+                        val bodyModifier = if (live) {
+                            Modifier
+                                .fillMaxWidth()
+                                .semantics { liveRegion = LiveRegionMode.Polite }
+                        } else {
+                            Modifier.fillMaxWidth()
+                        }
+                        if (useStreamingContainer) {
+                            StreamingThoughtBody(
+                                thoughtText = block.thought,
+                                frame = activeFrame,
+                                live = live,
+                                reduceMotion = reduceMotion,
+                                identityKey = thoughtKey ?: localDriver ?: Unit,
+                                modifier = bodyModifier,
+                            ) { blocks, active ->
                                 MarkdownDocumentView(
-                                    blocks = narrativeBlocks,
-                                    isStreaming = false,
-                                    modifier = bodyModifier,
+                                    blocks = blocks,
+                                    isStreaming = active,
                                 )
                             }
+                        } else {
+                            MarkdownDocumentView(
+                                blocks = narrativeBlocks,
+                                isStreaming = false,
+                                modifier = bodyModifier,
+                            )
                         }
                     }
                 }
             }
-        }
-    }
+        },
+    )
 }

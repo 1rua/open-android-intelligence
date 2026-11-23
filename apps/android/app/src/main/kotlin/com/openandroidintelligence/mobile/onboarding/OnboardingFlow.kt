@@ -60,6 +60,7 @@ import com.openandroidintelligence.mobile.onboarding.screens.RemoteGuideScreen
 import com.openandroidintelligence.mobile.onboarding.screens.PermissionsScreen
 import com.openandroidintelligence.mobile.onboarding.screens.WelcomeScreen
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.launch
 
 /**
@@ -91,7 +92,7 @@ fun OnboardingFlow(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // ---- 权限状态：进入页面时查询一次，回到前台时再查（用户可能去系统设置里改过） ----
@@ -318,7 +319,7 @@ fun OnboardingFlow(
             AnimatedContent(
                 targetState = state.stage,
                 transitionSpec = {
-                    fadeIn(MotionSpecs.emphasized(reduceMotion)) togetherWith
+                    fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                         fadeOut(MotionSpecs.fade(reduceMotion))
                 },
                 label = "onboarding-stage",

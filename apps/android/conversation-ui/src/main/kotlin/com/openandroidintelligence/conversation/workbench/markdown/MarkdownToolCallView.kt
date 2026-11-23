@@ -3,7 +3,6 @@ package com.openandroidintelligence.conversation.workbench
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 
 import android.widget.Toast
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -32,7 +31,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -55,20 +53,20 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.openandroidintelligence.conversation.components.ExpandableRegion
+import com.openandroidintelligence.conversation.components.M3ExpandableExpressiveCard
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -93,7 +91,7 @@ fun MarkdownToolCallView(
     isStreaming: Boolean = false,
     timingKey: String? = null,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val stateColors = LocalAppStateColors.current
 
     // 只有消息仍在流式时，未闭合的 tool_call 才代表「真的在执行」；
@@ -174,36 +172,28 @@ fun MarkdownToolCallView(
 
     val badgeText = toolBadgeText(block.toolName)
 
-    val chevronRotation = if (reduceMotion) {
-        if (expanded) 180f else 0f
-    } else {
-        animateFloatAsState(
-            targetValue = if (expanded) 180f else 0f,
-            animationSpec = MotionSpecs.spatial(reduceMotion),
-            label = "tool-call-chevron",
-        ).value
-    }
+    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+        expanded = expanded,
+        reduced = reduceMotion,
+        label = "tool-call-chevron",
+    )
 
-    Surface(
+    M3ExpandableExpressiveCard(
+        expanded = expanded,
+        onExpandedChange = { userExpanded = it },
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(AppRadius.Compact),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+        collapsedCornerRadius = AppRadius.Compact,
+        expandedCornerRadius = AppRadius.Medium,
+        pressedCornerRadius = AppRadius.Medium,
+        toggleClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
+        toggleStateDescription = if (expanded) "已展开" else "已收起",
+        header = {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = Dimensions.MinimumTouchTarget)
-                    .clip(RoundedCornerShape(AppRadius.Small))
-                    .clickable(
-                        role = Role.Button,
-                        onClickLabel = if (expanded) "收起工具详情" else "展开工具详情",
-                    ) {
-                        userExpanded = !expanded
-                    }
-                    .semantics { stateDescription = if (expanded) "已展开" else "已收起" }
                     .padding(horizontal = Dimensions.SpaceCompact, vertical = Dimensions.SpaceSmall),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall),
@@ -251,12 +241,11 @@ fun MarkdownToolCallView(
                         .rotate(chevronRotation),
                 )
             }
-
-            ExpandableRegion(expanded = expanded) {
-                ToolCallDetails(block = block, running = running)
-            }
-        }
-    }
+        },
+        expandedContent = {
+            ToolCallDetails(block = block, running = running)
+        },
+    )
 }
 
 /** 工具名称徽标：空名/占位名归一为 `[执行命令]`，其余统一加方括号。 */

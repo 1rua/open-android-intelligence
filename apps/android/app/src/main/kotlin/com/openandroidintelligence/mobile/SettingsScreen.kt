@@ -45,6 +45,7 @@ fun SettingsScreen(
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onRequestScreenCaptureAuthorization: () -> Unit = {},
     remoteRuntime: RemoteRuntime? = null,
+    hostOpen: Boolean = true,
 ) {
     val factory = remember(environment, runtime, remoteRuntime) {
         object : ViewModelProvider.Factory {
@@ -53,7 +54,7 @@ fun SettingsScreen(
         }
     }
     val model: SettingsViewModel = viewModel(key = "platform-settings", factory = factory)
-    SettingsNavHost(model, environment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization, remoteRuntime)
+    SettingsNavHost(model, environment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization, remoteRuntime, hostOpen)
 }
 
 /** Kept for callers and tests that inject the existing authoritative state owner. */
@@ -64,7 +65,8 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
     presentation: SettingsPresentation = SettingsPresentation.SCREEN,
     onRequestScreenCaptureAuthorization: () -> Unit = {},
-) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization)
+    hostOpen: Boolean = true,
+) = SettingsNavHost(viewModel, viewModel.settingsEnvironment, onBack, modifier, presentation, onRequestScreenCaptureAuthorization, hostOpen = hostOpen)
 
 /**
  * 兼容入口：主动推送已不再是用户可达的独立页面，配置挂在「通知读取」与「短信」详情里。

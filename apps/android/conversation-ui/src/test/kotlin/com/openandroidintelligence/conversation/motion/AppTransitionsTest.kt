@@ -2,22 +2,26 @@ package com.openandroidintelligence.conversation.motion
 
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.TweenSpec
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.theme.Dimensions
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * 转场动画与图标规范守卫测试。
  *
- * 确保遵循 Material 3 与 rikka-hub 等紧凑设计规范：
+ * 确保遵循 Material 3 Expressive 物理动效与紧凑设计规范：
  * 1. 各种转场在标准模式与 reduceMotion 模式下均正确生成 Transition 对象；
- * 2. reduceMotion 模式与标准模式产生不同的动效契约（无位移缩放，降级为温和淡化）；
- * 3. 紧凑图标与容器令牌尺寸保持规范约束（32dp/18dp/48dp）。
+ * 2. 标准模式下进场采用 SpatialDefault + EffectsDefault 弹簧，退场采用 SpatialFast + EffectsFast 弹簧；
+ * 3. reduceMotion 模式下所有位移和缩放取消，统一降级为 150ms 线性淡化；
+ * 4. 紧凑图标与容器令牌尺寸保持规范约束（32dp/18dp/48dp）。
  */
 class AppTransitionsTest {
 
@@ -94,59 +98,109 @@ class AppTransitionsTest {
     }
 
     @Test
-    fun exitTransitionsCoordinatedWithExitSpec() {
+    fun exitTransitionsCoordinatedWithSpringExitSpecs() {
         listOf(
-            AppTransitions.exit(reduced = false),
-            AppTransitions.navExit(reduced = false),
-            AppTransitions.navPopExit(reduced = false),
-            AppTransitions.modalExit(reduced = false),
-        ).forEach { exitTransition ->
-            val dataField = exitTransition.javaClass.getDeclaredField("data").apply { isAccessible = true }
-            val data = dataField.get(exitTransition)
-            val dataClass = data.javaClass
-            val fade = dataClass.getDeclaredField("fade").apply { isAccessible = true }.get(data)
-            val slide = dataClass.getDeclaredField("slide").apply { isAccessible = true }.get(data)
-
+            AppTransitions.exit(reduced = false) to true,
+            AppTransitions.navExit(reduced = false) to true,
+            AppTransitions.navPopExit(reduced = false) to true,
+            AppTransitions.modalExit(reduced = false) to false,
+        ).forEach { (exitTransition, expectsScale) ->
+            val data = extractTransitionData(exitTransition)
+            val fade = extractField(data, "fade")
+            val slide = extractField(data, "slide")
             assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
 
-            fun extractDuration(specOwner: Any): Int {
-                val spec = specOwner.javaClass.getDeclaredField("animationSpec").apply { isAccessible = true }.get(specOwner)
-                val duration = spec.javaClass.getDeclaredField("durationMillis").apply { isAccessible = true }.get(spec)
-                return duration as Int
-            }
+            val fadeSpec = extractAnimationSpec(fade!!) as SpringSpec<*>
+            assertEquals(MotionSpecs.EffectsFastSpring.dampingRatio, fadeSpec.dampingRatio, 0.0001f)
+            assertEquals(MotionSpecs.EffectsFastSpring.stiffness, fadeSpec.stiffness, 0.0001f)
 
-            assertEquals("Fade spec duration should match MotionSpecs.Exit", MotionSpecs.Exit, extractDuration(fade!!))
-            assertEquals("Slide spec duration should match MotionSpecs.Exit", MotionSpecs.Exit, extractDuration(slide!!))
+            val slideSpec = extractAnimationSpec(slide!!) as SpringSpec<*>
+            assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, slideSpec.dampingRatio, 0.0001f)
+            assertEquals(MotionSpecs.SpatialFastSpring.stiffness, slideSpec.stiffness, 0.0001f)
+
+            val scale = extractField(data, "scale")
+            if (expectsScale) {
+                assertNotNull("scale must not be null", scale)
+                val scaleSpec = extractAnimationSpec(scale!!) as SpringSpec<*>
+                assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, scaleSpec.dampingRatio, 0.0001f)
+                assertEquals(MotionSpecs.SpatialFastSpring.stiffness, scaleSpec.stiffness, 0.0001f)
+            } else {
+                assertNull("modalExit should not include scale", scale)
+            }
         }
     }
 
     @Test
-    fun enterTransitionsCoordinatedWithEnterSpec() {
+    fun enterTransitionsCoordinatedWithSpringEnterSpecs() {
         listOf(
-            AppTransitions.enter(reduced = false),
-            AppTransitions.navEnter(reduced = false),
-            AppTransitions.navPopEnter(reduced = false),
-            AppTransitions.modalEnter(reduced = false),
-        ).forEach { enterTransition ->
-            val dataField = enterTransition.javaClass.getDeclaredField("data").apply { isAccessible = true }
-            val data = dataField.get(enterTransition)
-            val dataClass = data.javaClass
-            val fade = dataClass.getDeclaredField("fade").apply { isAccessible = true }.get(data)
-            val slide = dataClass.getDeclaredField("slide").apply { isAccessible = true }.get(data)
-
+            AppTransitions.enter(reduced = false) to true,
+            AppTransitions.navEnter(reduced = false) to true,
+            AppTransitions.navPopEnter(reduced = false) to true,
+            AppTransitions.modalEnter(reduced = false) to false,
+        ).forEach { (enterTransition, expectsScale) ->
+            val data = extractTransitionData(enterTransition)
+            val fade = extractField(data, "fade")
+            val slide = extractField(data, "slide")
             assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
 
-            fun extractDuration(specOwner: Any): Int {
-                val spec = specOwner.javaClass.getDeclaredField("animationSpec").apply { isAccessible = true }.get(specOwner)
-                val duration = spec.javaClass.getDeclaredField("durationMillis").apply { isAccessible = true }.get(spec)
-                return duration as Int
-            }
+            val fadeSpec = extractAnimationSpec(fade!!) as SpringSpec<*>
+            assertEquals(MotionSpecs.EffectsDefaultSpring.dampingRatio, fadeSpec.dampingRatio, 0.0001f)
+            assertEquals(MotionSpecs.EffectsDefaultSpring.stiffness, fadeSpec.stiffness, 0.0001f)
 
-            assertEquals("Fade spec duration should match MotionSpecs.Enter", MotionSpecs.Enter, extractDuration(fade!!))
-            assertEquals("Slide spec duration should match MotionSpecs.Enter", MotionSpecs.Enter, extractDuration(slide!!))
+            val slideSpec = extractAnimationSpec(slide!!) as SpringSpec<*>
+            assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, slideSpec.dampingRatio, 0.0001f)
+            assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, slideSpec.stiffness, 0.0001f)
+
+            val scale = extractField(data, "scale")
+            if (expectsScale) {
+                assertNotNull("scale must not be null", scale)
+                val scaleSpec = extractAnimationSpec(scale!!) as SpringSpec<*>
+                assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, scaleSpec.dampingRatio, 0.0001f)
+                assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, scaleSpec.stiffness, 0.0001f)
+            } else {
+                assertNull("modalEnter should not include scale", scale)
+            }
         }
     }
-}
 
+    @Test
+    fun reducedMotionTransitionsStripSlideAndScaleAndUseReducedFade() {
+        val enterList = listOf(
+            AppTransitions.enter(reduced = true),
+            AppTransitions.navEnter(reduced = true),
+            AppTransitions.navPopEnter(reduced = true),
+            AppTransitions.modalEnter(reduced = true),
+        )
+        val exitList = listOf(
+            AppTransitions.exit(reduced = true),
+            AppTransitions.navExit(reduced = true),
+            AppTransitions.navPopExit(reduced = true),
+            AppTransitions.modalExit(reduced = true),
+        )
+        (enterList + exitList).forEach { transition ->
+            val data = extractTransitionData(transition)
+            assertNull("减少动态下不得包含 slide", extractField(data, "slide"))
+            assertNull("减少动态下不得包含 scale", extractField(data, "scale"))
+            val fade = extractField(data, "fade")
+            assertNotNull("减少动态下仍应保留短淡化", fade)
+            val spec = extractAnimationSpec(fade!!)
+            assertTrue(spec is TweenSpec<*>)
+            val tween = spec as TweenSpec<*>
+            assertEquals(MotionSpecs.ReducedMotionCrossfadeDuration, tween.durationMillis)
+            assertEquals(LinearEasing, tween.easing)
+        }
+    }
+
+    private fun extractTransitionData(transition: Any): Any {
+        assertTrue(transition is EnterTransition || transition is ExitTransition)
+        return extractField(transition, "data")!!
+    }
+
+    private fun extractAnimationSpec(specOwner: Any): Any =
+        extractField(specOwner, "animationSpec")!!
+
+    private fun extractField(owner: Any, fieldName: String): Any? =
+        owner.javaClass.getDeclaredField(fieldName).apply { isAccessible = true }.get(owner)
+}

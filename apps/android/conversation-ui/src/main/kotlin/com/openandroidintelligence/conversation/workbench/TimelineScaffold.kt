@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,9 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.openandroidintelligence.conversation.components.M3MorphingButton
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.delay
 
 /**
@@ -114,7 +115,7 @@ internal fun Modifier.timelineItemRise(fresh: Boolean, reduced: Boolean): Modifi
     val rise = remember { Animatable(if (shouldRise) 1f else 0f) }
     LaunchedEffect(Unit) {
         if (shouldRise) {
-            rise.animateTo(0f, tween(MotionSpecs.Exit, easing = MotionSpecs.EmphasizedDecelerateEasing))
+            rise.animateTo(0f, MotionSpecs.spatialDefault(reduced))
         }
     }
     val distancePx = with(LocalDensity.current) { TimelineItemRise.toPx() }
@@ -124,7 +125,8 @@ internal fun Modifier.timelineItemRise(fresh: Boolean, reduced: Boolean): Modifi
 /**
  * 「回到最新」：用户上滑离开尾部后出现（规格 §6 M13）。
  *
- * 150ms 淡入 + 缩放 0.9→1；减少动态时只做短暂淡化，不做缩放。
+ * 使用 [MotionSpecs.spatialFast] Expressive 弹簧缩放 + [MotionSpecs.fade] 淡入淡出，
+ * 按钮体采用 [M3MorphingButton]；减少动态时只做短暂淡化，不做缩放与形变。
  *
  * 公开给系统助理界面复用：助理进程没有自己的消息列表实现，只能复用同一个按钮，
  * 才能让「回到最新」在两个宿主里保持同一套动效与文案。
@@ -135,14 +137,14 @@ fun ScrollToLatestButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     AnimatedVisibility(
         visible = visible,
         enter = fadeIn(MotionSpecs.fade(reduced)) + if (reduced) {
             EnterTransition.None
         } else {
             scaleIn(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedDecelerateEasing),
+                animationSpec = MotionSpecs.spatialFast(reduced, expressive = true),
                 initialScale = 0.9f,
             )
         },
@@ -150,15 +152,16 @@ fun ScrollToLatestButton(
             ExitTransition.None
         } else {
             scaleOut(
-                animationSpec = tween(MotionSpecs.Fast, easing = MotionSpecs.EmphasizedAccelerateEasing),
+                animationSpec = MotionSpecs.spatialFast(reduced, expressive = true),
                 targetScale = 0.9f,
             )
         },
         modifier = modifier,
     ) {
-        FilledTonalButton(
+        M3MorphingButton(
             onClick = onClick,
             modifier = Modifier.padding(Dimensions.SpaceSmall),
+            colors = M3MorphingButtonDefaults.tonalColors(),
         ) {
             Icon(
                 imageVector = Icons.Default.ArrowDownward,
