@@ -30,67 +30,99 @@ refines:
    - **布局稳定性约束**：参与 `animateContentSize` 或父容器重测的尺寸展开/折叠（如 `ExpandableRegion`、`M3MorphingButton` 自适应宽度）统一使用临界阻尼 `MotionSpecs.morph`（`dampingRatio = 1.0f, stiffness = 700f`），防止列表重测时下方元素视觉抖动；圆角插值必须加 `.coerceAtLeast(0.dp)` 或 `.coerceIn(0f, 50f)` 保护，杜绝弹簧过冲产生负圆角崩溃。
 2. **Effects（效果弹簧）**：驱动透明度（Alpha）与颜色角色插值（`Theme.kt` 主题换色、组件容器/内容色切换）。
    - **强制临界阻尼（`Spring.DampingRatioNoBouncy = 1.0f`）**：严禁过冲或闪烁。
-3. **页面转场对称性与不对称节奏（`AppTransitions`）**：
-   - 进场（`enter`、`navEnter`、`navPopEnter`、`modalEnter`）：位移与缩放使用 `MotionSpecs.spatialDefault(false)`，淡入使用 `MotionSpecs.effectsDefault(false)`；
-   - 退场（`exit`、`navExit`、`navPopExit`、`modalExit`）：位移与缩放使用更轻快的 `MotionSpecs.spatialFast(false)`，淡出使用 `MotionSpecs.effectsFast(false)`，保证「离开快于进入」且全程可由手势任意打断。
+3. **页面分层不透明视差转场（`AppTransitions` + `FullscreenPredictiveSlideOverlay` + `navPageTransitionDecoration`）**：
+   - **同级表面切换（`enter` / `exit`）**：用于底层已有实色宿主的同级切换（例如登录页 ↔ 工作台），仍使用 `sharedAxisEnter` / `sharedAxisExit`。
+   - **层级导航与全屏设置覆盖层（`navEnter` / `navExit` / `navPopEnter` / `navPopExit` / `modalEnter` / `modalExit`）**：在非减少动态下**彻底取消全页 `fadeOut(targetAlpha = 0f)` / `fadeIn(initialAlpha = 0f)` 透明淡化**，改为 **100% 不透明实色表面 + Z-Index 分层叠放 + 背景 `-28%` 视差位移 + `0.96f` 纵深缩放 + 背景 `0.16f` Scrim 压暗 + 前景 `20.dp`（最高 `0.24f`）左侧边缘渐变阴影**：
+     - 进场前景（`navEnter` / `modalEnter`）：`MotionSpecs.spatialDefault(false)` 全宽全速滑入，全程 `alpha = 1f`，彻底杜绝底层聊天/登录界面瞬闪穿透；
+     - 退至背景页（`navExit`）：使用更轻快的 `MotionSpecs.spatialFast(false)` 向左侧做 `28%` 视差滑移并缩放至 `0.96f`，搭配 `MaterialTheme.colorScheme.scrim`（最大透明度 `0.16f`）柔和压暗；
+     - 出栈/手势预测性返回（`navPopEnter` / `navPopExit`）：上一级背景页从 `-28%` 视差位与 `0.96f` 缩放在底层立即可见并实时跟手复原，前景页全速全不透明向右滑出并在暴露给背景的侧缘绘制 `20.dp` 渐变阴影；
+     - `navPageTransitionDecoration` 在 Compose 绘图阶段惰性读取页面角色（`NavPageTransitionRole.FOREGROUND` / `BACKGROUND`）与渐变因子（入场使用 `EffectsSlowSpring`、退场使用 `EffectsDefaultSpring`），且在过渡静止时（`!transition.isRunning && transition.currentState == transition.targetState`）立即早退，保持静止页面零 GPU 过绘。
 
 核心源码位置：
 - [MotionPolicy.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/ui/design/MotionPolicy.kt)
 - [MotionSpecs.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/MotionSpecs.kt)
 - [AppTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/AppTransitions.kt)
+- [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt)
 
-### 1.2 `SharedTransitionLayout` 作用域架构
+### 1.2 作用域与页面层次架构（`SharedTransitionLayout` + 分层视差）
 
-为避免嵌套 `SharedTransitionLayout` 破坏作用域匹配，同时保证跨 `840dp` 窗口断点迁移 `movableSettings` 时导航与滚动状态不销毁，采用 **分层作用域 + 按需复用 + Key 命名空间隔离** 的三层结构：
+为避免嵌套 `SharedTransitionLayout` 破坏作用域匹配，同时保证跨 `840dp` 窗口断点迁移 `movableSettings` 时导航与滚动状态不销毁，采用 **共享容器与不透明页面层级解耦** 的架构：登录页表单/按钮及输入坞微交互继续保留共享元素形变，而工作台全屏设置覆盖层与设置内部 `NavHost` 各路由统一采用 100% 不透明分层视差，确保手势拖拽、横竖切换或断点重排时零透底、零裁切闪烁。
 
 ```text
 OpenAndroidIntelligenceTheme
  └─ AppSharedTransitionHost（RemoteWorkbenchRoot 根宿主，提供根 LocalSharedTransitionScope）
      ├─ AnimatedContent("native-plugin-surface") -> ProvideSharedVisibilityScope
      └─ AnimatedContent("root-surface") -> ProvideSharedVisibilityScope
-         ├─ RemoteLoginSettingsHost
-         │   └─ RemoteLoginScreen（复用根宿主 LocalSharedTransitionScope；无宿主时由 m3SharedBounds 安全退化以兼容软件画布渲染）
+         ├─ RemoteLoginSettingsHost -> PlatformSettingsDrawer
+         │   ├─ 宽屏 >= 840dp：ModalNavigationDrawer（320dp 侧栏抽屉）-> movableSettings(SIDEBAR)
+         │   ├─ 窄屏 < 840dp：FullscreenPredictiveSlideOverlay（Z=0 实色登录背景视差 + Z=1 全屏设置覆盖层）
+         │   └─ RemoteLoginScreen（根 Box 强制 surface 实色背景）
          │       └─ AnimatedContent(selfHosted) -> ProvideSharedVisibilityScope
          │           ├─ 表单容器：m3SharedBounds(SharedTransitionKeys.loginCard())
          │           └─ 主操作按钮：M3MorphingButton(sharedBoundsKey = morphingButton("remote-login-primary"))
          └─ WorkbenchSettingsHost -> WorkbenchScreen -> EnsureSharedTransitionHost（复用根宿主）
-             ├─ 平板侧栏 AnimatedContent(sidebarPanel) -> ProvideSharedVisibilityScope
-             ├─ 手机全屏设置 AnimatedVisibility(settingsOpen) -> ProvideSharedVisibilityScope
+             ├─ 平板侧栏（>= 840dp）：AnimatedContent(sidebarPanel, targetContentZIndex = 1f / -1f)
+             │   └─ ProvideSharedVisibilityScope -> Box(surfaceContainerLow + navPageTransitionDecoration)
+             ├─ 手机全屏设置（< 840dp）：FullscreenPredictiveSlideOverlay（Z=0 工作台主界面视差 + Z=1 实色设置覆盖层）
+             │   └─ LocalPredictiveOverlayBackController -> movableSettings(SCREEN)
              └─ ComposerBar AnimatedContent(recording) -> ProvideSharedVisibilityScope
                  ├─ 输入/录音容器：m3SharedBounds(SharedTransitionKeys.composerContainer())
                  └─ 发送/停止按钮：M3MorphingIconButton(sharedBoundsKey = composerAction("send-stop"))
 
 SettingsNavHost（独立隔离作用域，刻意挂在 movableSettings 内部）
- └─ AppSharedTransitionHost（随 movableSettings 在 839dp <-> 840dp 间整体迁移；不调用 EnsureSharedTransitionHost 复用外层工作台宿主，以防跨越 840dp 响应式断点重挂宿主时丢失设置子路由与共享边界状态）
-     └─ NavHost
-         ├─ OVERVIEW：ProvideSharedVisibilityScope + 每张分类卡外层 m3SharedBounds(settingsCategoryCard(category.route))
-         ├─ 一级分类页（APPEARANCE / GATEWAY / REMINDERS / PAIRING / SECURITY / ADVANCED）
-         │   └─ ProvideSharedVisibilityScope + LocalSettingsSharedCategoryKey
-         │       └─ SettingsPageScaffold(sharedCategoryKey = ...) -> m3SharedBounds(..., RemeasureToBounds)
-         └─ 二级子页（CAPABILITY / CONNECTION_DETAILS / AUDIT_LOG / APP_UPDATES / PLUGINS 等）
-             └─ ProvideSharedVisibilityScope（不注入 LocalSettingsSharedCategoryKey，保持纯水平 Shared Axis X 转场）
+ └─ AppSharedTransitionHost（随 movableSettings 在 839dp <-> 840dp 间整体迁移，不复用外层宿主以防重挂丢状态）
+     └─ Box(fillMaxSize + background(containerColor) + clipToBounds)
+         └─ NavHost（navEnter / navExit / navPopEnter / navPopExit 全透明淡出移除；非快照 transitionRoles + visibleEntries 清理）
+             ├─ OVERVIEW / 一级分类页 / 二级子页（统一经 settingsComposable）
+             │   └─ ProvideSharedVisibilityScope -> Box(fillMaxSize + background(containerColor) + navPageTransitionDecoration)
+             │       └─ SettingsPageScaffold(fillMaxSize + background(color) + containerColor)
+             └─ NOTIFICATIONS / DEVICE_PUSH 重定向占位页
+                 └─ Box(fillMaxSize + background(containerColor))（消除重定向期间透明瞬闪）
 ```
 
 Key 命名空间统一收敛在 [SharedTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/SharedTransitions.kt) 的 `SharedTransitionKeys`（全部英文静态前缀，不受文案与语言影响）：
-- `rootSurface(id = "workspace")` → `"root_surface:$id"`（预留 Key，供根层跨屏容器转场按需接入；当前登录与工作台切换由根 `AnimatedContent` 过渡，内部页面元素使用各自作用域 Key）
+- `rootSurface(id = "workspace")` → `"root_surface:$id"`（预留 Key，供根层跨屏容器转场按需接入）
 - `loginCard(id = "form")` → `"login_card:$id"`
-- `settingsCategoryCard(route)` → `"settings_category_card:$route"`
+- `settingsCategoryCard(route)` → `"settings_category_card:$route"`（预留分类卡片共享 Key；设置路由自身已统一升级为 100% 不透明分层视差导航）
 - `composerContainer()` → `"composer_container"`
 - `composerAction(id = "primary")` → `"composer_action:$id"`
 - `expandableCard(id)` → `"expandable_card:$id"`
 - `morphingButton(id)` → `"morphing_button:$id"`
 
-### 1.3 Predictive Back 跨版本兼容策略
+### 1.3 Predictive Back 跨版本兼容与协调结构（`SettingsNavHost` + `FullscreenPredictiveSlideOverlay`）
 
-[PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt) 屏蔽 Android 12–13（API 31–33）与 Android 14+（API 34+）的返回手势差异：
+[PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt) 屏蔽 Android 12–13（API 31–33）与 Android 14+（API 34+）的返回手势差异，并通过 `PredictiveOverlayBackController` 打通「外层全屏设置覆层」与「内层设置根路由」的单一真实进度：
 
 1. **平台分流**：`supportsNativePredictiveBack(sdkInt)` 判断 `sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE`（API 34）。
-   - **API 34+**：使用 `PredictiveBackHandler` 实时收集 `BackEventCompat.progress` 写入 `Animatable<Float>`（限定 `[0f, 1f]`）。
-   - **API 31–33**：自动回退为标准 `BackHandler`，进度保持 `0f`，保证返回语义完全一致。
-2. **手势取消平滑复原**：当用户边缘侧滑到一半反滑取消时，`PredictiveBackHandler` 抛出 `CancellationException`。兼容层通过绑定组合生命周期的 `rememberCoroutineScope()` + 代际令牌（`gestureToken`）管理独立回弹协程，以临界阻尼 `MotionSpecs.morph(false)` 弹簧将进度平滑回弹至 `0f` 后立即重抛 `CancellationException`；当新一次手势开始、宿主关闭或组件销毁时立刻取消旧回弹作业，彻底消除跨手势竞态覆写、退场协程泄漏与欠阻尼负值。
-3. **绘制阶段惰性读取与手势边缘方向适配**：`Modifier.predictiveBackSlideTransform(stateProvider = { state.value }, reduced, direction = null, maxScaleReduction = 0.04f)` 在 `!reduced` 时恒定挂载 `Modifier.graphicsLayer` 并在绘制阶段 lambda 内惰性读取手势进度，手势拖拽和回弹期间**零组合重构**与零布局重测；未显式指定 `direction` 时按 `swipeEdge`（左边缘向右、右边缘向左）与 `layoutDirection`（RTL 支持）自动适配滑移方向。
-4. **返回栈优先级（LIFO）**：
-   - 在工作台手机端全屏设置覆层（[WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)）与设置总览根页（[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)）中，`WorkbenchScreen` 将兜底 `rememberPredictiveBackState` 固定在 `if (expanded)` 之前注册，使外层处理器恒位于 `OnBackPressedDispatcher` LIFO 栈底、跨 `840dp` 断点折入窄屏时绝不抢占子页 `BackHandler`；只有 `hostOpen == true`、退回 `SettingsRoutes.OVERVIEW` 且处于 `SettingsPresentation.SCREEN` 时，根级 `rememberPredictiveBackState` 才激活预览并回调 `onBack`。
+   - **API 34+**：使用 `PredictiveBackHandler` 实时收集 `BackEventCompat.progress` 写入进度 `Animatable<Float>`（限定 `[0f, 1f]`）。
+   - **API 31–33**：自动回退为标准 `BackHandler`，不产生半拖出进度直接执行关闭。
+2. **单一进度源与「松手无弹回」提交**：
+   - `PredictiveOverlayBackController` 维护覆盖层开合进度 `openProgress`（`0f` 关闭、`1f` 全开）：拖拽时 `snapTo(1f - progress)` 直接实时同步背景视差与前景偏移；
+   - 手势取消（`CancellationException`）时由绑定组合生命周期与 `gestureToken` 的协程以临界阻尼 `MotionSpecs.morph(false)` 回弹至 `1f`；
+   - **手势提交时绝不把进度重置为 `0f` 或 `1f`**，而是直接调用 `onDismiss()` 使 `syncOpenState(open = false)` 从当前已拖出的进度位接管并按 `spatialFast` 平滑滑出至 `0f`，彻底消除旧版嵌套滑移导致的「松手回弹后再关闭」视觉断层。
+3. **协调结构图（`OnBackPressedDispatcher` LIFO 栈与控制权交接）**：
+
+```text
+PlatformSettingsDrawer / WorkbenchScreen（窄屏 < 840dp）
+ ├─ 在 `if (expanded)` 之前创建 `phoneOverlayController = rememberPredictiveOverlayBackController(...)`
+ │   └─ 注册最底层兜底 `PredictiveBackOverlayBridge(enabled = !expanded && open)`（始终处于 LIFO 栈底）
+ └─ FullscreenPredictiveSlideOverlay(controller = phoneOverlayController)
+     ├─ Z = 0：backgroundContent（0.28f 视差 + 0.96f 缩放 + 0.16f Scrim）
+     └─ Z = 1：overlayContent（surface 实底 + 20.dp 边缘阴影），注入 LocalPredictiveOverlayBackController
+         └─ SettingsNavHost
+             ├─ 1) 当 overlayBackController != null（嵌入全屏覆盖层）：
+             │   └─ 注册中层 `PredictiveBackOverlayBridge(enabled = hostOpen && atOverview && SCREEN)`
+             │       ├─ atOverview == true  -> 直接驱动 phoneOverlayController 联动背景视差并滑出关闭
+             │       └─ 禁止再对 AppSharedTransitionHost 叠加 .predictiveBackSlideTransform
+             ├─ 2) 当 overlayBackController == null（独立渲染如单元测试）：
+             │   └─ 退化挂载 `rememberPredictiveBackState` + `.predictiveBackSlideTransform(...)`
+             ├─ 3) NavHost（处于 LIFO 更上层）：
+             │   └─ 处于任意子页（atOverview == false）时优先消费返回事件，驱动 NavPopEnter/PopExit 视差预测返回
+             └─ 4) BackHandler(enabled = hostOpen && shortcutSources.isNotEmpty())（LIFO 最顶层）：
+                 └─ 同深度跨类目快捷跳转场景恢复源路由历史
+```
+
+4. **横跨 `840dp` 断点的不抢占保障**：由于 `phoneOverlayController` 位于 `if (expanded)` 之前，当设备从 `>= 840dp` 平板侧栏折叠至 `< 840dp` 手机全屏覆盖层时，外层控制器仍保持在 LIFO 栈底，`NavHost` 子页返回手势始终优先于外层覆盖层关闭手势。
 
 ### 1.4 Reduce Motion 降级决策树
 
@@ -100,41 +132,59 @@ Key 命名空间统一收敛在 [SharedTransitions.kt](../../apps/android/conver
 LocalMotionPolicy.current.isReduced == true ?
  ├─ 空间/尺寸/缩放/圆角（spatial* / morph / press / boundsTransform）
  │   └─ 降级为 snap() 直接落位；按压缩放锁定 1.0f（保留 M3 Ripple 水波纹）
+ ├─ 分层视差与边缘阴影（navPageTransitionDecoration / FullscreenPredictiveSlideOverlay 背景层）
+ │   └─ 零横向视差位移、背景缩放锁定 1.0f、不绘制 Scrim 遮罩与 20.dp 边缘渐变阴影
  ├─ 共享元素（m3SharedBounds / m3SharedElement）
  │   └─ 直接返回原 Modifier，不进入共享叠加层，不执行边界动画
  ├─ 颜色与透明度效果（effects* / fade / Theme 换色）
- │   ├─ 页面与可见性切换（AppTransitions / ExpandableRegion / M3MorphingIconButton）
+ │   ├─ 页面与覆盖层切换（AppTransitions / FullscreenPredictiveSlideOverlay / ExpandableRegion / M3MorphingIconButton）
  │   │   └─ 降级为 reducedFade()：tween(150ms, easing = LinearEasing)，零位移、零缩放
  │   └─ 主题配色角色切换（OpenAndroidIntelligenceTheme）
  │       └─ 降级为 snap() 瞬时切换
- └─ 预测性返回（rememberPredictiveBackState / rememberPredictiveBackProgress / predictiveBackSlideTransform）
-     └─ 手势进度恒定 0f，不执行横向滑移与缩放；点击与完成返回时仍正常触发 onBack
+ └─ 预测性返回（rememberPredictiveBackState / PredictiveOverlayBackController / predictiveBackSlideTransform）
+     └─ 手势拖拽期间恒定保持原位与 0f 预览偏移，完成提交后仅执行 reducedFade 或直接触发 onBack
 ```
 
 ---
 
-## 2. `MotionSpecs` 完整物理参数配置表
+## 2. `MotionSpecs` 与分层视差完整物理参数配置表
+
+### 2.1 `MotionSpecs` 物理弹簧配置表
 
 下表列出 [MotionSpecs.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/MotionSpecs.kt) 中所有物理弹簧与节奏令牌的精确参数：
 
 | 常量 / 工厂方法 | 类别 | `dampingRatio` | `stiffness` | 适用属性与典型场景 | Reduce Motion 降级方案 |
 | --- | --- | :---: | :---: | --- | --- |
-| `SpatialFastSpring` (`SnappySpring`) / `spatialFast(expressive = false)` / `snappy` | Standard Spatial | `0.9f` | `1400f` | 卡片/按钮圆角形变、固定按钮宽度切换、页面退场位移与缩放 | `snap()` 直接落位 |
-| `SpatialDefaultSpring` (`SpatialSpring`) / `spatialDefault(expressive = false)` / `spatial` | Standard Spatial | `0.9f` | `700f` | 页面进场位移与缩放、时间线消息上浮、`PredictiveBack` 取消回弹 | `snap()` 直接落位 |
+| `SpatialFastSpring` (`SnappySpring`) / `spatialFast(expressive = false)` / `snappy` | Standard Spatial | `0.9f` | `1400f` | 卡片/按钮圆角形变、固定按钮宽度切换、`navExit`/`navPopExit`/`modalExit` 退场位移与视差缩放 | `snap()` 直接落位 |
+| `SpatialDefaultSpring` (`SpatialSpring`) / `spatialDefault(expressive = false)` / `spatial` | Standard Spatial | `0.9f` | `700f` | `navEnter`/`navPopEnter`/`modalEnter` 进场位移与视差复原、时间线消息上浮、`PredictiveBack` 取消回弹 | `snap()` 直接落位 |
 | `SpatialSlowSpring` / `spatialSlow(expressive = false)` | Standard Spatial | `0.9f` | `300f` | 全屏级空间过渡、大容器展开 | `snap()` 直接落位 |
 | `ExpressiveSpatialFastSpring` / `spatialFast(expressive = true)` | Expressive Spatial | `0.6f` | `800f` | 微交互弹跳指示、「回到最新」按钮出现缩放 | `snap()` 直接落位 |
 | `ExpressiveSpatialDefaultSpring` / `spatialDefault(expressive = true)` / `boundsTransform` | Expressive Spatial | `0.8f` | `380f` | `SharedTransitionLayout` 共享边界与共享元素变换、悬浮吸附 | `snap()` 直接落位 |
 | `ExpressiveSpatialSlowSpring` / `spatialSlow(expressive = true)` | Expressive Spatial | `0.8f` | `200f` | 整屏沉浸式容器变换 | `snap()` 直接落位 |
-| `EffectsFastSpring` / `effectsFast` | Effects（临界阻尼） | `1.0f` | `3800f` | 组件容器/内容/边框色过渡、图标切换淡入淡出、页面退场淡出、顶栏分隔线 | `reducedFade()`（`150ms LinearEasing`） |
-| `EffectsDefaultSpring` / `effectsDefault` / `fade` | Effects（临界阻尼） | `1.0f` | `1600f` | 页面进场淡入、共享边界交叉淡化、`ExpandableRegion` 内容淡化、主题角色换色 | `reducedFade()`（Theme 为 `snap()`） |
-| `EffectsSlowSpring` / `effectsSlow` | Effects（临界阻尼） | `1.0f` | `800f` | 大面积背景遮罩（Scrim）、大块内容显现 | `reducedFade()`（`150ms LinearEasing`） |
+| `EffectsFastSpring` / `effectsFast` | Effects（临界阻尼） | `1.0f` | `3800f` | 组件容器/内容/边框色过渡、图标切换淡入淡出、同级表面退场淡出、顶栏分隔线 | `reducedFade()`（`150ms LinearEasing`） |
+| `EffectsDefaultSpring` / `effectsDefault` / `fade` | Effects（临界阻尼） | `1.0f` | `1600f` | 同级表面进场淡入、`navPageTransitionDecoration` 退场遮罩梯度、`ExpandableRegion` 内容淡化、主题角色换色 | `reducedFade()`（Theme 为 `snap()`） |
+| `EffectsSlowSpring` / `effectsSlow` | Effects（临界阻尼） | `1.0f` | `800f` | `navPageTransitionDecoration` 入场背景 Scrim 恢复与前景边缘阴影显现、大面积内容显现 | `reducedFade()`（装饰层跳过绘制） |
 | `PressSpring` / `press` | Press 反馈 | `0.75f` | `1200f` | `M3ExpressiveCard` / `M3MorphingButton` / `bouncyClickable` 按压缩放（`PressScaleDefault = 0.97f`、`PressScaleCompact = 0.95f`） | `snap()` 且缩放固定 `1.0f`（保留 Ripple） |
-| `MorphSpring` / `morph` / `emphasized` | 布局形变（临界阻尼） | `1.0f` | `700f` | `ExpandableRegion` 垂直展开/折叠、`M3MorphingButton` 自适应宽度、设置项胶囊形变、列表重排 `animateItem` | `snap()` 直接落位 |
+| `MorphSpring` / `morph` / `emphasized` | 布局形变（临界阻尼） | `1.0f` | `700f` | `ExpandableRegion` 垂直展开/折叠、`M3MorphingButton` 自适应宽度、设置项胶囊形变、`PredictiveOverlayBackController` 取消回弹 | `snap()` 直接落位 |
 | `EntranceSpring` / `entrance` | 悬浮进场 | `0.72f` | `380f` | 助理悬浮栏 `graphicsLayer` 进场位移与缩放 | `snap()` 直接落位 |
 | `ExpandSpring` / `expand` | 柔和展开（临界阻尼） | `1.0f` | `360f` | 助理输入栏展开成输入态高度变化 | `snap()` 直接落位 |
 | `CollapseSpring` / `collapse` | 快速收起（临界阻尼） | `1.0f` | `800f` | 助理输入栏收起恢复 | `snap()` 直接落位 |
 | `MomentumSpring` | 手势惯性 | `0.75f` | `400f` | 停靠球拖拽释放动量吸附 | 直接吸附落位 |
 | `SheetSpring` | 抽屉/弹层（临界阻尼） | `1.0f` | `400f` | 底部弹层、侧边抽屉 | `snap()` 直接落位 |
+
+### 2.2 分层视差、纵深缩放、Scrim 与边缘阴影配置表（`AppTransitions`）
+
+下表列出 [AppTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/AppTransitions.kt) 与 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt) 的分层视觉深度与视差参数：
+
+| 常量 / 层级角色 | 数值 / 取值 | 作用对象与数学曲线 | Reduce Motion / 静止行为 |
+| --- | :---: | --- | --- |
+| 前景图层 Z-Index（`NavHost` / 覆盖层 / 平板侧栏） | `1f`（高于背景层） | 当前滑入/滑出页（`FOREGROUND`）：`FullscreenPredictiveSlideOverlay` 使用 `zIndex(1f)`，平板侧栏使用 `targetContentZIndex = 1f`（返回切回会话时 `-1f`），`NavHost` 由内部 `zIndices` 栈自动保证出栈页位于上层 | 同层级结构，零透明穿透 |
+| 背景图层 Z-Index（底层页面） | `0f` | 被覆盖/返回揭示页（`BACKGROUND`）：全程挂载实色 `surface` / `surfaceContainerLow`，彻底取消 `fadeOut(0f)` | 同层级结构 |
+| `AppTransitions.ParallaxOffsetFraction` | `0.28f` | 背景页 `-28%` 横向视差位移（位于 MD3 `25%–30%` 区间）：`navExit` 向 `-0.28 * w` 滑出、`navPopEnter` 从 `-0.28 * w` 复原至 `0`；`FullscreenPredictiveSlideOverlay` 按 `-w * 0.28f * p * exitDirection` 联动 | 锁定 `0f` 无视差位移 |
+| `AppTransitions.BackgroundDepthScale` | `0.96f` | 背景页退至下层时的纵深缩放（`1.0f -> 0.96f`），搭配 `ScaleVisibilityThreshold = 0.0005f` 防止尾段提前截断跳变 | 锁定 `1.0f` 无缩放 |
+| `AppTransitions.BackgroundScrimMaxAlpha` | `0.16f` | 背景页叠加 `MaterialTheme.colorScheme.scrim.copy(alpha = 0.16f * (1f - factor))`（覆盖层为 `0.16f * p`）；页面内容本身维持 `alpha = 1f` 不透明 | 不绘制 Scrim 遮罩 |
+| `AppTransitions.EdgeShadowMaxAlpha` | `0.24f` | 前景页（`FOREGROUND`）暴露侧边缘渐变阴影峰值透明度，采用二次缓冲曲线 `0.24f * (1f - (1f - factor)^2)` | 不绘制阴影 |
+| `AppTransitions.EdgeShadowWidth` | `20.dp` | 前景页左侧（或覆盖层随 `exitDirection` 暴露侧）绘制 `20.dp` 水平渐变 `Brush.horizontalGradient(Transparent -> scrim.copy(alpha))` | 静止态（`!isTransitionActive`）与 Reduce Motion 下提前返回零绘制 |
 
 > **保留合法 `tween` 例外与范围边界说明**：除上述物理弹簧外，`:conversation-ui` 与主工作台/登录/设置导航改造范围内仅保留三类特定时序的 `tween` 例外（另附未纳入本轮全弹簧重写范围的既有引导页与 `:assistant-holder` 边界说明）：
 > 1. `MotionSpecs.reducedFade()`（`tween(150ms, LinearEasing)`）及兼容保留常量 `MotionSpecs.ReducedMotionSpec`：Reduce Motion / `durationScale <= 0f` 无障碍降级专用；
@@ -299,7 +349,7 @@ fun MorphingButtonExamples(
 
 ### 3.3 `Modifier.m3SharedBounds`（`AppSharedTransitionHost` + `ProvideSharedVisibilityScope`）
 
-封装自 [SharedTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/SharedTransitions.kt)。在需要跨页面/状态过渡的容器树顶部放置 `AppSharedTransitionHost`（或嵌套复用场景下使用 `EnsureSharedTransitionHost`），在 `AnimatedContent` / `AnimatedVisibility` / `NavHost.composable` 内容块内注入 `ProvideSharedVisibilityScope`，叶子节点直接挂接 `Modifier.m3SharedBounds`。
+封装自 [SharedTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/SharedTransitions.kt)。在需要跨页面/状态过渡的容器树顶部放置 `AppSharedTransitionHost`（或嵌套复用场景下使用 `EnsureSharedTransitionHost`），在 `AnimatedContent` / `AnimatedVisibility` 块内注入 `ProvideSharedVisibilityScope`，叶子节点挂接 `Modifier.m3SharedBounds`（例如登录页官方/自建表单容器、输入坞发送/停止键等同源状态形变；`SettingsNavHost` 层级设置路由则统一使用 §3.5 100% 不透明分层视差导航）。
 
 ```kotlin
 import androidx.compose.animation.AnimatedContent
@@ -315,7 +365,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import com.openandroidintelligence.conversation.components.SettingsSectionCard
+import com.openandroidintelligence.conversation.components.M3ExpressiveCard
 import com.openandroidintelligence.conversation.motion.AppSharedTransitionHost
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
@@ -334,9 +384,9 @@ fun SharedBoundsNavigationExample(showDetail: Boolean) {
         AnimatedContent(
             targetState = showDetail,
             transitionSpec = {
-                AppTransitions.navEnter(reduced) togetherWith AppTransitions.navExit(reduced)
+                AppTransitions.enter(reduced) togetherWith AppTransitions.exit(reduced)
             },
-            label = "category-shared-bounds-demo",
+            label = "shared-bounds-demo",
         ) { detail ->
             ProvideSharedVisibilityScope {
                 if (!detail) {
@@ -344,13 +394,13 @@ fun SharedBoundsNavigationExample(showDetail: Boolean) {
                         Modifier
                             .fillMaxWidth()
                             .m3SharedBounds(
-                                key = SharedTransitionKeys.settingsCategoryCard("settings/appearance"),
+                                key = SharedTransitionKeys.loginCard("demo-form"),
                                 resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
                                 clipShape = RoundedCornerShape(AppRadius.Large),
                             ),
                     ) {
-                        SettingsSectionCard {
-                            Text(stringResource(UiR.string.settings_title_appearance))
+                        M3ExpressiveCard {
+                            Text(stringResource(UiR.string.common_app_name))
                         }
                     }
                 } else {
@@ -358,12 +408,12 @@ fun SharedBoundsNavigationExample(showDetail: Boolean) {
                         Modifier
                             .fillMaxSize()
                             .m3SharedBounds(
-                                key = SharedTransitionKeys.settingsCategoryCard("settings/appearance"),
+                                key = SharedTransitionKeys.loginCard("demo-form"),
                                 resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
                                 clipShape = RoundedCornerShape(AppRadius.Large),
                             ),
                     ) {
-                        Text(stringResource(UiR.string.settings_section_theme_mode))
+                        Text(stringResource(UiR.string.common_state_idle_hint))
                     }
                 }
             }
@@ -372,9 +422,9 @@ fun SharedBoundsNavigationExample(showDetail: Boolean) {
 }
 ```
 
-### 3.4 `rememberPredictiveBackState` 与 `predictiveBackSlideTransform`
+### 3.4 `rememberPredictiveBackState` 与 `predictiveBackSlideTransform`（独立表面兜底）
 
-封装自 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt)。用于全屏抽屉、设置总览页等需要在返回前实时跟手预览并在取消时临界阻尼弹簧回弹的页面容器（支持按 `swipeEdge` 与 RTL 自动跟随方向，绘制阶段惰性读取零重组）。
+封装自 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt)。用于未接入 `FullscreenPredictiveSlideOverlay` 宿主（`LocalPredictiveOverlayBackController.current == null`）的独立全屏容器预览（支持按 `swipeEdge` 与 RTL 自动跟随方向，绘制阶段惰性读取零重组）。
 
 ```kotlin
 import androidx.compose.foundation.layout.Box
@@ -411,18 +461,118 @@ fun PredictiveBackPanelExample(
 }
 ```
 
+### 3.5 `FullscreenPredictiveSlideOverlay` 与 `navPageTransitionDecoration`（双层视差宿主 + `NavHost`）
+
+封装自 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt) 与 [AppTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/AppTransitions.kt)。外层在宽/窄屏条件分支之前创建 `rememberPredictiveOverlayBackController`，并通过 `FullscreenPredictiveSlideOverlay` 暴露 `LocalPredictiveOverlayBackController`；内层 `SettingsNavHost` 在根路由通过 `PredictiveBackOverlayBridge` 直接驱动覆盖层进退，并在每个子路由上挂载实色背景与 `navPageTransitionDecoration`。
+
+```kotlin
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.openandroidintelligence.conversation.motion.AppTransitions
+import com.openandroidintelligence.conversation.motion.FullscreenPredictiveSlideOverlay
+import com.openandroidintelligence.conversation.motion.LocalPredictiveOverlayBackController
+import com.openandroidintelligence.conversation.motion.NavPageTransitionRole
+import com.openandroidintelligence.conversation.motion.PredictiveBackOverlayBridge
+import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
+import com.openandroidintelligence.conversation.motion.navPageTransitionDecoration
+import com.openandroidintelligence.conversation.motion.rememberPredictiveOverlayBackController
+import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
+
+@Composable
+fun LayeredParallaxSettingsHostExample(
+    expanded: Boolean,
+    open: Boolean,
+    atOverview: Boolean,
+    onDismiss: () -> Unit,
+    backgroundContent: @Composable () -> Unit,
+) {
+    val reduced = LocalMotionPolicy.current.isReduced
+    // 在 if (expanded) 之前创建控制器，严守 OnBackPressedDispatcher LIFO 栈底
+    val overlayController = rememberPredictiveOverlayBackController(
+        overlayOpen = open,
+        enabled = !expanded && open,
+        reduced = reduced,
+        onDismiss = onDismiss,
+    )
+    if (!expanded) {
+        FullscreenPredictiveSlideOverlay(
+            controller = overlayController,
+            reduced = reduced,
+            modifier = Modifier.fillMaxSize(),
+            backgroundContent = backgroundContent,
+        ) {
+            val controllerFromHost = LocalPredictiveOverlayBackController.current
+            if (controllerFromHost != null) {
+                PredictiveBackOverlayBridge(
+                    controller = controllerFromHost,
+                    enabled = open && atOverview,
+                    onDismiss = onDismiss,
+                )
+            }
+            val nav = rememberNavController()
+            val roles = remember { mutableMapOf<String, NavPageTransitionRole>() }
+            val containerColor = MaterialTheme.colorScheme.surface
+            Box(Modifier.fillMaxSize().background(containerColor).clipToBounds()) {
+                NavHost(
+                    navController = nav,
+                    startDestination = "overview",
+                    enterTransition = {
+                        roles[targetState.id] = NavPageTransitionRole.FOREGROUND
+                        AppTransitions.navEnter(reduced)
+                    },
+                    exitTransition = {
+                        roles[initialState.id] = NavPageTransitionRole.BACKGROUND
+                        AppTransitions.navExit(reduced)
+                    },
+                    popEnterTransition = {
+                        roles[targetState.id] = NavPageTransitionRole.BACKGROUND
+                        AppTransitions.navPopEnter(reduced)
+                    },
+                    popExitTransition = {
+                        roles[initialState.id] = NavPageTransitionRole.FOREGROUND
+                        AppTransitions.navPopExit(reduced)
+                    },
+                ) {
+                    composable("overview") { entry ->
+                        ProvideSharedVisibilityScope {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .background(containerColor)
+                                    .navPageTransitionDecoration({ roles[entry.id] }, reduced),
+                            ) {
+                                // 实色设置总览页内容
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 ---
 
 ## 4. 关键集成节点与回归门禁索引
 
-> 下表索引核心动效架构与组件集成节点；本分支另包含全仓 `LocalMotionPolicy.current.isReduced` 统一迁移（`AttachmentLightbox.kt`、`ConversationBrowser.kt`、`MessageTimeline.kt`、`StreamingPresentationHost.kt`、`PlatformSettingsBottomSheet.kt`、`BubbleConversationActivity.kt`、`RemoteConnectionFeedback.kt`、`RemoteWorkbenchNotices.kt`、`OnboardingFlow.kt`、`ButtonRevealTransition.kt`、`RemoteConnectionChoiceScreen.kt`、`RemoteGuideScreen.kt`、`WelcomeScreen.kt`）以及 `apps/android/ci/app-regression.txt` 的 `[core]` 门禁登记。
+> 下表索引核心动效架构与组件集成节点；本分支另包含全仓 `LocalMotionPolicy.current.isReduced` 统一迁移（`AttachmentLightbox.kt`、`ConversationBrowser.kt`、`MessageTimeline.kt`、`StreamingPresentationHost.kt`、`BubbleConversationActivity.kt`、`RemoteConnectionFeedback.kt`、`RemoteWorkbenchNotices.kt`、`OnboardingFlow.kt`、`ButtonRevealTransition.kt`、`RemoteConnectionChoiceScreen.kt`、`RemoteGuideScreen.kt`、`WelcomeScreen.kt`）以及 `apps/android/ci/app-regression.txt` 的 `[core]` 门禁登记。
 
 | 模块 | 改造文件 | 核心接入内容 | 对应回归测试 |
 | --- | --- | --- | --- |
-| `:conversation-ui` | `MotionPolicy.kt`、`MotionSpecs.kt`、`AppTransitions.kt` | 新增 `isReduced`、M3 Standard/Expressive/Effects/Press 弹簧、`AppTransitions` 全弹簧化 | `MotionPhysicsTest`、`AppTransitionsTest` |
-| `:conversation-ui` | `SharedTransitions.kt`、`PredictiveBackCompat.kt` | 统一共享宿主/Key/安全修饰符与 API 31–36 预测性返回兼容 | `SharedTransitionsAndPredictiveBackTest` |
+| `:conversation-ui` | `MotionPolicy.kt`、`MotionSpecs.kt`、[AppTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/AppTransitions.kt) | 新增 `isReduced`、M3 Standard/Expressive/Effects/Press 弹簧、`navEnter`/`navExit`/`navPopEnter`/`navPopExit`/`modal*` 移除 `fadeOut(0f)` 并引入 `NavPageTransitionRole` + `navPageTransitionDecoration` | `MotionPhysicsTest`、`AppTransitionsTest` |
+| `:conversation-ui` | `SharedTransitions.kt`、[PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt) | 统一共享宿主/Key/安全修饰符、`PredictiveOverlayBackController`、`PredictiveBackOverlayBridge` 与 `FullscreenPredictiveSlideOverlay` 双层视差预测性返回兼容 | `SharedTransitionsAndPredictiveBackTest` |
 | `:conversation-ui` | `M3ExpressiveCard.kt`、`M3MorphingButton.kt`、`Theme.kt`、`ExpandableRegion.kt`、`Interaction.kt` | 动态圆角卡片、形变按钮与主题/展开/按压弹簧升级 | `M3ExpressiveComponentsTest` |
-| `:conversation-ui` | `WorkbenchScreen.kt`、`ComposerBar.kt`、`VoiceRecordingRow.kt`、`TimelineScaffold.kt`、`ApprovalCard.kt`、`CommandMenu.kt`、`ComposerAttachmentSheet.kt`、`MarkdownThoughtView.kt`、`MarkdownToolCallView.kt`、`ScreenSelectionOverlay.kt`、`SettingsItemMorph.kt`、`RecordingWaveform.kt`、`AssistantView.kt` | 工作台共享作用域、发送/停止与录音发送键共享边界形变、折叠思维链/工具卡升级、选区/形态 `isReduced` 统一、手机设置预测性返回防抢占 | `M3ExpressiveComponentsTest`、`ThoughtCardTest`、`VoiceRecordingRowTest`、`ScreenSelectionMinimumSizeTest`（并包含在 `:conversation-ui:test`） |
-| `:app` | [RemoteWorkbenchRoot.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteWorkbenchRoot.kt) | 主题内层 `AppSharedTransitionHost` 与双层 `AnimatedContent` 可见性注入 | `ExpressiveMotionNavigationTest`、`RemoteRootInteractionTest` |
-| `:app` | [RemoteLoginScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteLoginScreen.kt) | 官方/自建切换 `ProvideSharedVisibilityScope` + `m3SharedBounds` + `M3MorphingButton` | `ExpressiveMotionNavigationTest`、`RemoteLoginPresentationTest` |
-| `:app` | [SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)、[SettingsScaffold.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsScaffold.kt) | 内置 `AppSharedTransitionHost`、一级分类 `sharedCategoryKey` 共享转场、二级页纯水平滑入、`rememberPredictiveBackProgress` | `ExpressiveMotionNavigationTest`、`SettingsNavigationTest`、`SettingsHonestyCopyTest`、`SettingsResponsiveHostRegressionTest`、`MaterialTokenGuardTest` |
+| `:conversation-ui` | [WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)、`ComposerBar.kt`、`VoiceRecordingRow.kt`、`TimelineScaffold.kt`、`ApprovalCard.kt`、`CommandMenu.kt`、`ComposerAttachmentSheet.kt`、`MarkdownThoughtView.kt`、`MarkdownToolCallView.kt`、`ScreenSelectionOverlay.kt`、`SettingsItemMorph.kt`、`RecordingWaveform.kt`、`AssistantView.kt` | 手机设置改用 `FullscreenPredictiveSlideOverlay` 视差联动与松手不弹回提交、平板侧栏 `AnimatedContent` 接入 `navPageTransitionDecoration` 与 Z-Index 顺序、发送/停止与录音发送键共享边界形变、折叠思维链/工具卡升级 | `M3ExpressiveComponentsTest`、`ThoughtCardTest`、`VoiceRecordingRowTest`、`ScreenSelectionMinimumSizeTest`（包含在 `:conversation-ui:test`） |
+| `:app` | [RemoteWorkbenchRoot.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteWorkbenchRoot.kt)、[RemoteLoginScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteLoginScreen.kt)、[SettingsScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/SettingsScreen.kt)、[NotificationAppPicker.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/notifications/NotificationAppPicker.kt) | 主题内层 `AppSharedTransitionHost`、登录/推送兜底/应用选择器实色 `surface` 背景补齐、`m3SharedBounds` + `M3MorphingButton` | `ExpressiveMotionNavigationTest`、`RemoteRootInteractionTest`、`RemoteLoginPresentationTest` |
+| `:app` | [PlatformSettingsBottomSheet.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/PlatformSettingsBottomSheet.kt)、[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)、[SettingsScaffold.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsScaffold.kt) | 在 `if (expanded)` 前注册 `rememberPredictiveOverlayBackController`、手机端 `FullscreenPredictiveSlideOverlay`、内置 `AppSharedTransitionHost`、`containerColor` + `clipToBounds` + `transitionRoles` + `navPageTransitionDecoration`、根路由 `PredictiveBackOverlayBridge` 与 `SettingsPageScaffold` 强制实色铺满 | `ExpressiveMotionNavigationTest`、`SettingsNavigationTest`、`SettingsHonestyCopyTest`、`SettingsResponsiveHostRegressionTest`、`MaterialTokenGuardTest` |

@@ -101,6 +101,7 @@ internal fun NotificationAppPicker(
                 .widthIn(max = Dimensions.ReadingWidth)
                 .fillMaxSize()
                 .testTag("notification-app-picker"),
+            containerColor = MaterialTheme.colorScheme.surface,
             contentWindowInsets = if (presentation == SettingsPresentation.SIDEBAR) WindowInsets(0, 0, 0, 0) else WindowInsets.systemBars,
             topBar = {
                 TopAppBar(

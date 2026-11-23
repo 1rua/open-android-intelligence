@@ -14,6 +14,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,10 +35,13 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.components.ExpandableRegion
@@ -56,6 +60,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import androidx.compose.ui.test.onAllNodesWithTag
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -615,5 +620,406 @@ class SharedTransitionsAndPredictiveBackTest {
         compose.runOnIdle { expanded = true }
         compose.waitForIdle()
         compose.onNodeWithText("ExpandedBody").assertIsDisplayed()
+    }
+
+    @Test
+    fun fullscreenPredictiveSlideOverlayTracksParallaxZeroRecompositionAndCommitsWithoutBounceBack() {
+        var overlayOpen by mutableStateOf(true)
+        var dismissCalls = 0
+        var bgRecomposeCount = 0
+        var fgRecomposeCount = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = overlayOpen,
+                        enabled = overlayOpen,
+                        reduced = false,
+                        onDismiss = {
+                            dismissCalls++
+                            overlayOpen = false
+                        },
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        overlayTestTag = "phone-fullscreen-settings-container",
+                        backgroundContent = {
+                            SideEffect { bgRecomposeCount++ }
+                            Box(Modifier.fillMaxSize().testTag("overlay-background")) {
+                                Text("OverlayBg")
+                            }
+                        },
+                        overlayContent = {
+                            SideEffect { fgRecomposeCount++ }
+                            Box(Modifier.fillMaxSize().testTag("overlay-foreground")) {
+                                Text("OverlayFg")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val fullWidthPx = with(compose.density) { 240.dp.toPx() }
+        val initBgRecompose = bgRecomposeCount
+        val initFgRecompose = fgRecomposeCount
+
+        // 左边缘起滑推进至 0.5f：前景右移约 +0.5w，背景向左做 28% 视差与缩放，且全程零重组
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+
+        val fgDraggedX = compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x
+        val bgDraggedX = compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x
+        assertEquals(fullWidthPx * 0.5f, fgDraggedX, 2f)
+        assertTrue("左边缘拖拽时背景应向左视差退后: bgX=$bgDraggedX", bgDraggedX < -fullWidthPx * 0.05f)
+        assertEquals("拖拽期间背景不得重组", initBgRecompose, bgRecomposeCount)
+        assertEquals("拖拽期间前景不得重组", initFgRecompose, fgRecomposeCount)
+
+        // 松手提交返回：必须在松手位置继续滑出，绝不弹回 x = 0
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(16)
+        compose.waitForIdle()
+        val afterCommitX = compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x
+        assertTrue(
+            "提交返回后前景必须继续从拖出位置滑出而非弹回原点: dragged=$fgDraggedX, afterCommit=$afterCommitX",
+            afterCommitX >= fgDraggedX - 1f && afterCommitX > fullWidthPx * 0.45f,
+        )
+
+        // 退出动画完成后彻底卸载覆盖层，背景复原到原点
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(1, dismissCalls)
+        assertTrue(
+            compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().isEmpty(),
+        )
+        assertEquals(0f, compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x, 0.5f)
+    }
+
+    @Test
+    fun fullscreenPredictiveSlideOverlayTracksRightEdgeDirectionAndReboundsOnCancel() {
+        var dismissCalls = 0
+        var bgRecomposeCount = 0
+        var fgRecomposeCount = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = true,
+                        enabled = true,
+                        reduced = false,
+                        onDismiss = { dismissCalls++ },
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        overlayTestTag = "phone-fullscreen-settings-container",
+                        backgroundContent = {
+                            SideEffect { bgRecomposeCount++ }
+                            Box(Modifier.fillMaxSize().testTag("overlay-background")) {
+                                Text("OverlayBg")
+                            }
+                        },
+                        overlayContent = {
+                            SideEffect { fgRecomposeCount++ }
+                            Box(Modifier.fillMaxSize().testTag("overlay-foreground")) {
+                                Text("OverlayFg")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        val fullWidthPx = with(compose.density) { 240.dp.toPx() }
+        val initialOpenBgX = compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x
+        val initBgRecompose = bgRecomposeCount
+        val initFgRecompose = fgRecomposeCount
+
+        // 右边缘起滑推进至 0.5f：前景向左负向位移，背景向右靠近原点并保持视差区间
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(240f, 100f, 0f, BackEventCompat.EDGE_RIGHT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_RIGHT))
+        }
+        compose.waitForIdle()
+
+        val fgRightDraggedX = compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x
+        val bgRightDraggedX = compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x
+        assertEquals(-fullWidthPx * 0.5f, fgRightDraggedX, 2f)
+        assertTrue("右边缘拖拽时背景应保留在视差正偏移区 (0..$initialOpenBgX): bgX=$bgRightDraggedX", bgRightDraggedX in 1f..(initialOpenBgX - 1f))
+        assertEquals(initBgRecompose, bgRecomposeCount)
+        assertEquals(initFgRecompose, fgRecomposeCount)
+
+        // 半途取消手势：临界阻尼平滑回弹复原，不触发 onDismiss 也不卸载
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { dispatcher.dispatchOnBackCancelled() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(32)
+        val midReboundX = compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x
+        assertTrue(
+            "取消后应处于平滑回弹中间位置 (${fgRightDraggedX}..0): actual=$midReboundX",
+            midReboundX > fgRightDraggedX + 1f && midReboundX < -1f,
+        )
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(0, dismissCalls)
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+        assertEquals(0f, compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x, 0.5f)
+        assertEquals(initialOpenBgX, compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x, 0.5f)
+    }
+
+    @Test
+    fun fullscreenPredictiveSlideOverlayDegradesTo150msCrossfadeWhenReduced() {
+        var overlayOpen by mutableStateOf(true)
+        var dismissCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var capturedController: PredictiveOverlayBackController
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = true) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = overlayOpen,
+                        enabled = overlayOpen,
+                        reduced = true,
+                        onDismiss = {
+                            dismissCalls++
+                            overlayOpen = false
+                        },
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    capturedController = controller
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = true,
+                        modifier = Modifier.fillMaxSize(),
+                        overlayTestTag = "phone-fullscreen-settings-container",
+                        backgroundContent = {
+                            Box(Modifier.fillMaxSize().testTag("overlay-background")) {
+                                Text("OverlayBg")
+                            }
+                        },
+                        overlayContent = {
+                            Box(Modifier.fillMaxSize().testTag("overlay-foreground")) {
+                                Text("OverlayFg")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        // 初始即处于打开态时不得在挂载首帧重复动画
+        compose.waitForIdle()
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x, 0.5f)
+
+        // 减少动态下手势拖动不产生横向位移与背景视差
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.6f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals(0f, compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x, 0.5f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-background").fetchSemanticsNode().positionInRoot.x, 0.5f)
+
+        // 提交关闭：执行 150ms 线性淡出（45ms 时仍保持挂载无位移，超过 150ms 后彻底卸载）
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeBy(45)
+        compose.waitForIdle()
+        assertEquals(1, dismissCalls)
+        assertEquals(
+            1,
+            compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().size,
+        )
+        assertTrue(
+            "减少动态关闭中段应处于 150ms 线性淡出: ${capturedController.openProgress.value}",
+            capturedController.openProgress.value in 0.05f..0.95f,
+        )
+        assertEquals(0f, compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x, 0.5f)
+
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertTrue(
+            compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().isEmpty(),
+        )
+
+        // 重新打开：走 150ms 无位移线性淡入（先让 LaunchedEffect 挂载覆盖层再推进 45ms 采样）
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { overlayOpen = true }
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(45)
+        compose.waitForIdle()
+        assertEquals(
+            1,
+            compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().size,
+        )
+        assertTrue(
+            "减少动态打开中段应处于 150ms 线性淡入: ${capturedController.openProgress.value}",
+            capturedController.openProgress.value in 0.05f..0.95f,
+        )
+        assertEquals(0f, compose.onNodeWithTag("overlay-foreground").fetchSemanticsNode().positionInRoot.x, 0.5f)
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        compose.onNodeWithTag("phone-fullscreen-settings-container").assertIsDisplayed()
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+    }
+
+    @Test
+    fun navPageTransitionDecorationDegradesSafelyAndAppliesEffectsSpecs() {
+        var page by mutableStateOf(0)
+        var reducedDecorationSame = false
+        var noScopeDecorationSame = false
+        val probeBase = Modifier.padding(2.dp)
+
+        compose.setContent {
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                reducedDecorationSame = probeBase.navPageTransitionDecoration(
+                    roleProvider = { NavPageTransitionRole.FOREGROUND },
+                    reduced = true,
+                ) === probeBase
+                noScopeDecorationSame = probeBase.navPageTransitionDecoration(
+                    roleProvider = { NavPageTransitionRole.BACKGROUND },
+                    reduced = false,
+                ) === probeBase
+
+                AnimatedContent(
+                    targetState = page,
+                    transitionSpec = {
+                        (AppTransitions.navEnter(false) togetherWith AppTransitions.navExit(false)).apply {
+                            targetContentZIndex = 1f
+                        }
+                    },
+                    label = "nav-decoration-test",
+                ) { target ->
+                    ProvideSharedVisibilityScope {
+                        val role = if (target == page) NavPageTransitionRole.FOREGROUND else NavPageTransitionRole.BACKGROUND
+                        Box(
+                            Modifier
+                                .size(200.dp)
+                                .background(MaterialTheme.colorScheme.surface)
+                                .navPageTransitionDecoration(
+                                    roleProvider = { role },
+                                    reduced = false,
+                                ),
+                        ) {
+                            Text("DecoratedPage $target")
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        assertTrue(reducedDecorationSame)
+        assertTrue(noScopeDecorationSame)
+        compose.onNodeWithText("DecoratedPage 0").assertIsDisplayed()
+
+        compose.runOnIdle { page = 1 }
+        compose.waitForIdle()
+        compose.onNodeWithText("DecoratedPage 1").assertIsDisplayed()
+    }
+
+    @Test
+    fun fullscreenOverlayConsumesBackgroundPointerReboundsBlockedCommitAndHonorsNullTagAndBridgeReduced() {
+        var backgroundClicks = 0
+        var dismissAttempts = 0
+        var bridgeReduced by mutableStateOf(false)
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var capturedController: PredictiveOverlayBackController
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = true,
+                        enabled = false,
+                        reduced = false,
+                        onDismiss = {},
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    capturedController = controller
+                    // 未传 overlayTestTag 时默认值为 null，不自动挂接默认 tag
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        backgroundContent = {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .clickable { backgroundClicks++ },
+                            ) {
+                                Text("BgButton")
+                            }
+                        },
+                        overlayContent = {
+                            PredictiveBackOverlayBridge(
+                                controller = controller,
+                                enabled = true,
+                                onDismiss = { dismissAttempts++ },
+                                reduced = bridgeReduced,
+                                sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                            )
+                            Box(Modifier.fillMaxSize().testTag("overlay-blank-surface")) {
+                                Text("OverlayContent")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().isEmpty())
+
+        // 1. 验证覆盖层空白区彻底拦截触摸事件，不穿透到底层背景点击事件
+        compose.onNodeWithTag("overlay-blank-surface").performTouchInput { click(center) }
+        compose.waitForIdle()
+        assertEquals("覆盖层未消费区域必须拦截点穿事件", 0, backgroundClicks)
+
+        // 2. 验证宿主未改变 overlayOpen 时，提交手势经过 3 帧窗口后仍能平滑回弹至全开态
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals(0.5f, capturedController.openProgress.value, 0.02f)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        assertEquals(1, dismissAttempts)
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-blank-surface").fetchSemanticsNode().positionInRoot.x, 0.5f)
+
+        // 3. 验证显式向 Bridge 传入 reduced = true 时，即使外层政策为 false 也不发生拖动位移
+        compose.runOnIdle { bridgeReduced = true }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-blank-surface").fetchSemanticsNode().positionInRoot.x, 0.5f)
     }
 }

@@ -2,10 +2,10 @@ package com.openandroidintelligence.conversation.workbench
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.horizontalScroll
@@ -22,6 +22,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,10 +52,12 @@ import com.openandroidintelligence.conversation.model.GenerationState
 import com.openandroidintelligence.conversation.model.StreamHealth
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.motion.EnsureSharedTransitionHost
+import com.openandroidintelligence.conversation.motion.FullscreenPredictiveSlideOverlay
 import com.openandroidintelligence.conversation.motion.MotionSpecs
+import com.openandroidintelligence.conversation.motion.NavPageTransitionRole
 import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
-import com.openandroidintelligence.conversation.motion.predictiveBackSlideTransform
-import com.openandroidintelligence.conversation.motion.rememberPredictiveBackState
+import com.openandroidintelligence.conversation.motion.navPageTransitionDecoration
+import com.openandroidintelligence.conversation.motion.rememberPredictiveOverlayBackController
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.state.Loadable
@@ -858,33 +861,54 @@ fun WorkbenchScreen(
             }
             onSettingsOpenChange(false)
         }
-        // 在 if (expanded) 之前稳定注册兜底预测返回，确保从宽屏折叠至 < 840dp 时
+        // 在 if (expanded) 之前稳定注册兜底预测返回与覆盖层控制器，确保从宽屏折叠至 < 840dp 时
         // 外层处理器始终处于 OnBackPressedDispatcher 栈底，不会压在 movableSettings 内部子页返回之上。
-        val phoneSettingsBackState = rememberPredictiveBackState(
+        val phoneOverlayController = rememberPredictiveOverlayBackController(
+            overlayOpen = settingsOpen,
             enabled = !expanded && settingsOpen,
-            onBack = dismissPhoneSettings,
+            reduced = reduceMotion,
+            onDismiss = dismissPhoneSettings,
         )
 
         // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
         // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
         if (expanded) {
+            val sidebarTransitionRoles = remember { mutableMapOf<SidebarPanel, NavPageTransitionRole>() }
             val tabletSidebarContent: @Composable () -> Unit = {
                 AnimatedContent(
                     targetState = sidebarPanel,
                     transitionSpec = {
                         if (targetState == SidebarPanel.SETTINGS) {
-                            AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
+                            sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
+                            sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
+                            (AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)).apply {
+                                targetContentZIndex = 1f
+                            }
                         } else {
-                            AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)
+                            sidebarTransitionRoles[SidebarPanel.CONVERSATIONS] = NavPageTransitionRole.BACKGROUND
+                            sidebarTransitionRoles[SidebarPanel.SETTINGS] = NavPageTransitionRole.FOREGROUND
+                            (AppTransitions.navPopEnter(reduceMotion) togetherWith AppTransitions.navPopExit(reduceMotion)).apply {
+                                targetContentZIndex = -1f
+                            }
                         }
                     },
                     modifier = Modifier.fillMaxSize(),
                     label = "tablet-sidebar-content",
                 ) { panel ->
                     ProvideSharedVisibilityScope {
-                        when (panel) {
-                            SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
-                            SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                .navPageTransitionDecoration(
+                                    roleProvider = { sidebarTransitionRoles[panel] },
+                                    reduced = reduceMotion,
+                                ),
+                        ) {
+                            when (panel) {
+                                SidebarPanel.CONVERSATIONS -> savedSidebarState.SaveableStateProvider(panel) { drawerContent() }
+                                SidebarPanel.SETTINGS -> movableSettings { onSettingsOpenChange(false) }
+                            }
                         }
                     }
                 }
@@ -892,6 +916,8 @@ fun WorkbenchScreen(
             Row(Modifier.fillMaxSize()) {
                 Box(
                     Modifier.width(Dimensions.DrawerWidth).fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                        .clipToBounds()
                         .windowInsetsPadding(sidebarInsets),
                 ) { tabletSidebarContent() }
                 VerticalDivider()
@@ -905,46 +931,31 @@ fun WorkbenchScreen(
             val latestPhoneDrawerContent by rememberUpdatedState(phoneDrawerContent)
             val movablePhoneDrawer = remember { movableContentOf { latestPhoneDrawerContent() } }
 
-            Box(Modifier.fillMaxSize()) {
-                ModalNavigationDrawer(
-                    drawerState = drawer,
-                    gesturesEnabled = !settingsOpen,
-                    drawerContent = {
-                        ModalDrawerSheet(
-                            modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
-                            windowInsets = sidebarInsets,
-                        ) {
-                            movablePhoneDrawer()
-                        }
-                    },
-                ) {
-                    movableMain()
-                }
-
-                // 手机端全屏侧滑设置页面：
-                // 从左向右滑入（起点 translationX = -screenWidth，终点 translationX = 0）
-                // 退出时向左滑出（起点 translationX = 0，终点 translationX = -screenWidth）
-                // 覆盖整个应用窗口，宽度为全部可用宽度，高度填满整个内容区域，无右侧残留会话或背景遮罩空隙
-                AnimatedVisibility(
-                    visible = settingsOpen,
-                    enter = AppTransitions.modalEnter(reduceMotion),
-                    exit = AppTransitions.modalExit(reduceMotion),
-                    modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
-                ) {
-                    ProvideSharedVisibilityScope {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .predictiveBackSlideTransform(
-                                    stateProvider = { phoneSettingsBackState.value },
-                                    reduced = reduceMotion,
-                                ),
-                        ) {
-                            movableSettings(dismissPhoneSettings)
-                        }
+            FullscreenPredictiveSlideOverlay(
+                controller = phoneOverlayController,
+                reduced = reduceMotion,
+                modifier = Modifier.fillMaxSize(),
+                overlayTestTag = "phone-fullscreen-settings-container",
+                backgroundContent = {
+                    ModalNavigationDrawer(
+                        drawerState = drawer,
+                        gesturesEnabled = !settingsOpen,
+                        drawerContent = {
+                            ModalDrawerSheet(
+                                modifier = Modifier.width(Dimensions.DrawerWidth).testTag("workbench-drawer"),
+                                windowInsets = sidebarInsets,
+                            ) {
+                                movablePhoneDrawer()
+                            }
+                        },
+                    ) {
+                        movableMain()
                     }
-                }
-            }
+                },
+                overlayContent = {
+                    movableSettings(dismissPhoneSettings)
+                },
+            )
         }
 
         if (showAttachmentLibrary) {

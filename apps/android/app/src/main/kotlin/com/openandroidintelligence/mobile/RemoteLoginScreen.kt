@@ -121,7 +121,7 @@ internal fun RemoteLoginScreen(
         }
     }
 
-    Box(modifier.fillMaxSize().statusBarsPadding().imePadding().navigationBarsPadding(),
+    Box(modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface).statusBarsPadding().imePadding().navigationBarsPadding(),
         contentAlignment = Alignment.TopCenter) {
         Column(
             Modifier.widthIn(max = Dimensions.FormWidth).fillMaxWidth()
