@@ -62,6 +62,7 @@ class RemoteRuntime(
     private val recoveryPolicy: ConnectionRecoveryPolicy = ConnectionRecoveryPolicy(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val delayFn: suspend (Long) -> Unit = { delay(it) },
+    private val coldStartOnInit: Boolean = true,
 ) {
     private val stateLock = Any()
     private val mutableAgentConnection = MutableStateFlow(AgentConnectionState())
@@ -88,6 +89,7 @@ class RemoteRuntime(
     private var reconnectLoopJob: Job? = null
     private val hydrationJob = AtomicReference<Job?>(null)
     private var coldStartBootstrapped = false
+    private val foregroundBootstrap by lazy { bootstrapColdStartCacheFirst() }
 
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
     private val cachedWorkspacesByAgent = LinkedHashMap<AgentKey, List<RemoteWorkspace>>()
@@ -200,7 +202,7 @@ class RemoteRuntime(
                 replyNotifications.allowed,
             ) { _, _, _ -> Unit }.collect { refreshBackgroundWork() }
         }
-        bootstrapColdStartCacheFirst()
+        if (coldStartOnInit) prepareForUi()
     }
 
     private fun putCachedWorkspaces(agentKey: AgentKey, workspaces: List<RemoteWorkspace>) {
@@ -385,6 +387,9 @@ class RemoteRuntime(
             runColdStartGracefulRecovery(cachedAccount, savedWorkspace)
         }
     }
+
+    /** UI 在首帧读取缓存前显式进入普通恢复；后台待命只创建运行时，不调用此入口。 */
+    internal fun prepareForUi() = foregroundBootstrap
 
     private class OfflineWorkspaceHandle(
         val owner: CompletableJob,
@@ -2865,6 +2870,8 @@ class RemoteRuntime(
     }
 
     fun onAppForegrounded() {
+        // 系统待命可在后台创建本运行时；只有真正进入前台后才允许执行通用冷启动恢复。
+        prepareForUi()
         accountRuntime.refreshControlConnection()
         synchronized(backgroundOwnership) { foreground = true }
         replyNotifications.refreshPermission()

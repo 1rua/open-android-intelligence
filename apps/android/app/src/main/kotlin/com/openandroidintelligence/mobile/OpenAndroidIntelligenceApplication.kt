@@ -79,23 +79,28 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
 
     /** 进程级 Remote 连接运行时。 */
     private val remoteScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val remoteRuntime: RemoteRuntime by lazy {
-        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants)
+    internal val backgroundRemoteRuntime: RemoteRuntime by lazy {
+        // 后台待命可先创建此实例；普通冷启动由下面面向 UI 的 getter 显式触发。
+        RemoteRuntime(this, remoteScope, pluginHost, pairingGrants, coldStartOnInit = false)
     }
+
+    /** 既有 UI 调用保持原样；首次读取时同步准备缓存首帧，之后保持幂等。 */
+    val remoteRuntime: RemoteRuntime
+        get() = backgroundRemoteRuntime.also { it.prepareForUi() }
 
     val pluginRuntimesWired: Boolean get() = ::pluginHost.isInitialized && pluginHost.runtimes.isNotEmpty()
 
     private val gatewayNetworkMonitor by lazy {
         GatewayNetworkMonitor(
             context = this,
-            onAvailable = { remoteRuntime.onNetworkAvailable() },
-            onLost = { remoteRuntime.onNetworkLost() },
-            onRouteChanged = { remoteRuntime.onNetworkAvailable(routeChanged = true) },
+            onAvailable = { backgroundRemoteRuntime.onNetworkAvailable() },
+            onLost = { backgroundRemoteRuntime.onNetworkLost() },
+            onRouteChanged = { backgroundRemoteRuntime.onNetworkAvailable(routeChanged = true) },
         )
     }
 
     override suspend fun restoreHostStandby(): kotlinx.coroutines.flow.StateFlow<Boolean> {
-        val account = remoteRuntime.accountRuntime
+        val account = backgroundRemoteRuntime.accountRuntime
         account.restoreForStandby()
         if (account.hostStandby.value) gatewayNetworkMonitor.start()
         return account.hostStandby
@@ -103,12 +108,12 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
 
     /** Only an eligible, already foregrounded service reaches this recovery path. */
     internal fun onBackgroundSessionRestarted() {
-        remoteRuntime.onBackgroundSessionRestarted()
+        backgroundRemoteRuntime.onBackgroundSessionRestarted()
         gatewayNetworkMonitor.start()
     }
 
     internal fun onBackgroundSessionStopped() {
-        remoteRuntime.onBackgroundSessionStopped()
+        backgroundRemoteRuntime.onBackgroundSessionStopped()
     }
 
     fun platformSettingsEnvironment(): PlatformSettingsEnvironment = PlatformSettingsEnvironment(
@@ -176,7 +181,7 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
         devicePush = DevicePushComposition(this,installId).also { it.start() }
         val visibility = ProcessLifecycleOwner.get().lifecycle.currentStateFlow
         remoteScope.launch {
-            combine(remoteRuntime.accountRuntime.hostStandby, visibility) { eligible, state ->
+            combine(backgroundRemoteRuntime.accountRuntime.hostStandby, visibility) { eligible, state ->
                 eligible && state.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
             }.startVisibleHostStandby {
                 RemoteHostStandbyService.requestStart(this@OpenAndroidIntelligenceApplication)
@@ -212,14 +217,14 @@ class OpenAndroidIntelligenceApplication : Application(), RemoteStandbyOwner {
             object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
                     gatewayNetworkMonitor.start()
-                    remoteRuntime.onAppForegrounded()
+                    backgroundRemoteRuntime.onAppForegrounded()
                     devicePush?.onVisibilityChanged(true)
                     remoteScope.launch(Dispatchers.IO) {
                         runCatching { pluginHost.reconcileNotificationPolicyGrant() }
                     }
                 }
                 override fun onStop(owner: LifecycleOwner) {
-                    remoteRuntime.onAppBackgrounded()
+                    backgroundRemoteRuntime.onAppBackgrounded()
                     devicePush?.onVisibilityChanged(false)
                 }
             },

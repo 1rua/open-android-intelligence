@@ -20,6 +20,8 @@ import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.emptyFlow
 import okhttp3.*
@@ -38,7 +40,8 @@ class RemoteClientControlLifecycleTest {
         private val keys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
         private val failSealOnce = AtomicBoolean(false)
         val failedSeals = AtomicInteger()
-        override fun hasKey(scopeKey: String) = scopeKey in keys
+        @Volatile var lockedScope: String? = null
+        override fun hasKey(scopeKey: String) = scopeKey in keys && scopeKey != lockedScope
         fun failNextSeal() { failSealOnce.set(true) }
         override fun seal(scopeKey: String, plaintext: ByteArray, associatedData: ByteArray): ByteArray {
             if (failSealOnce.compareAndSet(true, false)) {
@@ -57,9 +60,26 @@ class RemoteClientControlLifecycleTest {
     private data class Hello(val socket: WebSocket, val payload: JsonValue.JObject) {
         val role: String get() = payload.requiredText("role")
     }
-    private class Fixture(private val hostHandler: RemoteRpcHostHandler? = null) : AutoCloseable {
+    /** 只挂起第一个任务（Client 账号循环）的首次恢复，收包协程仍能处理服务端关闭。 */
+    private class HandshakeGate : CoroutineDispatcher() {
+        private val worker = Dispatchers.Default.limitedParallelism(1)
+        val armed = AtomicBoolean(false)
+        val owner = AtomicReference<Job>()
+        val resumeOwner = CompletableDeferred<Runnable>()
+
+        override fun dispatch(context: CoroutineContext, block: Runnable) {
+            val job = context.job
+            val first = owner.compareAndSet(null, job)
+            val account = owner.get()
+            if (armed.get() && !first && (job === account || account.children.any { it === job }) &&
+                resumeOwner.complete(Runnable { worker.dispatch(context, block) })) return
+            worker.dispatch(context, block)
+        }
+    }
+    private class Fixture(private val hostHandler: RemoteRpcHostHandler? = null,
+        dispatcher: CoroutineDispatcher = Dispatchers.Default, private val beforeClientAck: () -> Unit = {}) : AutoCloseable {
         val server = MockWebServer()
-        val parent = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val parent = CoroutineScope(SupervisorJob() + dispatcher)
         val sockets = CopyOnWriteArrayList<WebSocket>()
         val registrations = CopyOnWriteArrayList<JsonValue.JObject>()
         val registrationAuthorizations = CopyOnWriteArrayList<String>()
@@ -174,6 +194,7 @@ class RemoteClientControlLifecycleTest {
                                             "payload" to obj("code" to "TOKEN_EXPIRED", "message" to "TOKEN_EXPIRED", "retryable" to false))))
                                         return
                                     }
+                                    if (role == "client") beforeClientAck()
                                     // 来自固定 server/gateway.ts 的 hello.ack 字段；短间隔只压缩反馈周期。
                                     socket.send(Json.canonical(obj("v" to 1, "id" to "ack", "type" to "hello.ack", "timestamp" to 1,
                                         "payload" to obj("protocol" to 1, "serverVersion" to "self-hosted/0.1.0", "connectionSessionId" to "$role-session-${sockets.size}",
@@ -216,11 +237,19 @@ class RemoteClientControlLifecycleTest {
         }
         private fun newRuntime() = RemoteAccountRuntime(RuntimeEnvironment.getApplication(), accountScope,
             hostHandler, vault = vault, protector = protector)
-        suspend fun restartAccountProcess() {
+        suspend fun restartAccountProcess(restore: Boolean = true) {
             accountScope.coroutineContext.job.cancelAndJoin()
             accountScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
             runtime = newRuntime()
-            runtime.restore()
+            if (restore) runtime.restore()
+        }
+        fun lockClientKey(locked: Boolean) {
+            val active = requireNotNull(runtime.account.value)
+            protector.lockedScope = if (locked) RemoteIdentityScope(active.origin, active.accountId, RemoteRole.CLIENT).storageKey else null
+        }
+        fun lockHostKey(locked: Boolean) {
+            val active = requireNotNull(runtime.account.value)
+            protector.lockedScope = if (locked) RemoteIdentityScope(active.origin, active.accountId, RemoteRole.HOST).storageKey else null
         }
         fun corrupt(role: RemoteRole) {
             val active = requireNotNull(runtime.account.value)
@@ -425,6 +454,23 @@ class RemoteClientControlLifecycleTest {
             assertEquals(helloCount, fixture.hellosFor("host").size)
             assertEquals(RemoteHostConnectionState.FAILED, fixture.runtime.hostState.value)
             assertEquals("DEVICE_REVOKED", fixture.runtime.hostFailure.value?.code)
+        }
+    }
+
+    @Test fun Client握手确认后在线发布前被替代只保留首次关闭原因(): Unit = runBlocking {
+        val gate = HandshakeGate()
+        Fixture(dispatcher = gate, beforeClientAck = { gate.armed.set(true) }).use { fixture ->
+            fixture.login()
+            val resume = withTimeout(5_000) { gate.resumeOwner.await() }
+            try {
+                await { fixture.pongs.get() > 0 }
+                assertEquals(RemoteAccountConnectionState.CONNECTING, fixture.runtime.state.value)
+                assertTrue(fixture.hellosFor("client").single().socket.close(4003, "replaced"))
+                await { fixture.accountJobs.all { it === gate.owner.get() } }
+            } finally { resume.run() }
+            await { fixture.runtime.clientFailure.value != null || fixture.hellosFor("client").size > 1 }
+            assertEquals("握手后被接管不能再抢占 Client", 1, fixture.hellosFor("client").size)
+            assertEquals("CONNECTION_REPLACED", fixture.runtime.clientFailure.value)
         }
     }
 
@@ -652,6 +698,28 @@ class RemoteClientControlLifecycleTest {
         }
     }
 
+    @Test fun 冷启动时已登记Client的密钥解锁后恢复握手(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+            fixture.lockClientKey(true)
+            fixture.restartAccountProcess()
+            await { fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE }
+            assertEquals(1, fixture.hellosFor("client").size)
+            fixture.lockClientKey(false)
+            fixture.runtime.refreshControlConnection()
+            fixture.runtime.restore()
+            await("Client 解锁后未恢复握手", { "clientFailure=${fixture.runtime.clientFailure.value}" }) {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.hellosFor("client").size == 2
+            }
+            assertNull(fixture.runtime.clientFailure.value)
+            assertEquals(2, fixture.hellosFor("host").size)
+            assertEquals(2, fixture.registrations.size)
+            assertTrue(fixture.refreshRequests.isEmpty())
+        }
+    }
+
     @Test fun 单角色密文损坏时仍恢复另一侧的已登记身份(): Unit = runBlocking {
         for (bad in RemoteRole.entries) Fixture(EmptyHostHandler()).use { f ->
             f.login()
@@ -728,6 +796,109 @@ class RemoteClientControlLifecycleTest {
             assertEquals(listOf("host"), fixture.rejectedRegistrationRoles)
             await { fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED && fixture.hellosFor("client").size == 1 }
             assertTrue(fixture.hellosFor("host").isEmpty())
+        }
+    }
+
+    @Test fun 待命恢复仅有Client凭据时不得新增Client握手(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.rejectHostRegistration = true
+            val result = fixture.login()
+            assertEquals(RemoteRoleRegistrationState.REGISTERED, result.client.state)
+            assertEquals(RemoteRoleRegistrationState.FAILED, result.host.state)
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.hellosFor("client").size == 1
+            }
+            assertTrue(fixture.hellosFor("host").isEmpty())
+
+            fixture.restartAccountProcess(restore = false)
+            val clientHellosBefore = fixture.hellosFor("client").size
+            fixture.runtime.restoreForStandby()
+            withTimeoutOrNull(1_000) {
+                while (fixture.hellosFor("client").size == clientHellosBefore) delay(10)
+            }
+            assertEquals("Host 未授权时，待命检查不得新增 Client 握手", clientHellosBefore,
+                fixture.hellosFor("client").size)
+            assertFalse(fixture.runtime.hostStandby.value)
+            fixture.runtime.refreshControlConnection()
+            delay(200)
+            assertEquals("网络恢复刷新不能绕过 Host-only 待命门闩", clientHellosBefore,
+                fixture.hellosFor("client").size)
+        }
+    }
+
+    @Test fun 双角色后台待命后进入前台只补Client且不重复Host(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 1 && fixture.hellosFor("host").size == 1
+            }
+
+            fixture.restartAccountProcess(restore = false)
+            val clientHellosBefore = fixture.hellosFor("client").size
+            val hostHellosBefore = fixture.hellosFor("host").size
+            fixture.runtime.restoreForStandby()
+            withTimeoutOrNull(1_000) {
+                while (fixture.hellosFor("client").size == clientHellosBefore) delay(10)
+            }
+            assertEquals("后台待命不能启动 Client 普通恢复", clientHellosBefore,
+                fixture.hellosFor("client").size)
+            await {
+                fixture.runtime.hostStandby.value &&
+                    fixture.hellosFor("host").size == hostHellosBefore + 1
+            }
+            fixture.runtime.refreshControlConnection()
+            delay(200)
+            assertEquals("Host 已待命时网络恢复仍不能启动 Client", clientHellosBefore,
+                fixture.hellosFor("client").size)
+
+            fixture.runtime.restore()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == clientHellosBefore + 1 &&
+                    fixture.hellosFor("host").size == hostHellosBefore + 1
+            }
+            assertEquals(clientHellosBefore + 1, fixture.hellosFor("client").size)
+            assertEquals("进入前台不能重复启动已经在线的 Host", hostHellosBefore + 1,
+                fixture.hellosFor("host").size)
+        }
+    }
+
+    @Test fun Host凭据暂锁时待命保持在线门闩且解锁后只重读Host(): Unit = runBlocking {
+        Fixture(EmptyHostHandler()).use { fixture ->
+            fixture.login()
+            await {
+                fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
+                    fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("client").size == 1 && fixture.hellosFor("host").size == 1
+            }
+            fixture.lockHostKey(true)
+            fixture.restartAccountProcess(restore = false)
+            val clientHellosBefore = fixture.hellosFor("client").size
+            val hostHellosBefore = fixture.hellosFor("host").size
+
+            fixture.runtime.restoreForStandby()
+            await {
+                fixture.runtime.hostStandby.value &&
+                    fixture.runtime.hostFailure.value?.code == "REMOTE_IDENTITY_LOCKED"
+            }
+            assertEquals("Host 暂锁时待命不能启动 Client", clientHellosBefore,
+                fixture.hellosFor("client").size)
+
+            fixture.lockHostKey(false)
+            fixture.runtime.refreshControlConnection()
+            await {
+                fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE &&
+                    fixture.hellosFor("host").size == hostHellosBefore + 1
+            }
+            assertEquals("Host 解锁后应重读原凭据上线", hostHellosBefore + 1,
+                fixture.hellosFor("host").size)
+            assertEquals("Host 解锁重读仍不能启动 Client", clientHellosBefore,
+                fixture.hellosFor("client").size)
+            assertTrue(fixture.runtime.hostStandby.value)
         }
     }
 

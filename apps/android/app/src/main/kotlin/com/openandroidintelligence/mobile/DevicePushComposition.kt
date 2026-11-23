@@ -51,7 +51,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
             }
         })
     }.getOrElse { issue.value = "PUSH_ENCRYPTED_STATE_UNAVAILABLE"; null }
-    private val transport = runtime?.let { RemotePushTransport(it,app.remoteRuntime::borrowPushSession,identity::isCurrent) }
+    private val transport = runtime?.let { RemotePushTransport(it,app.backgroundRemoteRuntime::borrowPushSession,identity::isCurrent) }
     private val recipientAuthorizer=runtime?.let(::RemotePushRecipientAuthorizer)
     private val emergencyObserver=com.openandroidintelligence.control.remote.PhoneLocalControlUiRegistry.observeEmergencyStop {
         runtime?.revokeRemoteRecipients()
@@ -179,7 +179,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
     fun onVisibilityChanged(visible: Boolean) {
         if (visible && loginObserver == null) {
             loginObserver = scope.launch {
-                app.remoteRuntime.state.collectLatest { synchronizeLogin();kick() }
+                app.backgroundRemoteRuntime.state.collectLatest { synchronizeLogin();kick() }
             }
         }
         visibleJob?.cancel()
@@ -211,7 +211,7 @@ class DevicePushComposition(private val app: OpenAndroidIntelligenceApplication,
         val loggedIn=synchronizeLogin()
         local.maintain()
         if (!loggedIn) { _endpoints.value=emptyList();return@withLock true }
-        val current=app.remoteRuntime.borrowPushSession()
+        val current=app.backgroundRemoteRuntime.borrowPushSession()
         _endpoints.value=current?.let { listOf(PushEndpointOption(it.target.endpoint(),it.label,it.isCurrent())) }.orEmpty()
         var moreSmsPages=false
         if (local.isCollectionAllowed(PushKind.NOTIFICATION)) DevicePushSourcesRegistry.current?.captureActiveNotifications()

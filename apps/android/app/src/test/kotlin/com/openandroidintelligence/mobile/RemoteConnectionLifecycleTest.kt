@@ -78,6 +78,7 @@ class RemoteConnectionLifecycleTest {
         customScope: CoroutineScope = scope,
         customAccount: FakeAccountConnection = account,
         customKeyProvider: AesGcmKeyProvider = key,
+        coldStartOnInit: Boolean = true,
     ): RemoteRuntime {
         val audit = AndroidAuditStore(InMemoryAuditSink())
         grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
@@ -107,6 +108,7 @@ class RemoteConnectionLifecycleTest {
             localDocumentKeyProvider = customKeyProvider,
             recoveryPolicy = policy,
             delayFn = delayFn,
+            coldStartOnInit = coldStartOnInit,
         )
     }
 
@@ -182,6 +184,42 @@ class RemoteConnectionLifecycleTest {
             assertEquals(1, coldAccount.restoreCalls)
         } finally {
             firstRestore.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `后台待命初始化不触发通用恢复而UI准备后仍同步启动首帧恢复`() = runBlocking {
+        val cachedAccount = RemoteActiveAccount(origin, accountId, 7)
+        val restoredAccount = cachedAccount.copy(epoch = 8)
+        val releaseRestore = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            restorableAccount = cachedAccount
+            restoreResult = restoredAccount
+            restoreGate = releaseRestore
+            state.value = RemoteAccountConnectionState.SIGNED_OUT
+            hostState.value = RemoteHostConnectionState.STOPPED
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Unconfined)
+        val coldRuntime = buildRuntime(customScope = coldScope, customAccount = coldAccount, coldStartOnInit = false)
+        try {
+            assertEquals("后台只创建运行时时不能启动普通恢复", 0, coldAccount.restoreCalls)
+
+            coldRuntime.prepareForUi()
+            assertEquals("UI 读取缓存前必须同步进入普通恢复", 1, coldAccount.restoreCalls)
+            coldRuntime.prepareForUi()
+            coldRuntime.onAppForegrounded()
+            assertEquals("UI 与生命周期重复进入必须幂等", 1, coldAccount.restoreCalls)
+
+            releaseRestore.complete(Unit)
+            eventually { coldRuntime.agentConnection.value.account == restoredAccount }
+            assertNull(coldRuntime.agentConnection.value.activeAgent)
+            assertEquals(0, coldAccount.connectCalls)
+            assertEquals(1, coldAccount.restoreCalls)
+        } finally {
+            releaseRestore.complete(Unit)
             coldRuntime.logout().join()
             coldRoot.cancelAndJoin()
         }

@@ -77,7 +77,7 @@ internal class ProductionRemoteAccountConnection(context: Context, scope: Corout
     override fun peekRestorableAccount(): RemoteActiveAccount? = runtime.peekRestorableAccount()
     override suspend fun restoreForStandby(): RemoteActiveAccount? {
         registration.awaitRegistration()
-        return runtime.restore()
+        return runtime.restoreForStandby()
     }
     override suspend fun restore() = runtime.restore()
     override suspend fun listHosts() = runtime.listHosts()

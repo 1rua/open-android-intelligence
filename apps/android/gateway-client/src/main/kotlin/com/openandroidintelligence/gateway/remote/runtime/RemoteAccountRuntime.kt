@@ -57,6 +57,7 @@ class RemoteAccountRuntime(
     private var host: RemoteHostControl? = null
     @Volatile private var client: RemoteSignalService? = null
     @Volatile private var clientJob: Job? = null
+    @Volatile private var standbyAwaitingForeground: RemoteActiveAccount? = null
     private var clientAvailable = CompletableDeferred<RemoteSignalService>()
     private val presenceRefresh = Mutex()
     private val selectionGeneration = java.util.concurrent.atomic.AtomicLong(0)
@@ -165,7 +166,18 @@ class RemoteAccountRuntime(
         mutableAccount.value ?: runCatching { vault.activeAccount() }.getOrNull()
 
     suspend fun restore(): RemoteActiveAccount? = lifecycle.withLock {
-        if (mutableAccount.value != null) return@withLock mutableAccount.value
+        val current = mutableAccount.value
+        if (current != null) {
+            // 待命恢复只启动 Host；普通前台恢复在这里补齐尚未启动的 Client。
+            if (standbyAwaitingForeground == current && mutableClientFailure.value == null) {
+                val failures = vault.roleFailures(current)
+                val client = readStoredRole(current, RemoteRole.CLIENT)
+                val clientError = clientRoleError(failures, client)
+                startClientRole(current, clientError)
+                standbyAwaitingForeground = null
+            }
+            return@withLock current
+        }
         val active = vault.activeAccount() ?: return@withLock null
         val server = server(active.origin)
         val failures = vault.roleFailures(active)
@@ -181,8 +193,8 @@ class RemoteAccountRuntime(
         currentCoroutineContext().ensureActive()
         vault.requireCurrent(active)
         api = server; mutableAccount.value = active
-        startClientRole(active, failures.clientStop
-            ?: if (client.first != null) null else client.second ?: failures.clientRegistration ?: "REMOTE_CREDENTIAL_MISSING")
+        val clientError = clientRoleError(failures, client)
+        startClientRole(active, clientError)
         when {
             failures.hostStop != null -> publishHost(RemoteHostConnectionState.FAILED, failures.hostStop)
             hostCredential != null || hostReceipt.second == "REMOTE_IDENTITY_LOCKED" -> startHost(active, server)
@@ -192,6 +204,50 @@ class RemoteAccountRuntime(
                 RemoteHostFailure(RemoteHostFailureStage.REGISTRATION, failures.hostRegistration))
         }
         active
+    }
+
+    /**
+     * 开机、覆盖安装和系统服务重建只核对并恢复 Host 角色，不触发 Client 普通冷启动。
+     * 这里必须在启动 Host 前完成本地授权与角色终态检查，避免后台流程进入 UI 恢复链路。
+     */
+    suspend fun restoreForStandby(): RemoteActiveAccount? = lifecycle.withLock {
+        mutableAccount.value?.let { return@withLock it }
+        val active = vault.activeAccount() ?: return@withLock null
+        val failures = vault.roleFailures(active)
+        if (failures.hostStop != null || failures.hostRegistration != null) return@withLock null
+        val hostReceipt = readStoredRole(active, RemoteRole.HOST)
+        val hostCredential = hostReceipt.first
+        val hostTemporarilyLocked = hostReceipt.second == "REMOTE_IDENTITY_LOCKED"
+        if (hostCredential == null && !hostTemporarilyLocked) return@withLock null
+        // 暂锁不是撤销或永久损坏；已有安装身份时保留 Host 保持任务，等待重读解锁。
+        if (installation.existingIdentities() == null) {
+            if (hostCredential == null) return@withLock null
+            // 迁移安装密钥时只读取另一角色用于保留旧身份，不启动 Client。
+            val clientReceipt = readStoredRole(active, RemoteRole.CLIENT)
+            clientReceipt.second?.let { throw RemoteRpcException(it) }
+            installation.loadOrCreate(clientReceipt.first?.identity, hostCredential.identity)
+        }
+        currentCoroutineContext().ensureActive()
+        vault.requireCurrent(active)
+        val server = server(active.origin)
+        // 账号可被网络监听器看到前，先限定这次后台恢复只运行 Host。
+        standbyAwaitingForeground = active
+        api = server
+        mutableClientFailure.value = null
+        mutableState.value = RemoteAccountConnectionState.DISCONNECTED
+        mutableAccount.value = active
+        startHost(active, server)
+        active
+    }
+
+    /** Client 的前台启动判定；暂锁、终态与缺凭据的优先级只在这里维护。 */
+    private fun clientRoleError(
+        failures: RemoteCredentialVault.RoleFailures,
+        client: Pair<RemoteRoleCredential?, String?>,
+    ): String? = failures.clientStop ?: when {
+        client.first != null -> null
+        client.second == "REMOTE_IDENTITY_LOCKED" -> failures.clientRegistration
+        else -> client.second ?: failures.clientRegistration ?: "REMOTE_CREDENTIAL_MISSING"
     }
     private fun readStoredRole(active: RemoteActiveAccount, role: RemoteRole): Pair<RemoteRoleCredential?, String?> = try {
         store.load(RemoteIdentityScope(active.origin, active.accountId, role)) to null
@@ -351,15 +407,21 @@ class RemoteAccountRuntime(
                             mutableState.value = RemoteAccountConnectionState.CONNECTING
                         }
                         current.startClient()
-                        synchronized(selectionLock) {
+                        val online = synchronized(selectionLock) {
                             requireActive(active)
-                            if (!current.connected) throw RemoteRpcException("TRANSPORT_CLOSED")
-                            mutableState.value = RemoteAccountConnectionState.CONNECTED
-                            clientAvailable.complete(current)
+                            val connected = current.connected
+                            if (connected) {
+                                mutableState.value = RemoteAccountConnectionState.CONNECTED
+                                clientAvailable.complete(current)
+                            }
+                            connected
                         }
-                        retry = 1_000L
-                        refreshedAfterRejection = false
-                        scope.launch { refreshPresence(active) }
+                        if (online) {
+                            retry = 1_000L
+                            refreshedAfterRejection = false
+                            scope.launch { refreshPresence(active) }
+                        }
+                        // 握手确认后也可能立即被接管，是否重连由该连接的首次关闭原因决定。
                         RemoteRpcException(safeClientErrorCode(ended.await(), "TRANSPORT_CLOSED"))
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (error: Exception) {
@@ -467,8 +529,9 @@ class RemoteAccountRuntime(
         synchronized(selectionLock) {
             if (mutableAccount.value != active) return
             if (mutableHostState.value == RemoteHostConnectionState.FAILED) host?.wake()
-            // 只有已经由授权登录或恢复启动过的 Client 才能重启，避免仅 Host 获授权时创建空转任务。
-            if (mutableClientFailure.value == null) {
+            // 只有同一账号仍停留在 Host-only 待命时才阻断 Client；普通账号即使旧 job
+            // 已清空，也继续允许网络恢复重新启动 Client。
+            if (standbyAwaitingForeground != active && mutableClientFailure.value == null) {
                 val job = clientJob
                 if (job == null || !job.isActive) startClient(active)
                 refreshClient = true

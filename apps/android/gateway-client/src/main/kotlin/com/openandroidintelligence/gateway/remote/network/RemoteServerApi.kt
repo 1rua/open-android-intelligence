@@ -17,6 +17,7 @@ import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -87,21 +88,33 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         } while (cursor != null)
         // 固定上游插件 devices() 单独查询 presence；目录允许不带 online，不能据此判为离线。
         val concurrency = Semaphore(8)
-        return coroutineScope {
+        // presence 的目标撤销与调用者撤销共用同一错误码，整批完成后只复核一次调用者。
+        val callerCheckRequired = AtomicBoolean(false)
+        val devices = coroutineScope {
             items.map { device -> async {
                 concurrency.withPermit {
                     val online = try { presence(accessToken, device.deviceId) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) {
-                        // 目录和 presence 同用 Client 票据。票据被拒时交给账号层续期，单台离线只影响该行。
-                        if (failure is RemoteRpcException && failure.code in setOf("TOKEN_EXPIRED", "AUTH_INVALID", "TOKEN_REUSED", "DEVICE_REVOKED")) throw failure
-                        java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
-                        false
+                        when ((failure as? RemoteRpcException)?.code) {
+                            // 目录和 presence 同用 Client 票据。票据被拒时交给账号层续期。
+                            "TOKEN_EXPIRED", "AUTH_INVALID", "TOKEN_REUSED" -> throw failure
+                            "DEVICE_REVOKED" -> {
+                                callerCheckRequired.set(true)
+                                false
+                            }
+                            else -> {
+                                java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
+                                false
+                            }
+                        }
                     }
                     device.copy(online = online)
                 }
             } }.awaitAll()
         }
+        if (callerCheckRequired.get()) request("GET", "/api/v1/me", accessToken).objectValue()
+        return devices
     }
     suspend fun presence(accessToken: String, deviceId: String): Boolean {
         val value = request("GET", "/api/v1/devices/${encode(deviceId)}/presence", accessToken).objectValue()

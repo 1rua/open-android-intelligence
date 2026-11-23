@@ -74,17 +74,20 @@ class RemoteServerApiTest {
     }
     @Test fun 上游目录无online时必须查询presence且以独立在线事实为准() = runBlocking {
         Server().use { fixture ->
+            val token = "a".repeat(16)
             // 来自固定 ea1c0925 packages/plugin/tests/server-api.test.ts 的 host(0)，没有 online 字段。
             fixture.route("/api/v1/devices") { obj("items" to listOf(obj("deviceId" to "host-0", "role" to "host",
                 "name" to "Host 0", "platform" to "linux", "membershipId" to "member-0")), "nextCursor" to null) }
             var online = true
             fixture.route("/api/v1/devices/host-0/presence") { obj("online" to online) }
+            fixture.route("/api/v1/me", 500) { obj("error" to obj("code" to "INTERNAL_ERROR")) }
             val api = RemoteServerApi(fixture.origin)
-            assertTrue(api.listHosts("a".repeat(16)).single().online)
+            assertTrue(api.listHosts(token).single().online)
             online = false
-            assertFalse(api.listHosts("a".repeat(16)).single().online)
+            assertFalse(api.listHosts(token).single().online)
             assertEquals(2, fixture.requests.count { it.first == "/api/v1/devices/host-0/presence" })
-            assertTrue(fixture.requests.all { it.second == "Bearer ${"a".repeat(16)}" })
+            assertEquals(0, fixture.requests.count { it.first == "/api/v1/me" })
+            assertTrue(fixture.requests.all { it.second == "Bearer $token" })
         }
     }
     @Test fun presence拒绝账号票时目录返回可续期的错误() = runBlocking {
@@ -102,6 +105,73 @@ class RemoteServerApiTest {
                 "platform" to "linux", "membershipId" to "member-0", "online" to true))) }
             fixture.route("/api/v1/devices/host-0/presence", 503) { obj("error" to obj("code" to "CONNECTION_FAILED")) }
             assertFalse(RemoteServerApi(fixture.origin).listHosts("a".repeat(16)).single().online)
+        }
+    }
+    @Test fun 单个目标Host撤销时并发的健康Host仍在线() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "revoked-host", "name" to "已撤销", "platform" to "linux", "membershipId" to "member-0"),
+                obj("deviceId" to "healthy-host-1", "name" to "健康主机 1", "platform" to "linux", "membershipId" to "member-1"),
+                obj("deviceId" to "healthy-host-2", "name" to "健康主机 2", "platform" to "linux", "membershipId" to "member-2"),
+            )) }
+            fixture.route("/api/v1/devices/revoked-host/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            fixture.route("/api/v1/devices/healthy-host-1/presence") { obj("online" to true) }
+            fixture.route("/api/v1/devices/healthy-host-2/presence") { obj("online" to true) }
+            fixture.route("/api/v1/me") { obj("status" to "ok") }
+
+            val hosts = RemoteServerApi(fixture.origin).listHosts(token).associateBy { it.deviceId }
+
+            assertEquals(setOf("revoked-host", "healthy-host-1", "healthy-host-2"), hosts.keys)
+            assertFalse(hosts.getValue("revoked-host").online)
+            assertTrue(hosts.getValue("healthy-host-1").online)
+            assertTrue(hosts.getValue("healthy-host-2").online)
+            val presenceRequests = fixture.requests.filter { it.first.endsWith("/presence") }
+            assertEquals(3, presenceRequests.size)
+            assertEquals(1, fixture.requests.count { it.first == "/api/v1/me" })
+            assertTrue(fixture.requests.all { it.second == "Bearer $token" })
+        }
+    }
+    @Test fun 调用者撤销时只执行一次账号级复核并透出错误() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "host-1", "name" to "主机 1", "platform" to "linux", "membershipId" to "member-1"),
+                obj("deviceId" to "host-2", "name" to "主机 2", "platform" to "linux", "membershipId" to "member-2"),
+            )) }
+            fixture.route("/api/v1/me", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            for (host in listOf("host-1", "host-2")) {
+                fixture.route("/api/v1/devices/$host/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            }
+
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts(token) }.exceptionOrNull()
+
+            assertEquals("DEVICE_REVOKED", (failure as? RemoteRpcException)?.code)
+            val callerProbeRequests = fixture.requests.filter { !it.first.endsWith("/presence") }
+            assertEquals(listOf("/api/v1/devices?limit=50", "/api/v1/me"), callerProbeRequests.map { it.first }.sorted())
+            assertTrue(callerProbeRequests.all { it.second == "Bearer $token" })
+            assertTrue(fixture.requests.none { it.first.contains(token) })
+            assertFalse(failure.toString().contains(token))
+        }
+    }
+    @Test fun 调用者复核非2xx不得当作目标Host撤销() = runBlocking {
+        Server().use { fixture ->
+            val token = "a".repeat(16)
+            fixture.route("/api/v1/devices") { obj("items" to listOf(
+                obj("deviceId" to "host-1", "name" to "主机 1", "platform" to "linux", "membershipId" to "member-1"),
+            )) }
+            fixture.route("/api/v1/devices/host-1/presence", 403) { obj("error" to obj("code" to "DEVICE_REVOKED")) }
+            fixture.route("/api/v1/me", 503) { obj("error" to obj("code" to "INTERNAL_ERROR", "message" to "上游秘密")) }
+
+            val failure = runCatching { RemoteServerApi(fixture.origin).listHosts(token) }.exceptionOrNull()
+
+            assertEquals("INTERNAL_ERROR", (failure as? RemoteRpcException)?.code)
+            val callerProbeRequests = fixture.requests.filter { !it.first.endsWith("/presence") }
+            assertEquals(listOf("/api/v1/devices?limit=50", "/api/v1/me"), callerProbeRequests.map { it.first }.sorted())
+            assertTrue(callerProbeRequests.all { it.second == "Bearer $token" })
+            assertTrue(fixture.requests.none { it.first.contains(token) })
+            assertFalse(failure.toString().contains(token))
+            assertFalse(failure.toString().contains("上游秘密"))
         }
     }
     @Test fun 私网HTTP只接受字面地址且规范化IDN与默认端口() {

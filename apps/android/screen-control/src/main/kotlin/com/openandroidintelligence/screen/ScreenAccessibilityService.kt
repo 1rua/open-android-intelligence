@@ -140,18 +140,14 @@ object ScreenAccessibilityConnection {
         return AutoCloseable { listeners -= listener }
     }
 
-    /** 快照成功后记录其目标窗口集合，供后续 TYPE_WINDOWS_CHANGED 只做差量判定。 */
-    internal fun noteSnapshotWindows(windows: List<ScreenTreeWindow>) {
-        val activeService = service ?: return
-        if (Log.isLoggable(SCREEN_TRACE, Log.DEBUG)) Log.d(SCREEN_TRACE, "SNAPSHOT generation=$generation windows=${windows.size}")
-        val ownPackage = activeService.packageName
-        val targets = windows.filterNot { it.isOwnedAuxiliary(ownPackage) }
-            .map { it.toWindowState() }
-            .sortedBy { it.id }
-        val auxiliary = observeWindows(activeService)?.auxiliary
+    /** 快照成功后记录与业务树同次枚举的完整窗口指纹；缺失时不建立乐观基线。 */
+    internal fun noteSnapshotWindows(businessWindowCount: Int, observed: ObservedWindows?) {
+        if (service == null) return
+        if (Log.isLoggable(SCREEN_TRACE, Log.DEBUG))
+            Log.d(SCREEN_TRACE, "SNAPSHOT generation=$generation windows=$businessWindowCount fingerprint=${observed != null}")
         synchronized(windowStateLock) {
-            snapshotTargets = targets
-            if (auxiliary != null) observedAuxiliary = auxiliary
+            snapshotTargets = observed?.targets
+            observedAuxiliary = observed?.auxiliary
         }
     }
 
@@ -193,9 +189,7 @@ object ScreenAccessibilityConnection {
     internal fun observeWindows(activeService: ScreenAccessibilityService): ObservedWindows? {
         val ownPackage = activeService.packageName
         val current = try { activeService.windows.orEmpty() } catch (_: RuntimeException) { return null }
-        val targets = ArrayList<ScreenWindowState>()
-        val auxiliary = LinkedHashSet<ScreenWindowState>()
-        val ownOverlayIds = LinkedHashSet<Int>()
+        val states = ArrayList<ScreenWindowState>()
         try {
             for (window in current) {
                 val rect = Rect()
@@ -212,20 +206,14 @@ object ScreenAccessibilityConnection {
                     bounds = ScreenBounds(rect.left, rect.top, rect.right, rect.bottom),
                     packageName = rootPackage,
                 )
-                if (state.isOwnedAuxiliary(ownPackage)) auxiliary += state else targets += state
-                if (state.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && state.packageName == ownPackage)
-                    ownOverlayIds += state.id
+                states += state
             }
         } catch (_: RuntimeException) {
             return null
         } finally {
             current.forEach(::recycleWindowInfo)
         }
-        return ObservedWindows(
-            targets = targets.sortedBy { it.id },
-            auxiliary = auxiliary.toSet(),
-            ownOverlayIds = ownOverlayIds.toSet(),
-        )
+        return buildObservedWindows(states, ownPackage)
     }
 
     private fun clearWindowState() {
@@ -256,24 +244,27 @@ internal data class ObservedWindows(
     val ownOverlayIds: Set<Int>,
 )
 
+internal fun buildObservedWindows(states: List<ScreenWindowState>, ownPackage: String): ObservedWindows {
+    val targets = ArrayList<ScreenWindowState>()
+    val auxiliary = LinkedHashSet<ScreenWindowState>()
+    val ownOverlayIds = LinkedHashSet<Int>()
+    for (state in states) {
+        if (state.isOwnedAuxiliary(ownPackage)) auxiliary += state else targets += state
+        if (state.type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && state.packageName == ownPackage)
+            ownOverlayIds += state.id
+    }
+    return ObservedWindows(
+        targets = targets.sortedBy { it.id },
+        auxiliary = auxiliary.toSet(),
+        ownOverlayIds = ownOverlayIds.toSet(),
+    )
+}
+
 private fun ScreenWindowState.isOwnedAuxiliary(ownPackage: String): Boolean =
     // 只排除自家无障碍浮层，以及非活跃、非焦点的自家系统临时窗（Toast 一类）。
     // 自家普通应用窗、聚焦系统窗仍属于真实目标，不能按包名整体忽略。
     packageName == ownPackage && (type == AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY ||
         (type == AccessibilityWindowInfo.TYPE_SYSTEM && !active && !focused))
-
-private fun ScreenTreeWindow.toWindowState() = ScreenWindowState(
-    id = window.id,
-    type = window.type,
-    layer = window.layer,
-    active = window.active,
-    focused = window.focused,
-    bounds = window.bounds,
-    packageName = packageName,
-)
-
-private fun ScreenTreeWindow.isOwnedAuxiliary(ownPackage: String): Boolean =
-    toWindowState().isOwnedAuxiliary(ownPackage)
 
 @Suppress("DEPRECATION")
 private fun recycleWindowInfo(value: AccessibilityWindowInfo) {
