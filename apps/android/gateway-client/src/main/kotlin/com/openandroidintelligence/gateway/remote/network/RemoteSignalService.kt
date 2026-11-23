@@ -1,6 +1,9 @@
 package com.openandroidintelligence.gateway.remote.network
 
 import android.content.Context
+import android.os.SystemClock
+import android.util.Log
+import com.openandroidintelligence.gateway.remote.auth.safeRoleErrorCode
 import com.openandroidintelligence.gateway.remote.crypto.*
 import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.*
@@ -36,6 +39,7 @@ internal class RemoteSignalService(
     private val onPeerClosed: (RemoteRpcConnectionScope) -> Unit = {},
     private val onClosed: (String) -> Unit = {},
     private val onHeartbeat: () -> Unit = {},
+    private val iceServers: suspend (String) -> List<RemoteIceServer> = { id -> api.iceServers(credential.tokens.accessToken, id) },
 ) {
     private val lifetime = SupervisorJob(parentScope.coroutineContext[Job])
     private val worker = CoroutineScope(parentScope.coroutineContext + lifetime)
@@ -49,11 +53,16 @@ internal class RemoteSignalService(
     @Volatile private var closed = false
     @Volatile private var limits = RemoteFrameLimits()
     @Volatile private var negotiated = emptySet<String>()
-    @Volatile private var lastReceived = System.currentTimeMillis()
+    @Volatile private var lastReceived = SystemClock.elapsedRealtime()
+    private var heartbeatObserved = false
     private val offered = setOf("transport.lan", "transport.p2p", "transport.turn", "transport.relay", "transport.relay.attach")
 
-    suspend fun startHost() { check(identityScope.role == RemoteRole.HOST); start(); withTimeout(15_000) { ready.await() } }
-    suspend fun startClient() { check(identityScope.role == RemoteRole.CLIENT); start(); withTimeout(15_000) { ready.await() } }
+    suspend fun startHost() { check(identityScope.role == RemoteRole.HOST); startControl() }
+    suspend fun startClient() { check(identityScope.role == RemoteRole.CLIENT); startControl() }
+    private suspend fun startControl() {
+        start()
+        if (withTimeoutOrNull(15_000) { ready.await() } == null) throw RemoteRpcException("HELLO_TIMEOUT")
+    }
     val connected: Boolean get() = ready.isCompleted && !ready.isCancelled && !closed
     fun cancelPendingSelection() {
         if (target != null && !clientResult.isCompleted) close()
@@ -80,9 +89,10 @@ internal class RemoteSignalService(
     }
     private fun start() {
         requireCurrent()
-        if (socket != null || closed) throw RemoteRpcException("CLIENT_CLOSED")
-        val control = RemoteSocket(api.http, websocketUrl(api.origin), onFailure = ::fail)
-        socket = control
+        val control = synchronized(clientPublication) {
+            if (socket != null || closed) throw RemoteRpcException("CLIENT_CLOSED")
+            RemoteSocket(api.http, websocketUrl(api.origin), onFailure = ::fail).also { socket = it }
+        }
         worker.launch {
             try {
                 control.awaitOpen(); requireCurrent()
@@ -91,7 +101,7 @@ internal class RemoteSignalService(
                     "clientVersion" to RemoteProtocol.REMOTE_COMPATIBILITY_VERSION,
                     *if (identityScope.role == RemoteRole.HOST) arrayOf("harnessVersion" to RemoteProtocol.HARNESS_COMPATIBILITY_VERSION) else emptyArray()))
                 for (frame in control.frames) {
-                    lastReceived = System.currentTimeMillis(); requireCurrent()
+                    lastReceived = SystemClock.elapsedRealtime(); requireCurrent()
                     try { handle(frame) }
                     catch (failure: Exception) {
                         val connectionId = frame.payload.optionalText("connectionId")
@@ -123,12 +133,19 @@ internal class RemoteSignalService(
                 socket?.limits = limits; ready.complete(Unit)
                 val heartbeatInterval = payload.longValue("heartbeatIntervalMs")
                 worker.launch {
-                    while (isActive && !closed) {
-                        delay(heartbeatInterval)
-                        if (System.currentTimeMillis() - lastReceived >= maxOf(15_000L, heartbeatInterval * 3)) { fail("HEARTBEAT_TIMEOUT"); break }
-                        sendControl("ping", obj("nonce" to UUID.randomUUID().toString()))
-                        onHeartbeat()
-                    }
+                    try {
+                        while (isActive && !closed) {
+                            delay(heartbeatInterval)
+                            if (SystemClock.elapsedRealtime() - lastReceived >= maxOf(15_000L, heartbeatInterval * 3)) {
+                                fail("HEARTBEAT_TIMEOUT")
+                                break
+                            }
+                            sendControl("ping", obj("nonce" to UUID.randomUUID().toString()))
+                            onHeartbeat()
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: RemoteRpcException) { fail(failure.code) }
+                    catch (_: Exception) { fail("TRANSPORT_CLOSED") }
                 }
             }
             "connect.accepted" -> {
@@ -152,7 +169,19 @@ internal class RemoteSignalService(
                     tunnels.values.filter { it.peer.device.deviceId == peer.device.deviceId }.forEach { it.fail("CONNECTION_REPLACED") }
                     newTunnel(connectionId, peer, payload)
                     sendControl("connect.accepted", obj("connectionId" to connectionId))
-                } catch (_: Exception) { sendControl("connect.rejected", obj("connectionId" to connectionId, "code" to "MEMBERSHIP_REQUIRED")) }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (failure: Exception) {
+                    val code = (failure as? RemoteRpcException)?.let { safeRoleErrorCode(it.code, "PEER_AUTHORIZATION_FAILED") }
+                        ?: "PEER_AUTHORIZATION_FAILED"
+                    Log.w(RemoteHostControl.TAG, "PEER_AUTHORIZATION $code")
+                    // 对端只接收可采取行动的固定分类，手机的凭据错误不离开本机。
+                    val rejection = when (code) {
+                        "PEER_IDENTITY_MISMATCH", "MEMBERSHIP_REQUIRED" -> code
+                        "DEVICE_NOT_FOUND", "PERMISSION_DENIED", "DEVICE_OWNERSHIP_REQUIRED" -> "MEMBERSHIP_REQUIRED"
+                        else -> "CONNECTION_FAILED"
+                    }
+                    sendControl("connect.rejected", obj("connectionId" to connectionId, "code" to rejection))
+                }
             }
             "secure.handshake" -> {
                 val tunnel = requireTunnel(payload)
@@ -169,8 +198,8 @@ internal class RemoteSignalService(
                 worker.launch { try { tunnel.signal(frame.type, payload) } catch (_: Exception) { tunnel.fail("RTC_NEGOTIATION_FAILED") } }
             }
             "relay" -> requireTunnel(payload).receiveRelay(payload)
-            "ping" -> sendControl("pong", payload)
-            "pong" -> Unit
+            "ping" -> { sendControl("pong", payload); observeHeartbeat() }
+            "pong" -> observeHeartbeat()
             "connect.rejected", "error" -> {
                 val code = payload.optionalText("code") ?: "CONNECTION_FAILED"
                 val connectionId = payload.optionalText("connectionId")
@@ -183,6 +212,12 @@ internal class RemoteSignalService(
                 } else throw RemoteRpcException(code)
             }
             else -> throw RemoteRpcException("INVALID_MESSAGE")
+        }
+    }
+    private fun observeHeartbeat() {
+        if (identityScope.role == RemoteRole.HOST && !heartbeatObserved && connected) {
+            heartbeatObserved = true
+            android.util.Log.d(RemoteHostControl.TAG, "HEARTBEAT_OBSERVED")
         }
     }
     private fun requireTunnel(payload: JsonValue.JObject): Tunnel {
@@ -201,6 +236,7 @@ internal class RemoteSignalService(
     private fun sendControl(type: String, payload: JsonValue.JObject) { requireCurrent(); socket?.send(frame(type, payload)) ?: throw RemoteRpcException("TRANSPORT_CLOSED") }
     private fun frame(type: String, payload: JsonValue.JObject) = RemoteControlCodec.create(type, payload, UUID.randomUUID().toString(), System.currentTimeMillis())
     fun close() = fail("CLIENT_CLOSED")
+    fun credentialRejected(code: String) = fail(code)
     private fun fail(code: String) {
         synchronized(clientPublication) {
             if (closed) return
@@ -264,7 +300,8 @@ internal class RemoteSignalService(
         }
         private suspend fun createRtc(turnOnly: Boolean): RemoteRtcPeer = try {
             RemoteRtcPeer(context, binding, connectionScope.generation, worker,
-                try { api.iceServers(credential.tokens.accessToken, id) } catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
+                try { iceServers(id) } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { emptyList() }, turnOnly) { type, fields ->
                 sendControl(type, obj("connectionId" to id, "targetDeviceId" to peer.device.deviceId, *fields.fields.map { it.first to it.second }.toTypedArray()))
             }
         } catch (_: LinkageError) {
@@ -337,6 +374,7 @@ internal class RemoteSignalService(
             try {
                 synchronized(clientPublication) { requireCurrentSelection() }
                 onAuthenticatedPeer(AuthenticatedRemotePeer(connectionScope, fingerprint(credential.identity.publicKey), fingerprint(peer.publicKey), identityScope.role))
+                if (identityScope.role == RemoteRole.HOST) Log.d(RemoteHostControl.TAG, "PEER_AUTHENTICATED")
                 val session = RemoteRpcSession(connectionScope, emptySet(), this, worker, hostHandler, ::fail)
                 // 选择替换与发布共用锁；对外认证回调留在锁外，回调返回后再次核对归属。
                 synchronized(clientPublication) {
@@ -395,6 +433,9 @@ internal class RemoteSignalService(
                 terminal = code; messages.clear(); closures.toList().also { closures.clear() }
             }
             tunnels.remove(id, this)
+            if (identityScope.role == RemoteRole.HOST && code != "CLIENT_CLOSED") {
+                Log.d(RemoteHostControl.TAG, "PEER_DISCONNECTED ${safeRoleErrorCode(code, "PEER_CONNECTION_CLOSED")}")
+            }
             closeRemoteConnectionResources(
                 { onPeerClosed(connectionScope) },
                 { rtcAvailable.completeExceptionally(RemoteRpcException(code)); Unit },

@@ -8,6 +8,7 @@ import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.RemoteAccountCodec
 import com.openandroidintelligence.gateway.remote.protocol.RemoteConnectionBinding
 import com.openandroidintelligence.gateway.remote.protocol.RemoteProtocolException
+import com.openandroidintelligence.gateway.remote.rpc.RemoteRpcException
 import com.openandroidintelligence.gateway.schema.Json
 import com.openandroidintelligence.gateway.schema.JsonFields
 import com.openandroidintelligence.gateway.schema.JsonValue
@@ -110,6 +111,16 @@ class RemoteIdentityTest {
             assertEquals(RemoteRoleRegistrationState.REGISTERED, succeeded.state)
             assertEquals(original.revision, fixture.store().load(failedScope)!!.revision)
         }
+    }
+
+    @Test
+    fun 注册阶段保留TOKEN_REUSED安全错误码() = runBlocking {
+        val fixture = Fixture()
+        val result = RemoteLoginCoordinator(fixture.store(), registrar { _, _ -> throw RemoteRpcException("TOKEN_REUSED") })
+            .registerRoles(origin, "account-a", accountToken(), credential(clientId).identity, credential(hostId).identity)
+        assertEquals("TOKEN_REUSED", result.client.errorCode)
+        assertEquals("TOKEN_REUSED", result.host.errorCode)
+        assertTrue(result.client.credential == null && result.host.credential == null)
     }
 
     @Test

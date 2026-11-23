@@ -2,6 +2,8 @@ package com.openandroidintelligence.gateway.remote.facade
 
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.gateway.schema.Json
+import com.openandroidintelligence.gateway.schema.JsonFields
+import com.openandroidintelligence.gateway.schema.JsonValue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -30,6 +32,162 @@ class PhoneControlBusTest {
         }
         override fun cancel(scope: ControlRequestScope) {}
         override fun capabilities(access: ControlAccessBinding) = ControlValue.Object(emptyMap())
+    }
+
+    private fun records(page: JsonValue) =
+        JsonFields.objects(page as? JsonValue.JObject, "records")
+    private fun event(record: JsonValue.JObject) = JsonFields.obj(JsonFields.field(record, "event"))
+    private fun eventData(record: JsonValue.JObject) = JsonFields.obj(JsonFields.field(event(record), "data"))
+    private fun eventType(record: JsonValue.JObject) = JsonFields.string(event(record), "type")
+    private fun eventRequestId(record: JsonValue.JObject) = JsonFields.string(eventData(record), "request_id")
+    private fun streamTypes(record: JsonValue.JObject) = JsonFields.objects(eventData(record), "stream").mapNotNull {
+        JsonFields.string(JsonFields.obj(JsonFields.field(it, "chunk")), "type")
+    }
+
+    @Test fun connectionClosedBeforeTurnPublishesMinimalClosedHistoryForSuccessorAccess() = runTest {
+        val ledger = Ledger(); val executor = Executor(); val original = access()
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings); val task = bus.create(original)
+        val secret = "不应进入连接关闭历史正文"
+        val closed = request("connection-closed-0001", secret)
+        bus.submit(original, task, closed)
+        // 保持 job 尚未调度，复现 accepted 后短连接先断开、历史里还没有 turn/start 的真实窗口。
+        assertEquals(ControlRequestState.ACCEPTED, ledger.rows.values.single { it.requestId == closed.requestId }.state)
+        bus.connectionClosed(original); runCurrent()
+
+        val row = ledger.rows.values.single { it.requestId == closed.requestId }
+        assertEquals(ControlRequestState.CANCELLED, row.state)
+        assertEquals(ControlExecutionStatus.NOT_STARTED, row.execution)
+        assertEquals("REMOTE_CONNECTION_CLOSED", row.errorCode)
+
+        // 重连沿用同一主体与授权代次，只更换临时连接标识；官方历史仍应可读。
+        val successor = original.copy(connectionId = "successor-connection", connectionGeneration = 2)
+        val page = bus.history(successor, task)
+        val related = records(page).filter { eventRequestId(it) == closed.requestId }
+        val starts = related.filter { eventType(it) == "turn/start" }
+        val messages = related.filter { eventType(it) == "assistant/message" }
+        val ends = related.filter { eventType(it) == "turn/end" }
+        assertEquals(1, starts.size)
+        assertEquals(1, messages.size)
+        assertEquals(1, ends.size)
+        val turn = JsonFields.long(eventData(starts.single()), "turn")
+        assertEquals(turn, JsonFields.long(eventData(ends.single()), "turn"))
+        assertEquals(turn?.plus(1), JsonFields.long(page as JsonValue.JObject, "nextTurn"))
+
+        val assistantRecord = messages.single()
+        assertEquals(listOf("block-start", "text-delta", "block-end", "finish"), streamTypes(assistantRecord))
+        val message = JsonFields.obj(JsonFields.field(eventData(assistantRecord), "message"))!!
+        val messageId = JsonFields.string(message, "id")
+        assertEquals(closed.requestId, messageId)
+        val text = JsonFields.string(JsonFields.objects(message, "content").single(), "text")!!
+        assertTrue(text.contains("\"state\":\"cancelled\""))
+        assertTrue(text.contains("\"error\":{\"code\":\"REMOTE_CONNECTION_CLOSED\""))
+        assertFalse(Json.canonical(page).contains(secret))
+        val projections = JsonFields.obj(JsonFields.field(page, "projections"))!!
+        val values = JsonFields.obj(JsonFields.field(projections, "values"))!!
+        val execution = JsonFields.obj(JsonFields.field(values, "execution"))!!
+        assertEquals("idle", JsonFields.string(execution, "status"))
+        val listed = bus.sessions(successor).map { it as JsonValue.JObject }.single { JsonFields.string(it, "sessionId") == task }
+        assertEquals(false, JsonFields.bool(listed, "running"))
+
+        bus.connectionClosed(original); runCurrent()
+        val afterRepeat = records(bus.history(successor, task)).filter { eventRequestId(it) == closed.requestId }
+        assertEquals(1, afterRepeat.count { eventType(it) == "turn/start" })
+        assertEquals(1, afterRepeat.count { eventType(it) == "assistant/message" })
+        assertEquals(1, afterRepeat.count { eventType(it) == "turn/end" })
+        val repeatedMessage = JsonFields.obj(JsonFields.field(eventData(afterRepeat.single { eventType(it) == "assistant/message" }), "message"))!!
+        assertEquals(messageId, JsonFields.string(repeatedMessage, "id"))
+        assertEquals(listOf("block-start", "text-delta", "block-end", "finish"), streamTypes(afterRepeat.single { eventType(it) == "assistant/message" }))
+
+        bus.submit(successor, task, closed); runCurrent()
+        assertTrue(executor.calls.isEmpty())
+        assertThrows(ControlRequestException::class.java) {
+            bus.history(successor.copy(authorizationEpoch = successor.authorizationEpoch + 1), task)
+        }
+    }
+
+    @Test fun connectionClosedAfterExecutionFenceClosesExistingTurnAsUnknownWithoutDuplicatingIt() = runTest {
+        val entered = CompletableDeferred<Unit>(); val never = CompletableDeferred<Unit>()
+        val executor = object : Executor() {
+            override suspend fun execute(context: PhoneExecutionContext, operation: ControlOperation): PhoneControlResult {
+                context.beforeDispatch(); calls += context.scope.requestId; entered.complete(Unit); never.await()
+                return PhoneControlResult(ControlValue.Object(emptyMap()))
+            }
+        }
+        val ledger = Ledger(); val original = access()
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings); val task = bus.create(original)
+        val secret = "已进入执行端口但不进入历史"
+        val request = request("connection-fenced-0001", secret)
+        bus.submit(original, task, request); runCurrent(); assertTrue(entered.isCompleted)
+        assertEquals(ControlRequestState.RUNNING, ledger.rows.values.single { it.requestId == request.requestId }.state)
+
+        bus.connectionClosed(original); runCurrent()
+        val successor = original.copy(connectionId = "successor-connection", connectionGeneration = 2)
+        val page = bus.history(successor, task)
+        val related = records(page).filter { eventRequestId(it) == request.requestId }
+        assertEquals(1, related.count { eventType(it) == "turn/start" })
+        assertEquals(1, related.count { eventType(it) == "assistant/message" })
+        assertEquals(1, related.count { eventType(it) == "turn/end" })
+        val message = JsonFields.obj(JsonFields.field(eventData(related.single { eventType(it) == "assistant/message" }), "message"))!!
+        val text = JsonFields.string(JsonFields.objects(message, "content").single(), "text")!!
+        assertTrue(text.contains("\"state\":\"outcome_unknown\""))
+        assertTrue(text.contains("\"status\":\"unknown\""))
+        assertTrue(text.contains("\"resultAvailable\":false"))
+        assertTrue(text.contains("REMOTE_CONNECTION_CLOSED"))
+        assertFalse(Json.canonical(page).contains(secret))
+        assertEquals(ControlRequestState.OUTCOME_UNKNOWN, ledger.rows.values.single { it.requestId == request.requestId }.state)
+    }
+
+    @Test fun 成功已提交但发布时连接失权仍能在重连后读到终态() = runTest {
+        val ledger = Ledger()
+        val original = access()
+        val request = request("success-before-disconnect")
+        val executor = object : Executor() {
+            override fun requireCurrentAccess(access: ControlAccessBinding) {
+                if (access == original && ledger.rows.values.any {
+                    it.requestId == request.requestId && it.state == ControlRequestState.COMPLETED
+                }) throw ControlRequestException("REMOTE_AUTHORIZATION_CHANGED")
+            }
+        }
+        val bus = PhoneControlBus(this, ledger, executor, phoneFacadeTestStrings)
+        val task = bus.create(original)
+        bus.submit(original, task, request)
+        runCurrent()
+        bus.connectionClosed(original)
+        val successor = original.copy(connectionId = "successor", connectionGeneration = 2)
+        val events = records(bus.history(successor, task)).filter { eventRequestId(it) == request.requestId }
+        assertEquals(listOf("turn/start", "assistant/message", "turn/end"), events.map(::eventType))
+        val result = Json.canonical(bus.receipt(successor, task, request.requestId))
+        assertTrue(result.contains("\"status\":\"succeeded\""))
+        assertFalse(result.contains("结果正文"))
+        assertEquals(1, executor.calls.size)
+    }
+
+    @Test fun connectionClosedKeepsSuccessfulResultAndItsSingleTerminalTurn() = runTest {
+        val executor = Executor(); val original = access()
+        val bus = PhoneControlBus(this, Ledger(), executor, phoneFacadeTestStrings); val task = bus.create(original)
+        val request = request("successful-request-001")
+        bus.submit(original, task, request); runCurrent()
+        val successor = original.copy(connectionId = "successor-connection", connectionGeneration = 2)
+        val before = bus.history(successor, task) as JsonValue.JObject
+        val beforeRelated = records(before).filter { eventRequestId(it) == request.requestId }
+        assertEquals(1, beforeRelated.count { eventType(it) == "turn/start" })
+        assertEquals(1, beforeRelated.count { eventType(it) == "assistant/message" })
+        assertEquals(1, beforeRelated.count { eventType(it) == "turn/end" })
+        val beforeNextTurn = JsonFields.long(before, "nextTurn")
+
+        bus.connectionClosed(original); runCurrent()
+        val receipt = bus.receipt(successor, task, request.requestId)
+        val receiptText = Json.canonical(receipt)
+        assertTrue(receiptText.contains("\"state\":\"completed\""))
+        assertTrue(receiptText.contains("\"status\":\"succeeded\""))
+        assertTrue(receiptText.contains("\"resultAvailable\":true"))
+        assertTrue(receiptText.contains("结果正文"))
+        val after = bus.history(successor, task) as JsonValue.JObject
+        val afterRelated = records(after).filter { eventRequestId(it) == request.requestId }
+        assertEquals(1, afterRelated.count { eventType(it) == "assistant/message" })
+        assertEquals(1, afterRelated.count { eventType(it) == "turn/end" })
+        assertEquals(beforeNextTurn, JsonFields.long(after, "nextTurn"))
+        assertEquals(1, executor.calls.size)
     }
 
     @Test fun repeatAndTaskConflictNeverRepeatProvider() = runTest {

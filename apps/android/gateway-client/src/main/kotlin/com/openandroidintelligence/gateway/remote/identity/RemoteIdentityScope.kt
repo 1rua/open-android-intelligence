@@ -141,6 +141,8 @@ class RemotePeerPin(
     override fun toString(): String = "RemotePeerPin(peerRole=$peerRole,peerDeviceId=$peerDeviceId,公钥=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本
 }
 
+class RemotePeerPinMismatchException : IllegalStateException("REMOTE_PEER_PIN_MISMATCH")
+
 class RemoteRoleCredential(
     val identity: RemoteStaticIdentity,
     val tokens: RemoteTokenPair,
@@ -172,7 +174,7 @@ class RemoteRoleCredential(
     fun requirePeerPin(peerRole: RemoteRole, peerDeviceId: RemoteDeviceId, publicKey: ByteArray) {
         val known = peers.firstOrNull { it.peerRole == peerRole && it.peerDeviceId == peerDeviceId }
             ?: throw IllegalStateException("REMOTE_PEER_UNPINNED")
-        if (!known.matches(publicKey)) throw IllegalStateException("REMOTE_PEER_PIN_MISMATCH")
+        if (!known.matches(publicKey)) throw RemotePeerPinMismatchException()
     }
     override fun toString(): String = "RemoteRoleCredential(identity=$identity,peers=${peers.size},凭据=已隐藏)" // i18n-ignore: 仅内部诊断脱敏文本
 }

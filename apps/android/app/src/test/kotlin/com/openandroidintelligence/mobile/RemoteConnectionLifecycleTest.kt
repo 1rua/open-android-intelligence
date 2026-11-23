@@ -9,6 +9,8 @@ import com.openandroidintelligence.conversation.remote.*
 import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.encrypted.store.AesGcmKeyProvider
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistration
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrationState
 import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
@@ -76,6 +78,7 @@ class RemoteConnectionLifecycleTest {
         customScope: CoroutineScope = scope,
         customAccount: FakeAccountConnection = account,
         customKeyProvider: AesGcmKeyProvider = key,
+        coldStartOnInit: Boolean = true,
     ): RemoteRuntime {
         val audit = AndroidAuditStore(InMemoryAuditSink())
         grants = PairingGrantStateHolder(InMemoryPairingGrantStore(), audit)
@@ -105,6 +108,7 @@ class RemoteConnectionLifecycleTest {
             localDocumentKeyProvider = customKeyProvider,
             recoveryPolicy = policy,
             delayFn = delayFn,
+            coldStartOnInit = coldStartOnInit,
         )
     }
 
@@ -140,6 +144,111 @@ class RemoteConnectionLifecycleTest {
 
     private suspend fun eventually(check: () -> Boolean) = withTimeout(5_000) {
         while (!check()) delay(10)
+    }
+
+    @Test
+    fun `无已选工作区冷启动不依赖UI即恢复账号控制角色且不连接电脑`() = runBlocking {
+        val cachedAccount = RemoteActiveAccount(origin, accountId, 7)
+        val restoredAccount = cachedAccount.copy(epoch = 8)
+        val firstRestore = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            restorableAccount = cachedAccount
+            restoreResult = restoredAccount
+            restoreGate = firstRestore
+            state.value = RemoteAccountConnectionState.SIGNED_OUT
+            hostState.value = RemoteHostConnectionState.STOPPED
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Default)
+        val coldRuntime = buildRuntime(customScope = coldScope, customAccount = coldAccount)
+        try {
+            eventually { coldAccount.restoreCalls == 1 && coldAccount.account.value == restoredAccount }
+
+            // 首帧仍来自同步缓存；恢复虽已开始，但尚未选择任何 Agent、工作区或电脑。
+            assertEquals(cachedAccount, coldRuntime.agentConnection.value.account)
+            assertNull(coldRuntime.agentConnection.value.activeAgent)
+            assertNull(coldRuntime.workspaceContext.value.activeWorkspace)
+            assertNull(coldRuntime.controller.value)
+            assertEquals(0, coldAccount.connectCalls)
+
+            // 账号控制角色已恢复；释放恢复屏障后只接受更高授权代际并刷新 Host 目录。
+            assertEquals(RemoteAccountConnectionState.CONNECTED, coldAccount.state.value)
+            assertEquals(RemoteHostConnectionState.ONLINE, coldAccount.hostState.value)
+            firstRestore.complete(Unit)
+            eventually { coldRuntime.agentConnection.value.account == restoredAccount && coldRuntime.state.value.hosts.isNotEmpty() }
+            assertNull(coldRuntime.agentConnection.value.activeAgent)
+            assertNull(coldRuntime.workspaceContext.value.activeWorkspace)
+            assertNull(coldRuntime.controller.value)
+            assertEquals(0, coldAccount.connectCalls)
+            assertTrue(coldRuntime.state.value.hosts.isNotEmpty())
+            assertEquals(1, coldAccount.restoreCalls)
+        } finally {
+            firstRestore.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `后台待命初始化不触发通用恢复而UI准备后仍同步启动首帧恢复`() = runBlocking {
+        val cachedAccount = RemoteActiveAccount(origin, accountId, 7)
+        val restoredAccount = cachedAccount
+        val releaseRestore = CompletableDeferred<Unit>()
+        val coldAccount = FakeAccountConnection().apply {
+            account.value = cachedAccount
+            restorableAccount = cachedAccount
+            restoreResult = restoredAccount
+            restoreGate = releaseRestore
+            state.value = RemoteAccountConnectionState.DISCONNECTED
+            hostState.value = RemoteHostConnectionState.ONLINE
+        }
+        val coldRoot = SupervisorJob()
+        val coldScope = CoroutineScope(coldRoot + Dispatchers.Unconfined)
+        val coldRuntime = buildRuntime(customScope = coldScope, customAccount = coldAccount, coldStartOnInit = false)
+        try {
+            assertEquals("后台只创建运行时时不能启动普通恢复", 0, coldAccount.restoreCalls)
+
+            coldRuntime.prepareForUi()
+            assertEquals("UI 读取缓存前必须同步进入普通恢复", 1, coldAccount.restoreCalls)
+            coldRuntime.prepareForUi()
+            coldRuntime.onAppForegrounded()
+            assertEquals("UI 与生命周期重复进入必须幂等", 1, coldAccount.restoreCalls)
+
+            releaseRestore.complete(Unit)
+            eventually { coldRuntime.agentConnection.value.account == restoredAccount }
+            assertNull(coldRuntime.agentConnection.value.activeAgent)
+            assertEquals(0, coldAccount.connectCalls)
+            assertEquals(1, coldAccount.restoreCalls)
+        } finally {
+            releaseRestore.complete(Unit)
+            coldRuntime.logout().join()
+            coldRoot.cancelAndJoin()
+        }
+    }
+
+    @Test
+    fun `两种登录入口均按实际注册角色决定目录访问和错误码`() = runBlocking {
+        runtime.restoreSessionIfAvailable().join()
+        for (external in listOf(false, true)) {
+            val before = account.listCalls
+            account.registration = RemoteLoginResult(accountId,
+                RemoteRoleRegistration(RemoteRole.CLIENT, RemoteRoleRegistrationState.FAILED, errorCode = "RATE_LIMITED"),
+                RemoteRoleRegistration(RemoteRole.HOST, RemoteRoleRegistrationState.REGISTERED))
+            if (external) runtime.completeExternalLogin("account-token", "attempt") else runtime.login(origin, "test", "password").join()
+            assertNotNull(runtime.agentConnection.value.account)
+            assertNull(runtime.agentConnection.value.errorCode)
+            assertEquals(before, account.listCalls)
+            account.registration = account.registration!!.copy(host = RemoteRoleRegistration(RemoteRole.HOST,
+                RemoteRoleRegistrationState.FAILED, errorCode = "REMOTE_ROLE_REGISTRATION_FAILED"))
+            if (external) {
+                val failure = runCatching { runtime.completeExternalLogin("account-token", "attempt") }.exceptionOrNull()
+                assertEquals("RATE_LIMITED", (failure as? RemoteRpcException)?.code)
+            } else {
+                runtime.login(origin, "test", "password").join()
+                assertEquals("RATE_LIMITED", runtime.agentConnection.value.errorCode)
+            }
+            assertNull(runtime.agentConnection.value.account)
+        }
     }
 
     @Test
@@ -981,6 +1090,8 @@ class RemoteConnectionLifecycleTest {
         override val account = MutableStateFlow<RemoteActiveAccount?>(null)
         override val state = MutableStateFlow(RemoteAccountConnectionState.READY)
         override val hostState = MutableStateFlow(RemoteHostConnectionState.ONLINE)
+        var listCalls = 0
+        var registration: RemoteLoginResult? = null
         var restorableAccount: RemoteActiveAccount? = RemoteActiveAccount(origin, accountId, 1)
         val channels = CopyOnWriteArrayList<FakeRpcChannel>()
         var connectCalls = 0
@@ -989,6 +1100,9 @@ class RemoteConnectionLifecycleTest {
         var connectTimeoutMillis: Long? = null
         var hostOneOffline = false
         var connectGate: CompletableDeferred<Unit>? = null
+        var restoreCalls = 0
+        var restoreGate: CompletableDeferred<Unit>? = null
+        var restoreResult: RemoteActiveAccount? = null
         var initialHistoryText: String = "冷启动本地缓存回复"
         var incrementalReplyText: String? = null
         var availableHosts = listOf(
@@ -1003,13 +1117,26 @@ class RemoteConnectionLifecycleTest {
 
         override fun peekRestorableAccount(): RemoteActiveAccount? = account.value ?: restorableAccount
 
-        override suspend fun login(origin: String, email: String, password: String): RemoteLoginResult =
-            error("测试不走密码登录")
+        private fun finishLogin(): RemoteLoginResult = requireNotNull(registration).also { result ->
+            account.value = if (listOf(result.client, result.host).any { it.state == RemoteRoleRegistrationState.REGISTERED })
+                RemoteActiveAccount(origin, accountId, 2) else null
+        }
+        override suspend fun login(origin: String, email: String, password: String) = finishLogin()
+        override suspend fun loginAccountToken(origin: String, token: String, loginAttemptId: String) = finishLogin()
 
-        override suspend fun restore(): RemoteActiveAccount? =
-            restorableAccount?.also { account.value = it }
+        override suspend fun restore(): RemoteActiveAccount? {
+            restoreCalls++
+            val restored = restoreResult ?: restorableAccount
+            if (restored != null) {
+                account.value = restored
+                state.value = RemoteAccountConnectionState.CONNECTED
+                hostState.value = RemoteHostConnectionState.ONLINE
+            }
+            restoreGate?.await()
+            return restored
+        }
 
-        override suspend fun listHosts(): List<RemoteHostDevice> = availableHosts
+        override suspend fun listHosts(): List<RemoteHostDevice> { listCalls++; return availableHosts }
 
         override suspend fun connect(hostDeviceId: String): RemoteRpcChannel {
             connectCalls++

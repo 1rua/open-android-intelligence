@@ -80,7 +80,7 @@ class AndroidAccessibilityRuntimeTest {
             shadowService.setWindows(listOf(window))
         }
         installWindow()
-        val windows = runtime.windows()
+        val windows = runtime.windows().windows
         val snapshot = try {
             ScreenTreeReader().capture(windows, ScreenDisplay(1080, 1920, 0), runtime.generation(), "org.example", 9)
         } finally { windows.forEach { it.root.close() } }

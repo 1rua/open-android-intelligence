@@ -10,6 +10,8 @@ import com.openandroidintelligence.conversation.state.Loadable
 import com.openandroidintelligence.conversation.state.WorkbenchController
 import com.openandroidintelligence.control.remote.*
 import com.openandroidintelligence.encrypted.store.*
+import com.openandroidintelligence.gateway.remote.auth.RemoteLoginResult
+import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrationState
 import com.openandroidintelligence.gateway.remote.authproduction.RemoteActiveAccount
 import com.openandroidintelligence.gateway.remote.facade.PhoneRemoteRpcHostHandler
 import com.openandroidintelligence.gateway.remote.identity.RemoteRole
@@ -60,6 +62,7 @@ class RemoteRuntime(
     private val recoveryPolicy: ConnectionRecoveryPolicy = ConnectionRecoveryPolicy(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val delayFn: suspend (Long) -> Unit = { delay(it) },
+    private val coldStartOnInit: Boolean = true,
 ) {
     private val stateLock = Any()
     private val mutableAgentConnection = MutableStateFlow(AgentConnectionState())
@@ -86,6 +89,7 @@ class RemoteRuntime(
     private var reconnectLoopJob: Job? = null
     private val hydrationJob = AtomicReference<Job?>(null)
     private var coldStartBootstrapped = false
+    private val foregroundBootstrap by lazy { bootstrapColdStartCacheFirst() }
 
     private val preferences = context.getSharedPreferences("remote-workspace-selection-v1", Context.MODE_PRIVATE)
     private val cachedWorkspacesByAgent = LinkedHashMap<AgentKey, List<RemoteWorkspace>>()
@@ -198,7 +202,7 @@ class RemoteRuntime(
                 replyNotifications.allowed,
             ) { _, _, _ -> Unit }.collect { refreshBackgroundWork() }
         }
-        bootstrapColdStartCacheFirst()
+        if (coldStartOnInit) prepareForUi()
     }
 
     private fun putCachedWorkspaces(agentKey: AgentKey, workspaces: List<RemoteWorkspace>) {
@@ -334,6 +338,9 @@ class RemoteRuntime(
                     )
                 },
             )
+            // 无上次工作区时，复用账号恢复入口；生产账号会启动已授权的控制角色并读取目录。
+            startupRecoveryJob = restoreSessionIfAvailable()
+            coldStartBootstrapped = true
             return
         }
         val agentKey = AgentKey.fromEndpointKey(savedWorkspace.endpoint.key)
@@ -380,6 +387,9 @@ class RemoteRuntime(
             runColdStartGracefulRecovery(cachedAccount, savedWorkspace)
         }
     }
+
+    /** UI 在首帧读取缓存前显式进入普通恢复；后台待命只创建运行时，不调用此入口。 */
+    internal fun prepareForUi() = foregroundBootstrap
 
     private class OfflineWorkspaceHandle(
         val owner: CompletableJob,
@@ -752,13 +762,21 @@ class RemoteRuntime(
     }
 
     private suspend fun beginAccountReset(
-        refreshHosts: Boolean = false,
-        authenticate: suspend () -> Unit,
+        authenticate: suspend () -> Boolean,
     ) {
         updateLayerStates(agentTransform = { it.copy(busy = true, errorCode = null) })
         try {
             retireAllAndClearController()
-            authenticate()
+            val canRefreshHosts = try {
+                authenticate()
+            } catch (failure: Exception) {
+                // 登录失败且原授权已撤销时，登录页不能继续展示先前缓存的账号。
+                if (!failure.isTrueCancellation() && accountRuntime.account.value == null) {
+                    updateLayerStates(agentTransform = { AgentConnectionState(busy = true) },
+                        workspaceTransform = { WorkspaceContextState() })
+                }
+                throw failure
+            }
             val acc = accountRuntime.account.value
             updateLayerStates(
                 agentTransform = {
@@ -770,7 +788,7 @@ class RemoteRuntime(
                 },
                 workspaceTransform = { WorkspaceContextState() },
             )
-            if (refreshHosts) {
+            if (canRefreshHosts) {
                 refreshHostsInternal()
             }
         } finally {
@@ -781,8 +799,8 @@ class RemoteRuntime(
     fun login(origin: String, email: String, password: String) = scope.launch {
         loginEntryBridge.cancelLocal()
         try {
-            beginAccountReset(refreshHosts = true) {
-                accountRuntime.login(origin, email, password)
+            beginAccountReset {
+                canBrowseRegisteredHosts(accountRuntime.login(origin, email, password))
             }
         } catch (failure: Exception) {
             if (failure.isTrueCancellation()) throw failure
@@ -791,14 +809,27 @@ class RemoteRuntime(
     }
 
     suspend fun completeExternalLogin(token: String, loginAttemptId: String) {
-        beginAccountReset(refreshHosts = true) {
-            accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId)
+        beginAccountReset {
+            canBrowseRegisteredHosts(accountRuntime.loginAccountToken("https://dsh.r2049.cn", token, loginAttemptId))
         }
     }
 
+    /** Client 与 Host 均未取得凭据时账号不会激活，必须把固定登录错误返回给登录页。 */
+    private fun canBrowseRegisteredHosts(result: RemoteLoginResult): Boolean {
+        if (result.client.state == RemoteRoleRegistrationState.FAILED &&
+            result.host.state == RemoteRoleRegistrationState.FAILED
+        ) {
+            val reason = listOfNotNull(result.client.errorCode, result.host.errorCode)
+                .firstOrNull { it != "REMOTE_ROLE_REGISTRATION_FAILED" }
+            throw RemoteRpcException(reason ?: "REMOTE_ROLE_REGISTRATION_FAILED")
+        }
+        return result.client.state == RemoteRoleRegistrationState.REGISTERED
+    }
+
     suspend fun completePairing(value: com.openandroidintelligence.gateway.remote.auth.RemotePairingImport, hostId: String) {
-        beginAccountReset(refreshHosts = false) {
+        beginAccountReset {
             accountRuntime.importPairing(value)
+            false
         }
     }
 
@@ -827,7 +858,8 @@ class RemoteRuntime(
             if (agentConnection.value.busy) return@launch
             updateLayerStates(agentTransform = { it.copy(busy = true) })
             try {
-                val account = accountRuntime.account.value ?: accountRuntime.restore()
+                // 后台已发布的账号可能只启动了 Host，前台恢复需要让账号层补齐 Client。
+                val account = accountRuntime.restore()
                 if (account == null) {
                     updateLayerStates(agentTransform = { it.copy(account = null) })
                     return@launch
@@ -2839,6 +2871,8 @@ class RemoteRuntime(
     }
 
     fun onAppForegrounded() {
+        // 系统待命可在后台创建本运行时；只有真正进入前台后才允许执行通用冷启动恢复。
+        prepareForUi()
         accountRuntime.refreshControlConnection()
         synchronized(backgroundOwnership) { foreground = true }
         replyNotifications.refreshPermission()

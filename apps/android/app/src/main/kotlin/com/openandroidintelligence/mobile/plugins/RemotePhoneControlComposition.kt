@@ -133,7 +133,15 @@ class RemotePhoneControlComposition(
             revalidate()
             val result = Json.parse(output.decodeToString())
             return phonePluginResult(entry, result)
-        } finally {
+        } catch (failure: CapabilityDenied) {
+            // 只公开可由本机处理的固定错误码，原语参数和插件异常正文不进入回执。
+            val code = failure.primitive.takeIf { it in phonePermissionErrors } ?: "CAPABILITY_DENIED"
+            fail(code)
+        } catch (_: ProviderRejected) { fail("PROVIDER_UNAVAILABLE") }
+          catch (_: BudgetExceeded) { fail("PLUGIN_BUDGET_EXCEEDED") }
+          catch (_: com.openandroidintelligence.plugin.wasm.BudgetExceeded) { fail("PLUGIN_BUDGET_EXCEEDED") }
+          catch (_: com.openandroidintelligence.plugin.wasm.PluginRejected) { fail("PLUGIN_RUNTIME_REJECTED") }
+        finally {
             activeRequests.remove(context.scope)
             PhoneLocalControlUiRegistry.current?.finish(context.scope.key.storageKey)
             pluginHost.finishRemoteRequest(id, connection.binding)
@@ -183,6 +191,13 @@ class RemotePhoneControlComposition(
     override fun close() { stopObserver.close(); kernelStopObserver.close(); connections.values.forEach { it.registration.close() }; connections.clear() }
     private fun fail(code: String): Nothing = throw ControlRequestException(code)
 }
+
+private val phonePermissionErrors = setOf(
+    "NOTIFICATION_ACCESS_REQUIRED", "NOTIFICATION_LISTENER_UNAVAILABLE", "LOCAL_POLICY_CORRUPTED", "LOCAL_GRANT_REQUIRED",
+    "FIELD_ACCESS_NOT_GRANTED", "PACKAGE_NOT_ALLOWED", "POLICY_REVISION_STALE", "AUTHORIZATION_REVISION_STALE",
+    "BACKGROUND_PERMISSION_REQUIRED", "REMOTE_BACKGROUND_AUTHORIZATION_CHANGED", "READ_SMS_REQUIRED", "SEND_SMS_REQUIRED",
+    "READ_CALL_LOG_REQUIRED", "SMS_SUBSCRIPTION_REQUIRED", "SMS_SUBSCRIPTION_CHANGED", "SMS_SUBSCRIPTION_UNAVAILABLE",
+)
 
 /** 仅已验证短信发送能力的未知结果可升级为控制未知终态；读取和其他插件保持原语义。 */
 internal fun phonePluginResult(entry: VerifiedCapability, result: JsonValue): PhoneControlResult {

@@ -14,13 +14,17 @@ import kotlinx.coroutines.withContext
 
 internal enum class NativeNodeAction { CLICK, LONG_CLICK, SET_TEXT, SCROLL_FORWARD, SCROLL_BACKWARD, SCROLL_UP, SCROLL_DOWN, SCROLL_LEFT, SCROLL_RIGHT }
 
+/** 业务树窗口与事件指纹必须来自同一次系统窗口枚举，但两者仍保持不同暴露范围。 */
+internal data class ScreenWindowCapture(
+    val windows: List<ScreenTreeWindow>,
+    val observed: ObservedWindows?,
+)
+
 internal interface ScreenRuntime {
     fun availability(): String?
     fun generation(): Long
     fun display(): ScreenDisplay
-    fun windows(): List<ScreenTreeWindow>
-    fun foregroundPackage(): String?
-    fun activeWindowId(): Int?
+    fun windows(): ScreenWindowCapture
     fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
     suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long, beforeDispatch: () -> Unit, drag: Boolean = false): Boolean
     fun global(action: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
@@ -44,12 +48,20 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
         ready()
         val generation = runtime.generation()
         val display = runtime.display()
-        val windows = runtime.windows()
+        val windowCapture = runtime.windows()
+        val windows = windowCapture.windows
         try {
             if (windows.isEmpty()) throw ScreenOperationException("SCREEN_WINDOW_UNAVAILABLE")
-            val snapshot = reader.capture(windows, display, generation, runtime.foregroundPackage(), runtime.activeWindowId())
+            // 包名和窗口号取自同一活动业务窗。系统保留的动态窗口号也无法指明本次快照的目标。
+            val active = windows.singleOrNull { it.window.active }?.takeIf {
+                !it.packageName.isNullOrBlank() && it.window.id in 0 until Int.MAX_VALUE
+            }
+            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id)
             if (runtime.generation() != generation || runtime.display() != display) throw ScreenOperationException("SCREEN_CHANGED")
             ready()
+            val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }
+            ScreenAccessibilityConnection.noteSnapshotWindows(windows.size, observed)
+            if (runtime.generation() != generation) throw ScreenOperationException("SCREEN_CHANGED")
             return snapshot to generation
         } catch (failure: ScreenOperationException) { throw failure }
         catch (_: SecurityException) { throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE") }
@@ -196,4 +208,17 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
     }
 
     private fun ready() { availability()?.let { throw ScreenOperationException(it) } }
+}
+
+private fun ObservedWindows.matchesBusinessWindows(windows: List<ScreenTreeWindow>): Boolean {
+    val states = targets + auxiliary
+    return windows.all { captured ->
+        val state = states.firstOrNull { it.id == captured.window.id } ?: return@all false
+        state.type == captured.window.type &&
+            state.layer == captured.window.layer &&
+            state.active == captured.window.active &&
+            state.focused == captured.window.focused &&
+            state.bounds == captured.window.bounds &&
+            state.packageName == captured.packageName
+    }
 }

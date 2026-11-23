@@ -70,6 +70,6 @@ their absence is a verification blocker, not a passing substitute.
 Periodic work is best-effort `JobScheduler` scheduling (`.setPersisted(false)`).
 Jobs are not persisted across reboots. When the app starts, `OpenAndroidIntelligenceApplication`
 reads the persisted SMS settings and restores the periodic job if auto-send is
-enabled with a non-manual interval. Reboot without a subsequent app launch
-results in no scheduled jobs. The app does not request `RECEIVE_BOOT_COMPLETED`
-and registers no `BroadcastReceiver`.
+enabled with a non-manual interval.
+
+Android 的私有 `RemoteHostBootReceiver` 在解锁启动后恢复已授权的手机 Host。短信读取模块的周期任务仍使用 `.setPersisted(false)`，由本机短信设置决定后续调度。

@@ -296,10 +296,16 @@ private class FakeRuntime : ScreenRuntime {
     override fun availability() = denial
     override fun generation() = sequence
     override fun display() = currentDisplay
-    override fun foregroundPackage() = "org.example.app"
-    override fun activeWindowId() = 1
-    override fun windows() = roots.mapIndexed { index, spec ->
-        ScreenTreeWindow(ScreenWindow(index + 1, 1, index, index == 0, index == 0, ScreenBounds(0, 0, 1080, 1920)), tree(spec))
+    override fun windows(): ScreenWindowCapture {
+        val packageName = "org.example.app"
+        val windows = roots.mapIndexed { index, spec ->
+            ScreenTreeWindow(ScreenWindow(index + 1, 1, index, index == 0, index == 0, ScreenBounds(0, 0, 1080, 1920)), tree(spec), packageName)
+        }
+        val states = windows.map {
+            ScreenWindowState(it.window.id, it.window.type, it.window.layer, it.window.active, it.window.focused,
+                it.window.bounds, it.packageName)
+        }
+        return ScreenWindowCapture(windows, buildObservedWindows(states, packageName))
     }
     private fun tree(spec: Spec): ScreenTreeNode {
         created++

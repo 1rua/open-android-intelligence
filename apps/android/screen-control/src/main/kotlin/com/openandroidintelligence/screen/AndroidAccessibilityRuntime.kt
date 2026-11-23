@@ -15,6 +15,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.openandroidintelligence.control.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -50,34 +51,70 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         return ScreenDisplay(bounds.width(), bounds.height(), manager.defaultDisplay.rotation)
     }
 
-    override fun windows(): List<ScreenTreeWindow> {
+    override fun windows(): ScreenWindowCapture {
         val service = service()
         val result = ArrayList<ScreenTreeWindow>()
+        val states = ArrayList<ScreenWindowState>()
+        var metadataComplete = true
         try {
-            val windows = service.windows.orEmpty()
+            val windows = service.windows
             try {
-                for (window in windows.take(ScreenTreeReader.MAX_WINDOWS + 1)) {
-                    if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue
-                    val root = window.root ?: continue
+                for (window in windows) {
+                    val root = try { window.root } catch (_: RuntimeException) {
+                        metadataComplete = false
+                        null
+                    }
+                    if (root == null) metadataComplete = false
+                    var adopted = false
                     try {
+                        val id = window.id
+                        val type = window.type
+                        val layer = window.layer
+                        val active = window.isActive
+                        val focused = window.isFocused
                         val rect = Rect()
                         window.getBoundsInScreen(rect)
-                        result += ScreenTreeWindow(ScreenWindow(window.id, window.type, window.layer,
-                            window.isActive, window.isFocused, rect.toScreenBounds()), AndroidTreeNode(root))
-                    } catch (failure: Exception) { recycle(root); throw failure }
+                        val packageName = try { root?.packageName?.toString() } catch (_: RuntimeException) {
+                            metadataComplete = false
+                            null
+                        }
+                        val bounds = rect.toScreenBounds()
+                        states += ScreenWindowState(id, type, layer, active, focused, bounds, packageName)
+                        if (type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY && root != null &&
+                            result.size < ScreenTreeReader.MAX_WINDOWS + 1) {
+                            result += ScreenTreeWindow(
+                                ScreenWindow(id, type, layer, active, focused, bounds),
+                                AndroidTreeNode(root),
+                                packageName,
+                            )
+                            adopted = true
+                        }
+                    } finally {
+                        if (!adopted) root?.let(::recycle)
+                    }
                 }
             } finally {
                 @Suppress("DEPRECATION")
                 windows.forEach { it.recycle() }
             }
-            if (result.isEmpty()) {
+            // 仅系统列表为空时读取活动根，避免把已过滤的浮层或不可读窗口重新引入业务树。
+            if (windows.isEmpty()) {
                 val root = service.rootInActiveWindow
                 if (root != null) {
-                    val rect = Rect(); root.getBoundsInScreen(rect)
-                    result += ScreenTreeWindow(ScreenWindow(root.windowId, 1, 0, true, true, rect.toScreenBounds()), AndroidTreeNode(root))
+                    try {
+                        val rect = Rect(); root.getBoundsInScreen(rect)
+                        result += ScreenTreeWindow(ScreenWindow(root.windowId, 1, 0, true, true, rect.toScreenBounds()),
+                            AndroidTreeNode(root), root.packageName?.toString())
+                    } catch (failure: Exception) {
+                        recycle(root)
+                        throw failure
+                    }
                 }
+                // 活跃窗口回退不是同一轮系统窗口枚举，不能据此建立乐观指纹基线。
+                metadataComplete = false
             }
-            return result
+            val observed = if (metadataComplete) buildObservedWindows(states, service.packageName) else null
+            return ScreenWindowCapture(result, observed)
         } catch (_: SecurityException) {
             result.forEach { it.root.close() }
             throw ScreenOperationException("ACCESSIBILITY_SERVICE_UNAVAILABLE")
@@ -87,16 +124,9 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         }
     }
 
-    override fun foregroundPackage(): String? = service().rootInActiveWindow?.let { root ->
-        try { root.packageName?.toString() } finally { recycle(root) }
-    }
-    override fun activeWindowId(): Int? = service().rootInActiveWindow?.let { root ->
-        try { root.windowId } finally { recycle(root) }
-    }
-
     override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long,
         beforeDispatch: () -> Unit): Boolean {
-        val windows = windows()
+        val windows = windows().windows
         val parts = expected.nodeId.substringAfter(':', "").split('.')
         if (parts.firstOrNull() != "0" || parts.size > ScreenTreeReader.MAX_DEPTH + 1) {
             windows.forEach { it.root.close() }

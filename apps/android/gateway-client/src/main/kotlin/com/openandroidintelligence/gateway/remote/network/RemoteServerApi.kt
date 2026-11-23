@@ -3,6 +3,7 @@ package com.openandroidintelligence.gateway.remote.network
 import com.openandroidintelligence.gateway.remote.api.RemoteAuthCodec
 import com.openandroidintelligence.gateway.remote.api.RemoteAuthRequest
 import com.openandroidintelligence.gateway.remote.auth.RemoteRoleRegistrar
+import com.openandroidintelligence.gateway.remote.auth.safeRoleErrorCode
 import com.openandroidintelligence.gateway.remote.auth.RemoteTokenRefresher
 import com.openandroidintelligence.gateway.remote.identity.*
 import com.openandroidintelligence.gateway.remote.protocol.RemoteBase64Url
@@ -16,6 +17,7 @@ import java.net.URI
 import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -48,6 +50,8 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
     private val deviceNameProvider: () -> String = { "OAI Android" },
 ) : RemoteRoleRegistrar, RemoteTokenRefresher {
     val origin: String = normalizeRemoteOrigin(origin)
+    // 只读查询允许 OkHttp 在复用的闲置连接被服务端关闭时重新建连。写请求仍使用单次传输。
+    private val reads = http.newBuilder().retryOnConnectionFailure(true).build()
     suspend fun loginProviders(): JsonValue.JObject = request("GET", "/api/v1/auth/oauth/providers").objectValue()
     suspend fun accountFromToken(token: String): RemoteAccountLogin {
         require(token.length >= 16) { "REMOTE_AUTHORIZATION_TOKEN_INVALID" }
@@ -84,19 +88,33 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
         } while (cursor != null)
         // 固定上游插件 devices() 单独查询 presence；目录允许不带 online，不能据此判为离线。
         val concurrency = Semaphore(8)
-        return coroutineScope {
+        // presence 的目标撤销与调用者撤销共用同一错误码，整批完成后只复核一次调用者。
+        val callerCheckRequired = AtomicBoolean(false)
+        val devices = coroutineScope {
             items.map { device -> async {
                 concurrency.withPermit {
                     val online = try { presence(accessToken, device.deviceId) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (failure: Exception) {
-                        java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${(failure as? RemoteRpcException)?.code ?: "CONNECTION_FAILED"}")
-                        false
+                        when ((failure as? RemoteRpcException)?.code) {
+                            // 目录和 presence 同用 Client 票据。票据被拒时交给账号层续期。
+                            "TOKEN_EXPIRED", "AUTH_INVALID", "TOKEN_REUSED" -> throw failure
+                            "DEVICE_REVOKED" -> {
+                                callerCheckRequired.set(true)
+                                false
+                            }
+                            else -> {
+                                java.util.logging.Logger.getLogger("RemoteServerApi").warning("PRESENCE_LOOKUP_FAILED:${safeRoleErrorCode((failure as? RemoteRpcException)?.code.orEmpty(), "CONNECTION_FAILED")}")
+                                false
+                            }
+                        }
                     }
                     device.copy(online = online)
                 }
             } }.awaitAll()
         }
+        if (callerCheckRequired.get()) request("GET", "/api/v1/me", accessToken).objectValue()
+        return devices
     }
     suspend fun presence(accessToken: String, deviceId: String): Boolean {
         val value = request("GET", "/api/v1/devices/${encode(deviceId)}/presence", accessToken).objectValue()
@@ -133,26 +151,38 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
             if (proof != null) header("X-DSH-Pairing-Proof", proof)
             method(method, (rawBody ?: body?.let(Json::canonical))?.toRequestBody("application/json".toMediaType()))
         }.build()
-        val response = http.newCall(request).await()
+        val transport = if (method == "GET") reads else http
+        val response = transport.newCall(request).await()
         return response.use {
             if (it.code == 204 && method == "DELETE") return@use JsonValue.JNull
-            val bytes = it.body?.byteStream()?.use { input ->
-                val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
-                while (true) {
-                    val count = input.read(buffer); if (count < 0) break
-                    if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
-            } ?: throw RemoteRpcException("INVALID_MESSAGE")
-            val parsed = try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
             if (!it.isSuccessful) {
-                val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
-                    ?.let { row -> (row as? JsonValue.JObject)?.optionalText("code") }
-                throw RemoteRpcException(code?.takeIf { codeValue -> Regex("[A-Z0-9_]{1,128}").matches(codeValue) } ?: "CONNECTION_FAILED")
+                val code = when {
+                    it.code == 429 -> "RATE_LIMITED"
+                    it.code in 500..599 -> "INTERNAL_ERROR"
+                    it.code in 400..499 -> safeErrorCode(it) ?: "CONNECTION_FAILED"
+                    else -> "CONNECTION_FAILED"
+                }
+                throw RemoteRpcException(code)
             }
-            parsed
+            val bytes = readBody(it) ?: throw RemoteRpcException("INVALID_MESSAGE")
+            try { RemoteWireJson.decode(bytes) } catch (_: Exception) { throw RemoteRpcException("INVALID_MESSAGE") }
         }
+    }
+    private fun safeErrorCode(response: Response): String? {
+        val bytes = readBody(response) ?: return null
+        val parsed = runCatching { RemoteWireJson.decode(bytes) }.getOrNull() ?: return null
+        val code = (parsed as? JsonValue.JObject)?.fields?.firstOrNull { row -> row.first == "error" }?.second
+            ?.let { row -> (row as? JsonValue.JObject)?.optionalText("code") }
+        return code?.takeIf { value -> Regex("[A-Z0-9_]{1,128}").matches(value) }
+    }
+    private fun readBody(response: Response): ByteArray? = response.body?.byteStream()?.use { input ->
+        val output = java.io.ByteArrayOutputStream(); val buffer = ByteArray(8192)
+        while (true) {
+            val count = input.read(buffer); if (count < 0) break
+            if (output.size() + count > 4 * 1024 * 1024) throw RemoteRpcException("HTTP_RESPONSE_TOO_LARGE")
+            output.write(buffer, 0, count)
+        }
+        output.toByteArray()
     }
     companion object {
         const val DEFAULT_ORIGIN = "https://dsh.r2049.cn"
@@ -165,7 +195,22 @@ class RemoteServerApi(origin: String, internal val http: OkHttpClient = defaultH
 internal suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
     continuation.invokeOnCancellation { cancel() }
     enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) { if (continuation.isActive) continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED")) }
+        override fun onFailure(call: Call, e: IOException) {
+            if (!continuation.isActive) return
+            // 只记录固定故障类别，不带 URL、票据或系统返回的异常正文。
+            val failure = when (e) {
+                is java.net.SocketTimeoutException -> "SOCKET_TIMEOUT"
+                is java.io.InterruptedIOException -> "CALL_TIMEOUT"
+                is javax.net.ssl.SSLException -> "TLS_FAILED"
+                is java.net.ConnectException -> "CONNECT_FAILED"
+                is java.net.UnknownHostException -> "DNS_FAILED"
+                is java.net.SocketException -> "SOCKET_FAILED"
+                is java.io.EOFException -> "PEER_CLOSED"
+                else -> "IO_FAILED"
+            }
+            java.util.logging.Logger.getLogger("RemoteServerApi").warning("HTTP_${call.request().method} $failure")
+            continuation.resumeWithException(RemoteRpcException("CONNECTION_FAILED"))
+        }
         override fun onResponse(call: Call, response: Response) {
             if (continuation.isActive) continuation.resume(response, onCancellation = { _, value, _ -> value.close() }) else response.close()
         }
