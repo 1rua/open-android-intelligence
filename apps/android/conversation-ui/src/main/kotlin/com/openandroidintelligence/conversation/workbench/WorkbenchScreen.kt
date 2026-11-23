@@ -850,6 +850,20 @@ fun WorkbenchScreen(
                 }
             }
         }
+        val dismissPhoneSettings: () -> Unit = {
+            if (settingsFromConversations) {
+                scope.launch {
+                    drawer.open()
+                }
+            }
+            onSettingsOpenChange(false)
+        }
+        // 在 if (expanded) 之前稳定注册兜底预测返回，确保从宽屏折叠至 < 840dp 时
+        // 外层处理器始终处于 OnBackPressedDispatcher 栈底，不会压在 movableSettings 内部子页返回之上。
+        val phoneSettingsBackProgress by rememberPredictiveBackProgress(
+            enabled = !expanded && settingsOpen,
+            onBack = dismissPhoneSettings,
+        )
 
         // 平板与宽屏（expanded）：设置与会话侧栏原位替换（320dp），右侧会话不被覆盖、不重新加载。
         // 手机与紧凑屏（!expanded）：设置页面采用独立全屏侧滑容器（从屏幕左向右滑入，占满窗口全部宽度和高度）。
@@ -918,32 +932,16 @@ fun WorkbenchScreen(
                     modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
                 ) {
                     ProvideSharedVisibilityScope {
-                        val backProgress by rememberPredictiveBackProgress(
-                            enabled = settingsOpen,
-                            onBack = {
-                                if (settingsFromConversations) {
-                                    scope.launch {
-                                        drawer.open()
-                                    }
-                                }
-                                onSettingsOpenChange(false)
-                            },
-                        )
                         Surface(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .predictiveBackSlideTransform(
-                                    progress = backProgress,
+                                    progress = phoneSettingsBackProgress,
                                     reduced = reduceMotion,
                                 ),
                             color = MaterialTheme.colorScheme.surface,
                         ) {
-                            movableSettings {
-                                if (settingsFromConversations) {
-                                    scope.launch { drawer.open() }
-                                }
-                                onSettingsOpenChange(false)
-                            }
+                            movableSettings(dismissPhoneSettings)
                         }
                     }
                 }

@@ -72,7 +72,7 @@ SettingsNavHost（独立隔离作用域，刻意挂在 movableSettings 内部）
 ```
 
 Key 命名空间统一收敛在 [SharedTransitions.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/SharedTransitions.kt) 的 `SharedTransitionKeys`（全部英文静态前缀，不受文案与语言影响）：
-- `rootSurface(id = "workspace")` → `"root_surface:$id"`
+- `rootSurface(id = "workspace")` → `"root_surface:$id"`（预留 Key，供根层跨屏容器转场按需接入；当前登录与工作台切换由根 `AnimatedContent` 过渡，内部页面元素使用各自作用域 Key）
 - `loginCard(id = "form")` → `"login_card:$id"`
 - `settingsCategoryCard(route)` → `"settings_category_card:$route"`
 - `composerContainer()` → `"composer_container"`
@@ -133,13 +133,14 @@ LocalMotionPolicy.current.isReduced == true ?
 | `EntranceSpring` / `entrance` | 悬浮进场 | `0.72f` | `380f` | 助理悬浮栏 `graphicsLayer` 进场位移与缩放 | `snap()` 直接落位 |
 | `ExpandSpring` / `expand` | 柔和展开（临界阻尼） | `1.0f` | `360f` | 助理输入栏展开成输入态高度变化 | `snap()` 直接落位 |
 | `CollapseSpring` / `collapse` | 快速收起（临界阻尼） | `1.0f` | `800f` | 助理输入栏收起恢复 | `snap()` 直接落位 |
-
-> **保留合法 `tween` 例外说明**：除上述物理弹簧外，代码库仅保留三类依赖显式时间延迟或无限循环节拍的合法 `tween`：
-> 1. `MotionSpecs.reducedFade()`（`tween(150ms, LinearEasing)`）：Reduce Motion / `durationScale <= 0f` 无障碍降级专用；
-> 2. `MotionSpecs.staggerEnter()`（含 `delayMillis` 错峰）与 [AssistantView.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/assistant/AssistantView.kt) 详情延迟淡入（`delayMillis = 120`）；
-> 3. [MessageTimeline.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimeline.kt) 的 `StreamingStatusDot` 无限呼吸动画（`infiniteRepeatable(tween(1200))`，减少动态时静止）。
 | `MomentumSpring` | 手势惯性 | `0.75f` | `400f` | 停靠球拖拽释放动量吸附 | 直接吸附落位 |
 | `SheetSpring` | 抽屉/弹层（临界阻尼） | `1.0f` | `400f` | 底部弹层、侧边抽屉 | `snap()` 直接落位 |
+
+> **保留合法 `tween` 例外与范围边界说明**：除上述物理弹簧外，`:conversation-ui` 与主工作台/登录/设置导航改造范围内仅保留三类特定时序的 `tween` 例外（另附未纳入本轮全弹簧重写范围的既有引导页与 `:assistant-holder` 边界说明）：
+> 1. `MotionSpecs.reducedFade()`（`tween(150ms, LinearEasing)`）及兼容保留常量 `MotionSpecs.ReducedMotionSpec`：Reduce Motion / `durationScale <= 0f` 无障碍降级专用；
+> 2. `MotionSpecs.staggerEnter()`（含 `delayMillis` 错峰）与 [AssistantView.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/assistant/AssistantView.kt) 详情延迟淡入（`ContentStaggerDelayMillis = 60`，减少动态时零延迟 `150ms`）；
+> 3. [MessageTimeline.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimeline.kt) 的 `StreamingStatusDot` 无限呼吸动画（`infiniteRepeatable(tween(1200))`，减少动态时静止）；
+> 4. 非本轮核心重写范围边界：引导流程（`OnboardingFlow.kt`、`RemoteGuideScreen.kt`、`OnboardingStepHeader.kt`）与悬浮助理模块（`:assistant-holder` 下 `AssistantCompactBar.kt`、`AssistantExpandedPanel.kt`）仍保留既有固定时长 `tween` 过渡。
 
 > **缓动与刻度补充**：`MotionSpecs.EmphasizedAccelerateEasing` 已对齐 MD3 官方 `CubicBezierEasing(0.3f, 0.0f, 0.8f, 0.15f)`；`ReducedMotionCrossfadeDuration = 150`（`Fast`）；列表错峰延迟 `staggerDelayMillis(index, reduced)` 每项步进 `40ms`、上限 `240ms`（减少动态时为 `0ms`）。
 
@@ -421,7 +422,7 @@ fun PredictiveBackPanelExample(
 | `:conversation-ui` | `MotionPolicy.kt`、`MotionSpecs.kt`、`AppTransitions.kt` | 新增 `isReduced`、M3 Standard/Expressive/Effects/Press 弹簧、`AppTransitions` 全弹簧化 | `MotionPhysicsTest`、`AppTransitionsTest` |
 | `:conversation-ui` | `SharedTransitions.kt`、`PredictiveBackCompat.kt` | 统一共享宿主/Key/安全修饰符与 API 31–36 预测性返回兼容 | `SharedTransitionsAndPredictiveBackTest` |
 | `:conversation-ui` | `M3ExpressiveCard.kt`、`M3MorphingButton.kt`、`Theme.kt`、`ExpandableRegion.kt`、`Interaction.kt` | 动态圆角卡片、形变按钮与主题/展开/按压弹簧升级 | `M3ExpressiveComponentsTest` |
-| `:conversation-ui` | `WorkbenchScreen.kt`、`ComposerBar.kt`、`TimelineScaffold.kt`、`ApprovalCard.kt`、`CommandMenu.kt`、`ComposerAttachmentSheet.kt`、`MarkdownThoughtView.kt`、`MarkdownToolCallView.kt` | 工作台共享作用域、发送/停止形变、审批卡/思考卡/工具卡升级、手机设置预测性返回 | `:conversation-ui:testDebugUnitTest` |
+| `:conversation-ui` | `WorkbenchScreen.kt`、`ComposerBar.kt`、`VoiceRecordingRow.kt`、`TimelineScaffold.kt`、`ApprovalCard.kt`、`CommandMenu.kt`、`ComposerAttachmentSheet.kt`、`MarkdownThoughtView.kt`、`MarkdownToolCallView.kt`、`ScreenSelectionOverlay.kt`、`SettingsItemMorph.kt`、`RecordingWaveform.kt`、`AssistantView.kt` | 工作台共享作用域、发送/停止与录音发送键共享边界形变、折叠思维链/工具卡升级、选区/形态 `isReduced` 统一、手机设置预测性返回防抢占 | `M3ExpressiveComponentsTest`、`ThoughtCardTest`、`VoiceRecordingRowTest`、`ScreenSelectionMinimumSizeTest`（并包含在 `:conversation-ui:test`） |
 | `:app` | [RemoteWorkbenchRoot.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteWorkbenchRoot.kt) | 主题内层 `AppSharedTransitionHost` 与双层 `AnimatedContent` 可见性注入 | `ExpressiveMotionNavigationTest`、`RemoteRootInteractionTest` |
 | `:app` | [RemoteLoginScreen.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/RemoteLoginScreen.kt) | 官方/自建切换 `ProvideSharedVisibilityScope` + `m3SharedBounds` + `M3MorphingButton` | `ExpressiveMotionNavigationTest`、`RemoteLoginPresentationTest` |
 | `:app` | [SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)、[SettingsScaffold.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsScaffold.kt) | 内置 `AppSharedTransitionHost`、一级分类 `sharedCategoryKey` 共享转场、二级页纯水平滑入、`rememberPredictiveBackProgress` | `ExpressiveMotionNavigationTest`、`SettingsNavigationTest`、`SettingsHonestyCopyTest`、`SettingsResponsiveHostRegressionTest`、`MaterialTokenGuardTest` |

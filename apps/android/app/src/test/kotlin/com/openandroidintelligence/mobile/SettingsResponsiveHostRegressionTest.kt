@@ -112,6 +112,76 @@ class SettingsResponsiveHostRegressionTest {
         compose.onNodeWithTag("workbench-settings-slot").assertWidthIsEqualTo(839.dp)
     }
 
+    @Test fun workbenchSettingsSubpageBackReturnsToOverviewAfterFoldingAcross840dp() {
+        val environment = settingsEnvironment()
+        val controller = WorkbenchController(
+            scope, EmptyGateway(),
+            object : AgentCommandCatalogRepository {
+                override suspend fun get(gatewayId: String, languageCode: String) =
+                    AgentCommandCatalog(CatalogVersion("test"), emptyList())
+            },
+            { ConversationScope("profile", "gateway", "account", "installation") },
+        )
+        var hostWidth by mutableStateOf(840.dp)
+        var settingsOpen by mutableStateOf(true)
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                MaterialTheme {
+                    Box(Modifier.size(hostWidth, 700.dp)) {
+                        WorkbenchSettingsHost { presentation ->
+                            com.openandroidintelligence.conversation.workbench.WorkbenchScreen(
+                                controller = controller,
+                                gatewayLabel = "https://gateway.example.com",
+                                onOpenSettings = { settingsOpen = true },
+                                onLogout = {},
+                                onPickCamera = {},
+                                onPickGallery = {},
+                                onPickDocument = {},
+                                onVoiceInput = {},
+                                settingsOpen = settingsOpen,
+                                onSettingsOpenChange = { settingsOpen = it },
+                                settingsPanel = { close ->
+                                    SettingsScreen(
+                                        environment = environment,
+                                        onBack = close,
+                                        presentation = presentation,
+                                        onRequestScreenCaptureAuthorization = {},
+                                    )
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        compose.onNodeWithText("外观与交互").performScrollTo().performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("连接与账号").assertDoesNotExist()
+        compose.onNodeWithText("外观与交互").assertIsDisplayed()
+
+        compose.runOnIdle { hostWidth = 839.dp }
+        compose.waitForIdle()
+        compose.runOnIdle { assertTrue("从宽屏折叠至手机端时设置面板应保持打开", settingsOpen) }
+        compose.onNodeWithText("连接与账号").assertDoesNotExist()
+        compose.onNodeWithText("外观与交互").assertIsDisplayed()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertTrue("子页首次返回必须回到总览页，不得被外层预测性返回抢占关闭", settingsOpen) }
+        compose.onNodeWithText("连接与账号").assertIsDisplayed()
+        compose.onNodeWithText("外观与交互").assertIsDisplayed()
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        compose.runOnIdle { assertFalse("回到总览页后再次返回才应关闭设置面板", settingsOpen) }
+        compose.onNodeWithText("连接与账号").assertDoesNotExist()
+        compose.onNodeWithText("外观与交互").assertDoesNotExist()
+    }
+
     @Test fun loginSettingsKeepsTheRealSubpageAcrossCompactExpandedCompact() {
         assertRealSettingsNavigation(839.dp, listOf(840.dp, 839.dp), reduceMotion = false)
     }

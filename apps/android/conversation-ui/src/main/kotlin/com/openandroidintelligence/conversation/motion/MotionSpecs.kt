@@ -112,6 +112,7 @@ object MotionSpecs {
     val ExpandSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 360f)
     /** 输入栏收起：与展开同路径但更快，用户不会觉得「卡住」。 */
     val CollapseSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 800f)
+    /** 兼容保留的固定时长淡化常量；新代码请优先使用 [reducedFade]。 */
     val ReducedMotionSpec = tween<Float>(Fast, easing = LinearEasing)
 
     // ===== 泛型 Spring 工厂 =====
@@ -213,11 +214,7 @@ object MotionSpecs {
 
     /** 容器形变：临界阻尼弹簧（700f）；减少动态直接落到目标值。 */
     fun <T> morph(reduced: Boolean): FiniteAnimationSpec<T> =
-        if (reduced) {
-            snap()
-        } else {
-            spring(dampingRatio = MorphSpring.dampingRatio, stiffness = MorphSpring.stiffness)
-        }
+        springSpecFrom(reduced = reduced, template = MorphSpring, visibilityThreshold = null)
 
     /** 轻快吸附：对齐 [spatialFast]；减少动态直接落到目标值。 */
     fun <T> snappy(reduced: Boolean): FiniteAnimationSpec<T> =

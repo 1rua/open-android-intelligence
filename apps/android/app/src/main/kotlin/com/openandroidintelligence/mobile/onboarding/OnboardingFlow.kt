@@ -319,7 +319,7 @@ fun OnboardingFlow(
             AnimatedContent(
                 targetState = state.stage,
                 transitionSpec = {
-                    fadeIn(MotionSpecs.emphasized(reduceMotion)) togetherWith
+                    fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                         fadeOut(MotionSpecs.fade(reduceMotion))
                 },
                 label = "onboarding-stage",

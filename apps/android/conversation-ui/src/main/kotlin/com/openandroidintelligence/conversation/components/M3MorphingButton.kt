@@ -110,6 +110,13 @@ object M3MorphingButtonDefaults {
         disabledContentColor = disabledContentColor,
     )
 
+    /**
+     * 输入坞发送/停止主操作配色。
+     *
+     * 为保持发送/停止键在禁用态下柔和融入输入坞底色，此处禁用容器色沿用
+     * [MaterialTheme.colorScheme.surfaceContainer]，并通过 0.38 不透明度的
+     * `onSurfaceVariant` 维持 MD3 禁用图标对比度语义（[DESIGN.md] §3.1）。
+     */
     @Composable
     fun sendStopColors(
         containerColor: Color = MaterialTheme.colorScheme.primary,

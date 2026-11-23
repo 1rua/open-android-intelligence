@@ -334,7 +334,7 @@ fun M3ExpandableExpressiveCard(
                         .clip(visuals.shape)
                         .then(headerClickModifier)
                         .then(
-                            if (toggleStateDescription != null) {
+                            if (clickableHeader && toggleStateDescription != null) {
                                 Modifier.semantics { stateDescription = toggleStateDescription }
                             } else {
                                 Modifier
