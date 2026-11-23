@@ -113,6 +113,10 @@ object MotionSpecs {
     /** 输入栏收起：与展开同路径但更快，用户不会觉得「卡住」。 */
     val CollapseSpring = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 800f)
     /** 兼容保留的固定时长淡化常量；新代码请优先使用 [reducedFade]。 */
+    @Deprecated(
+        message = "请改用 MotionSpecs.reducedFade()",
+        replaceWith = ReplaceWith("reducedFade()"),
+    )
     val ReducedMotionSpec = tween<Float>(Fast, easing = LinearEasing)
 
     // ===== 泛型 Spring 工厂 =====
@@ -206,11 +210,11 @@ object MotionSpecs {
 
     /** 淡入淡出：非减少动态使用临界阻尼 [effectsDefault]，减少动态退化为 150ms 线性淡化。 */
     fun <T> fade(reduced: Boolean): FiniteAnimationSpec<T> =
-        if (reduced) reducedFade() else effectsDefault(false)
+        effectsDefault(reduced)
 
     /** 展开/折叠等容器高度变化：临界阻尼不抖动，减少动态直接落位。 */
     fun <T> emphasized(reduced: Boolean): FiniteAnimationSpec<T> =
-        if (reduced) snap() else morph(false)
+        morph(reduced)
 
     /** 容器形变：临界阻尼弹簧（700f）；减少动态直接落到目标值。 */
     fun <T> morph(reduced: Boolean): FiniteAnimationSpec<T> =

@@ -31,8 +31,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.isTraversalGroup
@@ -73,6 +75,7 @@ private fun rememberExpressiveCardVisuals(
     sharedBoundsKey: Any?,
     shadowElevation: Dp,
     labelPrefix: String,
+    scaleTransformOrigin: TransformOrigin = TransformOrigin.Center,
 ): ExpressiveCardVisuals {
     val scale by animateFloatAsState(
         targetValue = if (interactive && pressed && !reduced) pressedScale else 1f,
@@ -96,10 +99,6 @@ private fun rememberExpressiveCardVisuals(
         label = "$labelPrefix-content",
     )
     val cardModifier = Modifier
-        .graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        }
         .then(
             if (sharedBoundsKey != null) {
                 Modifier.m3SharedBounds(key = sharedBoundsKey, clipShape = shape)
@@ -107,6 +106,11 @@ private fun rememberExpressiveCardVisuals(
                 Modifier
             },
         )
+        .graphicsLayer {
+            scaleX = scale
+            scaleY = scale
+            transformOrigin = scaleTransformOrigin
+        }
         .then(
             if (shadowElevation > 0.dp) {
                 Modifier.shadow(elevation = shadowElevation, shape = shape, clip = false)
@@ -227,16 +231,16 @@ fun M3ExpressiveCard(
         }
     }
 
-    Box(
-        modifier = modifier
-            .then(touchTargetModifier)
-            .then(visuals.cardModifier)
-            .then(interactionModifier),
-        propagateMinConstraints = true,
+    CompositionLocalProvider(
+        LocalContentColor provides visuals.contentColor,
+        LocalAbsoluteTonalElevation provides absoluteElevation,
     ) {
-        CompositionLocalProvider(
-            LocalContentColor provides visuals.contentColor,
-            LocalAbsoluteTonalElevation provides absoluteElevation,
+        Box(
+            modifier = modifier
+                .then(touchTargetModifier)
+                .then(visuals.cardModifier)
+                .then(interactionModifier),
+            propagateMinConstraints = true,
         ) {
             Column(
                 modifier = Modifier.padding(contentPadding),
@@ -252,7 +256,9 @@ fun M3ExpressiveCard(
  * 当提供 [onExpandedChange] 时，仅将点击区域、按压反馈与 M3 Ripple 挂载在 [header] 容器上
  * （最小触摸高度 [Dimensions.MinimumTouchTarget]），避免拦截展开体内的文本选中与复制按钮手势；
  * 当 [onExpandedChange] 为 `null` 时作为只读信息卡渲染（不暴露按钮语义且不应用禁用态置灰）。
- * 外层卡片随展开与按压动态弹簧插值圆角，展开内容由 [ExpandableRegion] 统一承载。
+ * 卡片按压围绕顶部中心微缩以避免长展开卡片按压头部时标题下移，头部仅以矩形边界裁切水波纹，
+ * 顶角由外层卡片圆角统一裁切，消除展开态接缝留白并避免非均匀圆角路径开销，
+ * 且禁用态仅作用于可点击头部而不污染已展开正文。
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -307,6 +313,7 @@ fun M3ExpandableExpressiveCard(
         sharedBoundsKey = sharedBoundsKey,
         shadowElevation = 0.dp,
         labelPrefix = "m3-expandable-card",
+        scaleTransformOrigin = TransformOrigin(0.5f, 0f),
     )
     val headerClickModifier = if (onExpandedChange != null) {
         Modifier.clickable(
@@ -325,13 +332,13 @@ fun M3ExpandableExpressiveCard(
         modifier = modifier.then(visuals.cardModifier),
         propagateMinConstraints = true,
     ) {
-        CompositionLocalProvider(LocalContentColor provides visuals.contentColor) {
-            Column(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            CompositionLocalProvider(LocalContentColor provides visuals.contentColor) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .defaultMinSize(minHeight = Dimensions.MinimumTouchTarget)
-                        .clip(visuals.shape)
+                        .clipToBounds()
                         .then(headerClickModifier)
                         .then(
                             if (clickableHeader && toggleStateDescription != null) {
@@ -343,6 +350,8 @@ fun M3ExpandableExpressiveCard(
                     verticalArrangement = Arrangement.Center,
                     content = header,
                 )
+            }
+            CompositionLocalProvider(LocalContentColor provides contentColor) {
                 ExpandableRegion(
                     expanded = expanded,
                     reduced = reduced,

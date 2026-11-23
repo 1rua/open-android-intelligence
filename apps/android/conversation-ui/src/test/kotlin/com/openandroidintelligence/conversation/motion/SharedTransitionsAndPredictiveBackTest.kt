@@ -10,6 +10,8 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.SpringSpec
 import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -20,19 +22,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.components.ExpandableRegion
 import com.openandroidintelligence.conversation.components.bouncyClickable
@@ -153,49 +159,53 @@ class SharedTransitionsAndPredictiveBackTest {
         compose.setContent {
             OpenAndroidIntelligenceTheme(reduceMotion = reduceMotion) {
                 EnsureSharedTransitionHost {
-                    AnimatedContent(
-                        targetState = expanded,
-                        transitionSpec = {
-                            AppTransitions.enter(reduceMotion) togetherWith AppTransitions.exit(reduceMotion)
-                        },
-                        label = "shared-bounds-test",
-                    ) { isExpanded ->
-                        ProvideSharedVisibilityScope {
-                            if (!isExpanded) {
-                                Box(
-                                    Modifier
-                                        .size(100.dp)
-                                        .m3SharedBounds(
-                                            key = SharedTransitionKeys.expandableCard("card-1"),
-                                            clipShape = RoundedCornerShape(12.dp),
+                    Box(Modifier.size(260.dp)) {
+                        AnimatedContent(
+                            targetState = expanded,
+                            transitionSpec = {
+                                (fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion))).using(null)
+                            },
+                            label = "shared-bounds-test",
+                        ) { isExpanded ->
+                            ProvideSharedVisibilityScope {
+                                if (!isExpanded) {
+                                    Box(
+                                        Modifier
+                                            .m3SharedBounds(
+                                                key = SharedTransitionKeys.expandableCard("card-1"),
+                                                clipShape = RoundedCornerShape(12.dp),
+                                            )
+                                            .size(100.dp)
+                                            .background(MaterialTheme.colorScheme.surfaceContainer),
+                                    ) {
+                                        Text(
+                                            "CollapsedCard",
+                                            modifier = Modifier.m3SharedElement(
+                                                key = SharedTransitionKeys.morphingButton("icon-1"),
+                                                clipShape = RoundedCornerShape(8.dp),
+                                            ),
                                         )
-                                        .background(MaterialTheme.colorScheme.surfaceContainer),
-                                ) {
-                                    Text(
-                                        "CollapsedCard",
-                                        modifier = Modifier.m3SharedElement(
-                                            key = SharedTransitionKeys.morphingButton("icon-1"),
-                                            clipShape = RoundedCornerShape(8.dp),
-                                        ),
-                                    )
-                                }
-                            } else {
-                                Box(
-                                    Modifier
-                                        .size(220.dp)
-                                        .m3SharedBounds(
-                                            key = SharedTransitionKeys.expandableCard("card-1"),
-                                            resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
-                                            clipShape = RoundedCornerShape(20.dp),
-                                        )
-                                        .background(MaterialTheme.colorScheme.secondaryContainer),
-                                ) {
-                                    Text(
-                                        "ExpandedCard",
-                                        modifier = Modifier.m3SharedElement(
-                                            key = SharedTransitionKeys.morphingButton("icon-1"),
-                                        ),
-                                    )
+                                    }
+                                } else {
+                                    Box(
+                                        Modifier
+                                            .m3SharedBounds(
+                                                key = SharedTransitionKeys.expandableCard("card-1"),
+                                                resizeMode = SharedTransitionScope.ResizeMode.RemeasureToBounds,
+                                                clipShape = RoundedCornerShape(20.dp),
+                                            )
+                                            .size(220.dp)
+                                            .background(MaterialTheme.colorScheme.secondaryContainer),
+                                    ) {
+                                        Box(Modifier.fillMaxSize().testTag("shared-card-expanded")) {
+                                            Text(
+                                                "ExpandedCard",
+                                                modifier = Modifier.m3SharedElement(
+                                                    key = SharedTransitionKeys.morphingButton("icon-1"),
+                                                ),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -205,9 +215,75 @@ class SharedTransitionsAndPredictiveBackTest {
         }
 
         compose.onNodeWithText("CollapsedCard").assertIsDisplayed()
+        val startPx = with(compose.density) { 100.dp.toPx() }
+        val endPx = with(compose.density) { 220.dp.toPx() }
+
+        compose.mainClock.autoAdvance = false
         compose.runOnIdle { expanded = true }
         compose.waitForIdle()
+        repeat(3) {
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+        }
+        if (!reduceMotion) {
+            val midWidth = compose.onNodeWithTag("shared-card-expanded").fetchSemanticsNode().boundsInRoot.width
+            assertTrue(
+                "标准模式下共享边界中段宽度应处于起止之间 ($startPx..$endPx), actual=$midWidth",
+                midWidth in (startPx + 1f)..(endPx - 1f),
+            )
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
         compose.onNodeWithText("ExpandedCard").assertIsDisplayed()
+        assertEquals(endPx, compose.onNodeWithTag("shared-card-expanded").fetchSemanticsNode().boundsInRoot.width, 1f)
+    }
+
+    @Test
+    fun navEnterProducesMidTransitionHorizontalSlideOnlyInStandardMode() {
+        var reduceMotion by mutableStateOf(false)
+        var page by mutableStateOf(0)
+        compose.setContent {
+            OpenAndroidIntelligenceTheme(reduceMotion = reduceMotion) {
+                key(reduceMotion) {
+                    AnimatedContent(
+                        targetState = page,
+                        transitionSpec = {
+                            AppTransitions.navEnter(reduceMotion) togetherWith AppTransitions.navExit(reduceMotion)
+                        },
+                        label = "nav-enter-clock-test",
+                    ) { target ->
+                        Box(Modifier.size(240.dp).testTag("nav-page-$target")) {
+                            Text("Page $target")
+                        }
+                    }
+                }
+            }
+        }
+
+        fun sampleMidFrameOffset(reduced: Boolean): Float {
+            compose.mainClock.autoAdvance = true
+            compose.runOnIdle {
+                reduceMotion = reduced
+                page = 0
+            }
+            compose.waitForIdle()
+            compose.mainClock.autoAdvance = false
+            compose.runOnIdle { page = 1 }
+            compose.waitForIdle()
+            repeat(3) {
+                compose.mainClock.advanceTimeByFrame()
+                compose.waitForIdle()
+            }
+            val left = compose.onNodeWithTag("nav-page-1").fetchSemanticsNode().positionInRoot.x
+            compose.mainClock.autoAdvance = true
+            compose.waitForIdle()
+            return left
+        }
+
+        val standardMidX = sampleMidFrameOffset(reduced = false)
+        assertTrue("标准态 navEnter 中段应仍在右侧滑入中: $standardMidX", standardMidX > 10f)
+        val reducedMidX = sampleMidFrameOffset(reduced = true)
+        assertEquals(0f, reducedMidX, 0.5f)
     }
 
     @Test
@@ -219,60 +295,131 @@ class SharedTransitionsAndPredictiveBackTest {
     }
 
     @Test
-    fun rememberPredictiveBackProgressTracksCancelSpringReboundAndCompletionOnApi34() {
-        var progressValue = -1f
+    fun rememberPredictiveBackStateTracksEdgeDirectionReboundZeroRecompositionAndCompletion() {
+        var latestState = PredictiveBackState()
         var backCalls = 0
+        var recomposeCount = 0
         lateinit var dispatcher: OnBackPressedDispatcher
 
         compose.setContent {
             dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
             CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
-                val progress by rememberPredictiveBackProgress(
+                val backState = rememberPredictiveBackState(
                     enabled = true,
                     onBack = { backCalls++ },
                     sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
                 )
-                progressValue = progress
+                SideEffect { recomposeCount++ }
                 Box(
                     Modifier
                         .size(200.dp)
-                        .predictiveBackSlideTransform(progress = progress, reduced = false),
+                        .predictiveBackSlideTransform(
+                            stateProvider = {
+                                latestState = backState.value
+                                backState.value
+                            },
+                            reduced = false,
+                        ),
                 ) {
                     Text("PredictivePanel", modifier = Modifier.testTag("predictive-panel"))
                 }
             }
         }
+        compose.waitForIdle()
+        val initialRecompose = recomposeCount
 
-        // 手势开始与推进：应同步跟踪进度，且触发向左的图层滑移
+        // 左边缘起滑应向右平移，右边缘起滑应向左平移，且不触发父组合体逐帧重组
         compose.runOnIdle {
             dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
             dispatcher.dispatchOnBackProgressed(BackEventCompat(40f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
         }
         compose.waitForIdle()
-        assertEquals(0.5f, progressValue, 0.01f)
-        val shiftedX = compose.onNodeWithTag("predictive-panel").fetchSemanticsNode().positionInRoot.x
-        assertTrue("预测性返回向左偏移时 positionInRoot.x 应小于 0: $shiftedX", shiftedX < 0f)
+        assertEquals(0.5f, latestState.progress, 0.01f)
+        val leftEdgeX = compose.onNodeWithTag("predictive-panel").fetchSemanticsNode().positionInRoot.x
+        assertTrue("左边缘侧滑时 positionInRoot.x 应大于 0: $leftEdgeX", leftEdgeX > 0f)
+        assertEquals("惰性读取进度不应触发宿主组合体重新组合", initialRecompose, recomposeCount)
 
-        // 手势取消：应在 NonCancellable 中弹簧回弹复原且不调用 onBack
+        // 取消后临界阻尼平滑回弹复原（全程 >= 0f），不触发 onBack
         compose.mainClock.autoAdvance = false
         compose.runOnIdle { dispatcher.dispatchOnBackCancelled() }
         compose.mainClock.advanceTimeByFrame()
         compose.mainClock.advanceTimeBy(32)
-        assertTrue("取消后应平滑回弹而不是瞬跳: $progressValue", progressValue in 0.01f..0.49f)
+        assertTrue("取消后应平滑回弹而不是瞬跳: ${latestState.progress}", latestState.progress in 0.01f..0.49f)
         compose.mainClock.autoAdvance = true
         compose.waitForIdle()
-        assertEquals(0f, progressValue, 0.001f)
+        assertEquals(0f, latestState.progress, 0.001f)
         assertEquals(0, backCalls)
+        assertEquals(initialRecompose, recomposeCount)
 
-        // 完整确认返回：触发 onBack 并复位进度
+        // 右边缘起滑应向左平移并支持正常完成复位
         compose.runOnIdle {
-            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
-            dispatcher.dispatchOnBackProgressed(BackEventCompat(80f, 100f, 0.8f, BackEventCompat.EDGE_LEFT))
-            dispatcher.onBackPressed()
+            dispatcher.dispatchOnBackStarted(BackEventCompat(100f, 100f, 0f, BackEventCompat.EDGE_RIGHT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(20f, 100f, 0.6f, BackEventCompat.EDGE_RIGHT))
         }
         compose.waitForIdle()
+        val rightEdgeX = compose.onNodeWithTag("predictive-panel").fetchSemanticsNode().positionInRoot.x
+        assertTrue("右边缘侧滑时 positionInRoot.x 应小于 0: $rightEdgeX", rightEdgeX < 0f)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
         assertEquals(1, backCalls)
-        assertEquals(0f, progressValue, 0.001f)
+        assertEquals(0f, latestState.progress, 0.001f)
+    }
+
+    @Test
+    fun rememberPredictiveBackStateCancelsReboundWithoutClobberingNextGesture() {
+        var latestProgress = 0f
+        var recomposeCount = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                val backState = rememberPredictiveBackState(
+                    enabled = true,
+                    onBack = {},
+                    sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                )
+                SideEffect { recomposeCount++ }
+                Box(
+                    Modifier
+                        .size(200.dp)
+                        .predictiveBackSlideTransform(
+                            stateProvider = {
+                                latestProgress = backState.value.progress
+                                backState.value
+                            },
+                            reduced = false,
+                        ),
+                ) {
+                    Text("RacePanel", modifier = Modifier.testTag("race-panel"))
+                }
+            }
+        }
+        compose.waitForIdle()
+        val initialRecompose = recomposeCount
+
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(40f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+
+        // 在第 1 次取消回弹中途（32ms）立即发起第 2 次手势推进到 0.7f
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { dispatcher.dispatchOnBackCancelled() }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeBy(32)
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(70f, 100f, 0.7f, BackEventCompat.EDGE_LEFT))
+        }
+        repeat(4) {
+            compose.mainClock.advanceTimeByFrame()
+            assertEquals("第 2 次手势进度不得被第 1 次手势取消清理覆盖", 0.7f, latestProgress, 0.01f)
+        }
+        compose.mainClock.autoAdvance = true
+        compose.waitForIdle()
+        assertEquals(initialRecompose, recomposeCount)
     }
 
     @Test
@@ -371,7 +518,7 @@ class SharedTransitionsAndPredictiveBackTest {
                 Box(
                     Modifier
                         .size(200.dp)
-                        .predictiveBackSlideTransform(progress = 0.6f, reduced = true),
+                        .predictiveBackSlideTransform(progressProvider = { 0.6f }, reduced = true),
                 ) {
                     Text("ReducedPanel", modifier = Modifier.testTag("reduced-panel"))
                 }
@@ -415,11 +562,30 @@ class SharedTransitionsAndPredictiveBackTest {
     }
 
     @Test
-    fun slideTransformReturnsSameModifierWhenReducedAndClampsProgress() {
+    fun slideTransformReturnsSameModifierWhenReducedAndFollowsRtlDirection() {
         val base = Modifier.padding(4.dp)
-        assertSame(base, base.predictiveBackSlideTransform(progress = 0.5f, reduced = true))
-        assertSame(base, base.predictiveBackSlideTransform(progress = -0.2f, reduced = false))
-        assertNotEquals(base, base.predictiveBackSlideTransform(progress = 1.5f, reduced = false))
+        assertSame(base, base.predictiveBackSlideTransform(progressProvider = { 0.5f }, reduced = true))
+        assertNotEquals(base, base.predictiveBackSlideTransform(progressProvider = { -0.2f }, reduced = false))
+        assertNotEquals(base, base.predictiveBackSlideTransform(progressProvider = { 1.5f }, reduced = false))
+        assertEquals(1f, resolvePredictiveBackDirection(BackEventCompat.EDGE_LEFT, LayoutDirection.Rtl))
+        assertEquals(-1f, resolvePredictiveBackDirection(BackEventCompat.EDGE_RIGHT, LayoutDirection.Ltr))
+        assertEquals(1f, resolvePredictiveBackDirection(-1, LayoutDirection.Ltr))
+        assertEquals(-1f, resolvePredictiveBackDirection(-1, LayoutDirection.Rtl))
+
+        compose.setContent {
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+                Box(
+                    Modifier
+                        .size(200.dp)
+                        .predictiveBackSlideTransform(progressProvider = { 0.5f }, reduced = false)
+                        .testTag("rtl-panel"),
+                ) {
+                    Text("RtlPanel")
+                }
+            }
+        }
+        val rtlX = compose.onNodeWithTag("rtl-panel").fetchSemanticsNode().positionInRoot.x
+        assertTrue("RTL 无特定边缘时应向左负向位移: $rtlX", rtlX < 0f)
     }
 
     @Test

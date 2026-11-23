@@ -3,7 +3,6 @@ package com.openandroidintelligence.conversation.workbench
 import com.openandroidintelligence.conversation.model.NativeExecutionStatus
 
 import android.widget.Toast
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -173,15 +172,11 @@ fun MarkdownToolCallView(
 
     val badgeText = toolBadgeText(block.toolName)
 
-    val chevronRotation = if (reduceMotion) {
-        if (expanded) 180f else 0f
-    } else {
-        animateFloatAsState(
-            targetValue = if (expanded) 180f else 0f,
-            animationSpec = MotionSpecs.spatialFast(reduceMotion),
-            label = "tool-call-chevron",
-        ).value
-    }
+    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+        expanded = expanded,
+        reduced = reduceMotion,
+        label = "tool-call-chevron",
+    )
 
     M3ExpandableExpressiveCard(
         expanded = expanded,

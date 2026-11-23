@@ -262,7 +262,13 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                     open = settings && displayedNativeUi == activeNative,
                                     onDismiss = { settings = false },
                                     settingsContent = { presentation, close ->
-                                        RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
+                                        RemoteSettings(
+                                            app,
+                                            requestScreenCaptureAuthorization,
+                                            presentation,
+                                            close,
+                                            hostOpen = settings && displayedNativeUi == activeNative,
+                                        )
                                     },
                                 ) {
                                     RemoteNativePluginSurface(app.pluginHost, activeNative, controller,
@@ -294,7 +300,13 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                             onRetry = { runtime.dismissConnectionError(); loginEntry.dismissError() },
                                             onOAuthLogin = { loginEntry.startOAuth(activity, RemoteOAuthProvider.valueOf(it.uppercase())) },
                                             settingsContent = { presentation, close ->
-                                                RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close)
+                                                RemoteSettings(
+                                                    app,
+                                                    requestScreenCaptureAuthorization,
+                                                    presentation,
+                                                    close,
+                                                    hostOpen = settings && controller == null && displayedNativeUi == null,
+                                                )
                                             },
                                             endpointContent = { RemoteLoginAgentSelector(runtime) },
                                         )
@@ -357,6 +369,7 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                         val offlineBannerVisible = agentConn.offlineConfirmed &&
                                             (agentConn.phase == AgentConnectionPhase.OFFLINE || agentConn.phase == AgentConnectionPhase.RECONNECTING)
                                         val bannerError = agentConn.errorCode.takeUnless { dismissedError || offlineBannerVisible }
+                                        val workbenchSettingsOpen = settings && controller != null && displayedNativeUi == null
                                         WorkbenchScreen(current, (workspaceCtx.activeWorkspace ?: connection.selected)?.origin?.value.orEmpty(),
                                             onOpenSettings = { settings = true }, onPickCamera = picks.camera, onPickGallery = picks.gallery,
                                             onPickDocument = picks.document,
@@ -370,9 +383,9 @@ internal fun RemoteWorkbenchRoot(app: OpenAndroidIntelligenceApplication, shared
                                             connectionHealth = mappedHealth,
                                             pluginCards = { com.openandroidintelligence.mobile.plugins.ProtectedConversationCards(app.pluginHost,
                                                 runtime.connectedAccountId) { settings = true } },
-                                            settingsOpen = settings && controller != null && displayedNativeUi == null,
+                                            settingsOpen = workbenchSettingsOpen,
                                             onSettingsOpenChange = { settings = it },
-                                            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close) },
+                                            settingsPanel = { close -> RemoteSettings(app, requestScreenCaptureAuthorization, presentation, close, hostOpen = workbenchSettingsOpen) },
                                             workspaceMenu = workspaceMenu,
                                             header = {
                                                 RemoteWorkbenchNotices(
@@ -434,9 +447,15 @@ private fun RemoteModelSelector(runtime: RemoteRuntime) {
 }
 
 @Composable
-private fun RemoteSettings(app: OpenAndroidIntelligenceApplication, requestScreenCaptureAuthorization: () -> Unit, presentation: SettingsPresentation = SettingsPresentation.SIDEBAR, onBack: () -> Unit) {
+private fun RemoteSettings(
+    app: OpenAndroidIntelligenceApplication,
+    requestScreenCaptureAuthorization: () -> Unit,
+    presentation: SettingsPresentation = SettingsPresentation.SIDEBAR,
+    onBack: () -> Unit,
+    hostOpen: Boolean = true,
+) {
     SettingsScreen(app.platformSettingsEnvironment(), onBack = onBack, runtime = app.remoteRuntime.localSettings, remoteRuntime = app.remoteRuntime,
-        presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization)
+        presentation = presentation, onRequestScreenCaptureAuthorization = requestScreenCaptureAuthorization, hostOpen = hostOpen)
 }
 
 /** 本机选中的原生全屏界面继续使用原宿主外壳与当前工作台操作。 */

@@ -87,10 +87,10 @@ Key 命名空间统一收敛在 [SharedTransitions.kt](../../apps/android/conver
 1. **平台分流**：`supportsNativePredictiveBack(sdkInt)` 判断 `sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE`（API 34）。
    - **API 34+**：使用 `PredictiveBackHandler` 实时收集 `BackEventCompat.progress` 写入 `Animatable<Float>`（限定 `[0f, 1f]`）。
    - **API 31–33**：自动回退为标准 `BackHandler`，进度保持 `0f`，保证返回语义完全一致。
-2. **手势取消平滑复原**：当用户边缘侧滑到一半反滑取消时，`PredictiveBackHandler` 抛出 `CancellationException`。兼容层在 `withContext(NonCancellable)` 中以 `MotionSpecs.spatialDefault(false)` 弹簧将进度平滑回弹至 `0f`，完成后再按协程约定重抛 `CancellationException`。
-3. **只作用于绘制层**：`Modifier.predictiveBackSlideTransform(progress, reduced, direction, maxScaleReduction)` 仅通过 `Modifier.graphicsLayer` 计算 `translationX` 与轻微缩放（默认 `maxScaleReduction = 0.04f`，即 `1.0f -> 0.96f`），不触发布局重新测量。
+2. **手势取消平滑复原**：当用户边缘侧滑到一半反滑取消时，`PredictiveBackHandler` 抛出 `CancellationException`。兼容层通过绑定组合生命周期的 `rememberCoroutineScope()` + 代际令牌（`gestureToken`）管理独立回弹协程，以临界阻尼 `MotionSpecs.morph(false)` 弹簧将进度平滑回弹至 `0f` 后立即重抛 `CancellationException`；当新一次手势开始、宿主关闭或组件销毁时立刻取消旧回弹作业，彻底消除跨手势竞态覆写、退场协程泄漏与欠阻尼负值。
+3. **绘制阶段惰性读取与手势边缘方向适配**：`Modifier.predictiveBackSlideTransform(stateProvider = { state.value }, reduced, direction = null, maxScaleReduction = 0.04f)` 在 `!reduced` 时恒定挂载 `Modifier.graphicsLayer` 并在绘制阶段 lambda 内惰性读取手势进度，手势拖拽和回弹期间**零组合重构**与零布局重测；未显式指定 `direction` 时按 `swipeEdge`（左边缘向右、右边缘向左）与 `layoutDirection`（RTL 支持）自动适配滑移方向。
 4. **返回栈优先级（LIFO）**：
-   - 在工作台手机端全屏设置覆层（[WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)）与设置总览根页（[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)）中，子页面由 `NavHost` 内置 `BackHandler` 优先消费；只有退回 `SettingsRoutes.OVERVIEW` 且处于 `SettingsPresentation.SCREEN` 时，根级 `rememberPredictiveBackProgress` 才激活预览并回调 `onBack`。
+   - 在工作台手机端全屏设置覆层（[WorkbenchScreen.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/WorkbenchScreen.kt)）与设置总览根页（[SettingsNavHost.kt](../../apps/android/app/src/main/kotlin/com/openandroidintelligence/mobile/settings/SettingsNavHost.kt)）中，`WorkbenchScreen` 将兜底 `rememberPredictiveBackState` 固定在 `if (expanded)` 之前注册，使外层处理器恒位于 `OnBackPressedDispatcher` LIFO 栈底、跨 `840dp` 断点折入窄屏时绝不抢占子页 `BackHandler`；只有 `hostOpen == true`、退回 `SettingsRoutes.OVERVIEW` 且处于 `SettingsPresentation.SCREEN` 时，根级 `rememberPredictiveBackState` 才激活预览并回调 `onBack`。
 
 ### 1.4 Reduce Motion 降级决策树
 
@@ -107,7 +107,7 @@ LocalMotionPolicy.current.isReduced == true ?
  │   │   └─ 降级为 reducedFade()：tween(150ms, easing = LinearEasing)，零位移、零缩放
  │   └─ 主题配色角色切换（OpenAndroidIntelligenceTheme）
  │       └─ 降级为 snap() 瞬时切换
- └─ 预测性返回（rememberPredictiveBackProgress / predictiveBackSlideTransform）
+ └─ 预测性返回（rememberPredictiveBackState / rememberPredictiveBackProgress / predictiveBackSlideTransform）
      └─ 手势进度恒定 0f，不执行横向滑移与缩放；点击与完成返回时仍正常触发 onBack
 ```
 
@@ -150,7 +150,7 @@ LocalMotionPolicy.current.isReduced == true ?
 
 ### 3.1 `M3ExpressiveCard` 与 `M3ExpandableExpressiveCard`
 
-封装自 [M3ExpressiveCard.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3ExpressiveCard.kt)，内置按压缩放、圆角弹簧形变（已做 `coerceAtLeast(0.dp)` 下界保护）、M3 State Layer Ripple、MD3 禁用态配色（`disabledContainerColor` 12% `onSurface`、`disabledContentColor` 38% `onSurface`）、最小触摸热区与可选共享边界。`M3ExpandableExpressiveCard` 的 `onExpandedChange` 为可空回调 `((Boolean) -> Unit)?`：传入 `null` 时按只读卡片渲染（不挂载 `.clickable` 与 `Role.Button` 语义，且不应用禁用态置灰）。
+封装自 [M3ExpressiveCard.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3ExpressiveCard.kt)，内置按压缩放、圆角弹簧形变（已做 `coerceAtLeast(0.dp)` 下界保护）、M3 State Layer Ripple（`CompositionLocalProvider(LocalContentColor)` 置于点击 `Box` 外层确保水波纹继承组件自身前景色）、MD3 禁用态配色（`disabledContainerColor` 12% `onSurface`、`disabledContentColor` 38% `onSurface`）、最小触摸热区与可选共享边界。`M3ExpandableExpressiveCard` 围绕顶部中心缩放、展开态头部仅裁切顶部两角、禁用态仅置灰可点击头部而不影响已展开正文，且 `onExpandedChange` 为可空回调 `((Boolean) -> Unit)?`：传入 `null` 时按只读卡片渲染（不挂载 `.clickable`、`Role.Button` 与 `stateDescription` 语义，且不应用禁用态置灰）。
 
 ```kotlin
 import androidx.compose.foundation.layout.Arrangement
@@ -223,7 +223,7 @@ fun ExpressiveCardExamples(onOpenDetail: () -> Unit) {
 
 ### 3.2 `M3MorphingButton` 与 `M3MorphingIconButton`
 
-封装自 [M3MorphingButton.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3MorphingButton.kt)，支持胶囊圆角到方圆角的百分比插值（`.coerceIn(0f, 50f)` 保护）、固定宽或 `animateContentSize(MotionSpecs.morph(reduced))` 自适应宽、颜色临界阻尼切换及共享边界过渡。
+封装自 [M3MorphingButton.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3MorphingButton.kt)，支持胶囊圆角到方圆角的百分比插值（`.coerceIn(0f, 50f)` 保护）、双侧或单侧固定宽与 `animateContentSize(MotionSpecs.morph(reduced))` 自适应宽、颜色临界阻尼切换、共享边界与层级控制（`sharedBoundsZIndex`）以及正确继承按钮自身 `contentColor` 的 M3 Ripple（`ContentPadding` 默认含垂直 `SpaceSmall` 边距）。`M3MorphingIconButton` 将无障碍描述单一挂在外层语义节点并支持独立 `onClickLabel`，在 `icon == morphedIcon` 时跳过图标交叉闪烁动画。
 
 ```kotlin
 import androidx.compose.foundation.layout.Arrangement
@@ -372,18 +372,17 @@ fun SharedBoundsNavigationExample(showDetail: Boolean) {
 }
 ```
 
-### 3.4 `rememberPredictiveBackProgress` 与 `predictiveBackSlideTransform`
+### 3.4 `rememberPredictiveBackState` 与 `predictiveBackSlideTransform`
 
-封装自 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt)。用于全屏抽屉、设置总览页等需要在返回前实时跟手预览并在取消时弹簧回弹的页面容器。
+封装自 [PredictiveBackCompat.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/motion/PredictiveBackCompat.kt)。用于全屏抽屉、设置总览页等需要在返回前实时跟手预览并在取消时临界阻尼弹簧回弹的页面容器（支持按 `swipeEdge` 与 RTL 自动跟随方向，绘制阶段惰性读取零重组）。
 
 ```kotlin
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import com.openandroidintelligence.conversation.motion.predictiveBackSlideTransform
-import com.openandroidintelligence.conversation.motion.rememberPredictiveBackProgress
+import com.openandroidintelligence.conversation.motion.rememberPredictiveBackState
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 
@@ -394,7 +393,7 @@ fun PredictiveBackPanelExample(
     content: @Composable () -> Unit,
 ) {
     val reduced = LocalMotionPolicy.current.isReduced
-    val backProgress by rememberPredictiveBackProgress(
+    val backState = rememberPredictiveBackState(
         enabled = visibleAtRoot,
         onBack = onClosePanel,
     )
@@ -402,9 +401,8 @@ fun PredictiveBackPanelExample(
         modifier = Modifier
             .fillMaxSize()
             .predictiveBackSlideTransform(
-                progress = backProgress,
+                stateProvider = { backState.value },
                 reduced = reduced,
-                direction = -1f,
                 maxScaleReduction = 0.04f,
             ),
     ) {
@@ -416,6 +414,8 @@ fun PredictiveBackPanelExample(
 ---
 
 ## 4. 关键集成节点与回归门禁索引
+
+> 下表索引核心动效架构与组件集成节点；本分支另包含全仓 `LocalMotionPolicy.current.isReduced` 统一迁移（`AttachmentLightbox.kt`、`ConversationBrowser.kt`、`MessageTimeline.kt`、`StreamingPresentationHost.kt`、`PlatformSettingsBottomSheet.kt`、`BubbleConversationActivity.kt`、`RemoteConnectionFeedback.kt`、`RemoteWorkbenchNotices.kt`、`OnboardingFlow.kt`、`ButtonRevealTransition.kt`、`RemoteConnectionChoiceScreen.kt`、`RemoteGuideScreen.kt`、`WelcomeScreen.kt`）以及 `apps/android/ci/app-regression.txt` 的 `[core]` 门禁登记。
 
 | 模块 | 改造文件 | 核心接入内容 | 对应回归测试 |
 | --- | --- | --- | --- |

@@ -45,6 +45,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.motion.MotionSpecs
@@ -115,7 +117,7 @@ object M3MorphingButtonDefaults {
      *
      * 为保持发送/停止键在禁用态下柔和融入输入坞底色，此处禁用容器色沿用
      * [MaterialTheme.colorScheme.surfaceContainer]，并通过 0.38 不透明度的
-     * `onSurfaceVariant` 维持 MD3 禁用图标对比度语义（[DESIGN.md] §3.1）。
+     * `onSurfaceVariant` 维持 MD3 禁用图标对比度语义（DESIGN.md §3.1）。
      */
     @Composable
     fun sendStopColors(
@@ -158,8 +160,12 @@ fun M3MorphingButton(
     pressedScale: Float = MotionSpecs.PressScaleCompact,
     colors: M3MorphingButtonColors = M3MorphingButtonDefaults.primaryColors(),
     border: BorderStroke? = null,
-    contentPadding: PaddingValues = PaddingValues(horizontal = Dimensions.SpaceMedium),
+    contentPadding: PaddingValues = PaddingValues(
+        horizontal = Dimensions.SpaceMedium,
+        vertical = Dimensions.SpaceSmall,
+    ),
     sharedBoundsKey: Any? = null,
+    sharedBoundsZIndex: Float = 0f,
     onClickLabel: String? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
     content: @Composable RowScope.(morphed: Boolean) -> Unit,
@@ -194,8 +200,15 @@ fun M3MorphingButton(
         )
         Modifier.width(animatedWidth.coerceAtLeast(Dimensions.MinimumTouchTarget))
     } else {
+        val targetFixedWidth = if (morphed) morphedWidth else restingWidth
         Modifier
-            .defaultMinSize(minWidth = Dimensions.MinimumTouchTarget)
+            .then(
+                if (targetFixedWidth != null) {
+                    Modifier.width(targetFixedWidth.coerceAtLeast(Dimensions.MinimumTouchTarget))
+                } else {
+                    Modifier.defaultMinSize(minWidth = Dimensions.MinimumTouchTarget)
+                },
+            )
             .animateContentSize(MotionSpecs.morph(reduced))
     }
 
@@ -221,7 +234,11 @@ fun M3MorphingButton(
     )
 
     val sharedModifier = if (sharedBoundsKey != null) {
-        Modifier.m3SharedBounds(key = sharedBoundsKey, clipShape = shape)
+        Modifier.m3SharedBounds(
+            key = sharedBoundsKey,
+            clipShape = shape,
+            zIndexInOverlay = sharedBoundsZIndex,
+        )
     } else {
         Modifier
     }
@@ -232,29 +249,29 @@ fun M3MorphingButton(
     }
     val minHeight = height.coerceAtLeast(Dimensions.MinimumTouchTarget)
 
-    Box(
-        modifier = modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .then(sharedModifier)
-            .then(widthModifier)
-            .heightIn(min = minHeight)
-            .background(color = containerColor, shape = shape)
-            .then(borderModifier)
-            .clip(shape)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = LocalIndication.current,
-                enabled = enabled,
-                onClickLabel = onClickLabel,
-                role = Role.Button,
-                onClick = onClick,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        CompositionLocalProvider(LocalContentColor provides contentColor) {
+    CompositionLocalProvider(LocalContentColor provides contentColor) {
+        Box(
+            modifier = modifier
+                .then(sharedModifier)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .then(widthModifier)
+                .heightIn(min = minHeight)
+                .background(color = containerColor, shape = shape)
+                .then(borderModifier)
+                .clip(shape)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = LocalIndication.current,
+                    enabled = enabled,
+                    onClickLabel = onClickLabel,
+                    role = Role.Button,
+                    onClick = onClick,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
             ProvideTextStyle(MaterialTheme.typography.labelLarge) {
                 Row(
                     modifier = Modifier.padding(contentPadding),
@@ -269,7 +286,8 @@ fun M3MorphingButton(
 }
 
 /**
- * 基于 [M3MorphingButton] 的图标形变按钮，在常驻态与形变态之间执行图标淡入微缩切换。
+ * 基于 [M3MorphingButton] 的图标形变按钮；在常驻态与形变态使用不同图标时执行微缩淡入切换，
+ * 同一图标时直接更新而不闪烁，并把无障碍描述单一挂在外层按钮语义节点上避免 TalkBack 重复播报。
  */
 @OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
@@ -293,12 +311,20 @@ fun M3MorphingIconButton(
     border: BorderStroke? = null,
     iconSize: Dp = Dimensions.Icon,
     sharedBoundsKey: Any? = null,
+    sharedBoundsZIndex: Float = 0f,
+    onClickLabel: String? = null,
     interactionSource: MutableInteractionSource = remember { MutableInteractionSource() },
 ) {
     val reduced = LocalMotionPolicy.current.isReduced
+    val activeContentDescription = if (morphed) morphedContentDescription else contentDescription
+    val semanticModifier = if (activeContentDescription != null) {
+        modifier.semantics { this.contentDescription = activeContentDescription }
+    } else {
+        modifier
+    }
     M3MorphingButton(
         onClick = onClick,
-        modifier = modifier,
+        modifier = semanticModifier,
         morphed = morphed,
         enabled = enabled,
         restingWidth = restingWidth,
@@ -312,30 +338,39 @@ fun M3MorphingIconButton(
         border = border,
         contentPadding = PaddingValues(0.dp),
         sharedBoundsKey = sharedBoundsKey,
-        onClickLabel = if (morphed) morphedContentDescription else contentDescription,
+        sharedBoundsZIndex = sharedBoundsZIndex,
+        onClickLabel = onClickLabel,
         interactionSource = interactionSource,
     ) { isMorphed ->
-        AnimatedContent(
-            targetState = isMorphed,
-            transitionSpec = {
-                if (reduced) {
-                    fadeIn(MotionSpecs.reducedFade()) togetherWith fadeOut(MotionSpecs.reducedFade())
-                } else {
-                    (fadeIn(MotionSpecs.effectsFast(false)) +
-                        scaleIn(MotionSpecs.spatialFast(false), initialScale = 0.8f))
-                        .togetherWith(
-                            fadeOut(MotionSpecs.effectsFast(false)) +
-                                scaleOut(MotionSpecs.spatialFast(false), targetScale = 0.8f),
-                        )
-                }
-            },
-            label = "m3-morphing-icon",
-        ) { state ->
+        if (icon == morphedIcon) {
             Icon(
-                imageVector = if (state) morphedIcon else icon,
-                contentDescription = if (state) morphedContentDescription else contentDescription,
+                imageVector = icon,
+                contentDescription = null,
                 modifier = Modifier.size(iconSize),
             )
+        } else {
+            AnimatedContent(
+                targetState = isMorphed,
+                transitionSpec = {
+                    if (reduced) {
+                        fadeIn(MotionSpecs.reducedFade()) togetherWith fadeOut(MotionSpecs.reducedFade())
+                    } else {
+                        (fadeIn(MotionSpecs.effectsFast(false)) +
+                            scaleIn(MotionSpecs.spatialFast(false), initialScale = 0.8f))
+                            .togetherWith(
+                                fadeOut(MotionSpecs.effectsFast(false)) +
+                                    scaleOut(MotionSpecs.spatialFast(false), targetScale = 0.8f),
+                            )
+                    }
+                },
+                label = "m3-morphing-icon",
+            ) { state ->
+                Icon(
+                    imageVector = if (state) morphedIcon else icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(iconSize),
+                )
+            }
         }
     }
 }

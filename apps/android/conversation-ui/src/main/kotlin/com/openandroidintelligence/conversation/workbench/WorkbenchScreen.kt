@@ -54,7 +54,7 @@ import com.openandroidintelligence.conversation.motion.EnsureSharedTransitionHos
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.motion.ProvideSharedVisibilityScope
 import com.openandroidintelligence.conversation.motion.predictiveBackSlideTransform
-import com.openandroidintelligence.conversation.motion.rememberPredictiveBackProgress
+import com.openandroidintelligence.conversation.motion.rememberPredictiveBackState
 import com.openandroidintelligence.conversation.ports.AgentCommand
 import com.openandroidintelligence.conversation.ports.AgentCommandCatalog
 import com.openandroidintelligence.conversation.state.Loadable
@@ -860,7 +860,7 @@ fun WorkbenchScreen(
         }
         // 在 if (expanded) 之前稳定注册兜底预测返回，确保从宽屏折叠至 < 840dp 时
         // 外层处理器始终处于 OnBackPressedDispatcher 栈底，不会压在 movableSettings 内部子页返回之上。
-        val phoneSettingsBackProgress by rememberPredictiveBackProgress(
+        val phoneSettingsBackState = rememberPredictiveBackState(
             enabled = !expanded && settingsOpen,
             onBack = dismissPhoneSettings,
         )
@@ -932,14 +932,13 @@ fun WorkbenchScreen(
                     modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
                 ) {
                     ProvideSharedVisibilityScope {
-                        Surface(
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .predictiveBackSlideTransform(
-                                    progress = phoneSettingsBackProgress,
+                                    stateProvider = { phoneSettingsBackState.value },
                                     reduced = reduceMotion,
                                 ),
-                            color = MaterialTheme.colorScheme.surface,
                         ) {
                             movableSettings(dismissPhoneSettings)
                         }
@@ -1068,11 +1067,7 @@ private fun WorkbenchTopBar(
                 onClick = onCreateThread,
                 icon = Icons.Default.Add,
                 contentDescription = stringResource(UiR.string.conv_workbench_cd_new_conversation),
-                morphed = creatingThread,
                 enabled = !creatingThread,
-                restingWidth = Dimensions.MinimumTouchTarget,
-                morphedWidth = Dimensions.MinimumTouchTarget,
-                height = Dimensions.MinimumTouchTarget,
                 colors = M3MorphingButtonDefaults.primaryColors(),
             )
             Spacer(Modifier.width(Dimensions.SpaceSmall))

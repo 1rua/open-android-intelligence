@@ -15,7 +15,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Surface
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,6 +56,7 @@ internal fun PlatformSettingsDrawer(
                 onBack = onBack,
                 presentation = presentation,
                 onRequestScreenCaptureAuthorization = onRequestScreenCaptureAuthorization,
+                hostOpen = open,
             )
         },
         content = content,
@@ -138,10 +138,7 @@ internal fun PlatformSettingsDrawer(
                     exit = AppTransitions.modalExit(reduceMotion),
                     modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
                 ) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = androidx.compose.material3.MaterialTheme.colorScheme.surface,
-                    ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
                         movableSettings(SettingsPresentation.SCREEN, onDismiss)
                     }
                 }

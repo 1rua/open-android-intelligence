@@ -390,18 +390,18 @@ class ExpressiveMotionNavigationTest {
 
         val initialPosX = compose.onNodeWithText("外观与交互").fetchSemanticsNode().positionInRoot.x
 
-        // 开始手势并推进至 0.5f（positionInRoot 不受根节点裁剪，可精确观测负向平移）
+        // 左边缘起滑推进至 0.5f（positionInRoot 不受根节点裁剪，左边缘向右跟随平移）
         compose.runOnIdle {
             dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
             dispatcher.dispatchOnBackProgressed(BackEventCompat(60f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
         }
         compose.waitForIdle()
 
-        val progressedPosX = compose.onNodeWithText("外观与交互").fetchSemanticsNode().positionInRoot.x
+        val leftProgressedPosX = compose.onNodeWithText("外观与交互").fetchSemanticsNode().positionInRoot.x
         if (reduceMotion) {
-            assertEquals("减少动态时预测性返回不应产生横向位移", initialPosX, progressedPosX, 1f)
+            assertEquals("减少动态时预测性返回不应产生横向位移", initialPosX, leftProgressedPosX, 1f)
         } else {
-            assertTrue("标准态预测性返回应向左平移: initial=$initialPosX, progressed=$progressedPosX", progressedPosX < initialPosX - 50f)
+            assertTrue("标准态左边缘预测性返回应向右平移: initial=$initialPosX, progressed=$leftProgressedPosX", leftProgressedPosX > initialPosX + 50f)
         }
 
         // 取消手势：不触发 onBack 且弹簧复原至初始位置
@@ -411,14 +411,47 @@ class ExpressiveMotionNavigationTest {
         val restoredPosX = compose.onNodeWithText("外观与交互").fetchSemanticsNode().positionInRoot.x
         assertEquals("取消预测性返回后设置面板应复原至初始水平位置", initialPosX, restoredPosX, 1f)
 
-        // 再次完整提交返回：触发关闭回调
+        // 右边缘起滑推进至 0.5f：应向左负向平移，再完整提交触发关闭回调
         compose.runOnIdle {
-            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
-            dispatcher.dispatchOnBackProgressed(BackEventCompat(90f, 100f, 0.8f, BackEventCompat.EDGE_LEFT))
-            dispatcher.onBackPressed()
+            dispatcher.dispatchOnBackStarted(BackEventCompat(300f, 100f, 0f, BackEventCompat.EDGE_RIGHT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(240f, 100f, 0.5f, BackEventCompat.EDGE_RIGHT))
         }
         compose.waitForIdle()
+        val rightProgressedPosX = compose.onNodeWithText("外观与交互").fetchSemanticsNode().positionInRoot.x
+        if (reduceMotion) {
+            assertEquals(initialPosX, rightProgressedPosX, 1f)
+        } else {
+            assertTrue("标准态右边缘预测性返回应向左平移: initial=$initialPosX, progressed=$rightProgressedPosX", rightProgressedPosX < initialPosX - 50f)
+        }
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
         assertEquals(1, closes)
+    }
+
+    @Test
+    fun settingsNavHostIgnoresBackWhenHostIsClosing() {
+        var closes = 0
+        var hostOpen by mutableStateOf(false)
+        lateinit var dispatcher: OnBackPressedDispatcher
+        val environment = settingsEnvironment()
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Surface(Modifier.fillMaxSize()) {
+                    SettingsScreen(
+                        environment = environment,
+                        onBack = { closes++ },
+                        presentation = SettingsPresentation.SCREEN,
+                        hostOpen = hostOpen,
+                    )
+                }
+            }
+        }
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        assertEquals("外层宿主进入退场态（hostOpen=false）时不得重入触发 onBack", 0, closes)
     }
 
     private fun settingsEnvironment(): PlatformSettingsEnvironment {

@@ -183,7 +183,7 @@ fun ComposerAttachmentOverlay(
     androidx.compose.runtime.LaunchedEffect(Unit) { entered = true }
     val alpha by animateFloatAsState(
         targetValue = if (entered) 1f else 0f,
-        animationSpec = if (reduceMotion) MotionSpecs.reducedFade() else MotionSpecs.effectsFast(false),
+        animationSpec = MotionSpecs.effectsFast(reduceMotion),
         label = "composer-attachment-sheet-alpha",
     )
     val slideProgress by animateFloatAsState(

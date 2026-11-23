@@ -103,6 +103,12 @@ internal fun RemoteLoginScreen(
     var account by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
+    var activeOAuthProvider by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(busy) {
+        if (!busy) {
+            activeOAuthProvider = null
+        }
+    }
     val reduceMotion = LocalMotionPolicy.current.isReduced
     val normalizedOrigin = normalizeRemoteLoginOrigin(origin)
     val address = ServiceAddress.parse(normalizedOrigin)
@@ -160,7 +166,8 @@ internal fun RemoteLoginScreen(
                             val baseTransition = fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
                                 fadeOut(MotionSpecs.fade(reduceMotion))
                             if (hasSharedScope) {
-                                baseTransition
+                                // 共享边界活跃时显式关闭默认 SizeTransform，避免与 m3SharedBounds(RemeasureToBounds) 尺寸竞争。
+                                baseTransition.using(null)
                             } else {
                                 baseTransition.using(SizeTransform { _, _ -> MotionSpecs.spatial(reduceMotion) })
                             }
@@ -200,32 +207,13 @@ internal fun RemoteLoginScreen(
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
                                         keyboardActions = KeyboardActions(onDone = { login() }))
                                     RemoteLoginPhase(busy, error, onRetry)
-                                    M3MorphingButton(
+                                    RemoteLoginPrimaryButton(
                                         onClick = { login() },
                                         morphed = busy,
                                         enabled = canLogin,
-                                        restingCornerPercent = 28f,
-                                        morphedCornerPercent = 50f,
-                                        pressedCornerPercent = 20f,
-                                        colors = M3MorphingButtonDefaults.primaryColors(),
-                                        sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall),
-                                    ) {
-                                        if (busy) {
-                                            CircularProgressIndicator(
-                                                Modifier.size(Dimensions.SmallIcon),
-                                                strokeWidth = Dimensions.StrokeStitch,
-                                                color = LocalContentColor.current,
-                                            )
-                                            Spacer(Modifier.width(Dimensions.SpaceSmall))
-                                        }
-                                        Text(
-                                            stringResource(if (busy) UiR.string.conn_status_connecting else UiR.string.remote_login_server),
-                                            style = MaterialTheme.typography.labelLarge,
-                                        )
-                                    }
+                                        showSpinner = busy,
+                                        label = stringResource(if (busy) UiR.string.conn_status_connecting else UiR.string.remote_login_server),
+                                    )
                                 } else {
                                     FilledTonalButton(onClick = onScanPairing, enabled = !busy, shape = MaterialTheme.shapes.medium,
                                         colors = ButtonDefaults.filledTonalButtonColors(
@@ -236,21 +224,17 @@ internal fun RemoteLoginScreen(
                                     }
                                     Text(stringResource(UiR.string.remote_login_scan_hint), style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    M3MorphingButton(
-                                        onClick = { onOAuthLogin("github") },
-                                        morphed = busy,
+                                    val githubBusy = busy && activeOAuthProvider == "github"
+                                    RemoteLoginPrimaryButton(
+                                        onClick = {
+                                            activeOAuthProvider = "github"
+                                            onOAuthLogin("github")
+                                        },
+                                        morphed = githubBusy,
                                         enabled = !busy,
-                                        restingCornerPercent = 28f,
-                                        morphedCornerPercent = 50f,
-                                        pressedCornerPercent = 20f,
-                                        colors = M3MorphingButtonDefaults.primaryColors(),
-                                        sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall),
-                                    ) {
-                                        Text(stringResource(UiR.string.remote_login_github))
-                                    }
+                                        showSpinner = githubBusy,
+                                        label = stringResource(UiR.string.remote_login_github),
+                                    )
                                     FilledTonalButton(onClick = { onOAuthLogin("zhihu") }, enabled = !busy, shape = MaterialTheme.shapes.medium,
                                         colors = ButtonDefaults.filledTonalButtonColors(
                                             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -321,6 +305,45 @@ private fun RemoteLoginInput(
         },
         shape = MaterialTheme.shapes.medium, keyboardOptions = keyboardOptions, keyboardActions = keyboardActions,
         modifier = Modifier.fillMaxWidth())
+}
+
+/** 登录页官方/自建共用主操作形变按钮，统一圆角比例、覆盖层层级与加载指示。 */
+@Composable
+private fun RemoteLoginPrimaryButton(
+    onClick: () -> Unit,
+    morphed: Boolean,
+    enabled: Boolean,
+    label: String,
+    showSpinner: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    M3MorphingButton(
+        onClick = onClick,
+        morphed = morphed,
+        enabled = enabled,
+        restingCornerPercent = 28f,
+        morphedCornerPercent = 50f,
+        pressedCornerPercent = 20f,
+        colors = M3MorphingButtonDefaults.primaryColors(),
+        sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
+        sharedBoundsZIndex = 1f,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = Dimensions.MinimumTouchTarget + Dimensions.SpaceSmall),
+    ) {
+        if (showSpinner) {
+            CircularProgressIndicator(
+                Modifier.size(Dimensions.SmallIcon),
+                strokeWidth = Dimensions.StrokeStitch,
+                color = LocalContentColor.current,
+            )
+            Spacer(Modifier.width(Dimensions.SpaceSmall))
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
 }
 
 /** 延续原登录入口：省略协议时默认 HTTPS，不改变显式 HTTP 地址。 */

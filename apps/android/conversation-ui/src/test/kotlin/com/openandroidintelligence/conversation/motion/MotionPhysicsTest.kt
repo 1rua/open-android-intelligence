@@ -9,7 +9,6 @@ import androidx.compose.animation.core.TweenSpec
 import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.ui.design.MotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 import org.junit.Test

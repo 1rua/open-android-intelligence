@@ -5,7 +5,10 @@ import android.graphics.Canvas
 import android.view.View
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -35,12 +38,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.node.CompositionLocalConsumerModifierNode
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.currentValueOf
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertHeightIsAtLeast
@@ -675,6 +684,164 @@ class M3ExpressiveComponentsTest {
             scheme.onSurface.copy(alpha = 0.12f).compositeOver(scheme.surface),
             renderedContainer,
         )
+    }
+
+    @Test
+    fun cardAndButtonIndicationObserveComponentContentColorInsteadOfOuterScope() {
+        val scheme = lightColorScheme()
+        var cardObserved = Color.Unspecified
+        var buttonObserved = Color.Unspecified
+        val cardIndication = object : IndicationNodeFactory {
+            override fun create(interactionSource: InteractionSource): DelegatableNode =
+                object : Modifier.Node(), DrawModifierNode, CompositionLocalConsumerModifierNode {
+                    override fun ContentDrawScope.draw() {
+                        cardObserved = currentValueOf(LocalContentColor)
+                        drawContent()
+                    }
+                }
+
+            override fun equals(other: Any?): Boolean = this === other
+            override fun hashCode(): Int = System.identityHashCode(this)
+        }
+        val buttonIndication = object : IndicationNodeFactory {
+            override fun create(interactionSource: InteractionSource): DelegatableNode =
+                object : Modifier.Node(), DrawModifierNode, CompositionLocalConsumerModifierNode {
+                    override fun ContentDrawScope.draw() {
+                        buttonObserved = currentValueOf(LocalContentColor)
+                        drawContent()
+                    }
+                }
+
+            override fun equals(other: Any?): Boolean = this === other
+            override fun hashCode(): Int = System.identityHashCode(this)
+        }
+
+        lateinit var rootView: View
+        compose.setContent {
+            rootView = LocalView.current
+            MaterialTheme(colorScheme = scheme) {
+                CompositionLocalProvider(LocalContentColor provides Color.Magenta) {
+                    Column {
+                        CompositionLocalProvider(LocalIndication provides cardIndication) {
+                            M3ExpressiveCard(
+                                onClick = {},
+                                containerColor = scheme.primary,
+                                contentColor = scheme.onPrimary,
+                                modifier = Modifier.testTag("indication-card"),
+                            ) {
+                                Text("Card")
+                            }
+                        }
+                        CompositionLocalProvider(LocalIndication provides buttonIndication) {
+                            M3MorphingButton(
+                                onClick = {},
+                                colors = M3MorphingButtonDefaults.primaryColors(),
+                                modifier = Modifier.testTag("indication-button"),
+                            ) {
+                                Text("Btn")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+        captureBitmap("indication-card", rootView)
+        captureBitmap("indication-button", rootView)
+        assertColor("Card LocalIndication receives component contentColor (onPrimary)", scheme.onPrimary, cardObserved)
+        assertColor("Button LocalIndication receives component contentColor (onPrimary)", scheme.onPrimary, buttonObserved)
+    }
+
+    @Test
+    fun expandableCardDisabledDoesNotDimExpandedBodyAndReadOnlyIgnoresStateDescription() {
+        val scheme = lightColorScheme()
+        var disabledHeaderColor = Color.Unspecified
+        var disabledBodyColor = Color.Unspecified
+
+        compose.setContent {
+            MaterialTheme(colorScheme = scheme) {
+                Column {
+                    M3ExpandableExpressiveCard(
+                        expanded = true,
+                        onExpandedChange = {},
+                        enabled = false,
+                        header = {
+                            disabledHeaderColor = LocalContentColor.current
+                            Text("DisabledHeader")
+                        },
+                        expandedContent = {
+                            disabledBodyColor = LocalContentColor.current
+                            Text("ExpandedBodyKeepFullAlpha")
+                        },
+                    )
+                    M3ExpandableExpressiveCard(
+                        expanded = false,
+                        onExpandedChange = null,
+                        toggleStateDescription = "Collapsed",
+                        header = { Text("ReadOnlyWithStateDesc") },
+                        expandedContent = { Text("HiddenBody") },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        assertColor(
+            "Disabled expandable header uses 0.38 onSurface",
+            scheme.onSurface.copy(alpha = 0.38f),
+            disabledHeaderColor,
+        )
+        assertColor(
+            "Expanded body keeps full contentColor even when header toggle is disabled",
+            scheme.onSurface,
+            disabledBodyColor,
+        )
+        compose.onNodeWithText("ReadOnlyWithStateDesc")
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Role))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
+    }
+
+    @Test
+    fun morphingIconButtonSupportsSingleFixedWidthAndAvoidsDuplicateOnClickLabel() {
+        var morphed by mutableStateOf(false)
+        compose.setContent {
+            MaterialTheme {
+                Row {
+                    M3MorphingButton(
+                        onClick = { morphed = !morphed },
+                        morphed = morphed,
+                        restingWidth = 96.dp,
+                        morphedWidth = null,
+                        modifier = Modifier.testTag("single-width-btn"),
+                    ) { isMorphed ->
+                        Text(if (isMorphed) "Expanded Wide Content Label" else "Go")
+                    }
+                    M3MorphingIconButton(
+                        onClick = {},
+                        icon = Icons.Default.ArrowUpward,
+                        contentDescription = "SendMessage",
+                        modifier = Modifier.testTag("no-dup-label-icon"),
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        val widthBtn = compose.onNodeWithTag("single-width-btn")
+        widthBtn.assertWidthIsEqualTo(96.dp)
+        widthBtn.performClick()
+        compose.waitForIdle()
+        val morphedWidth = widthBtn.fetchSemanticsNode().boundsInRoot.width
+        val restPx = with(compose.density) { 96.dp.toPx() }
+        assertTrue(
+            "Morphed content width should expand beyond restingWidth ($restPx -> $morphedWidth)",
+            morphedWidth > restPx,
+        )
+
+        val iconNode = compose.onNodeWithTag("no-dup-label-icon").fetchSemanticsNode()
+        assertEquals(listOf("SendMessage"), iconNode.config.getOrNull(SemanticsProperties.ContentDescription))
+        assertEquals(null, iconNode.config.getOrNull(SemanticsActions.OnClick)?.label)
     }
 
     private fun capturePixel(tag: String, rootView: View): Color {

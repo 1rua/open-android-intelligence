@@ -1,6 +1,5 @@
 package com.openandroidintelligence.conversation.workbench
 
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -260,15 +259,11 @@ fun MarkdownThoughtBlockView(
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
-    val chevronRotation = if (reduceMotion) {
-        if (expanded) 180f else 0f
-    } else {
-        animateFloatAsState(
-            targetValue = if (expanded) 180f else 0f,
-            animationSpec = MotionSpecs.spatialFast(reduceMotion),
-            label = "thought-chevron",
-        ).value
-    }
+    val chevronRotation = com.openandroidintelligence.conversation.components.rememberExpandChevronRotation(
+        expanded = expanded,
+        reduced = reduceMotion,
+        label = "thought-chevron",
+    )
 
     M3ExpandableExpressiveCard(
         expanded = expandable && expanded,

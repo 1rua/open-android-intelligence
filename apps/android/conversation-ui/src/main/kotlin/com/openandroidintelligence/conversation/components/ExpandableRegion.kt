@@ -1,6 +1,7 @@
 package com.openandroidintelligence.conversation.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -8,6 +9,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.IntSize
@@ -39,4 +41,19 @@ fun ExpandableRegion(
     ) {
         Column(content = content)
     }
+}
+
+/** 无条件驱动折叠卡片展开指示箭头的旋转角度，确保动态切换 `reduced` 时不破坏组合槽位结构。 */
+@Composable
+internal fun rememberExpandChevronRotation(
+    expanded: Boolean,
+    reduced: Boolean,
+    label: String,
+): Float {
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = MotionSpecs.spatialFast(reduced),
+        label = label,
+    )
+    return rotation
 }
