@@ -22,6 +22,7 @@ class NativePhoneScreen internal constructor(
     private val context: Context,
     private val backend: ScreenBackend,
     private val frameSource: SomFrameSource,
+    private val nextLayoutFrame: suspend () -> Unit = { kotlinx.coroutines.android.awaitFrame(); Unit },
 ) : NativePhoneScreenPort {
     constructor(context: Context, backend: ScreenBackend = AndroidScreenBackend(context)) :
         this(context, backend, AndroidSomFrameSource(context))
@@ -46,6 +47,9 @@ class NativePhoneScreen internal constructor(
                 val saved = snapshots[operation.snapshotId]?.takeIf { it.task == context.scope.task } ?: throw ControlRequestException("SNAPSHOT_STALE")
                 ScreenHostRegistry.controlLeases.withLease("remote:${context.scope.key.storageKey}", System.currentTimeMillis() + 5 * 60_000,
                         { guard(revalidate) }) {
+                    // 本机批准会换成执行浮层。首次布局前保护范围为全屏，等待已有的窗口布局信号后再复核目标。
+                    awaitControlLayout()
+                    guard(revalidate)
                     val result = backend.execute(saved.screen.revision, operation.action) { guard(revalidate); context.beforeDispatch() }
                     val settled = ScreenQuietWait(ScreenAccessibilityConnection.layoutEvents).await()
                     guard(revalidate)
@@ -61,6 +65,22 @@ class NativePhoneScreen internal constructor(
             else -> throw ControlRequestException("CONTROL_OPERATION_UNSUPPORTED")
         } } catch (failure: ScreenOperationException) {
             throw ControlRequestException(if (failure.code == "SCREEN_STALE_REFERENCE") "SNAPSHOT_STALE" else failure.code)
+        }
+    }
+    private suspend fun awaitControlLayout() {
+        val ui = PhoneLocalControlUiRegistry.current ?: return
+        val pending = ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE)
+        if (ui.protectedBounds != pending) return
+        withContext(Dispatchers.Main.immediate) {
+            val ready = kotlinx.coroutines.withTimeoutOrNull(PhoneControlOverlay.CAPTURE_LAYOUT_TIMEOUT_MS) {
+                while (ui.protectedBounds == pending) {
+                    if (PhoneLocalControlUiRegistry.current !== ui) throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+                    nextLayoutFrame()
+                }
+                if (PhoneLocalControlUiRegistry.current !== ui || ui.protectedBounds == null) throw ControlRequestException("SCREEN_LOCAL_UI_CHANGED")
+                true
+            }
+            if (ready == null) throw ControlRequestException("SCREEN_LOCAL_UI_LAYOUT_TIMEOUT")
         }
     }
     private suspend fun captureSom(request: PhoneExecutionContext, revalidate: () -> Unit): PhoneControlResult {

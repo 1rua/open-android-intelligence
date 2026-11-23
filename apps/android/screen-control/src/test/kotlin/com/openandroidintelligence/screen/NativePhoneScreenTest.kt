@@ -52,6 +52,32 @@ class NativePhoneScreenTest {
         advanceTimeBy(1); runCurrent(); assertTrue(first.isCompleted); assertEquals(listOf("back", "home"), backend.effects)
         advanceTimeBy(400); runCurrent(); assertTrue(second.isCompleted)
     }
+    @Test fun 本机同意后须等执行浮层首帧再复核触控() = runTest {
+        val ready = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val protected = ScreenBounds(0, 0, Int.MAX_VALUE, Int.MAX_VALUE)
+        val ui = object : PhoneLocalControlUi {
+            override val protectedBounds get() = if (ready.isCompleted) ScreenBounds(80, 0, 100, 40) else protected
+            override suspend fun confirm(requestId: String, capability: String, localParameters: String?) = error("本用例已批准")
+            override suspend fun executing(requestId: String) = error("本用例由内核进入执行态")
+            override suspend fun finish(requestId: String) = error("本用例仅验证端口")
+            override fun emergencyStop() = error("本用例不触发急停")
+        }
+        val previous = PhoneLocalControlUiRegistry.current
+        PhoneLocalControlUiRegistry.current = ui
+        try {
+            val backend = Backend()
+            val port = NativePhoneScreen(app, backend, SomFrameSource { error("操作未请求截图") }, nextLayoutFrame = { ready.await() })
+            val request = request("approved-control-layout")
+            val id = snapshotId(port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true }))
+            val job = async { port.execute(request, ControlOperation.Screen(id, ScreenAction.Global("back")), {}, { true }) }
+            runCurrent()
+            assertTrue(backend.effects.isEmpty())
+            ready.complete(Unit)
+            advanceUntilIdle()
+            job.await()
+            assertEquals(listOf("back"), backend.effects)
+        } finally { PhoneLocalControlUiRegistry.current = previous }
+    }
     @Test fun controlDoesNotReturnTreeWithoutIndependentReadPermission() = runTest {
         val backend = Backend(); val port = NativePhoneScreen(app, backend); val request = request("native-request-00003")
         val snapshot = snapshotId(port.execute(request, ControlOperation.DumpTree(ScreenReadQuery()), {}, { true }))

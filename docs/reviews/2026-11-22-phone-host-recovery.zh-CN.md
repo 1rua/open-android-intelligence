@@ -31,6 +31,6 @@
 
 2026-11-23，独立 Linux Client 用 `plugin.invoke` 读取通知。桌面得到 `completed/succeeded`，其中包含测试应用 `local.oai222.notifier` 的来源和标题「OAI222 验收通知」。正文为 Android 返回的 `Sensitive notification content hidden`。未允许通知来源时，手机在同一条链路返回 `PACKAGE_NOT_ALLOWED`。
 
-同日，原生 Linux Client 在同一 `harness/phone-capabilities` 任务中执行读树、点击、再次读树。测试应用的按钮读数从「点击计数 0」变为「点击计数 1」。本机确认后，`ui.tap` 请求 `566f048e-001e-4010-85b1-f86ecb994ec4` 得到 `completed`、`succeeded`、`performed=true`。较长的完整回执经 `remote_download_file` 读回，并与手机声明的长度及 SHA-256 一致。单独执行的 `ui.capture_som` 也经本机确认，桌面下载并解码了 1080×1920 的 WebP，41,172 字节，SHA-256 为 `be4af8b14c45119ccaaa9eccd1bc289d09c67249b056397770a6f264607b560d`。测试期间遇到系统栏内容实际变化时，旧快照返回 `SNAPSHOT_STALE`，执行状态为 `not_started`。
+同日，原生 Linux Client 在同一 `harness/phone-capabilities` 任务中执行读树、点击、再次读树。测试应用的按钮读数从「点击计数 0」变为「点击计数 1」。本机确认后，`ui.tap` 请求 `566f048e-001e-4010-85b1-f86ecb994ec4` 得到 `completed`、`succeeded`、`performed=true`。较长的完整回执经 `remote_download_file` 读回，并与手机声明的长度及 SHA-256 一致。单独执行的 `ui.capture_som` 也经本机确认，桌面下载并解码了 1080×1920 的 WebP，41,172 字节，SHA-256 为 `be4af8b14c45119ccaaa9eccd1bc289d09c67249b056397770a6f264607b560d`。测试期间遇到系统栏内容实际变化时，旧快照返回 `SNAPSHOT_STALE`，执行状态为 `not_started`。最终候选还覆盖了本机批准后执行浮层正在布局的时序，屏幕端等本机窗口保护范围就绪后复核目标。第二次实测同一条官方链路返回 `performed=true`，计数由 1 变为 2，请求 ID 为 `fc05d883-a800-4a4c-b1e6-9c3846d2e11c`。
 
-在后台覆盖安装的单独验证中，旧包能显示在线，但系统服务列表中缺少待命服务。修复后，在熄屏状态覆盖安装，Android 通过 `MY_PACKAGE_REPLACED` 恢复 `RemoteHostStandbyService`，系统记录 `isForeground=true`、通知 ID `2402`。此恢复入口只核对现有 Host 授权。
+在后台覆盖安装的单独验证中，旧包能显示在线，但系统服务列表中缺少待命服务。修复后，在熄屏状态覆盖安装，Android 通过 `MY_PACKAGE_REPLACED` 恢复 `RemoteHostStandbyService`，系统记录 `isForeground=true`、通知 ID `2402`。此恢复入口只核对现有 Host 授权。此后 161 秒内的 9 次独立采样，桌面均报告同一 Host 在线，安卓同时报告熄屏和前台待命服务运行。

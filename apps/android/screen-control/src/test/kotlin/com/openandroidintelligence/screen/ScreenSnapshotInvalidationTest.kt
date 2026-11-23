@@ -53,6 +53,13 @@ class ScreenSnapshotInvalidationTest {
         Dispatchers.resetMain()
     }
 
+    @Test fun 观察浮层卸载时仍由系统提供显示尺寸() {
+        val manager = service.getSystemService(android.view.WindowManager::class.java)
+        val observed = LocalOverlayWindowObserver(manager)
+        assertEquals(manager.maximumWindowMetrics.bounds, observed.maximumWindowMetrics.bounds)
+        assertEquals(manager.currentWindowMetrics.bounds, observed.currentWindowMetrics.bounds)
+    }
+
     @Test
     fun overlayRemovalWindowEventDoesNotTurnFreshDumpIntoStaleTap() = runTest {
         installTargetWindow()

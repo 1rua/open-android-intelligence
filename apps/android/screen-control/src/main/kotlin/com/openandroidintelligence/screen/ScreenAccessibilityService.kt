@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.util.Log
 import android.view.View
 import android.view.WindowManager
+import android.view.WindowMetrics
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -68,7 +69,11 @@ class ScreenAccessibilityService : AccessibilityService() {
 }
 
 /** 由系统服务获取自己卸下的窗口 ID，保留原浮层的渲染、按钮和触摸处理。 */
-private class LocalOverlayWindowObserver(private val system: WindowManager) : WindowManager by system {
+internal class LocalOverlayWindowObserver(private val system: WindowManager) : WindowManager by system {
+    // Kotlin 接口委托只转发抽象方法。系统窗口尺寸是 Java 默认方法，必须取实际管理器的实现。
+    override fun getMaximumWindowMetrics(): WindowMetrics = system.maximumWindowMetrics
+    override fun getCurrentWindowMetrics(): WindowMetrics = system.currentWindowMetrics
+
     override fun removeViewImmediate(view: View) {
         val id = runCatching {
             val node = view.createAccessibilityNodeInfo()
