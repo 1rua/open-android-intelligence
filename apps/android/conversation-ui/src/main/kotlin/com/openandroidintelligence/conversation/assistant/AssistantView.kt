@@ -85,6 +85,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -151,7 +152,7 @@ private fun AssistantSurfaceLayout(
     content: @Composable ColumnScope.() -> Unit,
     modifier: Modifier,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val density = LocalDensity.current
     var dockOnLeft by rememberSaveable { mutableStateOf(false) }
 

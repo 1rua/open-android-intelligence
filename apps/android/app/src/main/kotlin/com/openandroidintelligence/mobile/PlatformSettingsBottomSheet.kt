@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.testTag
 import com.openandroidintelligence.conversation.motion.AppTransitions
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.launch
 
 /**
@@ -71,7 +72,7 @@ internal fun PlatformSettingsDrawer(
     settingsContent: @Composable (presentation: SettingsPresentation, onBack: () -> Unit) -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val currentSettingsContent by rememberUpdatedState(settingsContent)
     val movableSettings = remember {
         movableContentOf<SettingsPresentation, () -> Unit> { presentation, onBack ->

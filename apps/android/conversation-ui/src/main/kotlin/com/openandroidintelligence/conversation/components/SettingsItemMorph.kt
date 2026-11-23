@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.unit.Density
 import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /** 设置条目的背景和波纹共用同一动画边界，点击修饰符必须接在返回值之后。 */
 @Composable
@@ -28,7 +29,7 @@ internal fun settingsItemMorphModifier(
     scaleOnPress: Boolean,
 ): Modifier {
     val pressed by interactionSource.collectIsPressedAsState()
-    val reduced = LocalMotionPolicy.current.reduceMotion
+    val reduced = LocalMotionPolicy.current.isReduced
     val progress by animateFloatAsState(
         targetValue = if (selected || (pressed && enabled)) 1f else 0f,
         animationSpec = MotionSpecs.morph(reduced),

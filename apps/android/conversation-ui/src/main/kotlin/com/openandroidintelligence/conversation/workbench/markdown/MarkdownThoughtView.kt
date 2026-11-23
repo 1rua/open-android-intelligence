@@ -272,7 +272,11 @@ fun MarkdownThoughtBlockView(
 
     M3ExpandableExpressiveCard(
         expanded = expandable && expanded,
-        onExpandedChange = { if (expandable) userExpanded = it },
+        onExpandedChange = if (expandable) {
+            { next -> userExpanded = next }
+        } else {
+            null
+        },
         modifier = modifier.fillMaxWidth(),
         enabled = expandable,
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,

@@ -149,47 +149,49 @@ object MotionSpecs {
         visibilityThreshold = visibilityThreshold,
     )
 
-    /** 快速效果弹簧（临界阻尼 1.0f）；减少动态时退化为 150ms 线性淡化。 */
-    fun <T> effectsFast(
+    private fun <T> effectsSpecFrom(
         reduced: Boolean,
-        visibilityThreshold: T? = null,
+        template: SpringSpec<Float>,
+        visibilityThreshold: T?,
     ): FiniteAnimationSpec<T> = if (reduced) {
         reducedFade()
     } else {
         springSpecFrom(
             reduced = false,
-            template = EffectsFastSpring,
+            template = template,
             visibilityThreshold = visibilityThreshold,
         )
     }
+
+    /** 快速效果弹簧（临界阻尼 1.0f）；减少动态时退化为 150ms 线性淡化。 */
+    fun <T> effectsFast(
+        reduced: Boolean,
+        visibilityThreshold: T? = null,
+    ): FiniteAnimationSpec<T> = effectsSpecFrom(
+        reduced = reduced,
+        template = EffectsFastSpring,
+        visibilityThreshold = visibilityThreshold,
+    )
 
     /** 默认效果弹簧（临界阻尼 1.0f）；减少动态时退化为 150ms 线性淡化。 */
     fun <T> effectsDefault(
         reduced: Boolean,
         visibilityThreshold: T? = null,
-    ): FiniteAnimationSpec<T> = if (reduced) {
-        reducedFade()
-    } else {
-        springSpecFrom(
-            reduced = false,
-            template = EffectsDefaultSpring,
-            visibilityThreshold = visibilityThreshold,
-        )
-    }
+    ): FiniteAnimationSpec<T> = effectsSpecFrom(
+        reduced = reduced,
+        template = EffectsDefaultSpring,
+        visibilityThreshold = visibilityThreshold,
+    )
 
     /** 慢速效果弹簧（临界阻尼 1.0f）；减少动态时退化为 150ms 线性淡化。 */
     fun <T> effectsSlow(
         reduced: Boolean,
         visibilityThreshold: T? = null,
-    ): FiniteAnimationSpec<T> = if (reduced) {
-        reducedFade()
-    } else {
-        springSpecFrom(
-            reduced = false,
-            template = EffectsSlowSpring,
-            visibilityThreshold = visibilityThreshold,
-        )
-    }
+    ): FiniteAnimationSpec<T> = effectsSpecFrom(
+        reduced = reduced,
+        template = EffectsSlowSpring,
+        visibilityThreshold = visibilityThreshold,
+    )
 
     /** 减少动态专用线性淡化规格（150ms LinearEasing）。 */
     fun <T> reducedFade(): FiniteAnimationSpec<T> =

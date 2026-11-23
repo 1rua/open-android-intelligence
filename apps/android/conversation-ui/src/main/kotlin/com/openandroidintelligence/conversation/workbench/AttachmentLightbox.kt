@@ -81,6 +81,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -186,7 +187,7 @@ private fun LightboxContent(
     onRequestOriginal: ((String) -> Unit)?,
     modifier: Modifier = Modifier,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     var menuOpen by remember { mutableStateOf(false) }
 
     // 打开时若原图还没请求过，只请求一次；已有结果或失败时不再反复触发。

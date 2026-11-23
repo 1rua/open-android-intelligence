@@ -9,7 +9,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -45,7 +44,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
-import com.openandroidintelligence.conversation.components.M3ExpressiveCard
 import com.openandroidintelligence.conversation.model.ApprovalChoice
 import com.openandroidintelligence.conversation.model.ApprovalOption
 import com.openandroidintelligence.conversation.model.ApprovalOptionStyle
@@ -138,20 +136,17 @@ fun ApprovalCard(
     // Gateway answered earns the conclusion's fade.
     val settledWhenFirstDrawn = remember(request) { state.isSettled }
 
-    M3ExpressiveCard(
-        onClick = null,
+    Surface(
+        shape = RoundedCornerShape(AppRadius.Medium),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier
             .fillMaxWidth()
             .testTag(ApprovalCardTags.ROOT),
-        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(Dimensions.StrokeHairline, MaterialTheme.colorScheme.outlineVariant),
-        restingCornerRadius = AppRadius.Medium,
-        pressedCornerRadius = AppRadius.Medium,
-        activeCornerRadius = AppRadius.Medium,
-        contentPadding = PaddingValues(Dimensions.SpaceMedium),
     ) {
         Column(
+            modifier = Modifier.padding(Dimensions.SpaceMedium),
             verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceCompact),
         ) {
             CardHeader(

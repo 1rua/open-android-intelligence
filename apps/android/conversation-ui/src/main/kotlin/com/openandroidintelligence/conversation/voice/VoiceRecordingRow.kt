@@ -1,16 +1,13 @@
 package com.openandroidintelligence.conversation.voice
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -31,7 +28,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import com.openandroidintelligence.conversation.components.M3MorphingButtonDefaults
+import com.openandroidintelligence.conversation.components.M3MorphingIconButton
 import com.openandroidintelligence.conversation.components.bouncyClickable
+import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
 import com.openandroidintelligence.conversation.theme.AppRadius
 import com.openandroidintelligence.conversation.theme.Dimensions
 
@@ -136,23 +136,17 @@ private fun RecordingIconAction(
     }
 }
 
-/** 录音态的主操作（发送语音）：与输入态的发送键同尺寸、同圆角、同底色。 */
+/** 录音态的主操作（发送语音）：与输入态发送键共用共享边界，同尺寸、同圆角、同底色。 */
 @Composable
 private fun RecordingSendAction(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .width(Dimensions.ComposerPrimaryAction)
-            .height(Dimensions.ComposerPrimaryAction)
-            .clip(CircleShape)
-            .bouncyClickable(role = Role.Button, onClick = onClick)
-            .background(MaterialTheme.colorScheme.primary),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.Send,
-            contentDescription = "发送语音",
-            tint = MaterialTheme.colorScheme.onPrimary,
-            modifier = Modifier.size(Dimensions.Icon),
-        )
-    }
+    M3MorphingIconButton(
+        onClick = onClick,
+        icon = Icons.AutoMirrored.Filled.Send,
+        contentDescription = "发送语音",
+        restingWidth = Dimensions.ComposerPrimaryAction,
+        morphedWidth = Dimensions.ComposerPrimaryAction,
+        height = Dimensions.ComposerPrimaryAction,
+        colors = M3MorphingButtonDefaults.primaryColors(),
+        sharedBoundsKey = SharedTransitionKeys.composerAction("send-stop"),
+    )
 }

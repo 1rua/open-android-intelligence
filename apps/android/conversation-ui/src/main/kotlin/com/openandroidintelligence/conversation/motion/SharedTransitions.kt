@@ -129,40 +129,37 @@ fun Modifier.m3SharedBounds(
     clipShape: Shape? = null,
     zIndexInOverlay: Float = 0f,
     renderInOverlayDuringTransition: Boolean = true,
-): Modifier {
-    val reduced = LocalMotionPolicy.current.isReduced
-    if (reduced || sharedTransitionScope == null || animatedVisibilityScope == null) {
-        return this
-    }
-    val boundsSpec = MotionSpecs.boundsTransform(reduced = false, expressive = expressive)
+): Modifier = applySharedTransition(
+    key = key,
+    sharedTransitionScope = sharedTransitionScope,
+    animatedVisibilityScope = animatedVisibilityScope,
+    expressive = expressive,
+) { base, state, visibility, boundsSpec ->
     val enterTransition = fadeIn(MotionSpecs.effectsDefault(false))
     val exitTransition = fadeOut(MotionSpecs.effectsFast(false))
-    return with(sharedTransitionScope) {
-        val state = rememberSharedContentState(key = key)
-        if (clipShape != null) {
-            this@m3SharedBounds.sharedBounds(
-                sharedContentState = state,
-                animatedVisibilityScope = animatedVisibilityScope,
-                enter = enterTransition,
-                exit = exitTransition,
-                boundsTransform = boundsSpec,
-                resizeMode = resizeMode,
-                renderInOverlayDuringTransition = renderInOverlayDuringTransition,
-                zIndexInOverlay = zIndexInOverlay,
-                clipInOverlayDuringTransition = OverlayClip(clipShape),
-            )
-        } else {
-            this@m3SharedBounds.sharedBounds(
-                sharedContentState = state,
-                animatedVisibilityScope = animatedVisibilityScope,
-                enter = enterTransition,
-                exit = exitTransition,
-                boundsTransform = boundsSpec,
-                resizeMode = resizeMode,
-                renderInOverlayDuringTransition = renderInOverlayDuringTransition,
-                zIndexInOverlay = zIndexInOverlay,
-            )
-        }
+    if (clipShape != null) {
+        base.sharedBounds(
+            sharedContentState = state,
+            animatedVisibilityScope = visibility,
+            enter = enterTransition,
+            exit = exitTransition,
+            boundsTransform = boundsSpec,
+            resizeMode = resizeMode,
+            renderInOverlayDuringTransition = renderInOverlayDuringTransition,
+            zIndexInOverlay = zIndexInOverlay,
+            clipInOverlayDuringTransition = OverlayClip(clipShape),
+        )
+    } else {
+        base.sharedBounds(
+            sharedContentState = state,
+            animatedVisibilityScope = visibility,
+            enter = enterTransition,
+            exit = exitTransition,
+            boundsTransform = boundsSpec,
+            resizeMode = resizeMode,
+            renderInOverlayDuringTransition = renderInOverlayDuringTransition,
+            zIndexInOverlay = zIndexInOverlay,
+        )
     }
 }
 
@@ -180,6 +177,44 @@ fun Modifier.m3SharedElement(
     clipShape: Shape? = null,
     zIndexInOverlay: Float = 0f,
     renderInOverlayDuringTransition: Boolean = true,
+): Modifier = applySharedTransition(
+    key = key,
+    sharedTransitionScope = sharedTransitionScope,
+    animatedVisibilityScope = animatedVisibilityScope,
+    expressive = expressive,
+) { base, state, visibility, boundsSpec ->
+    if (clipShape != null) {
+        base.sharedElement(
+            state = state,
+            animatedVisibilityScope = visibility,
+            boundsTransform = boundsSpec,
+            renderInOverlayDuringTransition = renderInOverlayDuringTransition,
+            zIndexInOverlay = zIndexInOverlay,
+            clipInOverlayDuringTransition = OverlayClip(clipShape),
+        )
+    } else {
+        base.sharedElement(
+            state = state,
+            animatedVisibilityScope = visibility,
+            boundsTransform = boundsSpec,
+            renderInOverlayDuringTransition = renderInOverlayDuringTransition,
+            zIndexInOverlay = zIndexInOverlay,
+        )
+    }
+}
+
+@Composable
+private fun Modifier.applySharedTransition(
+    key: Any,
+    sharedTransitionScope: SharedTransitionScope?,
+    animatedVisibilityScope: AnimatedVisibilityScope?,
+    expressive: Boolean,
+    apply: SharedTransitionScope.(
+        base: Modifier,
+        state: SharedTransitionScope.SharedContentState,
+        visibility: AnimatedVisibilityScope,
+        boundsSpec: BoundsTransform,
+    ) -> Modifier,
 ): Modifier {
     val reduced = LocalMotionPolicy.current.isReduced
     if (reduced || sharedTransitionScope == null || animatedVisibilityScope == null) {
@@ -188,23 +223,6 @@ fun Modifier.m3SharedElement(
     val boundsSpec = MotionSpecs.boundsTransform(reduced = false, expressive = expressive)
     return with(sharedTransitionScope) {
         val state = rememberSharedContentState(key = key)
-        if (clipShape != null) {
-            this@m3SharedElement.sharedElement(
-                state = state,
-                animatedVisibilityScope = animatedVisibilityScope,
-                boundsTransform = boundsSpec,
-                renderInOverlayDuringTransition = renderInOverlayDuringTransition,
-                zIndexInOverlay = zIndexInOverlay,
-                clipInOverlayDuringTransition = OverlayClip(clipShape),
-            )
-        } else {
-            this@m3SharedElement.sharedElement(
-                state = state,
-                animatedVisibilityScope = animatedVisibilityScope,
-                boundsTransform = boundsSpec,
-                renderInOverlayDuringTransition = renderInOverlayDuringTransition,
-                zIndexInOverlay = zIndexInOverlay,
-            )
-        }
+        apply(this@applySharedTransition, state, animatedVisibilityScope, boundsSpec)
     }
 }

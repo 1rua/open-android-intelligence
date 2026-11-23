@@ -41,6 +41,7 @@ import com.openandroidintelligence.conversation.motion.SharedTransitionKeys
 import com.openandroidintelligence.conversation.motion.m3SharedBounds
 import com.openandroidintelligence.conversation.theme.AppTextStyles
 import com.openandroidintelligence.conversation.theme.Dimensions
+import com.openandroidintelligence.conversation.motion.LocalSharedTransitionScope
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
@@ -152,11 +153,17 @@ internal fun RemoteLoginScreen(
                     }) {
                         Text(stringResource(if (selfHosted) UiR.string.remote_login_use_official else UiR.string.remote_login_use_self_hosted))
                     }
+                    val hasSharedScope = LocalSharedTransitionScope.current != null && !reduceMotion
                     AnimatedContent(
                         targetState = selfHosted,
                         transitionSpec = {
-                            (fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith fadeOut(MotionSpecs.fade(reduceMotion)))
-                                .using(SizeTransform { _, _ -> MotionSpecs.spatial(reduceMotion) })
+                            val baseTransition = fadeIn(MotionSpecs.fade(reduceMotion)) togetherWith
+                                fadeOut(MotionSpecs.fade(reduceMotion))
+                            if (hasSharedScope) {
+                                baseTransition
+                            } else {
+                                baseTransition.using(SizeTransform { _, _ -> MotionSpecs.spatial(reduceMotion) })
+                            }
                         },
                         label = "remote-login-card",
                     ) { showSelfHosted ->
@@ -197,6 +204,9 @@ internal fun RemoteLoginScreen(
                                         onClick = { login() },
                                         morphed = busy,
                                         enabled = canLogin,
+                                        restingCornerPercent = 28f,
+                                        morphedCornerPercent = 50f,
+                                        pressedCornerPercent = 20f,
                                         colors = M3MorphingButtonDefaults.primaryColors(),
                                         sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
                                         modifier = Modifier
@@ -230,6 +240,9 @@ internal fun RemoteLoginScreen(
                                         onClick = { onOAuthLogin("github") },
                                         morphed = busy,
                                         enabled = !busy,
+                                        restingCornerPercent = 28f,
+                                        morphedCornerPercent = 50f,
+                                        pressedCornerPercent = 20f,
                                         colors = M3MorphingButtonDefaults.primaryColors(),
                                         sharedBoundsKey = SharedTransitionKeys.morphingButton("remote-login-primary"),
                                         modifier = Modifier

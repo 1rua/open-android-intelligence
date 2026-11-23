@@ -318,6 +318,40 @@ class SharedTransitionsAndPredictiveBackTest {
     }
 
     @Test
+    fun predictiveBackCompatHandlerResetsProgressAfterCompletion() {
+        var latestState by mutableStateOf(PredictiveBackState())
+        var backCalls = 0
+        lateinit var dispatcher: OnBackPressedDispatcher
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            CompositionLocalProvider(LocalMotionPolicy provides MotionPolicy(reduceMotion = false)) {
+                PredictiveBackCompatHandler(
+                    enabled = true,
+                    onProgressChange = { latestState = it },
+                    onBack = { backCalls++ },
+                    sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                )
+                Box(Modifier.size(120.dp)) { Text("ResetAfterComplete") }
+            }
+        }
+
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(75f, 100f, 0.75f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertTrue(latestState.inProgress)
+        assertEquals(0.75f, latestState.progress, 0.01f)
+
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        assertEquals(1, backCalls)
+        assertFalse(latestState.inProgress)
+        assertEquals(0f, latestState.progress, 0.001f)
+    }
+
+    @Test
     fun predictiveBackStaysZeroWhenDurationScaleIsZeroOnApi34() {
         var progressWhenReduced = -1f
         var reducedBackCalls = 0

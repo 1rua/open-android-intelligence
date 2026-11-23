@@ -60,8 +60,8 @@ OpenAndroidIntelligenceTheme
                  ├─ 输入/录音容器：m3SharedBounds(SharedTransitionKeys.composerContainer())
                  └─ 发送/停止按钮：M3MorphingIconButton(sharedBoundsKey = composerAction("send-stop"))
 
-SettingsNavHost（独立自带作用域，挂在 movableSettings 内部）
- └─ AppSharedTransitionHost（随 movableSettings 在 839dp <-> 840dp 间整体迁移，不依赖外层宿主）
+SettingsNavHost（独立隔离作用域，刻意挂在 movableSettings 内部）
+ └─ AppSharedTransitionHost（随 movableSettings 在 839dp <-> 840dp 间整体迁移；不调用 EnsureSharedTransitionHost 复用外层工作台宿主，以防跨越 840dp 响应式断点重挂宿主时丢失设置子路由与共享边界状态）
      └─ NavHost
          ├─ OVERVIEW：ProvideSharedVisibilityScope + 每张分类卡外层 m3SharedBounds(settingsCategoryCard(category.route))
          ├─ 一级分类页（APPEARANCE / GATEWAY / REMINDERS / PAIRING / SECURITY / ADVANCED）
@@ -133,6 +133,11 @@ LocalMotionPolicy.current.isReduced == true ?
 | `EntranceSpring` / `entrance` | 悬浮进场 | `0.72f` | `380f` | 助理悬浮栏 `graphicsLayer` 进场位移与缩放 | `snap()` 直接落位 |
 | `ExpandSpring` / `expand` | 柔和展开（临界阻尼） | `1.0f` | `360f` | 助理输入栏展开成输入态高度变化 | `snap()` 直接落位 |
 | `CollapseSpring` / `collapse` | 快速收起（临界阻尼） | `1.0f` | `800f` | 助理输入栏收起恢复 | `snap()` 直接落位 |
+
+> **保留合法 `tween` 例外说明**：除上述物理弹簧外，代码库仅保留三类依赖显式时间延迟或无限循环节拍的合法 `tween`：
+> 1. `MotionSpecs.reducedFade()`（`tween(150ms, LinearEasing)`）：Reduce Motion / `durationScale <= 0f` 无障碍降级专用；
+> 2. `MotionSpecs.staggerEnter()`（含 `delayMillis` 错峰）与 [AssistantView.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/assistant/AssistantView.kt) 详情延迟淡入（`delayMillis = 120`）；
+> 3. [MessageTimeline.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/workbench/MessageTimeline.kt) 的 `StreamingStatusDot` 无限呼吸动画（`infiniteRepeatable(tween(1200))`，减少动态时静止）。
 | `MomentumSpring` | 手势惯性 | `0.75f` | `400f` | 停靠球拖拽释放动量吸附 | 直接吸附落位 |
 | `SheetSpring` | 抽屉/弹层（临界阻尼） | `1.0f` | `400f` | 底部弹层、侧边抽屉 | `snap()` 直接落位 |
 
@@ -144,7 +149,7 @@ LocalMotionPolicy.current.isReduced == true ?
 
 ### 3.1 `M3ExpressiveCard` 与 `M3ExpandableExpressiveCard`
 
-封装自 [M3ExpressiveCard.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3ExpressiveCard.kt)，内置按压缩放、圆角弹簧形变（已做 `coerceAtLeast(0.dp)` 下界保护）、M3 State Layer Ripple、最小触摸热区与可选共享边界。
+封装自 [M3ExpressiveCard.kt](../../apps/android/conversation-ui/src/main/kotlin/com/openandroidintelligence/conversation/components/M3ExpressiveCard.kt)，内置按压缩放、圆角弹簧形变（已做 `coerceAtLeast(0.dp)` 下界保护）、M3 State Layer Ripple、MD3 禁用态配色（`disabledContainerColor` 12% `onSurface`、`disabledContentColor` 38% `onSurface`）、最小触摸热区与可选共享边界。`M3ExpandableExpressiveCard` 的 `onExpandedChange` 为可空回调 `((Boolean) -> Unit)?`：传入 `null` 时按只读卡片渲染（不挂载 `.clickable` 与 `Role.Button` 语义，且不应用禁用态置灰）。
 
 ```kotlin
 import androidx.compose.foundation.layout.Arrangement

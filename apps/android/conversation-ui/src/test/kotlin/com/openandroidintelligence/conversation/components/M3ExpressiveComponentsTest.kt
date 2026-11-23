@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
@@ -33,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PixelMap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -552,6 +554,127 @@ class M3ExpressiveComponentsTest {
         compose.waitForIdle()
         val settled = capturePixel("tonal-card", rootView)
         assertColor("Selected tonal card settles to secondaryContainer", scheme.secondaryContainer, settled)
+    }
+
+    @Test
+    fun expressiveCardUsesMd3DisabledColorsWhenDisabled() {
+        val scheme = lightColorScheme()
+        lateinit var rootView: View
+        var resolvedContentColor = Color.Unspecified
+
+        compose.setContent {
+            MaterialTheme(colorScheme = scheme) {
+                rootView = LocalView.current
+                Box(modifier = Modifier.background(scheme.surface)) {
+                    M3ExpressiveCard(
+                        onClick = {},
+                        enabled = false,
+                        modifier = Modifier
+                            .size(width = 160.dp, height = 72.dp)
+                            .testTag("disabled-card"),
+                    ) {
+                        resolvedContentColor = LocalContentColor.current
+                        Spacer(modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("disabled-card").assertIsNotEnabled()
+        assertColor(
+            "Disabled M3ExpressiveCard uses 0.38 onSurface content color",
+            scheme.onSurface.copy(alpha = 0.38f),
+            resolvedContentColor,
+        )
+        val renderedContainer = capturePixel("disabled-card", rootView)
+        assertColor(
+            "Disabled M3ExpressiveCard uses 0.12 onSurface container color",
+            scheme.onSurface.copy(alpha = 0.12f).compositeOver(scheme.surface),
+            renderedContainer,
+        )
+    }
+
+    @Test
+    fun expandableCardWithoutCallbackExposesNoButtonSemantics() {
+        val scheme = lightColorScheme()
+        var headerContentColor = Color.Unspecified
+
+        compose.setContent {
+            MaterialTheme(colorScheme = scheme) {
+                M3ExpandableExpressiveCard(
+                    expanded = false,
+                    onExpandedChange = null,
+                    enabled = false,
+                    modifier = Modifier.testTag("readonly-expandable"),
+                    header = {
+                        headerContentColor = LocalContentColor.current
+                        Text("ReadOnlyHeader")
+                    },
+                    expandedContent = { Text("HiddenBody") },
+                )
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("ReadOnlyHeader")
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsActions.OnClick))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Role))
+        assertColor(
+            "Read-only M3ExpandableExpressiveCard keeps full onSurface content color even when enabled=false",
+            scheme.onSurface,
+            headerContentColor,
+        )
+    }
+
+    @Test
+    fun expandableCardDisabledUsesMd3DisabledColors() {
+        val scheme = lightColorScheme()
+        lateinit var rootView: View
+        var headerContentColor = Color.Unspecified
+        var expandToggles = 0
+
+        compose.setContent {
+            MaterialTheme(colorScheme = scheme) {
+                rootView = LocalView.current
+                Box(modifier = Modifier.background(scheme.surface)) {
+                    M3ExpandableExpressiveCard(
+                        expanded = false,
+                        onExpandedChange = { expandToggles++ },
+                        enabled = false,
+                        modifier = Modifier
+                            .width(180.dp)
+                            .testTag("disabled-expandable"),
+                        header = {
+                            headerContentColor = LocalContentColor.current
+                            Text(
+                                text = "DisabledHeader",
+                                color = Color.Transparent,
+                            )
+                        },
+                        expandedContent = { Text("HiddenBody") },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithText("DisabledHeader")
+            .assertIsNotEnabled()
+            .performClick()
+        assertEquals(0, expandToggles)
+        compose.onNodeWithText("HiddenBody").assertDoesNotExist()
+        assertColor(
+            "Disabled M3ExpandableExpressiveCard uses 0.38 onSurface content color",
+            scheme.onSurface.copy(alpha = 0.38f),
+            headerContentColor,
+        )
+        val renderedContainer = capturePixel("disabled-expandable", rootView)
+        assertColor(
+            "Disabled M3ExpandableExpressiveCard uses 0.12 onSurface container color",
+            scheme.onSurface.copy(alpha = 0.12f).compositeOver(scheme.surface),
+            renderedContainer,
+        )
     }
 
     private fun capturePixel(tag: String, rootView: View): Color {

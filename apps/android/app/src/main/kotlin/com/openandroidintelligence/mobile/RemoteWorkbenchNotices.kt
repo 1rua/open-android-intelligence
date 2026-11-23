@@ -17,6 +17,7 @@ import com.openandroidintelligence.conversation.motion.MotionSpecs
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.conversation.theme.LocalAppStateColors
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 import com.openandroidintelligence.ui.resources.R as UiR
 
 /** 离线与操作结果仍由工作台内容区承载；点击离线重试时原位展示加载状态并防重复点击，严禁踢回登录页。 */
@@ -28,7 +29,7 @@ internal fun RemoteWorkbenchNotices(
     onDismiss: () -> Unit,
     reconnecting: Boolean = false,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     Column(verticalArrangement = Arrangement.spacedBy(Dimensions.SpaceSmall)) {
         AnimatedVisibility(visible = offline,
             enter = expandVertically(MotionSpecs.emphasized(reduceMotion)) + fadeIn(MotionSpecs.fade(reduceMotion)),

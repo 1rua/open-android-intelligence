@@ -38,6 +38,7 @@ import com.openandroidintelligence.mobile.onboarding.components.OrbitalDiagram
 import com.openandroidintelligence.mobile.onboarding.components.TelemetryRow
 import com.openandroidintelligence.mobile.onboarding.components.halftone
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
+import com.openandroidintelligence.ui.design.isReduced
 
 /**
  * 欢迎与应用介绍页。
@@ -57,7 +58,7 @@ fun WelcomeScreen(
     onStart: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val reduceMotion = LocalMotionPolicy.current.reduceMotion
+    val reduceMotion = LocalMotionPolicy.current.isReduced
     val accent = MaterialTheme.colorScheme.tertiary
     val surface = MaterialTheme.colorScheme.surface
 

@@ -157,6 +157,9 @@ private fun PredictiveBackCompatEffect(
                 withContext(NonCancellable) {
                     if (progress.value != 0f) {
                         progress.snapTo(0f)
+                        currentOnProgressChange?.invoke(
+                            PredictiveBackState(progress = 0f, swipeEdge = lastEdge, inProgress = false),
+                        )
                     }
                 }
             }
