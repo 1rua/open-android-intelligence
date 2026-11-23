@@ -523,6 +523,9 @@ class RemoteAccountRuntime(
         val identityScope = RemoteIdentityScope(active.origin, active.accountId, role)
         return vault.credentialTransaction {
             requireActive(active)
+            val failures = vault.roleFailures(active)
+            val stopped = if (role == RemoteRole.CLIENT) failures.clientStop else failures.hostStop?.code
+            if (stopped != null) throw RemoteRpcException(stopped)
             val existing = store.load(identityScope) ?: throw RemoteRpcException("ACCOUNT_AUTH_REQUIRED")
             if (existing.tokens.accessToken != rejectedToken && existing.tokens.accessTokenExpiresAt > System.currentTimeMillis() + 30_000) existing
             else {
@@ -531,7 +534,20 @@ class RemoteAccountRuntime(
                 requireActive(active)
                 when (result) {
                     is RemoteTokenRotationResult.Rotated -> result.credential
-                    is RemoteTokenRotationResult.Failed -> throw RemoteRpcException(result.code)
+                    is RemoteTokenRotationResult.Failed -> {
+                        if (result.code in setOf("TOKEN_REUSED", "DEVICE_REVOKED", "TOKEN_EXPIRED", "AUTH_INVALID", "REMOTE_REFRESH_PERSISTENCE_FAILED")) {
+                            // 目录与控制连接共用此角色的刷新票。在放开事务前发布终态，等待者不能重交旧票。
+                            if (role == RemoteRole.CLIENT) {
+                                persistClientTerminal(active, result.code)
+                                synchronized(selectionLock) { client.takeIf { mutableAccount.value == active } }?.credentialRejected(result.code)
+                            } else {
+                                try { vault.stopHostUntilLogin(active, RemoteHostFailure(RemoteHostFailureStage.CREDENTIAL, result.code)) }
+                                catch (_: Exception) { failClosedActive(active); throw RemoteRpcException("REMOTE_CREDENTIAL_PERSISTENCE_FAILED") }
+                                synchronized(selectionLock) { host.takeIf { mutableAccount.value == active } }?.credentialRejected(result.code)
+                            }
+                        }
+                        throw RemoteRpcException(result.code)
+                    }
                 }
             }
         }

@@ -12,7 +12,7 @@
 - 账号注册携带安装级 Host ID、已保存设备名、`role=host`、`platform=android`，以及 Remote `0.6.5`、Harness `0.2.2-rc.1` 兼容声明。新安装默认读取系统设备名，缺省时取厂商与型号。
 - Host 已在线时，握手还要经 HTTP 查询来访设备的注册身份。固定服务关闭空闲 HTTP 连接后，用项目的 OkHttp 4.12.0 可复现下一次 GET 失败。模拟器也在 `PEER_AUTHORIZATION CONNECTION_FAILED` 同一时间记录了 HTTP GET 的 I/O 错误。本次只为 GET 启用 OkHttp 自带的连接恢复，写入保持单次提交。
 - 手机门面在固定上游桌面客户端发送带 `clientTimeZone` 的 `session/prompt` 时曾返回 `CONTROL_PARAMETERS_INVALID`。现按上游格式接收时区，业务授权与请求去重继续使用原来的账号、会话与 `request_id`。
-- 用户在可见 App 发起账号登录时，手机可以提前启动带系统常驻通知的待命服务。注册完成后，服务核对当前账号与 Host 票据，再保持出站信令。普通退后台继续待命，系统重建服务或开机解锁时重新核对加密授权。登录失败、退出或 Host 授权终止时，服务结束。
+- 用户在可见 App 发起账号登录时，手机可以提前启动带系统常驻通知的待命服务。注册完成后，服务核对当前账号与 Host 票据，再保持出站信令。普通退后台继续待命，系统重建服务、开机解锁或覆盖安装本应用时重新核对加密授权。登录失败、退出或 Host 授权终止时，服务结束。
 - 在受控回归中，服务端撤销 Host 并关闭连接的同时发送心跳，原实现将撤销报成普通断线并尝试重连。现在同一连接的读取、发送和心跳共用首次关闭原因。两个角色各自保存授权终态，显式重登后开始新代次。
 - API 35 上，本机确认浮层的窗口状态事件会在窗口已从系统列表移除之后到达。同一次更新也可能重复发出没有包名的窗口事件。现在按当前或刚卸下的本机浮层 ID 与快照目标判定，真实目标窗口的内容、焦点或几何变化仍使旧快照失效。
 - 日志可按 `OAI-Virtual-Host` 过滤。`REGISTERED` 表示已取得 Host 票据，`ONLINE` 表示服务器已确认控制连接，`HEARTBEAT_OBSERVED` 表示本次连接已交换心跳，`PEER_AUTHENTICATED` 表示来访设备已完成加密握手。故障记录阶段和固定错误码。
@@ -30,3 +30,7 @@
 在 API 35 模拟器上，Android 报告服务为前台，通知渠道 `remote-host-standby`。熄屏 141 秒，桌面每约 20 秒查询一次，8 次均为在线。正常重启模拟器后，在桌面启动器保持前台的情况下，系统以新进程恢复了同一 Host 和前台服务，桌面重新创建控机会话并收到 Android 的读屏结果。实际离线时长不以设备目录的缓存时间推算。
 
 2026-11-23，独立 Linux Client 用 `plugin.invoke` 读取通知。桌面得到 `completed/succeeded`，其中包含测试应用 `local.oai222.notifier` 的来源和标题「OAI222 验收通知」。正文为 Android 返回的 `Sensitive notification content hidden`。未允许通知来源时，手机在同一条链路返回 `PACKAGE_NOT_ALLOWED`。
+
+同日，原生 Linux Client 在同一 `harness/phone-capabilities` 任务中执行读树、点击、再次读树。测试应用的按钮读数从「点击计数 0」变为「点击计数 1」。本机确认后，`ui.tap` 请求 `566f048e-001e-4010-85b1-f86ecb994ec4` 得到 `completed`、`succeeded`、`performed=true`。较长的完整回执经 `remote_download_file` 读回，并与手机声明的长度及 SHA-256 一致。单独执行的 `ui.capture_som` 也经本机确认，桌面下载并解码了 1080×1920 的 WebP，41,172 字节，SHA-256 为 `be4af8b14c45119ccaaa9eccd1bc289d09c67249b056397770a6f264607b560d`。测试期间遇到系统栏内容实际变化时，旧快照返回 `SNAPSHOT_STALE`，执行状态为 `not_started`。
+
+在后台覆盖安装的单独验证中，旧包能显示在线，但系统服务列表中缺少待命服务。修复后，在熄屏状态覆盖安装，Android 通过 `MY_PACKAGE_REPLACED` 恢复 `RemoteHostStandbyService`，系统记录 `isForeground=true`、通知 ID `2402`。此恢复入口只核对现有 Host 授权。

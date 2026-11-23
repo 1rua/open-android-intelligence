@@ -6,6 +6,8 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Rect
 import android.util.Log
+import android.view.View
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -24,7 +26,8 @@ class ScreenAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         ScreenAccessibilityConnection.connect(this)
         overlay?.close()
-        overlay = PhoneControlOverlay(this).also { PhoneLocalControlUiRegistry.current = it }
+        val windowManager = getSystemService(WindowManager::class.java)
+        overlay = PhoneControlOverlay(this, LocalOverlayWindowObserver(windowManager)).also { PhoneLocalControlUiRegistry.current = it }
         val screen = NativePhoneScreen(this)
         nativeScreen = screen
         com.openandroidintelligence.control.remote.NativePhoneScreenRegistry.current = screen
@@ -61,6 +64,18 @@ class ScreenAccessibilityService : AccessibilityService() {
             }
         }
         nativeScreen = null
+    }
+}
+
+/** 由系统服务获取自己卸下的窗口 ID，保留原浮层的渲染、按钮和触摸处理。 */
+private class LocalOverlayWindowObserver(private val system: WindowManager) : WindowManager by system {
+    override fun removeViewImmediate(view: View) {
+        val id = runCatching {
+            val node = view.createAccessibilityNodeInfo()
+            try { node.windowId } finally { @Suppress("DEPRECATION") node.recycle() }
+        }.getOrDefault(-1)
+        ScreenAccessibilityConnection.overlayDetached(id)
+        system.removeViewImmediate(view)
     }
 }
 

@@ -651,6 +651,11 @@ class CallLogCollectorStaticTest(unittest.TestCase):
             (receiver.get(f"{ANDROID_NS}name"), receiver.get(f"{ANDROID_NS}exported")) for receiver in boot_receivers
         ])
 
+        # 覆盖安装由同一私有 Host 恢复入口处理，避免把其他设备能力升级成后台服务。
+        self.assertEqual({"android.intent.action.BOOT_COMPLETED", "android.intent.action.MY_PACKAGE_REPLACED"}, {
+            action.get(f"{ANDROID_NS}name") for action in boot_receivers[0].findall("intent-filter/action")
+        })
+
         scheduler = CALL_LOG_SCHEDULER.read_text(encoding="utf-8")
         self.assertIn(".setPersisted(false)", scheduler)
         self.assertNotIn(".setPersisted(true)", scheduler)

@@ -31,6 +31,7 @@ internal class RemoteHostControl(
 
     fun start() { job.start() }
     fun wake() { retryNow.trySend(Unit) }
+    fun credentialRejected(code: String) = synchronized(lock) { socket }?.credentialRejected(code)
     fun stop() {
         val closing = synchronized(lock) {
             stopped = true

@@ -119,7 +119,10 @@
                 android:value="为已登录并登记为远程主机的手机维持出站控制连接，使同账号设备可发起受本机授权约束的控制会话" />
         </service>
         <receiver android:name=".RemoteHostBootReceiver" android:exported="false">
-            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
         </receiver>
         <service
             android:name=".AgentSessionForegroundService"

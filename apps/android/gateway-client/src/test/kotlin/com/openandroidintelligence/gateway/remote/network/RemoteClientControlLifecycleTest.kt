@@ -488,8 +488,10 @@ class RemoteClientControlLifecycleTest {
                 fixture.runtime.state.value == RemoteAccountConnectionState.CONNECTED &&
                     fixture.runtime.hostState.value == RemoteHostConnectionState.ONLINE
             }
-            fixture.expireClientAccessToken()
             fixture.rejectRefreshAsReused = true
+            fixture.expireClientAccessToken()
+            // 目录读取先得到续期终态，控制连接随后断开。两个调用不能再次提交同一张刷新票。
+            runCatching { fixture.runtime.listHosts() }
             fixture.hellosFor("client").single().socket.close(1012, "刷新票终态")
 
             await("刷新 TOKEN_REUSED 未停止 Client", {

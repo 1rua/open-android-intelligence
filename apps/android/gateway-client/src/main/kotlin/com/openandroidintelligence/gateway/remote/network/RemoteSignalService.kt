@@ -236,6 +236,7 @@ internal class RemoteSignalService(
     private fun sendControl(type: String, payload: JsonValue.JObject) { requireCurrent(); socket?.send(frame(type, payload)) ?: throw RemoteRpcException("TRANSPORT_CLOSED") }
     private fun frame(type: String, payload: JsonValue.JObject) = RemoteControlCodec.create(type, payload, UUID.randomUUID().toString(), System.currentTimeMillis())
     fun close() = fail("CLIENT_CLOSED")
+    fun credentialRejected(code: String) = fail(code)
     private fun fail(code: String) {
         synchronized(clientPublication) {
             if (closed) return

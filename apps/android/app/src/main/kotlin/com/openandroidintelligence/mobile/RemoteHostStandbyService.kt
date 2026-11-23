@@ -104,10 +104,10 @@ class RemoteHostStandbyService : Service() {
     }
 }
 
-/** 系统完成解锁启动后，只给既有、仍有效的 Host 授权恢复前台待命服务。 */
+/** 系统完成解锁启动或覆盖安装后，为仍有 Host 授权的账号恢复前台待命服务。 */
 class RemoteHostBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
         val app = context.applicationContext as? RemoteStandbyOwner ?: return
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
