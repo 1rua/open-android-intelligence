@@ -17,21 +17,29 @@ import org.junit.Test
 /**
  * 转场动画与图标规范守卫测试。
  *
- * 确保遵循 Material 3 Expressive 物理动效与紧凑设计规范：
- * 1. 各种转场在标准模式与 reduceMotion 模式下均正确生成 Transition 对象；
- * 2. 标准模式下进场采用 SpatialDefault + EffectsDefault 弹簧，退场采用 SpatialFast + EffectsFast 弹簧；
- * 3. reduceMotion 模式下所有位移和缩放取消，统一降级为 150ms 线性淡化；
- * 4. 紧凑图标与容器令牌尺寸保持规范约束（32dp/18dp/48dp）。
+ * 确保遵循 Material 3 Expressive 分层视差动效与紧凑设计规范：
+ * 1. 页面导航与模态转场（`nav*`/`modal*`）在标准模式下均不含全页淡化（`fade == null`），
+ *    采用 100% 不透明分层视差位移与纵深缩放；
+ * 2. 同级切换（`enter`/`exit`）保留 `Spatial` + `Effects` 弹簧组合；
+ * 3. `reduceMotion = true` 时全部取消位移与缩放，统一降级为 150ms 线性交叉淡化；
+ * 4. 视差常数与紧凑图标尺寸令牌保持规范约束。
  */
 class AppTransitionsTest {
 
     @Test
-    fun compactIconDimensionsConformToSpec() {
+    fun compactIconDimensionsAndParallaxTokensConformToSpec() {
         assertEquals("列表前置图标容器直径应紧凑为 32dp", 32.dp, Dimensions.LeadingIconContainer)
         assertEquals("次级图标尺寸应紧凑为 18dp", 18.dp, Dimensions.SmallIcon)
         assertEquals("悬浮球直径应紧凑为 48dp", 48.dp, Dimensions.DockedBall)
         assertEquals("品牌标识高度应紧凑为 48dp", 48.dp, Dimensions.BrandMark)
         assertEquals("标准图标尺寸应为 24dp", 24.dp, Dimensions.Icon)
+
+        assertEquals(0.28f, AppTransitions.ParallaxOffsetFraction, 0.0001f)
+        assertEquals(0.96f, AppTransitions.BackgroundDepthScale, 0.0001f)
+        assertEquals(0.16f, AppTransitions.BackgroundScrimMaxAlpha, 0.0001f)
+        assertEquals(0.24f, AppTransitions.EdgeShadowMaxAlpha, 0.0001f)
+        assertEquals(20.dp, AppTransitions.EdgeShadowWidth)
+        assertEquals(0.0005f, AppTransitions.ScaleVisibilityThreshold, 0.00001f)
     }
 
     @Test
@@ -99,68 +107,100 @@ class AppTransitionsTest {
 
     @Test
     fun exitTransitionsCoordinatedWithSpringExitSpecs() {
+        // 同级切换保留 fade + slide + scale
+        val siblingData = extractTransitionData(AppTransitions.exit(reduced = false))
+        val siblingFade = extractField(siblingData, "fade")
+        val siblingSlide = extractField(siblingData, "slide")
+        val siblingScale = extractField(siblingData, "scale")
+        assertNotNull("enter/exit sibling fade must not be null", siblingFade)
+        assertNotNull("enter/exit sibling slide must not be null", siblingSlide)
+        assertNotNull("enter/exit sibling scale must not be null", siblingScale)
+
+        val siblingFadeSpec = extractAnimationSpec(siblingFade!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.EffectsFastSpring.dampingRatio, siblingFadeSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.EffectsFastSpring.stiffness, siblingFadeSpec.stiffness, 0.0001f)
+
+        val siblingSlideSpec = extractAnimationSpec(siblingSlide!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, siblingSlideSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.SpatialFastSpring.stiffness, siblingSlideSpec.stiffness, 0.0001f)
+
+        val siblingScaleSpec = extractAnimationSpec(siblingScale!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, siblingScaleSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.SpatialFastSpring.stiffness, siblingScaleSpec.stiffness, 0.0001f)
+
+        // 分层导航与模态退出必须保持 100% 不透明（fade == null）
         listOf(
-            AppTransitions.exit(reduced = false) to true,
             AppTransitions.navExit(reduced = false) to true,
-            AppTransitions.navPopExit(reduced = false) to true,
+            AppTransitions.navPopExit(reduced = false) to false,
             AppTransitions.modalExit(reduced = false) to false,
         ).forEach { (exitTransition, expectsScale) ->
             val data = extractTransitionData(exitTransition)
-            val fade = extractField(data, "fade")
+            assertNull("分层导航/模态退出不得包含透明 fade", extractField(data, "fade"))
             val slide = extractField(data, "slide")
-            assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
-
-            val fadeSpec = extractAnimationSpec(fade!!) as SpringSpec<*>
-            assertEquals(MotionSpecs.EffectsFastSpring.dampingRatio, fadeSpec.dampingRatio, 0.0001f)
-            assertEquals(MotionSpecs.EffectsFastSpring.stiffness, fadeSpec.stiffness, 0.0001f)
-
             val slideSpec = extractAnimationSpec(slide!!) as SpringSpec<*>
             assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, slideSpec.dampingRatio, 0.0001f)
             assertEquals(MotionSpecs.SpatialFastSpring.stiffness, slideSpec.stiffness, 0.0001f)
 
             val scale = extractField(data, "scale")
             if (expectsScale) {
-                assertNotNull("scale must not be null", scale)
+                assertNotNull("navExit 底层背景必须包含纵深缩放", scale)
                 val scaleSpec = extractAnimationSpec(scale!!) as SpringSpec<*>
                 assertEquals(MotionSpecs.SpatialFastSpring.dampingRatio, scaleSpec.dampingRatio, 0.0001f)
                 assertEquals(MotionSpecs.SpatialFastSpring.stiffness, scaleSpec.stiffness, 0.0001f)
+                assertEquals(AppTransitions.ScaleVisibilityThreshold, scaleSpec.visibilityThreshold)
             } else {
-                assertNull("modalExit should not include scale", scale)
+                assertNull("前景退出不得包含额外 scale", scale)
             }
         }
     }
 
     @Test
     fun enterTransitionsCoordinatedWithSpringEnterSpecs() {
+        // 同级切换保留 fade + slide + scale
+        val siblingData = extractTransitionData(AppTransitions.enter(reduced = false))
+        val siblingFade = extractField(siblingData, "fade")
+        val siblingSlide = extractField(siblingData, "slide")
+        val siblingScale = extractField(siblingData, "scale")
+        assertNotNull("enter sibling fade must not be null", siblingFade)
+        assertNotNull("enter sibling slide must not be null", siblingSlide)
+        assertNotNull("enter sibling scale must not be null", siblingScale)
+
+        val siblingFadeSpec = extractAnimationSpec(siblingFade!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.EffectsDefaultSpring.dampingRatio, siblingFadeSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.EffectsDefaultSpring.stiffness, siblingFadeSpec.stiffness, 0.0001f)
+
+        val siblingSlideSpec = extractAnimationSpec(siblingSlide!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, siblingSlideSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, siblingSlideSpec.stiffness, 0.0001f)
+
+        val siblingScaleSpec = extractAnimationSpec(siblingScale!!) as SpringSpec<*>
+        assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, siblingScaleSpec.dampingRatio, 0.0001f)
+        assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, siblingScaleSpec.stiffness, 0.0001f)
+
+        // 分层导航与模态进入必须保持 100% 不透明（fade == null）
         listOf(
-            AppTransitions.enter(reduced = false) to true,
-            AppTransitions.navEnter(reduced = false) to true,
+            AppTransitions.navEnter(reduced = false) to false,
             AppTransitions.navPopEnter(reduced = false) to true,
             AppTransitions.modalEnter(reduced = false) to false,
         ).forEach { (enterTransition, expectsScale) ->
             val data = extractTransitionData(enterTransition)
-            val fade = extractField(data, "fade")
+            assertNull("分层导航/模态进入不得包含透明 fade", extractField(data, "fade"))
             val slide = extractField(data, "slide")
-            assertNotNull("fade must not be null", fade)
             assertNotNull("slide must not be null", slide)
-
-            val fadeSpec = extractAnimationSpec(fade!!) as SpringSpec<*>
-            assertEquals(MotionSpecs.EffectsDefaultSpring.dampingRatio, fadeSpec.dampingRatio, 0.0001f)
-            assertEquals(MotionSpecs.EffectsDefaultSpring.stiffness, fadeSpec.stiffness, 0.0001f)
-
             val slideSpec = extractAnimationSpec(slide!!) as SpringSpec<*>
             assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, slideSpec.dampingRatio, 0.0001f)
             assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, slideSpec.stiffness, 0.0001f)
 
             val scale = extractField(data, "scale")
             if (expectsScale) {
-                assertNotNull("scale must not be null", scale)
+                assertNotNull("navPopEnter 底层背景必须包含纵深缩放复原", scale)
                 val scaleSpec = extractAnimationSpec(scale!!) as SpringSpec<*>
                 assertEquals(MotionSpecs.SpatialDefaultSpring.dampingRatio, scaleSpec.dampingRatio, 0.0001f)
                 assertEquals(MotionSpecs.SpatialDefaultSpring.stiffness, scaleSpec.stiffness, 0.0001f)
+                assertEquals(AppTransitions.ScaleVisibilityThreshold, scaleSpec.visibilityThreshold)
             } else {
-                assertNull("modalEnter should not include scale", scale)
+                assertNull("前景进入不得包含额外 scale", scale)
             }
         }
     }

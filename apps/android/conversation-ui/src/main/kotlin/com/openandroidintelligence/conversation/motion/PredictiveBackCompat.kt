@@ -6,17 +6,35 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
 import androidx.compose.ui.layout.MeasureScope
@@ -24,11 +42,15 @@ import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.invalidatePlacement
 import androidx.compose.ui.platform.InspectorInfo
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.zIndex
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
 import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -386,3 +408,361 @@ fun Modifier.predictiveBackSlideTransform(
     direction = direction,
     maxScaleReduction = maxScaleReduction,
 )
+
+/** 向全屏覆盖层内部的根路由暴露外层覆盖层预测性返回控制器，避免内外层冲突与松手弹回。 */
+val LocalPredictiveOverlayBackController =
+    compositionLocalOf<PredictiveOverlayBackController?> { null }
+
+/**
+ * 全屏侧滑覆盖层与预测性返回协同控制器。
+ *
+ * 维护覆盖层的单一真实开合进度 `openProgress`（`0f` 关闭、`1f` 全开）：
+ * - 手势拖拽期间仅更新 `snapTo(1f - progress)` 与退出方向，零组合重构；
+ * - 手势提交时**不将进度归零/归 1 弹回**，直接由宿主退出动画从当前拖出位置顺滑续滑完成；
+ * - 手势取消时以临界阻尼 [MotionSpecs.morph] 平滑回弹至全开态，并用代际令牌防止竞态覆写。
+ */
+@Stable
+class PredictiveOverlayBackController internal constructor(
+    initialOpen: Boolean,
+    enterFromStart: Boolean = true,
+) {
+    private val defaultExitDirection: Float = if (enterFromStart) -1f else 1f
+    internal val openProgress = Animatable(
+        initialValue = if (initialOpen) 1f else 0f,
+        visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
+    )
+    internal var exitDirection by mutableFloatStateOf(defaultExitDirection)
+    internal var overlayMounted by mutableStateOf(initialOpen)
+    internal var latestOpenState: Boolean = initialOpen
+    private var gestureToken: Int = 0
+    private var reboundJob: Job? = null
+
+    private fun resetExitDirection() {
+        exitDirection = defaultExitDirection
+    }
+
+    internal fun beginGesture(): Int {
+        val token = ++gestureToken
+        reboundJob?.cancel()
+        reboundJob = null
+        return token
+    }
+
+    internal suspend fun onDragProgress(
+        token: Int,
+        progress: Float,
+        swipeEdge: Int,
+        layoutDirection: LayoutDirection,
+    ) {
+        if (gestureToken != token) return
+        overlayMounted = true
+        exitDirection = resolvePredictiveBackDirection(swipeEdge, layoutDirection)
+        val targetOpen = 1f - progress.coerceIn(0f, 1f)
+        if (gestureToken == token) {
+            openProgress.snapTo(targetOpen)
+        }
+    }
+
+    internal fun onDragCommit(
+        token: Int,
+        scope: CoroutineScope,
+        reduced: Boolean,
+        onDismiss: () -> Unit,
+    ) {
+        if (gestureToken != token) return
+        onDismiss()
+        // 若宿主未因此关闭覆盖层（例如拦截状态未变更），下一帧自动平滑复原，避免停留在半拖出状态。
+        reboundJob = scope.launch {
+            withFrameNanos { }
+            if (gestureToken != token || !latestOpenState) return@launch
+            if (reduced) {
+                openProgress.snapTo(1f)
+            } else {
+                openProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = MotionSpecs.morph(false),
+                )
+                openProgress.snapTo(1f)
+            }
+            if (gestureToken == token) {
+                resetExitDirection()
+            }
+        }
+    }
+
+    internal fun onDragCancel(
+        token: Int,
+        scope: CoroutineScope,
+        reduced: Boolean,
+    ) {
+        if (gestureToken != token) return
+        reboundJob = scope.launch {
+            if (gestureToken != token || !latestOpenState) return@launch
+            if (reduced) {
+                openProgress.snapTo(1f)
+            } else {
+                openProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = MotionSpecs.morph(false),
+                )
+                openProgress.snapTo(1f)
+            }
+            if (gestureToken == token) {
+                resetExitDirection()
+            }
+        }
+    }
+
+    internal suspend fun syncOpenState(open: Boolean, reduced: Boolean) {
+        latestOpenState = open
+        gestureToken++
+        reboundJob?.cancel()
+        reboundJob = null
+        if (open) {
+            overlayMounted = true
+            if (openProgress.value == 0f || reduced) {
+                resetExitDirection()
+            }
+            if (openProgress.value < 1f) {
+                val spec = if (reduced) {
+                    MotionSpecs.reducedFade<Float>()
+                } else {
+                    MotionSpecs.spatialDefault(
+                        reduced = false,
+                        visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
+                    )
+                }
+                openProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = spec,
+                )
+                openProgress.snapTo(1f)
+            }
+            resetExitDirection()
+        } else {
+            if (overlayMounted && openProgress.value > 0f) {
+                val spec = if (reduced) {
+                    MotionSpecs.reducedFade<Float>()
+                } else {
+                    MotionSpecs.spatialFast(
+                        reduced = false,
+                        visibilityThreshold = AppTransitions.ScaleVisibilityThreshold,
+                    )
+                }
+                openProgress.animateTo(
+                    targetValue = 0f,
+                    animationSpec = spec,
+                )
+                openProgress.snapTo(0f)
+            }
+            overlayMounted = false
+            resetExitDirection()
+        }
+    }
+
+    internal fun dispose() {
+        gestureToken++
+        reboundJob?.cancel()
+        reboundJob = null
+    }
+}
+
+/**
+ * 创建并同步全屏覆盖层预测性返回控制器，在调用位置稳定注册兜底返回处理器。
+ *
+ * 调用方应将其放置在宽/窄屏条件分支之前，以维持 `OnBackPressedDispatcher` LIFO 栈底语义，
+ * 确保跨 `840dp` 断点折叠时绝不抢占内部子页导航的返回键。
+ */
+@Composable
+fun rememberPredictiveOverlayBackController(
+    overlayOpen: Boolean,
+    enabled: Boolean,
+    reduced: Boolean,
+    onDismiss: () -> Unit,
+    enterFromStart: Boolean = true,
+    sdkInt: Int = Build.VERSION.SDK_INT,
+): PredictiveOverlayBackController {
+    val controller = remember {
+        PredictiveOverlayBackController(
+            initialOpen = overlayOpen,
+            enterFromStart = enterFromStart,
+        )
+    }
+    LaunchedEffect(overlayOpen, reduced) {
+        controller.syncOpenState(open = overlayOpen, reduced = reduced)
+    }
+    DisposableEffect(controller) {
+        onDispose { controller.dispose() }
+    }
+    PredictiveBackOverlayBridge(
+        controller = controller,
+        enabled = enabled,
+        onDismiss = onDismiss,
+        sdkInt = sdkInt,
+    )
+    return controller
+}
+
+/**
+ * 将当前 Compose 层次中的预测性返回手势（API 34+）或传统返回键（API 31–33）桥接到
+ * [PredictiveOverlayBackController]，供宿主兜底与内层根路由共同驱动同一动画进度。
+ */
+@Composable
+fun PredictiveBackOverlayBridge(
+    controller: PredictiveOverlayBackController,
+    enabled: Boolean,
+    onDismiss: () -> Unit,
+    sdkInt: Int = Build.VERSION.SDK_INT,
+) {
+    val reduced = LocalMotionPolicy.current.isReduced
+    val scope = rememberCoroutineScope()
+    val layoutDirection = LocalLayoutDirection.current
+    val currentReduced by rememberUpdatedState(reduced)
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val currentLayoutDirection by rememberUpdatedState(layoutDirection)
+
+    if (supportsNativePredictiveBack(sdkInt)) {
+        PredictiveBackHandler(enabled = enabled) { events ->
+            val token = controller.beginGesture()
+            try {
+                events.collect { event ->
+                    if (!currentReduced) {
+                        controller.onDragProgress(
+                            token = token,
+                            progress = event.progress,
+                            swipeEdge = event.swipeEdge,
+                            layoutDirection = currentLayoutDirection,
+                        )
+                    }
+                }
+                controller.onDragCommit(
+                    token = token,
+                    scope = scope,
+                    reduced = currentReduced,
+                    onDismiss = currentOnDismiss,
+                )
+            } catch (cancelled: CancellationException) {
+                controller.onDragCancel(
+                    token = token,
+                    scope = scope,
+                    reduced = currentReduced,
+                )
+                throw cancelled
+            }
+        }
+    } else {
+        BackHandler(enabled = enabled) {
+            currentOnDismiss()
+        }
+    }
+}
+
+/**
+ * 全屏侧滑覆盖层的双层视差宿主容器：
+ * - `Z = 0`（底层背景页）：在绘制期惰性读取 `openProgress`，叠加 28% 视差位移、`0.96f` 纵深缩放与 Scrim 压暗；
+ * - `Z = 1`（顶层覆盖层）：强制实色 `surface` 背景与触控拦截，非减少动态下全程 `alpha = 1f` 不透明，
+ *   并在暴露给背景的侧缘绘制 `20.dp` Elevation 渐变阴影。
+ */
+@Composable
+fun FullscreenPredictiveSlideOverlay(
+    controller: PredictiveOverlayBackController,
+    reduced: Boolean,
+    modifier: Modifier = Modifier,
+    overlayTestTag: String? = "phone-fullscreen-settings-container",
+    backgroundContent: @Composable () -> Unit,
+    overlayContent: @Composable () -> Unit,
+) {
+    val scrimColor = MaterialTheme.colorScheme.scrim
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    Box(modifier = modifier.fillMaxSize().clipToBounds()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(0f)
+                .graphicsLayer {
+                    val p = controller.openProgress.value.coerceIn(0f, 1f)
+                    if (!reduced && p > 0f) {
+                        translationX = -size.width * AppTransitions.ParallaxOffsetFraction * p * controller.exitDirection
+                        val scale = 1f - (1f - AppTransitions.BackgroundDepthScale) * p
+                        scaleX = scale
+                        scaleY = scale
+                    } else {
+                        translationX = 0f
+                        scaleX = 1f
+                        scaleY = 1f
+                    }
+                }
+                .drawWithContent {
+                    drawContent()
+                    if (!reduced) {
+                        val p = controller.openProgress.value.coerceIn(0f, 1f)
+                        val scrimAlpha = AppTransitions.BackgroundScrimMaxAlpha * p
+                        if (scrimAlpha > 0.001f) {
+                            drawRect(color = scrimColor.copy(alpha = scrimAlpha))
+                        }
+                    }
+                },
+        ) {
+            backgroundContent()
+        }
+
+        if (controller.overlayMounted) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .zIndex(1f)
+                    .then(if (overlayTestTag != null) Modifier.testTag(overlayTestTag) else Modifier)
+                    .graphicsLayer {
+                        val p = controller.openProgress.value.coerceIn(0f, 1f)
+                        if (reduced) {
+                            translationX = 0f
+                            alpha = p
+                        } else {
+                            translationX = size.width * (1f - p) * controller.exitDirection
+                            alpha = 1f
+                        }
+                    }
+                    .drawWithContent {
+                        drawContent()
+                        if (!reduced) {
+                            val p = controller.openProgress.value.coerceIn(0f, 1f)
+                            if (p > 0.001f && p < 0.999f) {
+                                val shadowWidthPx = AppTransitions.EdgeShadowWidth.toPx()
+                                val away = (1f - p).coerceIn(0f, 1f)
+                                val shadowAlpha = AppTransitions.EdgeShadowMaxAlpha * (1f - away * away)
+                                if (shadowAlpha > 0.001f) {
+                                    if (controller.exitDirection >= 0f) {
+                                        drawRect(
+                                            brush = Brush.horizontalGradient(
+                                                colors = listOf(Color.Transparent, scrimColor.copy(alpha = shadowAlpha)),
+                                                startX = -shadowWidthPx,
+                                                endX = 0f,
+                                            ),
+                                            topLeft = Offset(x = -shadowWidthPx, y = 0f),
+                                            size = Size(width = shadowWidthPx, height = size.height),
+                                        )
+                                    } else {
+                                        drawRect(
+                                            brush = Brush.horizontalGradient(
+                                                colors = listOf(scrimColor.copy(alpha = shadowAlpha), Color.Transparent),
+                                                startX = size.width,
+                                                endX = size.width + shadowWidthPx,
+                                            ),
+                                            topLeft = Offset(x = size.width, y = 0f),
+                                            size = Size(width = shadowWidthPx, height = size.height),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .background(surfaceColor)
+                    .pointerInput(Unit) {},
+            ) {
+                CompositionLocalProvider(LocalPredictiveOverlayBackController provides controller) {
+                    overlayContent()
+                }
+            }
+        }
+    }
+}

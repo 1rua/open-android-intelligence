@@ -1,7 +1,5 @@
 package com.openandroidintelligence.mobile
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
@@ -26,7 +24,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import com.openandroidintelligence.conversation.motion.AppTransitions
+import com.openandroidintelligence.conversation.motion.FullscreenPredictiveSlideOverlay
+import com.openandroidintelligence.conversation.motion.rememberPredictiveOverlayBackController
 import com.openandroidintelligence.conversation.theme.Dimensions
 import com.openandroidintelligence.ui.design.LocalMotionPolicy
 import com.openandroidintelligence.ui.design.isReduced
@@ -82,6 +81,12 @@ internal fun PlatformSettingsDrawer(
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val expanded = maxWidth >= Dimensions.ExpandedWindow
+        val phoneOverlayController = rememberPredictiveOverlayBackController(
+            overlayOpen = open,
+            enabled = !expanded && open,
+            reduced = reduceMotion,
+            onDismiss = onDismiss,
+        )
 
         if (expanded) {
             val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -128,21 +133,15 @@ internal fun PlatformSettingsDrawer(
                 content = content,
             )
         } else {
-            // 手机/紧凑端：全屏侧滑设置（从左向右滑入，从右向左滑出），不留侧栏缝隙或残留可见会话
-            Box(Modifier.fillMaxSize()) {
-                content()
-
-                AnimatedVisibility(
-                    visible = open,
-                    enter = AppTransitions.modalEnter(reduceMotion),
-                    exit = AppTransitions.modalExit(reduceMotion),
-                    modifier = Modifier.fillMaxSize().testTag("phone-fullscreen-settings-container"),
-                ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        movableSettings(SettingsPresentation.SCREEN, onDismiss)
-                    }
-                }
-            }
+            // 手机/紧凑端：全屏侧滑设置（同步驱动背景视差与手势预测性返回），不留侧栏缝隙或残留可见内容
+            FullscreenPredictiveSlideOverlay(
+                controller = phoneOverlayController,
+                reduced = reduceMotion,
+                modifier = Modifier.fillMaxSize(),
+                overlayTestTag = "phone-fullscreen-settings-container",
+                backgroundContent = { content() },
+                overlayContent = { movableSettings(SettingsPresentation.SCREEN, onDismiss) },
+            )
         }
     }
 }
