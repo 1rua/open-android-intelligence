@@ -20,6 +20,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -263,26 +264,46 @@ fun Modifier.navPageTransitionDecoration(
                 }
             }
             NavPageTransitionRole.FOREGROUND -> {
-                val away = (1f - factor).coerceIn(0f, 1f)
-                val shadowAlpha = AppTransitions.EdgeShadowMaxAlpha * (1f - away * away)
-                if (shadowAlpha > 0.001f) {
-                    val shadowWidthPx = AppTransitions.EdgeShadowWidth.toPx()
-                    val brush = Brush.horizontalGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            scrimColor.copy(alpha = shadowAlpha),
-                        ),
-                        startX = -shadowWidthPx,
-                        endX = 0f,
-                    )
-                    drawRect(
-                        brush = brush,
-                        topLeft = Offset(x = -shadowWidthPx, y = 0f),
-                        size = Size(width = shadowWidthPx, height = size.height),
-                    )
-                }
+                drawTransitionEdgeShadow(
+                    scrimColor = scrimColor,
+                    factor = factor,
+                    onStartEdge = true,
+                )
             }
             null -> Unit
         }
     }
+}
+
+/**
+ * 在页面或全屏侧滑覆盖层暴露出的外缘绘制 MD3 Elevation 渐变阴影。
+ *
+ * @param factor 当前展开/可见系数 `[0f, 1f]`；在接近完全展开/收起两端衰减，中段接近 `EdgeShadowMaxAlpha`。
+ * @param onStartEdge `true` 时画在左缘外侧（`[-shadowWidthPx, 0]`），`false` 时画在右缘外侧（`[width, width + shadowWidthPx]`）。
+ */
+internal fun ContentDrawScope.drawTransitionEdgeShadow(
+    scrimColor: Color,
+    factor: Float,
+    onStartEdge: Boolean = true,
+) {
+    val away = (1f - factor.coerceIn(0f, 1f)).coerceIn(0f, 1f)
+    val shadowAlpha = AppTransitions.EdgeShadowMaxAlpha * (1f - away * away)
+    if (shadowAlpha <= 0.001f) return
+    val shadowWidthPx = AppTransitions.EdgeShadowWidth.toPx()
+    val startX = if (onStartEdge) -shadowWidthPx else size.width
+    val endX = if (onStartEdge) 0f else size.width + shadowWidthPx
+    val colors = if (onStartEdge) {
+        listOf(Color.Transparent, scrimColor.copy(alpha = shadowAlpha))
+    } else {
+        listOf(scrimColor.copy(alpha = shadowAlpha), Color.Transparent)
+    }
+    drawRect(
+        brush = Brush.horizontalGradient(
+            colors = colors,
+            startX = startX,
+            endX = endX,
+        ),
+        topLeft = Offset(x = startX, y = 0f),
+        size = Size(width = shadowWidthPx, height = size.height),
+    )
 }

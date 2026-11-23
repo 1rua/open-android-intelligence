@@ -14,6 +14,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,10 +35,13 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.openandroidintelligence.conversation.components.ExpandableRegion
@@ -934,5 +938,88 @@ class SharedTransitionsAndPredictiveBackTest {
         compose.runOnIdle { page = 1 }
         compose.waitForIdle()
         compose.onNodeWithText("DecoratedPage 1").assertIsDisplayed()
+    }
+
+    @Test
+    fun fullscreenOverlayConsumesBackgroundPointerReboundsBlockedCommitAndHonorsNullTagAndBridgeReduced() {
+        var backgroundClicks = 0
+        var dismissAttempts = 0
+        var bridgeReduced by mutableStateOf(false)
+        lateinit var dispatcher: OnBackPressedDispatcher
+        lateinit var capturedController: PredictiveOverlayBackController
+
+        compose.setContent {
+            dispatcher = checkNotNull(LocalOnBackPressedDispatcherOwner.current).onBackPressedDispatcher
+            OpenAndroidIntelligenceTheme(reduceMotion = false) {
+                Box(Modifier.size(240.dp)) {
+                    val controller = rememberPredictiveOverlayBackController(
+                        overlayOpen = true,
+                        enabled = false,
+                        reduced = false,
+                        onDismiss = {},
+                        sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                    )
+                    capturedController = controller
+                    // 未传 overlayTestTag 时默认值为 null，不自动挂接默认 tag
+                    FullscreenPredictiveSlideOverlay(
+                        controller = controller,
+                        reduced = false,
+                        modifier = Modifier.fillMaxSize(),
+                        backgroundContent = {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .clickable { backgroundClicks++ },
+                            ) {
+                                Text("BgButton")
+                            }
+                        },
+                        overlayContent = {
+                            PredictiveBackOverlayBridge(
+                                controller = controller,
+                                enabled = true,
+                                onDismiss = { dismissAttempts++ },
+                                reduced = bridgeReduced,
+                                sdkInt = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+                            )
+                            Box(Modifier.fillMaxSize().testTag("overlay-blank-surface")) {
+                                Text("OverlayContent")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+        compose.waitForIdle()
+        assertTrue(compose.onAllNodesWithTag("phone-fullscreen-settings-container").fetchSemanticsNodes().isEmpty())
+
+        // 1. 验证覆盖层空白区彻底拦截触摸事件，不穿透到底层背景点击事件
+        compose.onNodeWithTag("overlay-blank-surface").performTouchInput { click(center) }
+        compose.waitForIdle()
+        assertEquals("覆盖层未消费区域必须拦截点穿事件", 0, backgroundClicks)
+
+        // 2. 验证宿主未改变 overlayOpen 时，提交手势经过 3 帧窗口后仍能平滑回弹至全开态
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals(0.5f, capturedController.openProgress.value, 0.02f)
+        compose.runOnIdle { dispatcher.onBackPressed() }
+        compose.waitForIdle()
+        assertEquals(1, dismissAttempts)
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-blank-surface").fetchSemanticsNode().positionInRoot.x, 0.5f)
+
+        // 3. 验证显式向 Bridge 传入 reduced = true 时，即使外层政策为 false 也不发生拖动位移
+        compose.runOnIdle { bridgeReduced = true }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            dispatcher.dispatchOnBackStarted(BackEventCompat(0f, 100f, 0f, BackEventCompat.EDGE_LEFT))
+            dispatcher.dispatchOnBackProgressed(BackEventCompat(120f, 100f, 0.5f, BackEventCompat.EDGE_LEFT))
+        }
+        compose.waitForIdle()
+        assertEquals(1f, capturedController.openProgress.value, 0.001f)
+        assertEquals(0f, compose.onNodeWithTag("overlay-blank-surface").fetchSemanticsNode().positionInRoot.x, 0.5f)
     }
 }

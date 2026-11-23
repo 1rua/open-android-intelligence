@@ -15,6 +15,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.compositionLocalOf
@@ -29,11 +30,8 @@ import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.MeasureResult
@@ -463,6 +461,31 @@ class PredictiveOverlayBackController internal constructor(
         }
     }
 
+    private fun launchReboundToOpen(
+        token: Int,
+        scope: CoroutineScope,
+        reduced: Boolean,
+        waitFramesBeforeCheck: Int = 0,
+    ) {
+        reboundJob = scope.launch {
+            repeat(waitFramesBeforeCheck) {
+                withFrameNanos { }
+            }
+            if (gestureToken != token || !latestOpenState) return@launch
+            val spec = if (reduced) MotionSpecs.reducedFade<Float>() else MotionSpecs.morph(false)
+            if (openProgress.value < 1f) {
+                openProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = spec,
+                )
+            }
+            openProgress.snapTo(1f)
+            if (gestureToken == token) {
+                resetExitDirection()
+            }
+        }
+    }
+
     internal fun onDragCommit(
         token: Int,
         scope: CoroutineScope,
@@ -471,23 +494,13 @@ class PredictiveOverlayBackController internal constructor(
     ) {
         if (gestureToken != token) return
         onDismiss()
-        // 若宿主未因此关闭覆盖层（例如拦截状态未变更），下一帧自动平滑复原，避免停留在半拖出状态。
-        reboundJob = scope.launch {
-            withFrameNanos { }
-            if (gestureToken != token || !latestOpenState) return@launch
-            if (reduced) {
-                openProgress.snapTo(1f)
-            } else {
-                openProgress.animateTo(
-                    targetValue = 1f,
-                    animationSpec = MotionSpecs.morph(false),
-                )
-                openProgress.snapTo(1f)
-            }
-            if (gestureToken == token) {
-                resetExitDirection()
-            }
-        }
+        // 若宿主未因此关闭覆盖层（例如拦截状态未变更），等待数帧确认重组/异步状态传播后再平滑复原。
+        launchReboundToOpen(
+            token = token,
+            scope = scope,
+            reduced = reduced,
+            waitFramesBeforeCheck = 3,
+        )
     }
 
     internal fun onDragCancel(
@@ -496,21 +509,12 @@ class PredictiveOverlayBackController internal constructor(
         reduced: Boolean,
     ) {
         if (gestureToken != token) return
-        reboundJob = scope.launch {
-            if (gestureToken != token || !latestOpenState) return@launch
-            if (reduced) {
-                openProgress.snapTo(1f)
-            } else {
-                openProgress.animateTo(
-                    targetValue = 1f,
-                    animationSpec = MotionSpecs.morph(false),
-                )
-                openProgress.snapTo(1f)
-            }
-            if (gestureToken == token) {
-                resetExitDirection()
-            }
-        }
+        launchReboundToOpen(
+            token = token,
+            scope = scope,
+            reduced = reduced,
+            waitFramesBeforeCheck = 0,
+        )
     }
 
     internal suspend fun syncOpenState(open: Boolean, reduced: Boolean) {
@@ -588,6 +592,7 @@ fun rememberPredictiveOverlayBackController(
             enterFromStart = enterFromStart,
         )
     }
+    SideEffect { controller.latestOpenState = overlayOpen }
     LaunchedEffect(overlayOpen, reduced) {
         controller.syncOpenState(open = overlayOpen, reduced = reduced)
     }
@@ -598,6 +603,7 @@ fun rememberPredictiveOverlayBackController(
         controller = controller,
         enabled = enabled,
         onDismiss = onDismiss,
+        reduced = reduced,
         sdkInt = sdkInt,
     )
     return controller
@@ -612,9 +618,9 @@ fun PredictiveBackOverlayBridge(
     controller: PredictiveOverlayBackController,
     enabled: Boolean,
     onDismiss: () -> Unit,
+    reduced: Boolean = LocalMotionPolicy.current.isReduced,
     sdkInt: Int = Build.VERSION.SDK_INT,
 ) {
-    val reduced = LocalMotionPolicy.current.isReduced
     val scope = rememberCoroutineScope()
     val layoutDirection = LocalLayoutDirection.current
     val currentReduced by rememberUpdatedState(reduced)
@@ -668,7 +674,7 @@ fun FullscreenPredictiveSlideOverlay(
     controller: PredictiveOverlayBackController,
     reduced: Boolean,
     modifier: Modifier = Modifier,
-    overlayTestTag: String? = "phone-fullscreen-settings-container",
+    overlayTestTag: String? = null,
     backgroundContent: @Composable () -> Unit,
     overlayContent: @Composable () -> Unit,
 ) {
@@ -727,37 +733,25 @@ fun FullscreenPredictiveSlideOverlay(
                         if (!reduced) {
                             val p = controller.openProgress.value.coerceIn(0f, 1f)
                             if (p > 0.001f && p < 0.999f) {
-                                val shadowWidthPx = AppTransitions.EdgeShadowWidth.toPx()
-                                val away = (1f - p).coerceIn(0f, 1f)
-                                val shadowAlpha = AppTransitions.EdgeShadowMaxAlpha * (1f - away * away)
-                                if (shadowAlpha > 0.001f) {
-                                    if (controller.exitDirection >= 0f) {
-                                        drawRect(
-                                            brush = Brush.horizontalGradient(
-                                                colors = listOf(Color.Transparent, scrimColor.copy(alpha = shadowAlpha)),
-                                                startX = -shadowWidthPx,
-                                                endX = 0f,
-                                            ),
-                                            topLeft = Offset(x = -shadowWidthPx, y = 0f),
-                                            size = Size(width = shadowWidthPx, height = size.height),
-                                        )
-                                    } else {
-                                        drawRect(
-                                            brush = Brush.horizontalGradient(
-                                                colors = listOf(scrimColor.copy(alpha = shadowAlpha), Color.Transparent),
-                                                startX = size.width,
-                                                endX = size.width + shadowWidthPx,
-                                            ),
-                                            topLeft = Offset(x = size.width, y = 0f),
-                                            size = Size(width = shadowWidthPx, height = size.height),
-                                        )
-                                    }
-                                }
+                                drawTransitionEdgeShadow(
+                                    scrimColor = scrimColor,
+                                    factor = p,
+                                    onStartEdge = controller.exitDirection >= 0f,
+                                )
                             }
                         }
                     }
                     .background(surfaceColor)
-                    .pointerInput(Unit) {},
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                event.changes.forEach { change ->
+                                    if (!change.isConsumed) change.consume()
+                                }
+                            }
+                        }
+                    },
             ) {
                 CompositionLocalProvider(LocalPredictiveOverlayBackController provides controller) {
                     overlayContent()
