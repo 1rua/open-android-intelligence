@@ -50,7 +50,8 @@ class AndroidAccessibilityScreenshotRuntime(
     internal suspend fun takeSomFrame(snapshot: ScreenSnapshot): SomFrame {
         val service = ScreenAccessibilityConnection.service ?: throw ControlRequestException("ACCESSIBILITY_SERVICE_UNAVAILABLE")
         if (!hasScreenshotCapability()) throw ControlRequestException("SCREEN_CAPTURE_UNSUPPORTED")
-        val excluded = targetWindowId != null && Build.VERSION.SDK_INT >= 34
+        // 新版 SoM 只允许指定窗口取帧，目标缺失时在调用系统前拒绝。
+        val excluded = Build.VERSION.SDK_INT >= 34
         val capturedBounds = if (excluded) snapshot.windows.singleOrNull { it.id == targetWindowId }?.bounds
             ?: throw ControlRequestException("SCREEN_WINDOW_UNAVAILABLE")
         else ScreenBounds(0, 0, snapshot.display.widthPixels, snapshot.display.heightPixels)

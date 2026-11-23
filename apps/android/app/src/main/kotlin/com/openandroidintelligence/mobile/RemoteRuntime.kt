@@ -858,7 +858,8 @@ class RemoteRuntime(
             if (agentConnection.value.busy) return@launch
             updateLayerStates(agentTransform = { it.copy(busy = true) })
             try {
-                val account = accountRuntime.account.value ?: accountRuntime.restore()
+                // 后台已发布的账号可能只启动了 Host，前台恢复需要让账号层补齐 Client。
+                val account = accountRuntime.restore()
                 if (account == null) {
                     updateLayerStates(agentTransform = { it.copy(account = null) })
                     return@launch

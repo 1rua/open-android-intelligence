@@ -53,6 +53,19 @@ class SomScreenshotApiRouteTest {
             assertEquals(if (android.os.Build.VERSION.SDK_INT >= 34) 1 else 0, windowCalls)
         } finally { ScreenAccessibilityConnection.disconnect(service) }
     }
+
+    @Test @Config(sdk = [34]) fun 精确目标未知时在系统取帧前拒绝截图() = runTest {
+        val service = Robolectric.buildService(ScreenAccessibilityService::class.java).create().get()
+        ScreenAccessibilityConnection.connect(service)
+        try {
+            val snapshot = ScreenSnapshot("revision", "hash", null, ScreenDisplay(100, 200, 0), null, null,
+                listOf(ScreenWindow(17, 1, 1, false, true, ScreenBounds(0, 0, 100, 200))), emptyList(), false)
+            val failure = runCatching { AndroidSomFrameSource(service).capture(snapshot) }.exceptionOrNull()
+            assertEquals(0, displayCalls)
+            assertEquals(0, windowCalls)
+            assertEquals("SCREEN_WINDOW_UNAVAILABLE", (failure as? ControlRequestException)?.code)
+        } finally { ScreenAccessibilityConnection.disconnect(service) }
+    }
     companion object {
         private var displayCalls = 0
         private var windowCalls = 0

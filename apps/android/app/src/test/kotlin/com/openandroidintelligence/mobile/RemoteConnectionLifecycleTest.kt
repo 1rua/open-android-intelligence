@@ -192,14 +192,15 @@ class RemoteConnectionLifecycleTest {
     @Test
     fun `后台待命初始化不触发通用恢复而UI准备后仍同步启动首帧恢复`() = runBlocking {
         val cachedAccount = RemoteActiveAccount(origin, accountId, 7)
-        val restoredAccount = cachedAccount.copy(epoch = 8)
+        val restoredAccount = cachedAccount
         val releaseRestore = CompletableDeferred<Unit>()
         val coldAccount = FakeAccountConnection().apply {
+            account.value = cachedAccount
             restorableAccount = cachedAccount
             restoreResult = restoredAccount
             restoreGate = releaseRestore
-            state.value = RemoteAccountConnectionState.SIGNED_OUT
-            hostState.value = RemoteHostConnectionState.STOPPED
+            state.value = RemoteAccountConnectionState.DISCONNECTED
+            hostState.value = RemoteHostConnectionState.ONLINE
         }
         val coldRoot = SupervisorJob()
         val coldScope = CoroutineScope(coldRoot + Dispatchers.Unconfined)

@@ -499,8 +499,6 @@ class ScreenSnapshotInvalidationTest {
             }
             return ScreenWindowCapture(windows, observedOverride ?: buildObservedWindows(states, targetPackage))
         }
-        override fun foregroundPackage(): String = targetPackage
-        override fun activeWindowId(): Int = TARGET_WINDOW_ID
         override fun nodeAction(expected: com.openandroidintelligence.control.ScreenNode, action: NativeNodeAction,
             text: String?, generation: Long, beforeDispatch: () -> Unit): Boolean = false
         override suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long,

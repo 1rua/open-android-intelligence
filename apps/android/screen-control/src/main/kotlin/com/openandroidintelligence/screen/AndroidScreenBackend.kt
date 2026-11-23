@@ -25,8 +25,6 @@ internal interface ScreenRuntime {
     fun generation(): Long
     fun display(): ScreenDisplay
     fun windows(): ScreenWindowCapture
-    fun foregroundPackage(): String?
-    fun activeWindowId(): Int?
     fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
     suspend fun gesture(points: List<Pair<Int, Int>>, durationMs: Long, generation: Long, beforeDispatch: () -> Unit, drag: Boolean = false): Boolean
     fun global(action: String, generation: Long, beforeDispatch: () -> Unit = {}): Boolean
@@ -54,7 +52,11 @@ class AndroidScreenBackend internal constructor(private val runtime: ScreenRunti
         val windows = windowCapture.windows
         try {
             if (windows.isEmpty()) throw ScreenOperationException("SCREEN_WINDOW_UNAVAILABLE")
-            val snapshot = reader.capture(windows, display, generation, runtime.foregroundPackage(), runtime.activeWindowId())
+            // 包名和窗口号取自同一活动业务窗。系统保留的动态窗口号也无法指明本次快照的目标。
+            val active = windows.singleOrNull { it.window.active }?.takeIf {
+                !it.packageName.isNullOrBlank() && it.window.id in 0 until Int.MAX_VALUE
+            }
+            val snapshot = reader.capture(windows, display, generation, active?.packageName, active?.window?.id)
             if (runtime.generation() != generation || runtime.display() != display) throw ScreenOperationException("SCREEN_CHANGED")
             ready()
             val observed = windowCapture.observed?.takeIf { it.matchesBusinessWindows(windows) }

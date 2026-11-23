@@ -57,7 +57,7 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
         val states = ArrayList<ScreenWindowState>()
         var metadataComplete = true
         try {
-            val windows = service.windows.orEmpty()
+            val windows = service.windows
             try {
                 for (window in windows) {
                     val root = try { window.root } catch (_: RuntimeException) {
@@ -97,7 +97,8 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
                 @Suppress("DEPRECATION")
                 windows.forEach { it.recycle() }
             }
-            if (result.isEmpty()) {
+            // 仅系统列表为空时读取活动根，避免把已过滤的浮层或不可读窗口重新引入业务树。
+            if (windows.isEmpty()) {
                 val root = service.rootInActiveWindow
                 if (root != null) {
                     try {
@@ -121,13 +122,6 @@ internal class AndroidAccessibilityRuntime(private val context: Context) : Scree
             result.forEach { it.root.close() }
             throw ScreenOperationException("SCREEN_READ_FAILED")
         }
-    }
-
-    override fun foregroundPackage(): String? = service().rootInActiveWindow?.let { root ->
-        try { root.packageName?.toString() } finally { recycle(root) }
-    }
-    override fun activeWindowId(): Int? = service().rootInActiveWindow?.let { root ->
-        try { root.windowId } finally { recycle(root) }
     }
 
     override fun nodeAction(expected: ScreenNode, action: NativeNodeAction, text: String?, generation: Long,
