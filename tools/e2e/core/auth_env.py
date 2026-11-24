@@ -8,7 +8,6 @@ import queue
 import shutil
 import subprocess
 import threading
-import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +15,7 @@ from typing import Any
 
 from .device_driver import (
     E2EDeviceError,
+    resolve_main_repo_root,
     resolve_repo_root,
     resolve_toolchains_root,
 )
@@ -62,30 +62,16 @@ def _discover_fallback_node_modules(repo_root: Path) -> list[Path]:
         repo_root / "node_modules",
     ]
     # 若当前位于 git worktree，同时检查主仓库根目录对应的 node_modules
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=3.0,
-            check=True,
+    main_root = resolve_main_repo_root(repo_root)
+    if main_root is not None:
+        candidates.extend(
+            [
+                main_root / "tools/remote-server/node_modules",
+                main_root / "tools/remote-interop/node_modules",
+                main_root / "integrations/oai-android-mcp/node_modules",
+                main_root / "node_modules",
+            ]
         )
-        common_raw = proc.stdout.strip()
-        if common_raw:
-            common_path = Path(common_raw)
-            if not common_path.is_absolute():
-                common_path = (repo_root / common_path).resolve()
-            main_root = common_path.resolve().parent
-            candidates.extend(
-                [
-                    main_root / "tools/remote-server/node_modules",
-                    main_root / "tools/remote-interop/node_modules",
-                    main_root / "integrations/oai-android-mcp/node_modules",
-                    main_root / "node_modules",
-                ]
-            )
-    except (OSError, subprocess.SubprocessError):
-        pass
 
     # 若子目录尚未跑 npm ci，探测全局 npm root 或已安装 CLI 伴随的依赖目录（不写入任何锁定目录）
     npm_bin = shutil.which("npm")
@@ -129,14 +115,15 @@ def _discover_fallback_node_modules(repo_root: Path) -> list[Path]:
 def _build_esm_fallback_import_arg() -> str:
     """构造内联 Node ESM 解析钩子 `--import` 参数，仅在子目录缺少 node_modules 时辅助查找。"""
     hook_src = (
+        'import path from "node:path";'
         'import { pathToFileURL } from "node:url";'
-        'const dirs = (process.env.OAI_NODE_FALLBACK_MODULES || "").split(":").filter(Boolean);'
+        'const dirs = (process.env.OAI_NODE_FALLBACK_MODULES || "").split(path.delimiter).filter(Boolean);'
         "export async function resolve(specifier, context, nextResolve) {"
         "  try { return await nextResolve(specifier, context); } catch (err) {"
         '    if (!specifier.startsWith(".") && !specifier.startsWith("/") && '
         '!specifier.startsWith("node:") && !specifier.startsWith("data:")) {'
         "      for (const dir of dirs) {"
-        '        try { return await nextResolve(specifier, { ...context, parentURL: pathToFileURL(dir + "/__probe__.mjs").href }); } catch {}'
+        '        try { return await nextResolve(specifier, { ...context, parentURL: pathToFileURL(path.join(dir, "__probe__.mjs")).href }); } catch {}'
         "      }"
         "    }"
         "    throw err;"
@@ -220,14 +207,27 @@ class AuthEnvironmentManager:
         self.endpoint: IsolatedAuthEndpoint | None = None
         self._fixed_server_proc: subprocess.Popen[str] | None = None
         self._sim_host_proc: subprocess.Popen[str] | None = None
+        self._emulator_proc: Any = None
         self._reversed_port: int | None = None
-        self._temp_dirs: list[Path] = []
 
     def __enter__(self) -> IsolatedAuthEndpoint:
         return self.start()
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
+
+    def _has_online_device(self) -> bool:
+        """检查当前驱动对应设备是否在线。"""
+        if self.driver is None or not hasattr(self.driver, "list_connected_devices"):
+            return False
+        try:
+            devices = self.driver.list_connected_devices()
+        except Exception:
+            return False
+        serial = getattr(self.driver, "serial", None)
+        if serial:
+            return serial in devices
+        return len(devices) > 0
 
     def _has_avd_snapshot(self) -> bool:
         """探测当前在线模拟器是否具备目标黄金快照。"""
@@ -242,6 +242,26 @@ class AuthEnvironmentManager:
             if self.snapshot_name in tokens:
                 return True
         return False
+
+    def _cold_start_avd_snapshot(self) -> None:
+        """当尚无在线模拟器且显式配置 `avd_name` 时，无头冷启 AVD 快照。"""
+        if (
+            self.driver is None
+            or not self.avd_name
+            or not hasattr(self.driver, "start_emulator_snapshot")
+        ):
+            raise E2EAuthEnvironmentError("未配置可冷启的 AVD 或驱动不支持快照冷启")
+        try:
+            self._emulator_proc = self.driver.start_emulator_snapshot(
+                self.avd_name,
+                self.snapshot_name,
+                timeout=max(self.startup_timeout, 60.0),
+            )
+        except E2EDeviceError as exc:
+            self._emulator_proc = None
+            raise E2EAuthEnvironmentError(
+                f"冷启 AVD 快照 {self.avd_name!r}/{self.snapshot_name!r} 失败: {exc}"
+            ) from exc
 
     def _load_avd_snapshot(self) -> None:
         """请求运行中模拟器回滚加载黄金快照，确保只读免密起始状态。"""
@@ -273,7 +293,9 @@ class AuthEnvironmentManager:
         fallback_dirs = _discover_fallback_node_modules(self.repo_root)
         env = os.environ.copy()
         if fallback_dirs:
-            env["OAI_NODE_FALLBACK_MODULES"] = ":".join(str(p) for p in fallback_dirs)
+            env["OAI_NODE_FALLBACK_MODULES"] = os.pathsep.join(
+                str(p) for p in fallback_dirs
+            )
 
         server_nm = self.repo_root / "tools/remote-server/node_modules"
         server_cmd = [node_bin, "--experimental-vm-modules"]
@@ -363,7 +385,12 @@ class AuthEnvironmentManager:
             return self.endpoint
 
         if self.mode == "snapshot":
-            self._load_avd_snapshot()
+            if self.driver is None:
+                raise E2EAuthEnvironmentError("snapshot 模式要求传入有效的设备驱动实例")
+            if not self._has_online_device() and self.avd_name:
+                self._cold_start_avd_snapshot()
+            else:
+                self._load_avd_snapshot()
             self.endpoint = IsolatedAuthEndpoint(
                 mode="snapshot",
                 origin="",
@@ -374,9 +401,27 @@ class AuthEnvironmentManager:
             return self.endpoint
 
         if self.mode == "auto":
-            if self._has_avd_snapshot():
+            if self._has_online_device() and self._has_avd_snapshot():
                 try:
                     self._load_avd_snapshot()
+                    self.endpoint = IsolatedAuthEndpoint(
+                        mode="snapshot",
+                        origin="",
+                        fixture_account="",
+                        fixture_token="",
+                        host_name=self.host_name,
+                    )
+                    return self.endpoint
+                except E2EAuthEnvironmentError:
+                    pass
+            elif (
+                not self._has_online_device()
+                and self.avd_name
+                and self.driver is not None
+                and hasattr(self.driver, "start_emulator_snapshot")
+            ):
+                try:
+                    self._cold_start_avd_snapshot()
                     self.endpoint = IsolatedAuthEndpoint(
                         mode="snapshot",
                         origin="",
@@ -421,17 +466,8 @@ class AuthEnvironmentManager:
                 except OSError:
                     pass
 
-    def _move_to_trash(self, path: Path) -> None:
-        """将临时目录安全移至仓库 `.worktrees/trash/`，严禁使用永久删除命令。"""
-        if not path.exists():
-            return
-        trash_root = self.repo_root / ".worktrees" / "trash"
-        trash_root.mkdir(parents=True, exist_ok=True)
-        dest = trash_root / f"e2e-{path.name}-{int(time.time() * 1000)}"
-        shutil.move(str(path), str(dest))
-
     def close(self) -> None:
-        """安全关闭全部子进程、移除端口映射并转移临时目录至 `.worktrees/trash/`。"""
+        """安全关闭全部子进程、移除端口映射，并关闭由本管理器冷启的模拟器。"""
         if self._reversed_port is not None and self.driver is not None:
             try:
                 self.driver.remove_reverse_tcp(self._reversed_port)
@@ -445,10 +481,15 @@ class AuthEnvironmentManager:
         self._shutdown_process(self._fixed_server_proc)
         self._fixed_server_proc = None
 
-        for tmp_dir in self._temp_dirs:
+        if (
+            self._emulator_proc is not None
+            and self.driver is not None
+            and hasattr(self.driver, "stop_emulator")
+        ):
             try:
-                self._move_to_trash(tmp_dir)
+                self.driver.stop_emulator(self._emulator_proc)
             except Exception:
                 pass
-        self._temp_dirs.clear()
+            self._emulator_proc = None
+
         self.endpoint = None

@@ -345,19 +345,53 @@ def _trim_middle_screenshots(steps: list[StepEvidence]) -> list[StepEvidence]:
     return trimmed
 
 
+def _redact_text_secrets(text: str, secrets: Sequence[str]) -> str:
+    """将文本中出现的已登记敏感凭据统一替换为 `******`。"""
+    if not text or not secrets:
+        return text
+    out = text
+    for secret in sorted((s for s in secrets if s), key=len, reverse=True):
+        out = out.replace(secret, MASKED_SECRET)
+    return out
+
+
+def _redact_steps(
+    steps: Sequence[StepEvidence], secrets: Sequence[str]
+) -> list[StepEvidence]:
+    """对步骤副本的文本诊断字段执行二次密文擦除，防止任意路径泄漏凭据。"""
+    step_list = list(steps)
+    if not any(secrets):
+        return step_list
+    cleaned: list[StepEvidence] = []
+    for step in step_list:
+        clone = copy.copy(step)
+        clone.name = _redact_text_secrets(clone.name, secrets)
+        clone.target_desc = _redact_text_secrets(clone.target_desc, secrets)
+        if clone.input_value is not None:
+            clone.input_value = _redact_text_secrets(clone.input_value, secrets)
+        clone.detail = _redact_text_secrets(clone.detail, secrets)
+        clone.error_summary = _redact_text_secrets(clone.error_summary, secrets)
+        clone.traceback_text = _redact_text_secrets(clone.traceback_text, secrets)
+        clone.pruned_layout = _redact_text_secrets(clone.pruned_layout, secrets)
+        cleaned.append(clone)
+    return cleaned
+
+
 def write_html_report(
     report_dir: Path | str,
     scenario_name: str,
     passed: bool,
     steps: Sequence[StepEvidence],
     metadata: dict[str, Any] | None = None,
+    secrets: Sequence[str] = (),
 ) -> Path:
     """写入自包含 `report.html`（确保 <= 15MB）与 `report.json`，返回 `report.html` 路径。"""
     out_dir = Path(report_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_meta = _redact_metadata(metadata, [])
-    step_list = list(steps)
+    secret_list = tuple(s for s in secrets if s)
+    safe_meta = _redact_metadata(metadata, secret_list)
+    step_list = _redact_steps(steps, secret_list)
 
     json_payload = {
         "scenario": scenario_name,

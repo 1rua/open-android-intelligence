@@ -67,6 +67,30 @@ class SmartWait:
             return
         time.sleep(min(self.poll_interval, remaining))
 
+    def _poll_until(
+        self,
+        description: str,
+        probe_fn: Callable[[list[SemanticNode]], tuple[bool, Any]],
+        timeout: float | None = None,
+    ) -> Any:
+        """统一语义轮询循环：周期采样语义树直到 probe_fn 就绪，超时抛出诊断异常。"""
+        effective_timeout = self.default_timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + max(0.0, effective_timeout)
+        last_roots: list[SemanticNode] = []
+
+        while True:
+            last_roots = list(self.driver.dump_semantics())
+            ready, value = probe_fn(last_roots)
+            if ready:
+                return value
+            if time.monotonic() >= deadline:
+                raise SmartWaitTimeoutError(
+                    locator_desc=description,
+                    timeout=effective_timeout,
+                    last_layout_summary=format_pruned_summary(last_roots),
+                )
+            self._sleep_step(deadline)
+
     def wait_for(
         self,
         locator: BySemantics,
@@ -74,29 +98,21 @@ class SmartWait:
         require_stable: bool = True,
     ) -> SemanticNode:
         """等待指定语义节点出现；启用防抖时需连续两次中心位移 <= stability_px 才返回。"""
-        effective_timeout = self.default_timeout if timeout is None else float(timeout)
-        deadline = time.monotonic() + max(0.0, effective_timeout)
         prev_center: tuple[int, int] | None = None
-        last_roots: list[SemanticNode] = []
 
-        while True:
-            last_roots = list(self.driver.dump_semantics())
-            matches = find_nodes(last_roots, locator)
+        def _probe(roots: list[SemanticNode]) -> tuple[bool, SemanticNode | None]:
+            nonlocal prev_center
+            matches = find_nodes(roots, locator)
             if matches:
                 node = matches[0]
                 if not require_stable or self._is_stable(prev_center, node):
-                    return node
+                    return True, node
                 prev_center = node.center
             else:
                 prev_center = None
+            return False, None
 
-            if time.monotonic() >= deadline:
-                raise SmartWaitTimeoutError(
-                    locator_desc=locator.describe(),
-                    timeout=effective_timeout,
-                    last_layout_summary=format_pruned_summary(last_roots),
-                )
-            self._sleep_step(deadline)
+        return self._poll_until(locator.describe(), _probe, timeout)
 
     def wait_for_any(
         self,
@@ -108,53 +124,36 @@ class SmartWait:
         if not locators:
             raise ValueError("locators 不能为空")
 
-        effective_timeout = self.default_timeout if timeout is None else float(timeout)
-        deadline = time.monotonic() + max(0.0, effective_timeout)
         prev_centers: dict[int, tuple[int, int]] = {}
-        last_roots: list[SemanticNode] = []
         desc = " | ".join(loc.describe() for loc in locators)
 
-        while True:
-            last_roots = list(self.driver.dump_semantics())
+        def _probe(
+            roots: list[SemanticNode],
+        ) -> tuple[bool, tuple[BySemantics, SemanticNode] | None]:
             for idx, locator in enumerate(locators):
-                matches = find_nodes(last_roots, locator)
+                matches = find_nodes(roots, locator)
                 if matches:
                     node = matches[0]
                     if not require_stable or self._is_stable(
                         prev_centers.get(idx), node
                     ):
-                        return locator, node
+                        return True, (locator, node)
                     prev_centers[idx] = node.center
                 else:
                     prev_centers.pop(idx, None)
+            return False, None
 
-            if time.monotonic() >= deadline:
-                raise SmartWaitTimeoutError(
-                    locator_desc=desc,
-                    timeout=effective_timeout,
-                    last_layout_summary=format_pruned_summary(last_roots),
-                )
-            self._sleep_step(deadline)
+        return self._poll_until(desc, _probe, timeout)
 
     def wait_until_gone(
         self, locator: BySemantics, timeout: float | None = None
     ) -> None:
         """等待指定语义节点从当前界面树完全消失。"""
-        effective_timeout = self.default_timeout if timeout is None else float(timeout)
-        deadline = time.monotonic() + max(0.0, effective_timeout)
-        last_roots: list[SemanticNode] = []
 
-        while True:
-            last_roots = list(self.driver.dump_semantics())
-            if not find_nodes(last_roots, locator):
-                return
-            if time.monotonic() >= deadline:
-                raise SmartWaitTimeoutError(
-                    locator_desc=f"消失: {locator.describe()}",
-                    timeout=effective_timeout,
-                    last_layout_summary=format_pruned_summary(last_roots),
-                )
-            self._sleep_step(deadline)
+        def _probe(roots: list[SemanticNode]) -> tuple[bool, None]:
+            return (not find_nodes(roots, locator)), None
+
+        self._poll_until(f"消失: {locator.describe()}", _probe, timeout)
 
     def wait_for_predicate(
         self,
@@ -163,19 +162,11 @@ class SmartWait:
         timeout: float | None = None,
     ) -> T:
         """等待自定义谓词基于最新语义树返回真值/非空结果。"""
-        effective_timeout = self.default_timeout if timeout is None else float(timeout)
-        deadline = time.monotonic() + max(0.0, effective_timeout)
-        last_roots: list[SemanticNode] = []
 
-        while True:
-            last_roots = list(self.driver.dump_semantics())
-            result = predicate(last_roots)
+        def _probe(roots: list[SemanticNode]) -> tuple[bool, T | None]:
+            result = predicate(roots)
             if result is not None and result is not False:
-                return result
-            if time.monotonic() >= deadline:
-                raise SmartWaitTimeoutError(
-                    locator_desc=description,
-                    timeout=effective_timeout,
-                    last_layout_summary=format_pruned_summary(last_roots),
-                )
-            self._sleep_step(deadline)
+                return True, result
+            return False, None
+
+        return self._poll_until(description, _probe, timeout)

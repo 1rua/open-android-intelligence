@@ -252,6 +252,11 @@ class EvidenceRecorder:
         self.steps: list[StepEvidence] = []
         self._secrets: list[str] = []
 
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        """返回已登记敏感凭据的只读元组，供外部报告统一脱敏。"""
+        return tuple(self._secrets)
+
     def add_secret(self, value: str) -> None:
         """登记需在报告和日志中强制替换为 `******` 的敏感字符串。"""
         if value and len(value) >= 3 and value not in self._secrets:

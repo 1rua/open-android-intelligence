@@ -14,6 +14,7 @@ from .device_driver import (
     DEFAULT_APP_PACKAGE,
     AdbAndroidDriver,
     E2EDeviceError,
+    resolve_main_repo_root,
     resolve_repo_root,
     resolve_toolchains_root,
 )
@@ -51,6 +52,7 @@ __all__ = [
     "format_pruned_summary",
     "prune_android_cli_json",
     "prune_layout_xml",
+    "resolve_main_repo_root",
     "resolve_repo_root",
     "resolve_toolchains_root",
     "strip_resource_id_prefix",

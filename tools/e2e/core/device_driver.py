@@ -38,6 +38,28 @@ def resolve_repo_root() -> Path:
     return current.parents[3]
 
 
+def resolve_main_repo_root(repo_root: Path | None = None) -> Path | None:
+    """通过 `git rev-parse --git-common-dir` 推导主仓库根目录（适配 git worktree）。"""
+    root = (repo_root or resolve_repo_root()).resolve()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=True,
+        )
+        common_raw = proc.stdout.strip()
+        if not common_raw:
+            return None
+        common_path = Path(common_raw)
+        if not common_path.is_absolute():
+            common_path = (root / common_path).resolve()
+        return common_path.resolve().parent
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def resolve_toolchains_root(repo_root: Path | None = None) -> Path:
     """按环境变量 -> 当前工作区 -> 主仓库共有目录顺序解析 `.toolchains` 根目录。"""
     root = (repo_root or resolve_repo_root()).resolve()
@@ -53,24 +75,11 @@ def resolve_toolchains_root(repo_root: Path | None = None) -> Path:
     if local_tc.is_dir():
         return local_tc
 
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=True,
-        )
-        common_raw = proc.stdout.strip()
-        if common_raw:
-            common_path = Path(common_raw)
-            if not common_path.is_absolute():
-                common_path = (root / common_path).resolve()
-            main_tc = common_path.resolve().parent / ".toolchains"
-            if main_tc.is_dir():
-                return main_tc
-    except (OSError, subprocess.SubprocessError):
-        pass
+    main_root = resolve_main_repo_root(root)
+    if main_root is not None:
+        main_tc = main_root / ".toolchains"
+        if main_tc.is_dir():
+            return main_tc
 
     return local_tc
 
@@ -97,6 +106,7 @@ class AdbAndroidDriver:
         self.serial: str | None = serial
         self._adb_bin = self._locate_adb()
         self._android_cli = shutil.which("android")
+        self._launched_emulator_proc: subprocess.Popen[Any] | None = None
 
     def _locate_adb(self) -> str:
         """优先定位项目共享工具链中的 adb，再回退到系统 PATH。"""
@@ -107,6 +117,19 @@ class AdbAndroidDriver:
         if path_adb:
             return path_adb
         return "adb"
+
+    def _locate_emulator(self) -> str:
+        """定位 AVD emulator 可执行文件（优先 `.toolchains/android-sdk/emulator/emulator`）。"""
+        toolchains = resolve_toolchains_root(self.repo_root)
+        sdk_emu = toolchains / "android-sdk" / "emulator" / "emulator"
+        if sdk_emu.is_file() and os.access(sdk_emu, os.X_OK):
+            return str(sdk_emu)
+        path_emu = shutil.which("emulator")
+        if path_emu:
+            return path_emu
+        raise E2EDeviceError(
+            f"未找到 Android emulator 可执行文件（已检查 {sdk_emu} 与 PATH）"
+        )
 
     def _adb_base_cmd(self, with_serial: bool = True) -> list[str]:
         """构造带可选 `-s <serial>` 的基础 adb 命令前缀。"""
@@ -682,6 +705,103 @@ class AdbAndroidDriver:
             self._run(
                 ["reverse", "--remove", f"tcp:{int(remote_port)}"], check=False
             )
+
+    @staticmethod
+    def _terminate_process(
+        proc: subprocess.Popen[Any] | None, timeout: float = 10.0
+    ) -> None:
+        """温和等待并在超时后终止后台模拟器进程。"""
+        if proc is None:
+            return
+        try:
+            proc.wait(timeout=timeout)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=3.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2.0)
+
+    def start_emulator_snapshot(
+        self,
+        avd_name: str,
+        snapshot_name: str,
+        *,
+        timeout: float = 60.0,
+    ) -> subprocess.Popen[Any]:
+        """无头冷启指定 AVD 并加载黄金快照，随后等待设备通过 ADB 上线。"""
+        if not avd_name or not snapshot_name:
+            raise E2EDeviceError("avd_name 与 snapshot_name 均不能为空")
+
+        emu_bin = self._locate_emulator()
+        toolchains = resolve_toolchains_root(self.repo_root)
+        env = os.environ.copy()
+        avd_home = toolchains / "avd-home" / ".android" / "avd"
+        if "ANDROID_AVD_HOME" not in env and avd_home.is_dir():
+            env["ANDROID_AVD_HOME"] = str(avd_home)
+        android_sdk = toolchains / "android-sdk"
+        if "ANDROID_SDK_ROOT" not in env and android_sdk.is_dir():
+            env["ANDROID_SDK_ROOT"] = str(android_sdk)
+
+        cmd = [
+            emu_bin,
+            f"@{avd_name}",
+            "-snapshot",
+            snapshot_name,
+            "-no-snapshot-save",
+            "-no-window",
+            "-no-audio",
+            "-no-boot-anim",
+            "-no-metrics",
+            "-gpu",
+            "swiftshader_indirect",
+        ]
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(self.repo_root),
+                env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise E2EDeviceError(f"无法启动模拟器 {' '.join(cmd)}: {exc}") from exc
+
+        self._launched_emulator_proc = proc
+        if proc.poll() is not None:
+            self._launched_emulator_proc = None
+            raise E2EDeviceError(
+                f"模拟器进程冷启后提前退出 (code={proc.returncode}): {' '.join(cmd)}"
+            )
+        try:
+            self.wait_for_device(timeout=timeout)
+        except Exception:
+            self._terminate_process(proc)
+            if self._launched_emulator_proc is proc:
+                self._launched_emulator_proc = None
+            raise
+        return proc
+
+    def stop_emulator(
+        self,
+        proc: subprocess.Popen[Any] | None = None,
+        *,
+        timeout: float = 15.0,
+    ) -> None:
+        """通过 `adb emu kill` 关闭运行中模拟器并收尾等待进程退出。"""
+        target_proc = proc or self._launched_emulator_proc
+        try:
+            if self.serial or self.list_connected_devices():
+                self.emu_command("kill", timeout=min(self.command_timeout, 8.0))
+        except E2EDeviceError:
+            pass
+        self._terminate_process(target_proc, timeout=timeout)
+        if target_proc is self._launched_emulator_proc:
+            self._launched_emulator_proc = None
 
     def emu_command(self, *args: str, timeout: float | None = None) -> str:
         """向模拟器控制台发送 `adb emu ...` 指令（如快照列举或加载）。"""

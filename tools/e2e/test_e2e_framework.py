@@ -39,6 +39,7 @@ from tools.e2e.core import (
     format_pruned_summary,
     prune_android_cli_json,
     prune_layout_xml,
+    resolve_main_repo_root,
     resolve_repo_root,
     resolve_toolchains_root,
     strip_resource_id_prefix,
@@ -554,7 +555,6 @@ def test_reporter_failure_highlight_and_15mb_guard(tmp_path: Path) -> None:
     assert "******" in html_content
 
     # 再构造巨型噪点图（超过 15MB 原始 Base64 负荷），验证 15MB 压缩守卫自动生效
-    huge_rec = EvidenceRecorder(max_width=1440, webp_quality=95)
     # 生成多张大图，确保未压缩前 > 15MB
     fake_steps = []
     for i in range(12):
@@ -625,7 +625,9 @@ def test_auth_env_local_sim_end_to_end_protocol_and_clean_exit() -> None:
         fallback_dirs = _discover_fallback_node_modules(repo_root)
         env = os.environ.copy()
         if fallback_dirs:
-            env["OAI_NODE_FALLBACK_MODULES"] = ":".join(str(p) for p in fallback_dirs)
+            env["OAI_NODE_FALLBACK_MODULES"] = os.pathsep.join(
+                str(p) for p in fallback_dirs
+            )
 
         probe_script = r"""
 import assert from 'node:assert/strict';
@@ -634,7 +636,7 @@ import {
   loadRuntimeDependencies,
   toBase64Url,
   fromBase64Url,
-} from './tools/e2e/core/sim_remote_host.mjs';
+} from './tools/e2e/core/sim_remote_crypto.mjs';
 
 const [origin, account, password, hostId] = process.argv.slice(1);
 const deps = await loadRuntimeDependencies();
@@ -997,3 +999,194 @@ def test_snapshot_load_waits_for_adbd_reconnect() -> None:
     with patch("subprocess.run", side_effect=always_offline_run):
         with pytest.raises(E2EDeviceError, match="等待设备上线超时"):
             driver.wait_for_device(timeout=0.05, poll_interval=0.01)
+
+
+def test_cold_boot_emulator_snapshot_and_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """验证未运行模拟器且传入 avd_name 时支持冷启黄金快照，并在 close() 安全停机。"""
+    repo_root = resolve_repo_root()
+    fake_tc = tmp_path / "toolchains"
+    fake_emu = fake_tc / "android-sdk" / "emulator" / "emulator"
+    fake_emu.parent.mkdir(parents=True)
+    fake_emu.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_emu.chmod(0o755)
+    (fake_tc / "avd-home" / ".android" / "avd").mkdir(parents=True)
+    monkeypatch.setenv("OAI_TOOLCHAINS_ROOT", str(fake_tc))
+
+    driver = AdbAndroidDriver(serial=None, repo_root=repo_root, command_timeout=3.0)
+    booted = False
+    killed = False
+    popen_calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class _FakeEmulatorProc:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.waited = False
+
+        def poll(self) -> int | None:
+            return None if self.alive else 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waited = True
+            self.alive = False
+            return 0
+
+        def terminate(self) -> None:
+            self.alive = False
+
+        def kill(self) -> None:
+            self.alive = False
+
+    fake_proc = _FakeEmulatorProc()
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> _FakeEmulatorProc:
+        nonlocal booted
+        popen_calls.append((cmd, kwargs))
+        booted = True
+        return fake_proc
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        nonlocal killed
+        if "devices" in cmd:
+            if booted and not killed:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout="List of devices attached\nemulator-5554\tdevice\n", stderr=""
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="List of devices attached\n", stderr=""
+            )
+        if "getprop" in cmd and "sys.boot_completed" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+        if "emu" in cmd and "kill" in cmd:
+            killed = True
+            fake_proc.alive = False
+            return subprocess.CompletedProcess(cmd, 0, stdout="OK\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    mgr = AuthEnvironmentManager(
+        mode="snapshot",
+        driver=driver,
+        repo_root=repo_root,
+        snapshot_name="oai_authenticated",
+        avd_name="medium_phone",
+        startup_timeout=5.0,
+    )
+    with patch("subprocess.Popen", side_effect=fake_popen), patch(
+        "subprocess.run", side_effect=fake_run
+    ):
+        endpoint = mgr.start()
+        assert endpoint.mode == "snapshot"
+        assert driver.serial == "emulator-5554"
+        assert mgr._emulator_proc is fake_proc
+        mgr.close()
+
+    assert len(popen_calls) == 1
+    emu_cmd, popen_kwargs = popen_calls[0]
+    assert emu_cmd == [
+        str(fake_emu),
+        "@medium_phone",
+        "-snapshot",
+        "oai_authenticated",
+        "-no-snapshot-save",
+        "-no-window",
+        "-no-audio",
+        "-no-boot-anim",
+        "-no-metrics",
+        "-gpu",
+        "swiftshader_indirect",
+    ]
+    assert popen_kwargs["env"]["ANDROID_AVD_HOME"] == str(
+        fake_tc / "avd-home" / ".android" / "avd"
+    )
+    assert killed is True
+    assert fake_proc.waited is True
+
+    trash_dir = repo_root / ".worktrees" / "trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(fake_tc), str(trash_dir / f"ut-tc-{int(time.time() * 1000)}"))
+
+
+def test_report_secrets_redaction_and_os_pathsep_resolution(tmp_path: Path) -> None:
+    """验证 EvidenceRecorder.secrets -> write_html_report 全链路脱敏与 os.pathsep 路径解析。"""
+    repo_root = resolve_repo_root()
+    main_root = resolve_main_repo_root(repo_root)
+    assert main_root is not None and main_root.is_dir()
+
+    secret_val = "fixture-secret-value-98765"
+    rec = EvidenceRecorder()
+    png = _make_png_bytes(400, 600)
+    rec.record_action(
+        "输入隔离秘钥",
+        before_png=png,
+        after_png=png,
+        target=_btn("login-token", 200, 300),
+        input_value=secret_val,
+        secret=True,
+    )
+    assert rec.secrets == (secret_val,)
+
+    report_dir = tmp_path / "secret_report"
+    html_path = write_html_report(
+        report_dir,
+        "secret_redaction_check",
+        passed=True,
+        steps=rec.steps,
+        metadata={"note": f"echoed {secret_val}", "extra": ["ok", secret_val]},
+        secrets=rec.secrets,
+    )
+    html_text = html_path.read_text(encoding="utf-8")
+    json_text = (report_dir / "report.json").read_text(encoding="utf-8")
+    assert secret_val not in html_text
+    assert secret_val not in json_text
+    assert "******" in html_text
+    assert "******" in json_text
+
+    # 验证 ESM hook 与 sim_remote_crypto.mjs 均使用跨平台 path.delimiter / os.pathsep
+    from tools.e2e.core.auth_env import _build_esm_fallback_import_arg, _resolve_node_binary
+    import urllib.parse
+
+    decoded_hook = urllib.parse.unquote(_build_esm_fallback_import_arg())
+    assert "path.delimiter" in decoded_hook
+    assert "path.join" in decoded_hook
+
+    extra_nm_a = tmp_path / "nm_a"
+    extra_nm_b = tmp_path / "nm_b"
+    extra_nm_a.mkdir()
+    extra_nm_b.mkdir()
+    env = os.environ.copy()
+    env["OAI_NODE_FALLBACK_MODULES"] = os.pathsep.join([str(extra_nm_a), str(extra_nm_b)])
+    node_bin = _resolve_node_binary(repo_root)
+    proc = subprocess.run(
+        [
+            node_bin,
+            "--input-type=module",
+            "-e",
+            (
+                "import assert from 'node:assert/strict';"
+                "import { collectNodeModulesDirs } from './tools/e2e/core/sim_remote_crypto.mjs';"
+                "const [a, b] = process.argv.slice(1);"
+                "const dirs = collectNodeModulesDirs();"
+                "assert.ok(dirs.includes(a) && dirs.includes(b));"
+                "console.log('PATHSEP_OK');"
+            ),
+            str(extra_nm_a.resolve()),
+            str(extra_nm_b.resolve()),
+        ],
+        cwd=str(repo_root),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert "PATHSEP_OK" in proc.stdout
+
+    trash_dir = repo_root / ".worktrees" / "trash"
+    trash_dir.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(report_dir), str(trash_dir / f"ut-secret-report-{int(time.time() * 1000)}"))
+    shutil.move(str(extra_nm_a), str(trash_dir / f"ut-nm-a-{int(time.time() * 1000)}"))
+    shutil.move(str(extra_nm_b), str(trash_dir / f"ut-nm-b-{int(time.time() * 1000)}"))
