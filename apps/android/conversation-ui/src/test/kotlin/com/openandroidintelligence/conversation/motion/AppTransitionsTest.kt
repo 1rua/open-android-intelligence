@@ -199,14 +199,11 @@ class AppTransitionsTest {
         assertEquals("navEnter 前景不得额外缩放", frame.fullWidthPx, frame.enteringWidthPx, 1f)
 
         // 背景 navExit：左侧 28% 视差 + 0.96f 纵深缩放
-        assertTrue(
-            "navExit 应向左视差位移且不超过 ParallaxOffsetFraction: x=${frame.exitingX}, width=${frame.fullWidthPx}",
-            frame.exitingX < -1f && frame.exitingX >= -frame.fullWidthPx * (AppTransitions.ParallaxOffsetFraction + 0.02f),
-        )
-        assertTrue(
-            "navExit 底层背景应包含纵深缩放: actualWidth=${frame.exitingWidthPx}, full=${frame.fullWidthPx}",
-            frame.exitingWidthPx < frame.fullWidthPx - 1f &&
-                frame.exitingWidthPx >= frame.fullWidthPx * AppTransitions.BackgroundDepthScale - 1f,
+        assertBackgroundParallaxAndDepthScale(
+            x = frame.exitingX,
+            actualWidthPx = frame.exitingWidthPx,
+            fullWidthPx = frame.fullWidthPx,
+            label = "navExit",
         )
 
         // 100% 不透明：暴露出的前景与背景像素均不得透出红色底板
@@ -225,14 +222,11 @@ class AppTransitionsTest {
         )
 
         // 底层背景 navPopEnter：从 -28% 视差与 0.96f 纵深缩放平滑复原
-        assertTrue(
-            "navPopEnter 应从左侧视差位滑回: x=${frame.enteringX}, width=${frame.fullWidthPx}",
-            frame.enteringX < -1f && frame.enteringX >= -frame.fullWidthPx * (AppTransitions.ParallaxOffsetFraction + 0.02f),
-        )
-        assertTrue(
-            "navPopEnter 底层背景应包含纵深缩放复原: actualWidth=${frame.enteringWidthPx}, full=${frame.fullWidthPx}",
-            frame.enteringWidthPx < frame.fullWidthPx - 1f &&
-                frame.enteringWidthPx >= frame.fullWidthPx * AppTransitions.BackgroundDepthScale - 1f,
+        assertBackgroundParallaxAndDepthScale(
+            x = frame.enteringX,
+            actualWidthPx = frame.enteringWidthPx,
+            fullWidthPx = frame.fullWidthPx,
+            label = "navPopEnter",
         )
 
         // 前景 navPopExit：向右全速不缩放滑出
@@ -486,9 +480,7 @@ class AppTransitionsTest {
             val enteringSampleX = if (targetZIndex < 0f && exitingSpan != null && exitingSpan.first > 4f) {
                 (exitingSpan.first / 2f).roundToInt()
             } else {
-                val visibleLeft = enteringLeft.coerceAtLeast(0f)
-                val visibleRight = enteringRight.coerceAtMost(fullWidthPx)
-                ((visibleLeft + visibleRight) / 2f).roundToInt()
+                visibleMidpointX(enteringLeft, enteringRight, fullWidthPx)
             }.coerceIn(0, pixelMap.width - 1)
 
             val exitingSampleX = if (exitingSpan != null) {
@@ -503,12 +495,9 @@ class AppTransitionsTest {
                     enteringRight in exitingLeft..(exitingRight.coerceAtMost(fullWidthPx) - 4f)
                 ) {
                     // 在未被另一页覆盖的露空区域采样，避免软件画布绘制 GraphicsLayer 时依赖绘制顺序
-                    val exposedRight = exitingRight.coerceAtMost(fullWidthPx)
-                    ((enteringRight + exposedRight) / 2f).roundToInt()
+                    visibleMidpointX(enteringRight, exitingRight, fullWidthPx)
                 } else {
-                    val visibleLeft = exitingLeft.coerceAtLeast(0f)
-                    val visibleRight = exitingRight.coerceAtMost(fullWidthPx)
-                    ((visibleLeft + visibleRight) / 2f).roundToInt()
+                    visibleMidpointX(exitingLeft, exitingRight, fullWidthPx)
                 }
             } else {
                 (pixelMap.width / 2)
@@ -525,11 +514,34 @@ class AppTransitionsTest {
             )
         }
 
+        private fun visibleMidpointX(left: Float, right: Float, fullWidthPx: Float): Int {
+            val visibleLeft = left.coerceAtLeast(0f)
+            val visibleRight = right.coerceAtMost(fullWidthPx)
+            return ((visibleLeft + visibleRight) / 2f).roundToInt()
+        }
+
         private fun LayoutCoordinates.unclippedHorizontalSpan(hostLeft: Float): Pair<Float, Float> {
             val left = localToRoot(Offset.Zero).x - hostLeft
             val right = localToRoot(Offset(size.width.toFloat(), 0f)).x - hostLeft
             return left to right
         }
+    }
+
+    private fun assertBackgroundParallaxAndDepthScale(
+        x: Float,
+        actualWidthPx: Float,
+        fullWidthPx: Float,
+        label: String,
+    ) {
+        assertTrue(
+            "$label 底层背景应保留不超过 ParallaxOffsetFraction 的左移视差: x=$x, width=$fullWidthPx",
+            x < -1f && x >= -fullWidthPx * (AppTransitions.ParallaxOffsetFraction + 0.02f),
+        )
+        assertTrue(
+            "$label 底层背景应包含纵深缩放: actualWidth=$actualWidthPx, full=$fullWidthPx",
+            actualWidthPx < fullWidthPx - 1f &&
+                actualWidthPx >= fullWidthPx * AppTransitions.BackgroundDepthScale - 1f,
+        )
     }
 
     private fun assertSolidPageColor(
